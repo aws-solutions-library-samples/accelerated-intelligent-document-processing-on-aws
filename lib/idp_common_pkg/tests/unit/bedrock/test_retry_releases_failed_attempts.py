@@ -481,6 +481,31 @@ def test_no_ladder_retries_from_inside_an_except_block():
     )
 
 
+@pytest.mark.unit
+def test_no_ladder_retries_from_inside_a_try_statement():
+    """A retry made anywhere inside a ``try`` is covered by that frame's handlers.
+
+    Not only from an ``except`` block: a retry made from the ``try`` BODY runs with no
+    exception being handled, so it keeps nothing alive, but whatever the nested ladder
+    finally raises propagates back into this frame's ``try`` and is caught and retried
+    again on this frame's count. The LambdaHook function-error retry was made that
+    way, and with ``max_retries=4`` one function error followed by read timeouts made
+    9 invocations (#1706). So the rule is lexical and total: no self-call inside any
+    part of a ``try`` statement. ``test_retry_ladder_bounds`` measures the bound
+    itself.
+    """
+    offenders = []
+    for fn in _ladders():
+        tries = [t for t in ast.walk(fn) if isinstance(t, ast.Try)]
+        for call in _self_calls(fn):
+            if any(_within(call, t) for t in tries):
+                offenders.append(f"{fn.name} line {call.lineno}")
+    assert not offenders, (
+        "a ladder retries from inside a try statement, so its own handlers catch "
+        f"and retry what the nested ladder raises: {offenders} (#1706)"
+    )
+
+
 def _can_complete(stmts: list[ast.stmt]) -> bool:
     """Whether a block can finish without raising (conservative: True if unsure)."""
     if not stmts:
@@ -493,10 +518,27 @@ def _can_complete(stmts: list[ast.stmt]) -> bool:
     return True
 
 
+def _can_fall_through(stmts: list[ast.stmt]) -> bool:
+    """Whether a block can reach its end without raising or returning
+    (conservative: True if unsure)."""
+    if not stmts:
+        return True
+    last = stmts[-1]
+    if isinstance(last, (ast.Raise, ast.Return)):
+        return False
+    if isinstance(last, ast.If):
+        return _can_fall_through(last.body) or _can_fall_through(last.orelse)
+    return True
+
+
 def _retrying_handlers() -> set[tuple[str, str]]:
     """(ladder, handler) for every handler of a self-calling function that can
     complete without raising — the handlers that can decide to retry — plus
-    "<try body>" where a self-call sits in a ``try`` body."""
+    "<try body>" where the ``try`` body itself can reach its end, which in a ladder
+    means it decided to retry without any exception being handled (a body that
+    succeeds returns). Derived from what the body can do, not from where the retry
+    call sits: no retry call may sit inside a ``try`` at all, see
+    :func:`test_no_ladder_retries_from_inside_a_try_statement`."""
     found: set[tuple[str, str]] = set()
     for fn in _ladders():
         for node in ast.walk(fn):
@@ -507,9 +549,8 @@ def _retrying_handlers() -> set[tuple[str, str]]:
                     found.add(
                         (fn.name, ast.unparse(h.type) if h.type else "<bare except>")
                     )
-            for call in _self_calls(fn):
-                if any(_within(call, stmt) for stmt in node.body):
-                    found.add((fn.name, "<try body>"))
+            if _can_fall_through(node.body):
+                found.add((fn.name, "<try body>"))
     return found
 
 

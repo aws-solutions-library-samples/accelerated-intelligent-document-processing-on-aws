@@ -3289,9 +3289,16 @@ class BedrockClient:
         # Bound before the try so the handlers can measure the attempt they are
         # handling; reassigned immediately before the invoke.
         attempt_start_time = time.time()
-        # See ``_invoke_with_retry``: a retry decided by an ``except`` handler below is
-        # made after the try statement. The function-error retry in the try body
-        # stays where it is, because no exception is being handled there.
+        # Every retry this ladder makes, including the function-error retry, is
+        # decided inside the try statement and MADE after it. See
+        # ``_invoke_with_retry`` for why not from an ``except`` handler. The
+        # function-error retry used to be made from the try BODY instead, which no
+        # exception is being handled in, but which this frame's own handlers still
+        # cover: whatever the nested ladder finally raised was caught a second time
+        # here and retried again on this frame's count, so the bound applied per
+        # level rather than per request. Measured with ``max_retries=4``: one
+        # function error followed by read timeouts or throttles made 9 invocations
+        # rather than 5, every one re-running whatever the hook charges for (#1706).
         retry: Optional[Tuple[int, float]] = None
         # Whatever the CALLER was handling when it called in. Not ours to touch.
         caller_exception = sys.exc_info()[1]
@@ -3304,10 +3311,8 @@ class BedrockClient:
             attempt_start_time = time.time()
 
             # Invoke Lambda synchronously. The payload is serialised inline rather
-            # than bound to a local: the function-error retry below recurses from
-            # this frame, so a local holding the serialised request (every page
-            # image, base64) would stay alive for the rest of the ladder, one copy
-            # per attempt (#1678).
+            # than bound to a local, so this frame holds no copy of the serialised
+            # request (every page image, base64) while a later attempt runs (#1678).
             response = self.lambda_client.invoke(
                 FunctionName=lambda_arn,
                 InvocationType="RequestResponse",
@@ -3350,66 +3355,60 @@ class BedrockClient:
                         f"LambdaHook transient error, retrying in {backoff:.2f}s"
                     )
                     time.sleep(backoff)
-                    return self._invoke_lambda_hook_with_retry(
-                        lambda_arn=lambda_arn,
-                        lambda_payload=lambda_payload,
-                        retry_count=retry_count + 1,
-                        max_retries=max_retries,
-                        request_start_time=request_start_time,
-                        context=context,
-                        worst_attempt_seconds=worst,
-                    )
+                    retry = (retry_count + 1, worst)
+                else:
+                    self._put_metric("LambdaHookRequestsFailed", 1)
+                    raise RuntimeError(f"LambdaHook function error: {error_message}")
+            else:
+                # Parse response payload
+                response_payload = json.loads(
+                    response["Payload"].read().decode("utf-8")
+                )
 
-                self._put_metric("LambdaHookRequestsFailed", 1)
-                raise RuntimeError(f"LambdaHook function error: {error_message}")
+                logger.info(
+                    f"LambdaHook request successful after {retry_count + 1} attempts. "
+                    f"Duration: {duration:.2f}s"
+                )
 
-            # Parse response payload
-            response_payload = json.loads(response["Payload"].read().decode("utf-8"))
+                # Extract usage/metering from the Lambda response
+                usage = response_payload.get("usage", {})
+                if not usage:
+                    # Provide default metering if Lambda doesn't return usage
+                    usage = {
+                        "inputTokens": 0,
+                        "outputTokens": 0,
+                        "totalTokens": 0,
+                    }
 
-            logger.info(
-                f"LambdaHook request successful after {retry_count + 1} attempts. "
-                f"Duration: {duration:.2f}s"
-            )
+                # Track metrics
+                self._put_metric("LambdaHookRequestsSucceeded", 1)
+                self._put_metric(
+                    "LambdaHookRequestLatency", duration * 1000, "Milliseconds"
+                )
 
-            # Extract usage/metering from the Lambda response
-            usage = response_payload.get("usage", {})
-            if not usage:
-                # Provide default metering if Lambda doesn't return usage
-                usage = {
-                    "inputTokens": 0,
-                    "outputTokens": 0,
-                    "totalTokens": 0,
+                total_duration = time.time() - request_start_time
+                self._put_metric(
+                    "LambdaHookTotalLatency", total_duration * 1000, "Milliseconds"
+                )
+
+                # Build response in the same format as Bedrock responses (numeric
+                # usage entries only — see the Bedrock site).
+                response_with_metering = {
+                    "response": response_payload,
+                    "metering": {
+                        # Keyed on the bare FUNCTION NAME, never the raw ARN: an ARN
+                        # embeds account id and region, so no shipped pricing entry
+                        # could ever match it, and its ':function:' delimiter is not
+                        # a '/' so the pricing suffix walk cannot split it either.
+                        # See lambda_hook_metering_name.
+                        f"{context}/lambda_hook/{lambda_hook_metering_name(lambda_arn)}": {
+                            **numeric_usage(usage),
+                            "requests": 1,
+                        }
+                    },
                 }
 
-            # Track metrics
-            self._put_metric("LambdaHookRequestsSucceeded", 1)
-            self._put_metric(
-                "LambdaHookRequestLatency", duration * 1000, "Milliseconds"
-            )
-
-            total_duration = time.time() - request_start_time
-            self._put_metric(
-                "LambdaHookTotalLatency", total_duration * 1000, "Milliseconds"
-            )
-
-            # Build response in the same format as Bedrock responses (numeric
-            # usage entries only — see the Bedrock site).
-            response_with_metering = {
-                "response": response_payload,
-                "metering": {
-                    # Keyed on the bare FUNCTION NAME, never the raw ARN: an ARN
-                    # embeds account id and region, so no shipped pricing entry
-                    # could ever match it, and its ':function:' delimiter is not
-                    # a '/' so the pricing suffix walk cannot split it either.
-                    # See lambda_hook_metering_name.
-                    f"{context}/lambda_hook/{lambda_hook_metering_name(lambda_arn)}": {
-                        **numeric_usage(usage),
-                        "requests": 1,
-                    }
-                },
-            }
-
-            return response_with_metering
+                return response_with_metering
 
         except ClientError as e:
             error_code = e.response["Error"]["Code"]

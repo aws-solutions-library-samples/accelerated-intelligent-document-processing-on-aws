@@ -597,6 +597,13 @@ The Lambda Hook includes built-in retry logic:
 - **Function errors**: Retried for unhandled exceptions (cold start issues, etc.)
 - **Permanent errors**: Raised immediately (invalid ARN, missing permissions, etc.)
 
+One request makes at most `max_retries + 1` invocations of your hook, whatever mix of
+these failures it meets, where `max_retries` is the IDP Bedrock client's retry count
+(7 unless the caller sets another, so at most 8 invocations). Each retry re-runs whatever the hook charges for, so the
+bound is worth knowing when you price a hook. A function error followed by a
+throttle or a timeout used to be retried at two levels at once and could make almost
+twice that many.
+
 ## Metering and Cost Tracking
 
 Lambda Hook invocations are tracked in the document's metering data under:

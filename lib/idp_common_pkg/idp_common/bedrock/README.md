@@ -990,8 +990,18 @@ The BedrockClient automatically handles common failure scenarios:
   detaches the tracebacks along that chain. botocore's `Endpoint._send_request`
   holds the exception it raises in a local, which makes a reference cycle; without
   the detach the attempt is unreachable but stays in memory until the cyclic
-  garbage collector next reaches it. The LambdaHook ladder serialises its payload inline, because its
-  function-error retry recurses from inside the `try` body.
+  garbage collector next reaches it. The LambdaHook ladder serialises its payload
+  inline, so its frame holds no copy of the serialised request.
+  No ladder retries from anywhere inside a `try` statement, the body included. The
+  LambdaHook function-error retry (a hook that answers with `FunctionError:
+  Unhandled`) is decided in the `try` body, where no exception is being handled, but
+  it is made after the statement like every other retry: made from the body, the
+  outer frame's own handlers caught whatever the nested ladder finally raised and
+  retried it again on their own count, so with `max_retries=4` one function error
+  followed by read timeouts made 9 invocations instead of 5. A request now makes at
+  most `max_retries + 1` invocations whatever mix of failures it meets;
+  `tests/unit/bedrock/test_retry_ladder_bounds.py` checks every ordering of the three
+  retryable failure kinds (#1706).
   `tests/unit/bedrock/test_retry_releases_failed_attempts.py` drives every handler
   that can retry with a stub that fails the way botocore does, and measures the
   memory still held at each attempt with the cyclic collector off. It also fails
