@@ -1145,9 +1145,10 @@ endif
 # under a temporary profile, claims it, saves a draft and completes it through
 # the REST API with a real Annotator ID token, then waits for the finalize
 # run and the final review status object. Creates and removes a temporary
-# profile, user and document (CHECK_EVENTS=1 adds a temporary EventBridge rule
-# and SQS queue). Exit 0 = PASS, 1 = FAIL, 2 = a check errored or was skipped.
-stacktest-review-queues: ## Review queues live check: routes a document, claims, completes and waits for the final status object (STACK_NAME=...; creates and removes a temporary profile and user)
+# profile, Annotator, Admin and document, and lists the Annotator on the Default
+# queue for the run (CHECK_EVENTS=1 adds a temporary EventBridge rule and SQS
+# queue). Exit 0 = PASS, 1 = FAIL, 2 = a check errored or was skipped.
+stacktest-review-queues: ## Review queues live check: routes a document, claims, completes and waits for the final status object (STACK_NAME=...; creates and removes a temporary profile and users)
 ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=...])
 endif
