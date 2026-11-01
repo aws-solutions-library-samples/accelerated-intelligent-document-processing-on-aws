@@ -127,6 +127,12 @@ class TestAccepted:
         assert "purpose" not in body
         assert body["filesToProcess"] == 3
 
+    def test_an_empty_grouping_on_a_scoring_run_is_no_grouping(self, index):
+        """The decoder reads "" as no grouping, so the guard must not refuse it."""
+        index.handler(_event(draft_labeling=False, object_keys=(), sections=""), None)
+
+        assert "documentSections" not in _queued_body(index)
+
 
 @pytest.mark.unit
 class TestRefused:
@@ -145,6 +151,16 @@ class TestRefused:
     ):
         with pytest.raises(ValueError, match="exactly one document"):
             index.handler(_event(object_keys=object_keys), None)
+        _assert_nothing_happened(index)
+
+    def test_one_file_by_count_is_not_one_named_document(self, index):
+        """numberOfFiles=1 takes the set's first file, which the grouping may not
+        describe; only a named document ties the grouping to its ground truth."""
+        event = _event(object_keys=())
+        event["arguments"]["input"]["numberOfFiles"] = 1
+
+        with pytest.raises(ValueError, match="exactly one document"):
+            index.handler(event, None)
         _assert_nothing_happened(index)
 
     @pytest.mark.parametrize(
