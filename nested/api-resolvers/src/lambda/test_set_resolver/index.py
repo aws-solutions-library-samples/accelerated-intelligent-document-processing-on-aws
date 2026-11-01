@@ -2001,12 +2001,17 @@ def _drafting_run_ids(test_set_id, meta):
     named only by its ``labelJobId`` pointer. One list for the review-run, the
     configuration and the fingerprint resolvers, so the three agree on which runs
     drafted a set (#1746).
+
+    A FAILED job is left out. A job ends FAILED only when it labeled nothing, so its
+    run drafted none of the set's labels; counting it let one failed re-extract
+    under another profile make the set read as mixed, which no scoped Reviewer is
+    admitted to (#1757). The review-run resolver passes over a FAILED job too.
     """
     jobs = _label_jobs(test_set_id)
     if not jobs:
         pointer = (meta or {}).get("labelJobId")
         return [pointer] if pointer else []
-    run_ids = [_label_job_run_id(job) for job in jobs]
+    run_ids = [_label_job_run_id(job) for job in jobs if job.get("status") != "FAILED"]
     legacy = _legacy_drafting_run(jobs)
     if legacy:
         run_ids.insert(0, legacy)

@@ -12979,3 +12979,142 @@ class TestHarvestAfterALabelReset:
 
         assert len(result["sections"]) == 2
         assert table.get_item(Key=self.KEY).get("Item") is None
+
+
+@pytest.mark.unit
+class TestFailedJobIsNotADraftingRun:
+    """#1757: a labeling job ends FAILED only when it labeled nothing, so its run
+    drafted none of the set's labels. Counting it as a drafting run let one failed
+    re-extract under another profile make the set read as mixed, which leaves it
+    with no single profile and so out of every scoped Reviewer's reach."""
+
+    @staticmethod
+    def _seed(table, jobs, runs):
+        """``jobs``: (run id, status, extra) oldest first; ``runs``: run id ->
+        run-record attributes."""
+        _seed_test_set(table, "ts1", fileCount=2, labelJobId=jobs[-1][0])
+        for day, (run_id, status, extra) in enumerate(jobs, start=1):
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": f"labeljob#{run_id}",
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": status,
+                    "createdAt": f"2026-01-{day:02d}T00:00:00Z",
+                    **extra,
+                }
+            )
+        for run_id, attrs in runs.items():
+            table.put_item(Item={"PK": f"testrun#{run_id}", "SK": "metadata", **attrs})
+
+    def _meta(self, table):
+        return table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+    def _seed_failed_reextract(self, table, failed_profile="prof-B"):
+        self._seed(
+            table,
+            [
+                ("runA", "COMPLETED", {}),
+                ("runF", "FAILED", {"objectKeys": ["a.pdf"]}),
+            ],
+            {
+                "runA": {"ConfigVersion": "prof-A", "ConfidenceFingerprint": "fpA"},
+                "runF": {
+                    "ConfigVersion": failed_profile,
+                    "ConfidenceFingerprint": "fpF",
+                },
+            },
+        )
+
+    def test_a_failed_job_is_not_a_drafting_run(self, labeling_env):
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+
+        assert test_set_index._drafting_run_ids("ts1", self._meta(table)) == ["runA"]
+
+    def test_a_failed_reextract_under_another_profile_leaves_the_set_single(
+        self, labeling_env
+    ):
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+
+        assert test_set_index._resolve_set_config_version("ts1", self._meta(table)) == (
+            "prof-A",
+            "drafting-run",
+        )
+
+    def test_a_failed_reextract_does_not_mix_the_fingerprint(self, labeling_env):
+        table, _ = labeling_env
+        self._seed_failed_reextract(table, failed_profile="prof-A")
+
+        assert test_set_index._resolve_set_fingerprint(
+            "ts1", self._meta(table), "prof-A"
+        ) == ("fpA", "drafting-run")
+
+    @pytest.mark.parametrize(
+        "scope, admitted", [(["prof-A"], True), (["prof-B"], False)]
+    )
+    def test_a_scoped_reviewer_of_the_drafting_profile_is_admitted(
+        self, labeling_env, scope, admitted
+    ):
+        """The lockout itself, through the resolver's own access check. The second
+        case is the non-vacuity check: the scope really is enforced."""
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+        event = _caller("rev@example.com", "Reviewer")
+
+        with patch(
+            "idp_common.config_scope.resolve_allowed_config_versions",
+            return_value=scope,
+        ):
+            if admitted:
+                test_set_index._assert_set_access(event, "ts1")
+            else:
+                from idp_common.testset_scope import TestSetAccessDenied
+
+                with pytest.raises(TestSetAccessDenied):
+                    test_set_index._assert_set_access(event, "ts1")
+
+    def test_the_review_run_is_unchanged(self, labeling_env):
+        """#1737 already passed over a FAILED job when choosing a document's review
+        run; leaving it out of the drafting runs must not move that choice."""
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+
+        assert test_set_index._run_id_by_object_key("ts1", self._meta(table)) == (
+            {},
+            "runA",
+        )
+
+    def test_a_failed_oldest_job_still_names_the_run_before_it(self, labeling_env):
+        """A failed job's ``previousLabelJobId`` is still a record of the run that
+        drafted the set before it."""
+        table, _ = labeling_env
+        self._seed(
+            table,
+            [("runF", "FAILED", {"previousLabelJobId": "runL"})],
+            {"runF": {"ConfigVersion": "prof-B"}, "runL": {"ConfigVersion": "prof-A"}},
+        )
+        meta = self._meta(table)
+
+        assert test_set_index._drafting_run_ids("ts1", meta) == ["runL"]
+        assert test_set_index._resolve_set_config_version("ts1", meta) == (
+            "prof-A",
+            "drafting-run",
+        )
+        assert test_set_index._run_id_by_object_key("ts1", meta) == ({}, "runL")
+
+    def test_a_job_still_in_flight_is_a_drafting_run(self, labeling_env):
+        """Only a FAILED job is left out: a running re-extract is drafting labels."""
+        table, _ = labeling_env
+        self._seed(
+            table,
+            [("runA", "COMPLETED", {}), ("runR", "RUNNING", {"objectKeys": ["a.pdf"]})],
+            {"runA": {"ConfigVersion": "prof-A"}, "runR": {"ConfigVersion": "prof-B"}},
+        )
+
+        assert test_set_index._resolve_set_config_version("ts1", self._meta(table)) == (
+            None,
+            "mixed",
+        )
