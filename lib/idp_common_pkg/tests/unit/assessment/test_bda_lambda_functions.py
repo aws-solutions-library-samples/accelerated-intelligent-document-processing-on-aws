@@ -592,3 +592,163 @@ class TestBDAMatchWithoutBlueprint:
             False,
         ]
         assert hitl is (expected_confidence is None)
+
+
+# ---------------------------------------------------------------------------
+# Tests: bda_document_class (issue #1755)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestBdaDocumentClass:
+    """BDA reports the blueprint's ``class``, which escapes characters BDA does
+    not accept; the Lambda reads it back to the IDP class id."""
+
+    def test_an_escaped_class_is_read_back_to_the_class_id(self):
+        from idp_common.bda.blueprint_class import to_blueprint_class
+
+        class_id = "Invoice — {EU}"
+        reported = {"document_class": {"type": to_blueprint_class(class_id)}}
+        assert reported["document_class"]["type"] != class_id
+        assert bda_index.bda_document_class(reported) == class_id
+
+    def test_the_escaped_class_resolves_its_schema(self):
+        from idp_common.bda.blueprint_class import to_blueprint_class
+
+        schema = {"$id": "Pay—slip", "x-aws-idp-document-type": "Pay—slip"}
+        config = SimpleNamespace(classes=[schema])
+        result_data = {"document_class": {"type": to_blueprint_class("Pay—slip")}}
+        doc_class = bda_index.bda_document_class(result_data)
+        assert resolve_class_schema(doc_class, config) is schema
+
+    @pytest.mark.parametrize(
+        "result_data,expected",
+        [
+            ({"document_class": {"type": "W2"}}, "W2"),
+            ({"document_class": {"type": "Bank Statement"}}, "Bank Statement"),
+            ({"document_class": {}}, ""),
+            ({"document_class": None}, ""),
+            ({}, ""),
+            (None, ""),
+            ({"document_class": {"type": None}}, None),
+        ],
+    )
+    def test_other_values(self, result_data, expected):
+        assert bda_index.bda_document_class(result_data) == expected
+
+    def test_schema_aware_thresholds_resolve_an_escaped_class(self):
+        from idp_common.bda.blueprint_class import to_blueprint_class
+
+        schema = {**W2_SCHEMA, "x-aws-idp-document-type": "W—2"}
+        explainability = [
+            {"w2_copies": [{"w2_box_a_employee_ssn": {"confidence": 0.75}}]}
+        ]
+        result_data = {"document_class": {"type": to_blueprint_class("W—2")}}
+
+        enriched = add_confidence_thresholds_to_explainability_schema_aware(
+            explainability, result_data, 0.0, _config_with(schema)
+        )
+
+        leaf = enriched[0]["w2_copies"][0]["w2_box_a_employee_ssn"]
+        assert leaf["confidence_threshold"] == 0.8
+
+    def test_process_segments_resolves_the_class_id(self):
+        from idp_common.models import Document, Section
+
+        doc = Document(id="pkg.pdf", input_key="pkg.pdf")
+        doc.sections = [
+            Section(section_id="1", classification="Pay—slip", page_ids=["1"])
+        ]
+        output = {
+            "matched_blueprint": {"name": "bp", "confidence": 0.9},
+            "split_document": {"page_indices": [0]},
+            "document_class": {"type": "Pay_x2014_slip"},
+            "explainability_info": [],
+        }
+        resolve = MagicMock(return_value=None)
+        with (
+            patch.object(bda_index, "download_json", return_value=output),
+            patch.object(bda_index, "download_decimal", return_value=output),
+            patch.object(bda_index, "legacy_hitl_enabled", return_value=False),
+            patch.object(bda_index, "resolve_class_schema", resolve),
+            patch.dict(os.environ, {"DB_NAME": ""}, clear=False),
+            patch.object(bda_index, "boto3", MagicMock()),
+        ):
+            bda_index.process_segments(
+                input_bucket="in",
+                output_bucket="out",
+                object_key="pkg.pdf",
+                segment_metadata=[
+                    {
+                        "custom_output_status": "MATCH",
+                        "custom_output_path": "s3://bda/out/custom.json",
+                    }
+                ],
+                confidence_threshold=0.8,
+                execution_id="exec-1",
+                document=doc,
+            )
+        assert [c.args[0] for c in resolve.call_args_list] == ["Pay—slip"]
+
+    @staticmethod
+    def _sections_run(blueprint_class, write_fails=False):
+        """Run ``process_bda_sections`` over one section holding a result.json
+        whose class is ``blueprint_class``. Returns the sections, the result
+        written (or None) and the S3 double."""
+        import io
+        import json as _json
+
+        from idp_common.models import Document
+
+        raw = _json.dumps(
+            {
+                "document_class": {"type": blueprint_class},
+                "split_document": {"page_indices": [0]},
+            }
+        ).encode("utf-8")
+        written = {}
+
+        def _write(data, bucket, key, content_type=None):
+            if write_fails:
+                raise RuntimeError("write failed")
+            written[key] = _json.loads(_json.dumps(data))
+
+        def _get(Bucket, Key):
+            body = (
+                _json.dumps(written[Key]).encode("utf-8")
+                if Bucket == "out" and Key in written
+                else raw
+            )
+            return {"Body": io.BytesIO(body)}
+
+        s3 = MagicMock()
+        s3.list_objects_v2.side_effect = [
+            {"CommonPrefixes": [{"Prefix": "r/custom_output/0/"}]},
+            {"Contents": [{"Key": "r/custom_output/0/result.json"}]},
+        ]
+        s3.get_object.side_effect = _get
+        doc = Document(id="pkg.pdf", input_key="pkg.pdf")
+        with (
+            patch.object(bda_index, "s3_client", s3),
+            patch.object(bda_index, "write_content", side_effect=_write),
+            patch.object(bda_index, "create_metadata_file", MagicMock()),
+        ):
+            bda_index.process_bda_sections("bda", "r", "out", "pkg.pdf", doc)
+        result = next(iter(written.values()), None)
+        return [s.classification for s in doc.sections], result, s3
+
+    @pytest.mark.parametrize("class_id", ["Pay—slip", "_x0041_", "W2"])
+    def test_the_written_result_carries_the_class_id_once(self, class_id):
+        from idp_common.bda.blueprint_class import to_blueprint_class
+
+        sections, written, _ = self._sections_run(to_blueprint_class(class_id))
+
+        assert sections == [class_id]
+        assert written["document_class"]["type"] == class_id
+
+    def test_a_raw_fallback_copy_is_still_read_back_to_the_class_id(self):
+        sections, written, s3 = self._sections_run("Pay_x2014_slip", write_fails=True)
+
+        assert written is None
+        s3.copy_object.assert_called_once()
+        assert sections == ["Pay—slip"]

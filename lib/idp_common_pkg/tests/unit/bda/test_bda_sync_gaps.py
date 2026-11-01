@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from idp_common.bda.bda_blueprint_service import BdaBlueprintService, classes_not_sent
+from idp_common.bda.blueprint_class import from_blueprint_class
 from tests.unit.bda.test_blueprint_text_characters import (
     PRESET_CLASSES,
     PROBED_CHARS,
@@ -489,6 +490,11 @@ class TestEveryPresetClass:
         for path, text in _texts(blueprint):
             assert not set(text) - PROBED_CHARS, f"{path}: {text!r}"
             assert text.strip(), path
+        # The class: probed characters, at most 60 of them, not blank, and read
+        # back to the class id.
+        assert not set(blueprint["class"]) - PROBED_CHARS, blueprint["class"]
+        assert 0 < len(blueprint["class"].strip()) <= 60
+        assert from_blueprint_class(blueprint["class"]) == cls["$id"]
 
     def test_the_unsent_classes_are_preset_classes(self):
         present = {(p, c["$id"]) for p, c in PRESET_CLASSES}

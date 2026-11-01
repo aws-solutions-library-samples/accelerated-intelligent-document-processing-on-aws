@@ -38,6 +38,12 @@ from botocore.exceptions import ClientError
 from deepdiff import DeepDiff
 
 from idp_common.bda.bda_blueprint_creator import BDABlueprintCreator
+from idp_common.bda.blueprint_class import (
+    BDA_CLASS_MAX_LENGTH,
+    BDA_TEXT_CHARS,
+    from_blueprint_class,
+    to_blueprint_class,
+)
 from idp_common.config.class_names import sanitize_class_name
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.schema_constants import (
@@ -55,35 +61,10 @@ from idp_common.config.schema_constants import (
 
 logger = logging.getLogger(__name__)
 
-# The characters CreateBlueprint takes in a blueprint's text values, measured
-# against the control plane (DOCUMENT blueprints, us-west-2) with the schema
-# serialised the way this module sends it (``json.dumps``, so non-ASCII arrives
-# escaped). The same set holds for a property's ``instruction`` and for the
-# blueprint's ``description``. One blueprint whose instruction and description
-# each held every character below was accepted; each character outside it that
-# was probed was rejected on its own with "Request has invalid blueprint schema"
-# — among them the em and en dash, U+2212 minus, the ellipsis, the no-break
-# space, the bullet, the multiplication and division signs, Greek, Cyrillic,
-# Arabic, CJK, emoji, control characters, and the ASCII characters ^ ` { } ~.
-# The non-ASCII part is the character class the API's own regular expression
-# names for the schema string, less the CJK, kana and hangul ranges, which that
-# expression lists but the schema check still rejects, plus four characters the
-# expression does not list but the check was measured to accept in this
-# encoding: the right single quote, both double quotes and the zero-width space.
-# They are kept rather than rewritten so that text which already synced is not
-# changed (and its blueprint re-versioned). The left single quote was rejected.
-_BDA_TEXT_CHARS = frozenset(
-    "\t\n\v\f\r"
-    + "".join(chr(c) for c in range(0x20, 0x7F) if chr(c) not in "^`{}~")
-    + "¡£¥§©ª®°±²³´µ¹¿"
-    + "".join(chr(c) for c in range(0xC0, 0xD7))  # À-Ö
-    + "".join(chr(c) for c in range(0xD8, 0xDD))  # Ø-Ü
-    + "ß"
-    + "".join(chr(c) for c in range(0xE0, 0xF7))  # à-ö
-    + "".join(chr(c) for c in range(0xF8, 0xFD))  # ø-ü
-    + "Œœ฿ẞ₹€™✓⑆⑇⑈⑉₽₱₦₣₩₫₺"
-    + "\u2019\u201c\u201d\u200b"
-)
+# The characters CreateBlueprint takes in a blueprint's text values; defined,
+# with its measurements, in blueprint_class because the blueprint ``class``
+# takes the same set.
+_BDA_TEXT_CHARS = BDA_TEXT_CHARS
 
 # Replacements that keep the meaning of a character outside _BDA_TEXT_CHARS.
 # Anything not listed here is reduced through NFKD (which turns "ý" into "y" and
@@ -620,11 +601,13 @@ class BdaBlueprintService:
         # Validate that array properties have instruction field
         self._validate_bda_array_instruction_requirements(schema_copy)
 
-        # Create base IDP schema structure
-        idp_schema = {
+        # Create base IDP schema structure. The class id is read back through
+        # the reverse of the escaping the IDP -> BDA direction applies.
+        class_id = from_blueprint_class(str(schema_copy.get("class", "Document")))
+        idp_schema: dict = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": schema_copy.get("class", "Document"),
-            "x-aws-idp-document-type": schema_copy.get("class", "Document"),
+            "$id": class_id,
+            "x-aws-idp-document-type": class_id,
             "type": "object",
         }
 
@@ -1336,11 +1319,20 @@ class BdaBlueprintService:
                 add_missing_instructions(def_value["properties"], f"$defs.{def_name}")
 
     def _create_base_blueprint_structure(self, json_schema: dict) -> dict:
-        """Create the base blueprint structure."""
+        """Create the base blueprint structure.
+
+        The class id is carried in ``class`` through ``to_blueprint_class``, which
+        escapes the characters BDA rejects there reversibly, so a BDA → IDP sync
+        restores the id exactly (issue #1755).
+        """
         return {
             "$schema": "http://json-schema.org/draft-07/schema#",
-            "class": json_schema.get(
-                ID_FIELD, json_schema.get(X_AWS_IDP_DOCUMENT_TYPE, "Document")
+            "class": to_blueprint_class(
+                str(
+                    json_schema.get(
+                        ID_FIELD, json_schema.get(X_AWS_IDP_DOCUMENT_TYPE, "Document")
+                    )
+                )
             ),
             "description": json_schema.get(
                 SCHEMA_DESCRIPTION, "Document schema for data extraction"
@@ -2087,6 +2079,20 @@ class BdaBlueprintService:
                 # below is attributed to it.
                 recording.class_name = docu_class
 
+                blueprint_class = to_blueprint_class(str(docu_class))
+                if len(blueprint_class) > BDA_CLASS_MAX_LENGTH:
+                    raise ValueError(
+                        f"Document class '{docu_class}' is too long for BDA: a "
+                        f"blueprint's class holds at most {BDA_CLASS_MAX_LENGTH} "
+                        f"characters, and this one needs {len(blueprint_class)}"
+                        + (
+                            " once the characters BDA does not accept are escaped"
+                            if blueprint_class != docu_class
+                            else ""
+                        )
+                        + ". Use a shorter class name before syncing to BDA."
+                    )
+
                 skipped = self._skip_if_nothing_to_send(custom_class, recording)
                 if skipped is not None:
                     return skipped
@@ -2394,6 +2400,8 @@ class BdaBlueprintService:
                 )
 
             docu_class = blueprint_schema.get("class", None)
+            if isinstance(docu_class, str):
+                docu_class = from_blueprint_class(docu_class)
             class_exists = False
 
             if docu_class:
