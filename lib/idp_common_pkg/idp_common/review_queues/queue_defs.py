@@ -22,6 +22,7 @@ import logging
 import re
 import threading
 import time
+from decimal import Decimal
 from typing import Any, Callable, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -185,8 +186,28 @@ class QueueDefinition(BaseModel):
             # A stored ConfidenceThreshold (an older queue setting) is ignored. A
             # definition stored before the switch existed reads as on.
             enabled=True if enabled is None else bool(enabled),
-            version=int(item.get("Version") or 0),
+            version=_stored_version(item.get("Version"), queue_id),
         )
+
+
+def _stored_version(raw: Any, queue_id: Any) -> int:
+    """A stored ``Version`` as an int; 0 when absent or not a non-negative whole number.
+
+    A malformed one is read as 0 rather than dropping the queue from the listing, and
+    the version-0 write condition (:func:`_version_condition`) matches it, so the
+    queue stays editable and deletable; the next write stores a well-formed version.
+    """
+    if raw is None:
+        return 0
+    if (
+        isinstance(raw, (int, Decimal))
+        and not isinstance(raw, bool)
+        and raw >= 0
+        and raw == int(raw)
+    ):
+        return int(raw)
+    logger.warning("event=queue_definition_version_invalid queue=%s", queue_id)
+    return 0
 
 
 def default_definitions() -> list[QueueDefinition]:
@@ -252,15 +273,21 @@ _TXN_CONTENDED = frozenset({_TXN_CONDITION_FAILED, _TXN_CONFLICT})
 _CONTENDED_ATTEMPTS = 3
 
 
-def _version_condition(expected: int) -> str:
-    """The definition exists at version ``:expected``.
+def _version_condition(expected: int) -> tuple[str, dict[str, Any]]:
+    """The definition exists at version ``expected``: a condition and its values.
 
-    A definition stored before versions existed has no Version and reads as 0.
+    A definition stored before versions existed has no Version and reads as 0, and so
+    does one whose Version is malformed (:func:`_stored_version`): not a number, or a
+    negative one. Version 0 matches all of those. A positive number that is not whole
+    also reads as 0 but is not matched, because a condition expression cannot test
+    for a fraction; nothing this code writes stores one.
     """
-    return "attribute_exists(PK) AND " + (
-        "(attribute_not_exists(Version) OR Version = :expected)"
-        if expected == 0
-        else "Version = :expected"
+    if expected != 0:
+        return "attribute_exists(PK) AND Version = :expected", {":expected": expected}
+    return (
+        "attribute_exists(PK) AND (attribute_not_exists(Version)"
+        " OR NOT attribute_type(Version, :number) OR Version <= :expected)",
+        {":expected": expected, ":number": "N"},
     )
 
 
@@ -454,11 +481,12 @@ class QueueDefStore:
     def _replace(self, definition: QueueDefinition, expected: int) -> QueueDefinition:
         """Write ``definition`` over stored version ``expected``, as ``expected + 1``."""
         stored = definition.model_copy(update={"version": expected + 1})
+        condition, values = _version_condition(expected)
         try:
             self.client.put_item(
                 stored.to_item(),
-                condition_expression=_version_condition(expected),
-                expression_attribute_values={":expected": expected},
+                condition_expression=condition,
+                expression_attribute_values=values,
             )
         except Exception as exc:  # noqa: BLE001
             if not (_is_condition_failure(exc) or _is_transaction_conflict(exc)):
@@ -504,18 +532,15 @@ class QueueDefStore:
                 # delete writes the retired version, and a concurrent one fails this
                 # one's condition on the definition, so the value read stays current.
                 last = max(current.version, self._retired_version(current.id) or 0)
+                condition, values = _version_condition(current.version)
                 try:
                     self.client.transact_write_items(
                         [
                             {
                                 "Delete": {
                                     "Key": keys.qdef_key(current.id),
-                                    "ConditionExpression": _version_condition(
-                                        current.version
-                                    ),
-                                    "ExpressionAttributeValues": {
-                                        ":expected": current.version
-                                    },
+                                    "ConditionExpression": condition,
+                                    "ExpressionAttributeValues": values,
                                 }
                             },
                             {
