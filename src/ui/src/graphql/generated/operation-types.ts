@@ -2395,6 +2395,7 @@ export type ReviewQueueDefinition = {
   rejectReasons: Array<Scalars['String']['output']>;
   skipReasons: Array<Scalars['String']['output']>;
   timeLimitMinutes: Scalars['Int']['output'];
+  version?: Maybe<Scalars['Int']['output']>;
 };
 
 export type ReviewQueueDefinitionInput = {
@@ -2408,6 +2409,7 @@ export type ReviewQueueDefinitionInput = {
   rejectReasons?: InputMaybe<Array<Scalars['String']['input']>>;
   skipReasons?: InputMaybe<Array<Scalars['String']['input']>>;
   timeLimitMinutes?: InputMaybe<Scalars['Int']['input']>;
+  version?: InputMaybe<Scalars['Int']['input']>;
 };
 
 export type ReviewQueueHealth = {
@@ -3177,7 +3179,7 @@ export type CreateReviewQueueMutationVariables = Exact<{
 }>;
 
 
-export type CreateReviewQueueMutation = { createReviewQueue?: { id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null } | null };
+export type CreateReviewQueueMutation = { createReviewQueue?: { id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null, version?: number | null } | null };
 
 export type CreateUserMutationVariables = Exact<{
   email: Scalars['String']['input'];
@@ -3685,7 +3687,7 @@ export type UpdateReviewQueueMutationVariables = Exact<{
 }>;
 
 
-export type UpdateReviewQueueMutation = { updateReviewQueue?: { id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null } | null };
+export type UpdateReviewQueueMutation = { updateReviewQueue?: { id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null, version?: number | null } | null };
 
 export type UpdateTestSetMutationVariables = Exact<{
   input: UpdateTestSetInput;
@@ -4185,7 +4187,7 @@ export type ListReviewQueueItemsQuery = { listReviewQueueItems?: { nextToken?: s
 export type ListReviewQueuesQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type ListReviewQueuesQuery = { listReviewQueues?: Array<{ id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null }> | null };
+export type ListReviewQueuesQuery = { listReviewQueues?: Array<{ id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null, version?: number | null }> | null };
 
 export type ListSampleDocumentsQueryVariables = Exact<{ [key: string]: never; }>;
 

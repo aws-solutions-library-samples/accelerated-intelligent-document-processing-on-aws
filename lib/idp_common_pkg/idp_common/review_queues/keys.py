@@ -11,6 +11,8 @@ Base table (``PK`` / ``SK``):
 * ``R#<reviewerKey>`` / ``COUNTER``: the reviewer's open-claim counter.
 * ``QDEF`` / ``Q#<queueId>``: a queue definition. Queues are system-wide: any
   configuration profile routes to one by id.
+* ``QDEFGONE`` / ``Q#<queueId>``: the last ``Version`` of a deleted queue
+  definition, so a queue re-created under the same id continues from it.
 * ``QREG`` / ``Q#<queueId>``: the queue registry (with a member snapshot).
 * ``QUEUE#<queueId>`` / ``ANNOUNCE``: the "items waiting" debounce.
 * ``TSDOC#<testSetId>`` / ``D#<objectKey>``: a Test Studio document's summary
@@ -47,6 +49,7 @@ from .exceptions import ReviewValidationError
 ITEM_SK = "ITEM"
 COUNTER_SK = "COUNTER"
 QDEF_PK = "QDEF"
+QDEF_RETIRED_PK = "QDEFGONE"
 REGISTRY_PK = "QREG"
 TSDOC_OWNER_PREFIX = "RT#"
 TSDOC_SWEEP_PK = "TS"
@@ -107,6 +110,10 @@ def queue_partition(queue: str) -> str:
 
 def qdef_key(queue: str) -> dict[str, str]:
     return {"PK": QDEF_PK, "SK": queue_partition(queue)}
+
+
+def qdef_retired_key(queue: str) -> dict[str, str]:
+    return {"PK": QDEF_RETIRED_PK, "SK": queue_partition(queue)}
 
 
 def registry_key(queue: str) -> dict[str, str]:

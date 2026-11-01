@@ -83,6 +83,11 @@ def _event(field, args=None, *, groups=("Admin",), email="Admin@Example.com"):
     }
 
 
+def _echo(d, create, expected_version=None):
+    """A store's put as the stub's side effect: the definition comes back as written."""
+    return d
+
+
 def _model(payload):
     m = MagicMock()
     m.model_dump.return_value = payload
@@ -240,7 +245,7 @@ class TestErrors:
 class TestQueueDefinitions:
     def test_create_maps_the_api_shape_both_ways(self, module):
         store = module._SERVICE.directory.queue_defs
-        store.put.side_effect = lambda d, create: d
+        store.put.side_effect = _echo
         result = module.handler(
             _event(
                 "createReviewQueue",
@@ -271,11 +276,12 @@ class TestQueueDefinitions:
             "eligibleAnnotators": ["a@x.com"],
             "isDefaultQueue": False,
             "enabled": True,
+            "version": 0,
         }
 
     def test_create_takes_the_switch(self, module):
         store = module._SERVICE.directory.queue_defs
-        store.put.side_effect = lambda d, create: d
+        store.put.side_effect = _echo
         result = module.handler(
             _event("createReviewQueue", {"input": {"id": "q", "enabled": False}}),
             None,
@@ -285,7 +291,7 @@ class TestQueueDefinitions:
     def test_a_confidence_threshold_in_the_input_is_ignored(self, module):
         """An older client may still send one; queues have no threshold."""
         store = module._SERVICE.directory.queue_defs
-        store.put.side_effect = lambda d, create: d
+        store.put.side_effect = _echo
         result = module.handler(
             _event(
                 "createReviewQueue",
@@ -298,12 +304,16 @@ class TestQueueDefinitions:
 
     def test_update_writes_over_an_existing_queue(self, module):
         store = module._SERVICE.directory.queue_defs
-        store.put.side_effect = lambda d, create: d
-        store.get.return_value = QueueDefinition(id="default", enabled=False)
+        store.put.side_effect = _echo
+        store.read_current.return_value = QueueDefinition(
+            id="default", enabled=False, version=4
+        )
         result = module.handler(
             _event("updateReviewQueue", {"input": {"id": "default"}}), None
         )
-        assert store.put.call_args.kwargs == {"create": False}
+        # No version sent (an older client): the update is checked against the read
+        # made here, so the merged switch cannot be one another write has replaced.
+        assert store.put.call_args.kwargs == {"create": False, "expected_version": 4}
         assert result["isDefaultQueue"] is True
         # Left out of the input, the switch keeps its stored value.
         assert result["enabled"] is False
@@ -311,8 +321,8 @@ class TestQueueDefinitions:
 
     def test_update_changes_the_switch(self, module):
         store = module._SERVICE.directory.queue_defs
-        store.put.side_effect = lambda d, create: d
-        store.get.return_value = QueueDefinition(id="default", enabled=False)
+        store.put.side_effect = _echo
+        store.read_current.return_value = QueueDefinition(id="default", enabled=False)
         result = module.handler(
             _event(
                 "updateReviewQueue",
@@ -330,8 +340,8 @@ class TestQueueDefinitions:
     def test_update_keeps_the_stored_skip_reasons_when_omitted(self, module):
         """The queue dialog saves without the lists it does not show."""
         store = module._SERVICE.directory.queue_defs
-        store.put.side_effect = lambda d, create: d
-        store.get.return_value = QueueDefinition(
+        store.put.side_effect = _echo
+        store.read_current.return_value = QueueDefinition(
             id="claims", skip_reasons=["Needs a specialist"]
         )
         result = module.handler(
@@ -341,8 +351,8 @@ class TestQueueDefinitions:
 
     def test_update_sets_the_skip_reasons_given(self, module):
         store = module._SERVICE.directory.queue_defs
-        store.put.side_effect = lambda d, create: d
-        store.get.return_value = QueueDefinition(id="claims")
+        store.put.side_effect = _echo
+        store.read_current.return_value = QueueDefinition(id="claims")
         result = module.handler(
             _event(
                 "updateReviewQueue",
@@ -456,3 +466,166 @@ class TestQueueDefinitions:
         ) as emails:
             assert module.handler(_event("listAnnotators"), None) == ["a@x.com"]
         emails.assert_called_once_with("pool-1")
+
+
+@pytest.mark.unit
+class TestQueueVersions:
+    """``updateReviewQueue`` is checked against the version the caller read (#1727)."""
+
+    def test_the_version_sent_is_the_one_checked(self, module):
+        store = module._SERVICE.directory.queue_defs
+        store.put.side_effect = _echo
+        store.read_current.return_value = QueueDefinition(id="claims", version=7)
+        module.handler(
+            _event("updateReviewQueue", {"input": {"id": "claims", "version": 3}}),
+            None,
+        )
+        # The caller's version, not the newer one read here: that is what makes a
+        # save built from an old read fail instead of overwriting.
+        assert store.put.call_args.kwargs == {"create": False, "expected_version": 3}
+
+    def test_version_0_is_sent_on_as_0(self, module):
+        store = module._SERVICE.directory.queue_defs
+        store.put.side_effect = _echo
+        store.read_current.return_value = QueueDefinition(id="claims", version=5)
+        module.handler(
+            _event("updateReviewQueue", {"input": {"id": "claims", "version": 0}}),
+            None,
+        )
+        assert store.put.call_args.kwargs["expected_version"] == 0
+
+    @pytest.mark.parametrize("bad", [-1, True, "2", 1.5])
+    def test_a_malformed_version_is_a_bad_request(self, module, bad):
+        store = module._SERVICE.directory.queue_defs
+        with pytest.raises(ValueError, match="BAD_ARGUMENT: version"):
+            module.handler(
+                _event(
+                    "updateReviewQueue", {"input": {"id": "claims", "version": bad}}
+                ),
+                None,
+            )
+        store.put.assert_not_called()
+
+    def test_a_queue_never_listed_is_read_through_get(self, module):
+        """The Default queue is seeded by a listing; an update before one still works."""
+        store = module._SERVICE.directory.queue_defs
+        store.put.side_effect = _echo
+        store.read_current.return_value = None
+        store.get.return_value = QueueDefinition(id="default", version=1)
+        module.handler(_event("updateReviewQueue", {"input": {"id": "default"}}), None)
+        store.get.assert_called_once_with("default")
+        assert store.put.call_args.kwargs["expected_version"] == 1
+
+    def test_an_update_of_no_queue_names_no_version(self, module):
+        store = module._SERVICE.directory.queue_defs
+        store.put.side_effect = _echo
+        store.read_current.return_value = None
+        store.get.return_value = None
+        module.handler(_event("updateReviewQueue", {"input": {"id": "ghost"}}), None)
+        assert store.put.call_args.kwargs == {"create": False, "expected_version": None}
+
+    def test_a_refused_update_is_a_bad_request_naming_the_code(self, module):
+        store = module._SERVICE.directory.queue_defs
+        store.read_current.return_value = QueueDefinition(id="claims", version=2)
+        store.put.side_effect = ReviewConflict("QUEUE_CHANGED", "reload it")
+        with pytest.raises(ValueError) as exc:
+            module.handler(
+                _event("updateReviewQueue", {"input": {"id": "claims", "version": 1}}),
+                None,
+            )
+        assert type(exc.value) is ValueError
+        assert str(exc.value).startswith("QUEUE_CHANGED: ")
+
+    def test_the_view_carries_the_version(self, module):
+        store = module._SERVICE.directory.queue_defs
+        store.list.return_value = [QueueDefinition(id="claims", version=9)]
+        (view,) = module.handler(_event("listReviewQueues"), None)
+        assert view["version"] == 9
+
+    def test_the_listing_reads_past_the_cache(self, module):
+        store = module._SERVICE.directory.queue_defs
+        store.list.return_value = []
+        module.handler(_event("listReviewQueues"), None)
+        store.list.assert_called_once_with(fresh=True)
+
+
+@pytest.fixture
+def moto_module(module):
+    """The handler over a real ``QueueDefStore`` on a moto table."""
+    import boto3
+    from moto import mock_aws
+
+    from idp_common.dynamodb.client import DynamoDBClient
+    from idp_common.review_queues.queue_defs import QueueDefStore
+
+    with mock_aws():
+        boto3.client("dynamodb", region_name="us-east-1").create_table(
+            TableName="hitl",
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+            ],
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        client = DynamoDBClient(table_name="hitl", region="us-east-1")
+        module._SERVICE.directory.queue_defs = QueueDefStore(lambda: client)
+        yield module
+
+
+@pytest.mark.unit
+class TestLostUpdateOnMoto:
+    """Two Admins save forms built from one listing. Measured on moto, not DynamoDB."""
+
+    def _form(self, view, **changes):
+        form = {k: v for k, v in view.items() if k != "isDefaultQueue"}
+        form.update(changes)
+        return {"input": form}
+
+    def test_the_second_save_is_refused_and_the_first_kept(self, moto_module):
+        h = moto_module.handler
+        h(_event("createReviewQueue", {"input": {"id": "claims"}}), None)
+        (view,) = [
+            q for q in h(_event("listReviewQueues"), None) if q["id"] == "claims"
+        ]
+        first = h(_event("updateReviewQueue", self._form(view, priority=80)), None)
+        assert first["version"] == view["version"] + 1
+        with pytest.raises(ValueError, match="^QUEUE_CHANGED: "):
+            h(
+                _event(
+                    "updateReviewQueue",
+                    self._form(view, eligibleAnnotators=["b@example.com"]),
+                ),
+                None,
+            )
+        (stored,) = [
+            q for q in h(_event("listReviewQueues"), None) if q["id"] == "claims"
+        ]
+        assert (stored["priority"], stored["eligibleAnnotators"]) == (80, [])
+        # Reloaded, the second Admin's save goes through.
+        again = h(
+            _event(
+                "updateReviewQueue",
+                self._form(stored, eligibleAnnotators=["b@example.com"]),
+            ),
+            None,
+        )
+        assert (again["priority"], again["eligibleAnnotators"]) == (
+            80,
+            ["b@example.com"],
+        )
+
+    def test_an_old_client_sending_no_version_still_saves(self, moto_module):
+        h = moto_module.handler
+        h(_event("createReviewQueue", {"input": {"id": "claims"}}), None)
+        (view,) = [
+            q for q in h(_event("listReviewQueues"), None) if q["id"] == "claims"
+        ]
+        h(_event("updateReviewQueue", self._form(view, priority=80)), None)
+        old = {k: v for k, v in self._form(view, priority=20)["input"].items()}
+        old.pop("version")
+        saved = h(_event("updateReviewQueue", {"input": old}), None)
+        assert (saved["priority"], saved["version"]) == (20, view["version"] + 2)

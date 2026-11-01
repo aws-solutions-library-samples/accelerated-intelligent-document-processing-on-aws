@@ -156,6 +156,27 @@ document, so it finishes with the new grouping.
   Default with `move` (unassigned; an assignee is told), re-points its `HOLDING`
   items at Default, then deletes the definition. It refuses with
   `QUEUE_FINALIZING` while one of the queue's items is `FINALIZING`.
+- Every definition carries a `version` (`Version` in the table), which
+  `QueueDefStore.put` sets to 1 on create and bumps by one on every update; a
+  definition stored before versions existed reads as 0. `delete` keeps the last
+  version under `QDEFGONE` / `Q#<id>`, and a create under that id continues from it,
+  so a version never repeats for an id. Both are single transactions conditional on
+  the versions they read (the definition's for a delete, the retired one for a
+  create), retried a few times when a concurrent write moves one; a create or
+  delete that cannot settle is refused with `QUEUE_CHANGED`. Given `expected_version`,
+  an update is a conditional write and is refused with `QUEUE_CHANGED`
+  (`ReviewConflict`) when the stored version has moved on, so two Admins' saves
+  built from one read cannot silently overwrite each other; a missing queue is still
+  `UNKNOWN_QUEUE`. Without it, an update replaces what is stored, retrying a few
+  times if a write lands between its consistent read and its put.
+  `updateReviewQueue` passes the input's optional `version` through, or, when an
+  older client sends none, the version of its own consistent read
+  (`read_current`): the client's fields replace what that read found, and it is
+  refused only if another write lands in between, which protects the fields the
+  resolver merges from the stored definition. So the store's own unversioned path
+  is not reached through the API. `listReviewQueues` calls `list(fresh=True)`, a
+  strongly consistent read past the 30 s cache, since it is what an Admin edits
+  from.
 - `create`/`updateReviewQueue` take `enabled`. A new queue is enabled; an update
   that leaves it out keeps the stored value, and a definition stored without it
   reads as enabled. Queues have no confidence threshold: a `confidenceThreshold`
