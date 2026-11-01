@@ -152,7 +152,7 @@ INLINE_EXPECTED = {
 }
 
 # A $defs class with no inline objects, which BDA already accepted.
-ACCEPTED_SCHEMA = {
+BDA_PROBED_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "Accepted1732",
     "type": "object",
@@ -183,10 +183,10 @@ ACCEPTED_SCHEMA = {
     },
 }
 
-# What the converter produced for ACCEPTED_SCHEMA before the fix, recorded from
+# What the converter produced for BDA_PROBED_SCHEMA before the fix, recorded from
 # that code. Unchanged output means no existing blueprint is re-versioned by
 # the next sync's update check.
-ACCEPTED_EXPECTED = {
+BDA_PROBED_BLUEPRINT = {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "class": "Accepted1732",
     "description": "probe",
@@ -352,8 +352,10 @@ class TestInlineObjectInDefsSchema:
         assert json.dumps(INLINE_SCHEMA, sort_keys=True) == before
 
     def test_already_accepted_defs_schemas_convert_unchanged(self, service):
-        blueprint = service._transform_json_schema_to_bedrock_blueprint(ACCEPTED_SCHEMA)
-        assert blueprint == ACCEPTED_EXPECTED
+        blueprint = service._transform_json_schema_to_bedrock_blueprint(
+            BDA_PROBED_SCHEMA
+        )
+        assert blueprint == BDA_PROBED_BLUEPRINT
         assert_bda_accepted_shape(blueprint)
 
     def test_the_shape_check_allows_a_primitive_array_in_a_definition(self):
