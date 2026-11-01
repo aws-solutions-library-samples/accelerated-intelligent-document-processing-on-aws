@@ -4947,6 +4947,17 @@ Resources:
                   - lambda:RemovePermission
                 Resource:
                   - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${CodeBuildTriggerLogGroup}"
+                  - !GetAtt CodeBuildTriggerLogGroup.Arn
       ManagedPolicyArns:
         - !If
           - DeployInVPC
@@ -5516,6 +5527,14 @@ Resources:
               Action:
                 - bedrock:ListDataAutomationProjects
               Resource: "*"
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${BDAOCRProjectFunctionLogGroup}"
+                - !GetAtt BDAOCRProjectFunctionLogGroup.Arn
 
   BDAOCRProjectFunctionLogGroup:
     Type: AWS::Logs::LogGroup
