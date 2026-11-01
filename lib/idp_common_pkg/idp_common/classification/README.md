@@ -810,8 +810,9 @@ are not sent rather than pointing at a missing image.
 ⚠️ **A genuinely empty page is kept out of `document.errors`.** `classify_page_bedrock`
 sets `metadata["page_empty"]` only when the page's text was read, is empty, and
 images are not sent. Text that is only whitespace counts as empty, since OCR of a
-blank sheet often yields line breaks rather than `""`; such a page is never sent to
-the model. Such a page still carries `metadata["error"]`, which is what
+blank sheet often yields line breaks rather than `""`, and with images on a page
+whose text is only whitespace is still classified from its image. An empty page
+still carries `metadata["error"]`, which is what
 this function keys on, but `_classify_pages_multimodal` does not copy it into
 `document.errors`: `processresults` fails the whole document on any entry there, so
 one blank separator sheet in a text-only configuration used to discard the

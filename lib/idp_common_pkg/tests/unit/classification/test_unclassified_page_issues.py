@@ -465,3 +465,27 @@ class TestAPageWithNoTextDoesNotFailTheDocument:
         assert result.pages["2"].classification == "unclassified"
         issues = _issues(result, "classification_page_no_content")
         assert len(issues) == 1 and issues[0].details["page_ids"] == ["2"]
+
+    @pytest.mark.parametrize("blank", ["", " \n "])
+    def test_with_images_on_a_page_with_no_text_is_classified_from_its_image(
+        self, blank
+    ):
+        """The other half of the rule: no usable text is not no content when the
+        page image is sent. An image-only scan is exactly what images-on is for,
+        so the page still goes to the model."""
+        import io
+
+        from PIL import Image
+
+        png = io.BytesIO()
+        Image.new("RGB", (1, 1), "white").save(png, format="PNG")
+        result, invoke, _ = self._classify(
+            text={**self.TEXT, "2": blank},
+            images=True,
+            prepare_image=lambda *_: png.getvalue(),
+        )
+
+        assert invoke.call_count == 3
+        assert result.errors == []
+        assert result.pages["2"].classification == "invoice"
+        assert not _issues(result, "classification_page_no_content")
