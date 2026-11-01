@@ -548,9 +548,9 @@ does exactly that with `document.errors`, and a test pins it.
 `ProcessingIssueCount` is written by `update_document` and **not** by
 `update_document_section`, so a failure recorded through `persist_failed_section`
 shows on the Sections panel but can leave the list badge at its previous value.
-Neither list resolver recovers it — the range resolver returns the stored value, and
-the counter is absent from the fast GSI's INCLUDE projection, which also returns no
-`Sections` to derive from. This is not an oversight to patch at that writer: it does
+Neither list resolver recovers it — both return the stored value (the GSI resolver
+through `TypeDateIndexV2`'s projection), and neither returns `Sections` to derive
+from. This is not an oversight to patch at that writer: it does
 not read the item, the per-section handler has already narrowed `document.sections`
 to its own section (so a local count would be 1 and would clobber a larger correct
 one), and ten sections are being written concurrently. Correcting it needs an atomic
