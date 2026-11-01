@@ -36,7 +36,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # sys.path anyway so the revision read is the one being deployed rather than whatever
 # an editable-install pointer happens to name (the pattern check_retired_models.py
 # uses). It goes directly after the script's own directory, ahead of PYTHONPATH and
-# site-packages: appended, it came after the installed copy and was never read (#1747).
+# site-packages. Appended, it lost to a copy on PYTHONPATH, a regular install or a
+# static .pth editable install; it beat only a setuptools finder-mode editable
+# install, whose finder runs after the sys.path search (#1747).
 # `idp_common.stepfunctions_history` imports nothing outside the standard library, so
 # this costs no dependency.
 sys.path.insert(

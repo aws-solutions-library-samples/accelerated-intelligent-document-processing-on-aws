@@ -27,10 +27,12 @@ REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "sdlc" / "codebuild_deployment.py"
 
 # Runs the module's import preamble as the buildspec does, with the script's
-# directory as sys.path[0], and reports which idp_common it bound.
+# directory as sys.path[0] in place of the "" that -c puts there, so the path the
+# module edits has exactly the shape a `python3 <script>` run gives it; and
+# reports which idp_common it bound.
 _PROBE = """
 import json, runpy, sys
-sys.path.insert(0, sys.argv[1])
+sys.path[0] = sys.argv[1]
 sys.argv = [sys.argv[2]]
 module = runpy.run_path(sys.argv[0], run_name="not_main")
 import idp_common, idp_common.stepfunctions_history as h

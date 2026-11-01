@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""The WSL setup guide installs Python packages through ``make setup-venv``.
+"""The WSL setup guide installs Python packages only through ``make setup-venv``.
 
 ``make setup-venv`` installs every package against the export of
 ``lib/idp_common_pkg/uv.lock`` and checks afterwards that no first-party package came
@@ -10,6 +10,12 @@ WSL guide, and the next steps ``scripts/setup/wsl_setup.sh`` prints, used plain
 ``pip install`` lines instead, so a WSL environment resolved its versions afresh
 (#1747). WSL is Linux, so ``make`` is available and there is no reason to differ from
 the Linux guide.
+
+The rule is stated about the installer rather than about spellings of an install
+command: no command the guide gives a reader to copy, and no line of the setup script,
+invokes ``pip`` in any form (``pip``, ``pip3.12``, ``python -m pip``, ``uv pip``), with
+or without options between it and ``install``. A word is a run of letters, digits and
+``.+-``, so the apt package ``python3-pip`` is one word and is not ``pip``.
 """
 
 from __future__ import annotations
@@ -21,51 +27,65 @@ REPO = Path(__file__).resolve().parents[2]
 GUIDE = REPO / "docs" / "setup-development-env-WSL.md"
 SETUP_SCRIPT = REPO / "scripts" / "setup" / "wsl_setup.sh"
 
-# A package install by pip in any spelling a reader would copy; `uv pip` included.
-_PIP_INSTALL = re.compile(r"\b(?:pip3?|python3?\s+-m\s+pip|uv\s+pip)\s+install\b")
+_WORD = re.compile(r"[\w.+-]+")
+_PIP = re.compile(r"pip[\d.]*")
+_FENCE = re.compile(r"^\s*(```|~~~)")
+_INLINE_CODE = re.compile(r"`([^`]+)`")
 
 
-def _fenced_lines(markdown: str) -> list[str]:
-    lines, inside = [], False
+def _invokes_pip(text: str) -> bool:
+    return any(_PIP.fullmatch(word) for word in _WORD.findall(text))
+
+
+def _guide_code(markdown: str, inline: bool = True) -> list[str]:
+    """Every fenced line and, with ``inline``, every inline code span: what a
+    reader copies."""
+    code, fence = [], None
     for line in markdown.splitlines():
-        if line.lstrip().startswith("```"):
-            inside = not inside
+        opener = _FENCE.match(line)
+        if opener and fence in (None, opener.group(1)):
+            fence = None if fence else opener.group(1)
             continue
-        if inside:
-            lines.append(line)
-    return lines
+        if fence:
+            code.append(line)
+        elif inline:
+            code.extend(_INLINE_CODE.findall(line))
+    return code
 
 
-def test_the_guide_installs_nothing_with_pip():
-    commands = _fenced_lines(GUIDE.read_text(encoding="utf-8"))
-    # Non-vacuity: the fence parse found the guide's commands.
-    assert any("aws configure" in line for line in commands)
-    offending = [line for line in commands if _PIP_INSTALL.search(line)]
+def test_the_guide_gives_no_pip_command():
+    code = _guide_code(GUIDE.read_text(encoding="utf-8"))
+    # Non-vacuity: the parse found the guide's commands.
+    assert any("aws configure" in line for line in code)
+    offending = [line for line in code if _invokes_pip(line)]
     assert not offending, (
         f"{GUIDE.relative_to(REPO)} installs with pip, not against the lock: "
         f"{offending}. Use `make setup-venv`."
     )
-    assert any(line.strip() == "make setup-venv" for line in commands)
+    # A step that runs it, not a mention of it in prose.
+    fenced = _guide_code(GUIDE.read_text(encoding="utf-8"), inline=False)
+    assert any(line.strip() == "make setup-venv" for line in fenced)
 
 
 def test_the_guide_names_a_setup_script_that_exists():
-    commands = _fenced_lines(GUIDE.read_text(encoding="utf-8"))
+    code = _guide_code(GUIDE.read_text(encoding="utf-8"))
     scripts = [
-        line.strip() for line in commands if re.match(r"\s*\./scripts/\S+\.sh", line)
+        line.strip() for line in code if re.match(r"\s*\./scripts/\S+\.sh", line)
     ]
     assert scripts, "the guide no longer runs a setup script; update this test"
     for script in scripts:
         assert (REPO / script.split()[0]).is_file(), f"{script} does not exist"
 
 
-def test_the_setup_scripts_next_steps_install_nothing_with_pip():
-    echoed = [
+def test_the_setup_script_never_invokes_pip():
+    lines = [
         line
         for line in SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()
-        if line.lstrip().startswith("echo")
+        if line.strip() and not line.lstrip().startswith("#")
     ]
-    assert echoed
-    offending = [line for line in echoed if _PIP_INSTALL.search(line)]
-    assert not offending, f"{SETUP_SCRIPT.relative_to(REPO)} prints {offending}"
-    # The step itself, not a mention of the target in another step's text.
-    assert any(re.search(r':\s*make setup-venv"\s*$', line) for line in echoed)
+    # Non-vacuity: the apt line naming python3-pip is read and is not pip.
+    assert any("python3-pip" in line for line in lines)
+    offending = [line for line in lines if _invokes_pip(line)]
+    assert not offending, f"{SETUP_SCRIPT.relative_to(REPO)} invokes pip: {offending}"
+    # The printed next step itself, not a mention of the target in another step.
+    assert any(re.search(r':\s*make setup-venv"\s*$', line) for line in lines)

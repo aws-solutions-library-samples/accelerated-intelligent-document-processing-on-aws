@@ -51,7 +51,6 @@ This script automatically installs:
 - Node.js 22
 - AWS CLI v2
 - AWS SAM CLI
-- Python dependencies
 
 After running the setup script, go to your WSL home directory using ```cd ~```
 
@@ -93,7 +92,7 @@ make setup-venv
 source .venv/bin/activate
 ```
 
-> **Note**: This installs the `idp-cli` command along with all required Python dependencies, and the development tools the lint and test targets use. It installs every first-party package from `lib/` in one pass, at the versions the dependency lock records, and then checks that none of them came from the package index. See [Installing First-Party Packages Safely](dependency-confusion.md) for why that matters.
+> **Note**: This installs the `idp-cli` command along with all required Python dependencies, and the Python tools the lint and test targets use. The type checker, `basedpyright`, is installed separately with `npm install -g basedpyright`. It installs every first-party package from `lib/` in one pass, at the versions the dependency lock records, and then checks that none of them came from the package index. See [Installing First-Party Packages Safely](dependency-confusion.md) for why that matters.
 
 ### 4.3 Test Build Process
 
