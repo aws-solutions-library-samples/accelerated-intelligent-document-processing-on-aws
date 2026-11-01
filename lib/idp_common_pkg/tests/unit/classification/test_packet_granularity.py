@@ -1203,14 +1203,18 @@ class TestAWindowTooLargeForTheModelIsSplit:
 
 @pytest.mark.unit
 class TestAWindowWithTooManyImagesIsSplit(TestAWindowTooLargeForTheModelIsSplit):
-    """#1705: Bedrock caps how many images one request may carry, so with page
-    images on a window above that cap is refused however few tokens it holds —
-    a rejection worded as an image rejection, not as an input overflow, which
-    the split used not to recognise. Halving the window is the fix for that
-    refusal exactly as for an overflow, so every inherited test that goes
-    through the fake (``_run``) re-runs with the image-count wording, under the
-    same bounds. The few inherited tests that build their own overflow fake
-    re-run unchanged."""
+    """#1705: the Converse API limits how many images one message may carry, so
+    with page images on a window can be refused for its image count however few
+    tokens it holds — a rejection worded as an image rejection, not as an input
+    overflow, which the split used not to recognise. Halving the window fixes
+    that refusal exactly as it fixes an overflow.
+
+    The inherited tests re-run with the image-count wording. Only those whose
+    first call is refused and split actually depend on it (the classified
+    document, the halves, the single page, the bounded and refused-page cases);
+    the rest pass with or without the feature and are inherited for the bounds
+    they pin, not as coverage of it. The wording itself is the one
+    ``is_image_request_rejection`` records, not one measured against a model."""
 
     REFUSAL_MESSAGE = "too many images in request"
 

@@ -149,7 +149,11 @@ each split shrinks the window by a fraction rather than by a page; a sub-window
 already requested is not requested again; and the calls made for split windows stop
 at twice the packet's page count, after which the remaining sub-windows are reported
 as not classified. Any other image rejection — one image too large on its own —
-is not split, because no smaller window fixes it. A class-validation re-prompt that overflows keeps the answer
+is not split, because no smaller window fixes it. The count markers are matched as
+`is_image_request_rejection` already records them: the many-image dimension wording
+is Bedrock's recorded message, while the exact wording of a per-request image-count
+refusal has not been measured against a live model, so a refusal worded otherwise
+fails the window as before. A class-validation re-prompt that overflows keeps the answer
 already received, with its metering, and assigns the fallback rather than splitting.
 
 A combined packet call validates every segment's class like the page path does:

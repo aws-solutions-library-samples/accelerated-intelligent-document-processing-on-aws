@@ -729,10 +729,10 @@ packet costs that window's boundaries rather than the whole document's.
 
 `window_pages` is a page count, so a window can still be too large for the model
 once its page images are attached: a full window of full-resolution scans can
-exceed a smaller model's input, and Bedrock also caps how many images one request
-may carry, so with images on a `window_pages` above that cap is refused however
-few tokens it holds. A window the model refuses as too long, or as carrying too
-many images, is split in two and both halves
+exceed a smaller model's input, and the Converse API also limits how many images
+one message may carry, so with images on a large `window_pages` can be refused for
+its image count however few tokens it holds. A window the model refuses as too
+long, or as carrying too many images, is split in two and both halves
 are retried, down to single pages, with the overlap repeated at the junction and
 merged by the same earlier-window rule. Retrying is bounded: the calls made for
 split windows stop at twice the packet's page count, and anything left is reported

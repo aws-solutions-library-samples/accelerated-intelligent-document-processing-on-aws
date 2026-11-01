@@ -5322,8 +5322,9 @@ class ClassificationService:
                         f"(pages {window_page_ids[0]}-{window_page_ids[-1]}) was "
                         f"not classified: retrying windows the model refused as "
                         f"too large used all {split_budget} calls allowed. "
-                        f"Lower packet.window_pages, or set image.target_width "
-                        f"and target_height so pages render smaller."
+                        f"Lower packet.window_pages; for a refusal over input "
+                        f"length, image.target_width and target_height also make "
+                        f"each page smaller."
                     )
                     logger.error(error_msg)
                     errors.append(error_msg)
