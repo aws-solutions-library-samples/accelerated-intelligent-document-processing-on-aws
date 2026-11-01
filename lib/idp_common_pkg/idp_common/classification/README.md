@@ -696,6 +696,33 @@ See `notebooks/examples/step2_classification_with_regex.ipynb` for interactive d
 - Configuration examples and best practices
 - Error handling scenarios
 
+## Classes a reviewer forced (Test Studio re-extract)
+
+`apply_forced_document_class(document)` (in `forced_class.py`) runs at the start of
+the classification Lambda and replaces classification when a reviewer asked for a
+re-extract under a corrected class. Two shapes reach it, both as S3 object user
+metadata the test-set file copier stamps on the run's copy of the document and
+`Document.from_s3_event` reads:
+
+- **`document-class`** → `Document.forced_document_class`: one class for the whole
+  document. Every page gets it and one section covering every page is built.
+- **`document-sections`** → `Document.forced_sections`: a whole section grouping, used
+  to re-extract one section of a multi-section document. Encoded and decoded by
+  `idp_common.forced_sections` (standard library only, so the API resolvers can
+  build it): a list of `[section_id, class, pages]` with 0-based page indices in
+  reading order, ascending runs written `a-b`, capped at `MAX_ENCODED_BYTES` to stay
+  inside S3's 2 KB metadata limit. Exactly those sections are built, with their ids,
+  and each carries `attributes["page_indices"]`, which extraction writes out as
+  `split_document.page_indices`. It takes precedence over `document-class`.
+
+Either way the Lambda skips the model because something was forced, not only because
+every page has a class: a grouping may leave a page no section names unclassified.
+A grouping that is malformed, or names a page the document does not have, raises and
+fails the document, because classifying it instead would regroup every section. The
+harvest in the test-set resolver then writes back only the targeted section, and only
+when the run's result for it has the corrected class and the same page indices; the
+BDA branch never runs this step, so under `use_bda: true` the job fails instead.
+
 ## Enforcing a Valid Class Vocabulary (Validation + Retry)
 
 For every call that assigns a class, the service can guarantee the predicted

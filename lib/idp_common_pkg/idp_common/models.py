@@ -824,6 +824,12 @@ class Document:
     # DIFFERENT class than the pipeline would choose, so leaving classification
     # to the model would re-derive the wrong one and discard the correction.
     forced_document_class: Optional[str] = None
+    # A whole section grouping to build instead of classifying, encoded by
+    # idp_common.forced_sections. Set when a reviewer re-extracts ONE section of a
+    # multi-section test-set document: every other section keeps its ground-truth
+    # pages and class, and the corrected section gets the new one. Takes
+    # precedence over forced_document_class (apply_forced_document_class).
+    forced_sections: Optional[str] = None
     evaluation_status: Optional[str] = None
     evaluation_report_uri: Optional[str] = None
     evaluation_results_uri: Optional[str] = None
@@ -984,6 +990,9 @@ class Document:
             # classification. Dropping it here would silently re-enable
             # classification and lose the reviewer's correction.
             "forced_document_class": self.forced_document_class,
+            # Same reason: dropping it would re-enable classification and regroup
+            # every section of the document.
+            "forced_sections": self.forced_sections,
             "confidence_alert_count": self.confidence_alert_count,
             # We don't include evaluation_result or summarization_result in the dict since they're objects
         }
@@ -1168,6 +1177,7 @@ class Document:
             submission_source=data.get("submission_source"),
             test_set_id=data.get("test_set_id"),
             forced_document_class=data.get("forced_document_class"),
+            forced_sections=data.get("forced_sections"),
             errors=data.get("errors", []),
         )
 
@@ -1309,6 +1319,7 @@ class Document:
         submission_source = None
         test_set_id = None
         forced_document_class = None
+        forced_sections = None
         try:
             import boto3
 
@@ -1328,6 +1339,14 @@ class Document:
             submission_source = metadata.get("submission-source")
             test_set_id = metadata.get("test-set-id")
             forced_document_class = metadata.get("document-class")
+            # Decoded and validated where it is applied, at classification, so a
+            # malformed value fails the document there instead of here.
+            forced_sections = metadata.get("document-sections")
+            if forced_sections:
+                logger.info(
+                    f"Document {input_key} carries a forced section grouping; "
+                    "classification will be skipped"
+                )
             if forced_document_class:
                 logger.info(
                     f"Document {input_key} carries a forced class "
@@ -1353,6 +1372,7 @@ class Document:
             submission_source=submission_source,
             test_set_id=test_set_id,
             forced_document_class=forced_document_class,
+            forced_sections=forced_sections,
         )
 
     def to_json(self) -> str:
