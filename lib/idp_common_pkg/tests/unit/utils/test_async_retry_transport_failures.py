@@ -46,7 +46,14 @@ from strands.models.bedrock import BedrockModel
 from strands.tools.decorator import DecoratedFunctionTool
 from strands.tools.decorator import tool as _strands_tool
 from strands.types.exceptions import EventLoopException
-from urllib3.exceptions import ConnectTimeoutError, ProtocolError, ReadTimeoutError
+from urllib3.exceptions import (
+    ConnectTimeoutError,
+    NameResolutionError,
+    NewConnectionError,
+    ProtocolError,
+    ReadTimeoutError,
+    SSLError,
+)
 
 import idp_common.utils.bedrock_utils as bedrock_utils
 from idp_common.extraction.agentic_idp import invoke_agent_with_retry
@@ -241,6 +248,16 @@ def bedrock(monkeypatch):
             raise ReadTimeoutError(pool, url, "Read timed out. (read timeout=600)")
         if step == "C":
             raise ConnectTimeoutError(pool, "Connect timed out.")
+        if step == "E":
+            raise NewConnectionError(
+                pool, "Failed to establish a new connection: [Errno 111] refused"
+            )
+        if step == "L":
+            raise SSLError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+        if step == "N":
+            raise NameResolutionError(
+                pool.host, pool, OSError("Name or service not known")
+            )
         return urllib3.HTTPResponse(
             body=io.BytesIO(json.dumps(_BODIES[step]).encode()),
             status=200,
@@ -294,6 +311,10 @@ _SCHEDULES = {
     "DDDO": ("ConnectionClosedError", False),
     "TRO": ("ReadTimeoutError", True),
     "TCO": ("ConnectTimeoutError", True),
+    # Connection refused, and an endpoint name that did not resolve (#1745).
+    "EO": ("EndpointConnectionError", False),
+    "TEO": ("EndpointConnectionError", True),
+    "TNO": ("EndpointConnectionError", True),
 }
 
 
@@ -304,7 +325,7 @@ def test_a_transport_failure_on_the_agentic_call_is_retried(bedrock, steps):
     expected_error, _wrapped = _SCHEDULES[steps]
     result = asyncio.run(invoke_agent_with_retry([{"text": "hi"}], make_agent(steps)))
 
-    failures = steps.count("D") + steps.count("R") + steps.count("C")
+    failures = sum(steps.count(step) for step in "DRCEN")
     assert [type(e).__name__ for e in raised] == [expected_error] * failures
     assert sent == list(steps), f"sends {sent} for schedule {steps}"
     assert result.stop_reason == "end_turn"
@@ -337,6 +358,25 @@ def test_an_exhausted_ladder_raises_the_failure_it_last_met(bedrock):
         asyncio.run(invoke_agent_with_retry([{"text": "hi"}], make_agent("D" * 60)))
     # Bounded by the decorator's cumulative-delay budget, well short of max_retries.
     assert 1 < len(sent) < 50
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("steps", ["LO", "TLO"])
+def test_a_certificate_failure_is_not_retried(bedrock, steps):
+    """botocore's ``SSLError`` is a sibling of ``EndpointConnectionError`` under
+    botocore's ``ConnectionError``, and a certificate that failed verification fails
+    the same way on every attempt. Retrying the connection failures must not widen
+    to it."""
+    make_agent, sent, _raised = bedrock
+    with pytest.raises(Exception) as caught:
+        asyncio.run(invoke_agent_with_retry([{"text": "hi"}], make_agent(steps)))
+    error = caught.value
+    if steps.startswith("T"):
+        assert type(error) is EventLoopException
+        error = error.__cause__
+    assert type(error).__name__ == "SSLError"
+    assert type(error).__module__ == "botocore.exceptions"
+    assert sent == list(steps[:-1])
 
 
 def _decorated(raise_once):

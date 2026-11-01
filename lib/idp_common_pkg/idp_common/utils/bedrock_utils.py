@@ -462,10 +462,12 @@ DEFAULT_RETRYABLE_ERRORS = {
 _DEFAULT_RETRYABLE_ERRORS_LOWER = {err.lower() for err in DEFAULT_RETRYABLE_ERRORS}
 
 # botocore's transport failures for a Bedrock call that got no response: a read
-# timeout, a connect timeout, and a connection closed before the response arrived
-# (``ConnectionClosedError``, which botocore raises for urllib3's ``ProtocolError``).
-# The synchronous ladder in ``bedrock/client.py`` retries all three among its
-# transport failures (#1706).
+# timeout, a connect timeout, a connection that could not be opened at all
+# (``EndpointConnectionError``: refused, unreachable, or the endpoint name did not
+# resolve, so the request never left this process), and a connection closed before
+# the response arrived (``ConnectionClosedError``, which botocore raises for urllib3's
+# ``ProtocolError``). The synchronous ladder in ``bedrock/client.py`` retries all four
+# among its transport failures (#1706, #1745).
 #
 # Matched by type, and anywhere on the explicit ``raise ... from`` chain, because
 # Strands 1.48 delivers them in two forms (measured with a real Agent and a real
@@ -494,6 +496,7 @@ _DEFAULT_RETRYABLE_ERRORS_LOWER = {err.lower() for err in DEFAULT_RETRYABLE_ERRO
 _RETRYABLE_TRANSPORT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     botocore.exceptions.ReadTimeoutError,
     botocore.exceptions.ConnectTimeoutError,
+    botocore.exceptions.EndpointConnectionError,
     botocore.exceptions.ConnectionClosedError,
     urllib3.exceptions.ProtocolError,
 )

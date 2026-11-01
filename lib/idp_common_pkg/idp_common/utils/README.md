@@ -129,10 +129,11 @@ marked failed (#1101).
 
 ### What the agentic retry ladder treats as a transport failure
 
-`async_exponential_backoff_retry` retries botocore's three transport failures for a
-call that got no response — `ReadTimeoutError`, `ConnectTimeoutError` and
-`ConnectionClosedError`, the last being a connection closed before the response
-arrived — by **type**, and wherever they sit on the exception's `__cause__` chain. The
+`async_exponential_backoff_retry` retries botocore's four transport failures for a
+call that got no response — `ReadTimeoutError`, `ConnectTimeoutError`,
+`EndpointConnectionError` (a connection refused or unreachable, or an endpoint name that
+did not resolve, so the request never left the process) and `ConnectionClosedError`, a
+connection closed before the response arrived — by **type**, and wherever they sit on the exception's `__cause__` chain. The
 chain matters because Strands delivers the failure in two forms, measured with a real
 Strands 1.48 `Agent` over a real botocore client with only urllib3's `urlopen`
 replaced, on both `converse` and `converse_stream` (production's mode): raw from the
@@ -141,7 +142,13 @@ model call of any cycle that follows a tool use, which on the agentic extraction
 most of them. Neither form carries a name or message that the substring vocabulary
 (`DEFAULT_RETRYABLE_ERRORS`) matches — botocore words a read timeout "Read timeout on
 endpoint URL" — so such a dropped connection was never retried and such a read timeout
-only on the first cycle (#1730).
+only on the first cycle (#1730). `EndpointConnectionError` was not retried in either
+form until #1745, although the synchronous ladder in `bedrock/client.py` always retried
+it. An endpoint name that never resolves, such as a region without Bedrock, is retried
+too: measured on the production decoration, six or seven attempts and the full 90 s
+backoff allowance before the error is raised, so a misconfigured endpoint costs about
+90 s per agentic call. The handler then classifies `EndpointConnectionError` as
+transient (`transient_errors`), so the task-level retrier runs the shard again.
 
 A failure partway through a streamed response, after botocore has returned the event
 stream, is not rewrapped by botocore. A stall there surfaces as urllib3's
