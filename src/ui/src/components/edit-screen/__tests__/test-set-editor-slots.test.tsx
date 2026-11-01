@@ -593,4 +593,26 @@ describe('the note a finished re-extract leaves (#1728)', () => {
     act(() => sectionPicker.findItems()[1].click());
     await waitFor(() => expect(screen.queryByText(/^Re-extracted section 1 as/)).not.toBeInTheDocument());
   });
+
+  it('on authored ground truth, says the class was corrected and the values kept, not that it re-extracted', async () => {
+    withBaseline({ document_class: { type: 'Invoice' }, split_document: { page_indices: [0, 1] }, inference_result: { total: '1' } });
+    await reextractSectionOne();
+    const note = screen.getByText(/^Class corrected to Invoice/);
+    expect(note).toHaveTextContent('authored ground truth');
+    expect(note).toHaveTextContent('field values were kept');
+    expect(note).toHaveTextContent('JSON Editor');
+    expect(screen.queryByText(/^Re-extracted/)).not.toBeInTheDocument();
+  });
+
+  it('on a single-section document of authored ground truth, says the same of the document', async () => {
+    withBaseline({ document_class: { type: 'Invoice' }, split_document: { page_indices: [0, 1] }, inference_result: { total: '1' } });
+    const ONE_ALL: TestSetDocumentSectionRef[] = [{ ...SECTIONS[0], pageIndices: [0, 1, 2] }];
+    answer([{ sectionId: '1', documentClass: 'W2', pageIndices: [0, 1, 2] }]);
+    render(<Harness sections={ONE_ALL} afterChange={[{ ...ONE_ALL[0], documentClass: 'W2' }]} />);
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await reclassifyFirstAndSave();
+    await userEvent.click(await screen.findByRole('button', { name: /^Re-extract$/ }));
+    const note = await screen.findByText(/^Class corrected to Invoice/);
+    expect(note).toHaveTextContent('This document has authored ground truth');
+  });
 });
