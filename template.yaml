@@ -1843,6 +1843,15 @@ Resources:
       LoggingConfig:
         LogGroup:
           Ref: StacknameCheckFunctionLogGroup
+      Policies:
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${StacknameCheckFunctionLogGroup}"
+                - !GetAtt StacknameCheckFunctionLogGroup.Arn
 
   StacknameCheckFunctionLogGroup:
     Metadata:
@@ -2369,6 +2378,14 @@ Resources:
                   - kms:DescribeKey
                 Resource: !Ref ArtifactsBucketKmsKeyArn
               - !Ref AWS::NoValue
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ConfigurationCopyFunctionLogGroup}"
+                - !GetAtt ConfigurationCopyFunctionLogGroup.Arn
 
   ConfigurationCopyFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -2792,6 +2809,14 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${AgentCoreGatewayManagerLogGroup}"
+                - !GetAtt AgentCoreGatewayManagerLogGroup.Arn
 
   AgentCoreGatewayManagerLogGroup:
     Type: AWS::Logs::LogGroup
@@ -2889,6 +2914,14 @@ Resources:
               Action: ssm:GetParameter
               Resource:
                 - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${SettingsParameter}"
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ReadPreviousIDPPatternFunctionLogGroup}"
+                - !GetAtt ReadPreviousIDPPatternFunctionLogGroup.Arn
 
   ReadPreviousIDPPatternFunctionLogGroup:
     Metadata:
@@ -4066,6 +4099,14 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${TestSetBucketAutoDeleteFunctionLogGroup}"
+                - !GetAtt TestSetBucketAutoDeleteFunctionLogGroup.Arn
 
   TestSetBucketAutoDeleteFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -4154,6 +4195,14 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${FccDatasetDeployerLogGroup}"
+                - !GetAtt FccDatasetDeployerLogGroup.Arn
 
   FccDatasetDeployment:
     Type: Custom::FccDatasetDeployer
@@ -4232,6 +4281,14 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${OcrBenchmarkDeployerLogGroup}"
+                - !GetAtt OcrBenchmarkDeployerLogGroup.Arn
 
   OcrBenchmarkDeployment:
     Type: Custom::OcrBenchmarkDeployer
@@ -4311,6 +4368,14 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${RvlCdipNmpDeployerLogGroup}"
+                - !GetAtt RvlCdipNmpDeployerLogGroup.Arn
 
   RvlCdipNmpDeployment:
     Type: Custom::RvlCdipNmpDeployer
@@ -4384,6 +4449,14 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${W2DatasetDeployerLogGroup}"
+                - !GetAtt W2DatasetDeployerLogGroup.Arn
 
   W2DatasetDeployment:
     Type: Custom::W2DatasetDeployer
@@ -5672,6 +5745,14 @@ Resources:
                   - HasReportingBucketKmsKey
                   - !Ref ReportingBucketKmsKeyArn
                   - !Ref AWS::NoValue
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${MeteringHourMigrationFunctionLogGroup}"
+                - !GetAtt MeteringHourMigrationFunctionLogGroup.Arn
 
   MeteringHourMigrationFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -6494,6 +6575,14 @@ Resources:
                 - ssm:DeleteParameter
               Resource:
                 - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/idp/${AWS::StackName}/data-mart-rollup/*"
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DataMartMigrationDispatcherFunctionLogGroup}"
+                - !GetAtt DataMartMigrationDispatcherFunctionLogGroup.Arn
       InlineCode: |
         import json
         import logging
@@ -7376,6 +7465,14 @@ Resources:
                 - kms:Decrypt
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${BackfillTriggerFunctionLogGroup}"
+                - !GetAtt BackfillTriggerFunctionLogGroup.Arn
 
   BackfillCustomResource:
     Type: Custom::GSIBackfill
@@ -7776,6 +7873,14 @@ Resources:
                 - ssm:PutParameter
               Resource:
                 - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${SettingsParameter}"
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${UpdateSettingsFunctionLogGroup}"
+                - !GetAtt UpdateSettingsFunctionLogGroup.Arn
 
   UpdateSettingsFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -13405,6 +13510,17 @@ Resources:
                   - cognito-idp:DescribeUserPoolClient
                   - cognito-idp:UpdateUserPoolClient
                 Resource: !GetAtt UserPool.Arn
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${WebUIClientOAuthUrlsLogGroup}"
+                  - !GetAtt WebUIClientOAuthUrlsLogGroup.Arn
 
   WebUIClientOAuthUrlsFunction:
     Type: AWS::Serverless::Function
@@ -13561,6 +13677,14 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue  # pragma: allowlist secret - IAM action name, not a secret value
               Resource: !Ref ExternalIdPOIDCClientSecretArn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ResolveOIDCClientSecretFunctionLogGroup}"
+                - !GetAtt ResolveOIDCClientSecretFunctionLogGroup.Arn
       InlineCode: |
         import cfnresponse
         import boto3
@@ -14000,6 +14124,15 @@ Resources:
               'OutputString': lowercaseWithTimestamp, # don't change key - avoid UserPool update errors
             }                                            
             cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+      Policies:
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${GetDomainLambdaLogGroup}"
+                - !GetAtt GetDomainLambdaLogGroup.Arn
 
   GetDomainLambdaLogGroup:
     Type: AWS::Logs::LogGroup
@@ -15920,6 +16053,17 @@ Resources:
                   - lambda:RemovePermission
                 Resource:
                   - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${StartUICodeBuildLogGroup}"
+                  - !GetAtt StartUICodeBuildLogGroup.Arn
 
   StartUICodeBuild:
     Type: AWS::Serverless::Function

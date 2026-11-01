@@ -383,6 +383,17 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DockerBuildRunFunctionLogGroup}"
+                  - !GetAtt DockerBuildRunFunctionLogGroup.Arn
 
   DockerBuildRunFunction:
     Type: AWS::Serverless::Function
