@@ -79,18 +79,16 @@ def _throttled(_pool, _url):
 
 
 class _StrandsShapedError(Exception):
-    """A wrapper raised ``from`` botocore's error, whose message the decorator
-    reads as retryable. Strands wraps a throttle this way; it does not wrap a dropped
-    connection, which reaches the decorator raw and is not retried, so the
-    dropped-connection parameter is a synthetic route kept for the cycle shape
-    ``ConnectionClosedError`` carries (its ``request=`` kwarg), not one production
-    takes."""
+    """A wrapper raised ``from`` botocore's error. Strands wraps a transport failure
+    this way (``EventLoopException``) on every model call after a tool use; how that
+    reaches the decorator is measured in ``test_async_retry_transport_failures.py``."""
 
 
 _FAILURES: dict[str, tuple[Callable, bool]] = {
     "read timeout": (_read_timeout, False),
     "read timeout, wrapped": (_read_timeout, True),
-    "dropped connection, wrapped as retryable (synthetic)": (_dropped, True),
+    "dropped connection": (_dropped, False),
+    "dropped connection, wrapped": (_dropped, True),
     "throttle (control)": (_throttled, False),
 }
 
@@ -132,7 +130,7 @@ def _decorated(client, wrapped: bool):
             return client.converse(**params)
         except Exception as e:
             if wrapped:
-                raise _StrandsShapedError(f"ModelThrottledException: {e}") from e
+                raise _StrandsShapedError(str(e)) from e
             raise
 
     return call

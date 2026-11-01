@@ -127,6 +127,32 @@ this matters most, because its blocks nest: a transient re-raised for one rule t
 up through `asyncio.gather` into a document-level `except` that returns a document
 marked failed (#1101).
 
+### What the agentic retry ladder treats as a transport failure
+
+`async_exponential_backoff_retry` retries botocore's three transport failures for a
+call that got no response — `ReadTimeoutError`, `ConnectTimeoutError` and
+`ConnectionClosedError`, the last being a connection closed before the response
+arrived — by **type**, and wherever they sit on the exception's `__cause__` chain. The
+chain matters because Strands delivers the failure in two forms, measured with a real
+Strands 1.48 `Agent` over a real botocore client with only urllib3's `urlopen`
+replaced, on both `converse` and `converse_stream` (production's mode): raw from the
+first model call of an invocation, and wrapped in Strands' `EventLoopException` from the
+model call of any cycle that follows a tool use, which on the agentic extraction path is
+most of them. Neither form carries a name or message that the substring vocabulary
+(`DEFAULT_RETRYABLE_ERRORS`) matches — botocore words a read timeout "Read timeout on
+endpoint URL" — so such a dropped connection was never retried and such a read timeout
+only on the first cycle (#1730).
+
+What this does **not** cover is a failure partway through a streamed response, after
+botocore has returned the event stream: a stall there surfaces as urllib3's
+`ReadTimeoutError`, whose message the substring vocabulary does match, so it was and is
+retried; a connection reset there surfaces as urllib3's `ProtocolError`, which is not
+retried by this ladder. Only `__cause__`, the explicit
+`raise ... from` link, is followed: `__context__` is set on any exception raised while
+another is being handled, so following it would make a deterministic failure raised
+inside an `except` inherit the transience of what was being handled.
+`transient_errors` follows the same rule for the same reason.
+
 ### A retry frees the attempt it replaces (`idp_common.failed_attempt`)
 
 `async_exponential_backoff_retry`, the ladder around the agentic extraction call,
@@ -137,10 +163,8 @@ dropped connection leaves a botocore reference cycle behind it
 attempt's serialised request, page images included, stayed in memory until the cyclic
 garbage collector next ran. Measured with a real botocore client and an 8 MB request
 with the collector off, 8, 16, 24 and 32 MB were still held at attempts 2 to 5 of a
-read timeout, whether the botocore error arrived raw or raised `from` a wrapper. (The
-decorator does not retry a raw dropped connection at all: botocore's
-`ConnectionClosedError` matches none of its retryable names, and Strands wraps only a
-throttle in a retryable exception.) The retrying branch now
+read timeout, whether the botocore error arrived raw or raised `from` a wrapper. The
+retrying branch now
 calls `drop_failed_attempt`, the helper `bedrock/client.py` uses, which detaches the
 tracebacks along the failure's chain and stops at any exception the caller was already
 handling. It lives in the leaf module `idp_common/failed_attempt.py` so that both
