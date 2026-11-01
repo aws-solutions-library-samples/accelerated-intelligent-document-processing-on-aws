@@ -1573,6 +1573,57 @@ The assessment service automatically handles each attribute type differently:
 - Creates alerts using array notation (e.g., "LineItems[0].Description", "LineItems[1].Total")
 - **Important**: Does NOT create aggregate assessments - each item must be assessed individually
 
+### Absent values raise no alert; missing required fields are counted
+
+`assessment/presence.py` holds the two rules that read the **extracted values**,
+which the alert builders above never see
+([#1527](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1527)).
+
+- **`exclude_absent_value_alerts(alerts, assessment, extraction_results)`** drops
+  every alert raised on a confidence leaf whose own extracted value is absent
+  (`has_extracted_value`: `_is_populated_value` from #1474, applied recursively, so
+  an object or list holding only null, blank or empty members is absent too). The
+  leaf's score and reason stay in `explainability_info`. The walk names leaves
+  exactly as `enrich_assessment_with_thresholds` names alerts, and an alert beneath
+  an absent leaf (as `_check_confidence_alerts` reports for a leaf's sub-fields) is
+  dropped with it. A populated string the model scored as sub-keyed fragments keeps
+  its fragment alerts, since there is no per-fragment value to test.
+- **`collect_missing_required_fields(extraction_results, class_schema, assessment)`**
+  lists the fields the class schema's JSON Schema `required` arrays require and the
+  extraction left absent: per present object, per existing list row, one entry for
+  an absent required object rather than one per child, nothing for a schema with no
+  `required`, and the multi-instance wrapper's own `required: ["instances"]`
+  ignored. Entries have the alert shape (`attribute_name`, `confidence`,
+  `confidence_threshold`), with the score read from the assessment leaf at the same
+  path when there is one. The list is evaluated per section against that section's
+  class schema; the document's `missing_required_field_count` is the sum over its
+  sections.
+
+They are applied where each mode stores its alerts, so every producer upstream is
+covered by one call: `AssessmentService.process_document_section` (`separate`),
+`ExtractionService._attach_explainability` (`integrated`, and `separate` run
+inside agentic shards), and
+`create_confidence_threshold_alerts` in the BDA result processor, which skips a
+key-value entry whose `value` is absent. `ExtractionService._save_results` builds
+`missing_required_fields` for every confidence mode, including none, and the
+`separate` Assessment step rebuilds it with scores. Because `ConfidenceAlertCount`,
+`review_queues.routing.legacy_section_triggers` and the `low_confidence` review
+reasons all read `confidence_threshold_alerts`, none of them sees an absent value.
+Nothing routes on `missing_required_fields`.
+
+One path judges list rows it cannot place. On the agentic sharded path, when the
+integrated retry did not rebuild the alert surface, each alert's row index counts
+from its shard's first row (upstream #813), so matching it against the merged data
+would test the wrong row and could drop a real alert on a populated row.
+`_attach_explainability` therefore passes `row_indexes_are_global=False` there, and
+alerts carrying a row index are kept unjudged.
+
+The tracking item stores the list as `MissingRequiredFields` beside
+`ConfidenceThresholdAlerts`, bounded the same way (at most 50 per section and 300
+per document, with `MissingRequiredFieldsTotal` recorded when a section's list was
+truncated), and the document count as `MissingRequiredFieldCount`. That count is
+not in the document list's GSI projection, so the list's fast path cannot show it.
+
 ### Assessment Response Requirements
 
 **Critical Guidelines:**

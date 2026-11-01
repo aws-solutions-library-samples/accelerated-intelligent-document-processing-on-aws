@@ -911,6 +911,9 @@ class TestAWindowTooLargeForTheModelIsSplit:
     """
 
     LIMIT = 4  # page images one request may carry before the fake refuses
+    #: What the fake says when it refuses. Overridden by the image-count subclass.
+    REFUSAL_MESSAGE = "Input is too long for requested model."
+    REFUSAL_CODE = "ValidationException"
     # Ground truth the fake answers from: pages 1-6 are one invoice, 7 onwards one
     # receipt. Each call reports a segment per document it can see.
     TRUTH = {str(p): ("invoice" if p <= 6 else "receipt") for p in range(1, 21)}
@@ -937,8 +940,8 @@ class TestAWindowTooLargeForTheModelIsSplit:
                 raise ClientError(
                     {
                         "Error": {
-                            "Code": "ValidationException",
-                            "Message": "Input is too long for requested model.",
+                            "Code": self.REFUSAL_CODE,
+                            "Message": self.REFUSAL_MESSAGE,
                         }
                     },
                     "Converse",
@@ -979,6 +982,10 @@ class TestAWindowTooLargeForTheModelIsSplit:
         ):
             result = service.packet_classify_document(document)
         return result, calls
+
+    def _run_with(self, message: str, code: str = "ValidationException"):
+        self.REFUSAL_MESSAGE, self.REFUSAL_CODE = message, code
+        return self._run()
 
     def test_the_document_is_classified_instead_of_failed(self):
         result, calls = self._run()
@@ -1192,6 +1199,55 @@ class TestAWindowTooLargeForTheModelIsSplit:
             if total >= 8:
                 assert len(second) <= 3 * total // 4 + 1, (total, overlap)
         assert service._split_overflowing_window(["1"]) is None
+
+
+@pytest.mark.unit
+class TestAWindowWithTooManyImagesIsSplit(TestAWindowTooLargeForTheModelIsSplit):
+    """#1705: the Converse API limits how many images one message may carry, so
+    with page images on a window can be refused for its image count however few
+    tokens it holds — a rejection worded as an image rejection, not as an input
+    overflow, which the split used not to recognise. Halving the window fixes
+    that refusal exactly as it fixes an overflow.
+
+    The inherited tests re-run with the image-count wording. Only those whose
+    first call is refused and split actually depend on it (the classified
+    document, the halves, the single page, the bounded and refused-page cases);
+    the rest pass with or without the feature and are inherited for the bounds
+    they pin, not as coverage of it. The wording itself is the one
+    ``is_image_request_rejection`` records, not one measured against a model."""
+
+    REFUSAL_MESSAGE = "too many images in request"
+
+
+@pytest.mark.unit
+class TestOnlyARefusalAboutImageCountIsSplit:
+    """The split is for refusals a smaller request fixes. These are judged
+    through the shared matchers in ``bedrock_utils``, the ones extraction uses."""
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "too many images in request",
+            "image exceed max allowed size for many-image requests: 2000 pixels",
+        ],
+    )
+    def test_a_count_dependent_rejection_is_split(self, message):
+        _, calls = TestAWindowWithTooManyImagesIsSplit()._run_with(message)
+        assert len(calls) > 1
+
+    @pytest.mark.parametrize(
+        ("code", "message"),
+        [
+            # One image too large on its own: no window is small enough.
+            ("ValidationException", "image exceeds maximum size of 5 MB"),
+            ("ValidationException", "image dimensions exceed 8000 pixels"),
+            # A throttle that happens to mention images.
+            ("ThrottlingException", "Rate exceeded: too many images in flight"),
+        ],
+    )
+    def test_any_other_image_error_is_not_split(self, code, message):
+        _, calls = TestAWindowWithTooManyImagesIsSplit()._run_with(message, code=code)
+        assert len(calls) == 1
 
 
 # --------------------------------------------------------------------------
@@ -1474,6 +1530,43 @@ class TestAModelRefusingImagesNamesTheSetting:
             "ValidationException: malformed image",
         ):
             assert not _looks_like_an_image_refusal(Exception(message)), message
+
+    #: Each mentions an image, a vision or a multimodal input, so the
+    #: capability markers match it — and each is a request the model accepts
+    #: images on, refused for its size or its image count.
+    SIZE_REFUSALS = (
+        "Input is too long for requested model: the request carries 25 page images",
+        "prompt is too long: 230000 tokens > 200000 maximum (multimodal input)",
+        "Input Tokens Exceeded for vision request",
+        "too many images in request",
+        "image exceed max allowed size for many-image requests: 2000 pixels",
+    )
+
+    @pytest.mark.parametrize("message", SIZE_REFUSALS)
+    def test_an_overflow_or_image_rejection_gets_no_capability_hint(
+        self, monkeypatch, message
+    ):
+        """#1705: "set modality.images to false" is the wrong advice for a
+        request that was too large or carried too many images on a model that
+        accepts them. Classified by the shared ``bedrock_utils`` matchers."""
+        from botocore.exceptions import ClientError
+
+        from idp_common.classification.service import _IMAGE_REFUSAL_MARKERS
+        from idp_common.utils import bedrock_utils
+
+        # Premises, so the case cannot pass vacuously: a capability marker is
+        # present, and the shared matchers do classify the message.
+        assert any(m in message.lower() for m in _IMAGE_REFUSAL_MARKERS)
+        err = ClientError(
+            {"Error": {"Code": "ValidationException", "Message": message}}, "Converse"
+        )
+        assert bedrock_utils.is_input_token_overflow(
+            err
+        ) or bedrock_utils.is_image_request_rejection(err)
+
+        raised = self._invoke(monkeypatch, err, [{"image": {}}])
+        assert "modality.images" not in str(raised)
+        assert message in str(raised)
 
     def test_image_blocks_are_counted_at_any_nesting(self):
         from idp_common.classification.service import _count_image_blocks

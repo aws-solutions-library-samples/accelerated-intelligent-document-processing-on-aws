@@ -23,6 +23,11 @@ query GetDocument($objectKey: ID!) {
         confidence
         confidenceThreshold
       }
+      MissingRequiredFields {
+        attributeName
+        confidence
+        confidenceThreshold
+      }
       ProcessingIssues {
         stage
         severity
@@ -66,6 +71,7 @@ query GetDocument($objectKey: ID!) {
     ConfigRevision
     HITLCompleted
     ProcessingIssueCount
+    MissingRequiredFieldCount
     TraceId
   }
 }

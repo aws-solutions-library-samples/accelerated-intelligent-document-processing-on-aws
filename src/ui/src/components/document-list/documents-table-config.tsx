@@ -39,6 +39,7 @@ export interface MappedDocument {
   configRevision?: number | null;
   evaluationStatus: string;
   confidenceAlertCount: number;
+  missingRequiredFieldCount?: number | null;
   processingIssueCount: number;
   hitlStatus: string;
   hitlReviewOwner: string;
@@ -262,6 +263,15 @@ export const COLUMN_DEFINITIONS_MAIN = (
     width: 150,
   },
   {
+    id: 'missingRequiredFieldCount',
+    header: 'Missing Required Fields',
+    // Null when this row does not carry the count (the list's fast path cannot
+    // read it yet): a dash, not a 0 the row cannot substantiate.
+    cell: (item) => (item.missingRequiredFieldCount == null ? '-' : item.missingRequiredFieldCount),
+    sortingField: 'missingRequiredFieldCount',
+    width: 180,
+  },
+  {
     id: 'processingIssueCount',
     header: 'Processing Issues',
     cell: (item) => {
@@ -320,6 +330,7 @@ const VISIBLE_CONTENT_OPTIONS = [
       { id: 'configVersion', label: 'Config Profile' },
       { id: 'evaluationStatus', label: 'Evaluation' },
       { id: 'confidenceAlertCount', label: 'Confidence Alerts' },
+      { id: 'missingRequiredFieldCount', label: 'Missing Required Fields' },
       { id: 'processingIssueCount', label: 'Processing Issues' },
       { id: 'hitlStatus', label: 'Review Status' },
       { id: 'hitlReviewOwner', label: 'Review Owner' },

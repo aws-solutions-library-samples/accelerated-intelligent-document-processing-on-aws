@@ -908,6 +908,11 @@ export const getDocument = /* GraphQL */ `
           confidence
           confidenceThreshold
         }
+        MissingRequiredFields {
+          attributeName
+          confidence
+          confidenceThreshold
+        }
         ProcessingIssues {
           stage
           severity
@@ -951,6 +956,7 @@ export const getDocument = /* GraphQL */ `
       ConfigRevision
       HITLCompleted
       ProcessingIssueCount
+      MissingRequiredFieldCount
       TraceId
     }
   }
@@ -991,6 +997,11 @@ export const getDocumentVersion = /* GraphQL */ `
         Excluded
         ExclusionReason
         ConfidenceThresholdAlerts {
+          attributeName
+          confidence
+          confidenceThreshold
+        }
+        MissingRequiredFields {
           attributeName
           confidence
           confidenceThreshold
@@ -1774,6 +1785,7 @@ export const listDocuments = /* GraphQL */ `
         HITLReviewedBy
         PageCount
         ConfidenceAlertCount
+        MissingRequiredFieldCount
         ProcessingIssueCount
       }
       nextToken
@@ -1812,6 +1824,11 @@ export const listDocumentsByDateRange = /* GraphQL */ `
           Excluded
           ExclusionReason
           ConfidenceThresholdAlerts {
+            attributeName
+            confidence
+            confidenceThreshold
+          }
+          MissingRequiredFields {
             attributeName
             confidence
             confidenceThreshold
@@ -2292,6 +2309,11 @@ export const onUpdateDocument = /* GraphQL */ `
         Excluded
         ExclusionReason
         ConfidenceThresholdAlerts {
+          attributeName
+          confidence
+          confidenceThreshold
+        }
+        MissingRequiredFields {
           attributeName
           confidence
           confidenceThreshold
