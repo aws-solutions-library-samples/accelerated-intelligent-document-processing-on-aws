@@ -451,3 +451,17 @@ class TestAPageWithNoTextDoesNotFailTheDocument:
             images=True, prepare_image=lambda *_: b"img", missing={("2", "image")}
         )
         assert any("Error classifying page 2" in e for e in result.errors)
+
+    @pytest.mark.parametrize("blank", [" ", "\n\n", " \t\r\n ", "\u00a0\u2003"])
+    def test_whitespace_only_text_is_an_empty_page(self, blank):
+        """OCR of a blank sheet often yields line breaks or spaces rather than an
+        empty string. That is no more content than ``""``: it must take the empty
+        page path — no model call, a warning — rather than be sent to the model,
+        which would answer with a class the page gives it no evidence for."""
+        result, invoke, _ = self._classify(text={**self.TEXT, "2": blank})
+
+        assert invoke.call_count == 2
+        assert result.errors == []
+        assert result.pages["2"].classification == "unclassified"
+        issues = _issues(result, "classification_page_no_content")
+        assert len(issues) == 1 and issues[0].details["page_ids"] == ["2"]

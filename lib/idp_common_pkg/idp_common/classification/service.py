@@ -2605,8 +2605,12 @@ class ClassificationService:
                     raw_text_uri=raw_text_uri,
                 )
 
-        # Verify we have at least some content to classify
-        if not text_content and not image_content:
+        # Verify we have at least some content to classify. Whitespace is not
+        # content: OCR of a blank sheet commonly yields line breaks or spaces
+        # rather than "", and sending that to the model buys a class the page
+        # gives it no evidence for.
+        has_text = bool(text_content and text_content.strip())
+        if not has_text and not image_content:
             logger.warning(f"No content available for page {page_id}")
             # Genuinely empty only when nothing went wrong: the page's text was
             # read and is empty, and no image was expected because images are
