@@ -956,6 +956,11 @@ Inside one shard, several durations draw on the same invocation:
 | Retry backoff allowance | 90 s | Total time the retry ladder around the agent call may spend asleep, across all attempts |
 | Lambda `Timeout` | 900 s | The whole invocation — Lambda's maximum, so it cannot be widened |
 
+With botocore held to one attempt, `BedrockClient`'s own ladder is what retries a
+transient network failure on the non-streamed `converse`: a read or connect timeout, a
+failed connection, and a connection dropped before the response arrived
+(`ConnectionClosedError`). The last of these used to fail the call on its first attempt.
+
 What keeps a shard inside its invocation is **not** that these numbers sum to less than
 900 — they do not. It is that the retry ladder refuses to *begin* an attempt the size of
 the one that just failed when the remaining invocation cannot hold it, and raises the
