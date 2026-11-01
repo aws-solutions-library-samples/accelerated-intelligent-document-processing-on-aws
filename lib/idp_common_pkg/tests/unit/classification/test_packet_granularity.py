@@ -911,6 +911,9 @@ class TestAWindowTooLargeForTheModelIsSplit:
     """
 
     LIMIT = 4  # page images one request may carry before the fake refuses
+    #: What the fake says when it refuses. Overridden by the image-count subclass.
+    REFUSAL_MESSAGE = "Input is too long for requested model."
+    REFUSAL_CODE = "ValidationException"
     # Ground truth the fake answers from: pages 1-6 are one invoice, 7 onwards one
     # receipt. Each call reports a segment per document it can see.
     TRUTH = {str(p): ("invoice" if p <= 6 else "receipt") for p in range(1, 21)}
@@ -937,8 +940,8 @@ class TestAWindowTooLargeForTheModelIsSplit:
                 raise ClientError(
                     {
                         "Error": {
-                            "Code": "ValidationException",
-                            "Message": "Input is too long for requested model.",
+                            "Code": self.REFUSAL_CODE,
+                            "Message": self.REFUSAL_MESSAGE,
                         }
                     },
                     "Converse",
@@ -979,6 +982,10 @@ class TestAWindowTooLargeForTheModelIsSplit:
         ):
             result = service.packet_classify_document(document)
         return result, calls
+
+    def _run_with(self, message: str, code: str = "ValidationException"):
+        self.REFUSAL_MESSAGE, self.REFUSAL_CODE = message, code
+        return self._run()
 
     def test_the_document_is_classified_instead_of_failed(self):
         result, calls = self._run()
@@ -1192,6 +1199,51 @@ class TestAWindowTooLargeForTheModelIsSplit:
             if total >= 8:
                 assert len(second) <= 3 * total // 4 + 1, (total, overlap)
         assert service._split_overflowing_window(["1"]) is None
+
+
+@pytest.mark.unit
+class TestAWindowWithTooManyImagesIsSplit(TestAWindowTooLargeForTheModelIsSplit):
+    """#1705: Bedrock caps how many images one request may carry, so with page
+    images on a window above that cap is refused however few tokens it holds —
+    a rejection worded as an image rejection, not as an input overflow, which
+    the split used not to recognise. Halving the window is the fix for that
+    refusal exactly as for an overflow, so every inherited test that goes
+    through the fake (``_run``) re-runs with the image-count wording, under the
+    same bounds. The few inherited tests that build their own overflow fake
+    re-run unchanged."""
+
+    REFUSAL_MESSAGE = "too many images in request"
+
+
+@pytest.mark.unit
+class TestOnlyARefusalAboutImageCountIsSplit:
+    """The split is for refusals a smaller request fixes. These are judged
+    through the shared matchers in ``bedrock_utils``, the ones extraction uses."""
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "too many images in request",
+            "image exceed max allowed size for many-image requests: 2000 pixels",
+        ],
+    )
+    def test_a_count_dependent_rejection_is_split(self, message):
+        _, calls = TestAWindowWithTooManyImagesIsSplit()._run_with(message)
+        assert len(calls) > 1
+
+    @pytest.mark.parametrize(
+        ("code", "message"),
+        [
+            # One image too large on its own: no window is small enough.
+            ("ValidationException", "image exceeds maximum size of 5 MB"),
+            ("ValidationException", "image dimensions exceed 8000 pixels"),
+            # A throttle that happens to mention images.
+            ("ThrottlingException", "Rate exceeded: too many images in flight"),
+        ],
+    )
+    def test_any_other_image_error_is_not_split(self, code, message):
+        _, calls = TestAWindowWithTooManyImagesIsSplit()._run_with(message, code=code)
+        assert len(calls) == 1
 
 
 # --------------------------------------------------------------------------

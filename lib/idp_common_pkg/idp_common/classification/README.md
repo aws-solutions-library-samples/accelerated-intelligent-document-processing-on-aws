@@ -127,7 +127,9 @@ is the leading overlap, and the pages after it continue that window's document. 
 fold carries no `candidates`, so a merged segment built entirely from one reported
 segment gets that segment's list back, and one assembled from several gets none.
 
-A window the model refuses as too long (`is_input_token_overflow`) is split in two
+A window the model refuses as too long (`is_input_token_overflow`), or as carrying
+too many images (`is_image_count_rejection`: the per-request image cap, and the
+tighter dimension cap Bedrock applies only to many-image requests), is split in two
 by `_split_overflowing_window` and both halves are retried, recursively, with up to
 `overlap_pages` repeated at the junction; the halves are queued in page order so
 the merge's "earlier window wins" still holds. A one-page window that does not fit
@@ -137,7 +139,8 @@ repeated overlap is capped at about half the first half (and at least one page),
 each split shrinks the window by a fraction rather than by a page; a sub-window
 already requested is not requested again; and the calls made for split windows stop
 at twice the packet's page count, after which the remaining sub-windows are reported
-as not classified. A class-validation re-prompt that overflows keeps the answer
+as not classified. Any other image rejection — one image too large on its own —
+is not split, because no smaller window fixes it. A class-validation re-prompt that overflows keeps the answer
 already received, with its metering, and assigns the fallback rather than splitting.
 
 A combined packet call validates every segment's class like the page path does:
