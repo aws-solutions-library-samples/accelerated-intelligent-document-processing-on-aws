@@ -80,6 +80,11 @@ from idp_common.review_queues.testset_summaries import (  # type: ignore
     summarize_document,
 )
 from idp_common.s3 import find_matching_files  # type: ignore
+from idp_common.testset_label_jobs import (  # type: ignore
+    drafting_run_ids,
+    legacy_drafting_run,
+    oldest_first,
+)
 from idp_common.testset_scope import (  # type: ignore
     REVIEWER_GROUP,
     SCOPE_PROFILE_ATTRIBUTE,
@@ -1964,58 +1969,20 @@ def _label_jobs(test_set_id):
         if not next_key or next_key == start_key:
             break
         start_key = next_key
-    return sorted(jobs, key=lambda j: str(j.get("createdAt") or ""))
-
-
-def _label_job_run_id(job):
-    """The test run a labeling-job item records: its ``jobId``, else its SK."""
-    return job.get("jobId") or str(job.get("SK", "")).split("#", 1)[-1] or None
-
-
-def _legacy_drafting_run(jobs):
-    """The run the set's pointer named before its oldest job, when that run has
-    no job record of its own; otherwise None.
-
-    Starting a job repoints the set's ``labelJobId`` and keeps the run it replaced
-    as the job's ``previousLabelJobId``. Every job this resolver starts is recorded
-    before the pointer moves, so on the oldest job that run is normally a recorded
-    job too. When it is not, it is named nowhere else once the pointer has moved,
-    and it is counted as a drafting run. ``jobs`` is :func:`_label_jobs`'s list,
-    oldest first.
-    """
-    if not jobs:
-        return None
-    previous = jobs[0].get("previousLabelJobId")
-    if not previous:
-        return None
-    if previous in {_label_job_run_id(job) for job in jobs}:
-        return None
-    return previous
+    return oldest_first(jobs)
 
 
 def _drafting_run_ids(test_set_id, meta):
     """Every test run that drafted labels for a set, oldest first.
 
-    Each labeling job's run, preceded by the pointer's unrecorded earlier run when
-    there is one (:func:`_legacy_drafting_run`); a set with no job record at all is
-    named only by its ``labelJobId`` pointer. One list for the review-run, the
-    configuration and the fingerprint resolvers, so the three agree on which runs
-    drafted a set (#1746).
-
-    A FAILED job is left out. A job ends FAILED only when it labeled nothing, so its
-    run drafted none of the set's labels; counting it let one failed re-extract
-    under another profile make the set read as mixed, which no scoped Reviewer is
-    admitted to (#1757). The review-run resolver passes over a FAILED job too.
+    :func:`idp_common.testset_label_jobs.drafting_run_ids` over the set's job
+    records and its ``labelJobId`` pointer. One list for the configuration and the
+    fingerprint resolvers here and for the test-execution aggregation's
+    self-measurement guard, so they agree on which runs drafted a set (#1746,
+    #1757). A FAILED job drafted nothing and is left out of it, as the review-run
+    resolver below passes over one.
     """
-    jobs = _label_jobs(test_set_id)
-    if not jobs:
-        pointer = (meta or {}).get("labelJobId")
-        return [pointer] if pointer else []
-    run_ids = [_label_job_run_id(job) for job in jobs if job.get("status") != "FAILED"]
-    legacy = _legacy_drafting_run(jobs)
-    if legacy:
-        run_ids.insert(0, legacy)
-    return [run_id for run_id in run_ids if run_id]
+    return drafting_run_ids(_label_jobs(test_set_id), (meta or {}).get("labelJobId"))
 
 
 def _run_id_by_object_key(test_set_id, meta=None):
@@ -2045,7 +2012,7 @@ def _run_id_by_object_key(test_set_id, meta=None):
     if not jobs:
         return {}, (meta or {}).get("labelJobId") or None
     per_doc = {}
-    default_run = _legacy_drafting_run(jobs)
+    default_run = legacy_drafting_run(jobs)
     for job in jobs:
         run_id = job.get("jobId")
         if not run_id:
