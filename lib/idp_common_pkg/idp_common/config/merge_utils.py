@@ -546,6 +546,7 @@ def _template_header(
     disabled: List[str],
     include_prompts: bool,
     confidence_mode: Optional[str],
+    empty: Optional[List[str]] = None,
 ) -> str:
     """The comment block that opens a generated template, describing that file."""
     label = features if isinstance(features, str) else ", ".join(features)
@@ -567,6 +568,12 @@ def _template_header(
         )
     if omitted:
         lines.append(f"# Sections not in this file: {', '.join(omitted)}.")
+    if empty:
+        lines.append(
+            f"# Empty in the system defaults, so left out: {', '.join(empty)}."
+        )
+        lines.append("# Written empty, it would replace the profile's own on upload;")
+        lines.append("# add yours under that top-level key.")
     if not include_prompts:
         lines.append(
             "# Long system_prompt, task_prompt and user_prompt values are left out;"
@@ -599,7 +606,8 @@ def generate_config_template(
     Args:
         features: Feature set name ("min", "core", "all") or a list of section
             names (see ``template_sections``). An unknown name in a list raises
-            ``ValueError``.
+            ``ValueError``, as does a request whose sections are all empty in
+            the defaults (``["classes"]``), which has nothing to write.
         pattern: Pattern to base the template on
         include_prompts: If True, include full prompt templates
         include_comments: If True, include helpful comments
@@ -619,8 +627,17 @@ def generate_config_template(
     template["notes"] = "My IDP Configuration - customize as needed"
 
     written: List[str] = []
+    empty: List[str] = []
     for section in sections:
         if section in defaults:
+            # A list the defaults leave empty (``classes: []``) has nothing to
+            # copy, and writing it is not neutral: an uploaded file is merged over
+            # the profile's current configuration, and a list there is replaced
+            # rather than merged, so ``classes: []`` emptied the profile's document
+            # classes (issue #1720). Leaving the key out keeps them.
+            if defaults[section] == []:
+                empty.append(section)
+                continue
             section_data = deepcopy(defaults[section])
 
             # Optionally strip prompts for cleaner output
@@ -629,6 +646,16 @@ def generate_config_template(
 
             template[section] = section_data
             written.append(section)
+
+    if not written:
+        # Only empty sections were requested, so the file would hold nothing but
+        # ``notes``, and uploading it would only overwrite the profile's notes.
+        raise ValueError(
+            f"Nothing to generate: {', '.join(empty)} "
+            f"{'is' if len(empty) == 1 else 'are'} empty in the system defaults. "
+            "Write your document classes under a top-level 'classes:' key in your "
+            "own file, or request a section that has defaults."
+        )
 
     # Add disabled flags for sections not in the template
     disabled: List[str] = []
@@ -653,7 +680,13 @@ def generate_config_template(
         ).get("mode")
         yaml_str = (
             _template_header(
-                features, pattern, written, disabled, include_prompts, confidence_mode
+                features,
+                pattern,
+                written,
+                disabled,
+                include_prompts,
+                confidence_mode,
+                empty,
             )
             + yaml_str
         )

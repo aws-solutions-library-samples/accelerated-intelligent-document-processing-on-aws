@@ -148,8 +148,12 @@ top-level key of the pattern's defaults holding a mapping or a list
 list naming one, or naming anything that is not a section, raises `ValueError`
 listing the valid sections. `min` writes `enabled: false` for summarization and
 evaluation and copies `extraction`, so confidence scoring
-(`extraction.confidence.mode`) stays at its default `separate`. The header comment
-lists the sections the file copies, switches off and leaves out.
+(`extraction.confidence.mode`) stays at its default `separate`. A section the defaults
+leave empty is not written: `classes` is `[]` in the defaults, and an uploaded
+file replaces a list rather than merging it, so writing it would empty the
+profile's classes; a request naming only such sections (`["classes"]`) raises
+`ValueError`, since the file would hold nothing else. The header comment lists the sections the file copies,
+switches off and leaves out.
 
 ## Example: Minimal User Config
 

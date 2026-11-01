@@ -233,8 +233,9 @@ class ConfigOperation:
 
         Raises:
             IDPValidationError: ``features`` names no section, an unknown feature
-                set or section, or is not a string or list of strings, or
-                ``pattern`` is not a known pattern.
+                set or section, or is not a string or list of strings, or names
+                only sections that are empty in the system defaults (``classes``
+                alone), or ``pattern`` is not a known pattern.
         """
         from idp_common.config.merge_utils import generate_config_template
 

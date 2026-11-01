@@ -1480,7 +1480,7 @@ Operations for managing IDP configurations.
 Generate an IDP configuration template.
 
 **Parameters:**
-- `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or one or more section names, comma-separated or as a list (default: `"min"`). A single section name is read the same way as a list, and blank segments are dropped. `"min"` switches summarization and evaluation off and leaves confidence scoring (`extraction.confidence`) on
+- `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or one or more section names, comma-separated or as a list (default: `"min"`). A single section name is read the same way as a list, and blank segments are dropped. `"min"` switches summarization and evaluation off and leaves confidence scoring (`extraction.confidence`) on. No template carries a `classes` section: the system defaults have no document classes, and an empty list uploaded over a profile would replace its classes with none
 - `pattern` (str, optional): Pattern to use — `"pattern-1"` or `"pattern-2"` (default: `"pattern-2"`)
 - `output` (str, optional): Output file path
 - `include_prompts` (bool, optional): Include prompt templates (default: False). When False, the long `system_prompt`, `task_prompt` and `user_prompt` values are left out of the template, so they take whatever value the configuration is merged over
@@ -1488,7 +1488,7 @@ Generate an IDP configuration template.
 
 **Returns:** `ConfigCreateResult` with `yaml_content` and `output_path`
 
-**Raises:** `IDPValidationError` when `features` names no section, an unknown feature set or section, or a feature set combined with section names, and when `pattern` is not a known pattern. The message lists the valid sections. `config.parse_features(features)` returns how a value is read (a feature-set name, or a list of section names) without generating anything.
+**Raises:** `IDPValidationError` when `features` names no section, an unknown feature set or section, or a feature set combined with section names, or only `classes` (empty in the system defaults, so there is nothing to write), and when `pattern` is not a known pattern. The message lists the valid sections. `config.parse_features(features)` returns how a value is read (a feature-set name, or a list of section names) without generating anything.
 
 ```python
 result = client.config.create(
