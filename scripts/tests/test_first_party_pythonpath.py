@@ -416,8 +416,17 @@ def test_every_pytest_recipe_line_goes_through_a_pinning_wrapper(
 _RECIPE_SCRIPT = re.compile(
     r"(?:^|[\s'\"=])(?:\./|\$\(CURDIR\)/)?(scripts/[\w./-]+\.py)\b"
 )
-#: The wrapper as the word that starts the interpreter, not text inside a value.
-_PINNED_COMMAND = re.compile(r"(?:^|\s)\$\(RUN_FIRST_PARTY\)\s")
+#: The wrapper as its own word BEFORE the script path: neither text inside a
+#: quoted value nor an argument after the script counts. Anchoring it at the
+#: start of the command is not possible, because a ``VAR=$(if ...)`` prefix
+#: (``stacktest-zapdast``) holds spaces.
+_PINNED_WORD = "$(RUN_FIRST_PARTY)"
+
+
+def _pinned(command: str) -> bool:
+    match = _RECIPE_SCRIPT.search(command)
+    assert match, command
+    return _PINNED_WORD in command[: match.start(1)].split()
 
 
 def _reaches_first_party(path: Path, packages: frozenset[str], seen: set) -> bool:
@@ -503,7 +512,7 @@ def test_every_recipe_running_a_first_party_script_pins_this_checkout() -> None:
     # Non-vacuity: the live checks and the stack-test runners are in this set.
     assert any("review_queues_live_check.py" in line for line in lines), lines
     assert any("run_stacktest.py" in line for line in lines), lines
-    unpinned = [line for line in lines if not _PINNED_COMMAND.search(line)]
+    unpinned = [line for line in lines if not _pinned(line)]
     assert not unpinned, (
         "these recipe lines run a script that imports a first-party package "
         "without $(RUN_FIRST_PARTY), so the import reads whichever checkout the "
