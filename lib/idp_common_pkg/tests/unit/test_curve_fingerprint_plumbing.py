@@ -31,6 +31,10 @@ def runner():
             "AWS_REGION": "us-east-1",
         },
     ):
+        # boto3 is patched only while the handler module builds its module-scope
+        # clients. Yielding inside the patch kept boto3.client and boto3.resource
+        # replaced for every test in this module, which the binding check in
+        # tests/conftest.py reports (#1756).
         with patch("boto3.client"), patch("boto3.resource"):
             spec = importlib.util.spec_from_file_location(
                 "runner_fp_under_test", _RUNNER
@@ -38,7 +42,7 @@ def runner():
             assert spec and spec.loader
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
-            yield mod
+        yield mod
 
 
 CONFIG_A = {

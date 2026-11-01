@@ -25,36 +25,23 @@ import json
 
 import pytest
 
-# The @tool decorator: under tests, conftest replaces the ``strands`` module with
-# a MagicMock, so ``table_parser`` binds a MagicMock as ``tool`` at import (which
-# breaks @tool). We must make it a passthrough BEFORE the factories are called.
-# table_parser does ``from strands import tool``, so patch the BOUND name on the
-# module directly (not the global ``strands.tool``), and re-apply it per-test via
-# an autouse fixture so this file never depends on — or corrupts — the import
-# order relative to the other table-tool test modules.
-from idp_common.extraction.tools import table_parser as _tp  # noqa: E402
-
-_tp.tool = lambda fn: fn  # type: ignore[assignment]
+# The factories' tools are decorated with the REAL strands ``@tool`` and called
+# directly: ``DecoratedFunctionTool.__call__`` forwards to the wrapped function.
+# Do not replace the decorator here (``strands.tool``, or the name a production
+# module bound from it): a replacement made at import outlives this module and
+# turns every Strands tool built later in the same process into a plain
+# function, which an Agent then cannot register (#1756). The strands-binding
+# check in tests/conftest.py fails a module that does it.
+DecoratedFunctionTool = pytest.importorskip(
+    "strands.tools.decorator",
+    reason="strands-agents not installed (a conftest stub does not count)",
+).DecoratedFunctionTool
 
 from idp_common.extraction.tools.table_parser import (  # noqa: E402
     INLINE_ROW_CAP,
     create_map_table_to_schema_tool,
     create_parse_table_tool,
 )
-
-
-@pytest.fixture(autouse=True)
-def _passthrough_tool_decorator():
-    """Ensure ``table_parser.tool`` is a passthrough for each test in this module
-    and RESTORE the prior value afterward, so running this file before/after the
-    other table-tool test modules can neither be broken by nor break their
-    import-order-dependent decorator state."""
-    prev = _tp.tool
-    _tp.tool = lambda fn: fn  # type: ignore[assignment]
-    try:
-        yield
-    finally:
-        _tp.tool = prev  # type: ignore[assignment]
 
 
 class _State:
@@ -242,3 +229,20 @@ class TestLazyImagesConfig:
         merged = merge_config_with_defaults({}, validate=True)
         cfg = IDPConfig(**merged)
         assert cfg.extraction.agentic.table_parsing.lazy_images is True
+
+
+# =============================================================================
+# The factory returns a real Strands tool
+# =============================================================================
+
+
+class TestTableToolsAreStrandsTools:
+    """The ToolResult shape above only matters if Strands sees a decorated tool."""
+
+    def test_both_factories_return_strands_tools(self):
+        for tool_obj, name in (
+            (create_parse_table_tool(), "parse_table"),
+            (create_map_table_to_schema_tool(), "map_table_to_schema"),
+        ):
+            assert isinstance(tool_obj, DecoratedFunctionTool), tool_obj
+            assert tool_obj.tool_name == name
