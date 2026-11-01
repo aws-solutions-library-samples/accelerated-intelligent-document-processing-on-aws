@@ -360,7 +360,7 @@ class TestSanitizeUntypedObjects:
         assert list(sanitized["properties"]["Code"]["properties"]) == ["x&y"]
         assert mapping == {}
 
-    @pytest.mark.parametrize("with_defs", [True])
+    @pytest.mark.parametrize("with_defs", [True, False])
     def test_every_blueprint_name_is_valid_after_a_sync_style_conversion(
         self, service, with_defs
     ):
@@ -384,3 +384,134 @@ class TestSanitizeUntypedObjects:
         ]
         assert "NameTitle" in names and "Unit" in names
         assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", n) for n in names), names
+
+
+@pytest.mark.unit
+class TestUntypedObjectsWithoutDefs:
+    """Item 4: an untyped object is converted as an object, never as a string."""
+
+    def test_untyped_object_items_are_hoisted_not_turned_into_strings(self, service):
+        schema = {
+            "$id": "T",
+            "properties": {
+                "Rows": {
+                    "type": "array",
+                    "description": "rows",
+                    "items": {"properties": {"A": {"type": "number"}}},
+                }
+            },
+        }
+        blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        assert blueprint["properties"]["Rows"] == {
+            "type": "array",
+            "items": {"$ref": "#/definitions/RowsItem"},
+            "instruction": "rows",
+        }
+        assert blueprint["definitions"]["RowsItem"] == {
+            "type": "object",
+            "properties": {"A": _leaf("number")},
+        }
+        assert_bda_accepted_shape(blueprint)
+
+    def test_an_untyped_array_of_untyped_objects_is_hoisted(self, service):
+        schema = {
+            "$id": "T",
+            "properties": {"Rows": {"items": {"properties": {"A": {}}}}},
+        }
+        blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        assert blueprint["properties"]["Rows"]["items"] == {
+            "$ref": "#/definitions/RowsItem"
+        }
+        assert blueprint["definitions"]["RowsItem"]["properties"] == {
+            "A": _leaf("string")
+        }
+        assert_bda_accepted_shape(blueprint)
+
+    def test_an_untyped_object_property_is_hoisted(self, service):
+        schema = {
+            "$id": "T",
+            "properties": {"Owner": {"properties": {"Name": {"type": "string"}}}},
+        }
+        blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        assert blueprint["properties"]["Owner"] == {"$ref": "#/definitions/Owner"}
+        assert blueprint["definitions"]["Owner"]["properties"] == {
+            "Name": _leaf("string")
+        }
+        assert_bda_accepted_shape(blueprint)
+
+    def test_untyped_items_that_nest_further_are_dropped_and_recorded(self, service):
+        schema = {
+            "$id": "T",
+            "properties": {
+                "Rows": {
+                    "type": "array",
+                    "items": {"properties": {"Inner": {"properties": {"X": {}}}}},
+                },
+                "Leaf": {"type": "string"},
+            },
+        }
+        with service._recording_drops_for("T") as recording:
+            blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        assert list(blueprint["properties"]) == ["Leaf"]
+        assert [(d["property"], d["type"]) for d in recording.drops] == [
+            ("Rows", "nested_array")
+        ]
+
+    @pytest.mark.parametrize("with_defs", [True, False])
+    def test_an_untyped_object_inside_a_definition_is_dropped_not_a_string(
+        self, service, with_defs
+    ):
+        members = {
+            "Name": {"type": "string"},
+            "Inner": {"properties": {"X": {"type": "string"}}},
+            "Tags": {"items": {"type": "string"}},
+            "Rows": {"items": {"properties": {"Y": {"type": "string"}}}},
+        }
+        if with_defs:
+            schema = {
+                "$id": "T",
+                "$defs": {"C": {"properties": members}},
+                "properties": {"C": {"$ref": "#/$defs/C"}},
+            }
+        else:
+            schema = {
+                "$id": "T",
+                "properties": {"C": {"properties": members}, "L": {"type": "string"}},
+            }
+        with service._recording_drops_for("T") as recording:
+            blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        if with_defs:
+            assert blueprint["definitions"]["C"]["properties"] == {
+                "Name": _leaf("string"),
+                "Tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "instruction": "-",
+                },
+            }
+            assert sorted(d["property"] for d in recording.drops) == ["Inner", "Rows"]
+        else:
+            # Without $defs an object holding an object is dropped whole, as it
+            # is when both are typed.
+            assert list(blueprint["properties"]) == ["L"]
+            assert [d["property"] for d in recording.drops] == ["C"]
+        assert_bda_accepted_shape(blueprint)
+
+    def test_typed_schemas_convert_exactly_as_before(self, service):
+        """Inference applies only where "type" is missing."""
+        schema = {
+            "$id": "T",
+            "properties": {
+                "Code": {"type": "string", "properties": {"Q": {"type": "string"}}},
+                "Rows": {
+                    "type": "array",
+                    "items": {"type": "string", "properties": {"Q": {}}},
+                },
+            },
+        }
+        blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        assert blueprint["properties"] == {
+            "Code": _leaf("string"),
+            "Rows": {"type": "array", "items": {"type": "string"}, "instruction": "-"},
+        }
+        assert "definitions" not in blueprint

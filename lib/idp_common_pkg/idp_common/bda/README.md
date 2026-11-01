@@ -201,8 +201,9 @@ The two paths differ in what they do with nesting. The flat path drops an object
 Shapes this does not convert. They leave an inline object or a malformed field and were not probed:
 
 - a `$defs` entry that is itself an array of inline objects;
-- an object property with no `properties`, or with a list-valued `type` such as `["object", "null"]`;
-- on the flat path only, an object or array of objects that omits `"type"`.
+- an object property with no `properties`, or with a list-valued `type` such as `["object", "null"]`.
+
+An object or array that omits `"type"` is converted as the object or array its `properties` or `items` make it, on both paths and inside definitions (`_schema_type`; issue #1742). A declared `type` always wins.
 
 ### Text BDA rejects is rewritten before the blueprint is sent
 

@@ -1526,7 +1526,7 @@ class BdaBlueprintService:
 
             # Skip nested objects - BDA doesn't support them
             # TODO: Re-enable when BDA supports nested objects
-            if value.get(SCHEMA_TYPE) == TYPE_OBJECT:
+            if self._schema_type(value) == TYPE_OBJECT:
                 self._record_skipped_property(
                     name,
                     "nested_object",
@@ -1542,7 +1542,7 @@ class BdaBlueprintService:
 
             # Any other array nests an object or a $ref inside the definition,
             # which BDA rejects.
-            if value.get(SCHEMA_TYPE) == TYPE_ARRAY:
+            if self._schema_type(value) == TYPE_ARRAY:
                 self._record_skipped_property(
                     name,
                     "nested_array",
@@ -1559,6 +1559,25 @@ class BdaBlueprintService:
         return processed_properties
 
     @staticmethod
+    def _schema_type(schema: dict) -> Optional[str]:
+        """A schema's declared ``type``, or the one its structure implies.
+
+        An object is often written with ``properties`` and no ``type``, and an
+        array with ``items`` and no ``type``. Reading only the declared type
+        turned such an object inside a definition into a string field, and such
+        array items on the path without ``$defs`` into ``{"type": "string"}``,
+        with no warning (issue #1742). A declared type always wins.
+        """
+        declared = schema.get(SCHEMA_TYPE)
+        if declared is not None:
+            return declared
+        if SCHEMA_PROPERTIES in schema:
+            return TYPE_OBJECT
+        if SCHEMA_ITEMS in schema:
+            return TYPE_ARRAY
+        return None
+
+    @staticmethod
     def _is_primitive_array(schema: object) -> bool:
         """True for an array of strings or numbers.
 
@@ -1568,15 +1587,18 @@ class BdaBlueprintService:
         is not treated as primitive and is dropped as before. ``items`` must be
         present: an array with no ``items`` inside a definition was not probed.
         """
-        if not isinstance(schema, dict) or schema.get(SCHEMA_TYPE) != TYPE_ARRAY:
+        if (
+            not isinstance(schema, dict)
+            or BdaBlueprintService._schema_type(schema) != TYPE_ARRAY
+        ):
             return False
         items = schema.get(SCHEMA_ITEMS)
         return (
             isinstance(items, dict)
             and REF_FIELD not in items
             and SCHEMA_PROPERTIES not in items
-            and SCHEMA_ITEMS not in items
-            and items.get(SCHEMA_TYPE, "string") in _PRIMITIVE_ARRAY_ITEM_TYPES
+            and (BdaBlueprintService._schema_type(items) or "string")
+            in _PRIMITIVE_ARRAY_ITEM_TYPES
         )
 
     def _process_array_property_simple(self, prop_value: dict) -> dict:
@@ -1630,7 +1652,7 @@ class BdaBlueprintService:
 
         if (
             isinstance(items, dict)
-            and items.get(SCHEMA_TYPE) == TYPE_OBJECT
+            and self._schema_type(items) == TYPE_OBJECT
             and SCHEMA_PROPERTIES in items
         ):
             # Array of simple objects - extract to definition
@@ -1711,7 +1733,7 @@ class BdaBlueprintService:
                 )
                 continue
 
-            prop_type = prop_value.get(SCHEMA_TYPE, "string")
+            prop_type = self._schema_type(prop_value) or "string"
 
             if prop_type == TYPE_OBJECT and SCHEMA_PROPERTIES in prop_value:
                 # Check if this object has nested complex structures
@@ -1762,7 +1784,7 @@ class BdaBlueprintService:
                 items = prop_value.get(SCHEMA_ITEMS, {})
                 if (
                     isinstance(items, dict)
-                    and items.get(SCHEMA_TYPE) == TYPE_OBJECT
+                    and self._schema_type(items) == TYPE_OBJECT
                     and SCHEMA_PROPERTIES in items
                     and self._has_nested_complex_structures(items[SCHEMA_PROPERTIES])
                 ):
@@ -1806,7 +1828,7 @@ class BdaBlueprintService:
             if not isinstance(prop_value, dict):
                 continue
 
-            prop_type = prop_value.get(SCHEMA_TYPE, "string")
+            prop_type = self._schema_type(prop_value) or "string"
 
             # Check for nested objects
             if prop_type == TYPE_OBJECT:
