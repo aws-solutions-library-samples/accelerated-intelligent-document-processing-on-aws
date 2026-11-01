@@ -11,12 +11,15 @@ import logging
 import os
 import random
 import re
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import TYPE_CHECKING, Unpack
 
 import botocore.exceptions
+
+from idp_common.failed_attempt import drop_failed_attempt
 
 # The invocation deadline, the sleep clamp and the pre-attempt budget gate. They live
 # in a standard-library-only leaf module and are re-exported from here, because the
@@ -484,6 +487,9 @@ def async_exponential_backoff_retry[T, **P](
             # reset the comparison and re-license an attempt that cannot return.
             # Measured rather than assumed: see lambda_deadline.attempt_cannot_finish.
             worst_attempt_seconds: float | None = None
+            # Whatever the CALLER was handling when it awaited this. Not ours to
+            # touch: see ``drop_failed_attempt``'s ``stop_at``.
+            caller_exception = sys.exc_info()[1]
 
             for attempt in range(max_retries):
                 attempt_started = time.time()
@@ -591,6 +597,19 @@ def async_exponential_backoff_retry[T, **P](
                         await asyncio.sleep(backoff)
                         total_slept += backoff
                         delay = min(delay * exponential_base, max_delay)
+                        # The next attempt starts after this handler exits, so the
+                        # failure is unreachable by then; but a timeout or a dropped
+                        # connection leaves botocore's reference cycle behind it (see
+                        # ``drop_failed_attempt``), so without this the failed
+                        # attempt's serialised request stayed in memory until the
+                        # cyclic collector ran. Measured with a real botocore client
+                        # and an 8 MB request, cyclic collector off: 8, 16, 24 and
+                        # 32 MB still held at attempts 2-5 with read timeouts, and
+                        # the same with each raised ``from`` a Strands exception. A
+                        # botocore throttle (``ClientError``) leaves no cycle and
+                        # measured flat, which is why the branch above has no call
+                        # (#1706).
+                        drop_failed_attempt(e, stop_at=caller_exception)
                         continue
 
                     # Log bedrock invocation details for non-retryable exceptions

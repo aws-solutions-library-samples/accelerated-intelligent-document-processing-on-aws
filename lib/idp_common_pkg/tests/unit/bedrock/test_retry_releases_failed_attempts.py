@@ -672,3 +672,22 @@ def test_a_retry_leaves_the_callers_own_exception_alone(runner, first, second):
     assert frames_after == frames_before, (
         f"the caller's traceback went from {frames_before} to {frames_after} frames"
     )
+
+
+@pytest.mark.unit
+def test_dropping_a_failed_attempt_terminates_on_a_cyclic_chain():
+    """Exceptions can reference each other in a loop through botocore's ``kwargs``
+    (nothing stops ``error=`` naming an exception that chains back), and the walk
+    must visit each one once rather than circle. Run in a thread so a regression
+    fails here instead of hanging the suite."""
+    import threading
+
+    inner = RuntimeError("inner")
+    outer = ReadTimeoutError(endpoint_url=_URL, error=inner)
+    inner.kwargs = {"error": outer}  # type: ignore[attr-defined]
+    worker = threading.Thread(
+        target=client_mod._drop_failed_attempt, args=(outer,), daemon=True
+    )
+    worker.start()
+    worker.join(timeout=5)
+    assert not worker.is_alive(), "the walk circled a cyclic exception chain"

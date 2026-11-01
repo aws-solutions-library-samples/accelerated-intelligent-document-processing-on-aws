@@ -986,7 +986,9 @@ The BedrockClient automatically handles common failure scenarios:
   the ladder, and through its traceback, its chained exceptions and botocore's
   `error=` and `request=` kwargs so does the failed attempt's serialised request
   body, with every attached image base64-encoded: one more copy per retry. Before
-  recording the decision the handler also calls `_drop_failed_attempt(e)`, which
+  recording the decision the handler also calls `_drop_failed_attempt(e)` (defined in
+  the leaf module `idp_common/failed_attempt.py`, which the agentic retry decorator in
+  `utils/bedrock_utils.py` also uses), which
   detaches the tracebacks along that chain. botocore's `Endpoint._send_request`
   holds the exception it raises in a local, which makes a reference cycle; without
   the detach the attempt is unreachable but stays in memory until the cyclic
