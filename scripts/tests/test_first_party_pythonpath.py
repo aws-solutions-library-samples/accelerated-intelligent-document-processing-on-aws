@@ -408,6 +408,142 @@ def test_every_pytest_recipe_line_goes_through_a_pinning_wrapper(
     )
 
 
+# --------------------------------------------------------------------------- #
+# scripts run by a recipe, not only pytest
+# --------------------------------------------------------------------------- #
+#: A ``scripts/...py`` path as a word, bare or spelled ``./scripts/`` or
+#: ``$(CURDIR)/scripts/``.
+_RECIPE_SCRIPT = re.compile(
+    r"(?:^|[\s'\"=])(?:\./|\$\(CURDIR\)/)?(scripts/[\w./-]+\.py)\b"
+)
+#: The wrapper as its own word BEFORE the script path: neither text inside a
+#: quoted value nor an argument after the script counts. Anchoring it at the
+#: start of the command is not possible, because a ``VAR=$(if ...)`` prefix
+#: (``stacktest-zapdast``) holds spaces.
+_PINNED_WORD = "$(RUN_FIRST_PARTY)"
+
+
+def _pinned(command: str) -> bool:
+    match = _RECIPE_SCRIPT.search(command)
+    assert match, command
+    return _PINNED_WORD in command[: match.start(1)].split()
+
+
+def _reaches_first_party(path: Path, packages: frozenset[str], seen: set) -> bool:
+    """Does ``path`` import a first-party package, itself or through a sibling?
+
+    Every import statement counts, at any depth, because the deferred import inside
+    a function is the shape that hides the problem: the script starts and only fails
+    — or reads another checkout — when it reaches that function. A sibling module
+    (``import codebuild_deployment`` beside the script, which is how
+    ``run_stacktest.py`` reaches ``idp_common``) is followed, since the script's own
+    directory is ``sys.path[0]``.
+    """
+    if path in seen:
+        return False
+    seen.add(path)
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        else:
+            continue
+        for name in names:
+            top = name.split(".")[0]
+            if top in packages:
+                return True
+            for sibling in (
+                path.parent / f"{top}.py",
+                path.parent / top / "__init__.py",
+            ):
+                if sibling.is_file() and _reaches_first_party(sibling, packages, seen):
+                    return True
+    return False
+
+
+def _first_party_script_lines() -> list[str]:
+    """Shell commands, in the root Makefile's and ``make/*.mk``'s recipes, that run
+    a script whose import closure reaches a first-party package.
+
+    One entry per command rather than per line, so a pinned command does not vouch
+    for an unpinned one joined to it with ``&&``, ``;`` or a pipe.
+    """
+    packages = frozenset(_importable_first_party_packages())
+    found = []
+    for makefile in [MAKEFILE, *sorted((REPO_ROOT / "make").glob("*.mk"))]:
+        for line in makefile.read_text(encoding="utf-8").splitlines():
+            if not line.startswith("\t"):
+                continue
+            body = line.lstrip("\t").lstrip("@").strip()
+            if body.startswith("#"):
+                continue
+            for command in re.split(r"&&|\|\||;|\|", body):
+                # An echo names a script without running it; judged per command
+                # so `echo ... | $(PYTHON) scripts/x.py` is still read.
+                if command.strip().startswith("echo"):
+                    continue
+                for match in _RECIPE_SCRIPT.finditer(command):
+                    script = REPO_ROOT / match.group(1)
+                    if script.is_file() and _reaches_first_party(
+                        script, packages, set()
+                    ):
+                        found.append(command.strip())
+                        break
+    return found
+
+
+def test_every_recipe_running_a_first_party_script_pins_this_checkout() -> None:
+    """A script a recipe runs is pinned like a pytest run is (#1729).
+
+    The pytest closure above cannot see these: ``$(PYTHON) scripts/x.py`` names
+    neither wrapper nor ``-m``. ``make stacktest-review-queues`` ran that way beside
+    ``stacktest-inbox``, which used ``$(RUN_FIRST_PARTY)``, so its ``idp_sdk``
+    import followed whichever checkout the editable install last named (#1094); so
+    did the stack-test and transform-deploy-test runners, which reach
+    ``idp_common`` and ``idp_sdk`` through a sibling module. The universe is derived
+    from the scripts' imports, so a new target running such a script is covered.
+
+    Bound: a script reached other than by its path on the recipe line (a variable
+    holding the path, the ``-m`` module form, or a ``cd`` into ``scripts/`` followed
+    by a bare filename) is not seen.
+    """
+    lines = _first_party_script_lines()
+    # Non-vacuity: the live checks and the stack-test runners are in this set.
+    assert any("review_queues_live_check.py" in line for line in lines), lines
+    assert any("run_stacktest.py" in line for line in lines), lines
+    unpinned = [line for line in lines if not _pinned(line)]
+    assert not unpinned, (
+        "these recipe lines run a script that imports a first-party package "
+        "without $(RUN_FIRST_PARTY), so the import reads whichever checkout the "
+        "editable install last pointed at (#1094):\n  " + "\n  ".join(unpinned)
+    )
+
+
+def test_the_script_wrapper_resolves_every_first_party_package_here() -> None:
+    """``$(RUN_FIRST_PARTY)`` pins, measured rather than read.
+
+    The closure above only proves the recipes name the wrapper; this runs it. The
+    inherited ``PYTHONPATH`` is stripped, as in :func:`_run_under_wrapper`, so the
+    probe cannot pass on the test runner's own pin.
+    """
+    wrapper = _make_variable("RUN_FIRST_PARTY", directory=REPO_ROOT)
+    packages = _importable_first_party_packages()
+    result = subprocess.run(  # noqa: S603 - fixed argv; the text comes from our makefile
+        ["sh", "-c", f"{wrapper} -c {_quote(_provenance_probe(packages))}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=REPO_ROOT,
+        env={k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
+        timeout=_PROBE_TIMEOUT,
+    )
+    assert result.returncode == 0, f"{wrapper}\n{result.stderr}"
+    _assert_every_origin_is_in_this_checkout(
+        result.stdout, how="under $(RUN_FIRST_PARTY)"
+    )
+
+
 @functools.lru_cache(maxsize=1)
 def _library_pytest_commands() -> dict[str, str]:
     """``command → the targets that run it``, for every pytest recipe in the library.

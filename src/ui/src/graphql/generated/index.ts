@@ -413,6 +413,7 @@ export const createReviewQueue = /* GraphQL */ `
       eligibleAnnotators
       isDefaultQueue
       enabled
+      version
     }
   }
 ` as GeneratedMutation<CreateReviewQueueMutationVariables, CreateReviewQueueMutation>;
@@ -2086,6 +2087,7 @@ export const listReviewQueues = /* GraphQL */ `
       eligibleAnnotators
       isDefaultQueue
       enabled
+      version
     }
   }
 ` as GeneratedQuery<ListReviewQueuesQueryVariables, ListReviewQueuesQuery>;
@@ -3198,6 +3200,7 @@ export const updateReviewQueue = /* GraphQL */ `
       eligibleAnnotators
       isDefaultQueue
       enabled
+      version
     }
   }
 ` as GeneratedMutation<UpdateReviewQueueMutationVariables, UpdateReviewQueueMutation>;

@@ -357,3 +357,17 @@ agentic-extraction = [
 "Homepage" = "https://github.com/aws-samples/sample-genai-idp"
 
 [dependency-groups]
+# Locked here, used elsewhere: third-party packages that only the OTHER first-party
+# packages under lib/ require, so nothing in this project's own dependencies would
+# put them in uv.lock. CI and `make setup` install all five packages constrained to
+# this one lock (`make lock-constraints` exports every group), and a constraint
+# pins only what the lock records — so without this group these resolved from the
+# index on the day of every install (#1729). A group, not an extra: it is never
+# part of this package's published metadata, so installing idp_common is unchanged.
+# Keep each specifier the same as the requirement it mirrors;
+# scripts/tests/test_ci_gate_parity.py fails if a first-party package requires a
+# third-party distribution the lock does not record.
+first-party-siblings = [
+  "pytest-mock>=3.11.0",  # lib/idp_sdk [dev], lib/idp_cli_pkg [test]
+  "semver>=3.0",          # lib/idp_feature_sdk
+]

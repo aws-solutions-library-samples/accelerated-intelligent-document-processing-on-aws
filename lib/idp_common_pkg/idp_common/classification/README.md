@@ -708,7 +708,11 @@ metadata the test-set file copier stamps on the run's copy of the document and
 `Document.from_s3_event` reads:
 
 - **`document-class`** → `Document.forced_document_class`: one class for the whole
-  document. Every page gets it and one section covering every page is built.
+  document. Every page gets it and one section covering every page is built. The
+  test runner forwards a `documentClass` only on a draft-labeling run of exactly one
+  named document, never beside a grouping, and only when
+  `idp_common.forced_sections.is_valid_document_class` accepts it, which is the
+  vocabulary a grouping's classes use.
 - **`document-sections`** → `Document.forced_sections`: a whole section grouping, used
   to re-extract one section of a multi-section document. Encoded and decoded by
   `idp_common.forced_sections` (standard library only, so the API resolvers can
@@ -724,7 +728,10 @@ A grouping that is malformed, or names a page the document does not have, raises
 fails the document, because classifying it instead would regroup every section. The
 harvest in the test-set resolver then writes back only the targeted section, and only
 when the run's result for it has the corrected class and the same page indices; the
-BDA branch never runs this step, so under `use_bda: true` the job fails instead.
+BDA branch never runs this step, so under `use_bda: true` the job fails instead. The
+same holds for `document-class`: the harvest writes the run's result only when every
+section it would write came back as the forced class, so a whole-document re-extract
+under `use_bda: true` that comes back classified otherwise fails with nothing written.
 
 ## Enforcing a Valid Class Vocabulary (Validation + Retry)
 

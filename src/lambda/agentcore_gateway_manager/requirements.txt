@@ -1,5 +1,6 @@
 # cfnresponse is vendored as cfnresponse.py beside index.py, not installed.
-bedrock_agentcore_starter_toolkit
+# >=0.2.0: create_mcp_gateway(enable_observability=...) does not exist before it.
+bedrock_agentcore_starter_toolkit>=0.2.0
 # Prevent C extension that requires compilation
 ruamel-yaml>=0.17.0,<0.19.0
 # lazy-object-proxy 1.13.0 (via bedrock_agentcore_starter_toolkit -> openapi-spec-validator)

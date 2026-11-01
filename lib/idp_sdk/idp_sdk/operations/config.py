@@ -4,7 +4,7 @@
 """Configuration operations for IDP SDK."""
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import (
@@ -18,6 +18,7 @@ from idp_sdk.models import (
     ConfigDeleteResult,
     ConfigDownloadResult,
     ConfigListResult,
+    ConfigMigrateResult,
     ConfigRevisionInfo,
     ConfigRevisionListResult,
     ConfigSyncBdaResult,
@@ -256,7 +257,9 @@ class ConfigOperation:
         return ConfigCreateResult(yaml_content=yaml_content, output_path=output)
 
     @staticmethod
-    def _validation_unavailable(cause: ImportError) -> ConfigValidationResult:
+    def _validation_unavailable(
+        cause: ImportError, *, document_loaded: bool = False
+    ) -> ConfigValidationResult:
         """The verdict for an installation that cannot run the checks at all.
 
         `valid` is False, because nothing about the configuration was established
@@ -270,6 +273,7 @@ class ConfigOperation:
         return ConfigValidationResult(
             valid=False,
             validation_available=False,
+            document_loaded=document_loaded,
             errors=[
                 # "Validation" is load-bearing in this sentence: `idp-cli
                 # config-upload` keys its `--no-validate` hint on the word, and that
@@ -307,9 +311,6 @@ class ConfigOperation:
             `errors` — rather than as an exception out of a method whose contract is
             to return a verdict.
         """
-        from pathlib import Path
-
-        import yaml
 
         # `idp_common` does the checking, and a method whose contract is to return a
         # verdict has to answer when it is not importable rather than raise out of a
@@ -332,25 +333,22 @@ class ConfigOperation:
         # module and per cause, and a rule written against any of them misses the
         # rest.
         try:
-            from idp_common.config.merge_utils import load_yaml_file, validate_config
+            from idp_common.config.merge_utils import validate_config
         except ImportError as e:
-            return ConfigOperation._validation_unavailable(e)
+            # Before the file is opened, so nothing is known about it either.
+            return ConfigOperation._validation_unavailable(e, document_loaded=False)
 
         try:
-            user_config = load_yaml_file(Path(config_file))
-        except yaml.YAMLError as e:
+            user_config = ConfigOperation._load_config_file(config_file)
+        except IDPValidationError as e:
             return ConfigValidationResult(
-                valid=False, errors=[f"YAML syntax error: {e}"]
-            )
-        except Exception as e:
-            return ConfigValidationResult(
-                valid=False, errors=[f"Failed to load file: {e}"]
+                valid=False, document_loaded=False, errors=[str(e)]
             )
 
         try:
             result = validate_config(user_config, pattern=pattern)
         except ImportError as e:
-            return ConfigOperation._validation_unavailable(e)
+            return ConfigOperation._validation_unavailable(e, document_loaded=True)
 
         # Keys the configuration models will not read, at every depth, as found by
         # validate_config. Computing `set(config) - set(IDPConfig.model_fields)` here
@@ -375,6 +373,96 @@ class ConfigOperation:
             deprecated_fields=deprecated_fields,
             unknown_fields=unknown_fields,
             merged_config=result.get("merged_config") if show_merged else None,
+            class_count=ConfigOperation._class_count(user_config),
+        )
+
+    @staticmethod
+    def _load_config_file(config_file: str) -> Any:
+        """Read ``config_file`` as YAML, the way ``validate`` and ``migrate`` both do.
+
+        Raises:
+            IDPValidationError: The file is not valid YAML ("YAML syntax error: ...")
+                or could not be read at all ("Failed to load file: ...") — two
+                problems with different remedies, so the message says which.
+        """
+        from pathlib import Path
+
+        import yaml
+
+        from idp_common.config.merge_utils import load_yaml_file
+
+        try:
+            return load_yaml_file(Path(config_file))
+        except yaml.YAMLError as e:
+            raise IDPValidationError(f"YAML syntax error: {e}") from e
+        except Exception as e:
+            raise IDPValidationError(f"Failed to load file: {e}") from e
+
+    @staticmethod
+    def _class_count(user_config: Any) -> Optional[int]:
+        """How many document classes the file itself defines (None: not a mapping)."""
+        if not isinstance(user_config, dict):
+            return None
+        classes = user_config.get("classes")
+        return len(classes) if isinstance(classes, list) else 0
+
+    def migrate(
+        self,
+        config_file: str,
+        output: Optional[str] = None,
+        **kwargs,
+    ) -> ConfigMigrateResult:
+        """Migrate a configuration file to the current configuration format.
+
+        The file is converted the way the loader converts it (for example, v0.5
+        to v0.6 field layouts) and returned as YAML headed by a comment naming the
+        format version and the source file, so the result can be saved and
+        imported without being converted again. Nothing is validated; use
+        ``validate`` for that.
+
+        Args:
+            config_file: Path to the configuration file
+            output: Optional path to write the migrated YAML to
+            **kwargs: Additional parameters
+
+        Returns:
+            ConfigMigrateResult with the migrated YAML and the format version
+
+        Raises:
+            IDPValidationError: The file is not valid YAML, could not be read, or
+                its top level is not a mapping.
+        """
+        import yaml
+
+        from idp_common.config.migrations import migrate_config
+
+        user_config = self._load_config_file(config_file)
+        if not isinstance(user_config, dict):
+            # The loader and validate() refuse this too; migrate_config would raise
+            # an AttributeError from deep inside it.
+            raise IDPValidationError(
+                "The configuration's top level must be a mapping of section names "
+                f"to settings; this file holds a {type(user_config).__name__}."
+            )
+        migrated = migrate_config(user_config)
+        version = migrated.get("config_format_version")
+        yaml_content = (
+            f"# Migrated to config_format_version {version or '?'} "
+            f"from: {config_file}\n\n"
+        ) + yaml.dump(
+            migrated,
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=True,
+            width=120,
+        )
+        if output:
+            with open(output, "w", encoding="utf-8") as f:
+                f.write(yaml_content)
+        return ConfigMigrateResult(
+            yaml_content=yaml_content,
+            config_format_version=None if version is None else str(version),
+            output_path=output,
         )
 
     def download(

@@ -79,6 +79,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
 ### Prerequisites
 
 - Python 3.12 or higher
+- [`uv`](https://docs.astral.sh/uv/) on `PATH`, which `make setup-venv` uses to read the dependency lock
 - AWS credentials configured (via AWS CLI or environment variables)
 - An active IDP Accelerator CloudFormation stack
 
@@ -2545,6 +2546,7 @@ idp-cli config-validate [OPTIONS]
 - `--config-file`, `-f` (required): Path to configuration file to validate
 - `--show-merged`: Show the full merged configuration
 - `--strict`: Fail validation if config contains unknown or deprecated fields
+- `--emit-migrated <path>`: Write the file converted to the current configuration format to `<path>`, headed by a comment naming the format version and the source file
 
 **Examples:**
 
@@ -2561,6 +2563,7 @@ idp-cli config-validate --config-file ./config.yaml --strict
 
 **Notes:**
 - The `config-upload` command runs validation by default before uploading to protect production stacks.
+- The command calls the SDK's `client.config.validate()` and, for `--emit-migrated`, `client.config.migrate()`, so the CLI and the SDK give the same verdict on a file. See [config.validate()](idp-sdk.md#configvalidate).
 - Model ID validation requires `config_library/pricing.yaml`. Ensure `idp-cli` is run from the repository root, or set the `IDP_PROJECT_ROOT` environment variable to the repo root for validation to work correctly.
 
 ---

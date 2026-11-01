@@ -85,4 +85,28 @@ describe('useSavedQueueDefinitions', () => {
     rerender();
     expect(result.current).toBe(first);
   });
+
+  it('believes a list that reports a later version, before the hold ends (#1727)', () => {
+    const { saved } = setup();
+    saved().remember(def({ name: 'Renamed', version: 2 }));
+    // An older version is a stale read: the saved one stands.
+    expect(saved().apply([def({ version: 1 })])[0].name).toBe('Renamed');
+    // Someone else saved after us: their definition shows, not ours.
+    expect(saved().apply([def({ name: 'Theirs', version: 3 })])[0].name).toBe('Theirs');
+    expect(saved().apply([def({ version: 1 })])[0].name).toBe('Default');
+  });
+
+  it('keeps holding after a read of the saved version, so a later stale read cannot undo it', () => {
+    const { saved } = setup();
+    saved().remember(def({ name: 'Renamed', version: 2 }));
+    expect(saved().apply([def({ name: 'Renamed', version: 2 })])[0].name).toBe('Renamed');
+    // Another instance's read, still at version 1.
+    expect(saved().apply([def({ version: 1 })])[0].name).toBe('Renamed');
+  });
+
+  it('compares field by field when the API reports no version', () => {
+    const { saved } = setup();
+    saved().remember(def({ name: 'Renamed' }));
+    expect(saved().apply([def({ name: 'Theirs' })])[0].name).toBe('Renamed');
+  });
 });
