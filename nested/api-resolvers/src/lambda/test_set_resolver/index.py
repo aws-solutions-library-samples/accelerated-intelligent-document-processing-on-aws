@@ -1973,13 +1973,15 @@ def _label_job_run_id(job):
 
 
 def _legacy_drafting_run(jobs):
-    """The drafting run of a set drafted before job records existed, or None.
+    """The run the set's pointer named before its oldest job, when that run has
+    no job record of its own; otherwise None.
 
     Starting a job repoints the set's ``labelJobId`` and keeps the run it replaced
-    as the job's ``previousLabelJobId``. On the oldest job that run is a recorded
-    job only if the set already had records; when it is not, it is the set's
-    original drafting run, named nowhere else once the pointer has moved. ``jobs``
-    is :func:`_label_jobs`'s list, oldest first.
+    as the job's ``previousLabelJobId``. Every job this resolver starts is recorded
+    before the pointer moves, so on the oldest job that run is normally a recorded
+    job too. When it is not, it is named nowhere else once the pointer has moved,
+    and it is counted as a drafting run. ``jobs`` is :func:`_label_jobs`'s list,
+    oldest first.
     """
     if not jobs:
         return None
@@ -1994,11 +1996,11 @@ def _legacy_drafting_run(jobs):
 def _drafting_run_ids(test_set_id, meta):
     """Every test run that drafted labels for a set, oldest first.
 
-    Each labeling job's run, preceded by the legacy drafting run when there is one
-    (:func:`_legacy_drafting_run`); a set with no job record at all is named only by
-    its ``labelJobId`` pointer. Without the legacy run, a set drafted before job
-    records existed and then re-extracted once resolved its configuration and
-    confidence fingerprint from the one-document re-extract alone (#1746).
+    Each labeling job's run, preceded by the pointer's unrecorded earlier run when
+    there is one (:func:`_legacy_drafting_run`); a set with no job record at all is
+    named only by its ``labelJobId`` pointer. One list for the review-run, the
+    configuration and the fingerprint resolvers, so the three agree on which runs
+    drafted a set (#1746).
     """
     jobs = _label_jobs(test_set_id)
     if not jobs:
@@ -3771,8 +3773,7 @@ def _resolve_set_config_version(test_set_id, meta, explicit=None):
       ``labelJobId`` pointer alone: a one-document re-extract under another
       profile repoints that pointer, and the estimate would otherwise read a curve
       holding none of the set's review observations and call it the set's own.
-      A set drafted before job records existed also counts the run its first
-      job's ``previousLabelJobId`` keeps (:func:`_drafting_run_ids`).
+      The run list is :func:`_drafting_run_ids`.
     - ``"mixed"`` with ``None`` — the labeling jobs disagree. The caller falls back
       to the set's aggregate curve and can say why.
     - ``None, None`` — nothing identifies a configuration (uploaded labels with no
@@ -4204,10 +4205,11 @@ def _label_job_is_stale(job):
     """True when a job is old enough that a missing document will never arrive.
 
     A job whose ``createdAt`` is missing or unreadable counts as stale. Every job
-    this resolver starts is stamped, so such a record was not written by a job in
-    flight here, and reading "cannot be aged" as "fresh" let it block re-grouping
-    its documents and hold their missing copies pending until a harvest ended the
-    job some other way (#1746).
+    this resolver starts is stamped, so such a record is not a job it started: the
+    shape arises when a harvest's final write lands after a label reset deleted the
+    job, and recreates the item with only the fields it writes. Reading "cannot be
+    aged" as "fresh" let that record (which names no documents, so covers the whole
+    set) block re-grouping every document for good (#1746).
     """
     created = str(job.get("createdAt") or "")
     if not created:

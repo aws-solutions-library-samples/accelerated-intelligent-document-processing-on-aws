@@ -1071,10 +1071,7 @@ assessment settings — but not across prompt tweaks.
 > `aggregate` | `prior`), `configVersionSource` (`argument` | `test-set` | `bound` |
 > `drafting-run` | `mixed`) and `confidenceFingerprint` / `confidenceFingerprintSource`
 > (`drafting-run` | `mixed-revisions` | `partial` — some drafting runs predate the
-> fingerprint, so their labels' family is unknown | null). The drafting runs are
-> every labeling job's run plus, on a set drafted before per-job records existed,
-> its original drafting run, which stays counted after a document is re-extracted.
-> So after a model swap on a profile the
+> fingerprint, so their labels' family is unknown | null). So after a model swap on a profile the
 > estimate does not silently inherit the old curve: it says it is using the pooled
 > curve until the new family has observations of its own. While that note shows,
 > treat the estimate as provisional — the pooled curve blends the earlier revisions'

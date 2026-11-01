@@ -12596,11 +12596,11 @@ class TestRegroupRefusalEdges:
 
 @pytest.mark.unit
 class TestLegacyDraftingRunInSetResolvers:
-    """#1746: a set drafted before job records existed names its drafting run only
-    through the ``labelJobId`` pointer. Starting a re-extract repoints that pointer
-    and keeps the run it replaced as the job's ``previousLabelJobId``; the
-    configuration and fingerprint resolvers must count that run too, or a set with
-    one re-extract resolves from the one-document run alone."""
+    """#1746: when a set's pointer named a run with no job record, starting a
+    re-extract repoints the pointer and keeps that run only as the job's
+    ``previousLabelJobId``. The configuration and fingerprint resolvers count it, as
+    the review-run resolver does, rather than resolving from the one-document run
+    alone."""
 
     def _seed_reextracted_legacy_set(self, table, legacy_run, reextract_run=None):
         """Drafted by ``legacy_run`` (no job record), then one document re-extracted
@@ -12710,6 +12710,20 @@ class TestLegacyDraftingRunInSetResolvers:
 
         assert test_set_index._drafting_run_ids("ts1", {}) == ["runA", "runB"]
 
+    def test_a_job_record_with_no_job_id_is_named_by_its_key(self, labeling_env):
+        table, _ = labeling_env
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#runK",
+                "testSetId": "ts1",
+                "status": "COMPLETED",
+                "createdAt": "2026-01-01T00:00:00Z",
+            }
+        )
+
+        assert test_set_index._drafting_run_ids("ts1", {}) == ["runK"]
+
     def test_a_set_with_no_job_record_is_named_by_its_pointer(self, labeling_env):
         assert test_set_index._drafting_run_ids("ts1", {"labelJobId": "runL"}) == [
             "runL"
@@ -12722,7 +12736,28 @@ class TestUndatedLabelJobIsStale:
     """#1746: a job record with no readable ``createdAt`` cannot be aged. Every job
     this resolver starts is stamped, so such a record is not a job in flight, and
     reading it as fresh let it block re-grouping and hold missing documents pending
-    for good."""
+    for good. The record arises when a harvest's write lands after a label reset
+    deleted the job."""
+
+    def test_a_job_recreated_by_a_harvest_after_a_reset_does_not_block_regrouping(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        helpers = TestRegroupWhileALabelingJobRuns()
+        _SECTION_FIXTURES._seed(table, s3, helpers.SINGLE)
+        helpers._seed_run_in_progress(table, "run9", ["packet.pdf"])
+        _seed_running_job(table, "run9", ["packet.pdf"])
+        key = {"PK": "testset#ts1", "SK": "labeljob#run9"}
+        job = table.get_item(Key=key)["Item"]
+        # The reset deletes the job between the harvest's read and its write.
+        table.delete_item(Key=key)
+        test_set_index._harvest_label_job(job, deadline=None)
+        recreated = table.get_item(Key=key).get("Item")
+        # Non-vacuity: the harvest did recreate an undated, whole-set record.
+        assert recreated is not None
+        assert "createdAt" not in recreated and "objectKeys" not in recreated
+
+        assert len(helpers._regroup()["sections"]) == 2
 
     @pytest.mark.parametrize("created", [None, "", "not-a-timestamp"])
     def test_an_undated_job_is_stale(self, created):
