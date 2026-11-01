@@ -166,8 +166,20 @@ def _looks_like_an_image_refusal(exc: Exception) -> bool:
     only consults this when the request actually carried images, so the worst case
     is appending an image hint to an image-shaped error that had another cause.
     """
+    from idp_common.utils.bedrock_utils import (
+        is_image_request_rejection,
+        is_input_token_overflow,
+    )
+
     text = str(exc).lower()
     if not any(marker in text for marker in _IMAGE_REFUSAL_MARKERS):
+        return False
+    # A request too large for the model, or images it rejects for their size or
+    # number, is a request the model DOES accept images on: the remedy is a
+    # smaller request or smaller pages, and "turn images off" would discard the
+    # input for nothing. Judged by the shared matchers extraction uses rather
+    # than by more words here, so the two cannot drift apart.
+    if is_input_token_overflow(exc) or is_image_request_rejection(exc):
         return False
     # ⚠️ Not every image-shaped error is a CAPABILITY refusal, and the remedy
     # differs: "set modality.images to false" is wrong advice for an image that

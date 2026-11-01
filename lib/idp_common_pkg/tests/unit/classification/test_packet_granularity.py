@@ -1527,6 +1527,43 @@ class TestAModelRefusingImagesNamesTheSetting:
         ):
             assert not _looks_like_an_image_refusal(Exception(message)), message
 
+    #: Each mentions an image, a vision or a multimodal input, so the
+    #: capability markers match it — and each is a request the model accepts
+    #: images on, refused for its size or its image count.
+    SIZE_REFUSALS = (
+        "Input is too long for requested model: the request carries 25 page images",
+        "prompt is too long: 230000 tokens > 200000 maximum (multimodal input)",
+        "Input Tokens Exceeded for vision request",
+        "too many images in request",
+        "image exceed max allowed size for many-image requests: 2000 pixels",
+    )
+
+    @pytest.mark.parametrize("message", SIZE_REFUSALS)
+    def test_an_overflow_or_image_rejection_gets_no_capability_hint(
+        self, monkeypatch, message
+    ):
+        """#1705: "set modality.images to false" is the wrong advice for a
+        request that was too large or carried too many images on a model that
+        accepts them. Classified by the shared ``bedrock_utils`` matchers."""
+        from botocore.exceptions import ClientError
+
+        from idp_common.classification.service import _IMAGE_REFUSAL_MARKERS
+        from idp_common.utils import bedrock_utils
+
+        # Premises, so the case cannot pass vacuously: a capability marker is
+        # present, and the shared matchers do classify the message.
+        assert any(m in message.lower() for m in _IMAGE_REFUSAL_MARKERS)
+        err = ClientError(
+            {"Error": {"Code": "ValidationException", "Message": message}}, "Converse"
+        )
+        assert bedrock_utils.is_input_token_overflow(
+            err
+        ) or bedrock_utils.is_image_request_rejection(err)
+
+        raised = self._invoke(monkeypatch, err, [{"image": {}}])
+        assert "modality.images" not in str(raised)
+        assert message in str(raised)
+
     def test_image_blocks_are_counted_at_any_nesting(self):
         from idp_common.classification.service import _count_image_blocks
 

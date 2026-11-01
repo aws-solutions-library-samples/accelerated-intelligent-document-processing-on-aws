@@ -74,6 +74,15 @@ its wrapping element when that element held nothing else, or appends a wrapped
 placeholder when the prompt has none. Both directions are logged with the
 call's path.
 
+A model that does not accept images refuses the request without naming the
+setting that sent them, so `_invoke_bedrock_model` appends a sentence naming the
+call's `modality.images` path, the image count and the model
+(`_annotate_image_refusal`). It does so only for a request that carried images and
+an error that reads as a capability refusal: an input overflow
+(`is_input_token_overflow`) or an image rejection for size or count
+(`is_image_request_rejection`) is a model that accepts images, so either one gets
+no hint even when its message mentions images, vision or multimodal input.
+
 The page limit (`document_shape.maxPagesForClassification`) is applied only when
 `sectionSplitting` is `disabled`; with boundary detection on it is set to `ALL`
 at construction, with a warning.

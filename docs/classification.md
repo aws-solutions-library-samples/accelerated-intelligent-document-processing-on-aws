@@ -171,6 +171,13 @@ classification* as `SectionClassification/…`. The combined strategy stays unde
   model's output limit, on a call the selected strategy makes. Each is named by
   its path, for example `classification.split_then_classify.section_classification.llm.model`.
 
+A model that does not accept images is not refused at save time, because no
+list of which models accept images is kept. Bedrock refuses the request instead,
+and the error then names the call's `modality.images` setting, how many images
+were sent and the model. An error about a request being too long, or about its
+images being too large or too many, carries no such sentence: that model accepts
+images, and the remedy is a smaller window or smaller page images.
+
 ## Classification in BDA mode and pipeline mode
 
 `use_bda` chooses which of the two runs. They classify in entirely different
