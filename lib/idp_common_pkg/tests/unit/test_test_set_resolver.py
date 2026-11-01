@@ -12592,3 +12592,186 @@ class TestRegroupRefusalEdges:
         assert deadlines[0] - time.monotonic() <= (
             test_set_index.QUEUE_HARVEST_TIME_BUDGET_SECONDS
         )
+
+
+@pytest.mark.unit
+class TestLegacyDraftingRunInSetResolvers:
+    """#1746: a set drafted before job records existed names its drafting run only
+    through the ``labelJobId`` pointer. Starting a re-extract repoints that pointer
+    and keeps the run it replaced as the job's ``previousLabelJobId``; the
+    configuration and fingerprint resolvers must count that run too, or a set with
+    one re-extract resolves from the one-document run alone."""
+
+    def _seed_reextracted_legacy_set(self, table, legacy_run, reextract_run=None):
+        """Drafted by ``legacy_run`` (no job record), then one document re-extracted
+        by ``runR``, whose job keeps the replaced pointer. ``reextract_run`` is the
+        re-extract's run record, or None when it is gone."""
+        _seed_test_set(table, "ts1", fileCount=2, labelJobId="runR")
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#runR",
+                "testSetId": "ts1",
+                "jobId": "runR",
+                "status": "COMPLETED",
+                "objectKeys": ["a.pdf"],
+                "previousLabelJobId": "runL",
+                "createdAt": "2026-01-02T00:00:00Z",
+            }
+        )
+        table.put_item(Item={"PK": "testrun#runL", "SK": "metadata", **legacy_run})
+        if reextract_run is not None:
+            table.put_item(
+                Item={"PK": "testrun#runR", "SK": "metadata", **reextract_run}
+            )
+
+    def test_the_drafting_runs_include_the_legacy_run_first(self, labeling_env):
+        table, _ = labeling_env
+        self._seed_reextracted_legacy_set(table, {"ConfigVersion": "prof-A"})
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+        assert test_set_index._drafting_run_ids("ts1", meta) == ["runL", "runR"]
+
+    def test_a_reextract_under_another_profile_makes_the_set_mixed(self, labeling_env):
+        table, _ = labeling_env
+        self._seed_reextracted_legacy_set(
+            table, {"ConfigVersion": "prof-A"}, {"ConfigVersion": "prof-B"}
+        )
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+        assert test_set_index._resolve_set_config_version("ts1", meta) == (
+            None,
+            "mixed",
+        )
+
+    def test_the_legacy_run_names_the_profile_when_the_reextract_run_is_gone(
+        self, labeling_env
+    ):
+        table, _ = labeling_env
+        self._seed_reextracted_legacy_set(table, {"ConfigVersion": "prof-A"})
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+        assert test_set_index._resolve_set_config_version("ts1", meta) == (
+            "prof-A",
+            "drafting-run",
+        )
+
+    def test_an_unstamped_legacy_run_makes_the_fingerprint_partial(self, labeling_env):
+        """The upgrade shape: labels drafted before the stamp existed, one document
+        re-extracted after. The re-extract's fingerprint is not the set's."""
+        table, _ = labeling_env
+        self._seed_reextracted_legacy_set(
+            table,
+            {"ConfigVersion": "prof-A"},
+            {"ConfigVersion": "prof-A", "ConfidenceFingerprint": "fpR"},
+        )
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+        assert test_set_index._resolve_set_fingerprint("ts1", meta, "prof-A") == (
+            None,
+            "partial",
+        )
+
+    def test_a_differently_stamped_legacy_run_makes_the_fingerprint_mixed(
+        self, labeling_env
+    ):
+        table, _ = labeling_env
+        self._seed_reextracted_legacy_set(
+            table,
+            {"ConfigVersion": "prof-A", "ConfidenceFingerprint": "fpL"},
+            {"ConfigVersion": "prof-A", "ConfidenceFingerprint": "fpR"},
+        )
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+        assert test_set_index._resolve_set_fingerprint("ts1", meta, "prof-A") == (
+            None,
+            "mixed-revisions",
+        )
+
+    def test_a_replaced_pointer_naming_a_recorded_job_is_not_counted_twice(
+        self, labeling_env
+    ):
+        table, _ = labeling_env
+        for run_id, created, extra in (
+            ("runA", "2000-01-01T00:00:00Z", {"previousLabelJobId": "runB"}),
+            ("runB", "2000-01-02T00:00:00Z", {}),
+        ):
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": f"labeljob#{run_id}",
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": "COMPLETED",
+                    "createdAt": created,
+                    **extra,
+                }
+            )
+
+        assert test_set_index._drafting_run_ids("ts1", {}) == ["runA", "runB"]
+
+    def test_a_set_with_no_job_record_is_named_by_its_pointer(self, labeling_env):
+        assert test_set_index._drafting_run_ids("ts1", {"labelJobId": "runL"}) == [
+            "runL"
+        ]
+        assert test_set_index._drafting_run_ids("ts1", {}) == []
+
+
+@pytest.mark.unit
+class TestUndatedLabelJobIsStale:
+    """#1746: a job record with no readable ``createdAt`` cannot be aged. Every job
+    this resolver starts is stamped, so such a record is not a job in flight, and
+    reading it as fresh let it block re-grouping and hold missing documents pending
+    for good."""
+
+    @pytest.mark.parametrize("created", [None, "", "not-a-timestamp"])
+    def test_an_undated_job_is_stale(self, created):
+        job = {"jobId": "run9"}
+        if created is not None:
+            job["createdAt"] = created
+        assert test_set_index._label_job_is_stale(job) is True
+
+    def test_a_fresh_job_is_not_stale(self):
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        assert test_set_index._label_job_is_stale({"createdAt": now}) is False
+
+    @staticmethod
+    def _undate(table, run_id):
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": f"labeljob#{run_id}"},
+            UpdateExpression="REMOVE createdAt",
+        )
+
+    def test_an_undated_job_does_not_block_regrouping(self, labeling_env):
+        table, s3 = labeling_env
+        helpers = TestRegroupWhileALabelingJobRuns()
+        _SECTION_FIXTURES._seed(table, s3, helpers.SINGLE)
+        helpers._seed_run_in_progress(table, "run9", ["packet.pdf"])
+        _seed_running_job(table, "run9", ["packet.pdf"])
+        self._undate(table, "run9")
+
+        assert len(helpers._regroup()["sections"]) == 2
+
+    def test_an_undated_job_gives_up_on_a_document_with_no_tracking_record(
+        self, labeling_env
+    ):
+        table, _ = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        table.put_item(
+            Item={
+                "PK": "testrun#run9",
+                "SK": "metadata",
+                "TestSetId": "ts1",
+                "Files": ["a.pdf"],
+                "Status": "RUNNING",
+            }
+        )
+        _seed_running_job(table, "run9", ["a.pdf"])
+        self._undate(table, "run9")
+
+        result = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": "run9"}
+        )
+
+        assert result["status"] == "FAILED"
+        assert result["failedDocuments"] == 1
