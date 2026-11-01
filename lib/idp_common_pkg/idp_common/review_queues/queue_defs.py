@@ -488,6 +488,8 @@ class QueueDefStore:
         the id has had, and the retired version is never lowered. A write that lands
         in between, or holds either item in another transaction, is retried.
         """
+        # Compared as it is looked up: another spelling of Default is still Default.
+        queue_id = queue_id.strip().lower()
         if queue_id == DEFAULT_QUEUE_ID:
             raise ReviewValidationError(
                 "PROTECTED_QUEUE", "the Default queue can't be deleted"

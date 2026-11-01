@@ -77,6 +77,22 @@ class TestDelete:
         assert exc.value.code == "PROTECTED_QUEUE"
         assert _stored_ids(defs) == [DEFAULT_QUEUE_ID]
 
+    @pytest.mark.parametrize("spelling", ["Default", " DEFAULT ", "default "])
+    def test_default_is_protected_however_it_is_spelled(self, defs, spelling):
+        # The id is normalised before it is looked up, so the guard must compare the
+        # normalised id too, or another spelling deletes the Default queue.
+        defs.list()
+        with pytest.raises(ReviewValidationError) as exc:
+            defs.delete(spelling)
+        assert exc.value.code == "PROTECTED_QUEUE"
+        assert _stored_ids(defs) == [DEFAULT_QUEUE_ID]
+
+    def test_another_queue_is_deleted_however_it_is_spelled(self, defs):
+        defs.put(QueueDefinition(id="claims"), create=True)
+        defs.delete(" Claims ")
+        assert _stored_ids(defs) == []
+        assert _retired(defs, "claims") == 1
+
     def test_an_escalation_queue_is_ordinary(self, defs):
         defs.put(QueueDefinition(id="escalation", priority=90), create=True)
         defs.delete("escalation")
