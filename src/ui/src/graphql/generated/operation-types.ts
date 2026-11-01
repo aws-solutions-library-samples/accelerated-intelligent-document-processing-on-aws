@@ -2243,6 +2243,7 @@ export type ReextractTestSetDocumentInput = {
   configVersion?: InputMaybe<Scalars['String']['input']>;
   documentClass?: InputMaybe<Scalars['String']['input']>;
   objectKey: Scalars['String']['input'];
+  sectionId?: InputMaybe<Scalars['String']['input']>;
   testSetId: Scalars['String']['input'];
 };
 

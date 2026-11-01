@@ -50,14 +50,6 @@ import boto3
 import pytest
 from moto import mock_aws
 
-# Imported before load_handler on purpose. It execs each handler inside
-# patch.dict("sys.modules"), which removes on exit every module first imported
-# during the exec. A service module first imported there stays bound inside the
-# handler but leaves sys.modules, so a later test file's
-# patch("idp_common.image.prepare_image") patches a fresh copy and the real
-# function runs (measured: test_assessment_service.py went red after this file).
-import idp_common.assessment.service  # noqa: F401
-import idp_common.extraction.service  # noqa: F401
 from idp_common.config.models import IDPConfig
 from idp_common.dynamodb.client import DynamoDBClient, DynamoDBError
 from idp_common.dynamodb.service import DocumentDynamoDBService

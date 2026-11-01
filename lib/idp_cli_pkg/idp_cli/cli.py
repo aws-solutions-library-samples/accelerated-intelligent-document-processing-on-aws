@@ -5001,7 +5001,7 @@ def remove_residual_resources_from_deleted_stacks(
 @click.option(
     "--features",
     default="min",
-    help="Feature set: 'min' (classification, extraction, classes), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all', or comma-separated list of sections",
+    help="Feature set: 'min' (classification, extraction; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all', or one or more section names, comma-separated. An unknown section name is refused",
 )
 @click.option(
     "--output",
@@ -5032,11 +5032,13 @@ def config_create(
     to customize the values they want to change - unspecified fields use defaults.
 
     Feature sets:
-      min:  classification, extraction, classes (simplest)
+      min:  classification, extraction (simplest); switches
+            summarization and evaluation off and leaves confidence scoring on
       core: min + ocr, with summarization and evaluation left at their defaults
       all:  all sections with full defaults
 
-    Or specify a comma-separated list of sections:
+    Or name one or more sections, comma-separated (an unknown name is refused):
+      --features summarization
       --features "classification,extraction,summarization"
 
     Examples:
@@ -5054,36 +5056,25 @@ def config_create(
       idp-cli config-create --features "classification,extraction,summarization" --output config.yaml
     """
     try:
-        from idp_common.config.merge_utils import generate_config_template
+        from idp_sdk.exceptions import IDPValidationError
 
-        # Parse features - could be a preset or comma-separated list. The comma is what
-        # decides which of the two it is, so that branch is left alone; only the blank
-        # segments inside a list change, and a list that is all blanks is refused rather
-        # than handed on as a section whose name is the empty string.
-        if "," in features:
-            feature_list = _comma_separated_values(features)
-            if not feature_list:
-                console.print(
-                    "[red]✗ Error: --features contains no section names. Give a preset "
-                    "('min', 'core', 'all') or one or more section names, "
-                    "comma-separated.[/red]"
-                )
-                sys.exit(1)
-        else:
-            feature_list = features  # type: ignore
-
-        # Generate template
-        yaml_content = generate_config_template(
-            features=feature_list,
-            pattern="pattern-2",
-            include_prompts=include_prompts,
-            include_comments=not no_comments,
-        )
+        # The SDK parses --features (a preset, or one or more section names,
+        # comma-separated) and writes --output, so this command and
+        # client.config.create cannot read the same value differently.
+        try:
+            result = IDPClient().config.create(
+                features=features,
+                pattern="pattern-2",
+                output=output,
+                include_prompts=include_prompts,
+                include_comments=not no_comments,
+            )
+        except IDPValidationError as e:
+            err_console.print(f"[red]✗ Error (--features): {e}[/red]")
+            sys.exit(1)
+        yaml_content = result.yaml_content
 
         if output:
-            # Write to file
-            with open(output, "w", encoding="utf-8") as f:
-                f.write(yaml_content)
             console.print(
                 f"[green]✓ Configuration template written to: {output}[/green]"
             )

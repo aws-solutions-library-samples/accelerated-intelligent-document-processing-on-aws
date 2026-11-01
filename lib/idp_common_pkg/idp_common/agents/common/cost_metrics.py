@@ -69,8 +69,9 @@ class ControlPlaneCostHook(HookProvider):
         # Guards the delta-vs-snapshot state so concurrent invocations of
         # the same reused agent (parallel ``stream_async`` from the same
         # warm container) can't interleave a read-modify-write and
-        # misattribute token counts. Held only around the arithmetic +
-        # attribute update — NOT around the CloudWatch emit call, which
+        # misattribute token counts. Held around the usage read, the
+        # arithmetic and the attribute update — NOT around the CloudWatch
+        # emit call, which
         # would otherwise serialise every hook's PutMetricData across
         # threads.
         self._state_lock = threading.Lock()
@@ -79,16 +80,48 @@ class ControlPlaneCostHook(HookProvider):
         registry.add_callback(AfterInvocationEvent, self._on_after_invocation)
 
     def _on_after_invocation(self, event: AfterInvocationEvent) -> None:
-        try:
-            usage = event.agent.event_loop_metrics.accumulated_usage
-            # Do NOT ``or 0`` the get() result — falsy non-None shapes
-            # (empty string, empty dict, False) should surface as
-            # TypeError via the narrow except below rather than silently
-            # rounding down to 0. Missing keys use the explicit 0
-            # default; genuine 0 counts flow through as integers.
-            total_in = int(usage.get("inputTokens", 0))
-            total_out = int(usage.get("outputTokens", 0))
-        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        # The usage read is inside the lock, with the delta arithmetic and the
+        # snapshot update. Overlapping invocations sharing this hook share one
+        # ``accumulated_usage``, so reads taken in lock order never decrease
+        # unless the counter really was reset. A read taken before the lock
+        # could lose the race to a later, larger read, and would then look like
+        # a reset and be re-emitted in full (#1708). Strands' default
+        # ``ConcurrentInvocationMode.THROW`` refuses overlapping calls on one
+        # agent, so this matters only for an agent built with
+        # ``UNSAFE_REENTRANT``; none in this repository is.
+        drift = None
+        with self._state_lock:
+            try:
+                usage = event.agent.event_loop_metrics.accumulated_usage
+                # Do NOT ``or 0`` the get() result — falsy non-None shapes
+                # (empty string, empty dict, False) should surface as
+                # TypeError via the narrow except below rather than silently
+                # rounding down to 0. Missing keys use the explicit 0
+                # default; genuine 0 counts flow through as integers.
+                total_in = int(usage.get("inputTokens", 0))
+                total_out = int(usage.get("outputTokens", 0))
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                drift = exc
+            else:
+                # If either counter regressed below the last-seen baseline,
+                # the Strands event loop was reset for that counter. Handle
+                # each counter INDEPENDENTLY — treating the whole hook as reset
+                # when only one counter drops would re-emit the still-growing
+                # counter in full (e.g. input 100→150 while output 50→30
+                # shouldn't emit 150 input tokens, only the true 50-token
+                # delta).
+                if total_in >= self._last_input_tokens:
+                    delta_in = total_in - self._last_input_tokens
+                else:
+                    delta_in = total_in  # reset — new baseline starts at 0
+                if total_out >= self._last_output_tokens:
+                    delta_out = total_out - self._last_output_tokens
+                else:
+                    delta_out = total_out
+                self._last_input_tokens = total_in
+                self._last_output_tokens = total_out
+
+        if drift is not None:
             # Strands API drift (renamed field, changed shape) — log at
             # ERROR so operators see it in log-based alarms. The hook
             # itself must not break the agent for telemetry, so we return
@@ -101,30 +134,10 @@ class ControlPlaneCostHook(HookProvider):
                 "invocation. Investigate if control_plane_hourly starts "
                 "showing 0 est_bedrock_cost for this component.",
                 self.component,
-                type(exc).__name__,
-                exc,
+                type(drift).__name__,
+                drift,
             )
             return
-
-        # If either counter regressed below the last-seen baseline, the
-        # Strands event loop was reset for that counter. Handle each
-        # counter INDEPENDENTLY — treating the whole hook as reset when
-        # only one counter drops would re-emit the still-growing counter
-        # in full (e.g. input 100→150 while output 50→30 shouldn't emit
-        # 150 input tokens, only the true 50-token delta). Compute the
-        # delta and update the snapshot atomically under the lock so
-        # concurrent invocations can't interleave read-modify-write.
-        with self._state_lock:
-            if total_in >= self._last_input_tokens:
-                delta_in = total_in - self._last_input_tokens
-            else:
-                delta_in = total_in  # reset — new baseline starts at 0
-            if total_out >= self._last_output_tokens:
-                delta_out = total_out - self._last_output_tokens
-            else:
-                delta_out = total_out
-            self._last_input_tokens = total_in
-            self._last_output_tokens = total_out
 
         if delta_in == 0 and delta_out == 0:
             return

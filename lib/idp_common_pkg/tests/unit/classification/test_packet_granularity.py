@@ -1214,9 +1214,27 @@ class TestAWindowWithTooManyImagesIsSplit(TestAWindowTooLargeForTheModelIsSplit)
     document, the halves, the single page, the bounded and refused-page cases);
     the rest pass with or without the feature and are inherited for the bounds
     they pin, not as coverage of it. The wording itself is the one
-    ``is_image_request_rejection`` records, not one measured against a model."""
+    ``is_image_request_rejection`` records; the refusals Bedrock actually returns
+    are pinned verbatim in ``MEASURED_IMAGE_COUNT_REFUSALS`` below."""
 
     REFUSAL_MESSAGE = "too many images in request"
+
+
+#: What Bedrock Converse returned, verbatim, for a request over the model's
+#: images-per-request cap (measured 2026-11-01 with 101 and 1001 small images).
+#: The two Claude families word the same limit differently, so both are pinned.
+#: Nova 2 Lite accepted 1001 images, and Nova Pro refused that many as an input
+#: token overflow, which the split already handled.
+MEASURED_IMAGE_COUNT_REFUSALS = (
+    # Claude Sonnet 4.5 (limit 100) and Sonnet 4.6 (limit 600).
+    "An error occurred (ValidationException) when calling the Converse operation "
+    "(reached max retries: 0): The model returned the following errors: too many "
+    "images and documents: 101 + 0 > 100",
+    # Claude Haiku 4.5 (limit 100).
+    "An error occurred (ValidationException) when calling the Converse operation "
+    "(reached max retries: 0): The model returned the following errors: Too much "
+    "media: 0 document pages + 101 images > 100",
+)
 
 
 @pytest.mark.unit
@@ -1229,6 +1247,7 @@ class TestOnlyARefusalAboutImageCountIsSplit:
         [
             "too many images in request",
             "image exceed max allowed size for many-image requests: 2000 pixels",
+            *MEASURED_IMAGE_COUNT_REFUSALS,
         ],
     )
     def test_a_count_dependent_rejection_is_split(self, message):
@@ -1540,6 +1559,7 @@ class TestAModelRefusingImagesNamesTheSetting:
         "Input Tokens Exceeded for vision request",
         "too many images in request",
         "image exceed max allowed size for many-image requests: 2000 pixels",
+        *MEASURED_IMAGE_COUNT_REFUSALS,
     )
 
     @pytest.mark.parametrize("message", SIZE_REFUSALS)

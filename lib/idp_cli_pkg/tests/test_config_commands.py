@@ -62,7 +62,6 @@ Each of these has a test whose docstring states the consequence:
   `--strict` passes a mistyped nested key. This one is a **decision**, not a backlog
   item: failing on a nested unknown key would reject configurations that pass today
   in the flag built for pipelines, and it was deliberately excluded from #1230.
-- `config-create --features "a,typo"` drops the unknown section silently.
 """
 
 import json
@@ -267,7 +266,10 @@ def test_create_writes_only_loadable_yaml_to_stdout():
     assert result.exit_code == 0, result.output
 
     loaded = yaml.safe_load(result.stdout)
-    assert "classes" in loaded and "extraction" in loaded
+    assert "classification" in loaded and "extraction" in loaded
+    # Empty in the defaults, and an empty list would replace a profile's classes
+    # on upload (issue #1720).
+    assert "classes" not in loaded
     assert result.stderr == "", (
         f"config-create wrote to stderr on success: {result.stderr!r}"
     )
@@ -281,7 +283,7 @@ def test_create_to_a_file_parses_and_names_the_next_steps():
         assert result.exit_code == 0, result.output
         loaded = yaml.safe_load(open("gen.yaml", encoding="utf-8").read())
 
-    assert "classes" in loaded
+    assert "extraction" in loaded and "classes" not in loaded
     assert "gen.yaml" in result.output
     # The three follow-on commands, because a generated template on its own is not
     # yet a deployable configuration.
@@ -331,47 +333,90 @@ def test_create_accepts_a_comma_separated_section_list():
 
 
 @pytest.mark.unit
-def test_create_drops_an_unknown_section_from_a_list_without_warning():
-    """
-    DEFECT (`idp_cli/cli.py:4281`, `generate_config_template`): a comma-separated
-    `--features` list containing a section that does not exist is accepted, the
-    unknown name is dropped from the output, and the command exits 0. The name is
-    echoed in the generated header comment — as one of the sections that were
-    *requested* — but there is no warning and nothing distinguishes it from the
-    sections that were actually produced.
+@pytest.mark.parametrize(
+    "features", ["classification,not-a-real-section", "not-a-real-section"]
+)
+def test_create_refuses_an_unknown_section_and_writes_nothing(features):
+    """An unknown section name is refused, whether alone or in a list (#1709).
 
-    Consequence: `--features "classification,extration"` — one transposed letter —
-    produces a template with no extraction section at all, reported as a success. A
-    single unknown name IS rejected outright (the next test), so the two spellings
-    of the same mistake behave oppositely.
-
-    This test pins the current behaviour.
+    It used to be dropped from a list with exit 0, so `--features
+    "classification,extration"` (one transposed letter) produced a template with
+    no extraction section, reported as a success, while the same name alone was
+    rejected.
     """
-    result = CliRunner().invoke(
-        cli, ["config-create", "--features", "classification,not-a-real-section"]
-    )
-    assert result.exit_code == 0
-    loaded = yaml.safe_load(result.stdout)
-    assert "classification" in loaded
-    assert "not-a-real-section" not in loaded, (
-        "the unknown section is dropped from the template body"
-    )
-    # It survives only inside the header comment, which is why `yaml.safe_load`
-    # above cannot see it — and no line calls it out as a problem.
-    assert "not-a-real-section" in result.stdout
-    for marker in ("Invalid", "Unknown", "⚠", "not recognized"):
-        assert marker not in result.stdout, f"{marker!r} would be a warning"
+    with write_config("", filename="unused.txt") as runner:
+        result = runner.invoke(
+            cli, ["config-create", "--features", features, "--output", "gen.yaml"]
+        )
+        written = os.path.exists("gen.yaml")
+
+    assert result.exit_code == 1, result.output
+    assert "Unknown configuration section" in result.stderr
+    assert "'not-a-real-section'" in result.stderr
+    assert "Valid sections:" in result.stderr
+    assert result.stderr.count("✗ Error") == 1, result.stderr
+    assert not written, "a refused request must not leave a template behind"
+
+
+@pytest.mark.unit
+def test_create_accepts_a_single_section_name():
+    """No comma is needed to name one section (#1709)."""
+    single = CliRunner().invoke(cli, ["config-create", "--features", "summarization"])
+    listed = CliRunner().invoke(cli, ["config-create", "--features", "summarization,"])
+
+    assert single.exit_code == 0, single.output
+    assert single.stdout == listed.stdout
+    assert set(yaml.safe_load(single.stdout)) == {"notes", "summarization"}
+
+
+@pytest.mark.unit
+def test_create_reads_a_preset_with_a_trailing_comma_as_the_preset():
+    """docs/idp-cli.md: a trailing comma is harmless for every comma option."""
+    plain = CliRunner().invoke(cli, ["config-create", "--features", "min"])
+    trailing = CliRunner().invoke(cli, ["config-create", "--features", "min,"])
+
+    assert trailing.exit_code == 0, trailing.output
+    assert trailing.stdout == plain.stdout
 
 
 @pytest.mark.unit
 def test_create_refuses_an_unknown_feature_preset_on_stderr():
     result = CliRunner().invoke(cli, ["config-create", "--features", "everything"])
     assert result.exit_code == 1
-    assert "Invalid feature set 'everything'" in result.stderr
+    assert "Unknown configuration section(s) for pattern-2: 'everything'" in (
+        result.stderr
+    )
+    assert "Feature sets, used on their own: min, core, all" in result.stderr
     assert result.stdout == "", (
         "a diagnostic on stdout lands in the redirected config file; that is why "
         "this command's errors go to err_console"
     )
+
+
+@pytest.mark.unit
+def test_create_hands_the_raw_features_value_to_the_sdk():
+    """The CLI does not parse `--features`; the SDK does, once (#1709).
+
+    Recorded at the SDK boundary, so a CLI that split or rewrote the value before
+    calling the SDK, or that called `idp_common` directly, fails here.
+    """
+    from idp_sdk.models import ConfigCreateResult
+    from idp_sdk.operations.config import ConfigOperation
+
+    seen = {}
+
+    def _create(self, **kwargs):
+        seen.update(kwargs)
+        return ConfigCreateResult(yaml_content="notes: x\n", output_path=None)
+
+    with patch.object(ConfigOperation, "create", _create):
+        result = CliRunner().invoke(
+            cli, ["config-create", "--features", " classification, ocr ,"]
+        )
+
+    assert result.exit_code == 0, result.output
+    assert seen["features"] == " classification, ocr ,"
+    assert result.stdout.strip() == "notes: x"
 
 
 @pytest.mark.unit
@@ -380,9 +425,7 @@ def test_create_no_comments_omits_the_header():
     without = CliRunner().invoke(cli, ["config-create", "--no-comments"]).stdout
     assert with_comments.lstrip().startswith("#")
     assert not without.lstrip().startswith("#")
-    assert (
-        yaml.safe_load(without)["classes"] == yaml.safe_load(with_comments)["classes"]
-    )
+    assert yaml.safe_load(without) == yaml.safe_load(with_comments)
 
 
 @pytest.mark.unit
@@ -2088,3 +2131,22 @@ def test_sync_bda_rejects_an_unknown_direction_and_mode_up_front():
     assert "sideways" in bad_direction.output
     assert bad_mode.exit_code == 2
     assert "obliterate" in bad_mode.output
+
+
+@pytest.mark.unit
+def test_create_refuses_a_request_for_only_empty_sections():
+    """`--features classes` has nothing to copy: the system defaults define no
+    classes, and writing `classes: []` emptied a profile's classes on upload
+    (#1720). A file holding only `notes` would report success for nothing."""
+    with write_config("", filename="unused.txt") as runner:
+        result = runner.invoke(
+            cli, ["config-create", "--features", "classes", "--output", "gen.yaml"]
+        )
+        written = os.path.exists("gen.yaml")
+
+    assert result.exit_code == 1, result.output
+    assert "✗ Error (--features): Nothing to generate: classes is empty" in (
+        " ".join(result.stderr.split())
+    )
+    assert "Traceback" not in result.output
+    assert not written, "a refused request must not leave a template behind"

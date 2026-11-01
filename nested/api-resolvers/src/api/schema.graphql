@@ -1571,7 +1571,15 @@ input ReextractTestSetDocumentInput {
   # The corrected class. Written to the document's baseline sections before the
   # run so extraction uses it instead of re-deciding the class. Omit to re-extract
   # under the class the document already carries.
+  #
+  # Forcing a class onto a whole document with more than one section is refused,
+  # because it would merge every section into one. Pass sectionId for that case.
   documentClass: String
+  # Re-extract only this section of the document's baseline, under documentClass
+  # (required with it). Every other section keeps its pages, class and labels: the
+  # run is given the document's whole grouping, and only this section's label is
+  # replaced. Omit to re-extract the whole document, as before.
+  sectionId: String
   # Defaults to the config version the set was last labeled with.
   configVersion: String
 }
