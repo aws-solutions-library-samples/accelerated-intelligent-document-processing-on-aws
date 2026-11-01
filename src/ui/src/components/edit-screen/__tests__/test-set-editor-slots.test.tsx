@@ -552,3 +552,45 @@ describe('a Test Studio section with no field values', () => {
     expect(screen.queryByText(/No field values for this section/i)).not.toBeInTheDocument();
   });
 });
+
+describe('the note a finished re-extract leaves (#1728)', () => {
+  const TWO_AFTER: TestSetDocumentSectionRef[] = [{ ...SECTIONS[0], documentClass: 'W2' }, SECTIONS[1]];
+  const TWO_SAVED = [
+    { sectionId: '1', documentClass: 'W2', pageIndices: [0, 1] },
+    { sectionId: '2', documentClass: 'W2', pageIndices: [2] },
+  ];
+  const fetchCalls = () => (global.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+
+  /** Reclassify section 1, re-extract it, and wait until the editor has re-read it. */
+  const reextractSectionOne = async () => {
+    answer(TWO_SAVED);
+    render(<Harness afterChange={TWO_AFTER} />);
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await reclassifyFirstAndSave();
+    const button = await screen.findByRole('button', { name: 'Re-extract section 1' });
+    await waitFor(() => expect(isActionable(button)).toBe(true));
+    const before = fetchCalls();
+    await userEvent.click(button);
+    // The re-extract bumps the reload token, so the open section is read again.
+    await waitFor(() => expect(fetchCalls()).toBeGreaterThan(before));
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+  };
+
+  it('is still showing once the re-extracted section has been read again', async () => {
+    await reextractSectionOne();
+    expect(screen.getByText('Re-extracted section 1 as Invoice. The other sections were not changed.')).toBeInTheDocument();
+  });
+
+  it('goes once another section is opened', async () => {
+    await reextractSectionOne();
+    const sectionPicker = createWrapper(document.body)
+      .findAllButtonDropdowns()
+      .find((d) => (d.findNativeButton().getElement().getAttribute('aria-label') ?? '').startsWith('Section:'))!;
+    act(() => sectionPicker.openDropdown());
+    act(() => sectionPicker.findItems()[1].click());
+    await waitFor(() => expect(screen.queryByText(/^Re-extracted section 1 as/)).not.toBeInTheDocument());
+  });
+});
