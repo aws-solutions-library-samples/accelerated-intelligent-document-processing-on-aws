@@ -2003,15 +2003,13 @@ def _run_id_by_object_key(test_set_id, meta=None):
         run_id = job.get("jobId")
         if not run_id:
             continue
-        if (job.get("sectionId") or job.get("forcedClass")) and job.get(
-            "status"
-        ) == "FAILED":
-            # A re-extract that failed wrote nothing, and its copy of the document
-            # may not match the labels at all: a run that ignored the forced
-            # grouping or class (Bedrock Data Automation mode) has the pipeline's
-            # own sections and class. The harvest never marks that copy as a
-            # test-set document either, so a review saved on it would reach
-            # nothing. The run before it is still the one that matches the labels.
+        if job.get("status") == "FAILED":
+            # A job is FAILED only when it labeled nothing, so the harvest marked
+            # none of its copies as a test-set document and a review saved on one
+            # would reach nothing. Its copy may not match the labels at all either:
+            # a re-extract whose run ignored the forced grouping or class (Bedrock
+            # Data Automation mode) has the pipeline's own sections and class. The
+            # run before it is still the one that matches the labels.
             continue
         object_keys = job.get("objectKeys") or []
         if object_keys:
@@ -2635,25 +2633,29 @@ def update_test_set_document_sections(args, event=None):
     if not meta:
         raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
-    in_flight, harvest_error = _label_job_to_write(test_set_id, object_key)
-    if in_flight and harvest_error:
+    in_flight, harvest_failed = _label_job_to_write(test_set_id, object_key)
+    if in_flight and harvest_failed:
         raise ValueError(
-            f"'{object_key}' has a re-extract or draft-labeling job (job "
-            f"{in_flight.get('jobId')}) that is still to write it, and its progress "
-            f"could not be checked ({harvest_error}). A page grouping saved now "
-            "could be overwritten by it, so it was not saved. Try again in a few "
-            "minutes."
+            f"'{object_key}' still has labels to be written by a re-extract or "
+            f"draft-labeling job (job {in_flight.get('jobId')}), and that job's "
+            "progress could not be checked, so the page grouping was not saved: "
+            "saved now, it could be overwritten by the job. Try again in a few "
+            "minutes; if this keeps happening, the job is failing and an "
+            "administrator can find why in the test-set resolver's logs."
         )
     if in_flight:
         # The harvest writes the run's sections over the baseline: a whole-document
         # run would overwrite this grouping and prune the sections it adds, and a
-        # section-scoped run would fail on it (#1728).
+        # section-scoped run would fail on it (#1728). The job may also have
+        # finished and simply not been harvested to this document within the
+        # budget, so the message does not claim it is still running.
         raise ValueError(
-            f"'{object_key}' is being re-extracted or draft-labeled right now (job "
-            f"{in_flight.get('jobId')}), and a page grouping saved before that "
-            "finishes would be overwritten by it or make it fail. Wait for it to "
-            "finish (a re-extract usually takes under a minute), then open Edit "
-            "Page Grouping again."
+            f"'{object_key}' still has labels to be written by a re-extract or "
+            f"draft-labeling job (job {in_flight.get('jobId')}), so the page "
+            "grouping was not saved: saved now, it would be overwritten by that "
+            "job or make it fail. Try again in a minute (a re-extract usually "
+            "finishes in under one, and each try also moves the job along), then "
+            "open Edit Page Grouping again."
         )
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
@@ -2769,9 +2771,10 @@ def update_test_set_document_sections(args, event=None):
 def _label_job_to_write(test_set_id, object_key):
     """The labeling job that is still to write ``object_key``'s labels, or None.
 
-    Returns ``(job, error)``: ``error`` is the reason the job could not be advanced
-    when its harvest raised, so the refusal can say so rather than describe a broken
-    harvest as progress.
+    Returns ``(job, harvest_failed)``: ``harvest_failed`` is True when the job's
+    harvest raised, so the refusal can say so rather than describe a broken harvest
+    as progress. The exception itself is only logged: it can carry account and
+    resource names, and a ValueError's message reaches the caller.
 
     A job counts while it is in flight, names the document (a job with no
     ``objectKeys`` covered the whole set) and has neither written nor given up on
@@ -2782,7 +2785,8 @@ def _label_job_to_write(test_set_id, object_key):
 
     Every job shares one harvest budget, the queue's, so the save still answers
     inside the dispatcher's timeout however many jobs are in flight; a job the
-    budget did not reach to the end stays in flight and the save is refused.
+    budget did not reach to the end stays in flight and the save is refused, which
+    the refusal's wording allows for: each try harvests further.
     """
     deadline = time.monotonic() + QUEUE_HARVEST_TIME_BUDGET_SECONDS
     for job in reversed(_label_jobs(test_set_id)):
@@ -2801,7 +2805,7 @@ def _label_job_to_write(test_set_id, object_key):
                 f"Could not advance labeling job {job.get('jobId')} before "
                 f"re-grouping {object_key}: {e}"
             )
-            error = str(e)[:300]
+            error = True
         if job.get("status") in ("COMPLETED", "FAILED"):
             continue
         if object_key in (job.get("harvestedFiles") or []) or object_key in (

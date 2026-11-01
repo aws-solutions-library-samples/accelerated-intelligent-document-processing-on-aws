@@ -11549,7 +11549,7 @@ class TestReextractOneSection:
         [
             ("RUNNING", "2", "run2"),
             ("COMPLETED", "2", "run2"),
-            ("FAILED", None, "run2"),
+            ("FAILED", None, "run1"),
             ("FAILED", "2", "run1"),
         ],
         ids=[
@@ -11562,8 +11562,9 @@ class TestReextractOneSection:
     def test_which_run_a_document_is_reviewed_on(
         self, labeling_env, status, section_id, expected
     ):
-        """Only a failed section-scoped job is passed over; every other job,
-        including a failed whole-document one, resolves as it always did."""
+        """A failed job is passed over, section-scoped or not: it labeled nothing,
+        so none of its copies is marked as a test-set document (#1728). A job in
+        flight or completed resolves as it always did."""
         table, _s3 = labeling_env
         for run_id, created, extra in (
             ("run1", "2000-01-01T00:00:00Z", {"status": "COMPLETED"}),
@@ -12161,7 +12162,7 @@ class TestRegroupWhileALabelingJobRuns:
 
         message = str(caught.value)
         assert "packet.pdf" in message
-        assert "being re-extracted or draft-labeled" in message
+        assert "still has labels to be written" in message
         assert "Edit Page Grouping again" in message
         assert _baseline_bytes(s3) == stamped
 
@@ -12295,7 +12296,7 @@ class TestRegroupWhileALabelingJobRuns:
             }
         )
 
-        with pytest.raises(ValueError, match="being re-extracted or draft-labeled"):
+        with pytest.raises(ValueError, match="still has labels to be written"):
             test_set_index.update_test_set_document_sections(
                 {
                     "input": {
@@ -12529,7 +12530,7 @@ class TestRegroupRefusalEdges:
         self._helpers._seed_run_in_progress(table, "run9", ["packet.pdf"])
         _seed_running_job(table, "run9", [])
 
-        with pytest.raises(ValueError, match="being re-extracted or draft-labeled"):
+        with pytest.raises(ValueError, match="still has labels to be written"):
             self._helpers._regroup()
 
     def test_a_job_that_gave_up_on_this_document_does_not_block(self, labeling_env):
@@ -12561,7 +12562,9 @@ class TestRegroupRefusalEdges:
                 self._helpers._regroup()
 
         message = str(caught.value)
-        assert "could not be checked (boom)" in message
+        assert "could not be checked" in message
+        # Logged, not returned: an exception can carry account and resource names.
+        assert "boom" not in message
         assert "Try again" in message
         assert "right now" not in message
 
