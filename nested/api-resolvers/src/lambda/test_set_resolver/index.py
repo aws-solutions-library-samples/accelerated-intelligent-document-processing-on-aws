@@ -34,6 +34,10 @@ from idp_common.evaluation.confidence_curve import (  # type: ignore
     estimate_for_target,
 )
 from idp_common.evaluation.curve_store import CurveStore  # type: ignore
+from idp_common.forced_sections import (  # type: ignore
+    ForcedSectionsError,
+    encode_forced_sections,
+)
 from idp_common.models import Status  # type: ignore
 from idp_common.review_queues import testset_summaries  # type: ignore
 from idp_common.review_queues.annotators import (  # type: ignore
@@ -125,6 +129,9 @@ def validate_test_set_name(name):
 # than a clean rejection.
 _DOCUMENT_CLASS_RE = re.compile(r"[a-zA-Z0-9 _-]+")
 _DOCUMENT_CLASS_MAX_LEN = 100
+# A baseline section id, which becomes part of an S3 key: the ids the pipeline and
+# update_test_set_document_sections write are short decimal strings.
+_SECTION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 def validate_document_class(document_class):
@@ -1971,13 +1978,20 @@ def _run_id_by_object_key(test_set_id):
 
     Later jobs win, so a re-extracted document points at its newest run while its
     neighbours keep theirs. A job with no explicit ``objectKeys`` covered the whole
-    set, and is applied as a default for documents no later job names.
+    set, and is applied as a default for documents no later job names. A failed
+    section-scoped re-extract is passed over.
     """
     per_doc = {}
     default_run = None
     for job in _label_jobs(test_set_id):
         run_id = job.get("jobId")
         if not run_id:
+            continue
+        if job.get("sectionId") and job.get("status") == "FAILED":
+            # A section-scoped re-extract that failed wrote nothing, and its copy of
+            # the document may not have the baseline's sections at all (a run that
+            # ignored the grouping). The run before it is still the one that
+            # matches the labels.
             continue
         object_keys = job.get("objectKeys") or []
         if object_keys:
@@ -2067,7 +2081,9 @@ def _documents_needing_labels(test_set_id):
     return needs, already
 
 
-def generate_draft_labels(args, event=None):
+def generate_draft_labels(
+    args, event=None, *, forced_sections=None, section_id=None, section_expected=None
+):
     """Start a labeling job: run the active config over a test set's documents.
 
     Returns immediately with a jobId (the underlying test run id); the caller
@@ -2078,6 +2094,13 @@ def generate_draft_labels(args, event=None):
     Without an explicit ``objectKeys``, only documents that need labels are
     processed; labeling the rest would spend inference on results the harvester
     then refuses to write.
+
+    ``forced_sections``, ``section_id`` and ``section_expected`` are keyword-only and
+    set only by ``reextract_test_set_document`` for a section-scoped re-extract: the
+    encoded grouping the run builds instead of classifying, the one section whose
+    label the harvest replaces, and the class and page indices that section must
+    come back with (``{"class": ..., "pages": [...]}``). They are deliberately not read from ``input``, so
+    the public ``generateDraftLabels`` operation cannot reach them.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
@@ -2105,7 +2128,15 @@ def generate_draft_labels(args, event=None):
     if file_count <= 0:
         raise ValueError(f"Test set '{test_set_id}' has no documents to label")
 
-    if document_class:
+    if forced_sections:
+        # Built by reextract_test_set_document from one document's baseline, so it
+        # describes exactly that document and nothing else.
+        if len(object_keys) != 1 or document_class or not section_id:
+            raise ValueError(
+                "A forced section grouping needs exactly one objectKey and a "
+                "sectionId, and no documentClass"
+            )
+    elif document_class:
         # A forced class replaces classification for every document in the run, so
         # it is limited to the one document a reviewer corrected, and to a document
         # with one section (see _single_section_keys_for_forced_class).
@@ -2152,6 +2183,8 @@ def generate_draft_labels(args, event=None):
         run_input["objectKeys"] = object_keys
     if document_class:
         run_input["documentClass"] = document_class
+    if forced_sections:
+        run_input["documentSections"] = forced_sections
 
     lambda_client = boto3.client("lambda")
     response = lambda_client.invoke(
@@ -2189,6 +2222,13 @@ def generate_draft_labels(args, event=None):
         "createdAt": now,
         "startedBy": started_by,
     }
+    if forced_sections:
+        # The harvest replaces only this section's label, and only if the run kept
+        # it as asked (_harvest_label_job).
+        job_item["sectionId"] = section_id
+        if section_expected:
+            job_item["sectionClass"] = section_expected["class"]
+            job_item["sectionPages"] = list(section_expected["pages"])
     db_client.put_item(job_item)
 
     # Recorded on the set so progress survives the user navigating away. The
@@ -2238,17 +2278,22 @@ def reextract_test_set_document(args, event=None):
     the correction vanished, leaving fields extracted under the old schema beside
     a "Re-extracted as X" success message.
 
-    A corrected class is refused on a document whose baseline has more than one
-    section. Both writes above are document-wide — the stamp touches every section
-    and the forced run produces a single section over every page — so on a packet a
-    correction to one section would rewrite the class of all of them and then
-    collapse the grouping. Re-extracting a single section needs the pipeline to
-    accept a forced class per page range, which it does not.
+    A whole-document corrected class is refused on a document whose baseline has
+    more than one section. Both writes above are document-wide — the stamp touches
+    every section and the forced run produces a single section over every page — so
+    on a packet a correction to one section would rewrite the class of all of them
+    and then collapse the grouping.
+
+    ``sectionId`` is how one section of a packet is re-extracted instead
+    (:func:`_reextract_one_section`): the run is given the document's whole
+    grouping with only that section's class corrected, and the harvest replaces
+    only that section's label.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
     object_key = input_data["objectKey"]
     document_class = input_data.get("documentClass")
+    section_id = input_data.get("sectionId")
 
     if not validate_test_set_name(test_set_id):
         raise ValueError("Invalid test set id")
@@ -2258,11 +2303,34 @@ def reextract_test_set_document(args, event=None):
             "characters of letters, digits, spaces, hyphens or underscores"
         )
 
+    if section_id is not None and section_id != "":
+        if not isinstance(section_id, str) or not _SECTION_ID_RE.fullmatch(section_id):
+            raise ValueError(
+                "Invalid sectionId: expected up to 64 letters, digits, hyphens or "
+                "underscores"
+            )
+        if not document_class:
+            raise ValueError(
+                "sectionId re-extracts one section under a corrected class, so it "
+                "needs a documentClass"
+            )
+
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
         raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
+    if section_id:
+        return _reextract_one_section(
+            test_set_bucket,
+            test_set_id,
+            object_key,
+            section_id,
+            document_class,
+            meta,
+            input_data.get("configVersion"),
+            event,
+        )
     if document_class:
         # Refused before the stamp below writes anything; generate_draft_labels
         # repeats the check for callers that reach it directly.
@@ -2305,6 +2373,103 @@ def reextract_test_set_document(args, event=None):
         f"'{document_class or 'its existing class'}' via job {result['jobId']}"
     )
     return result
+
+
+def _reextract_one_section(
+    test_set_bucket,
+    test_set_id,
+    object_key,
+    section_id,
+    document_class,
+    meta,
+    config_version,
+    event,
+):
+    """Re-extract one section of a document under a corrected class (#1699).
+
+    The run processes the whole document, but with its grouping forced rather than
+    classified: every section keeps the pages, class and id its baseline records,
+    and the targeted section gets ``document_class``. That keeps the run's copy of
+    the document a faithful one — the review flow keys on it section by section —
+    and the harvest then replaces only the targeted section's label, so every
+    other section's ground truth is left exactly as it was. The cost is that
+    extraction runs over every section, not just the one written back.
+
+    Everything is checked before anything is written: the grouping has to be
+    complete and readable, or the run would not reproduce the document's other
+    sections, and it has to fit in the object metadata that carries it.
+    """
+    existing = _read_baseline_sections(test_set_bucket, test_set_id, object_key)
+    if section_id not in existing:
+        raise ValueError(
+            f"'{object_key}' has no section '{section_id}'"
+            + (
+                f" (it has {', '.join(sorted(existing, key=_section_sort_key))})"
+                if existing
+                else ""
+            )
+        )
+
+    grouping = []
+    for sid, (_key, parsed) in existing.items():
+        indices = (parsed.get("split_document") or {}).get("page_indices")
+        doc_class = parsed.get("document_class")
+        current_class = doc_class.get("type") if isinstance(doc_class, dict) else None
+        cls = document_class if sid == section_id else current_class
+        if not isinstance(indices, list) or not indices:
+            raise ValueError(
+                f"Section '{sid}' of '{object_key}' records no pages, so a "
+                "re-extract could not keep it as it is. Fix its pages in Edit Page "
+                "Grouping first."
+            )
+        if not cls:
+            raise ValueError(
+                f"Section '{sid}' of '{object_key}' has no class, so a re-extract "
+                "could not keep it as it is. Set its class in Edit Page Grouping "
+                "first."
+            )
+        grouping.append(
+            {"section_id": sid, "classification": cls, "page_indices": indices}
+        )
+    grouping.sort(key=lambda entry: min(entry["page_indices"]))
+    try:
+        encoded = encode_forced_sections(grouping)
+    except ForcedSectionsError as e:
+        raise ValueError(f"Cannot re-extract one section of '{object_key}': {e}") from e
+
+    # Only the targeted section is re-labelled and, if reviewed, demoted; every
+    # other section's file is not written at all.
+    target_key, target = existing[section_id]
+    target_pages = [int(i) for i in target["split_document"]["page_indices"]]
+    _set_baseline_document_class(
+        test_set_bucket, test_set_id, object_key, document_class, [target_key]
+    )
+
+    config_version, _ = _resolve_set_config_version(test_set_id, meta, config_version)
+    result = generate_draft_labels(
+        {
+            "input": {
+                "testSetId": test_set_id,
+                "objectKeys": [object_key],
+                "configVersion": config_version,
+            }
+        },
+        event,
+        forced_sections=encoded,
+        section_id=section_id,
+        section_expected={"class": document_class, "pages": target_pages},
+    )
+    logger.info(
+        f"Re-extracting section {section_id} of {object_key} in {test_set_id} as "
+        f"'{document_class}' via job {result['jobId']}, keeping the other "
+        f"{len(grouping) - 1} section(s) as they are"
+    )
+    return result
+
+
+def _section_sort_key(section_id):
+    """Numeric ids in number order, anything else after them."""
+    return (0, int(section_id), "") if section_id.isdigit() else (1, 0, section_id)
 
 
 # A packet with more sections than this is far more likely to be a client bug than a
@@ -2565,10 +2730,10 @@ def _single_section_keys_for_forced_class(test_set_bucket, test_set_id, object_k
     keys = _baseline_section_keys(test_set_bucket, test_set_id, object_key)
     if len(keys) > 1:
         raise ValueError(
-            f"'{object_key}' has {len(keys)} sections. Re-extracting with a "
-            "corrected class re-runs the whole document as one section of that "
-            "class, which would overwrite the class and the grouping of every "
-            "section. Correct this section's fields directly instead."
+            f"'{object_key}' has {len(keys)} sections. Changing the class for the "
+            f"whole document would merge all {len(keys)} sections into one and "
+            "discard their ground truth; pass sectionId to re-extract a single "
+            "section instead."
         )
     return keys
 
@@ -3953,6 +4118,14 @@ def _harvest_label_job(job, deadline=None):
 
     wanted = set(job.get("objectKeys") or [])
     files = [f for f in (run.get("Files") or []) if not wanted or f in wanted]
+    if not run.get("Files") and wanted:
+        # The run records its file list only once the copier has listed the set,
+        # moments after the job is created. A poll in that window saw no files,
+        # nothing pending, and completed the job with nothing harvested, so a
+        # re-extract reported success over unchanged fields. Until the list exists
+        # the named documents are pending (each has no tracking record yet, which
+        # the stale-job rule below bounds).
+        files = sorted(wanted)
 
     done = set(job.get("harvestedFiles") or [])
     failed = list(job.get("failedFiles") or [])
@@ -3966,6 +4139,7 @@ def _harvest_label_job(job, deadline=None):
     # pending, so counting it would hold the job RUNNING forever.
     pending_files = set()
     out_of_time = False
+    section_failure = None
     for file_name in files:
         if file_name in resolved:
             continue
@@ -4014,6 +4188,8 @@ def _harvest_label_job(job, deadline=None):
                 doc.get("Sections") or [],
                 config_version=job.get("configVersion") or doc.get("ConfigVersion"),
                 confidence_fingerprint=run.get("ConfidenceFingerprint") or None,
+                only_section_id=job.get("sectionId") or None,
+                only_section_expected=_section_expected(job),
             )
             # Keep the queue's summary of this document current as its draft lands.
             _refresh_summary(test_set_id, file_name)
@@ -4031,6 +4207,14 @@ def _harvest_label_job(job, deadline=None):
             # Writing no sections still counts: that means every section was
             # already human-owned, which needs no draft.
             done.add(file_name)
+        except _TargetSectionMissing as e:
+            # A section-scoped run that did not produce its section will not
+            # produce it on a later pass either; waiting would leave a job that
+            # reports success with nothing written. The reason is the job's error,
+            # because it is the one thing the reviewer can act on.
+            logger.warning(f"Draft labeling job {job_id}: {e}; recording it as failed")
+            failed.append(file_name)
+            section_failure = str(e)
         except Exception as e:  # noqa: BLE001 — one bad doc must not fail the job
             # Deliberately not counted pending: a document that fails every time
             # would hold the job RUNNING forever. It is left out of the harvested
@@ -4071,7 +4255,7 @@ def _harvest_label_job(job, deadline=None):
         }
         if status == "FAILED":
             update_expr += ", #er = :e"
-            expr_values[":e"] = (
+            expr_values[":e"] = section_failure or (
                 f"All {len(set(failed))} document(s) failed processing; no labels were "
                 "produced"
             )
@@ -4133,6 +4317,11 @@ def _harvest_label_job(job, deadline=None):
             done |= set(expected_done)
             failed = sorted(set(failed) | set(expected_failed))
             pending_files -= done | set(failed)
+            # The pass that wrote first may have recorded why a section-scoped
+            # re-extract failed; this pass did not see that, and must not replace
+            # the reason with the generic one.
+            if not section_failure and fresh.get("sectionId") and fresh.get("error"):
+                section_failure = fresh["error"]
             logger.info(
                 f"Draft labeling job {job_id}: another harvest wrote first; "
                 f"merging and retrying (attempt {attempt} of "
@@ -4177,6 +4366,30 @@ def _harvest_label_job(job, deadline=None):
     return updated
 
 
+class _TargetSectionMissing(Exception):
+    """A section-scoped run did not produce the targeted section as it was asked to."""
+
+
+def _read_json_or_none(bucket, key):
+    """A JSON object from S3, or None when it is absent or unreadable."""
+    try:
+        return json.loads(s3_client.get_object(Bucket=bucket, Key=key)["Body"].read())
+    except Exception:  # noqa: BLE001 — absent and unreadable both mean "not that section"
+        return None
+
+
+def _section_expected(job):
+    """``(class, page indices)`` a section-scoped job's section must come back with.
+
+    ``None`` for a job that recorded neither (any other job).
+    """
+    cls = job.get("sectionClass")
+    pages = job.get("sectionPages")
+    if not cls and not pages:
+        return None
+    return cls, [int(i) for i in pages or []]
+
+
 def _write_draft_labels_for_doc(
     test_set_bucket,
     test_set_id,
@@ -4184,6 +4397,8 @@ def _write_draft_labels_for_doc(
     sections,
     config_version=None,
     confidence_fingerprint=None,
+    only_section_id=None,
+    only_section_expected=None,
 ):
     """Write one document's sections into the test-set baseline as draft labels.
 
@@ -4192,7 +4407,28 @@ def _write_draft_labels_for_doc(
 
     Sections a previous run wrote that this one no longer produces are pruned —
     see :func:`_prune_superseded_draft_sections`.
+
+    ``only_section_id`` is set for a section-scoped re-extract: that one section is
+    written and nothing else is read, written or pruned, because the run
+    re-extracted the other sections only to keep its copy of the document whole.
+    Raises :class:`_TargetSectionMissing` when the run produced no such section, or
+    produced it with a class or pages other than ``only_section_expected``. That is
+    what a run that never applied the forced grouping looks like — Bedrock Data
+    Automation mode, for one, does not run the classification step that applies it
+    — and writing its section would put another span's fields into this label.
     """
+    if only_section_id is not None:
+        sections = [
+            section
+            for section in sections
+            if str(section.get("Id") or section.get("SectionId") or "")
+            == str(only_section_id)
+            and (section.get("OutputJSONUri") or "").startswith("s3://")
+        ]
+        if not sections:
+            raise _TargetSectionMissing(
+                f"the run produced no section '{only_section_id}' for '{file_name}'"
+            )
     wrote = False
     written_section_ids = set()
     for section in sections:
@@ -4211,6 +4447,45 @@ def _write_draft_labels_for_doc(
         src_bucket, src_key = output_uri[len("s3://") :].split("/", 1)
         body = s3_client.get_object(Bucket=src_bucket, Key=src_key)["Body"].read()
         result = json.loads(body)
+        if only_section_expected is not None:
+            want_class, want_pages = only_section_expected
+            got_class = (result.get("document_class") or {}).get("type")
+            got_pages = [
+                int(i)
+                for i in (result.get("split_document") or {}).get("page_indices") or []
+            ]
+            if got_class != want_class or got_pages != want_pages:
+                raise _TargetSectionMissing(
+                    f"The run did not keep section {section_id} as asked: it came back "
+                    f"as {got_class!r} on page indices {got_pages}, not {want_class!r} "
+                    f"on {want_pages}. Nothing was written. A configuration that uses "
+                    "Bedrock Data Automation does not apply a forced grouping."
+                )
+            # Read again now, not when the run started: the document can be
+            # re-grouped while the run is in flight, and a re-group renumbers
+            # sections, so this id may now name other pages — or keep its pages
+            # under a class the reviewer chose after this run started.
+            current = _read_json_or_none(test_set_bucket, baseline_key)
+            current_pages = [
+                int(i)
+                for i in ((current or {}).get("split_document") or {}).get(
+                    "page_indices"
+                )
+                or []
+            ]
+            current_class = ((current or {}).get("document_class") or {}).get("type")
+            if current is None:
+                raise _TargetSectionMissing(
+                    f"Section {section_id} was removed while it was being "
+                    "re-extracted. Nothing was written."
+                )
+            if current_pages != want_pages or current_class != want_class:
+                raise _TargetSectionMissing(
+                    f"Section {section_id} was changed while it was being "
+                    f"re-extracted (it is now {current_class!r} on page indices "
+                    f"{current_pages}, was {want_class!r} on {want_pages}). Nothing "
+                    "was written; re-extract it again."
+                )
 
         explainability = result.get("explainability_info")
         inference = result.get("inference_result")
@@ -4247,7 +4522,7 @@ def _write_draft_labels_for_doc(
         written_section_ids.add(section_id)
         wrote = True
 
-    if wrote:
+    if wrote and only_section_id is None:
         _prune_superseded_draft_sections(
             test_set_bucket, test_set_id, file_name, written_section_ids
         )

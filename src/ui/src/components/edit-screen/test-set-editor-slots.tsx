@@ -5,7 +5,8 @@
 // from the source document (test-set documents have no processed page images), the
 // baselines as the sections, the classes of the config the labels were written under,
 // the page-class board over the set's 0-based page indices, and the notices after a
-// regroup or a class change (with Re-extract). The shared SectionEditor does the field
+// regroup or a class change (with Re-extract: the whole document when it has one section,
+// the open section only when it has several). The shared SectionEditor does the field
 // editing; this hook supplies its slots and the board.
 import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, FormField, Input } from '@cloudscape-design/components';
@@ -172,16 +173,23 @@ export const useTestSetEditorSlots = ({
   const boardPages = useMemo(() => pages.map((page) => ({ id: Number(page.Id), imageUri: page.ImageUri })), [pages]);
   const canRegroup = boardPages.length > 0 && sections.length > 0;
   /**
-   * Re-extract runs the whole document under one forced class, as one section, so on a
-   * document with several sections it would rewrite every section's class and collapse
-   * the grouping (#1672). The server refuses it there; this keeps the button away too.
+   * Which Re-extract this document gets. A whole-document re-extract forces one class
+   * onto every page as one section, so on a document with several sections it would
+   * merge them all and discard their ground truth (#1672); the server refuses it there.
+   * Such a document re-extracts the open section only (#1699): the run keeps every
+   * other section's pages and class, and only that section's label is replaced.
    */
   // Also counts the grouping just saved: the caller's refs lag the save until its reload
-  // lands, and a split into several sections must not show the button in between. Once
+  // lands, and a split into several sections must already be treated as several. Once
   // new refs arrive they are the truth and the saved count is dropped. Keyed on the
   // array's identity, which the caller replaces on each reload: a content key would miss
   // a re-read that lands on the same section ids the save started from.
-  const canReextract = Math.max(sections.length, savedSectionCount ?? 0) <= 1;
+  const sectionCount = Math.max(sections.length, savedSectionCount ?? 0);
+  const perSection = sectionCount > 1;
+  // A save renumbers sections in page order, so until the refs catch up the open
+  // section's id may name a different section on the server: a per-section re-extract
+  // waits for them.
+  const refsPending = savedSectionCount !== null;
   useEffect(() => setSavedSectionCount(null), [sections]);
 
   /**
@@ -251,15 +259,28 @@ export const useTestSetEditorSlots = ({
    * the fields on screen are wrong until then; labels are harvested on read, so this poll
    * drives the write-back.
    */
-  const handleReextract = async () => {
+  const handleReextract = async (sectionId: string) => {
     if (!documentClassType || !testSetId) return;
+    // Captured now: the open section can change while the run is in flight.
+    const target = perSection ? sectionId : null;
     setIsReextracting(true);
     setError(null);
     setReextractNote(null);
     try {
       const started = await client.graphql({
         query: reextractTestSetDocument,
-        variables: { input: { testSetId, objectKey, documentClass: documentClassType, configVersion: classConfigVersion } },
+        variables: {
+          input: {
+            testSetId,
+            objectKey,
+            documentClass: documentClassType,
+            configVersion: classConfigVersion,
+            // Present only on a document with several sections: the server refuses a
+            // whole-document class there, and a single-section document keeps the
+            // whole-document form it always had.
+            ...(target ? { sectionId: target } : {}),
+          },
+        },
       });
       const job = started.data?.reextractTestSetDocument;
       if (!job?.jobId) throw new Error('No job returned');
@@ -281,11 +302,15 @@ export const useTestSetEditorSlots = ({
       }
       setReloadToken((token) => token + 1);
       setReclassified({});
-      setReextractNote(`Re-extracted as ${documentClassType}.`);
+      setReextractNote(
+        target
+          ? `Re-extracted section ${target} as ${documentClassType}. The other sections were not changed.`
+          : `Re-extracted as ${documentClassType}.`,
+      );
       onChanged();
     } catch (err) {
       logger.error('Re-extraction failed:', err);
-      setError(`Could not re-extract this document: ${getErrorMessage(err)}`);
+      setError(`Could not re-extract this ${target ? 'section' : 'document'}: ${getErrorMessage(err)}`);
     } finally {
       setIsReextracting(false);
     }
@@ -304,14 +329,8 @@ export const useTestSetEditorSlots = ({
           onDismiss={() => setRegroupedSectionIds([])}
         >
           The grouping is saved and your field values are untouched — but those sections were extracted from a different set of pages, so
-          their values may no longer match. Check them
-          {canReextract ? (
-            <>
-              , and change the section&apos;s class and use <b>Re-extract</b> if you would rather the model redo it.
-            </>
-          ) : (
-            '.'
-          )}
+          their values may no longer match. Check them, and change the section&apos;s class and use <b>Re-extract</b> if you would rather
+          the model redo it{perSection ? ' (on this document it re-extracts that one section)' : ''}.
         </Alert>
       )}
       {error && <Alert type="error">{error}</Alert>}
@@ -323,19 +342,40 @@ export const useTestSetEditorSlots = ({
     <>
       {/* A section's class is changed in Edit Page Grouping. Its fields were extracted under
           the previous class, and only a re-extract replaces them. */}
-      {ctx.data && reclassified[ctx.selectedSectionId] && testSetId && !canReextract && (
-        <Alert type="info" header="Fields still reflect the previous class">
-          These fields were extracted as <b>{reclassified[ctx.selectedSectionId]}</b>. Correct them for <b>{documentClassType}</b> by hand.
-          Re-extract is not offered on a document with more than one section: it re-runs the whole document as a single section of one
-          class, which would overwrite the class and the page grouping of every other section.
-        </Alert>
-      )}
-      {ctx.data && reclassified[ctx.selectedSectionId] && testSetId && canReextract && (
+      {ctx.data && reclassified[ctx.selectedSectionId] && testSetId && perSection && (
         <Alert
           type="info"
           header="Fields still reflect the previous class"
           action={
-            <Button onClick={handleReextract} loading={isReextracting} disabled={!mayChangeClass}>
+            <Button
+              onClick={() => void handleReextract(ctx.selectedSectionId)}
+              loading={isReextracting}
+              disabled={!mayChangeClass || refsPending}
+              disabledReason={refsPending ? 'Loading the saved grouping…' : undefined}
+              ariaLabel={`Re-extract section ${ctx.selectedSectionId}`}
+            >
+              {isReextracting ? 'Re-extracting…' : 'Re-extract'}
+            </Button>
+          }
+        >
+          These fields were extracted as <b>{reclassified[ctx.selectedSectionId]}</b>. Re-extract replaces this section&apos;s fields with
+          ones the <b>{documentClassType}</b> schema produces; the other {sectionCount - 1} section
+          {sectionCount > 2 ? 's keep their' : ' keeps its'} pages, class and fields.
+          {ctx.data?.labelSource === 'reviewed-human'
+            ? ' This section was already marked reviewed; re-extracting discards its confirmed values.'
+            : ctx.data?.labelSource === 'draft-machine'
+              ? " This section's draft labels are replaced."
+              : ' The class is corrected, but this section has authored ground truth, so its field values are kept.'}{' '}
+          Changing the class for the whole document would merge all {sectionCount} sections into one and discard their ground truth, so
+          Re-extract here works on this section only.
+        </Alert>
+      )}
+      {ctx.data && reclassified[ctx.selectedSectionId] && testSetId && !perSection && (
+        <Alert
+          type="info"
+          header="Fields still reflect the previous class"
+          action={
+            <Button onClick={() => void handleReextract(ctx.selectedSectionId)} loading={isReextracting} disabled={!mayChangeClass}>
               {isReextracting ? 'Re-extracting…' : 'Re-extract'}
             </Button>
           }
@@ -382,14 +422,15 @@ export const useTestSetEditorSlots = ({
             ? 'This section has an empty result: extraction ran but produced no fields, or the section was added when the pages were re-grouped and nothing has extracted it as a group yet.'
             : 'This section has no inference_result at all.'}{' '}
         {sections.length > 1 ? 'Other sections of this document may still have values — choose one from the Section list above. ' : ''}
-        {documentClassType && canReextract ? (
+        {documentClassType && perSection ? (
           <>
-            To have the model populate it, change its class in <b>Edit Page Grouping</b> and choose <b>Re-extract</b>, or use the{' '}
-            <b>JSON Editor</b> tab to enter values by hand.
+            To have the model populate it, change its class in <b>Edit Page Grouping</b> and choose <b>Re-extract</b>, which re-extracts
+            this section only and leaves the others as they are, or use the <b>JSON Editor</b> tab to enter values by hand.
           </>
         ) : documentClassType ? (
           <>
-            Use the <b>JSON Editor</b> tab to enter values by hand. Re-extract is not offered on a document with more than one section.
+            To have the model populate it, change its class in <b>Edit Page Grouping</b> and choose <b>Re-extract</b>, or use the{' '}
+            <b>JSON Editor</b> tab to enter values by hand.
           </>
         ) : (
           <>

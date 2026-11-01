@@ -179,7 +179,8 @@ you already hold, if your scope has been narrowed since.
     Switching sections with unsaved changes asks first.
     **Edit Page Grouping** opens the page-grouping board in a dialog, where each section's
     pages and class are changed; there is no separate class dropdown. After a class
-    change on a single-section document, the section offers **Re-extract**, so its fields match the new class. Versioning works exactly
+    change, the section offers **Re-extract**, so its fields match the new class; on a document with several sections it re-extracts
+    that section only and leaves the others as they are. Versioning works exactly
     as in Test Studio.
   - **Skip**, on either kind of item assigned to you, gives it back: it leaves your
     Tasks and goes back to its queue unassigned, where another Annotator can claim

@@ -21,7 +21,7 @@ from aws_xray_sdk.core import xray_recorder, patch_all
 patch_all()
 
 # Configuration will be loaded in handler function
-region = os.environ['AWS_REGION']
+region = os.environ.get('AWS_REGION')  # always set in Lambda; optional so tests can import this module
 MAX_WORKERS = int(os.environ.get('MAX_WORKERS', 20))
 
 logger = logging.getLogger()
@@ -67,7 +67,12 @@ def handler(event, context):
     # wrong answer and silently discard the correction. That is exactly the bug
     # this exists to fix — the class was previously pinned only in the test set's
     # baseline, which the harvest then overwrote with the pipeline's own guess.
-    apply_forced_document_class(document)
+    #
+    # A forced section grouping (one section of a test-set packet re-extracted)
+    # builds every section the ground truth records and may leave a page no section
+    # names unclassified, so "something was forced" is what skips the model, not
+    # only "every page has a class" — classifying here would regroup the document.
+    forced = apply_forced_document_class(document)
 
     # Intelligent Classification detection: Skip if pages already have classifications
     pages_with_classification = 0
@@ -75,7 +80,7 @@ def handler(event, context):
         if page.classification and page.classification.strip():
             pages_with_classification += 1
     
-    if pages_with_classification == len(document.pages) and len(document.pages) > 0:
+    if forced or (pages_with_classification == len(document.pages) and len(document.pages) > 0):
         logger.info(f"Skipping classification for document {document.id} - all {len(document.pages)} pages already classified")
         
         # Ensure document has the expected execution ARN
