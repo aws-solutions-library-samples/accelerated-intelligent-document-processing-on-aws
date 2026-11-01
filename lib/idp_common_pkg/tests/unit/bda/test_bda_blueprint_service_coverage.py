@@ -880,13 +880,17 @@ class TestTransformDropsUnsupportedStructures:
         assert warnings and warnings[0]["type"] == "nested_array"
         assert warnings[0]["class"] == "Invoice"
 
-    def test_a_ref_inside_a_definition_is_rewritten_to_the_draft07_path(self, service):
-        """A `#/$defs/…` ref in a draft-07 blueprint resolves to nothing."""
-        result = service._process_object_properties(
-            {"child": {"$ref": "#/$defs/Child"}}
-        )
+    def test_a_ref_inside_a_definition_is_dropped_and_reported(self, service):
+        """CreateBlueprint rejects a $ref inside a definition (issue #1742)."""
+        with service._recording_drops_for("Invoice") as recording:
+            result = service._process_object_properties(
+                {"child": {"$ref": "#/$defs/Child"}, "name": {"type": "string"}}
+            )
 
-        assert result == {"child": {"$ref": "#/definitions/Child", "instruction": "-"}}
+        assert list(result) == ["name"]
+        assert [(d["property"], d["type"]) for d in recording.drops] == [
+            ("child", "nested_object")
+        ]
 
     def test_a_leaf_inside_a_definition_takes_its_instruction_from_its_description(
         self, service

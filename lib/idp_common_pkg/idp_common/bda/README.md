@@ -198,9 +198,8 @@ BDA accepts an object only as an entry in `definitions` referenced by `$ref`. An
 
 The two paths differ in what they do with nesting. The flat path drops an object that has any nested object or array, as a whole. The `$defs` path processes the hoisted object exactly like a `$defs` entry, so only the nested members are dropped, each recorded, and an object left with no members is dropped and recorded as a whole. On both paths the property keeps its name, so the blueprint's field paths are unchanged. The definition takes the property's name (`<name>Item` for array items), suffixed with a number if a definition of that name already exists. A later BDA → IDP sync reads such a class back with the object under `$defs`.
 
-Shapes this does not convert. BDA was measured to reject the first; the others leave an inline object or a malformed field and were not probed:
+Shapes this does not convert. They leave an inline object or a malformed field and were not probed:
 
-- an object whose member is a `$ref`, which leaves a `$ref` inside a definition;
 - a `$defs` entry that is itself an array of inline objects;
 - an object property with no `properties`, or with a list-valued `type` such as `["object", "null"]`;
 - on the flat path only, an object or array of objects that omits `"type"`.
@@ -216,7 +215,9 @@ Not covered: the blueprint's `class` value, which comes from the class id. BDA r
 ### Every dropped property is a warning, not just a log line
 
 BDA supports neither objects inside objects nor arrays whose items nest further, so the
-transform drops those properties. Each drop is recorded in `_skipped_properties`, which
+transform drops those properties. A `$ref` member inside a definition is dropped as a
+`nested_object` for the same reason: it nests one definition in another, and
+`CreateBlueprint` was measured to reject it (issue #1742). Each drop is recorded in `_skipped_properties`, which
 `_process_single_class` returns as per-class `warnings` and the sync resolver surfaces in
 its response. The recorded `type` values are `nested_object`, `nested_array`,
 `unsupported_characters` (see above) and `invalid_property_schema` (a property whose value is not a JSON Schema object — `null`,

@@ -1426,12 +1426,17 @@ class BdaBlueprintService:
         processed_properties = {}
 
         for name, value in properties.items():
-            # Handle $ref properties — normalize path and include with instruction
+            # A $ref here would put one definition inside another, which
+            # CreateBlueprint rejects ("Request has invalid blueprint schema",
+            # measured, with or without an instruction beside it). Dropped and
+            # recorded like the nested object it stands for.
             if REF_FIELD in value:
-                processed_properties[name] = {
-                    REF_FIELD: self._normalize_ref_path(value[REF_FIELD]),
-                    "instruction": "-",
-                }
+                self._record_skipped_property(
+                    name,
+                    "nested_object",
+                    f"Property '{name}' skipped - BDA does not support a $ref "
+                    f"inside a definition",
+                )
                 continue
 
             # Skip nested objects - BDA doesn't support them
