@@ -295,7 +295,7 @@ class ReviewQueuesLiveCheck:
         self.admin = f"review-live-admin-{tag}@example.invalid"
         self.admin_password = "Aa1!" + secrets.token_urlsafe(24)
         self.admin_created = False
-        self.admin_token = ""
+        self.admin_token: str | None = None
         self.listed_on_default = False
         self.listed_at = 0.0
         self.object_key = f"review-live-check-{tag}/{Path(args.sample).name}"
@@ -832,7 +832,7 @@ class ReviewQueuesLiveCheck:
         if not self.listed_on_default:
             return
         # The run can outlast the ID token minted at the start; mint a new one.
-        self.admin_token = ""
+        self.admin_token = None
         queue = self._default_queue()
         listed = [str(e).lower() for e in queue.get("eligibleAnnotators") or []]
         if self.user not in listed:

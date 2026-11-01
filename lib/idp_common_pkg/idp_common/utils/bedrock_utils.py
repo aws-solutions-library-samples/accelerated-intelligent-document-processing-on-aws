@@ -443,15 +443,14 @@ DEFAULT_RETRYABLE_ERRORS = {
     "InternalServerError",  # Variant of InternalServerException
     "RequestTimeout",
     "RequestTimeoutException",
-    # Transient network/read timeouts to Bedrock. These surface as botocore
-    # ReadTimeoutError / ConnectTimeoutError, or are wrapped by Strands in an
-    # EventLoopException whose message contains the urllib3 pool text. We match
-    # the timeout-SPECIFIC markers (by exception name and as message substrings
-    # — see the generic-Exception branch), NOT the generic "EventLoopException"
-    # wrapper name (which also wraps non-retryable failures), so a slow/oversized
-    # request retries with backoff instead of failing the whole section after the
-    # full read timeout. The durable fix for oversized requests is image capping
-    # + sharding (below); this just prevents a hard fail on a transient blip.
+    # Transient network/read timeouts to Bedrock, matched by exception name and as
+    # message substrings in the generic-Exception branch — NOT the generic
+    # "EventLoopException" wrapper name (which also wraps non-retryable failures),
+    # so a slow/oversized request retries with backoff instead of failing the whole
+    # section after the full read timeout. The durable fix for oversized requests is
+    # image capping + sharding (below); this just prevents a hard fail on a
+    # transient blip. botocore's own transport failures, raw or wrapped by Strands,
+    # are recognised by TYPE instead: see _RETRYABLE_TRANSPORT_EXCEPTION_TYPES.
     "ReadTimeoutError",
     "ConnectTimeoutError",
     "Read timed out",
@@ -461,11 +460,59 @@ DEFAULT_RETRYABLE_ERRORS = {
 # Pre-folded for case-insensitive comparison.
 _DEFAULT_RETRYABLE_ERRORS_LOWER = {err.lower() for err in DEFAULT_RETRYABLE_ERRORS}
 
-# Default retryable exception types (caught by isinstance check)
-# Only include ModelThrottledException if strands is available
+# botocore's transport failures for a Bedrock call that got no response: a read
+# timeout, a connect timeout, and a connection closed before the response arrived
+# (``ConnectionClosedError``, which botocore raises for urllib3's ``ProtocolError``).
+# The synchronous ladder in ``bedrock/client.py`` retries all three among its
+# transport failures (#1706).
+#
+# Matched by type, and anywhere on the explicit ``raise ... from`` chain, because
+# Strands 1.48 delivers them in two forms (measured with a real Agent and a real
+# botocore client, only urllib3's ``urlopen`` replaced, on both ``converse`` and
+# ``converse_stream``): raw from the first model
+# call of an invocation, and wrapped in ``EventLoopException`` — ``__cause__`` the
+# botocore error, message its ``str()`` — from the model call of every cycle after a
+# tool use, which on the agentic extraction path is most of them. Neither form
+# carries a name or a message the substring vocabulary above matches: before this,
+# a dropped connection was never retried, and a read timeout was retried only on the
+# first cycle, because botocore words it "Read timeout on endpoint URL" (#1730).
+# Not covered: a connection reset partway through a streamed response, which
+# surfaces as urllib3's ``ProtocolError`` rather than as one of these.
+_RETRYABLE_TRANSPORT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
+    botocore.exceptions.ReadTimeoutError,
+    botocore.exceptions.ConnectTimeoutError,
+    botocore.exceptions.ConnectionClosedError,
+)
+
+# Default retryable exception types, matched by isinstance against the exception and
+# its ``__cause__`` chain (see :func:`_raised_from`). ModelThrottledException is
+# included only if strands is available.
 DEFAULT_RETRYABLE_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     (ModelThrottledException,) if _STRANDS_AVAILABLE else ()
-)
+) + _RETRYABLE_TRANSPORT_EXCEPTION_TYPES
+
+# Bounds the ``__cause__`` walk; a real chain here is two or three links.
+_MAX_CAUSE_CHAIN = 16
+
+
+def _raised_from(error: BaseException, types: tuple[type[BaseException], ...]) -> bool:
+    """Whether ``error``, or an exception it was explicitly raised ``from``, is one
+    of ``types``.
+
+    Only ``__cause__`` is followed, never ``__context__``: Python sets the context on
+    any exception raised while another is being handled, so a deterministic failure
+    raised inside a caller's ``except`` would inherit the transience of whatever the
+    caller was handling. ``transient_errors`` follows the same rule for the same
+    reason. Cycle-safe and bounded.
+    """
+    seen: set[int] = set()
+    node: BaseException | None = error
+    while node is not None and id(node) not in seen and len(seen) < _MAX_CAUSE_CHAIN:
+        if isinstance(node, types):
+            return True
+        seen.add(id(node))
+        node = node.__cause__
+    return False
 
 
 def async_exponential_backoff_retry[T, **P](
@@ -591,10 +638,9 @@ def async_exponential_backoff_retry[T, **P](
                     if is_image_request_rejection(e):
                         log_bedrock_invocation_error(e, attempt + 1)
                         raise
-                    # Check if this is a retryable exception type (e.g., Strands ModelThrottledException)
-                    is_retryable_type = retryable_exception_types and isinstance(
-                        e, retryable_exception_types
-                    )
+                    # A retryable exception type (Strands' ModelThrottledException,
+                    # botocore's transport failures), raw or raised ``from`` one.
+                    is_retryable_type = _raised_from(e, retryable_exception_types)
 
                     # Also check if exception name or message contains retryable error patterns
                     exception_name = type(e).__name__
