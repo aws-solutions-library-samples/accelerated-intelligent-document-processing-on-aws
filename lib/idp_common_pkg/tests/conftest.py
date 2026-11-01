@@ -11,7 +11,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -534,3 +534,321 @@ def bounded_real_sleep(request, monkeypatch):
 
     monkeypatch.setattr(time, "sleep", _budgeted_sleep)
     yield budget
+
+
+# ---------------------------------------------------------------------------
+# Strands / boto3 binding check (#1756)
+# ---------------------------------------------------------------------------
+#
+# A test module that replaces a library attribute when it is imported changes
+# that attribute for every module collected after it in the same process, and
+# collection imports every module before the first test runs. Three modules
+# once replaced ``strands.tool`` with a passthrough this way, so every Strands
+# tool defined later in the process was a plain function an Agent could not
+# register, and the tests built on those tools went on passing.
+#
+# The rule checked is about what the names REFER TO, not about how a module
+# spells the replacement. After each test module is imported, and after each
+# test's teardown:
+#
+# * every public function or class of the source modules below must be the
+#   object it was when this conftest loaded;
+# * every name a first-party module bound from one of them (``from strands
+#   import tool``, read from that module's own import statements) must still be
+#   that object;
+# * every function a first-party module defines at module level or in a class
+#   body, whose outermost decorator EVALUATES (in that module's namespace) to the
+#   strands tool decorator, must be a Strands tool. Evaluating the decorator,
+#   rather than matching how it is spelled, covers ``@tool``, ``@strands.tool``,
+#   ``@tools.tool``, an alias assigned in the module, the called form
+#   ``@tool(name=...)``, and definitions inside module-level ``if``/``try``
+#   blocks. This catches a module that was first imported while the decorator
+#   was replaced, even by a replacement that was undone afterwards.
+#
+# A violation is reported against the module or test that caused it, and the
+# originals are put back so the report does not cascade: a source attribute or
+# binding is reassigned, and a plain tool function is re-decorated, including
+# where another first-party module holds the same function by name.
+#
+# A replacement scoped to one test (``monkeypatch``, or ``unittest.mock.patch``
+# as a context manager or decorator) is undone before the teardown check runs,
+# so it passes, unless the test imported a tool-defining first-party module for
+# the first time while the decorator was replaced. A fixture with a wider scope
+# that keeps one of these replaced across tests is reported at the first test's
+# teardown: patch for the duration you need instead.
+#
+# Not covered: attributes of library classes (``Agent.__init__``,
+# ``BaseClient._make_api_call``); non-callable module state such as
+# ``boto3.DEFAULT_SESSION``, which boto3 itself assigns lazily; modules outside
+# the ``idp_common`` package, such as Lambda handlers loaded by path; a tool
+# built by calling the decorator rather than decorating (``x = tool(fn)``);
+# functions nested inside other functions; and a decorator reached through a
+# first-party name that was itself assigned from the replacement while it was
+# in place, which no longer evaluates to the real decorator.
+
+#: The library modules whose public functions and classes are snapshotted.
+_BINDING_SOURCE_MODULES = (
+    "strands",
+    "strands.tools",
+    "strands.tools.decorator",
+    "boto3",
+)
+
+#: Module-name prefix of the first-party code whose imported names are checked.
+_FIRST_PARTY_PREFIX = "idp_common"
+
+
+def _snapshot_binding_sources() -> Dict[tuple, Any]:
+    import inspect
+    import types
+
+    snapshot: Dict[tuple, Any] = {}
+    for source in _BINDING_SOURCE_MODULES:
+        try:
+            module = importlib.import_module(source)
+        except ImportError:
+            continue
+        if not isinstance(module, types.ModuleType):
+            continue  # a conftest stub (MagicMock): there is nothing real to keep
+        for attr in dir(module):
+            if attr.startswith("_"):
+                continue
+            value = getattr(module, attr, None)
+            if inspect.isfunction(value) or inspect.isclass(value):
+                snapshot[(source, attr)] = value
+    return snapshot
+
+
+_BINDING_SNAPSHOT = _snapshot_binding_sources()
+
+#: (first-party module name, bound name) -> (source module, source attribute),
+#: read from each first-party module's own ``from <source> import <name>``.
+_FIRST_PARTY_BINDINGS: Dict[tuple, tuple] = {}
+#: (first-party module name, attribute path) of functions whose outermost
+#: decorator evaluated to the strands tool decorator when the module was scanned.
+_FIRST_PARTY_TOOLS: list = []
+_SCANNED_FIRST_PARTY: set = set()
+#: Modules whose imports have been read but whose decorators are not resolved yet;
+#: resolution waits until every binding has been put back.
+_UNRESOLVED_FIRST_PARTY: list = []
+
+
+def _decorated_definitions(tree) -> list:
+    """(attribute path, outermost decorator) for every function defined at module
+    level or in a class body, including inside module-level ``if``/``try``/
+    ``with`` blocks. A function nested in another function has no stable object
+    to check and is skipped."""
+    import ast
+
+    found = []
+
+    def visit(statements, path):
+        for node in statements:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.decorator_list:
+                    found.append(((*path, node.name), node.decorator_list[0]))
+            elif isinstance(node, ast.ClassDef):
+                visit(node.body, (*path, node.name))
+            elif isinstance(node, (ast.If, ast.Try, ast.With, ast.AsyncWith)):
+                for block in ("body", "orelse", "finalbody"):
+                    visit(getattr(node, block, []), path)
+                for handler in getattr(node, "handlers", []):
+                    visit(handler.body, path)
+
+    visit(tree.body, ())
+    return found
+
+
+def _evaluate_decorator(decorator, namespace: dict):
+    """The object a decorator expression names, or None.
+
+    Only a name or an attribute chain is evaluated (the function of a call, for
+    ``@tool(name=...)``); nothing is called."""
+    import ast
+
+    if isinstance(decorator, ast.Call):
+        decorator = decorator.func
+    parts = []
+    while isinstance(decorator, ast.Attribute):
+        parts.append(decorator.attr)
+        decorator = decorator.value
+    if not isinstance(decorator, ast.Name) or decorator.id not in namespace:
+        return None
+    value = namespace[decorator.id]
+    try:
+        for part in reversed(parts):
+            value = getattr(value, part)
+    except Exception:  # noqa: BLE001 - an unreadable decorator is not a tool
+        return None
+    return value
+
+
+def _scan_first_party_imports() -> None:
+    import ast
+
+    source_roots = {src.split(".")[0] for src in _BINDING_SOURCE_MODULES}
+    for name, module in list(sys.modules.items()):
+        if name in _SCANNED_FIRST_PARTY or not (
+            name == _FIRST_PARTY_PREFIX or name.startswith(_FIRST_PARTY_PREFIX + ".")
+        ):
+            continue
+        _SCANNED_FIRST_PARTY.add(name)
+        path = getattr(module, "__file__", None)
+        if not path or not path.endswith(".py"):
+            continue
+        try:
+            source_text = Path(path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if not any(root in source_text for root in source_roots):
+            continue
+        tree = ast.parse(source_text)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and not node.level
+                and node.module in _BINDING_SOURCE_MODULES
+            ):
+                for alias in node.names:
+                    key = (node.module, alias.name)
+                    if key in _BINDING_SNAPSHOT:
+                        bound = alias.asname or alias.name
+                        _FIRST_PARTY_BINDINGS[(name, bound)] = key
+        _UNRESOLVED_FIRST_PARTY.append((name, _decorated_definitions(tree)))
+
+
+def _resolve_first_party_tools(real_tool) -> None:
+    while _UNRESOLVED_FIRST_PARTY:
+        name, definitions = _UNRESOLVED_FIRST_PARTY.pop()
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        namespace = vars(module)
+        for attr_path, decorator in definitions:
+            if _evaluate_decorator(decorator, namespace) is real_tool:
+                _FIRST_PARTY_TOOLS.append((name, attr_path))
+
+
+def _lookup(module, attr_path):
+    owner = module
+    for part in attr_path[:-1]:
+        owner = getattr(owner, part, None)
+        if owner is None:
+            return None, None
+    return owner, vars(owner).get(attr_path[-1]) if hasattr(owner, "__dict__") else None
+
+
+def _redecorate_everywhere(plain, decorated) -> None:
+    """Replace a plain tool function wherever a first-party module holds it."""
+    for name, module in list(sys.modules.items()):
+        if name == _FIRST_PARTY_PREFIX or name.startswith(_FIRST_PARTY_PREFIX + "."):
+            namespace = getattr(module, "__dict__", None) or {}
+            for attr, value in list(namespace.items()):
+                if value is plain:
+                    setattr(module, attr, decorated)
+
+
+def binding_problems(restore: bool = True) -> list:
+    """Describe every replaced source attribute or first-party binding, and every
+    first-party tool that is not a Strands tool.
+
+    With ``restore`` the original objects are put back, so one offender is
+    reported once rather than by every module and test after it.
+    """
+    import inspect
+
+    problems = []
+    for (source, attr), original in _BINDING_SNAPSHOT.items():
+        module = sys.modules.get(source)
+        if module is None:
+            continue
+        current = getattr(module, attr, None)
+        if current is not original:
+            problems.append(f"{source}.{attr} is {current!r}, not {original!r}")
+            if restore:
+                setattr(module, attr, original)
+    _scan_first_party_imports()
+    for (owner, bound), key in _FIRST_PARTY_BINDINGS.items():
+        module = sys.modules.get(owner)
+        if module is None or not hasattr(module, bound):
+            continue
+        current = getattr(module, bound)
+        original = _BINDING_SNAPSHOT[key]
+        if current is not original:
+            problems.append(
+                f"{owner}.{bound} (bound by `from {key[0]} import {key[1]}`) is "
+                f"{current!r}, not {original!r}"
+            )
+            if restore:
+                setattr(module, bound, original)
+    tool_class = _BINDING_SNAPSHOT.get(
+        ("strands.tools.decorator", "DecoratedFunctionTool")
+    )
+    real_tool = _BINDING_SNAPSHOT.get(("strands.tools.decorator", "tool"))
+    if tool_class is None or real_tool is None:
+        return problems
+    _resolve_first_party_tools(real_tool)
+    for owner, attr_path in _FIRST_PARTY_TOOLS:
+        module = sys.modules.get(owner)
+        if module is None:
+            continue
+        holder, current = _lookup(module, attr_path)
+        if current is None or isinstance(current, tool_class):
+            continue
+        problems.append(
+            f"{owner}.{'.'.join(attr_path)} is decorated with the strands tool "
+            f"decorator but is {current!r}, not a Strands tool: the module was "
+            f"imported while the decorator was replaced"
+        )
+        if restore and inspect.isfunction(current):
+            decorated = real_tool(current)
+            setattr(holder, attr_path[-1], decorated)
+            _redecorate_everywhere(current, decorated)
+    return problems
+
+
+def _binding_failure_text(where: str, problems: list) -> str:
+    remedies = []
+    if any("not a Strands tool" in p for p in problems):
+        remedies.append(
+            "A module imported while the strands tool decorator is replaced keeps "
+            "plain functions for the rest of the process, even after the "
+            "replacement is undone. Import the module before replacing the "
+            "decorator, or do not replace the decorator."
+        )
+    if any("not a Strands tool" not in p for p in problems):
+        remedies.append(
+            "A replacement made at import, or inside a test without being undone, "
+            "outlives it and changes every module and test that runs after it in "
+            "this process. Use `monkeypatch.setattr` inside the test, or a "
+            "function-scoped fixture, so the replacement ends with the test."
+        )
+    return (
+        f"{where} left the strands/boto3 bindings changed (#1756):\n  "
+        + "\n  ".join(problems)
+        + "\n"
+        + "\n".join(remedies)
+        + "\nThe originals have been put back."
+    )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(collector):
+    report = yield
+    if isinstance(collector, pytest.Module):
+        problems = binding_problems()
+        if problems and report.outcome != "failed":
+            report.outcome = "failed"
+            report.longrepr = _binding_failure_text(
+                f"Importing {collector.nodeid}", problems
+            )
+    return report
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    result = yield
+    problems = binding_problems()
+    if problems:
+        pytest.fail(_binding_failure_text(item.nodeid, problems), pytrace=False)
+    return result

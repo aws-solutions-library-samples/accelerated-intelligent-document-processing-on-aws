@@ -38,6 +38,12 @@ from botocore.exceptions import ClientError
 from deepdiff import DeepDiff
 
 from idp_common.bda.bda_blueprint_creator import BDABlueprintCreator
+from idp_common.bda.blueprint_class import (
+    BDA_CLASS_MAX_LENGTH,
+    BDA_TEXT_CHARS,
+    from_blueprint_class,
+    to_blueprint_class,
+)
 from idp_common.config.class_names import sanitize_class_name
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.schema_constants import (
@@ -55,35 +61,10 @@ from idp_common.config.schema_constants import (
 
 logger = logging.getLogger(__name__)
 
-# The characters CreateBlueprint takes in a blueprint's text values, measured
-# against the control plane (DOCUMENT blueprints, us-west-2) with the schema
-# serialised the way this module sends it (``json.dumps``, so non-ASCII arrives
-# escaped). The same set holds for a property's ``instruction`` and for the
-# blueprint's ``description``. One blueprint whose instruction and description
-# each held every character below was accepted; each character outside it that
-# was probed was rejected on its own with "Request has invalid blueprint schema"
-# — among them the em and en dash, U+2212 minus, the ellipsis, the no-break
-# space, the bullet, the multiplication and division signs, Greek, Cyrillic,
-# Arabic, CJK, emoji, control characters, and the ASCII characters ^ ` { } ~.
-# The non-ASCII part is the character class the API's own regular expression
-# names for the schema string, less the CJK, kana and hangul ranges, which that
-# expression lists but the schema check still rejects, plus four characters the
-# expression does not list but the check was measured to accept in this
-# encoding: the right single quote, both double quotes and the zero-width space.
-# They are kept rather than rewritten so that text which already synced is not
-# changed (and its blueprint re-versioned). The left single quote was rejected.
-_BDA_TEXT_CHARS = frozenset(
-    "\t\n\v\f\r"
-    + "".join(chr(c) for c in range(0x20, 0x7F) if chr(c) not in "^`{}~")
-    + "¡£¥§©ª®°±²³´µ¹¿"
-    + "".join(chr(c) for c in range(0xC0, 0xD7))  # À-Ö
-    + "".join(chr(c) for c in range(0xD8, 0xDD))  # Ø-Ü
-    + "ß"
-    + "".join(chr(c) for c in range(0xE0, 0xF7))  # à-ö
-    + "".join(chr(c) for c in range(0xF8, 0xFD))  # ø-ü
-    + "Œœ฿ẞ₹€™✓⑆⑇⑈⑉₽₱₦₣₩₫₺"
-    + "\u2019\u201c\u201d\u200b"
-)
+# The characters CreateBlueprint takes in a blueprint's text values; defined,
+# with its measurements, in blueprint_class because the blueprint ``class``
+# takes the same set.
+_BDA_TEXT_CHARS = BDA_TEXT_CHARS
 
 # Replacements that keep the meaning of a character outside _BDA_TEXT_CHARS.
 # Anything not listed here is reduced through NFKD (which turns "ý" into "y" and
@@ -117,8 +98,44 @@ _BDA_TEXT_REPLACEMENTS = {
 
 
 # Item types of an array CreateBlueprint was measured to accept inside a
-# definition (see BdaBlueprintService._is_primitive_array).
-_PRIMITIVE_ARRAY_ITEM_TYPES = ("string", "number")
+# definition (see BdaBlueprintService._is_primitive_array). ``integer`` is listed
+# because it reaches BDA as ``number`` (see _convert_integer_types).
+_PRIMITIVE_ARRAY_ITEM_TYPES = ("string", "number", "integer")
+
+# CreateBlueprint rejects ``"type": "integer"`` wherever it appears — a leaf, an
+# array's items, a member of a definition — and accepts ``number`` in each of
+# those places (measured; catalog blueprints use only string, number and
+# boolean). An integer is therefore sent as a number, and this note is added to
+# its instruction so the whole-number meaning is not lost.
+_WHOLE_NUMBER_HINT = "(a whole number)"
+_WHOLE_NUMBERS_HINT = "(whole numbers)"
+
+
+# The warning ``type`` of a class that was not sent to BDA at all, because its
+# blueprint would have had no properties (see _skip_if_nothing_to_send).
+EMPTY_BLUEPRINT_WARNING = "empty_blueprint"
+
+
+def classes_not_sent(statuses: object) -> list:
+    """The classes a sync's status list reports as not sent to BDA.
+
+    Such a class's entry is a ``success`` — nothing went wrong, and there is
+    nothing to retry — but no blueprint exists for it, so a caller counting
+    synced classes should count it apart. Recognised by its
+    ``EMPTY_BLUEPRINT_WARNING`` warning.
+    """
+    if not isinstance(statuses, list):
+        return []
+    return [
+        entry.get("class")
+        for entry in statuses
+        if isinstance(entry, dict)
+        and entry.get("status") == "success"
+        and any(
+            isinstance(w, dict) and w.get("type") == EMPTY_BLUEPRINT_WARNING
+            for w in entry.get("warnings") or []
+        )
+    ]
 
 
 def _has_visible_text(text: str) -> bool:
@@ -139,6 +156,10 @@ class _DropRecording:
 
     class_name: Optional[str]
     drops: list = field(default_factory=list)
+    # False for a trial conversion whose drops may be discarded
+    # (``_skip_if_nothing_to_send``), so they are not also appended to the
+    # instance's ``_skipped_properties`` unless the trial's result is used.
+    mirrored: bool = True
 
 
 # The recording in force for the calling thread, or None when the transform is being
@@ -580,11 +601,13 @@ class BdaBlueprintService:
         # Validate that array properties have instruction field
         self._validate_bda_array_instruction_requirements(schema_copy)
 
-        # Create base IDP schema structure
-        idp_schema = {
+        # Create base IDP schema structure. The class id is read back through
+        # the reverse of the escaping the IDP -> BDA direction applies.
+        class_id = from_blueprint_class(str(schema_copy.get("class", "Document")))
+        idp_schema: dict = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": schema_copy.get("class", "Document"),
-            "x-aws-idp-document-type": schema_copy.get("class", "Document"),
+            "$id": class_id,
+            "x-aws-idp-document-type": class_id,
             "type": "object",
         }
 
@@ -1062,6 +1085,8 @@ class BdaBlueprintService:
 
         self._drop_arrays_from_item_definitions(blueprint)
 
+        self._convert_integer_types(blueprint)
+
         # Last, so every path above (and every default it filled in) is covered.
         self._normalize_blueprint_text(blueprint)
 
@@ -1113,6 +1138,40 @@ class BdaBlueprintService:
         if "definitions" in blueprint and not definitions:
             # Nothing references an empty object, so it is not sent at all.
             del blueprint["definitions"]
+
+    def _convert_integer_types(self, blueprint: dict) -> None:
+        """Send every ``integer`` in the finished blueprint as ``number``.
+
+        CreateBlueprint rejects the whole blueprint over one ``"type": "integer"``
+        (issue #1755: four classes of the shipped ``ocr-benchmark`` preset), and
+        accepts ``number`` in the same place. The property keeps its whole-number
+        meaning through a note appended to its instruction. Only schema positions
+        are visited — ``properties`` values, ``items`` and definitions — so a
+        property that happens to be named ``type`` is never rewritten.
+        """
+        nodes = list((blueprint.get(SCHEMA_PROPERTIES) or {}).values())
+        for definition in (blueprint.get("definitions") or {}).values():
+            if isinstance(definition, dict):
+                nodes.extend((definition.get(SCHEMA_PROPERTIES) or {}).values())
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            items = node.get(SCHEMA_ITEMS)
+            if node.get(SCHEMA_TYPE) == "integer":
+                node[SCHEMA_TYPE] = "number"
+                hint = _WHOLE_NUMBER_HINT
+            elif isinstance(items, dict) and items.get(SCHEMA_TYPE) == "integer":
+                items[SCHEMA_TYPE] = "number"
+                hint = _WHOLE_NUMBERS_HINT
+            else:
+                continue
+            instruction = node.get("instruction")
+            if not isinstance(instruction, str) or not _has_visible_text(
+                instruction.replace("-", "")
+            ):
+                node["instruction"] = hint
+            elif hint not in instruction:
+                node["instruction"] = f"{instruction.rstrip()} {hint}"
 
     def _drop_properties_referring_to(self, blueprint: dict, def_name: str) -> None:
         """Drop and record every top-level property that refers to ``def_name``."""
@@ -1260,11 +1319,20 @@ class BdaBlueprintService:
                 add_missing_instructions(def_value["properties"], f"$defs.{def_name}")
 
     def _create_base_blueprint_structure(self, json_schema: dict) -> dict:
-        """Create the base blueprint structure."""
+        """Create the base blueprint structure.
+
+        The class id is carried in ``class`` through ``to_blueprint_class``, which
+        escapes the characters BDA rejects there reversibly, so a BDA → IDP sync
+        restores the id exactly (issue #1755).
+        """
         return {
             "$schema": "http://json-schema.org/draft-07/schema#",
-            "class": json_schema.get(
-                ID_FIELD, json_schema.get(X_AWS_IDP_DOCUMENT_TYPE, "Document")
+            "class": to_blueprint_class(
+                str(
+                    json_schema.get(
+                        ID_FIELD, json_schema.get(X_AWS_IDP_DOCUMENT_TYPE, "Document")
+                    )
+                )
             ),
             "description": json_schema.get(
                 SCHEMA_DESCRIPTION, "Document schema for data extraction"
@@ -1489,7 +1557,8 @@ class BdaBlueprintService:
             recording.drops.append(entry)
         # Also kept on the instance as an ordered record of everything dropped,
         # independently of which class was being processed.
-        self._skipped_properties.append(entry)
+        if recording is None or recording.mirrored:
+            self._skipped_properties.append(entry)
         if class_name is None:
             logger.warning(message)
         else:
@@ -1579,12 +1648,13 @@ class BdaBlueprintService:
 
     @staticmethod
     def _is_primitive_array(schema: object) -> bool:
-        """True for an array of strings or numbers.
+        """True for an array of strings or numbers (integers included).
 
         Such an array is representable inside a definition; an array of objects
         or of ``$ref`` items is not. Only ``string`` and ``number`` items were
-        probed (a leaf ``integer`` is rejected outright), so any other item type
-        is not treated as primitive and is dropped as before. ``items`` must be
+        probed there; ``integer`` items count because they are sent as
+        ``number`` (``_convert_integer_types``). Any other item type is not
+        treated as primitive and is dropped as before. ``items`` must be
         present: an array with no ``items`` inside a definition was not probed.
         """
         if (
@@ -2009,6 +2079,24 @@ class BdaBlueprintService:
                 # below is attributed to it.
                 recording.class_name = docu_class
 
+                blueprint_class = to_blueprint_class(str(docu_class))
+                if len(blueprint_class) > BDA_CLASS_MAX_LENGTH:
+                    raise ValueError(
+                        f"Document class '{docu_class}' is too long for BDA: a "
+                        f"blueprint's class holds at most {BDA_CLASS_MAX_LENGTH} "
+                        f"characters, and this one needs {len(blueprint_class)}"
+                        + (
+                            " once the characters BDA does not accept are escaped"
+                            if blueprint_class != docu_class
+                            else ""
+                        )
+                        + ". Use a shorter class name before syncing to BDA."
+                    )
+
+                skipped = self._skip_if_nothing_to_send(custom_class, recording)
+                if skipped is not None:
+                    return skipped
+
                 blueprint_exists = self._blueprint_lookup(
                     existing_blueprints, docu_class
                 )
@@ -2141,6 +2229,53 @@ class BdaBlueprintService:
                     "error": str(e),
                 }
 
+    def _skip_if_nothing_to_send(
+        self, custom_class: dict, recording: _DropRecording
+    ) -> Optional[dict]:
+        """Skip a class whose blueprint would have no properties.
+
+        CreateBlueprint rejects a blueprint with no properties — an empty
+        ``properties``, none at all, or only ``definitions`` (measured). A class
+        with no fields, or whose every field is dropped as unrepresentable, used to
+        be sent anyway and reported failed with a bare ValidationException (issue
+        #1755: three shipped preset classes). It is now not sent, and the result is
+        a success carrying an ``empty_blueprint`` warning, on the same channel as a
+        dropped property, together with the drops that emptied it. No blueprint is
+        created or updated for it, so in replace mode a blueprint synced for it
+        earlier is removed like that of a deleted class.
+
+        The conversion here runs in its own recording, so when the class is *not*
+        skipped its drops are not reported twice: the create or update path that
+        follows runs the transform again and records them itself.
+
+        Returns:
+            The class's result if it is skipped, otherwise None.
+        """
+        with self._recording_drops_for(recording.class_name) as trial:
+            trial.mirrored = False
+            sanitized, _ = self._sanitize_property_names(deepcopy(custom_class))
+            candidate = self._transform_json_schema_to_bedrock_blueprint(sanitized)
+        if candidate.get(SCHEMA_PROPERTIES):
+            return None
+        recording.drops.extend(trial.drops)
+        self._skipped_properties.extend(trial.drops)
+        reason = (
+            "it has no properties"
+            if not trial.drops
+            else "none of its properties can be represented in a BDA blueprint"
+        )
+        self._record_skipped_property(
+            str(recording.class_name),
+            EMPTY_BLUEPRINT_WARNING,
+            f"Class '{recording.class_name}' was not sent to BDA: {reason}, and "
+            f"BDA rejects a blueprint with no fields.",
+        )
+        return {
+            "class": recording.class_name,
+            "status": "success",
+            "warnings": list(recording.drops),
+        }
+
     def _process_classes_parallel(
         self, classess: list, existing_blueprints: list
     ) -> tuple:
@@ -2265,6 +2400,8 @@ class BdaBlueprintService:
                 )
 
             docu_class = blueprint_schema.get("class", None)
+            if isinstance(docu_class, str):
+                docu_class = from_blueprint_class(docu_class)
             class_exists = False
 
             if docu_class:

@@ -258,3 +258,96 @@ def test_the_skipped_property_warning_and_the_orphan_warning_coexist(bda_service
     assert "Skipped: Invoice: party" in result["message"]
     assert ORPHAN_ONE in result["message"]
     assert result["warnings"][0]["property"] == "party"
+
+
+@pytest.mark.unit
+def test_a_class_not_sent_to_bda_is_reported_as_a_class(bda_service):
+    """An ``empty_blueprint`` warning names the class, not a skipped property
+    (issue #1755), and the property warnings beside it are still listed."""
+    with bda_service(
+        statuses=[
+            {
+                "class": "Notice",
+                "status": "success",
+                "warnings": [
+                    {
+                        "class": "Notice",
+                        "property": "header",
+                        "type": "nested_object",
+                        "message": "dropped",
+                    },
+                    {
+                        "class": "Notice",
+                        "property": "Notice",
+                        "type": "empty_blueprint",
+                        "message": "not sent",
+                    },
+                ],
+            },
+            {"class": "Invoice", "status": "success"},
+        ],
+        orphans=[],
+    ):
+        result = index.handler(_event(), None)
+
+    message = result["message"]
+    assert result["success"] is True
+    assert "WARNING: 1 document class(es) were not sent to BDA" in message
+    assert message.rstrip().endswith("Skipped: Notice: header")
+    assert "Notice: header, Notice" not in message
+    assert [w["type"] for w in result["warnings"]] == [
+        "nested_object",
+        "empty_blueprint",
+    ]
+    # Not counted as synced: no blueprint exists for it.
+    assert message.startswith("Successfully synchronized 1 document classes")
+    assert result["processedClasses"] == ["Invoice"]
+
+
+_UNSENT = {
+    "class": "Notice",
+    "status": "success",
+    "warnings": [
+        {
+            "class": "Notice",
+            "property": "Notice",
+            "type": "empty_blueprint",
+            "message": "not sent",
+        }
+    ],
+}
+
+
+@pytest.mark.unit
+def test_a_class_not_sent_is_named_when_another_class_fails(bda_service):
+    with bda_service(
+        statuses=[
+            _UNSENT,
+            {"class": "Invoice", "status": "success"},
+            {"class": "Receipt", "status": "failed", "error": "boom"},
+        ],
+        orphans=[],
+    ):
+        result = index.handler(_event(), None)
+
+    assert result["bdaSyncStatus"] == "partial"
+    assert "were not sent to BDA" in result["message"]
+    assert "Notice" in result["message"]
+    assert result["message"].startswith("Successfully synchronized 1 document classes")
+    assert result["processedClasses"] == ["Invoice"]
+
+
+@pytest.mark.unit
+def test_a_class_not_sent_is_named_when_every_other_class_fails(bda_service):
+    with bda_service(
+        statuses=[_UNSENT, {"class": "Receipt", "status": "failed", "error": "boom"}],
+        orphans=[],
+    ):
+        result = index.handler(_event(), None)
+
+    assert result["success"] is False
+    assert "failed for all 1 document classes" in result["message"]
+    assert "were not sent to BDA" in result["message"]
+    # The web UI shows `error.message` on this branch, not `message`.
+    assert "were not sent to BDA" in result["error"]["message"]
+    assert "Notice" in result["error"]["message"]

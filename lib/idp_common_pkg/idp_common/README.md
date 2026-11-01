@@ -37,6 +37,7 @@ The IDP Common library provides these main modules:
 - **[Config](config/README.md)**: Configuration loading, merging, validation, and typed models
 - **[Hooks](hooks/README.md)**: Helpers for authoring pipeline-hook Lambdas (load / mutate / return a Document)
 - **[Monitoring](monitoring/README.md)**: Shared monitoring foundation (logs, X-Ray, Step Functions, stack discovery)
+- **Test-set drafting runs** (`testset_label_jobs.py`): which test runs drafted a Test Studio set's labels, read from its labeling-job records and `labelJobId` pointer. The test-set resolver (a set's configuration profile and confidence fingerprint) and the test-execution aggregation (whether a scoring run measures a configuration against labels it drafted) both use it, so they agree. A FAILED job labeled nothing and is not a drafting run; the run an older pointer named, when it has no job record, is one
 - **Step Functions history** (`stepfunctions_history.py`): the one rule for reading an execution history and naming the state that failed — see [Naming the state that failed](#-naming-the-state-that-failed) below
 
 ## 🗃️ Key Classes

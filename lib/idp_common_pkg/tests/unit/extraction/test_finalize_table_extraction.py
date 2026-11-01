@@ -5,25 +5,21 @@
 
 from __future__ import annotations
 
-import sys
 from typing import Optional
-from unittest.mock import MagicMock
 
-import strands  # noqa: E402 — mocked by conftest
+import pytest
 
-# Make @tool a passthrough decorator for testing
-strands.tool = lambda fn: fn
-
-# Mock additional strands submodules required by agentic_idp imports
-for mod_name in [
-    "strands.agent",
-    "strands.agent.conversation_manager",
-    "strands.types",
-    "strands.types.agent",
-    "strands.types.content",
-    "strands.types.media",
-]:
-    sys.modules.setdefault(mod_name, MagicMock())
+# The factories' tools are decorated with the REAL strands ``@tool`` and called
+# directly: ``DecoratedFunctionTool.__call__`` forwards to the wrapped function.
+# Do not replace the decorator here (``strands.tool``, or the name a production
+# module bound from it): a replacement made at import outlives this module and
+# turns every Strands tool built later in the same process into a plain
+# function, which an Agent then cannot register (#1756). The strands-binding
+# check in tests/conftest.py fails a module that does it.
+DecoratedFunctionTool = pytest.importorskip(
+    "strands.tools.decorator",
+    reason="strands-agents not installed (a conftest stub does not count)",
+).DecoratedFunctionTool
 
 from pydantic import BaseModel  # noqa: E402
 
@@ -380,3 +376,23 @@ class TestFinalizeDateFormatDiagnostics:
         assert result["status"] == "validation_error"
         assert result["date_format_fields"] == []
         assert "date_to_iso" not in result["message"]
+
+
+# =============================================================================
+# The factory returns a real Strands tool
+# =============================================================================
+
+
+class TestFinalizeTableExtractionIsAStrandsTool:
+    """The factory must hand the agent a registrable tool, not a bare function."""
+
+    def test_factory_returns_strands_tools(self):
+        tools = create_dynamic_extraction_tool_and_patch_tool(BankStatement)
+        assert len(tools) == 6
+        for tool_obj in tools:
+            assert isinstance(tool_obj, DecoratedFunctionTool), tool_obj
+        assert tools[-1].tool_name == "finalize_table_extraction"
+
+    def test_agent_parameter_is_not_asked_of_the_model(self):
+        spec = _get_finalize_tool(BankStatement).tool_spec
+        assert "agent" not in spec["inputSchema"]["json"]["properties"]
