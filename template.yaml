@@ -2725,7 +2725,7 @@ Resources:
           - id: F38
             reason: "PassRole is required to delegate the execution role to the Bedrock AgentCore Gateway service, and is scoped to the single AgentCoreGatewayExecutionRole ARN"
           - id: F3
-            reason: "Wildcard actions required for AgentCore Gateway lifecycle management (create, update, delete) and CloudWatch Logs delivery configuration"
+            reason: "bedrock-agentcore:* covers the AgentCore Gateway and gateway target lifecycle (list, get, create, update, delete); the CloudWatch Logs actions are the deletes that remove the log group and delivery resources older gateways created, and are not wildcards"
           - id: W11
             reason: "Wildcard resource required as AgentCore Gateway ARNs are dynamically generated and unknown at deployment time"
     # checkov:skip=CKV_AWS_116: "DLQ not required for Cfn Custom Resource function"
@@ -2752,21 +2752,24 @@ Resources:
       Policies:
         - Statement:
             - Effect: Allow
+              # The gateway and target lifecycle runs through bedrock-agentcore,
+              # the IAM prefix of the bedrock-agentcore-control API (issue #1753).
+              # The two delivery deletes are delete_gateway_observability's, which
+              # removes the delivery resources that gateways created before
+              # enable_observability=False left behind; they stay on "*" because
+              # their scoping has not been measured against the service. The
+              # function's own log writes come from the AWSLambdaBasicExecutionRole
+              # policy SAM attaches, not from this statement.
               Action:
-                - bedrock-agent:*
                 - bedrock-agentcore:*
-                - bedrock-agentcore-control:*
-                - logs:CreateLogGroup
-                - logs:PutLogEvents
-                - logs:DeleteLogGroup
-                - logs:PutDeliverySource
                 - logs:DeleteDeliverySource
-                - logs:PutDeliveryDestination
                 - logs:DeleteDeliveryDestination
-                - logs:DescribeDeliveryDestinations
-                - logs:DescribeDeliverySources
-                - cognito-idp:DescribeUserPool
               Resource: "*"
+            # The vended log group older gateways created; its path is fixed and
+            # only the gateway id after it is service-assigned.
+            - Effect: Allow
+              Action: logs:DeleteLogGroup
+              Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/bedrock-agentcore/gateway/APPLICATION_LOGS/*"
             # AppSec finding b2b397a9 (Security Invariant scenario 1.1,
             # iam-role-without-privilege-escalation): this function is a
             # configuration custom resource and must not be able to grant itself

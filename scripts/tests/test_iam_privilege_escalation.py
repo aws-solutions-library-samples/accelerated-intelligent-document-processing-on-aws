@@ -42,6 +42,7 @@ Two known seams, both shared with the sibling gate in
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import os
 from functools import lru_cache
@@ -326,6 +327,191 @@ def test_the_agentcore_gateway_manager_policy_stays_scoped() -> None:
             f"AgentCoreGatewayManagerFunction grants {actions} on Resource '*'. "
             "Scope it to AgentCoreGatewayExecutionRole's ARN."
         )
+
+
+GATEWAY_MANAGER_SOURCE = REPO_ROOT / "src/lambda/agentcore_gateway_manager/index.py"
+
+
+def _client_service(call: ast.Call) -> object:
+    """The service a ``<x>.client(...)`` call names, or the node if not literal."""
+    node = call.args[0] if call.args else None
+    for keyword in call.keywords:
+        if keyword.arg == "service_name":
+            node = keyword.value
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return node
+
+
+def _logs_calls_in_gateway_manager() -> tuple[set[str], list[str]]:
+    """IAM actions for the CloudWatch Logs APIs the gateway manager calls.
+
+    Returns the actions and the problems that make the derivation unreliable.
+    The rule is about reach, not spelling: ``index.py`` may reach CloudWatch
+    Logs only through a name assigned directly from ``<x>.client("logs")`` and
+    used only as ``name.<method>``. Anything else (a non-literal service name,
+    an inline or annotated client, an alias, ``getattr``) is a problem, because
+    a call made that way could not be read here. This catches the ordinary
+    ways of writing a call and is not a proof of reach: a client built through
+    botocore directly, through a reference to ``boto3.client`` held under
+    another name, through ``locals()``, or in a sibling module, and any call
+    the starter toolkit makes on the handler's behalf, are outside what it
+    reads.
+    """
+    tree = ast.parse(GATEWAY_MANAGER_SOURCE.read_text())
+    parents = {
+        child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
+    }
+    problems: list[str] = []
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "client"
+        ):
+            continue
+        service = _client_service(node)
+        if not isinstance(service, str):
+            problems.append(f"line {node.lineno}: client() with a non-literal service")
+            continue
+        if service != "logs":
+            continue
+        parent = parents.get(node)
+        if (
+            isinstance(parent, ast.Assign)
+            and len(parent.targets) == 1
+            and isinstance(parent.targets[0], ast.Name)
+        ):
+            names.add(parent.targets[0].id)
+        else:
+            problems.append(
+                f"line {node.lineno}: logs client not bound to a plain name"
+            )
+    calls: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Name) and node.id in names):
+            continue
+        if isinstance(node.ctx, ast.Store):
+            continue
+        parent = parents.get(node)
+        if not (isinstance(parent, ast.Attribute) and parent.value is node):
+            problems.append(
+                f"line {node.lineno}: logs client {node.id!r} used other than as name.<method>"
+            )
+            continue
+        if parent.attr != "exceptions":
+            pascal = "".join(part.capitalize() for part in parent.attr.split("_"))
+            calls.add(f"logs:{pascal}")
+    return calls, problems
+
+
+# Retained without having been shown necessary: no call on the handler's code
+# path needs iam:GetRole, and nothing passes a KMS key. Pinned so they cannot
+# grow, not because they were derived.
+_GATEWAY_MANAGER_RETAINED = {
+    "iam:GetRole",
+    "iam:PassRole",
+    "kms:Encrypt",
+    "kms:Decrypt",
+    "kms:ReEncrypt*",
+    "kms:GenerateDataKey*",
+    "kms:DescribeKey",
+}
+
+
+@pytest.mark.unit
+def test_the_agentcore_gateway_manager_grants_only_what_it_calls() -> None:
+    """Issue #1753: the role grants the gateway manager's calls and no more.
+
+    The function needs ``bedrock-agentcore:*`` for the gateway and target
+    lifecycle and exactly the CloudWatch Logs APIs ``index.py`` calls, plus the
+    retained IAM and KMS actions above. It used to also hold the log-delivery
+    create and describe actions the toolkit's observability step needed,
+    ``cognito-idp:DescribeUserPool``, and two prefixes IAM does not have
+    (``bedrock-agent``, ``bedrock-agentcore-control``).
+
+    Read over the role's whole surface: every ``Policies`` item must be an
+    inline statement document (a managed-policy name or a SAM policy template
+    would grant what this cannot see), no ``Allow`` may use ``NotAction`` or
+    ``NotResource``, and no other resource may attach a policy to the role.
+    ``Deny`` statements are not grants and are not compared.
+    """
+    logs_calls, problems = _logs_calls_in_gateway_manager()
+    assert not problems, problems
+    # An empty derivation would make the comparison below vacuous for logs.
+    assert logs_calls, "found no logs client calls in the gateway manager"
+
+    doc = _load_text((REPO_ROOT / "template.yaml").read_text())
+    resources = doc["Resources"]
+    function = resources["AgentCoreGatewayManagerFunction"]
+    properties = function["Properties"]
+    # SAM adds its own grants to a generated role for DeadLetterQueue, Tracing,
+    # VpcConfig, Events and others, so only the properties the function has
+    # today are accepted; a new one has to be judged here before it ships.
+    assert set(properties) <= {
+        "CodeUri",
+        "Environment",
+        "Handler",
+        "LoggingConfig",
+        "MemorySize",
+        "PermissionsBoundary",
+        "Policies",
+        "Runtime",
+        "Timeout",
+    }, sorted(properties)
+
+    shapes = []
+    for item in properties.get("Policies") or []:
+        for branch in _branches(item):
+            if not (
+                isinstance(branch, dict) and set(branch) <= {"Version", "Statement"}
+            ):
+                shapes.append(branch)
+    assert not shapes, f"Policies items that are not inline statements: {shapes}"
+
+    # Anything else naming the function or its role (an attached policy, a
+    # SAM Connector) can grant what the function's own properties do not show.
+    # The custom resource it serves is the one expected reference.
+    attached = sorted(
+        name
+        for name, body in resources.items()
+        if name not in ("AgentCoreGatewayManagerFunction", "AgentCoreGateway")
+        and isinstance(body, dict)
+        and "AgentCoreGatewayManagerFunction" in repr(body)
+    )
+    assert not attached, f"resources that reference the manager or its role: {attached}"
+
+    vended_log_groups = (
+        "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:"
+        "/aws/vendedlogs/bedrock-agentcore/gateway/APPLICATION_LOGS/*"
+    )
+    granted: set[str] = set()
+    for statement in _statements(function):
+        effect = statement.get("Effect")
+        assert effect in ("Allow", "Deny"), f"Effect must be a literal: {statement}"
+        if effect != "Allow":
+            continue
+        if any(action.startswith("kms:") for action in _actions(statement)):
+            assert statement.get("Resource") == {
+                "Fn::GetAtt": "CustomerManagedEncryptionKey.Arn"
+            }, f"the KMS actions must stay on the stack's key: {statement}"
+        assert "NotAction" not in statement and "NotResource" not in statement, (
+            statement
+        )
+        granted.update(_actions(statement))
+        if "logs:DeleteLogGroup" in _actions(statement):
+            assert statement.get("Resource") == {"Fn::Sub": vended_log_groups}, (
+                "logs:DeleteLogGroup must stay scoped to the gateway's vended-log "
+                f"path; got {statement.get('Resource')!r}"
+            )
+
+    expected = {"bedrock-agentcore:*"} | logs_calls | _GATEWAY_MANAGER_RETAINED
+    assert granted == expected, (
+        "AgentCoreGatewayManagerFunction's grants no longer match what "
+        "src/lambda/agentcore_gateway_manager/index.py calls. Extra: "
+        f"{sorted(granted - expected)}; missing: {sorted(expected - granted)}"
+    )
 
 
 # Templates that still grant iam:PassRole on Resource "*". Empty by design —
