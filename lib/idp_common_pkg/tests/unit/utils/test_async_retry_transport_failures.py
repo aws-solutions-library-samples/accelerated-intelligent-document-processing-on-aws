@@ -1,7 +1,8 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""The agentic extraction call retries a dropped connection and a timeout (#1730).
+"""The agentic extraction call retries a dropped connection and a timeout (#1730),
+and a connection reset partway through a streamed response (#1745).
 
 ``invoke_agent_with_retry`` is wrapped by ``async_exponential_backoff_retry``. A
 Bedrock connection closed before the response arrived reached it as botocore's
@@ -16,7 +17,9 @@ produce rather than forms built here. The model is non-streamed (``converse``) b
 a JSON body is simpler to stub than an event stream; production streams
 (``converse_stream``), and for a failure *before* the response arrives the same two
 forms were measured there with hand-built event-stream responses. A failure partway
-through a stream is a different exception and is not covered here. Strands delivers
+through a stream is a different exception — urllib3's ``ProtocolError``, which botocore
+does not rewrap — and is covered by the streamed tests at the end of this file, which
+build the event stream by hand. Strands delivers
 two forms: raw, from the first
 model call of an invocation, and wrapped in ``EventLoopException`` from the model
 call of a cycle that follows a tool use. Measured before the fix, schedule by
@@ -30,14 +33,18 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import struct
+import zlib
 
 import pytest
 import urllib3
 from botocore.config import Config
 from botocore.exceptions import ConnectionClosedError
 from botocore.httpsession import URLLib3Session
-from strands import Agent, tool
+from strands import Agent
 from strands.models.bedrock import BedrockModel
+from strands.tools.decorator import DecoratedFunctionTool
+from strands.tools.decorator import tool as _strands_tool
 from strands.types.exceptions import EventLoopException
 from urllib3.exceptions import ConnectTimeoutError, ProtocolError, ReadTimeoutError
 
@@ -69,10 +76,117 @@ _BODIES = {
 }
 
 
-@tool
+#: Every call the model's tool use reaches, so a test can count tool executions.
+_TOOL_CALLS: list[str] = []
+
+
+# The decorator is taken from its defining module, not as ``strands.tool``: three
+# test modules elsewhere in this suite replace ``strands.tool`` with a passthrough at
+# import and never restore it, and collected after any of them ``@tool`` here left
+# ``ping`` a plain function the agent could not register. Every tool use then
+# answered "tool not found" and these tests still passed.
+@_strands_tool
 def ping(x: str) -> str:
     """Echo the argument."""
+    _TOOL_CALLS.append(x)
     return x
+
+
+def _event_header(name: str, value: str) -> bytes:
+    raw_name, raw_value = name.encode(), value.encode()
+    # Header value type 7 is a string, length-prefixed with two bytes.
+    return (
+        bytes([len(raw_name)])
+        + raw_name
+        + bytes([7])
+        + struct.pack(">H", len(raw_value))
+        + raw_value
+    )
+
+
+def _event(event_type: str, payload: dict) -> bytes:
+    """One ``application/vnd.amazon.eventstream`` message, framed the way botocore's
+    ``EventStreamBuffer`` parses it: prelude (total and header length, CRC), headers,
+    payload, message CRC."""
+    headers = (
+        _event_header(":event-type", event_type)
+        + _event_header(":content-type", "application/json")
+        + _event_header(":message-type", "event")
+    )
+    body = json.dumps(payload).encode()
+    prelude = struct.pack(">II", 12 + len(headers) + len(body) + 4, len(headers))
+    prelude += struct.pack(">I", zlib.crc32(prelude) & 0xFFFFFFFF)
+    message = prelude + headers + body
+    return message + struct.pack(">I", zlib.crc32(message) & 0xFFFFFFFF)
+
+
+def _stream_content(step: str) -> bytes:
+    """Every event of a streamed answer except the trailing ``metadata``: for ``T`` a
+    complete ``toolUse`` block, for ``O`` a text answer, each ending ``messageStop``."""
+    events = [_event("messageStart", {"role": "assistant"})]
+    if step == "T":
+        events += [
+            _event(
+                "contentBlockStart",
+                {
+                    "start": {"toolUse": {"toolUseId": "t1", "name": "ping"}},
+                    "contentBlockIndex": 0,
+                },
+            ),
+            _event(
+                "contentBlockDelta",
+                {
+                    "delta": {"toolUse": {"input": json.dumps({"x": "a"})}},
+                    "contentBlockIndex": 0,
+                },
+            ),
+            _event("contentBlockStop", {"contentBlockIndex": 0}),
+            _event("messageStop", {"stopReason": "tool_use"}),
+        ]
+    else:
+        events += [
+            _event(
+                "contentBlockDelta", {"delta": {"text": "done"}, "contentBlockIndex": 0}
+            ),
+            _event("contentBlockStop", {"contentBlockIndex": 0}),
+            _event("messageStop", {"stopReason": "end_turn"}),
+        ]
+    return b"".join(events)
+
+
+_STREAM_METADATA = _event(
+    "metadata",
+    {
+        "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        "metrics": {"latencyMs": 1},
+    },
+)
+
+
+class _ResetAfter(io.RawIOBase):
+    """A socket that delivers ``first`` and is then reset by the peer."""
+
+    def __init__(self, first: bytes):
+        self._first: bytes | None = first
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        if self._first is None:
+            raise ConnectionResetError(104, "Connection reset by peer")
+        first, self._first = self._first, None
+        buffer[: len(first)] = first
+        return len(first)
+
+
+#: Mid-stream schedule steps: the body delivered before the reset.
+_MID_STREAM = {
+    # Only ``messageStart``.
+    "M": lambda: _event("messageStart", {"role": "assistant"}),
+    # A complete ``toolUse`` block and ``messageStop``; only ``metadata`` is missing.
+    "X": lambda: _stream_content("T"),
+}
 
 
 @pytest.fixture
@@ -91,10 +205,36 @@ def bedrock(monkeypatch):
     schedule: list[str] = []
     sent: list[str] = []
     raised: list[BaseException] = []
+    requests: list[dict] = []
+    _TOOL_CALLS.clear()
 
     def urlopen(pool, method, url, *args, **kwargs):
         step = schedule[len(sent)] if len(sent) < len(schedule) else "O"
         sent.append(step)
+        requests.append(json.loads(kwargs["body"]))
+        if url.endswith("/converse-stream"):
+            headers = {"content-type": "application/vnd.amazon.eventstream"}
+            if step == "F":
+                # The peer closes cleanly after a complete ``toolUse`` block, short of
+                # the length it declared: urllib3 reports IncompleteRead.
+                body = io.BytesIO(_stream_content("T"))
+                headers["content-length"] = str(
+                    len(_stream_content("T") + _STREAM_METADATA)
+                )
+            elif step in _MID_STREAM:
+                body = _ResetAfter(_MID_STREAM[step]())
+            elif step in "TO":
+                body = io.BytesIO(_stream_content(step) + _STREAM_METADATA)
+            else:
+                body = None
+            if body is not None:
+                return urllib3.HTTPResponse(
+                    body=body,
+                    status=200,
+                    headers=headers,
+                    preload_content=False,
+                    enforce_content_length=True,
+                )
         if step == "D":
             raise ProtocolError("Connection aborted.", ConnectionResetError(104))
         if step == "R":
@@ -125,11 +265,12 @@ def bedrock(monkeypatch):
         if caught_exception is not None:
             raised.append(caught_exception)
 
-    def make_agent(steps: str) -> Agent:
+    def make_agent(steps: str, streaming: bool = False) -> Agent:
+        assert isinstance(ping, DecoratedFunctionTool), "ping is not a Strands tool"
         schedule[:] = list(steps)
         model = BedrockModel(
             model_id="us.amazon.nova-lite-v1:0",
-            streaming=False,
+            streaming=streaming,
             boto_client_config=Config(
                 retries={"total_max_attempts": 1, "mode": "standard"}
             ),
@@ -141,6 +282,7 @@ def bedrock(monkeypatch):
         )
         return Agent(model=model, tools=[ping], callback_handler=None)
 
+    make_agent.requests = requests  # pyright: ignore[reportFunctionMemberAccess]
     yield make_agent, sent, raised
     set_lambda_deadline_epoch(None)
 
@@ -256,3 +398,72 @@ def test_a_cyclic_cause_chain_ends_the_walk(bedrock):
     with pytest.raises(RuntimeError):
         asyncio.run(call())
     assert len(calls) == 1
+
+
+#: Streamed schedule -> whether Strands wraps the mid-stream reset. ``M`` resets
+#: after ``messageStart``, ``X`` after a complete ``toolUse`` block and
+#: ``messageStop``, which is the latest point a reset can land before the stream ends.
+#: ``F`` is a clean close short of the declared length, which urllib3 reports as
+#: ``ProtocolError`` from ``IncompleteRead`` rather than from a connection error.
+_MID_STREAM_SCHEDULES = {
+    "MO": False,
+    "XO": False,
+    "FO": False,
+    "TMO": True,
+    "TXO": True,
+    "TFO": True,
+}
+
+
+def _roles(messages: list[dict]) -> list[tuple[str, list[str]]]:
+    return [
+        (m["role"], [next(iter(block)) for block in m["content"]]) for m in messages
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("steps", sorted(_MID_STREAM_SCHEDULES))
+def test_strands_keeps_nothing_from_a_stream_reset_partway(bedrock, steps):
+    """The premise that makes retrying a mid-stream reset safe, measured with no
+    decorator: the reset reaches the caller as urllib3's ``ProtocolError`` (raw, or as
+    the ``__cause__`` of ``EventLoopException`` after a tool use), and Strands has
+    neither run the tool the stream already described nor kept any part of the
+    assistant message. If Strands starts acting on a partial stream, this goes red and
+    retrying it would duplicate a tool call."""
+    make_agent, _sent, _raised = bedrock
+    agent = make_agent(steps, streaming=True)
+    with pytest.raises(Exception) as caught:
+        asyncio.run(agent.invoke_async([{"text": "hi"}]))
+    error = caught.value
+    if _MID_STREAM_SCHEDULES[steps]:
+        assert type(error) is EventLoopException
+        error = error.__cause__
+    assert type(error) is ProtocolError
+    tool_uses_before_the_reset = len(steps) - len(steps.lstrip("T"))
+    assert len(_TOOL_CALLS) == tool_uses_before_the_reset
+    expected = [("user", ["text"])] + [
+        ("assistant", ["toolUse"]),
+        ("user", ["toolResult"]),
+    ] * tool_uses_before_the_reset
+    assert _roles(agent.messages) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("steps", sorted(_MID_STREAM_SCHEDULES))
+def test_a_stream_reset_partway_is_retried_without_repeating_anything(bedrock, steps):
+    make_agent, sent, _raised = bedrock
+    agent = make_agent(steps, streaming=True)
+    result = asyncio.run(invoke_agent_with_retry([{"text": "hi"}], agent))
+
+    assert result.stop_reason == "end_turn"
+    assert sent == list(steps), f"sends {sent} for schedule {steps}"
+    tool_uses = steps.count("T")
+    assert len(_TOOL_CALLS) == tool_uses
+    # The retry resumed the conversation the reset left: the request after the
+    # reset is the request the reset interrupted, prompt included once.
+    requests = make_agent.requests
+    assert requests[-1]["messages"] == requests[-2]["messages"]
+    assert _roles(agent.messages) == [("user", ["text"])] + [
+        ("assistant", ["toolUse"]),
+        ("user", ["toolResult"]),
+    ] * tool_uses + [("assistant", ["text"])]

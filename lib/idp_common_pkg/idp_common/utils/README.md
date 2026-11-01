@@ -143,11 +143,22 @@ most of them. Neither form carries a name or message that the substring vocabula
 endpoint URL" — so such a dropped connection was never retried and such a read timeout
 only on the first cycle (#1730).
 
-What this does **not** cover is a failure partway through a streamed response, after
-botocore has returned the event stream: a stall there surfaces as urllib3's
-`ReadTimeoutError`, whose message the substring vocabulary does match, so it was and is
-retried; a connection reset there surfaces as urllib3's `ProtocolError`, which is not
-retried by this ladder. Only `__cause__`, the explicit
+A failure partway through a streamed response, after botocore has returned the event
+stream, is not rewrapped by botocore. A stall there surfaces as urllib3's
+`ReadTimeoutError`, whose message the substring vocabulary matches. A connection reset
+there surfaces as urllib3's `ProtocolError`, raw or as the `__cause__` of
+`EventLoopException`, and is in the type list for that reason (#1745). Retrying a
+reset that late is safe because Strands 1.48 keeps nothing from a stream it could not
+finish reading: it appends the assistant message, and runs any tool the model asked
+for, only after the last event has been read. Measured with a hand-built event stream
+cut after a complete `toolUse` block and `messageStop`: the tool ran zero times and
+`agent.messages` was unchanged, so the retry resumes exactly the request the reset
+interrupted. The chunks already streamed did reach the agent's callback handler, so
+partial text may be printed twice; nothing else repeats.
+`test_strands_keeps_nothing_from_a_stream_reset_partway` pins that premise, and goes
+red if Strands starts acting on a partial stream.
+
+Only `__cause__`, the explicit
 `raise ... from` link, is followed: `__context__` is set on any exception raised while
 another is being handled, so following it would make a deterministic failure raised
 inside an `except` inherit the transience of what was being handled.

@@ -18,6 +18,7 @@ from functools import wraps
 from typing import TYPE_CHECKING, Unpack
 
 import botocore.exceptions
+import urllib3.exceptions
 
 from idp_common.failed_attempt import drop_failed_attempt
 
@@ -476,12 +477,25 @@ _DEFAULT_RETRYABLE_ERRORS_LOWER = {err.lower() for err in DEFAULT_RETRYABLE_ERRO
 # carries a name or a message the substring vocabulary above matches: before this,
 # a dropped connection was never retried, and a read timeout was retried only on the
 # first cycle, because botocore words it "Read timeout on endpoint URL" (#1730).
-# Not covered: a connection reset partway through a streamed response, which
-# surfaces as urllib3's ``ProtocolError`` rather than as one of these.
+#
+# A connection reset PARTWAY through a streamed response (``converse_stream``, after
+# botocore has returned the event stream) is not rewrapped by botocore at all: it
+# reaches here as urllib3's own ``ProtocolError``, raw or wrapped in the same way
+# (#1745). Retrying it is safe for the same reason it is safe before the response:
+# Strands 1.48 appends the assistant message, and starts any tool the model asked
+# for, only after the stream has been read to its end (``process_stream`` yields
+# its result after the loop over chunks; ``_handle_model_execution`` appends it
+# after that). Measured with hand-built event streams cut after a complete
+# ``toolUse`` block and ``messageStop``: the tool ran zero times and
+# ``agent.messages`` was unchanged, so the retry resumes the same conversation an
+# unanswered attempt leaves. A mid-stream read STALL is urllib3's
+# ``ReadTimeoutError``, retried by name above. The one visible side effect is
+# that the chunks already streamed were delivered to the agent's callback handler.
 _RETRYABLE_TRANSPORT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     botocore.exceptions.ReadTimeoutError,
     botocore.exceptions.ConnectTimeoutError,
     botocore.exceptions.ConnectionClosedError,
+    urllib3.exceptions.ProtocolError,
 )
 
 # Default retryable exception types, matched by isinstance against the exception and

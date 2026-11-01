@@ -964,9 +964,10 @@ The retry ladder around the agentic extraction call retries the same three failu
 when they happen before the response arrives, including when the Strands agent reports
 one wrapped in its own exception, which it does for every model call after the first
 tool use. Before, that ladder did not retry such a dropped connection at all, and
-retried such a read timeout only on the first model call of each attempt. A connection
-reset partway through a streamed response surfaces as a different exception and is not
-retried by that ladder.
+retried such a read timeout only on the first model call of each attempt. It also
+retries a connection reset partway through a streamed response, which is safe because
+the Strands agent keeps no part of a response it could not finish reading and runs no
+tool from it.
 
 What keeps a shard inside its invocation is **not** that these numbers sum to less than
 900 — they do not. It is that the retry ladder refuses to *begin* an attempt the size of
