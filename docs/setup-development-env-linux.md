@@ -189,6 +189,8 @@ https://docs.aws.amazon.com/cli/latest/userguide/getting-started-quickstart.html
 
 ## Install the CLI and Dependencies
 
+`make setup-venv` needs [`uv`](https://docs.astral.sh/uv/) on `PATH`: it reads the dependency lock, so the installed versions are the ones CI tests.
+
 ```bash
 make setup-venv
 source .venv/bin/activate

@@ -248,7 +248,7 @@ EOF
 
 ## **12) Install the IDP CLI**
 
-Install the IDP CLI and all required dependencies:
+Install the IDP CLI and all required dependencies. `make setup-venv` needs [`uv`](https://docs.astral.sh/uv/) on `PATH`: it reads the dependency lock, so the installed versions are the ones CI tests.
 
 ```bash
 make setup-venv
