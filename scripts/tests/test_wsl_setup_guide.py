@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""The WSL setup guide installs Python packages only through ``make setup-venv``.
+"""The WSL setup guide and its setup script never install Python packages with pip.
 
 ``make setup-venv`` installs every package against the export of
 ``lib/idp_common_pkg/uv.lock`` and checks afterwards that no first-party package came
