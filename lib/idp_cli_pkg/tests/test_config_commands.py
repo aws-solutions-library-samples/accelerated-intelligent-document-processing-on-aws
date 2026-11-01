@@ -266,7 +266,10 @@ def test_create_writes_only_loadable_yaml_to_stdout():
     assert result.exit_code == 0, result.output
 
     loaded = yaml.safe_load(result.stdout)
-    assert "classes" in loaded and "extraction" in loaded
+    assert "classification" in loaded and "extraction" in loaded
+    # Empty in the defaults, and an empty list would replace a profile's classes
+    # on upload (issue #1720).
+    assert "classes" not in loaded
     assert result.stderr == "", (
         f"config-create wrote to stderr on success: {result.stderr!r}"
     )
@@ -280,7 +283,7 @@ def test_create_to_a_file_parses_and_names_the_next_steps():
         assert result.exit_code == 0, result.output
         loaded = yaml.safe_load(open("gen.yaml", encoding="utf-8").read())
 
-    assert "classes" in loaded
+    assert "extraction" in loaded and "classes" not in loaded
     assert "gen.yaml" in result.output
     # The three follow-on commands, because a generated template on its own is not
     # yet a deployable configuration.
@@ -422,9 +425,7 @@ def test_create_no_comments_omits_the_header():
     without = CliRunner().invoke(cli, ["config-create", "--no-comments"]).stdout
     assert with_comments.lstrip().startswith("#")
     assert not without.lstrip().startswith("#")
-    assert (
-        yaml.safe_load(without)["classes"] == yaml.safe_load(with_comments)["classes"]
-    )
+    assert yaml.safe_load(without) == yaml.safe_load(with_comments)
 
 
 @pytest.mark.unit
@@ -2130,3 +2131,22 @@ def test_sync_bda_rejects_an_unknown_direction_and_mode_up_front():
     assert "sideways" in bad_direction.output
     assert bad_mode.exit_code == 2
     assert "obliterate" in bad_mode.output
+
+
+@pytest.mark.unit
+def test_create_refuses_a_request_for_only_empty_sections():
+    """`--features classes` has nothing to copy: the system defaults define no
+    classes, and writing `classes: []` emptied a profile's classes on upload
+    (#1720). A file holding only `notes` would report success for nothing."""
+    with write_config("", filename="unused.txt") as runner:
+        result = runner.invoke(
+            cli, ["config-create", "--features", "classes", "--output", "gen.yaml"]
+        )
+        written = os.path.exists("gen.yaml")
+
+    assert result.exit_code == 1, result.output
+    assert "✗ Error (--features): Nothing to generate: classes is empty" in (
+        " ".join(result.stderr.split())
+    )
+    assert "Traceback" not in result.output
+    assert not written, "a refused request must not leave a template behind"

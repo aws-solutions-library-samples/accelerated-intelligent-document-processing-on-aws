@@ -259,6 +259,15 @@ class TestCreate:
         with pytest.raises(IDPValidationError, match="Unknown configuration section"):
             IDPClient().config.create(features=features)
 
+    @pytest.mark.parametrize("features", ["classes", ["classes"], "classes, classes"])
+    def test_a_request_for_only_empty_sections_is_refused(self, features):
+        """`classes` is empty in the defaults; writing `classes: []` emptied a
+        profile's classes on upload, and a notes-only file is nothing (#1720)."""
+        from idp_sdk.exceptions import IDPValidationError
+
+        with pytest.raises(IDPValidationError, match="Nothing to generate: classes"):
+            IDPClient().config.create(features=features)
+
     def test_combining_a_preset_with_sections_says_why_it_is_refused(self):
         from idp_sdk.exceptions import IDPValidationError
 
@@ -708,6 +717,52 @@ class TestUploadWritesRealItems:
         )
         assert result.success is True, result.error
         assert _item(aws_credentials, "Config#generated") is not None
+
+    @mock_aws
+    @pytest.mark.parametrize("features", ["min", "core", "all"])
+    def test_a_generated_template_keeps_the_profiles_document_classes(
+        self, aws_credentials, config_env, tmp_path, features
+    ):
+        """Uploading a generated template over a profile leaves its classes alone.
+
+        The upload merges the file over the profile's stored configuration and a
+        list is replaced, not merged, so a template carrying ``classes: []``
+        removed every document class the profile had (issue #1720).
+        """
+        from idp_common.config.configuration_manager import ConfigurationManager
+
+        _create_stack(aws_credentials)
+        client = _client(aws_credentials)
+        w2 = {
+            "$id": "W2",
+            "type": "object",
+            "x-aws-idp-document-type": "W2",
+            "properties": {"employer_name": {"type": "string"}},
+        }
+        client.config.upload(
+            config_file=_write_config(tmp_path / "profile.yaml", classes=[w2]),
+            config_profile="tuning",
+            validate=False,
+        )
+
+        def stored_classes():
+            config = ConfigurationManager(region=aws_credentials).get_configuration(
+                "Config", version="tuning"
+            )
+            return config.model_dump(mode="python")["classes"]
+
+        before = stored_classes()
+        assert [c["$id"] for c in before] == ["W2"]
+
+        out = tmp_path / "generated.yaml"
+        client.config.create(features=features, output=str(out))
+        result = client.config.upload(
+            config_file=str(out), config_profile="tuning", validate=True
+        )
+
+        assert result.success is True, result.error
+        assert result.version_created is False
+        assert stored_classes() == before
 
     @mock_aws
     def test_the_second_upload_of_a_profile_is_not_a_creation(
