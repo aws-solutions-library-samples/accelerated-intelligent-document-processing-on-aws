@@ -136,9 +136,20 @@ idp-cli config-download --stack-name my-stack --output config.yaml
 
 `config-create` exposes no mode selector, so it always generates from the
 `pattern-2.yaml` (pipeline mode) defaults. To build a template against the
-`pattern-1.yaml` (BDA mode) defaults, call
-`idp_common.config.merge_utils.generate_config_template(pattern="pattern-1")`
+`pattern-1.yaml` (BDA mode) defaults, call `IDPClient().config.create(pattern="pattern-1")`
+from the SDK, or `idp_common.config.merge_utils.generate_config_template(pattern="pattern-1")`
 directly.
+
+`generate_config_template` takes a feature-set name (`min`, `core`, `all`) or a
+**list** of section names; the comma-separated string form is the SDK's
+(`config.create` / `config.parse_features`), which the CLI calls. A section is a
+top-level key of the pattern's defaults holding a mapping or a list
+(`template_sections(pattern)`). A preset skips a section the pattern lacks, but a
+list naming one, or naming anything that is not a section, raises `ValueError`
+listing the valid sections. `min` writes `enabled: false` for summarization and
+evaluation and copies `extraction`, so confidence scoring
+(`extraction.confidence.mode`) stays at its default `separate`. The header comment
+lists the sections the file copies, switches off and leaves out.
 
 ## Example: Minimal User Config
 
