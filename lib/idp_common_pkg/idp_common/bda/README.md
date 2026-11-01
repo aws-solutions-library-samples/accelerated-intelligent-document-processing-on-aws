@@ -217,7 +217,14 @@ Not covered: the blueprint's `class` value, which comes from the class id. BDA r
 BDA supports neither objects inside objects nor arrays whose items nest further, so the
 transform drops those properties. A `$ref` member inside a definition is dropped as a
 `nested_object` for the same reason: it nests one definition in another, and
-`CreateBlueprint` was measured to reject it (issue #1742). Each drop is recorded in `_skipped_properties`, which
+`CreateBlueprint` was measured to reject it (issue #1742).
+
+An array of a scalar type (`items: {"type": "string"}` and the like) is not dropped from a
+definition: `CreateBlueprint` accepts it there, and catalog blueprints such as receipt carry
+it. The exception is a definition that a top-level array uses as its `items`, where the same
+member nests an array in an array and is rejected. Which use a definition gets is known only
+once the blueprint is built, so `_drop_arrays_from_item_definitions` runs over the finished
+blueprint and drops, and records, every array member of such a definition. Each drop is recorded in `_skipped_properties`, which
 `_process_single_class` returns as per-class `warnings` and the sync resolver surfaces in
 its response. The recorded `type` values are `nested_object`, `nested_array`,
 `unsupported_characters` (see above) and `invalid_property_schema` (a property whose value is not a JSON Schema object — `null`,

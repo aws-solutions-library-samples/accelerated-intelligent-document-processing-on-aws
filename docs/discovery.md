@@ -1656,11 +1656,11 @@ BDA currently has limitations with complex nested structures that affect sync op
 
 A top-level object like `employee` can be written inline, as above, or under `$defs` and referenced with `$ref`. BDA itself accepts only the second form, so the sync converts an inline object into a blueprint definition and a reference to it. The field keeps its name in the blueprint either way.
 
-**Nested Arrays Not Supported:**
-Arrays within object definitions are not supported by BDA:
+**Arrays of Objects Within Objects Not Supported:**
+BDA does not accept an array of objects inside an object definition:
 
 ```json
-// ❌ NOT SUPPORTED: Arrays within object definitions
+// ❌ NOT SUPPORTED: An array of objects within an object definition
 {
   "Employee": {
     "type": "object",
@@ -1681,6 +1681,8 @@ Arrays within object definitions are not supported by BDA:
   }
 }
 ```
+
+An array of plain values, such as `{"type": "array", "items": {"type": "string"}}`, is kept inside an object definition, as long as no top-level array uses that object as its items. BDA rejects an array nested inside an array's items, so in an object such as `Employee` above, which `employees` uses as its items, an array of plain values is dropped too. Each dropped field is reported as a warning for the class.
 
 **Characters BDA does not accept in descriptions:**
 BDA rejects a whole blueprint when the class description or any field's description (which becomes the field's instruction) contains a character outside the set it accepts. That set is ASCII without `^`, `` ` ``, `{`, `}` and `~`, plus the accented Latin letters and a few symbols such as `€`, `£`, `°` and `©`. Typographic dashes, the left single quote (`‘`), the ellipsis, the no-break space, bullets, Greek, Cyrillic, CJK and emoji are all rejected. The right single quote and both curly double quotes are accepted.
@@ -1782,7 +1784,7 @@ Flatten complex structures — avoid nested objects and place arrays at the top 
 
 **3. Pre-Sync Validation Checklist:**
 - ✅ No nested objects within object definitions
-- ✅ No arrays within object definitions  
+- ✅ No arrays of objects within object definitions, and no arrays at all in an object used as a top-level array's items
 - ✅ All array properties have description or instruction fields
 - ✅ Field names follow BDA naming conventions (no special characters like &, /)
 - ✅ Schema uses supported data types (string, number, boolean)

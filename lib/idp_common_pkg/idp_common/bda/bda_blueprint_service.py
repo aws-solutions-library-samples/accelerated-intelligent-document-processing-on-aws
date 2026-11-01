@@ -116,6 +116,11 @@ _BDA_TEXT_REPLACEMENTS = {
 }
 
 
+# Item types of an array CreateBlueprint was measured to accept inside a
+# definition (see BdaBlueprintService._is_primitive_array).
+_PRIMITIVE_ARRAY_ITEM_TYPES = ("string", "number")
+
+
 def _has_visible_text(text: str) -> bool:
     """False for text that is empty, whitespace, or zero-width spaces only."""
     return bool(text.replace("\u200b", "").strip())
@@ -1047,10 +1052,81 @@ class BdaBlueprintService:
         else:
             blueprint.update(self._process_flat_schema(properties))
 
+        self._drop_arrays_from_item_definitions(blueprint)
+
         # Last, so every path above (and every default it filled in) is covered.
         self._normalize_blueprint_text(blueprint)
 
         return blueprint
+
+    def _drop_arrays_from_item_definitions(self, blueprint: dict) -> None:
+        """Drop array members from a definition that is used as array items.
+
+        CreateBlueprint accepts a primitive array inside a definition referenced
+        by an object property, but rejects the same definition when an array's
+        ``items`` references it, which would nest one array in another (both
+        measured; no catalog blueprint uses the second form). Which kind of
+        reference a definition gets is known only once the blueprint is built, so
+        this runs over the finished blueprint and records each drop.
+        """
+        definitions = blueprint.get("definitions") or {}
+        prefix = "#/definitions/"
+        item_defs: dict[str, None] = {}
+        for prop in (blueprint.get(SCHEMA_PROPERTIES) or {}).values():
+            if not isinstance(prop, dict) or prop.get(SCHEMA_TYPE) != TYPE_ARRAY:
+                continue
+            items = prop.get(SCHEMA_ITEMS)
+            ref = items.get(REF_FIELD) if isinstance(items, dict) else None
+            if isinstance(ref, str) and ref.startswith(prefix):
+                item_defs[ref[len(prefix) :]] = None
+        for def_name in item_defs:
+            members = (definitions.get(def_name) or {}).get(SCHEMA_PROPERTIES)
+            if not isinstance(members, dict):
+                continue
+            for name in [
+                n
+                for n, m in members.items()
+                if isinstance(m, dict) and m.get(SCHEMA_TYPE) == TYPE_ARRAY
+            ]:
+                del members[name]
+                self._record_skipped_property(
+                    name,
+                    "nested_array",
+                    f"Property '{name}' skipped - BDA does not support an array "
+                    f"inside a definition used as array items "
+                    f"('{def_name}')",
+                )
+            if not members:
+                # Nothing representable is left. A definition with no
+                # properties is never sent, so every property that refers to it
+                # is dropped and recorded too, as the hoisting paths do.
+                del definitions[def_name]
+                self._drop_properties_referring_to(blueprint, def_name)
+        if "definitions" in blueprint and not definitions:
+            # Nothing references an empty object, so it is not sent at all.
+            del blueprint["definitions"]
+
+    def _drop_properties_referring_to(self, blueprint: dict, def_name: str) -> None:
+        """Drop and record every top-level property that refers to ``def_name``."""
+        ref = f"#/definitions/{def_name}"
+        properties = blueprint.get(SCHEMA_PROPERTIES) or {}
+        for name, prop in list(properties.items()):
+            if not isinstance(prop, dict):
+                continue
+            items = prop.get(SCHEMA_ITEMS)
+            if prop.get(REF_FIELD) == ref:
+                kind = "nested_object"
+            elif isinstance(items, dict) and items.get(REF_FIELD) == ref:
+                kind = "nested_array"
+            else:
+                continue
+            del properties[name]
+            self._record_skipped_property(
+                name,
+                kind,
+                f"Property '{name}' skipped - none of its members can be "
+                f"represented in a BDA blueprint",
+            )
 
     def _normalize_blueprint_text(self, node: object, path: str = "") -> None:
         """Make every ``instruction`` and ``description`` text BDA-acceptable.
@@ -1416,12 +1492,13 @@ class BdaBlueprintService:
         Process object properties, adding BDA fields to leaf properties only.
 
         BDA Limitations (as of current version):
-        - Nested objects are not supported
-        - Nested arrays (arrays within object definitions) are not supported
+        - Nested objects, and $ref members, are not supported
+        - Arrays of objects within object definitions are not supported; an array
+          of a scalar type is, and is kept
 
         TODO: When BDA supports nested structures, re-enable processing of:
         - TYPE_OBJECT properties with nested properties
-        - TYPE_ARRAY properties within object definitions
+        - TYPE_ARRAY properties of objects within object definitions
         """
         processed_properties = {}
 
@@ -1449,13 +1526,20 @@ class BdaBlueprintService:
                 )
                 continue
 
-            # Skip nested arrays - BDA doesn't support arrays within object definitions
-            # TODO: Re-enable when BDA supports nested arrays within objects
+            # A primitive array is kept: CreateBlueprint accepts one inside a
+            # definition (measured; catalog blueprints such as receipt carry it).
+            if self._is_primitive_array(value):
+                processed_properties[name] = self._add_bda_fields_to_schema(value)
+                continue
+
+            # Any other array nests an object or a $ref inside the definition,
+            # which BDA rejects.
             if value.get(SCHEMA_TYPE) == TYPE_ARRAY:
                 self._record_skipped_property(
                     name,
                     "nested_array",
-                    f"Property '{name}' skipped - BDA does not support nested arrays within definitions",
+                    f"Property '{name}' skipped - BDA does not support arrays of "
+                    f"objects within definitions",
                 )
                 continue
 
@@ -1465,6 +1549,27 @@ class BdaBlueprintService:
             )
 
         return processed_properties
+
+    @staticmethod
+    def _is_primitive_array(schema: object) -> bool:
+        """True for an array of strings or numbers.
+
+        Such an array is representable inside a definition; an array of objects
+        or of ``$ref`` items is not. Only ``string`` and ``number`` items were
+        probed (a leaf ``integer`` is rejected outright), so any other item type
+        is not treated as primitive and is dropped as before. ``items`` must be
+        present: an array with no ``items`` inside a definition was not probed.
+        """
+        if not isinstance(schema, dict) or schema.get(SCHEMA_TYPE) != TYPE_ARRAY:
+            return False
+        items = schema.get(SCHEMA_ITEMS)
+        return (
+            isinstance(items, dict)
+            and REF_FIELD not in items
+            and SCHEMA_PROPERTIES not in items
+            and SCHEMA_ITEMS not in items
+            and items.get(SCHEMA_TYPE, "string") in _PRIMITIVE_ARRAY_ITEM_TYPES
+        )
 
     def _process_array_property_simple(self, prop_value: dict) -> dict:
         """Process array properties for simple cases."""
@@ -1676,11 +1781,12 @@ class BdaBlueprintService:
 
     def _has_nested_complex_structures(self, properties: dict) -> bool:
         """
-        Check if properties contain nested complex structures (objects or arrays).
+        Check if properties contain nested complex structures (objects, or
+        arrays other than an array of a scalar type).
 
         BDA doesn't support:
         - Objects within objects
-        - Arrays within objects
+        - Arrays of objects within objects
 
         Args:
             properties: Properties dict to check
@@ -1699,8 +1805,9 @@ class BdaBlueprintService:
                 logger.debug(f"Found nested object property '{prop_name}'")
                 return True
 
-            # Check for nested arrays
-            if prop_type == TYPE_ARRAY:
+            # Check for nested arrays. A primitive array is not one: it is kept
+            # inside the definition (see _process_object_properties).
+            if prop_type == TYPE_ARRAY and not self._is_primitive_array(prop_value):
                 logger.debug(f"Found nested array property '{prop_name}'")
                 return True
 

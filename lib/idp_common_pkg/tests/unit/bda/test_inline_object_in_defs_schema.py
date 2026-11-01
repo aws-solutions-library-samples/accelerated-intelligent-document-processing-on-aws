@@ -94,8 +94,8 @@ INLINE_SCHEMA = {
         "Code": {"type": "string", "properties": {"Q": {"type": "string"}}},
         "Tags": {"type": "array", "items": {"type": "string"}},
         "Total": {"type": "number", "description": "total"},
-        # A leaf survives; the nested object and array are dropped individually,
-        # exactly as they are inside a $defs definition.
+        # A leaf and a primitive array survive; the nested object is dropped
+        # individually, exactly as it is inside a $defs definition.
         "Deep2": {
             "type": "object",
             "properties": {
@@ -128,7 +128,17 @@ INLINE_EXPECTED = {
             "type": "object",
             "properties": {"Amount": _leaf("number", "amt")},
         },
-        "Deep2": {"type": "object", "properties": {"Leaf": _leaf("string")}},
+        "Deep2": {
+            "type": "object",
+            "properties": {
+                "Leaf": _leaf("string"),
+                "Arr": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "instruction": "-",
+                },
+            },
+        },
     },
     "properties": {
         "Owner": {"$ref": "#/definitions/Contact", "instruction": "-"},
@@ -338,7 +348,6 @@ class TestInlineObjectInDefsSchema:
             service._transform_json_schema_to_bedrock_blueprint(INLINE_SCHEMA)
         dropped = sorted((d["property"], d["type"]) for d in recording.drops)
         assert dropped == [
-            ("Arr", "nested_array"),
             ("Deep", "nested_object"),
             ("EmptyRows", "nested_array"),
             ("Inner", "nested_object"),

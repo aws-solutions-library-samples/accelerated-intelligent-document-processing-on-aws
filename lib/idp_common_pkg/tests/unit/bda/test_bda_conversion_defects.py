@@ -9,9 +9,12 @@ DOCUMENT, us-west-2), not assumed:
 - rejected: a ``$ref`` member inside a definition, with or without an
   ``instruction``; an array of ``$ref`` items inside a definition.
 - accepted: a primitive array (``items: {"type": "string"}`` or ``number``) inside
-  a definition, with or without ``inferenceType``, and with ``"-"`` as its
-  instruction. AWS's own catalog blueprints (receipt, schedule C, medical
-  insurance card) carry the same shape.
+  a definition referenced by an object property, with or without
+  ``inferenceType``, and with ``"-"`` as its instruction. AWS's own catalog
+  blueprints (receipt, schedule C, medical insurance card) carry the same shape,
+  and only in that position.
+- rejected: the same primitive array inside a definition that an array's
+  ``items`` references (an array nested in an array).
 """
 
 from unittest.mock import MagicMock, patch
@@ -26,6 +29,20 @@ LEAF_DEFAULT = "Extract this field from the document"
 
 def _leaf(type_: str, instruction: str = LEAF_DEFAULT) -> dict:
     return {"type": type_, "inferenceType": "explicit", "instruction": instruction}
+
+
+def assert_no_array_in_an_item_definition(blueprint: dict) -> None:
+    """Probed: an array inside a definition that is used as array items is
+    rejected by CreateBlueprint."""
+    for prop in blueprint["properties"].values():
+        ref = (
+            (prop.get("items") or {}).get("$ref")
+            if prop.get("type") == "array"
+            else None
+        )
+        if ref:
+            members = blueprint["definitions"][ref.split("/")[-1]]["properties"]
+            assert not [n for n, m in members.items() if m.get("type") == "array"], ref
 
 
 @pytest.fixture
@@ -91,3 +108,211 @@ class TestRefInsideADefinition:
             "Name": _leaf("string")
         }
         assert_bda_accepted_shape(blueprint)
+
+
+@pytest.mark.unit
+class TestPrimitiveArrayInsideADefinition:
+    """Item 2: a primitive array inside a definition is kept, on both paths."""
+
+    MEMBERS = {
+        "Name": {"type": "string"},
+        "Tags": {"type": "array", "description": "tags", "items": {"type": "string"}},
+        "Amounts": {"type": "array", "items": {"type": "number"}},
+        "Rows": {
+            "type": "array",
+            "items": {"type": "object", "properties": {"A": {"type": "string"}}},
+        },
+        "Refs": {"type": "array", "items": {"$ref": "#/$defs/Other"}},
+        "Grid": {"type": "array", "items": {"type": "array", "items": {}}},
+        "Bare": {"type": "array"},
+    }
+    KEPT = {
+        "Name": _leaf("string"),
+        "Tags": {"type": "array", "items": {"type": "string"}, "instruction": "tags"},
+        "Amounts": {"type": "array", "items": {"type": "number"}, "instruction": "-"},
+    }
+
+    def test_defs_path(self, service):
+        schema = {
+            "$id": "T",
+            "$defs": {
+                "C": {"properties": dict(self.MEMBERS)},
+                "Other": {"properties": {"X": {"type": "string"}}},
+            },
+            "properties": {"C": {"$ref": "#/$defs/C"}},
+        }
+        with service._recording_drops_for("T") as recording:
+            blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        assert blueprint["definitions"]["C"]["properties"] == self.KEPT
+        assert sorted(d["property"] for d in recording.drops) == [
+            "Bare",
+            "Grid",
+            "Refs",
+            "Rows",
+        ]
+        assert_bda_accepted_shape(blueprint)
+        assert_no_array_in_an_item_definition(blueprint)
+
+    def test_flat_path_object_keeps_the_array_instead_of_dropping_the_object(
+        self, service
+    ):
+        primitive_only = {k: self.MEMBERS[k] for k in ("Name", "Tags", "Amounts")}
+        schema = {
+            "$id": "T",
+            "properties": {
+                "C": {"type": "object", "properties": primitive_only},
+                "Rows": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": primitive_only},
+                },
+            },
+        }
+        with service._recording_drops_for("T") as recording:
+            blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        assert blueprint["properties"]["C"] == {"$ref": "#/definitions/C"}
+        assert blueprint["definitions"]["C"]["properties"] == self.KEPT
+        # Used as array items, so its arrays would nest in an array: dropped.
+        assert blueprint["definitions"]["RowsItem"]["properties"] == {
+            "Name": _leaf("string")
+        }
+        assert sorted(d["property"] for d in recording.drops) == ["Amounts", "Tags"]
+        assert_bda_accepted_shape(blueprint)
+        assert_no_array_in_an_item_definition(blueprint)
+
+    def test_defs_path_definition_used_as_array_items_loses_its_arrays(self, service):
+        primitive_only = {k: self.MEMBERS[k] for k in ("Name", "Tags", "Amounts")}
+        schema = {
+            "$id": "T",
+            "$defs": {
+                "Shared": {"properties": dict(primitive_only)},
+                "Solo": {"properties": dict(primitive_only)},
+            },
+            "properties": {
+                "One": {"$ref": "#/$defs/Shared"},
+                "Many": {"type": "array", "items": {"$ref": "#/$defs/Shared"}},
+                "Only": {"$ref": "#/$defs/Solo"},
+            },
+        }
+        with service._recording_drops_for("T") as recording:
+            blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        assert blueprint["definitions"]["Shared"]["properties"] == {
+            "Name": _leaf("string")
+        }
+        assert blueprint["definitions"]["Solo"]["properties"] == self.KEPT
+        assert sorted(d["property"] for d in recording.drops) == ["Amounts", "Tags"]
+        assert all("'Shared'" in d["message"] for d in recording.drops)
+        assert_bda_accepted_shape(blueprint)
+        assert_no_array_in_an_item_definition(blueprint)
+
+    def test_flat_path_still_drops_an_object_holding_an_array_of_objects(self, service):
+        schema = {
+            "$id": "T",
+            "properties": {
+                "C": {
+                    "type": "object",
+                    "properties": {"Rows": self.MEMBERS["Rows"]},
+                },
+                "Leaf": {"type": "string"},
+            },
+        }
+        with service._recording_drops_for("T") as recording:
+            blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        assert list(blueprint["properties"]) == ["Leaf"]
+        assert [d["property"] for d in recording.drops] == ["C"]
+
+    @pytest.mark.parametrize("with_defs", [True, False])
+    def test_items_left_with_no_members_drop_the_array(self, service, with_defs):
+        """Not an empty definition: the array itself is dropped and recorded."""
+        item = {"type": "object", "properties": {"Tags": self.MEMBERS["Tags"]}}
+        properties = {
+            "Rows": {"type": "array", "items": item},
+            "Leaf": {"type": "string"},
+        }
+        schema = {"$id": "T", "properties": properties}
+        if with_defs:
+            schema["$defs"] = {"D": {"properties": {"X": {"type": "string"}}}}
+        with service._recording_drops_for("T") as recording:
+            blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        assert list(blueprint["properties"]) == ["Leaf"]
+        assert "RowsItem" not in blueprint.get("definitions", {})
+        if not with_defs:
+            # The only definition went, so no empty "definitions" is sent.
+            assert "definitions" not in blueprint
+        assert [(d["property"], d["type"]) for d in recording.drops] == [
+            ("Tags", "nested_array"),
+            ("Rows", "nested_array"),
+        ]
+
+    def test_a_shared_definition_left_empty_drops_every_reference(self, service):
+        schema = {
+            "$id": "T",
+            "$defs": {
+                "Only": {"properties": {"Tags": self.MEMBERS["Tags"]}},
+                "Keep": {"properties": {"X": {"type": "string"}}},
+            },
+            "properties": {
+                "One": {"$ref": "#/$defs/Only"},
+                "Many": {"type": "array", "items": {"$ref": "#/$defs/Only"}},
+                "K": {"$ref": "#/$defs/Keep"},
+            },
+        }
+        with service._recording_drops_for("T") as recording:
+            blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        assert list(blueprint["properties"]) == ["K"]
+        assert list(blueprint["definitions"]) == ["Keep"]
+        assert sorted((d["property"], d["type"]) for d in recording.drops) == [
+            ("Many", "nested_array"),
+            ("One", "nested_object"),
+            ("Tags", "nested_array"),
+        ]
+        assert_bda_accepted_shape(blueprint)
+
+    def test_every_item_definition_is_checked_and_only_arrays_go(self, service):
+        members = {
+            "Flag": {"type": "boolean"},
+            "Tags": self.MEMBERS["Tags"],
+            "Name": {"type": "string"},
+        }
+        schema = {
+            "$id": "T",
+            "$defs": {
+                "A": {"properties": dict(members)},
+                "B": {"properties": dict(members)},
+            },
+            "properties": {
+                "As": {"type": "array", "items": {"$ref": "#/$defs/A"}},
+                "Bs": {"type": "array", "items": {"$ref": "#/$defs/B"}},
+            },
+        }
+        with service._recording_drops_for("T") as recording:
+            blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        for name in ("A", "B"):
+            assert list(blueprint["definitions"][name]["properties"]) == [
+                "Flag",
+                "Name",
+            ]
+        assert [d["property"] for d in recording.drops] == ["Tags", "Tags"]
+        assert_no_array_in_an_item_definition(blueprint)
+
+    @pytest.mark.parametrize(
+        "schema,primitive",
+        [
+            ({"type": "array", "items": {"type": "string"}}, True),
+            ({"type": "array", "items": {}}, True),
+            # Only string and number items were probed; others stay dropped.
+            ({"type": "array", "items": {"type": "boolean"}}, False),
+            ({"type": "array", "items": {"type": "integer"}}, False),
+            ({"type": "array", "items": {"type": ["string", "null"]}}, False),
+            ({"type": "array"}, False),
+            ({"type": "array", "items": {"type": "object"}}, False),
+            ({"type": "array", "items": {"properties": {}}}, False),
+            ({"type": "array", "items": {"$ref": "#/$defs/X"}}, False),
+            ({"type": "array", "items": {"type": "array"}}, False),
+            ({"type": "array", "items": {"items": {}}}, False),
+            ({"type": "array", "items": "string"}, False),
+            ({"type": "string"}, False),
+            ("array", False),
+        ],
+    )
+    def test_is_primitive_array(self, schema, primitive):
+        assert BdaBlueprintService._is_primitive_array(schema) is primitive
