@@ -966,6 +966,15 @@ The BedrockClient automatically handles common failure scenarios:
 
 - Exponential backoff with jitter for rate limits and transient errors
 - Intelligent classification of retryable vs. non-retryable errors
+- A read or connect timeout, a failed connection (`EndpointConnectionError`) and a
+  connection dropped before the response arrived (`ConnectionClosedError`, botocore's
+  rewrap of urllib3's `ProtocolError`) are retried by `_invoke_with_retry` and counted
+  as `BedrockTimeouts`. botocore's own retries are pinned to one attempt, so this
+  ladder is the only one that sees them; a dropped connection used to fall to the
+  unexpected-error branch and fail the call on its first attempt.
+  `tests/unit/bedrock/test_retry_ladder_bounds.py` drives a real `bedrock-runtime`
+  client with only urllib3's `urlopen` replaced, so the exception is the one botocore
+  itself raises (#1706).
 - Detailed logging with appropriate content sanitization
 - Metrics collection for request counts, latencies, and token usage
 - A retry frees the attempt it replaces before it starts. Every ladder here

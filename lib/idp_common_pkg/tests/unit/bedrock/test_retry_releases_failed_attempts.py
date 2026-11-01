@@ -264,7 +264,8 @@ _NOVA_OVER_LIMIT = (
 )
 _CONVERSE_TIMEOUTS = (
     "(ReadTimeoutError, ConnectTimeoutError, EndpointConnectionError, "
-    "Urllib3ReadTimeoutError, RequestsReadTimeout, RequestsConnectTimeout)"
+    "ConnectionClosedError, Urllib3ReadTimeoutError, RequestsReadTimeout, "
+    "RequestsConnectTimeout)"
 )
 
 #: (ladder, where the retry is decided, route name) -> (runner, outcomes, expected
@@ -303,6 +304,11 @@ ROUTES: dict[tuple[str, str, str], tuple[Callable[[_Transport], None], list, typ
         _run_converse,
         [_rewrapped_timeout(ConnectTimeoutError)] * (RETRIES + 1),
         ConnectTimeoutError,
+    ),
+    ("_invoke_with_retry", _CONVERSE_TIMEOUTS, "connection closed, request kwarg"): (
+        _run_converse,
+        [_connection_closed()] * (RETRIES + 1),
+        ConnectionClosedError,
     ),
     ("_generate_embedding_with_retry", "ClientError", "throttle"): (
         _run_embedding,

@@ -22,6 +22,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import (
     ClientError,
+    ConnectionClosedError,
     ConnectTimeoutError,
     EndpointConnectionError,
     ReadTimeoutError,
@@ -2346,11 +2347,20 @@ class BedrockClient:
             ReadTimeoutError,
             ConnectTimeoutError,
             EndpointConnectionError,
+            ConnectionClosedError,
             Urllib3ReadTimeoutError,
             RequestsReadTimeout,
             RequestsConnectTimeout,
         ) as e:
-            # Handle timeout and connection errors (these are retryable)
+            # Handle timeout and connection errors (these are retryable).
+            # ``ConnectionClosedError`` is botocore's rewrap of urllib3's
+            # ``ProtocolError``: the connection dropped before a response arrived,
+            # which is as transient as a read timeout. It is NOT a subclass of any
+            # other class here (it derives from ``HTTPClientError``), so without its
+            # own entry it fell to ``except Exception`` below and failed the call on
+            # the first attempt. botocore's own retry handler would have retried it,
+            # but this client pins botocore to one attempt so that this ladder is the
+            # only one (#1706).
             error_message = str(e)
 
             self._put_metric("BedrockTimeouts", 1)
