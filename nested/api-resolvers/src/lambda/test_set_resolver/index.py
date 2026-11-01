@@ -2096,11 +2096,15 @@ def _harvest_active_label_job(test_set_id, meta):
     for job in jobs:
         try:
             harvested.append(_harvest_label_job(job, deadline=deadline))
+        except _LabelJobGone:
+            continue  # deleted by a label reset since it was listed: not a job now
         except Exception as e:  # noqa: BLE001
             logger.error(
                 f"Queue harvest failed for labeling job {job.get('jobId')}: {e}"
             )
             harvested.append(job)
+    if not harvested:
+        return None
 
     # Report the job the UI is tracking when it is one of these, else the newest,
     # so a progress banner follows the run the user started.
@@ -2842,6 +2846,8 @@ def _label_job_to_write(test_set_id, object_key):
         error = None
         try:
             job = _harvest_label_job(job, deadline=deadline)
+        except _LabelJobGone:
+            continue  # deleted by a label reset: it will write nothing
         except Exception as e:  # noqa: BLE001 — judged on the stored state instead
             logger.warning(
                 f"Could not advance labeling job {job.get('jobId')} before "
@@ -4457,7 +4463,8 @@ def _harvest_label_job(job, deadline=None):
         # needs a writer outside this function -- a manual repair or a migration, since
         # every version of this code has stored both sorted.
         condition = (
-            "(attribute_not_exists(#h) OR #h = :exp_h) "
+            f"{_LABEL_JOB_EXISTS} "
+            "AND (attribute_not_exists(#h) OR #h = :exp_h) "
             "AND (attribute_not_exists(#f) OR #f = :exp_f)"
         )
         try:
@@ -4482,6 +4489,14 @@ def _harvest_label_job(job, deadline=None):
             # the names still outstanding is what keeps the derived status honest
             # without recomputing it from the file list.
             fresh = db_client.get_item(job_key) or {}
+            if not fresh:
+                # The record was deleted, not raced: a label reset removed it. The
+                # set's status is left as the reset wrote it too.
+                logger.info(
+                    f"Draft labeling job {job_id}: the job was deleted while it "
+                    "was being harvested; not recording this pass"
+                )
+                raise _LabelJobGone(job_id)
             expected_done = sorted(fresh.get("harvestedFiles") or [])
             expected_failed = sorted(set(fresh.get("failedFiles") or []))
             done |= set(expected_done)
@@ -4538,6 +4553,24 @@ def _harvest_label_job(job, deadline=None):
 
 class _TargetSectionMissing(Exception):
     """A section-scoped run did not produce the targeted section as it was asked to."""
+
+
+class _LabelJobGone(ResourceNotFound):
+    """The labeling job's record was deleted after it was read (#1757).
+
+    A label reset deletes every job record of the set. A harvest that read the job
+    before the reset and wrote after it used to recreate the record, with no
+    ``createdAt`` and no document list, and put the set's label state back; the job
+    writes are conditional on the record existing, and this is raised instead.
+    """
+
+    def __init__(self, job_id):
+        super().__init__(f"Labeling job '{job_id}' not found")
+
+
+# Every write to an existing job record carries this, so a reset that deleted the
+# record between the writer's read and its write wins (#1757).
+_LABEL_JOB_EXISTS = "attribute_exists(PK)"
 
 
 def _read_json_or_none(bucket, key):
@@ -4813,15 +4846,30 @@ def _existing_label_is_human(bucket, key):
 
 
 def _fail_label_job(job, message):
-    db_client.update_item(
-        key={
-            "PK": f"testset#{job['testSetId']}",
-            "SK": _label_job_sk(job["jobId"]),
-        },
-        update_expression="SET #st = :s, #er = :e",
-        expression_attribute_names={"#st": "status", "#er": "error"},
-        expression_attribute_values={":s": "FAILED", ":e": message},
-    )
+    """Record the job FAILED, and the set's job status with it.
+
+    Raises :class:`_LabelJobGone`, writing nothing, when the job's record no longer
+    exists: a label reset deleted it, and failing it would recreate it.
+    """
+    try:
+        db_client.update_item(
+            key={
+                "PK": f"testset#{job['testSetId']}",
+                "SK": _label_job_sk(job["jobId"]),
+            },
+            update_expression="SET #st = :s, #er = :e",
+            expression_attribute_names={"#st": "status", "#er": "error"},
+            expression_attribute_values={":s": "FAILED", ":e": message},
+            condition_expression=_LABEL_JOB_EXISTS,
+        )
+    except DynamoDBError as e:
+        if e.error_code != "ConditionalCheckFailedException":
+            raise
+        logger.info(
+            f"Draft labeling job {job['jobId']} was deleted before it could be "
+            f"recorded as failed ({message}); leaving it deleted"
+        )
+        raise _LabelJobGone(job["jobId"]) from e
     db_client.update_item(
         key={"PK": f"testset#{job['testSetId']}", "SK": "metadata"},
         update_expression="SET labelJobStatus = :s",
