@@ -67,4 +67,5 @@ def test_the_setup_scripts_next_steps_install_nothing_with_pip():
     assert echoed
     offending = [line for line in echoed if _PIP_INSTALL.search(line)]
     assert not offending, f"{SETUP_SCRIPT.relative_to(REPO)} prints {offending}"
-    assert any("make setup-venv" in line for line in echoed)
+    # The step itself, not a mention of the target in another step's text.
+    assert any(re.search(r':\s*make setup-venv"\s*$', line) for line in echoed)
