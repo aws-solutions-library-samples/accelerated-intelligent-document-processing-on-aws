@@ -21,7 +21,7 @@ Requires the real strands package, per the conftest in this directory.
 from __future__ import annotations
 
 import asyncio
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from typing import Any
 from unittest.mock import patch
 
@@ -30,8 +30,10 @@ from pydantic import BaseModel
 from strands.event_loop.event_loop import MAX_ATTEMPTS
 
 from idp_common.config.models import IDPConfig
+from idp_common.discovery import rules_discovery as rules_discovery_module
 from idp_common.discovery.rules_discovery import RulesDiscovery
 from idp_common.extraction import agentic_idp
+from idp_common.extraction import service as service_module
 from idp_common.extraction.service import ExtractionService, SectionInfo
 
 pytestmark = pytest.mark.agentic
@@ -47,14 +49,31 @@ def built_agents():
     """Every agent ``structured_output_async`` constructs, recorded as Strands built
     it; the call stops right after."""
     agents: list[Any] = []
-    real_agent = agentic_idp.Agent
+    # Several test modules drop ``agentic_idp`` from ``sys.modules`` and re-import it,
+    # so a caller can hold a function from an older copy of the module. Patch ``Agent``
+    # where each caller's function actually looks it up, not only in the copy this
+    # file imported — patching only that let the discovery test reach the network
+    # when it ran after one of them.
+    namespaces = {
+        id(ns): ns
+        for ns in (
+            agentic_idp.__dict__,
+            rules_discovery_module.structured_output.__globals__,
+            service_module.structured_output.__globals__,
+            service_module.concurrent_structured_output_async.__globals__,
+        )
+    }.values()
 
-    def record(*args, **kwargs):
-        agent = real_agent(*args, **kwargs)
-        agents.append(agent)
-        raise _Built
+    with ExitStack() as stack:
+        for namespace in namespaces:
+            real_agent = namespace["Agent"]
 
-    with patch.object(agentic_idp, "Agent", record):
+            def record(*args, _real=real_agent, **kwargs):
+                agent = _real(*args, **kwargs)
+                agents.append(agent)
+                raise _Built
+
+            stack.enter_context(patch.dict(namespace, {"Agent": record}))
         yield agents
 
 
