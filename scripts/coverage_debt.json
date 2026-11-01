@@ -422,6 +422,10 @@
         "skipped": 0
       },
       "files": {
+        "agentcore_gateway_manager/__init__.py": 100.0,
+        "agentcore_gateway_manager/cfnresponse.py": 43.48,
+        "agentcore_gateway_manager/index.py": 55.43,
+        "agentcore_gateway_manager/log_sanitizer.py": 64.0,
         "api_handler/index.py": 90.91,
         "api_handler/models.py": 100.0,
         "batch_pre_processor/index.py": 92.08,

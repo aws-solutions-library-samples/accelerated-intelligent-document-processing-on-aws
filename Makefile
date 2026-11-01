@@ -931,6 +931,11 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# index.py -- which also means this needs no region pin, as every boto3 client
 	@# is a MagicMock.
 	cd src/lambda/start_codebuild && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# AgentCore gateway custom resource: no toolkit observability on create, and
+	@# Delete removes the log group and delivery resources older versions left
+	@# (#1731). The toolkit is stubbed in sys.modules; the logs client is a real
+	@# botocore client behind a Stubber with an explicit region.
+	cd src/lambda/agentcore_gateway_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/test_file_copier && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/update_configuration && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/user_management && $(PYTEST_HERMETIC) -q -p no:cacheprovider
