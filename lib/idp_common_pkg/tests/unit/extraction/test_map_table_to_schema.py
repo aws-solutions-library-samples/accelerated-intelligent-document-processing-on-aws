@@ -5,9 +5,19 @@
 
 from __future__ import annotations
 
-import strands  # noqa: E402 — mocked by conftest; make @tool a passthrough
+import pytest
 
-strands.tool = lambda fn: fn
+# The factories' tools are decorated with the REAL strands ``@tool`` and called
+# directly: ``DecoratedFunctionTool.__call__`` forwards to the wrapped function.
+# Do not replace the decorator here (``strands.tool``, or the name a production
+# module bound from it): a replacement made at import outlives this module and
+# turns every Strands tool built later in the same process into a plain
+# function, which an Agent then cannot register (#1756). The strands-binding
+# check in tests/conftest.py fails a module that does it.
+DecoratedFunctionTool = pytest.importorskip(
+    "strands.tools.decorator",
+    reason="strands-agents not installed (a conftest stub does not count)",
+).DecoratedFunctionTool
 
 from idp_common.extraction.tools.table_parser import (  # noqa: E402
     create_map_table_to_schema_tool,
@@ -526,3 +536,23 @@ class TestMapTableDateTransforms:
         unknown = [w for w in result["warnings"] if "Unknown value transform" in w]
         assert len(unknown) == 1
         assert "date_to_iso_mdy" in unknown[0]
+
+
+# =============================================================================
+# The factory returns a real Strands tool
+# =============================================================================
+
+
+class TestMapTableToSchemaIsAStrandsTool:
+    """The factory must hand the agent a registrable tool, not a bare function."""
+
+    def test_factory_returns_a_strands_tool(self):
+        tool_fn = create_map_table_to_schema_tool()
+        assert isinstance(tool_fn, DecoratedFunctionTool)
+        assert tool_fn.tool_name == "map_table_to_schema"
+
+    def test_agent_parameter_is_not_asked_of_the_model(self):
+        spec = create_map_table_to_schema_tool().tool_spec
+        properties = spec["inputSchema"]["json"]["properties"]
+        assert "column_mapping" in properties
+        assert "agent" not in properties
