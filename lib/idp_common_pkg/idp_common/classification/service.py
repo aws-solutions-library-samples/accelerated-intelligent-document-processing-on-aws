@@ -166,8 +166,20 @@ def _looks_like_an_image_refusal(exc: Exception) -> bool:
     only consults this when the request actually carried images, so the worst case
     is appending an image hint to an image-shaped error that had another cause.
     """
+    from idp_common.utils.bedrock_utils import (
+        is_image_request_rejection,
+        is_input_token_overflow,
+    )
+
     text = str(exc).lower()
     if not any(marker in text for marker in _IMAGE_REFUSAL_MARKERS):
+        return False
+    # A request too large for the model, or images it rejects for their size or
+    # number, is a request the model DOES accept images on: the remedy is a
+    # smaller request or smaller pages, and "turn images off" would discard the
+    # input for nothing. Judged by the shared matchers extraction uses rather
+    # than by more words here, so the two cannot drift apart.
+    if is_input_token_overflow(exc) or is_image_request_rejection(exc):
         return False
     # ⚠️ Not every image-shaped error is a CAPABILITY refusal, and the remedy
     # differs: "set modality.images to false" is wrong advice for an image that
@@ -2605,8 +2617,12 @@ class ClassificationService:
                     raw_text_uri=raw_text_uri,
                 )
 
-        # Verify we have at least some content to classify
-        if not text_content and not image_content:
+        # Verify we have at least some content to classify. Whitespace is not
+        # content: OCR of a blank sheet commonly yields line breaks or spaces
+        # rather than "", and sending that to the model buys a class the page
+        # gives it no evidence for.
+        has_text = bool(text_content and text_content.strip())
+        if not has_text and not image_content:
             logger.warning(f"No content available for page {page_id}")
             # Genuinely empty only when nothing went wrong: the page's text was
             # read and is empty, and no image was expected because images are
@@ -5256,7 +5272,10 @@ class ClassificationService:
             partial result is still reported as partial rather than as a clean
             run over fewer pages.
         """
-        from idp_common.utils.bedrock_utils import is_input_token_overflow
+        from idp_common.utils.bedrock_utils import (
+            is_image_count_rejection,
+            is_input_token_overflow,
+        )
 
         pages_content, _ = self._format_pages_with_coverage(document)
         config = self._get_classification_config(stage)
@@ -5301,10 +5320,11 @@ class ClassificationService:
                     error_msg = (
                         f"Packet window {window_label} "
                         f"(pages {window_page_ids[0]}-{window_page_ids[-1]}) was "
-                        f"not classified: retrying windows that exceeded the "
-                        f"model's input used all {split_budget} calls allowed. "
-                        f"Lower packet.window_pages, or set image.target_width "
-                        f"and target_height so pages render smaller."
+                        f"not classified: retrying windows the model refused as "
+                        f"too large used all {split_budget} calls allowed. "
+                        f"Lower packet.window_pages; for a refusal over input "
+                        f"length, image.target_width and target_height also make "
+                        f"each page smaller."
                     )
                     logger.error(error_msg)
                     errors.append(error_msg)
@@ -5321,9 +5341,14 @@ class ClassificationService:
                     forced_class=forced_class,
                 )
             except Exception as e:
+                # Two refusals that a smaller window fixes: the input is too
+                # long, or the request carries too many page images (Bedrock
+                # caps images per request, so a window above that cap with
+                # images on is refused however few tokens it holds). Both are
+                # properties of how many pages one call carries.
                 halves = (
                     self._split_overflowing_window(window_page_ids)
-                    if is_input_token_overflow(e)
+                    if is_input_token_overflow(e) or is_image_count_rejection(e)
                     else None
                 )
                 # Termination is checked here rather than trusted to the
@@ -5336,8 +5361,8 @@ class ClassificationService:
                     # window packet is already split, so a too-large window is
                     # split the same way rather than failing the document.
                     logger.warning(
-                        "Packet window %s (pages %s-%s) exceeded the model's "
-                        "input limit; retrying as windows of %d and %d pages: %s",
+                        "Packet window %s (pages %s-%s) was refused as too large "
+                        "for one request; retrying as windows of %d and %d pages: %s",
                         window_label,
                         window_page_ids[0],
                         window_page_ids[-1],

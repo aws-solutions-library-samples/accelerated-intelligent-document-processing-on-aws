@@ -3,6 +3,7 @@
 
 import { getDocumentConfidenceAlertCount } from './confidence-alerts-utils';
 import { getDocumentProcessingIssueCount } from './processing-issues-utils';
+import { resolveMissingRequiredFieldCount } from './missing-required-fields-utils';
 import { parseMetering, parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
 import { isHitlReviewFinished } from './review-status';
 
@@ -37,6 +38,7 @@ interface DocumentApiItem {
   HITLReviewedByEmail?: string;
   HITLReviewHistory?: string | Record<string, unknown>[];
   ConfidenceAlertCount?: number;
+  MissingRequiredFieldCount?: number | null;
   ProcessingIssueCount?: number;
   ConfigVersion?: string;
   ConfigRevision?: number | null;
@@ -142,6 +144,14 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
         ? apiProcessingIssueCount
         : getDocumentProcessingIssueCount((sections ?? null) as Parameters<typeof getDocumentProcessingIssueCount>[0]);
 
+    // Missing required fields (#1527): the stored count when present, else the
+    // sum of the sections' lists, else null — the document list's fast path
+    // carries neither, and a 0 there would claim something the row cannot know.
+    const missingRequiredFieldCount = resolveMissingRequiredFieldCount(
+      item.MissingRequiredFieldCount,
+      (sections ?? null) as Parameters<typeof resolveMissingRequiredFieldCount>[1],
+    );
+
     // Extract HITL metadata - use HITLTriggered from backend, fallback to status check
     const hitlTriggered = item.HITLTriggered === true || (hitlStatus && hitlStatus !== 'N/A');
     // Finished means completed, skipped, or (for a queue review) rejected.
@@ -175,6 +185,7 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       summaryReportUri,
       ruleValidationResultUri,
       confidenceAlertCount,
+      missingRequiredFieldCount,
       processingIssueCount,
       listPK,
       listSK,

@@ -16,6 +16,7 @@ import useUserRole from '../../hooks/use-user-role';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import { getDocumentConfidenceAlertCount } from '../common/confidence-alerts-utils';
+import { getDocumentMissingRequiredFieldCount, resolveMissingRequiredFieldCount } from '../common/missing-required-fields-utils';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
 import { getMalwareScanView } from '../common/malware-scan';
 import { renderObjectStatus } from '../common/object-status-renderer';
@@ -56,6 +57,7 @@ interface MappedDocument {
   summaryReportUri?: string;
   ruleValidationResultUri?: string;
   sections?: Record<string, unknown>[];
+  missingRequiredFieldCount?: number | null;
   pages?: Record<string, unknown>[];
   metering?: Record<string, Record<string, unknown>> | null;
   executionArn?: string;
@@ -140,6 +142,27 @@ const ConfidenceAlertsSection = ({ sections, mergedConfig }: ConfidenceAlertsSec
   return <StatusIndicator type="warning">{totalAlertCount}</StatusIndicator>;
 };
 
+/**
+ * Required fields extraction left absent (#1527), next to the confidence alerts.
+ * An absent field raises no confidence alert, so it is counted here instead.
+ */
+export const MissingRequiredFieldsCount = ({
+  count,
+  sections,
+}: {
+  count: number | null | undefined;
+  sections: Record<string, unknown>[] | undefined;
+}): React.JSX.Element => {
+  const resolved = resolveMissingRequiredFieldCount(count, sections as Parameters<typeof resolveMissingRequiredFieldCount>[1]);
+  if (resolved === null) {
+    return <>-</>;
+  }
+  if (resolved === 0) {
+    return <StatusIndicator type="success">0</StatusIndicator>;
+  }
+  return <StatusIndicator type="warning">{resolved}</StatusIndicator>;
+};
+
 const isHitlSkippedStatus = (raw: string | null | undefined): boolean => normalizeHitlStatus(raw).kind === 'skipped';
 
 /** One field of the Document Details grid: its label over its value. */
@@ -199,6 +222,9 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
       )}
       <Field label="Confidence Alerts">
         <ConfidenceAlertsSection sections={item.sections} mergedConfig={item.mergedConfig} />
+      </Field>
+      <Field label="Missing Required Fields">
+        <MissingRequiredFieldsCount count={item.missingRequiredFieldCount} sections={item.sections} />
       </Field>
       <Field label="Summary">{item.summaryReportUri ? 'Available' : 'N/A'}</Field>
       <MalwareScanAttribute item={item} />
@@ -373,6 +399,11 @@ export const DocumentPanel = ({
     return {
       ...localItem,
       sections: (versionDetail.Sections ?? []) as Record<string, unknown>[],
+      // A run record stores the per-section lists but no document count, and the
+      // live document's count describes a different run.
+      missingRequiredFieldCount: getDocumentMissingRequiredFieldCount(
+        (versionDetail.Sections ?? []) as Parameters<typeof getDocumentMissingRequiredFieldCount>[0],
+      ),
       pages: (versionDetail.Pages ?? []) as Record<string, unknown>[],
       summaryReportUri: versionDetail.SummaryReportUri ?? '',
       evaluationReportUri: versionDetail.EvaluationReportUri ?? '',

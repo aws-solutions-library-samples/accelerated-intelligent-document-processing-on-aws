@@ -23,6 +23,7 @@ import { SectionClassMismatch } from '../common/ClassMismatchIndicator';
 import ClassNameText from '../common/ClassNameText';
 import { EMPTY_CLASSIFICATION_INDEX, type ClassificationIndex } from '../common/classification-comparison-utils';
 import { getSectionIssueStatus } from '../common/processing-issues-utils';
+import { getSectionMissingRequiredFields } from '../common/missing-required-fields-utils';
 import type { EditableSection } from '../../types/documents';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
@@ -215,6 +216,44 @@ const ConfidenceAlertsCell = ({
   }
 
   return <StatusIndicator type="warning">{alertCount}</StatusIndicator>;
+};
+
+/**
+ * Required fields of this section's class that extraction left absent (#1527),
+ * as a count beside the low-confidence count, with the field names on hover. An
+ * absent field raises no confidence alert, so it is listed here instead.
+ */
+export const MissingRequiredFieldsCell = ({ item }: { item: SectionItem }): React.JSX.Element => {
+  const missing = getSectionMissingRequiredFields(item);
+  if (missing.length === 0) {
+    return <StatusIndicator type="success">0</StatusIndicator>;
+  }
+  return (
+    <Popover
+      dismissButton={false}
+      position="top"
+      size="medium"
+      triggerType="custom"
+      header="Missing required fields"
+      content={
+        <SpaceBetween size="xxs">
+          {missing.map((field) => (
+            // Paths are unique within a section, so the path is the key.
+            <Box key={field.attributeName || '(unnamed field)'} variant="code">
+              {field.attributeName || '(unnamed field)'}
+            </Box>
+          ))}
+          <Box variant="small" color="text-body-secondary">
+            The class schema marks these fields required and extraction found no value for them. They raise no confidence alert.
+          </Box>
+        </SpaceBetween>
+      }
+    >
+      <span style={{ cursor: 'pointer' }}>
+        <StatusIndicator type="warning">{missing.length}</StatusIndicator>
+      </span>
+    </Popover>
+  );
 };
 
 // Processing status cell: a worst-severity StatusIndicator over the section's
@@ -431,6 +470,7 @@ export const SECTION_COLUMN_OPTIONS = [
   { id: 'class', label: 'Class/Type' },
   { id: 'pageIds', label: 'Page IDs' },
   { id: 'confidenceAlerts', label: 'Low Confidence Fields' },
+  { id: 'missingRequiredFields', label: 'Missing Required Fields' },
   { id: 'status', label: 'Status' },
 ] as const;
 
@@ -466,6 +506,11 @@ export const sectionColumnDefinitions = (
       id: 'confidenceAlerts',
       header: 'Low Confidence Fields',
       cell: (item: SectionItem) => <ConfidenceAlertsCell item={item} mergedConfig={mergedConfig} />,
+    },
+    {
+      id: 'missingRequiredFields',
+      header: 'Missing Required Fields',
+      cell: (item: SectionItem) => <MissingRequiredFieldsCell item={item} />,
     },
     {
       id: 'status',

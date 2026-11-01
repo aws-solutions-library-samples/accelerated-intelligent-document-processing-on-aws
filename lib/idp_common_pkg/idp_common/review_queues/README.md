@@ -97,7 +97,8 @@ In queue mode:
 - **Reasons.** Each of a section's `confidence_threshold_alerts` (computed by
   assessment or extraction in Pipeline mode, and by BDA processing in BDA mode, with
   the field's `x-aws-idp-confidence-threshold` and otherwise
-  `hitl.confidence_threshold`) is a `low_confidence` reason named by its path
+  `hitl.confidence_threshold`, and never raised for a field with no extracted
+  value, see `idp_common.assessment.presence`) is a `low_confidence` reason named by its path
   (`Address.City`, `Rows[0].Amount`), with the alert's confidence and threshold. In
   BDA mode a matched blueprint under `hitl.confidence_threshold` is a
   `blueprint_confidence` reason, and so is a matched blueprint whose confidence is
@@ -107,7 +108,9 @@ In queue mode:
   true), so a reprocess that reloads the document is held again. A section whose segment matched no blueprint is
   unscored too but is not flagged, so it is not held, as legacy HITL does not mark
   it. So routing agrees exactly with the alerts users
-  see, and it reads nothing from S3. A malformed alert is skipped. The module must
+  see, and it reads nothing from S3. A malformed alert is skipped. A section's
+  `missing_required_fields` are not reasons and nothing here reads them; they are
+  the input for routing on missing data, which does not exist yet. The module must
   not import `idp_common.assessment`: the Pipeline ProcessResults Lambda installs
   only the `review_queues` extra. Up to 20 reasons are stored per item, worst gap
   first; `reason_count` keeps the total.
