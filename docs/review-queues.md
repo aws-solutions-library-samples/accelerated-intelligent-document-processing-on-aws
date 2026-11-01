@@ -268,11 +268,15 @@ moves them there.
 if it was off, turn it on in Review Management. Documents from profiles with HITL
 off are no longer queued.
 
-Deleting a queue that still holds items moves them to the Default queue first, and
+Deleting a queue that still holds items moves them to the Default queue, and
 the confirmation says how many will move:
 open and assigned items become unassigned there (an assignee is told), and items
 still waiting for their first run to finish are activated in Default. Deleting is
 refused while one of the queue's items is being finalized; try again a minute later.
+The queue is deleted before its items move, so a delete that is refused has moved
+nothing. If one stops part-way, the queue stays listed as no longer defined while
+it still holds open or assigned items, and deleting it again moves them; items
+still waiting for their first run are activated in Default either way.
 An **Escalation** queue that an earlier release created is an ordinary queue and can
 be deleted.
 

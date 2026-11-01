@@ -8,6 +8,8 @@ on a stack that has other queues. It is the only queue that can't be deleted: an
 Escalation queue an older release seeded is an ordinary queue.
 """
 
+from decimal import Decimal
+
 import pytest
 
 from idp_common.dynamodb.client import (
@@ -58,6 +60,56 @@ class TestSeeding:
         defs.put(QueueDefinition(id=DEFAULT_QUEUE_ID, enabled=False), create=True)
         assert defs.get(DEFAULT_QUEUE_ID).enabled is False
 
+    def test_a_listing_that_misses_default_reports_the_stored_one(
+        self, defs, monkeypatch
+    ):
+        # An eventually consistent query can miss a Default that exists; the seed is
+        # then refused, and what is listed must be the stored Default, not the seed.
+        defs.list()
+        defs.put(QueueDefinition(id=DEFAULT_QUEUE_ID, priority=80), create=False)
+        defs.put(QueueDefinition(id=DEFAULT_QUEUE_ID, priority=90), create=False)
+        monkeypatch.setattr(defs.client, "query_pages", lambda *a, **k: iter([{}]))
+        defs.invalidate()
+        (default,) = defs.list()
+        assert (default.version, default.priority) == (3, 90)
+        assert defs.read_current(DEFAULT_QUEUE_ID).version == 3
+
+    def test_a_stored_default_that_cannot_be_read_lists_the_seed(
+        self, defs, monkeypatch, caplog
+    ):
+        defs.list()
+        defs.put(QueueDefinition(id=DEFAULT_QUEUE_ID, priority=80), create=False)
+        monkeypatch.setattr(defs.client, "query_pages", lambda *a, **k: iter([{}]))
+
+        def throttled(*_a, **_k):
+            raise DynamoDBError("slow down", "ProvisionedThroughputExceededException")
+
+        monkeypatch.setattr(defs.client, "get_item", throttled)
+        defs.invalidate()
+        (default,) = defs.list()
+        assert (default.id, default.version) == (DEFAULT_QUEUE_ID, 1)
+        assert "event=queue_default_read_failed" in caplog.text
+
+    def test_a_refused_seed_with_nothing_stored_lists_the_seed(self, defs, monkeypatch):
+        # Refused, then gone again by the time it is read: the seed is listed.
+        def refused(*_a, **_k):
+            raise DynamoDBError("exists", "ConditionalCheckFailedException")
+
+        monkeypatch.setattr(defs.client, "put_item", refused)
+        (default,) = defs.list()
+        assert (default.id, default.version) == (DEFAULT_QUEUE_ID, 1)
+
+    def test_a_seed_that_fails_for_another_reason_still_lists_default(
+        self, defs, monkeypatch, caplog
+    ):
+        def throttled(*_a, **_k):
+            raise DynamoDBError("slow down", "ProvisionedThroughputExceededException")
+
+        monkeypatch.setattr(defs.client, "put_item", throttled)
+        (default,) = defs.list()
+        assert (default.id, default.version) == (DEFAULT_QUEUE_ID, 1)
+        assert "event=queue_default_seed_failed queue=default" in caplog.text
+
     def test_new_fields_survive_an_update(self, defs):
         defs.list()
         defs.put(
@@ -76,6 +128,22 @@ class TestDelete:
             defs.delete(DEFAULT_QUEUE_ID)
         assert exc.value.code == "PROTECTED_QUEUE"
         assert _stored_ids(defs) == [DEFAULT_QUEUE_ID]
+
+    @pytest.mark.parametrize("spelling", ["Default", " DEFAULT ", "default "])
+    def test_default_is_protected_however_it_is_spelled(self, defs, spelling):
+        # The id is normalised before it is looked up, so the guard must compare the
+        # normalised id too, or another spelling deletes the Default queue.
+        defs.list()
+        with pytest.raises(ReviewValidationError) as exc:
+            defs.delete(spelling)
+        assert exc.value.code == "PROTECTED_QUEUE"
+        assert _stored_ids(defs) == [DEFAULT_QUEUE_ID]
+
+    def test_another_queue_is_deleted_however_it_is_spelled(self, defs):
+        defs.put(QueueDefinition(id="claims"), create=True)
+        defs.delete(" Claims ")
+        assert _stored_ids(defs) == []
+        assert _retired(defs, "claims") == 1
 
     def test_an_escalation_queue_is_ordinary(self, defs):
         defs.put(QueueDefinition(id="escalation", priority=90), create=True)
@@ -152,6 +220,59 @@ class TestVersionedUpdates:
                 )
             assert exc.value.code == "UNKNOWN_QUEUE"
         assert _raw_item(defs, "ghost") is None
+
+    @pytest.mark.parametrize(
+        "stored", ["abc", "3", -2, True, ["1"]], ids=lambda v: repr(v)
+    )
+    def test_a_malformed_version_reads_as_0_and_stays_editable(
+        self, defs, stored, caplog
+    ):
+        # A Version that is not a non-negative whole number must not drop the queue
+        # from the listing, and the queue must stay editable and deletable: version 0
+        # matches it the way it matches a definition stored without one.
+        item = QueueDefinition(id="odd", priority=40).to_item()
+        item["Version"] = stored
+        defs.client.put_item(item)
+        assert [d.id for d in defs.list(fresh=True)].count("odd") == 1
+        assert defs.read_current("odd").version == 0
+        assert "event=queue_definition_version_invalid queue=odd" in caplog.text
+        if stored is not True:  # moto compares a stored true equal to the number 1
+            with pytest.raises(ReviewConflict):
+                defs.put(QueueDefinition(id="odd"), create=False, expected_version=1)
+        updated = defs.put(
+            QueueDefinition(id="odd", priority=60), create=False, expected_version=0
+        )
+        assert (updated.version, _raw_item(defs, "odd")["Version"]) == (1, 1)
+        item["Version"] = stored
+        defs.client.put_item(item)
+        assert defs.put(QueueDefinition(id="odd"), create=False).version == 1
+        item["Version"] = stored
+        defs.client.put_item(item)
+        defs.delete("odd")
+        assert _raw_item(defs, "odd") is None
+        assert _retired(defs, "odd") == 0
+
+    def test_a_stored_version_of_0_is_matched_by_0(self, defs):
+        item = QueueDefinition(id="zero").to_item()
+        assert item["Version"] == 0
+        defs.client.put_item(item)
+        updated = defs.put(QueueDefinition(id="zero"), create=False, expected_version=0)
+        assert (updated.version, _raw_item(defs, "zero")["Version"]) == (1, 1)
+
+    def test_a_fractional_version_is_listed_as_0(self, defs):
+        # Listed rather than dropped. It is not matched by version 0 (a condition
+        # expression cannot test for a fraction), and nothing here writes one.
+        item = QueueDefinition(id="odd").to_item()
+        item["Version"] = Decimal("2.5")
+        defs.client.put_item(item)
+        listed = {d.id: d.version for d in defs.list(fresh=True)}
+        assert listed["odd"] == 0
+
+    def test_a_well_formed_version_is_not_matched_by_0(self, defs):
+        defs.put(QueueDefinition(id="claims"), create=True)
+        with pytest.raises(ReviewConflict):
+            defs.put(QueueDefinition(id="claims"), create=False, expected_version=0)
+        assert _raw_item(defs, "claims")["Version"] == 1
 
     def test_a_definition_stored_before_versions_reads_as_0(self, defs):
         item = QueueDefinition(id="legacy", priority=40).to_item()

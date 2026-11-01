@@ -8,7 +8,8 @@
  * order (Assigned counts every assigned item, started or not; the other settings
  * stay in the queue's Settings dialog); every production queue but Default can be
  * deleted, even one that holds items, and the confirmation says those items move to
- * the Default queue; a refusal while an item is being completed is shown in the
+ * the Default queue; so can a queue that is no longer defined but still holds items
+ * (what a delete that stopped part-way leaves), moving the rest; a refusal while an item is being completed is shown in the
  * dialog.
  */
 
@@ -164,6 +165,29 @@ describe('the Production Queues table', () => {
     await waitFor(() => expect(setSuccessMessage).toHaveBeenCalledWith(expect.stringContaining('moved to the Default queue')));
   });
 
+  it('lets a queue that is no longer defined but holds items be deleted again, moving them', async () => {
+    // What a delete that stopped part-way leaves: the definition is gone first, the items after.
+    fetchQueuesOverview.mockResolvedValue({
+      queues: [
+        health('default', 0),
+        health('claims', 3, 2, 1),
+        { ...health('gone', 2), summary: { ...health('gone', 2).summary, displayName: 'Gone Queue' } },
+      ],
+    });
+    await renderPage();
+    await waitFor(() => expect(table().findRows().length).toBe(3));
+    const menu = openMenu('Gone Queue');
+    expect(itemDisabled(menu.findItemById('delete')!)).toBe(false);
+    expect(itemDisabled(menu.findItemById('edit')!)).toBe(true);
+    menu.findItemById('delete')!.click();
+    const modal = deleteModal();
+    expect(modal.findContent().getElement().textContent).toBe(
+      "Delete the queue Gone Queue (gone)? This can't be undone. 2 items will move to the Default queue.",
+    );
+    fireEvent.click(modal.findFooter()!.findAllButtons().at(-1)!.getElement());
+    await waitFor(() => expect(deleteReviewQueue).toHaveBeenCalledWith('gone'));
+  });
+
   it('keeps the Default queue from being deleted', async () => {
     await renderPage();
     const del = openMenu('Default').findItemById('delete')!;
@@ -224,6 +248,10 @@ describe('the table helpers', () => {
     expect(deleteDisabledReason(def('default'))).toBe("The default queue can't be deleted");
     expect(deleteDisabledReason(def('escalation'))).toBeUndefined();
     expect(deleteDisabledReason(null)).toBe('This queue is not defined');
+    expect(deleteDisabledReason(null, 0)).toBe('This queue is not defined');
+    expect(deleteDisabledReason(null, 1)).toBeUndefined();
+    expect(deleteDisabledReason(null, 2)).toBeUndefined();
+    expect(deleteDisabledReason(def('default'), 2)).toBe("The default queue can't be deleted");
   });
 
   it('names the items that will move only when there are some', () => {
