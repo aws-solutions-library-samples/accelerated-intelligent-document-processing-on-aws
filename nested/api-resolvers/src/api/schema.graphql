@@ -1503,6 +1503,9 @@ type ReviewQueueDefinition @aws_cognito_user_pools {
   isDefaultQueue: Boolean!
   # When false, no documents are added to this queue.
   enabled: Boolean
+  # Bumped by every write. Send it back with updateReviewQueue so a save built from
+  # a definition someone has since changed is refused instead of overwriting it.
+  version: Int
 }
 
 input ReviewQueueDefinitionInput {
@@ -1518,6 +1521,11 @@ input ReviewQueueDefinitionInput {
   eligibleAnnotators: [String!]
   # A new queue defaults to true, an update keeps the stored value when omitted.
   enabled: Boolean
+  # updateReviewQueue: the version the edit was built from (ReviewQueueDefinition.version).
+  # When the stored queue has a different one, the update is refused with
+  # QUEUE_CHANGED. Omitted, the update replaces whatever is stored. createReviewQueue
+  # ignores it.
+  version: Int
 }
 
 type AnnotationQueue @aws_cognito_user_pools @aws_iam {

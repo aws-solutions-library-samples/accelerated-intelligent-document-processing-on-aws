@@ -231,6 +231,15 @@ their User Management record is created when they're first given a test set.
 Each row's actions menu offers **View** and **Settings**; a production queue also
 offers **Delete**. Each queue's page has a **Settings** button too.
 
+If another Admin saves a production queue's **Settings** while you have them open,
+your **Save** is refused rather than overwriting their change: the dialog says the
+queue was changed by someone else, and **Reload queue** fills it with the current
+settings so you can make your change again. Reloading replaces what you had entered.
+Through the API, send back the `version` that `listReviewQueues` returned with
+`updateReviewQueue`; a stale one is refused with `QUEUE_CHANGED`. An update that sends
+no `version` (an older client) replaces whatever is stored when it is made, and is
+refused only if another save lands while it is being written.
+
 **Production queues** are edited in **Settings** and deleted here. Queue
 Management has no **Create queue**: documents are routed to the Default queue, and
 any other queue that already exists stays listed and usable. Each queue has:

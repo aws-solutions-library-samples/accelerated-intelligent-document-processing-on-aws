@@ -26,8 +26,10 @@ from typing import Any, Callable, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from idp_common.dynamodb.client import DynamoDBTransactionCanceledError
+
 from . import keys
-from .exceptions import ReviewValidationError
+from .exceptions import ReviewConflict, ReviewValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,11 @@ class QueueDefinition(BaseModel):
     eligible_annotators: List[str] = Field(default_factory=list, max_length=200)
     #: When off, no documents are added to this queue.
     enabled: bool = True
+    #: Bumped by every write (:meth:`QueueDefStore.put`). An update names the version
+    #: it was built from and is refused if the stored one has moved on, so two Admins
+    #: editing one queue cannot silently overwrite each other. A definition stored
+    #: before versions existed reads as 0.
+    version: int = Field(default=0, ge=0)
 
     @field_validator("id", mode="before")
     @classmethod
@@ -156,6 +163,7 @@ class QueueDefinition(BaseModel):
             "TimeLimitMinutes": self.time_limit_minutes,
             "EligibleAnnotators": list(self.eligible_annotators),
             "Enabled": self.enabled,
+            "Version": self.version,
         }
 
     @classmethod
@@ -177,6 +185,7 @@ class QueueDefinition(BaseModel):
             # A stored ConfidenceThreshold (an older queue setting) is ignored. A
             # definition stored before the switch existed reads as on.
             enabled=True if enabled is None else bool(enabled),
+            version=int(item.get("Version") or 0),
         )
 
 
@@ -226,6 +235,67 @@ class QueuesView:
         return list(default.skip_reasons if default else DEFAULT_SKIP_REASONS)
 
 
+#: How often an update that names no version re-reads and retries when another write
+#: lands between its read and its put.
+_UNVERSIONED_ATTEMPTS = 3
+
+
+#: A transaction cancellation reason: that item's condition was false.
+_TXN_CONDITION_FAILED = "ConditionalCheckFailed"
+#: A cancellation reason meaning another transaction held the item: a concurrent
+#: write, retried like a moved version rather than surfaced as a server fault.
+_TXN_CONFLICT = "TransactionConflict"
+_TXN_CONTENDED = frozenset({_TXN_CONDITION_FAILED, _TXN_CONFLICT})
+
+#: How often a create or delete re-reads and retries when a concurrent write moves
+#: the version it read.
+_CONTENDED_ATTEMPTS = 3
+
+
+def _version_condition(expected: int) -> str:
+    """The definition exists at version ``:expected``.
+
+    A definition stored before versions existed has no Version and reads as 0.
+    """
+    return "attribute_exists(PK) AND " + (
+        "(attribute_not_exists(Version) OR Version = :expected)"
+        if expected == 0
+        else "Version = :expected"
+    )
+
+
+def _retired_check(queue_id: str, retired: Optional[int]) -> dict[str, Any]:
+    """A transact check that the retired version of ``queue_id`` is still ``retired``."""
+    check: dict[str, Any] = {"Key": keys.qdef_retired_key(queue_id)}
+    if retired is None:
+        check["ConditionExpression"] = "attribute_not_exists(PK)"
+    else:
+        check["ConditionExpression"] = "Version = :retired"
+        check["ExpressionAttributeValues"] = {":retired": retired}
+    return {"ConditionCheck": check}
+
+
+def _is_condition_failure(exc: Exception) -> bool:
+    return "ConditionalCheckFailed" in (getattr(exc, "error_code", "") or "")
+
+
+def _is_transaction_conflict(exc: Exception) -> bool:
+    """A single write refused because a transaction held the item."""
+    return "TransactionConflict" in (getattr(exc, "error_code", "") or "")
+
+
+def _unknown_queue(queue_id: str) -> ReviewValidationError:
+    return ReviewValidationError("UNKNOWN_QUEUE", f"queue {queue_id!r} does not exist")
+
+
+def _queue_changed(queue_id: str) -> ReviewConflict:
+    return ReviewConflict(
+        "QUEUE_CHANGED",
+        f"queue {queue_id!r} was changed by someone else after you opened it; "
+        "reload it and make your change again",
+    )
+
+
 class QueueDefStore:
     """Queue definitions in HITLTable, cached briefly per process."""
 
@@ -251,13 +321,25 @@ class QueueDefStore:
         with self._lock:
             self._cached = None
 
-    def list(self) -> list[QueueDefinition]:
+    def list(self, *, fresh: bool = False) -> list[QueueDefinition]:
+        """Every definition, Default seeded if missing.
+
+        Served from the per-process cache for up to ``ttl`` seconds, unless ``fresh``:
+        then the cache is bypassed and the read is strongly consistent, so it returns
+        every write that has completed (what an Admin edits a queue from needs that).
+        """
         with self._lock:
-            if self._cached is not None and self._clock() - self._loaded_at < self._ttl:
+            if (
+                not fresh
+                and self._cached is not None
+                and self._clock() - self._loaded_at < self._ttl
+            ):
                 return list(self._cached)
         items: list[dict[str, Any]] = []
         for page in self.client.query_pages(
-            "PK = :pk", expression_attribute_values={":pk": keys.QDEF_PK}
+            "PK = :pk",
+            expression_attribute_values={":pk": keys.QDEF_PK},
+            consistent_read=True if fresh else None,
         ):
             items.extend(page.get("Items", []))
         defs = []
@@ -282,6 +364,7 @@ class QueueDefStore:
         """Write the Default queue if absent; return the seeded definitions."""
         out = []
         for definition in default_definitions():
+            definition = definition.model_copy(update={"version": 1})
             try:
                 self.client.put_item(
                     definition.to_item(),
@@ -292,30 +375,162 @@ class QueueDefStore:
             out.append(definition)
         return out
 
-    def put(self, definition: QueueDefinition, *, create: bool) -> QueueDefinition:
+    def put(
+        self,
+        definition: QueueDefinition,
+        *,
+        create: bool,
+        expected_version: Optional[int] = None,
+    ) -> QueueDefinition:
+        """Write a definition and return it as stored, with its new ``version``.
+
+        A create writes version 1 — or, for an id whose queue was deleted, one more
+        than that queue's last version — and is refused if the queue exists
+        (``QUEUE_EXISTS``). An update writes one more than the version it replaces and
+        is refused if the queue does not exist (``UNKNOWN_QUEUE``). Given
+        ``expected_version`` — the version the caller's definition was built from — an
+        update is also refused if the stored version is no longer that one
+        (``QUEUE_CHANGED``, a :class:`ReviewConflict`): another write overtook the
+        caller's read, and writing anyway would silently undo it. Without
+        ``expected_version`` an update replaces whatever is stored, as it always did.
+        """
+        if create:
+            return self._create(definition)
+        if expected_version is not None:
+            return self._replace(definition, expected_version)
+        # No version named: replace what is stored now. Retried, so a write that lands
+        # between this read and the put moves the version on instead of reusing it.
+        for _ in range(_UNVERSIONED_ATTEMPTS):
+            current = self.read_current(definition.id)
+            if current is None:
+                raise _unknown_queue(definition.id)
+            try:
+                return self._replace(definition, current.version)
+            except ReviewConflict:
+                continue
+        raise _queue_changed(definition.id)
+
+    def _create(self, definition: QueueDefinition) -> QueueDefinition:
+        """Write a new queue, continuing from the version of one deleted under its id.
+
+        One transaction writes the definition and checks that the retired version it
+        read is still the one stored, so a delete that completes in between cannot
+        leave the new queue at a version a form from before it already holds.
+        """
+        for _ in range(_CONTENDED_ATTEMPTS):
+            retired = self._retired_version(definition.id)
+            stored = definition.model_copy(update={"version": (retired or 0) + 1})
+            try:
+                self.client.transact_write_items(
+                    [
+                        {
+                            "Put": {
+                                "Item": stored.to_item(),
+                                "ConditionExpression": "attribute_not_exists(PK)",
+                            }
+                        },
+                        _retired_check(definition.id, retired),
+                    ]
+                )
+            except DynamoDBTransactionCanceledError as exc:
+                if exc.reason_code(0) == _TXN_CONDITION_FAILED:
+                    raise ReviewValidationError(
+                        "QUEUE_EXISTS", f"queue {definition.id!r} already exists"
+                    ) from None
+                if _TXN_CONTENDED & {exc.reason_code(0), exc.reason_code(1)}:
+                    continue  # deleted again meanwhile: read the new retired version
+                raise
+            self.invalidate()
+            return stored
+        raise _queue_changed(definition.id)
+
+    def _retired_version(self, queue_id: str) -> Optional[int]:
+        """The last version of a queue deleted under this id, or None."""
+        item = self.client.get_item(
+            keys.qdef_retired_key(queue_id), consistent_read=True
+        )
+        return int(item.get("Version") or 0) if item else None
+
+    def _replace(self, definition: QueueDefinition, expected: int) -> QueueDefinition:
+        """Write ``definition`` over stored version ``expected``, as ``expected + 1``."""
+        stored = definition.model_copy(update={"version": expected + 1})
         try:
             self.client.put_item(
-                definition.to_item(),
-                condition_expression=(
-                    "attribute_not_exists(PK)" if create else "attribute_exists(PK)"
-                ),
+                stored.to_item(),
+                condition_expression=_version_condition(expected),
+                expression_attribute_values={":expected": expected},
             )
         except Exception as exc:  # noqa: BLE001
-            code = getattr(exc, "error_code", "") or ""
-            if "ConditionalCheckFailed" in code:
-                raise ReviewValidationError(
-                    "QUEUE_EXISTS" if create else "UNKNOWN_QUEUE",
-                    f"queue {definition.id!r} "
-                    + ("already exists" if create else "does not exist"),
-                ) from None
-            raise
+            if not (_is_condition_failure(exc) or _is_transaction_conflict(exc)):
+                raise
+            self.invalidate()
+            if self.read_current(definition.id) is None:
+                raise _unknown_queue(definition.id) from None
+            raise _queue_changed(definition.id) from None
         self.invalidate()
-        return definition
+        return stored
+
+    def read_current(self, queue_id: str) -> Optional[QueueDefinition]:
+        """The definition as stored now: a strongly consistent read, past the cache.
+
+        Unlike :meth:`get` it does not seed the Default queue.
+        """
+        item = self.client.get_item(
+            keys.qdef_key(queue_id.strip().lower()), consistent_read=True
+        )
+        return QueueDefinition.from_item(item) if item else None
 
     def delete(self, queue_id: str) -> None:
+        """Delete a definition, keeping its last version under ``QDEFGONE``.
+
+        The delete and the retired version are one transaction, conditional on the
+        version read, so a create under this id always continues past every version
+        the id has had, and the retired version is never lowered. A write that lands
+        in between, or holds either item in another transaction, is retried.
+        """
         if queue_id == DEFAULT_QUEUE_ID:
             raise ReviewValidationError(
                 "PROTECTED_QUEUE", "the Default queue can't be deleted"
             )
-        self.client.delete_item(keys.qdef_key(queue_id))
-        self.invalidate()
+        try:
+            for _ in range(_CONTENDED_ATTEMPTS):
+                current = self.read_current(queue_id)
+                if current is None:
+                    return
+                # Never lowered: a definition stored without a Version (by an older
+                # release) under an id that was retired before reads as 0. Only a
+                # delete writes the retired version, and a concurrent one fails this
+                # one's condition on the definition, so the value read stays current.
+                last = max(current.version, self._retired_version(current.id) or 0)
+                try:
+                    self.client.transact_write_items(
+                        [
+                            {
+                                "Delete": {
+                                    "Key": keys.qdef_key(current.id),
+                                    "ConditionExpression": _version_condition(
+                                        current.version
+                                    ),
+                                    "ExpressionAttributeValues": {
+                                        ":expected": current.version
+                                    },
+                                }
+                            },
+                            {
+                                "Put": {
+                                    "Item": {
+                                        **keys.qdef_retired_key(current.id),
+                                        "QueueId": current.id,
+                                        "Version": last,
+                                    },
+                                }
+                            },
+                        ]
+                    )
+                    return
+                except DynamoDBTransactionCanceledError as exc:
+                    if not _TXN_CONTENDED & {exc.reason_code(0), exc.reason_code(1)}:
+                        raise
+            raise _queue_changed(queue_id)
+        finally:
+            self.invalidate()
