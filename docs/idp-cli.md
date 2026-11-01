@@ -79,6 +79,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
 ### Prerequisites
 
 - Python 3.12 or higher
+- [`uv`](https://docs.astral.sh/uv/) on `PATH`, which `make setup-venv` uses to read the dependency lock
 - AWS credentials configured (via AWS CLI or environment variables)
 - An active IDP Accelerator CloudFormation stack
 

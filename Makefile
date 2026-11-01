@@ -107,7 +107,7 @@ LOCK_CONSTRAINTS ?= $(CURDIR)/build/lock-constraints/idp_common_pkg.txt
 .PHONY: lock-constraints
 lock-constraints: ## Export lib/idp_common_pkg/uv.lock as a pip constraints file (needs uv)
 	@command -v uv >/dev/null 2>&1 || { \
-		echo -e "$(RED)ERROR: uv is required to read lib/idp_common_pkg/uv.lock (https://docs.astral.sh/uv/).$(NC)"; \
+		echo -e "$(RED)ERROR: uv is required to read lib/idp_common_pkg/uv.lock, which make setup, make setup-venv and CI install against. Install it with pip install uv, or see https://docs.astral.sh/uv/.$(NC)"; \
 		exit 1; }
 	@mkdir -p "$(dir $(LOCK_CONSTRAINTS))"
 	uv export --locked --project lib/idp_common_pkg --all-extras --all-groups \

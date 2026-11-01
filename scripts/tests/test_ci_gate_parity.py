@@ -1483,7 +1483,7 @@ def _installer_segments(recipe: str) -> list[str]:
     different subcommand (``uv sync``), is not recognised.
     """
     joined = re.sub(r"\\\n\s*", " ", _uncommented(recipe))
-    segments = re.split(r"&&|\|\||;|\n", joined)
+    segments = re.split(r"&&|\|\||;|\||\n", joined)
     found = []
     for segment in segments:
         words = segment.split()
@@ -1514,12 +1514,15 @@ def test_the_setup_targets_install_against_the_lock(target: str) -> None:
     # Non-vacuity: the recipe installs the first-party packages, the capacity test
     # requirements, cfn-lint and ruff. Finding none would mean the parse is wrong.
     assert len(installs) >= 4, f"`{target}`: only found installs {installs}"
+    constrained = re.compile(
+        r'(?:^|\s)(?:-c|--constraint)[\s=]"\$\(LOCK_CONSTRAINTS\)"'
+    )
+    self_upgrade = (["--upgrade", "pip"], ["-U", "pip"])
     unconstrained = [
         cmd
         for cmd in installs
-        if '-c "$(LOCK_CONSTRAINTS)"' not in cmd
-        and [w for w in cmd.split("install", 1)[1].split() if not w.startswith("-")]
-        != ["pip"]
+        if not constrained.search(cmd)
+        and cmd.split(" install ", 1)[-1].split() not in self_upgrade
     ]
     assert not unconstrained, (
         f'`{target}` installs without -c "$(LOCK_CONSTRAINTS)": {unconstrained}. '
