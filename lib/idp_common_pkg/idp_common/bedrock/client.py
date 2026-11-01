@@ -14,18 +14,25 @@ import logging
 import os
 import random
 import re
+import sys
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import boto3
 from botocore.config import Config
 from botocore.exceptions import (
     ClientError,
+    ConnectionClosedError,
     ConnectTimeoutError,
     EndpointConnectionError,
     ReadTimeoutError,
 )
 from urllib3.exceptions import ReadTimeoutError as Urllib3ReadTimeoutError
+
+# Releasing a failed attempt before the next one begins. A standard-library-only leaf
+# for the same reason as ``lambda_deadline`` below: the streamed agentic ladder's decorators
+# in ``utils.bedrock_utils`` need it too, from the other side of that import boundary.
+from idp_common.failed_attempt import drop_failed_attempt as _drop_failed_attempt
 
 # The invocation's wall clock. Every ladder in this module backs off and retries
 # inside a Lambda that will be killed on a fixed deadline, so both of these are
@@ -2079,6 +2086,11 @@ class BedrockClient:
         # the attempt they are handling cost. Reassigned immediately before the API
         # call, which is the duration the budget gate below is about.
         attempt_start_time = time.time()
+        # (next retry_count, worst attempt so far) when a handler below decides to
+        # retry; the retry itself is made after the try statement. See the note there.
+        retry: Optional[Tuple[int, float]] = None
+        # Whatever the CALLER was handling when it called in. Not ours to touch.
+        caller_exception = sys.exc_info()[1]
         try:
             # Create a copy of the messages to sanitize for logging
             sanitized_params = copy.deepcopy(converse_params)
@@ -2240,17 +2252,8 @@ class BedrockClient:
                 # Sleep for backoff period
                 time.sleep(backoff)
 
-                # Recursive call with incremented retry count
-                return self._invoke_with_retry(
-                    model_id=model_id,
-                    converse_params=converse_params,
-                    retry_count=retry_count + 1,
-                    max_retries=max_retries,
-                    request_start_time=request_start_time,
-                    last_exception=e,
-                    context=context,
-                    worst_attempt_seconds=worst,
-                )
+                _drop_failed_attempt(e, stop_at=caller_exception)
+                retry = (retry_count + 1, worst)
             else:
                 # Self-heal an over-limit maxTokens request. There is no AWS API
                 # for the per-model output cap, so when model_config_limits.yaml
@@ -2279,41 +2282,42 @@ class BedrockClient:
                         model_id,
                         discovered_limit,
                     )
-                    return self._invoke_with_retry(
-                        model_id=model_id,
-                        converse_params=converse_params,
-                        retry_count=retry_count,
-                        max_retries=max_retries,
-                        request_start_time=request_start_time,
-                        last_exception=e,
-                        context=context,
-                        worst_attempt_seconds=max(
-                            worst_attempt_seconds,
-                            time.time() - attempt_start_time,
-                        ),
+                    _drop_failed_attempt(e, stop_at=caller_exception)
+                    retry = (
+                        retry_count,
+                        max(worst_attempt_seconds, time.time() - attempt_start_time),
                     )
-
-                # Include model_id: errors like ResourceNotFoundException
-                # ("model version has reached the end of its life") do not name
-                # the model, so logging it here makes the offending model
-                # explicit in the function logs for troubleshooting.
-                logger.error(
-                    f"Non-retryable Bedrock error for model {model_id}: "
-                    f"{error_code} - {error_message}"
-                )
-                self._put_metric("BedrockRequestsFailed", 1)
-                self._put_metric("BedrockNonRetryableErrors", 1)
-                raise
+                else:
+                    # Include model_id: errors like ResourceNotFoundException
+                    # ("model version has reached the end of its life") do not name
+                    # the model, so logging it here makes the offending model
+                    # explicit in the function logs for troubleshooting.
+                    logger.error(
+                        f"Non-retryable Bedrock error for model {model_id}: "
+                        f"{error_code} - {error_message}"
+                    )
+                    self._put_metric("BedrockRequestsFailed", 1)
+                    self._put_metric("BedrockNonRetryableErrors", 1)
+                    raise
 
         except (
             ReadTimeoutError,
             ConnectTimeoutError,
             EndpointConnectionError,
+            ConnectionClosedError,
             Urllib3ReadTimeoutError,
             RequestsReadTimeout,
             RequestsConnectTimeout,
         ) as e:
-            # Handle timeout and connection errors (these are retryable)
+            # Handle timeout and connection errors (these are retryable).
+            # ``ConnectionClosedError`` is botocore's rewrap of urllib3's
+            # ``ProtocolError``: the connection dropped before a response arrived,
+            # which is as transient as a read timeout. It is NOT a subclass of any
+            # other class here (it derives from ``HTTPClientError``), so without its
+            # own entry it fell to ``except Exception`` below and failed the call on
+            # the first attempt. botocore's own retry handler would have retried it,
+            # but this client pins botocore to one attempt so that this ladder is the
+            # only one (#1706).
             error_message = str(e)
 
             self._put_metric("BedrockTimeouts", 1)
@@ -2351,17 +2355,8 @@ class BedrockClient:
             # Sleep for backoff period
             time.sleep(backoff)
 
-            # Recursive call with incremented retry count
-            return self._invoke_with_retry(
-                model_id=model_id,
-                converse_params=converse_params,
-                retry_count=retry_count + 1,
-                max_retries=max_retries,
-                request_start_time=request_start_time,
-                last_exception=e,
-                context=context,
-                worst_attempt_seconds=worst,
-            )
+            _drop_failed_attempt(e, stop_at=caller_exception)
+            retry = (retry_count + 1, worst)
 
         except Exception as e:
             # Handle unexpected errors (not retryable)
@@ -2370,6 +2365,27 @@ class BedrockClient:
             self._put_metric("BedrockRequestsFailed", 1)
             self._put_metric("BedrockUnexpectedErrors", 1)
             raise
+
+        # Every retry is started HERE, after the handler that caught the failure has
+        # exited, never from inside it. A call made from inside an ``except`` block
+        # runs while that exception is still being handled, so the exception — its
+        # traceback, everything chained to it, and botocore's own ``error=`` and
+        # ``request=`` kwargs — stays reachable for the rest of the ladder, and with
+        # it the failed attempt's serialised request body: every page image,
+        # base64-encoded, one more copy per retry (#1678).
+        # Unreachable: the try returns, and every handler retries or raises.
+        if retry is None:
+            raise RuntimeError("Bedrock retry ladder fell through without a decision")
+        next_retry_count, worst = retry
+        return self._invoke_with_retry(
+            model_id=model_id,
+            converse_params=converse_params,
+            retry_count=next_retry_count,
+            max_retries=max_retries,
+            request_start_time=request_start_time,
+            context=context,
+            worst_attempt_seconds=worst,
+        )
 
     def get_guardrail_config(self) -> Optional[Dict[str, str]]:
         """
@@ -2628,6 +2644,10 @@ class BedrockClient:
         # Bound before the try so the handler can measure the attempt it is handling;
         # reassigned immediately before the API call.
         attempt_start_time = time.time()
+        # See ``_invoke_with_retry``: the retry is made after the try statement.
+        retry: Optional[Tuple[int, float]] = None
+        # Whatever the CALLER was handling when it called in. Not ours to touch.
+        caller_exception = sys.exc_info()[1]
         try:
             logger.info(
                 f"Bedrock embedding request attempt {retry_count + 1}/{max_retries}:"
@@ -2744,16 +2764,8 @@ class BedrockClient:
                 # Sleep for backoff period
                 time.sleep(backoff)
 
-                # Recursive call with incremented retry count
-                return self._generate_embedding_with_retry(
-                    model_id=model_id,
-                    request_body=request_body,
-                    normalized_text=normalized_text,
-                    retry_count=retry_count + 1,
-                    max_retries=max_retries,
-                    last_exception=e,
-                    worst_attempt_seconds=worst,
-                )
+                _drop_failed_attempt(e, stop_at=caller_exception)
+                retry = (retry_count + 1, worst)
             else:
                 logger.error(
                     f"Non-retryable Bedrock error for embedding model {model_id}: "
@@ -2770,6 +2782,21 @@ class BedrockClient:
             self._put_metric("BedrockEmbeddingRequestsFailed", 1)
             self._put_metric("BedrockEmbeddingUnexpectedErrors", 1)
             raise
+
+        # Retried outside the handler, for the reason given in ``_invoke_with_retry``
+        # (#1678).
+        # Unreachable: the try returns, and every handler retries or raises.
+        if retry is None:
+            raise RuntimeError("Bedrock embedding retry ladder fell through")
+        next_retry_count, worst = retry
+        return self._generate_embedding_with_retry(
+            model_id=model_id,
+            request_body=request_body,
+            normalized_text=normalized_text,
+            retry_count=next_retry_count,
+            max_retries=max_retries,
+            worst_attempt_seconds=worst,
+        )
 
     def extract_text_from_response(self, response: Dict[str, Any]) -> str:
         """
@@ -3219,6 +3246,19 @@ class BedrockClient:
         # Bound before the try so the handlers can measure the attempt they are
         # handling; reassigned immediately before the invoke.
         attempt_start_time = time.time()
+        # Every retry this ladder makes, including the function-error retry, is
+        # decided inside the try statement and MADE after it. See
+        # ``_invoke_with_retry`` for why not from an ``except`` handler. The
+        # function-error retry used to be made from the try BODY instead, which no
+        # exception is being handled in, but which this frame's own handlers still
+        # cover: whatever the nested ladder finally raised was caught a second time
+        # here and retried again on this frame's count, so the bound applied per
+        # level rather than per request. Measured with ``max_retries=4``: one
+        # function error followed by read timeouts or throttles made 9 invocations
+        # rather than 5, every one re-running whatever the hook charges for (#1706).
+        retry: Optional[Tuple[int, float]] = None
+        # Whatever the CALLER was handling when it called in. Not ours to touch.
+        caller_exception = sys.exc_info()[1]
         try:
             logger.info(
                 f"LambdaHook request attempt {retry_count + 1}/{max_retries}: "
@@ -3227,14 +3267,13 @@ class BedrockClient:
 
             attempt_start_time = time.time()
 
-            # Serialize payload - handle bytes by converting to base64
-            payload_json = json.dumps(lambda_payload, default=str)
-
-            # Invoke Lambda synchronously
+            # Invoke Lambda synchronously. The payload is serialised inline rather
+            # than bound to a local, so this frame holds no copy of the serialised
+            # request (every page image, base64) while a later attempt runs (#1678).
             response = self.lambda_client.invoke(
                 FunctionName=lambda_arn,
                 InvocationType="RequestResponse",
-                Payload=payload_json.encode("utf-8"),
+                Payload=json.dumps(lambda_payload, default=str).encode("utf-8"),
             )
 
             duration = time.time() - attempt_start_time
@@ -3273,66 +3312,63 @@ class BedrockClient:
                         f"LambdaHook transient error, retrying in {backoff:.2f}s"
                     )
                     time.sleep(backoff)
-                    return self._invoke_lambda_hook_with_retry(
-                        lambda_arn=lambda_arn,
-                        lambda_payload=lambda_payload,
-                        retry_count=retry_count + 1,
-                        max_retries=max_retries,
-                        request_start_time=request_start_time,
-                        context=context,
-                        worst_attempt_seconds=worst,
-                    )
+                    retry = (retry_count + 1, worst)
+                else:
+                    # Not counted here either, for the same reason as the
+                    # out-of-time raise above: ``except Exception`` below counts it on
+                    # the way out. Counting it at both points reported every request
+                    # that ended on a function error as two failures (#1706).
+                    raise RuntimeError(f"LambdaHook function error: {error_message}")
+            else:
+                # Parse response payload
+                response_payload = json.loads(
+                    response["Payload"].read().decode("utf-8")
+                )
 
-                self._put_metric("LambdaHookRequestsFailed", 1)
-                raise RuntimeError(f"LambdaHook function error: {error_message}")
+                logger.info(
+                    f"LambdaHook request successful after {retry_count + 1} attempts. "
+                    f"Duration: {duration:.2f}s"
+                )
 
-            # Parse response payload
-            response_payload = json.loads(response["Payload"].read().decode("utf-8"))
+                # Extract usage/metering from the Lambda response
+                usage = response_payload.get("usage", {})
+                if not usage:
+                    # Provide default metering if Lambda doesn't return usage
+                    usage = {
+                        "inputTokens": 0,
+                        "outputTokens": 0,
+                        "totalTokens": 0,
+                    }
 
-            logger.info(
-                f"LambdaHook request successful after {retry_count + 1} attempts. "
-                f"Duration: {duration:.2f}s"
-            )
+                # Track metrics
+                self._put_metric("LambdaHookRequestsSucceeded", 1)
+                self._put_metric(
+                    "LambdaHookRequestLatency", duration * 1000, "Milliseconds"
+                )
 
-            # Extract usage/metering from the Lambda response
-            usage = response_payload.get("usage", {})
-            if not usage:
-                # Provide default metering if Lambda doesn't return usage
-                usage = {
-                    "inputTokens": 0,
-                    "outputTokens": 0,
-                    "totalTokens": 0,
+                total_duration = time.time() - request_start_time
+                self._put_metric(
+                    "LambdaHookTotalLatency", total_duration * 1000, "Milliseconds"
+                )
+
+                # Build response in the same format as Bedrock responses (numeric
+                # usage entries only — see the Bedrock site).
+                response_with_metering = {
+                    "response": response_payload,
+                    "metering": {
+                        # Keyed on the bare FUNCTION NAME, never the raw ARN: an ARN
+                        # embeds account id and region, so no shipped pricing entry
+                        # could ever match it, and its ':function:' delimiter is not
+                        # a '/' so the pricing suffix walk cannot split it either.
+                        # See lambda_hook_metering_name.
+                        f"{context}/lambda_hook/{lambda_hook_metering_name(lambda_arn)}": {
+                            **numeric_usage(usage),
+                            "requests": 1,
+                        }
+                    },
                 }
 
-            # Track metrics
-            self._put_metric("LambdaHookRequestsSucceeded", 1)
-            self._put_metric(
-                "LambdaHookRequestLatency", duration * 1000, "Milliseconds"
-            )
-
-            total_duration = time.time() - request_start_time
-            self._put_metric(
-                "LambdaHookTotalLatency", total_duration * 1000, "Milliseconds"
-            )
-
-            # Build response in the same format as Bedrock responses (numeric
-            # usage entries only — see the Bedrock site).
-            response_with_metering = {
-                "response": response_payload,
-                "metering": {
-                    # Keyed on the bare FUNCTION NAME, never the raw ARN: an ARN
-                    # embeds account id and region, so no shipped pricing entry
-                    # could ever match it, and its ':function:' delimiter is not
-                    # a '/' so the pricing suffix walk cannot split it either.
-                    # See lambda_hook_metering_name.
-                    f"{context}/lambda_hook/{lambda_hook_metering_name(lambda_arn)}": {
-                        **numeric_usage(usage),
-                        "requests": 1,
-                    }
-                },
-            }
-
-            return response_with_metering
+                return response_with_metering
 
         except ClientError as e:
             error_code = e.response["Error"]["Code"]
@@ -3357,16 +3393,8 @@ class BedrockClient:
                     f"LambdaHook throttled ({error_code}), retrying in {backoff:.2f}s"
                 )
                 time.sleep(backoff)
-                return self._invoke_lambda_hook_with_retry(
-                    lambda_arn=lambda_arn,
-                    lambda_payload=lambda_payload,
-                    retry_count=retry_count + 1,
-                    max_retries=max_retries,
-                    request_start_time=request_start_time,
-                    last_exception=e,
-                    context=context,
-                    worst_attempt_seconds=worst,
-                )
+                _drop_failed_attempt(e, stop_at=caller_exception)
+                retry = (retry_count + 1, worst)
             else:
                 logger.error(f"LambdaHook error: {error_code} - {error_message}")
                 self._put_metric("LambdaHookRequestsFailed", 1)
@@ -3388,20 +3416,28 @@ class BedrockClient:
                     f"LambdaHook unexpected error, retrying in {backoff:.2f}s: {error_message}"
                 )
                 time.sleep(backoff)
-                return self._invoke_lambda_hook_with_retry(
-                    lambda_arn=lambda_arn,
-                    lambda_payload=lambda_payload,
-                    retry_count=retry_count + 1,
-                    max_retries=max_retries,
-                    request_start_time=request_start_time,
-                    last_exception=e,
-                    context=context,
-                    worst_attempt_seconds=worst,
-                )
+                _drop_failed_attempt(e, stop_at=caller_exception)
+                retry = (retry_count + 1, worst)
+            else:
+                logger.error(f"LambdaHook failed: {error_message}", exc_info=True)
+                self._put_metric("LambdaHookRequestsFailed", 1)
+                raise
 
-            logger.error(f"LambdaHook failed: {error_message}", exc_info=True)
-            self._put_metric("LambdaHookRequestsFailed", 1)
-            raise
+        # Retried outside the handler, for the reason given in ``_invoke_with_retry``
+        # (#1678).
+        # Unreachable: the try returns, and every handler retries or raises.
+        if retry is None:
+            raise RuntimeError("LambdaHook retry ladder fell through")
+        next_retry_count, worst = retry
+        return self._invoke_lambda_hook_with_retry(
+            lambda_arn=lambda_arn,
+            lambda_payload=lambda_payload,
+            retry_count=next_retry_count,
+            max_retries=max_retries,
+            request_start_time=request_start_time,
+            context=context,
+            worst_attempt_seconds=worst,
+        )
 
     def _calculate_backoff(self, retry_count: int) -> float:
         """

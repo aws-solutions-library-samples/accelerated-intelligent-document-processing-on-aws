@@ -240,6 +240,12 @@ def handler(event, context):
     )
     logger.info(f"Total confidence alert count: {document.confidence_alert_count}")
 
+    # Required fields left absent, counted separately from confidence alerts
+    # (#1527). Informational: nothing above routes on it.
+    document.missing_required_field_count = sum(
+        len(section.missing_required_fields or []) for section in document.sections
+    )
+
     # Update final status in AppSync / Document Service (includes Review Status)
     logger.info(f"Updating document status to {document.status}")
     document_service.update_document(document)

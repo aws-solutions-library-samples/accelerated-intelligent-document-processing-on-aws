@@ -7344,6 +7344,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         document: Document,
         section: Any,
         section_info: SectionInfo,
+        alert_rows_shard_local: bool = False,
     ) -> None:
         """Ground the merged in-shard assessment and stage it for output.
 
@@ -7373,6 +7374,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # integrated large-list coverage reaches 100% like the separate path
         # (which retries inside assess_results_batched). No-op when nothing is
         # missing. Best-effort: never fails extraction.
+        # Whether the alert surface's row indexes are GLOBAL. They are not when
+        # the surface is the shards' own alerts concatenated (the shard merge
+        # marks it): each row index then counts from its shard's first row
+        # (upstream #813), so it cannot be matched against the merged data. The
+        # retry below rebuilds the surface from the merged assessment, which
+        # makes it global again.
+        alert_rows_are_global = not alert_rows_shard_local
         if self._integrated_assessment_enabled():
             try:
                 merged_assessment, regenerated_alerts, split_stats = (
@@ -7388,6 +7396,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 # extends) the incoming surface: extending would re-introduce
                 # the slice-local duplicates this exists to fix (upstream #813).
                 merged_assessment_alerts = regenerated_alerts
+                alert_rows_are_global = True
                 # Surface adaptive batch-splitting activity (only when the
                 # confidence model truncated and batches had to shrink).
                 from idp_common.assessment.batching import split_stats_are_notable
@@ -7444,8 +7453,20 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # the same non-indexed finding can arrive several times. Idempotent;
         # imported lazily like the other batching imports in this file.
         from idp_common.assessment.batching import dedupe_alerts
+        from idp_common.assessment.presence import exclude_absent_value_alerts
 
-        section.confidence_threshold_alerts = dedupe_alerts(merged_assessment_alerts)
+        # An absent value raises no confidence alert (#1527) — the same filter the
+        # standalone Assessment step applies where it stores its alerts. Its score
+        # stays in explainability_info; a required absent field is listed in
+        # missing_required_fields by _save_results instead.
+        section.confidence_threshold_alerts = dedupe_alerts(
+            exclude_absent_value_alerts(
+                merged_assessment_alerts,
+                grounded,
+                extracted_fields,
+                row_indexes_are_global=alert_rows_are_global,
+            )
+        )
         output_metadata["assessment_integrated_in_extraction"] = True
         # Counts the list that was actually STORED. Reading the pre-dedupe list
         # here let the recorded count contradict the data next to it — a section
@@ -7729,6 +7750,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         shard_conflicts = None
         merged_assessment = None
         merged_assessment_alerts = None
+        alert_rows_shard_local = False
         assessment_split_stats = None
         # One of this section's agent runs was cut off at the model's output ceiling
         # and its already-validated extraction was salvaged from agent state rather
@@ -7753,6 +7775,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             merged_assessment = result.metering.pop("_merged_assessment", None)
             merged_assessment_alerts = result.metering.pop(
                 "_merged_assessment_alerts", None
+            )
+            alert_rows_shard_local = bool(
+                result.metering.pop("_merged_assessment_alerts_shard_local", False)
             )
             # Adaptive batch-splitting activity from the in-shard assessment
             # (present only when the confidence model truncated its output and
@@ -8017,6 +8042,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 document=document,
                 section=section,
                 section_info=section_info,
+                alert_rows_shard_local=alert_rows_shard_local,
             )
 
         # Structured issues (1.4) + completeness gate (1.3): translate the
@@ -8048,6 +8074,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 geometry_available=self._ocr_geometry_available,
             )
             section_issues = ladder_issues + audit_issues
+
+        # Required fields this section's extraction left absent (#1527), for
+        # every confidence mode — including none, since it is a property of the
+        # values and the class schema. With integrated confidence the entries
+        # carry the field's score; with `separate` the Assessment step rebuilds
+        # this list from the same values once it has scores.
+        from idp_common.assessment.presence import collect_missing_required_fields
+
+        section.missing_required_fields = collect_missing_required_fields(
+            fields_for_output,
+            self._class_schema,
+            self._grounded_assessment if merged_assessment else None,
+        )
 
         # Extraction-completeness issue (BOTH modes): flag empty / suspiciously
         # sparse extractions — e.g. a large list schema field that came back

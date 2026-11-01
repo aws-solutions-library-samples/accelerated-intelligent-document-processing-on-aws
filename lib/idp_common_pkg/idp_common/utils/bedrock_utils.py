@@ -11,12 +11,15 @@ import logging
 import os
 import random
 import re
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import TYPE_CHECKING, Unpack
 
 import botocore.exceptions
+
+from idp_common.failed_attempt import drop_failed_attempt
 
 # The invocation deadline, the sleep clamp and the pre-attempt budget gate. They live
 # in a standard-library-only leaf module and are re-exported from here, because the
@@ -279,6 +282,31 @@ def is_image_request_rejection(error: BaseException) -> bool:
     return any(marker in msg for marker in _IMAGE_REJECTION_MARKERS)
 
 
+#: The subset of ``_IMAGE_REJECTION_MARKERS`` whose limit depends on how MANY
+#: images one request carries rather than on any single image: the cap on images
+#: per request, and the tighter per-image dimension cap that applies only above a
+#: count threshold ("... for many-image requests"). Sending the same pages in two
+#: smaller requests fixes these; it does nothing for an image that is too large on
+#: its own, which is why the per-image markers are not here.
+_IMAGE_COUNT_REJECTION_MARKERS = (
+    "too many images",
+    "many-image request",
+)
+
+
+def is_image_count_rejection(error: BaseException) -> bool:
+    """True if ``error`` is an image rejection that fewer images per request fixes.
+
+    Narrower than :func:`is_image_request_rejection`, and judged through it first,
+    so the error-code guard applies unchanged: a throttle that happens to say "too
+    many images" is not a rejection of the request's shape.
+    """
+    if not is_image_request_rejection(error):
+        return False
+    msg = str(error).lower()
+    return any(marker in msg for marker in _IMAGE_COUNT_REJECTION_MARKERS)
+
+
 def is_input_token_overflow(error: BaseException) -> bool:
     """True if ``error`` is a Bedrock input/context overflow.
 
@@ -484,6 +512,9 @@ def async_exponential_backoff_retry[T, **P](
             # reset the comparison and re-license an attempt that cannot return.
             # Measured rather than assumed: see lambda_deadline.attempt_cannot_finish.
             worst_attempt_seconds: float | None = None
+            # Whatever the CALLER was handling when it awaited this. Not ours to
+            # touch: see ``drop_failed_attempt``'s ``stop_at``.
+            caller_exception = sys.exc_info()[1]
 
             for attempt in range(max_retries):
                 attempt_started = time.time()
@@ -591,6 +622,19 @@ def async_exponential_backoff_retry[T, **P](
                         await asyncio.sleep(backoff)
                         total_slept += backoff
                         delay = min(delay * exponential_base, max_delay)
+                        # The next attempt starts after this handler exits, so the
+                        # failure is unreachable by then; but a botocore timeout
+                        # leaves botocore's reference cycle behind it (see
+                        # ``drop_failed_attempt``), so without this the failed
+                        # attempt's serialised request stayed in memory until the
+                        # cyclic collector ran. Measured with a real botocore client
+                        # and an 8 MB request, cyclic collector off: 8, 16, 24 and
+                        # 32 MB still held at attempts 2-5 with read timeouts, and
+                        # the same with each raised ``from`` a Strands exception. A
+                        # botocore throttle (``ClientError``) leaves no cycle and
+                        # measured flat, which is why the branch above has no call
+                        # (#1706).
+                        drop_failed_attempt(e, stop_at=caller_exception)
                         continue
 
                     # Log bedrock invocation details for non-retryable exceptions

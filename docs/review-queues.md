@@ -55,7 +55,10 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
    enabled, the document is held in the Default queue when either of these is true:
    - a section raised a confidence alert: a field's confidence is under its own
      threshold (`x-aws-idp-confidence-threshold` in the class schema), or under
-     `hitl.confidence_threshold` when it has none
+     `hitl.confidence_threshold` when it has none. Only a field with an extracted
+     value can raise one; a field with no value does not, and a missing required
+     field is counted but not routed (see
+     [Absent values and missing required fields](./extraction-and-confidence.md#absent-values-and-missing-required-fields))
    - in BDA mode, the matched blueprint's confidence is under
      `hitl.confidence_threshold`, or BDA matched a blueprint but returned no
      usable confidence for it: null, NaN, infinite, `true` or `false`, a string

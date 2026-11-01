@@ -165,7 +165,10 @@ A document is held for review when all of these are true:
 - The document raised a confidence alert: a field's confidence is under its own
   threshold (`x-aws-idp-confidence-threshold` in the class schema), or under
   `hitl.confidence_threshold` when it has none; or, in BDA mode, the matched
-  blueprint's confidence is under `hitl.confidence_threshold` or unusable
+  blueprint's confidence is under `hitl.confidence_threshold` or unusable. A field
+  with no extracted value raises no confidence alert, so it does not hold a document;
+  see
+  [Absent values and missing required fields](extraction-and-confidence.md#absent-values-and-missing-required-fields)
 
 Each alert becomes a **review reason** on the item. A document with no alerts isn't
 queued, and documents processed by a Test Studio run are never held in a Production
