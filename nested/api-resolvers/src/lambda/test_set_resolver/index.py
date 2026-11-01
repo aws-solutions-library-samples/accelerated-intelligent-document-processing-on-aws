@@ -1967,7 +1967,7 @@ def _label_jobs(test_set_id):
     return sorted(jobs, key=lambda j: str(j.get("createdAt") or ""))
 
 
-def _run_id_by_object_key(test_set_id):
+def _run_id_by_object_key(test_set_id, meta=None):
     """Which labeling run produced each document's pipeline copy.
 
     Review keys are ``{runId}/{filename}``, so this cannot be a single per-set
@@ -1980,10 +1980,26 @@ def _run_id_by_object_key(test_set_id):
     neighbours keep theirs. A job with no explicit ``objectKeys`` covered the whole
     set, and is applied as a default for documents no later job names. A failed
     section-scoped re-extract is passed over.
+
+    ``meta`` is the set's metadata item, for sets drafted before job records
+    existed, whose run is named only by the ``labelJobId`` pointer. The pointer is
+    used only while the set has no job record at all: starting a job repoints it,
+    so once one exists the pointer names that job — a failed section re-extract the
+    loop below passes over, on a set with no other record (#1728). The run a job's
+    pointer replaced is kept on the job as ``previousLabelJobId``; when the oldest
+    job's is not itself a recorded job, it is that legacy drafting run, and it is
+    the default for documents no job names.
     """
+    jobs = _label_jobs(test_set_id)
+    if not jobs:
+        return {}, (meta or {}).get("labelJobId") or None
     per_doc = {}
     default_run = None
-    for job in _label_jobs(test_set_id):
+    recorded = {job.get("jobId") for job in jobs}
+    legacy_run = jobs[0].get("previousLabelJobId")
+    if legacy_run and legacy_run not in recorded:
+        default_run = legacy_run
+    for job in jobs:
         run_id = job.get("jobId")
         if not run_id:
             continue
@@ -2222,6 +2238,12 @@ def generate_draft_labels(
         "createdAt": now,
         "startedBy": started_by,
     }
+    if meta.get("labelJobId"):
+        # The pointer is about to name this job. On a set drafted before job
+        # records existed it is the only record of the drafting run, which stays
+        # the review run of every document this job does not replace
+        # (_run_id_by_object_key).
+        job_item["previousLabelJobId"] = meta["labelJobId"]
     if forced_sections:
         # The harvest replaces only this section's label, and only if the run kept
         # it as asked (_harvest_label_job).
@@ -3322,9 +3344,7 @@ def get_annotation_queue(args, event=None):
     # copy of a document, "{runId}/{filename}", not the test-set key. It is returned
     # so no client has to reconstruct that backend key layout.
     # Per document, not one pointer for the set: see _run_id_by_object_key.
-    per_doc_run, default_run = _run_id_by_object_key(test_set_id)
-    if not per_doc_run and not default_run:
-        default_run = meta.get("labelJobId")
+    per_doc_run, default_run = _run_id_by_object_key(test_set_id, meta)
     entries = []
     for doc in documents:
         state = claims.get(doc["objectKey"], {})
@@ -3495,10 +3515,8 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     from the set's most recent labeling run. Without one, nothing is claimed and
     every document reads as available.
     """
-    per_doc_run, default_run = _run_id_by_object_key(test_set_id)
-    if not per_doc_run and not default_run:
-        # Fall back to the set pointer for sets labeled before per-run resolution.
-        default_run = meta.get("labelJobId")
+    # The set pointer is the fallback for sets labeled before per-run resolution.
+    per_doc_run, default_run = _run_id_by_object_key(test_set_id, meta)
     if not per_doc_run and not default_run:
         return {}
 

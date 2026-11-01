@@ -11828,3 +11828,144 @@ class TestReextractOneSection:
 
         assert run_input["documentClass"] == "W2"
         assert "documentSections" not in run_input
+
+
+#: The #1699 fixtures (a three-section packet, the resolver call with the runner
+#: stubbed, and a pipeline that builds the sections it was told to), reused rather
+#: than copied.
+_SECTION_FIXTURES = TestReextractOneSection()
+
+
+def _fail_the_section_run(table, s3, run_input, run_id="run2"):
+    """Run the section-scoped pipeline, then make it come back with the wrong class,
+    which is what a pipeline that ignored the forced grouping produces."""
+    _SECTION_FIXTURES._run_pipeline(table, s3, run_input, run_id=run_id)
+    key = f"{run_id}/packet.pdf/sections/2/result.json"
+    body = json.loads(s3.get_object(Bucket="output-bucket", Key=key)["Body"].read())
+    body["document_class"] = {"type": "W2"}
+    s3.put_object(Bucket="output-bucket", Key=key, Body=json.dumps(body))
+
+
+def _reextract_on_a_legacy_set(section_id):
+    """``_reextract`` for a set whose pointer names a run with no job record.
+
+    The resolver reads that run's configuration through ``boto3``, which the stub
+    replaces; the configuration is not what these tests are about.
+    """
+    with patch.object(
+        test_set_index, "_resolve_set_config_version", return_value=(None, None)
+    ):
+        return _SECTION_FIXTURES._reextract(section_id)
+
+
+@pytest.mark.unit
+class TestReviewRunWithoutEarlierJobRecords:
+    """#1728 item 1: which run a document is reviewed on when the set has no
+    ``labeljob#`` record older than a failed section-scoped re-extract.
+
+    Starting a job repoints the set's ``labelJobId`` at it, so the pointer names the
+    failed run; falling back to the pointer made that run the review run, whose copy
+    of the document may not have the baseline's sections.
+    """
+
+    def _queue_entry(self, s3):
+        _build_queue_summaries(s3)
+        result = test_set_index.get_annotation_queue({"testSetId": "ts1"}, None)
+        return {d["objectKey"]: d for d in result["documents"]}
+
+    def test_authored_ground_truth_has_no_review_run_after_a_failed_reextract(
+        self, labeling_env
+    ):
+        """No drafting run ever processed the document, so it has no pipeline copy
+        to review; the failed run's copy is not one."""
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3)
+
+        result, run_input = _SECTION_FIXTURES._reextract("2")
+        _fail_the_section_run(table, s3, run_input)
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+        assert job["status"] == "FAILED"
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert meta["labelJobId"] == "run2", "precondition: the pointer names it"
+
+        assert self._queue_entry(s3)["packet.pdf"]["reviewObjectKey"] is None
+        assert (
+            test_set_index._claim_state_for_documents(
+                "ts1", meta, [{"objectKey": "packet.pdf"}]
+            )
+            == {}
+        )
+
+    def test_a_legacy_drafting_run_stays_the_review_run_after_a_failed_reextract(
+        self, labeling_env
+    ):
+        """A set drafted before job records existed names its run only through the
+        pointer. Starting the re-extract overwrites that pointer, so the job keeps
+        the run it replaced."""
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3)
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET labelJobId = :j",
+            ExpressionAttributeValues={":j": "run0"},
+        )
+        table.put_item(
+            Item={
+                "PK": "doc#run0/packet.pdf",
+                "SK": "none",
+                "ObjectStatus": "COMPLETED",
+            }
+        )
+
+        result, run_input = _reextract_on_a_legacy_set("2")
+        _fail_the_section_run(table, s3, run_input)
+        test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert self._queue_entry(s3)["packet.pdf"]["reviewObjectKey"] == (
+            "run0/packet.pdf"
+        )
+
+    def test_a_legacy_run_still_covers_the_documents_a_reextract_did_not_name(
+        self, labeling_env
+    ):
+        """A successful one-document re-extract on a legacy set used to leave every
+        other document with no review run at all, because the pointer fallback
+        applied only while the set had no job records."""
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3)
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET labelJobId = :j, fileCount = :n",
+            ExpressionAttributeValues={":j": "run0", ":n": 2},
+        )
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/other.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/other.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {"document_class": {"type": "W2"}, "labelSource": "draft-machine"}
+            ).encode(),
+        )
+        for name in ("packet.pdf", "other.pdf"):
+            table.put_item(
+                Item={
+                    "PK": f"doc#run0/{name}",
+                    "SK": "none",
+                    "ObjectStatus": "COMPLETED",
+                }
+            )
+
+        result, run_input = _reextract_on_a_legacy_set("2")
+        _SECTION_FIXTURES._run_pipeline(table, s3, run_input)
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+        assert job["status"] == "COMPLETED"
+
+        entries = self._queue_entry(s3)
+        assert entries["packet.pdf"]["reviewObjectKey"] == "run2/packet.pdf"
+        assert entries["other.pdf"]["reviewObjectKey"] == "run0/other.pdf"
