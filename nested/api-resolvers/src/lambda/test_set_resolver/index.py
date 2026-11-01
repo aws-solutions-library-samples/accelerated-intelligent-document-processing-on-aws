@@ -4451,8 +4451,6 @@ def _harvest_label_job(job, deadline=None):
         except DynamoDBError as e:
             if e.error_code != "ConditionalCheckFailedException":
                 raise
-            if attempt == _MAX_HARVEST_WRITE_ATTEMPTS:
-                raise
             # Merge rather than redo. The expensive part of this pass -- reading
             # each document and writing its draft labels to S3 -- has already
             # happened and is idempotent, so a lost conflict must not discard it
@@ -4469,6 +4467,8 @@ def _harvest_label_job(job, deadline=None):
                     "was being harvested; not recording this pass"
                 )
                 raise _LabelJobGone(job_id)
+            if attempt == _MAX_HARVEST_WRITE_ATTEMPTS:
+                raise
             expected_done = sorted(fresh.get("harvestedFiles") or [])
             expected_failed = sorted(set(fresh.get("failedFiles") or []))
             done |= set(expected_done)
@@ -4491,6 +4491,11 @@ def _harvest_label_job(job, deadline=None):
         # The set now carries machine labels; publishing freezes them as unreviewed.
         meta_expr += ", labelState = :ls"
         meta_values[":ls"] = "draft"
+    if status == "FAILED":
+        # A failed job is not a drafting run, so the set's profile may differ from
+        # the one recorded while the job was in flight; it is resolved again on
+        # next use (`_scope_profile`, #1757).
+        meta_expr += f" REMOVE {SCOPE_PROFILE_ATTRIBUTE}"
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
         update_expression=meta_expr,
@@ -4844,7 +4849,9 @@ def _fail_label_job(job, message):
         raise _LabelJobGone(job["jobId"]) from e
     db_client.update_item(
         key={"PK": f"testset#{job['testSetId']}", "SK": "metadata"},
-        update_expression="SET labelJobStatus = :s",
+        # As in the harvest: a failed job is not a drafting run, so the recorded
+        # profile is resolved again.
+        update_expression=f"SET labelJobStatus = :s REMOVE {SCOPE_PROFILE_ATTRIBUTE}",
         expression_attribute_values={":s": "FAILED"},
     )
     logger.error(f"Draft labeling job {job['jobId']} failed: {message}")

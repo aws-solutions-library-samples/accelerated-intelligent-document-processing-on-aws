@@ -12908,6 +12908,21 @@ class TestHarvestAfterALabelReset:
         assert stored["createdAt"] == job["createdAt"]
         assert self._meta(table)["labelJobStatus"] == "FAILED"
 
+    def test_a_reset_before_the_last_write_attempt_is_still_read_as_a_reset(
+        self, labeling_env
+    ):
+        """The write budget's last attempt re-reads the record too, so a deletion
+        that lands then is reported as the job being gone, not as a lost race."""
+        table, s3 = labeling_env
+        self._seed_running(table, s3)
+        job = self._job_read_then_reset(table)
+
+        with patch.object(test_set_index, "_MAX_HARVEST_WRITE_ATTEMPTS", 1):
+            with pytest.raises(test_set_index.ResourceNotFound):
+                test_set_index._harvest_label_job(job, deadline=None)
+
+        assert table.get_item(Key=self.KEY).get("Item") is None
+
     def test_another_write_failure_while_failing_a_job_is_not_read_as_a_reset(
         self, labeling_env
     ):
@@ -13118,3 +13133,52 @@ class TestFailedJobIsNotADraftingRun:
             None,
             "mixed",
         )
+
+    @pytest.mark.parametrize("how", ["run-failed", "document-failed"])
+    def test_a_reviewer_refused_while_the_job_ran_is_admitted_once_it_fails(
+        self, labeling_env, how
+    ):
+        """The profile is recorded on first use (`_scope_profile`). Read while the
+        re-extract was in flight it is mixed, so the job failing has to drop it, or
+        the Reviewer stays locked out of a set whose profile is single again."""
+        from idp_common.testset_scope import TestSetAccessDenied
+
+        table, _ = labeling_env
+        self._seed(
+            table,
+            [
+                ("runA", "COMPLETED", {}),
+                ("runF", "RUNNING", {"objectKeys": ["a.pdf"]}),
+            ],
+            {
+                "runA": {"ConfigVersion": "prof-A"},
+                "runF": {
+                    "ConfigVersion": "prof-B",
+                    "TestSetId": "ts1",
+                    "Files": ["a.pdf"],
+                    "Status": "FAILED" if how == "run-failed" else "RUNNING",
+                },
+            },
+        )
+        if how == "document-failed":
+            table.put_item(
+                Item={"PK": "doc#runF/a.pdf", "SK": "none", "ObjectStatus": "FAILED"}
+            )
+        event = _caller("rev@example.com", "Reviewer")
+        key = {"PK": "testset#ts1", "SK": "labeljob#runF"}
+
+        with patch(
+            "idp_common.config_scope.resolve_allowed_config_versions",
+            return_value=["prof-A"],
+        ):
+            with pytest.raises(TestSetAccessDenied):
+                test_set_index._assert_set_access(event, "ts1")
+            # Non-vacuity: the mixed answer really was recorded.
+            assert self._meta(table)[test_set_index.SCOPE_PROFILE_ATTRIBUTE] == ""
+
+            failed = test_set_index._harvest_label_job(
+                table.get_item(Key=key)["Item"], deadline=None
+            )
+            assert failed["status"] == "FAILED"
+
+            test_set_index._assert_set_access(event, "ts1")
