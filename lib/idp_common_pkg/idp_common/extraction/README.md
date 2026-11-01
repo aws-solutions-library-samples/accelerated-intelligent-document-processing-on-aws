@@ -601,13 +601,16 @@ prompt is a fourth block and a third copy is a fifth
 ([#1296](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1296)).
 
 Because the system cache point now belongs to the agent's system prompt rather
-than to the model, strands' conversation-summarization call — which sends its
-own fixed summarization prompt through the same model — no longer carries one.
-That prompt is about 925 characters (roughly 230 tokens at four characters a
-token), below the smallest minimum cacheable prefix `min_cacheable_prefix_tokens`
-reports for any model that is sent cache points, and the request has no
-`toolConfig` ahead of it, so the block it used to carry could not create a cache
-entry for a model whose minimum is known.
+than to the model, strands' conversation-summarization call no longer carries one
+in `system`. That call sends strands' own fixed summarization prompt (about 925
+characters, roughly 230 tokens) through the same model, plus strands' placeholder
+`noop` tool whenever the conversation holds tool calls, so the prefix the old block
+covered was that prompt and the `noop` spec. For the Claude models this is below
+the minimum cacheable prefix `min_cacheable_prefix_tokens` reports (512 tokens at
+the smallest), so the block could not create a cache entry — an estimate from
+those minimums, not a measurement. For Nova, whose minimum that function does not
+record, it may have; summarization runs only when the conversation is compacted,
+and that cost is not measured.
 
 Each model has a **minimum cacheable prefix**, and below it a cache point silently
 does nothing. ⚠️ **The numbers are deliberately not repeated here** — ask
