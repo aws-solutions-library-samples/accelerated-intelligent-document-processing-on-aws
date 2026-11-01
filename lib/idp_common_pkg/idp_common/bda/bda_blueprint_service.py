@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import threading
+import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -53,6 +54,71 @@ from idp_common.config.schema_constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The characters CreateBlueprint takes in a blueprint's text values, measured
+# against the control plane (DOCUMENT blueprints, us-west-2) with the schema
+# serialised the way this module sends it (``json.dumps``, so non-ASCII arrives
+# escaped). The same set holds for a property's ``instruction`` and for the
+# blueprint's ``description``. One blueprint whose instruction and description
+# each held every character below was accepted; each character outside it that
+# was probed was rejected on its own with "Request has invalid blueprint schema"
+# — among them the em and en dash, U+2212 minus, the ellipsis, the no-break
+# space, the bullet, the multiplication and division signs, Greek, Cyrillic,
+# Arabic, CJK, emoji, control characters, and the ASCII characters ^ ` { } ~.
+# The non-ASCII part is the character class the API's own regular expression
+# names for the schema string, less the CJK, kana and hangul ranges, which that
+# expression lists but the schema check still rejects, plus four characters the
+# expression does not list but the check was measured to accept in this
+# encoding: the right single quote, both double quotes and the zero-width space.
+# They are kept rather than rewritten so that text which already synced is not
+# changed (and its blueprint re-versioned). The left single quote was rejected.
+_BDA_TEXT_CHARS = frozenset(
+    "\t\n\v\f\r"
+    + "".join(chr(c) for c in range(0x20, 0x7F) if chr(c) not in "^`{}~")
+    + "¡£¥§©ª®°±²³´µ¹¿"
+    + "".join(chr(c) for c in range(0xC0, 0xD7))  # À-Ö
+    + "".join(chr(c) for c in range(0xD8, 0xDD))  # Ø-Ü
+    + "ß"
+    + "".join(chr(c) for c in range(0xE0, 0xF7))  # à-ö
+    + "".join(chr(c) for c in range(0xF8, 0xFD))  # ø-ü
+    + "Œœ฿ẞ₹€™✓⑆⑇⑈⑉₽₱₦₣₩₫₺"
+    + "\u2019\u201c\u201d\u200b"
+)
+
+# Replacements that keep the meaning of a character outside _BDA_TEXT_CHARS.
+# Anything not listed here is reduced through NFKD (which turns "ý" into "y" and
+# a full-width letter into its ASCII form); whatever is still outside the set
+# after that is removed, and the removal is recorded as a per-class warning.
+_BDA_TEXT_REPLACEMENTS = {
+    **dict.fromkeys("‐‑‒–—―−﹘﹣", "-"),
+    **dict.fromkeys("‘‚‛′`", "'"),
+    **dict.fromkeys("„‟″«»", '"'),
+    # No-break, en/em/thin/hair and other fixed-width spaces, and the
+    # ideographic space.
+    **dict.fromkeys(
+        "\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007"
+        "\u2008\u2009\u200a\u202f\u205f\u3000",
+        " ",
+    ),
+    # Soft hyphen, zero-width non-joiner, joiner, word joiner, BOM.
+    **dict.fromkeys("\u00ad\u200c\u200d\u2060\ufeff", ""),
+    **dict.fromkeys("•‣⁃∙◦·", "-"),
+    "…": "...",
+    "×": "x",
+    "÷": "/",
+    "⁄": "/",
+    "→": "->",
+    "←": "<-",
+    "↔": "<->",
+    "⇒": "=>",
+    "{": "(",
+    "}": ")",
+}
+
+
+def _has_visible_text(text: str) -> bool:
+    """False for text that is empty, whitespace, or zero-width spaces only."""
+    return bool(text.replace("\u200b", "").strip())
 
 
 @dataclass
@@ -981,7 +1047,74 @@ class BdaBlueprintService:
         else:
             blueprint.update(self._process_flat_schema(properties))
 
+        # Last, so every path above (and every default it filled in) is covered.
+        self._normalize_blueprint_text(blueprint)
+
         return blueprint
+
+    def _normalize_blueprint_text(self, node: object, path: str = "") -> None:
+        """Make every ``instruction`` and ``description`` text BDA-acceptable.
+
+        CreateBlueprint rejects the whole blueprint over one character outside
+        ``_BDA_TEXT_CHARS`` in any of these values (issue #1741: an em dash in one
+        preset field's instruction). Walks the finished blueprint in place, so it
+        covers user classes, shipped presets and the converter's own defaults
+        alike. Only string values are touched, so a property that happens to be
+        named ``description`` is still recursed into rather than overwritten.
+        """
+        if isinstance(node, dict):
+            for key, value in node.items():
+                child = f"{path}.{key}" if path else key
+                if key in ("instruction", SCHEMA_DESCRIPTION) and isinstance(
+                    value, str
+                ):
+                    node[key] = self._normalize_bda_text(value, child)
+                else:
+                    self._normalize_blueprint_text(value, child)
+
+    def _normalize_bda_text(self, text: str, path: str) -> str:
+        """Return ``text`` with every character BDA rejects replaced or removed.
+
+        Text BDA already accepts is returned unchanged, so a blueprint that synced
+        before is not re-versioned by the next sync's update check. Otherwise the
+        text is composed (NFC), each remaining character outside
+        ``_BDA_TEXT_CHARS`` is replaced from ``_BDA_TEXT_REPLACEMENTS``, or else
+        reduced through NFKD; a character that leaves nothing acceptable behind is
+        removed and recorded as a warning for the class. A text that is blank, or
+        left blank, becomes ``"-"``, because CreateBlueprint rejects a blank
+        instruction.
+        """
+        if all(ch in _BDA_TEXT_CHARS for ch in text):
+            # A blank instruction is rejected too, and cannot have synced.
+            return text if _has_visible_text(text) else "-"
+        kept: list[str] = []
+        removed: list[str] = []
+        for ch in unicodedata.normalize("NFC", text):
+            if ch in _BDA_TEXT_CHARS:
+                kept.append(ch)
+            elif ch in _BDA_TEXT_REPLACEMENTS:
+                kept.append(_BDA_TEXT_REPLACEMENTS[ch])
+            else:
+                reduced = "".join(
+                    c if c in _BDA_TEXT_CHARS else _BDA_TEXT_REPLACEMENTS.get(c, "")
+                    for c in unicodedata.normalize("NFKD", ch)
+                )
+                kept.append(reduced)
+                if not reduced:
+                    removed.append(ch)
+        result = "".join(kept)
+        if not _has_visible_text(result):
+            result = "-"
+        logger.info(f"Normalized text at '{path}' for BDA: {text!r} -> {result!r}")
+        if removed:
+            shown = ", ".join(f"{c!r} U+{ord(c):04X}" for c in dict.fromkeys(removed))
+            self._record_skipped_property(
+                path,
+                "unsupported_characters",
+                f"Text at '{path}' had characters a BDA blueprint cannot hold; "
+                f"removed {len(removed)} ({shown})",
+            )
+        return result
 
     def _validate_array_instruction_requirements(self, json_schema: dict) -> None:
         """

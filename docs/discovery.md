@@ -1682,6 +1682,11 @@ Arrays within object definitions are not supported by BDA:
 }
 ```
 
+**Characters BDA does not accept in descriptions:**
+BDA rejects a whole blueprint when the class description or any field's description (which becomes the field's instruction) contains a character outside the set it accepts. That set is ASCII without `^`, `` ` ``, `{`, `}` and `~`, plus the accented Latin letters and a few symbols such as `€`, `£`, `°` and `©`. Typographic dashes, the left single quote (`‘`), the ellipsis, the no-break space, bullets, Greek, Cyrillic, CJK and emoji are all rejected. The right single quote and both curly double quotes are accepted.
+
+The sync therefore rewrites those characters in the blueprint it sends. Your configuration is not changed. Where an equivalent exists, the character is replaced: dashes become `-`, the left single quote and backticks become `'`, other curly quotes outside the set become straight quotes, `…` becomes `...`, unusual spaces become a plain space, a bullet becomes `-`, `×` becomes `x`, `→` becomes `->`, and `{` and `}` become `(` and `)`. Accented letters outside the set lose the accent, so `ý` becomes `y`. A character with no equivalent, such as a CJK character, `^` or `~`, is removed. Each removal is reported as an `unsupported_characters` warning for the class, and a description that is blank, or has nothing left after removal, becomes `-`.
+
 ##### AWS Standard Blueprint Handling
 
 - AWS-provided blueprints (identifiable by `aws:blueprint` in ARN) are read-only

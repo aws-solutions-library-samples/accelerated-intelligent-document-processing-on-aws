@@ -205,13 +205,21 @@ Shapes this does not convert. BDA was measured to reject the first; the others l
 - an object property with no `properties`, or with a list-valued `type` such as `["object", "null"]`;
 - on the flat path only, an object or array of objects that omits `"type"`.
 
+### Text BDA rejects is rewritten before the blueprint is sent
+
+`CreateBlueprint` rejects a whole blueprint with "Request has invalid blueprint schema" when one `instruction` or `description` holds a character outside `_BDA_TEXT_CHARS` (issue #1741: one em dash in the `ds11-passport-application` preset). That set was measured against the control plane with the schema serialised by `json.dumps`, which is how this module sends it. It is ASCII without `^`, `` ` ``, `{`, `}` and `~`, plus the non-ASCII characters the API's own regular expression names for the schema string, less the CJK, kana and hangul ranges, plus four characters the check was measured to accept although the expression does not list them (`’`, `“`, `”` and U+200B). That regular expression is shown only when the schema is sent as raw UTF-8, and the post-parse check still rejects those three ranges. The left single quote `‘` is rejected. The set holds the same for a leaf `instruction` and for the blueprint `description`. `tests/unit/bda/test_blueprint_text_characters.py` records the probes, asserts that the constant equals the probed set, and converts every class of every `config_library/unified` preset.
+
+`_normalize_blueprint_text` runs last in `_transform_json_schema_to_bedrock_blueprint`, over the finished blueprint, so it covers both transform paths and the defaults they fill in. It touches only string values under those two keys, so a property named `description` is still recursed into. Text that is already accepted is returned unchanged, so an already-synced blueprint is not re-versioned. Otherwise the text is NFC-composed, each character outside the set is replaced from `_BDA_TEXT_REPLACEMENTS` or reduced through NFKD, and a character that leaves nothing acceptable behind is removed and recorded as an `unsupported_characters` drop. A text that is blank, or left blank, becomes `"-"`, because a blank instruction is rejected too.
+
+Not covered: the blueprint's `class` value, which comes from the class id. BDA rejects an em dash or a brace there as well, but a BDA → IDP sync reads `class` back as the class id, so rewriting it would rename the class. It is left alone.
+
 ### Every dropped property is a warning, not just a log line
 
 BDA supports neither objects inside objects nor arrays whose items nest further, so the
 transform drops those properties. Each drop is recorded in `_skipped_properties`, which
 `_process_single_class` returns as per-class `warnings` and the sync resolver surfaces in
-its response. The recorded `type` values are `nested_object`, `nested_array` and
-`invalid_property_schema` (a property whose value is not a JSON Schema object — `null`,
+its response. The recorded `type` values are `nested_object`, `nested_array`,
+`unsupported_characters` (see above) and `invalid_property_schema` (a property whose value is not a JSON Schema object — `null`,
 or a bare string — which cannot be described to BDA at all and used to fail the whole
 class with a raw `TypeError`).
 
