@@ -2482,10 +2482,11 @@ idp-cli config-create [OPTIONS]
 
 **Options:**
 - `--features`: Feature set (default: `min`)
-  - `min`: classification, extraction, classes only (simplest). It also writes `enabled: false` for summarization and evaluation, so those are switched off. It leaves **confidence scoring on**: confidence is configured under `extraction.confidence`, which comes with `extraction` at its default `mode: separate`. To turn it off, set `extraction.confidence.mode: off` in the generated file
+  - `min`: classification and extraction only (simplest). It also writes `enabled: false` for summarization and evaluation, so those are switched off. It leaves **confidence scoring on**: confidence is configured under `extraction.confidence`, which comes with `extraction` at its default `mode: separate`. To turn it off, set `extraction.confidence.mode: off` in the generated file
   - `core`: the sections of min plus ocr. Unlike min, it does not turn summarization or evaluation off. Confidence scoring is configured under `extraction.confidence`, so it comes with `extraction`
   - `all`: all sections with full defaults
   - Or one or more section names, comma-separated: `summarization`, or `"classification,extraction,summarization"`. A single name and a list are read the same way. A name that is not a section of the configuration is **refused** with exit 1 and the list of valid sections, rather than dropped, and a feature set cannot be combined with section names
+- No feature set writes a `classes` section. The system defaults define no document classes, and an empty `classes: []` uploaded over a profile would replace the profile's classes with none, so the key is left out and the profile keeps its own. `--features classes` on its own is refused for the same reason. Add your classes under a top-level `classes:` key
 - The header comment of the generated file states which sections it copies, which it switches off, which it leaves out, and whether confidence scoring is on
 - `--output`, `-o`: Output file path (default: stdout)
 - `--include-prompts`: Include full prompt templates. By default the long `system_prompt`, `task_prompt` and `user_prompt` values are left out of the file, so they take whatever value the configuration is merged over: the system defaults when validating or deploying, or the stack's default (or the profile's current) configuration when uploading

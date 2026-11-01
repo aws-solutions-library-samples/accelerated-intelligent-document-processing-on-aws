@@ -2505,7 +2505,7 @@ signals make both loud without changing what is extracted:
   | Surface | Reader | Before | After |
   |---|---|---|---|
   | The section's status indicator | `getSectionIssueStatus` in `src/ui/src/components/common/processing-issues-utils.ts` | `success` / **OK** | `info` / **Info** |
-  | The document list's processing-issue count | `ProcessingIssueCount`, written with no severity filter in `dynamodb/service.py`, or summed from the sections on the GSI path | `0` | non-zero |
+  | The document list's processing-issue count | `ProcessingIssueCount`, written with no severity filter in `dynamodb/service.py` | `0` | non-zero |
 
   So on an OCR configuration that renders no exact-width tables, a document where
   nothing is wrong gets a non-zero issue count and a section labelled **Info**.

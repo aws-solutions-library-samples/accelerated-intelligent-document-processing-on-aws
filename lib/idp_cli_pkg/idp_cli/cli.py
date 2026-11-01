@@ -5001,7 +5001,7 @@ def remove_residual_resources_from_deleted_stacks(
 @click.option(
     "--features",
     default="min",
-    help="Feature set: 'min' (classification, extraction, classes; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all', or one or more section names, comma-separated. An unknown section name is refused",
+    help="Feature set: 'min' (classification, extraction; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all', or one or more section names, comma-separated. An unknown section name is refused",
 )
 @click.option(
     "--output",
@@ -5032,7 +5032,7 @@ def config_create(
     to customize the values they want to change - unspecified fields use defaults.
 
     Feature sets:
-      min:  classification, extraction, classes (simplest); switches
+      min:  classification, extraction (simplest); switches
             summarization and evaluation off and leaves confidence scoring on
       core: min + ocr, with summarization and evaluation left at their defaults
       all:  all sections with full defaults

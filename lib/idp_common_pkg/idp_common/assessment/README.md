@@ -1621,8 +1621,10 @@ alerts carrying a row index are kept unjudged.
 The tracking item stores the list as `MissingRequiredFields` beside
 `ConfidenceThresholdAlerts`, bounded the same way (at most 50 per section and 300
 per document, with `MissingRequiredFieldsTotal` recorded when a section's list was
-truncated), and the document count as `MissingRequiredFieldCount`. That count is
-not in the document list's GSI projection, so the list's fast path cannot show it.
+truncated), and the document count as `MissingRequiredFieldCount`. The document list's
+`TypeDateIndexV2` projects that count, so the list shows it for every document
+processed since the count was introduced; an older row, or one served from
+`TypeDateIndex` while `TypeDateIndexV2` backfills after an upgrade, shows a dash.
 
 ### Assessment Response Requirements
 

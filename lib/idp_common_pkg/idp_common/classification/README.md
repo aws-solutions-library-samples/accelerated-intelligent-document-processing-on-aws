@@ -138,7 +138,10 @@ segment gets that segment's list back, and one assembled from several gets none.
 
 A window the model refuses as too long (`is_input_token_overflow`), or as carrying
 too many images (`is_image_count_rejection`: the per-request image cap, and the
-tighter dimension cap Bedrock applies only to many-image requests), is split in two
+tighter dimension cap Bedrock applies only to many-image requests; the Claude
+models word the cap two ways, "too many images and documents: 101 + 0 > 100" and,
+on Haiku 4.5, "Too much media: 0 document pages + 101 images > 100", and both are
+matched), is split in two
 by `_split_overflowing_window` and both halves are retried, recursively, with up to
 `overlap_pages` repeated at the junction; the halves are queued in page order so
 the merge's "earlier window wins" still holds. A one-page window that does not fit

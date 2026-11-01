@@ -40,7 +40,7 @@ export interface MappedDocument {
   evaluationStatus: string;
   confidenceAlertCount: number;
   missingRequiredFieldCount?: number | null;
-  processingIssueCount: number;
+  processingIssueCount?: number | null;
   hitlStatus: string;
   hitlReviewOwner: string;
   hitlReviewOwnerEmail: string;
@@ -265,8 +265,9 @@ export const COLUMN_DEFINITIONS_MAIN = (
   {
     id: 'missingRequiredFieldCount',
     header: 'Missing Required Fields',
-    // Null when this row does not carry the count (the list's fast path cannot
-    // read it yet): a dash, not a 0 the row cannot substantiate.
+    // Null when this row does not carry the count (written before the count
+    // existed, or served while the list index backfills after an upgrade): a
+    // dash, not a 0 the row cannot substantiate.
     cell: (item) => (item.missingRequiredFieldCount == null ? '-' : item.missingRequiredFieldCount),
     sortingField: 'missingRequiredFieldCount',
     width: 180,
@@ -274,8 +275,11 @@ export const COLUMN_DEFINITIONS_MAIN = (
   {
     id: 'processingIssueCount',
     header: 'Processing Issues',
+    // A dash when the row does not carry the count, for the same reason as the
+    // column above; a green 0 would claim the document was checked and clean.
     cell: (item) => {
-      const count = item.processingIssueCount || 0;
+      const count = item.processingIssueCount;
+      if (count == null) return '-';
       return count === 0 ? <StatusIndicator type="success">0</StatusIndicator> : <StatusIndicator type="warning">{count}</StatusIndicator>;
     },
     sortingField: 'processingIssueCount',

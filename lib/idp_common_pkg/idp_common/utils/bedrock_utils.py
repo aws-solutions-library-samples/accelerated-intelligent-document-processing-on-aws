@@ -253,6 +253,11 @@ _IMAGE_REJECTION_MARKERS = (
     "image dimension",
     "too many images",
     "image is too large",
+    # Claude Haiku 4.5's wording for the per-request image cap, which the other
+    # Claude models word as "too many images and documents: 101 + 0 > 100".
+    # Measured against Bedrock Converse, 2026-11-01: "Too much media: 0 document
+    # pages + 101 images > 100".
+    "too much media",
 )
 
 
@@ -291,6 +296,7 @@ def is_image_request_rejection(error: BaseException) -> bool:
 _IMAGE_COUNT_REJECTION_MARKERS = (
     "too many images",
     "many-image request",
+    "too much media",
 )
 
 

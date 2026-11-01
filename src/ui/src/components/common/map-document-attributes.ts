@@ -137,16 +137,21 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
         : getDocumentConfidenceAlertCount((sections ?? null) as Parameters<typeof getDocumentConfidenceAlertCount>[0]);
 
     // Processing-issue count: prefer the server-side ProcessingIssueCount (GSI /
-    // getDocument), else derive from the sections' ProcessingIssues arrays.
+    // getDocument), else derive from the sections' ProcessingIssues arrays, else
+    // null. A list row carries no Sections, so a row whose index entry lacks the
+    // count (served while the list index backfills, or written before the count
+    // existed) has nothing to derive from, and a 0 would be a claim it cannot make.
     const apiProcessingIssueCount = item.ProcessingIssueCount;
     const processingIssueCount =
       apiProcessingIssueCount != null
         ? apiProcessingIssueCount
-        : getDocumentProcessingIssueCount((sections ?? null) as Parameters<typeof getDocumentProcessingIssueCount>[0]);
+        : Array.isArray(sections)
+          ? getDocumentProcessingIssueCount(sections as Parameters<typeof getDocumentProcessingIssueCount>[0])
+          : null;
 
     // Missing required fields (#1527): the stored count when present, else the
-    // sum of the sections' lists, else null — the document list's fast path
-    // carries neither, and a 0 there would claim something the row cannot know.
+    // sum of the sections' lists, else null — a list row whose index entry lacks
+    // the count carries neither, and a 0 there would claim something it cannot know.
     const missingRequiredFieldCount = resolveMissingRequiredFieldCount(
       item.MissingRequiredFieldCount,
       (sections ?? null) as Parameters<typeof resolveMissingRequiredFieldCount>[1],

@@ -2023,6 +2023,18 @@ the sections table (hover the count for the field names), and as an optional col
 in the document list. Missing required fields are informational. Nothing routes on
 them.
 
+In the document list, the **Missing Required Fields** column and the **Processing
+Issues** column show a dash, not a 0, for a row that does not carry the count: a
+document processed before the count existed, or one whose processing stopped before
+any section was written. After an in-place upgrade to a release that adds the list's
+`TypeDateIndexV2` index, rows can show a dash in both columns until DynamoDB
+finishes building that index, which continues after the stack update reports
+complete and takes longer on a larger tracking table. The list keeps working
+meanwhile, read from the previous index, and the counts appear without any action
+once the build completes. If that stack update rolls back after the index was
+created, CloudFormation leaves the index on the table, and retrying the update
+fails until `TypeDateIndexV2` is deleted from the tracking table by hand.
+
 "Required" follows JSON Schema `required`:
 
 - A property is required when the `required` array of the object that declares it

@@ -514,9 +514,12 @@ code-intelligence agent (`code-intelligence`), quick-start agent
 (`quick-start`), and external MCP agent (`external-mcp`). The
 marketplace idp-monitor's `monitor-agent` picks up the same hook via
 its own repo. The hook is asymmetric-regression-safe (one counter
-dropping doesn't re-emit the other from scratch), thread-safe (state
-update guarded by an internal lock so concurrent `stream_async` calls
-against a reused agent don't tear the delta), and zero-side-skipping
+dropping doesn't re-emit the other from scratch), thread-safe (the
+usage read and the state update are guarded by one internal lock, so
+overlapping invocations sharing one hook neither tear the delta nor
+mistake a stale read for a counter reset; Strands' default
+concurrent-invocation mode already refuses overlapping calls on one
+agent), and zero-side-skipping
 (a 0-valued CloudWatch datum is never emitted). **Latent gap**: the
 hook doesn't yet read `cacheReadInputTokens` / `cacheWriteInputTokens`
 — no in-repo agent has prompt caching enabled today, so the counters
