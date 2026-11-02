@@ -17,6 +17,7 @@ This tool handles the mechanical parsing while the agent handles semantic reason
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from strands import tool
@@ -411,6 +412,10 @@ def _merge_adjacent_tables(
             prev["gaps_recovered"] = prev.get("gaps_recovered", 0) + table.get(
                 "gaps_recovered", 0
             )
+            # And the label rows taken as the header, so the warning counts them all
+            prev["promoted_rows"] = prev.get("promoted_rows", 0) + table.get(
+                "promoted_rows", 0
+            )
 
             # Track number of additional tables merged (not including the original)
             if "merged_tables" not in prev:
@@ -426,6 +431,165 @@ def _merge_adjacent_tables(
             merged.append(table)
 
     return merged
+
+
+#: A cell that reads as a value rather than a column label: a number, an amount,
+#: a percentage or a date, optionally signed or with a currency symbol, or a
+#: placeholder a data cell uses for "none" (a dash, an em or en dash, N/A).
+_VALUE_CELL = re.compile(
+    r"^[-+(]?[$€£¥]?\s*[-+]?(\d[\d,]*(\.\d+)?|\.\d+)\s*%?\)?$"
+    r"|^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$"
+    r"|^[$€£¥]?\s*[-–—]{1,2}$"
+    r"|^(n/?a|none|nil)$",
+    re.IGNORECASE,
+)
+
+
+def _is_value_cell(cell: str) -> bool:
+    return bool(_VALUE_CELL.match(cell.strip()))
+
+
+def _is_label_row(cells: list[str]) -> bool:
+    """Whether a row holds column labels: some text, and no cell reading as a value."""
+    filled = [c for c in cells if c.strip()]
+    return bool(filled) and not any(_is_value_cell(c) for c in filled)
+
+
+def _value_columns(lines: list[str]) -> set[int]:
+    """Columns in which most of the filled cells of ``lines`` read as values."""
+    counts: dict[int, list[int]] = {}
+    for line in lines:
+        for i, cell in enumerate(_split_table_row(line)):
+            if cell.strip():
+                seen = counts.setdefault(i, [0, 0])
+                seen[0] += _is_value_cell(cell)
+                seen[1] += 1
+    return {i for i, (values, filled) in counts.items() if 2 * values > filled}
+
+
+def _promote_header_rows(
+    header_line: str, data_lines: list[str]
+) -> tuple[str, list[str], int]:
+    """Recover the column labels when OCR put them below a blank header row.
+
+    Textract sometimes emits a table whose first row is entirely blank, with the
+    real labels in the rows after it, split across lines when a label wraps (one
+    row carries most of the labels and the next carries the one for the first
+    column). Taken as written, the blank row becomes ``_unnamed_*`` columns and
+    the label rows become data, so a 532-row table reads as 534. When the header
+    is blank, the first data row is promoted to the header if it is a label row,
+    and each following label row that only fills header cells still blank is
+    merged in. Returns the header line, the remaining data lines and how many
+    rows were promoted; anything that fails a guard is left as it was.
+
+    The test is lexical, so the guards are what keep a data row out of the
+    header. The candidate must fill more than half the header's cells (a sparse
+    category row such as ``EQUITIES`` does not); the rows left below it must have
+    at least one column that mostly holds values, and the candidate must carry a
+    non-value label in every such column (a data row with a value or a
+    placeholder there is refused, and an all-text table is never re-headed); and
+    its labels must be distinct, or one column's data would be keyed over
+    another's. None of that can tell a short all-text data row from a label row,
+    which is why parse_markdown_tables applies a candidate only when another
+    fragment of the document opens with the same labels. Two shapes are
+    deliberately not recovered: an all-numeric label row (``| 2023 | 2024 |``),
+    and a lone first-column row after the labels that is a category rather than a
+    wrapped label, which is merged in as the first column's name.
+    """
+    header_cells = _split_table_row(header_line)
+    if any(c.strip() for c in header_cells) or not data_lines:
+        return header_line, data_lines, 0
+    labels = _split_table_row(data_lines[0])
+    width = len(header_cells)
+    if len(labels) > width:
+        # A label OCR split across cells would widen the header past every data
+        # row and fail the whole parse; leave the fragment as it was.
+        return header_line, data_lines, 0
+    labels.extend([""] * (width - len(labels)))
+    if not _is_label_row(labels) or 2 * sum(1 for c in labels if c.strip()) <= width:
+        return header_line, data_lines, 0
+    consumed = 1
+    while consumed < len(data_lines):
+        cells = _split_table_row(data_lines[consumed])
+        filled = [i for i, c in enumerate(cells) if c.strip()]
+        if (
+            not filled
+            or not _is_label_row(cells)
+            or any(i >= len(labels) or labels[i].strip() for i in filled)
+        ):
+            break
+        for i in filled:
+            labels[i] = cells[i]
+        consumed += 1
+    # Only the header's own columns: one over-wide OCR row (an extra trailing
+    # cell, truncated later) must not turn the recovery off for the fragment.
+    value_columns = {
+        i for i in _value_columns(data_lines[consumed:]) if i < len(labels)
+    }
+    named = [c.strip().lower() for c in labels if c.strip()]
+    if (
+        not value_columns
+        or any(i >= len(labels) or not labels[i].strip() for i in value_columns)
+        or len(named) != len(set(named))
+    ):
+        return header_line, data_lines, 0
+    return "| " + " | ".join(labels) + " |", data_lines[consumed:], consumed
+
+
+def _normalized_labels(header_line: str) -> tuple[str, ...]:
+    return tuple(
+        re.sub(r"[\s.:]+", " ", c).strip().lower()
+        for c in _split_table_row(header_line)
+    )
+
+
+def _promote_corroborated_headers(raw_tables: list[dict[str, Any]]) -> None:
+    """Apply :func:`_promote_header_rows` where the document corroborates it.
+
+    A candidate header is applied to a fragment only when at least one other
+    fragment opens with the same label row (compared without case, spacing or
+    trailing punctuation). The artifact this recovers repeats on every page of a
+    split table, while a data row that happens to pass the lexical guards does
+    not open several fragments, so a lone candidate is left as data. The group
+    shares one header built from every label its members supply, so the
+    fragments still merge. A wrapped first-column label is taken from the
+    group's first fragment only, where it occurs; on every later fragment only
+    the corroborated label row leaves the data, so a category row under it there
+    stays a row. A one-fragment table with the artifact keeps its ``_unnamed_*``
+    columns. Sets ``promoted_rows`` on each fragment (0 where nothing changed).
+    """
+    candidates = []
+    for raw_table in raw_tables:
+        raw_table["promoted_rows"] = 0
+        header, rest, promoted = _promote_header_rows(
+            raw_table["header_line"], raw_table["data_lines"]
+        )
+        candidates.append((header, rest, promoted))
+    groups: dict[tuple[str, ...], list[int]] = {}
+    for idx, (_, _, promoted) in enumerate(candidates):
+        if promoted:
+            opening = raw_tables[idx]["data_lines"][0]
+            groups.setdefault(_normalized_labels(opening), []).append(idx)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        first, later = members[0], members[1:]
+        applied = {first: candidates[first]}
+        for idx in later:
+            lines = raw_tables[idx]["data_lines"]
+            applied[idx] = (lines[0], lines[1:], 1)
+        labels: list[str] = []
+        for header, _, _ in applied.values():
+            for pos, cell in enumerate(_split_table_row(header)):
+                if pos == len(labels):
+                    labels.append("")
+                if not labels[pos].strip() and cell.strip():
+                    labels[pos] = cell
+        canonical = "| " + " | ".join(labels) + " |"
+        for idx, (_, rest, promoted) in applied.items():
+            raw_tables[idx]["header_line"] = canonical
+            raw_tables[idx]["data_lines"] = rest
+            raw_tables[idx]["promoted_rows"] = promoted
 
 
 def _parse_single_table(
@@ -632,6 +796,11 @@ def parse_markdown_tables(
         # Find all tables in the text (with lookahead tolerance for OCR artifacts)
         raw_tables = _find_tables_in_text(text, max_empty_line_gap=max_empty_line_gap)
 
+        # Recover labels OCR put under a blank header row, per fragment and before
+        # the merge: a continuation page carries the same artifact, and a merged
+        # table's interior label rows would be out of reach afterwards.
+        _promote_corroborated_headers(raw_tables)
+
         # Merge adjacent tables with identical columns (recovers from table splits)
         if auto_merge_adjacent_tables and len(raw_tables) > 1:
             original_count = len(raw_tables)
@@ -664,6 +833,11 @@ def parse_markdown_tables(
                 header_line=raw_table["header_line"],
                 data_lines=raw_table["data_lines"],
             )
+            if raw_table.get("promoted_rows"):
+                warnings.append(
+                    "Header row was blank; took the column names from the next "
+                    f"{raw_table['promoted_rows']} row(s)"
+                )
 
             # Prefix warnings with table index if multiple tables
             if len(raw_tables) > 1:
@@ -1184,7 +1358,6 @@ def create_map_table_to_schema_tool():
             page and first row of the next get concatenated.  Detection:
             look for columns with two dollar amounts, two quantities, etc.
             """
-            import re
 
             # Find columns with multiple dollar values (e.g. "$57.9 $55.11")
             multi_dollar = re.compile(r"\$[\d,.]+\s+\$[\d,.]+")

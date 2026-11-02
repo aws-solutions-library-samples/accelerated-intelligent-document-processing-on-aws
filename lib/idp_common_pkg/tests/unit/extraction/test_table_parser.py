@@ -825,3 +825,155 @@ class TestParseSuccessRateRowBased:
         # 2 rows, 1 with error → rate = 0.5
         assert result["quality"]["parse_success_rate"] == 0.5
         assert result["quality"]["consistent_column_count"] is False
+
+
+# =============================================================================
+# Labels below a blank header row
+# =============================================================================
+
+# The shape Textract produced for samples/Nuveen.pdf: on every page a blank
+# header row, the labels in the next row, and on the first page the first
+# column's label on a row of its own.
+BLANK = "|  |  |  |\n|--|--|--|\n"
+LABELS = "|  | Ticker | NAV |\n"
+
+
+def _pages(*bodies: str) -> str:
+    """One blank-header fragment per body, separated so they do not merge."""
+    return "\n\n--- PAGE BREAK ---\n\n".join(BLANK + body for body in bodies)
+
+
+def _all_rows(result: dict) -> list[dict]:
+    return [row for table in result["tables"] for row in table["rows"]]
+
+
+class TestLabelsBelowABlankHeader:
+    """Labels under a blank header become the columns when the document repeats them."""
+
+    def test_labels_repeated_across_pages_become_the_columns(self):
+        result = parse_markdown_tables(
+            _pages(
+                LABELS + "| Fund Name |  |  |\n| Alpha Fund | AAAX | $10.16 |\n",
+                LABELS + "| Beta Fund | BBBX | $9.74 |\n",
+            )
+        )
+        assert result["table_count"] == 1
+        assert result["columns"] == ["Fund Name", "Ticker", "NAV"]
+        assert result["row_count"] == 2
+        assert [r["Ticker"] for r in result["rows"]] == ["AAAX", "BBBX"]
+        assert (
+            "Header row was blank; took the column names from the next 3 row(s)"
+            in result["warnings"]
+        )
+
+    def test_a_lone_candidate_is_left_as_data(self):
+        """A short all-text data row passes every lexical guard; one page cannot tell."""
+        result = parse_markdown_tables(
+            BLANK + "| Alpha Fund | AAAX | Growth |\n| Beta Fund | BBBX | $9.74 |\n"
+        )
+        assert result["columns"] == ["_unnamed_0", "_unnamed_1", "_unnamed_2"]
+        assert result["row_count"] == 2
+
+    def test_a_one_page_table_with_the_artifact_keeps_its_rows(self):
+        result = parse_markdown_tables(
+            BLANK + LABELS + "| Fund Name |  |  |\n| Alpha Fund | AAAX | $10.16 |\n"
+        )
+        assert result["columns"] == ["_unnamed_0", "_unnamed_1", "_unnamed_2"]
+        assert result["row_count"] == 3
+
+    def test_a_blank_header_over_data_on_every_page_is_left_as_it_was(self):
+        result = parse_markdown_tables(
+            _pages("| Alpha Fund | AAAX | $1.00 |\n", "| Beta Fund | BBBX | $2.00 |\n")
+        )
+        assert all(t["columns"][0] == "_unnamed_0" for t in result["tables"])
+        assert len(_all_rows(result)) == 2
+
+    def test_a_named_header_is_never_replaced(self):
+        result = parse_markdown_tables(
+            "| Name | Ticker | NAV |\n|--|--|--|\n| Label | Other | Text |\n"
+            "| Alpha Fund | AAAX | $1.00 |\n"
+        )
+        assert result["columns"] == ["Name", "Ticker", "NAV"]
+        assert result["row_count"] == 2
+
+    def test_a_label_row_that_overlaps_the_header_stays_data(self):
+        result = parse_markdown_tables(
+            _pages(
+                LABELS + "| Total | Amount |  |\n| Alpha | AAAX | $1.00 |\n",
+                LABELS + "| Beta | BBBX | $2.00 |\n",
+            )
+        )
+        rows = _all_rows(result)
+        assert [r["Ticker"] for r in rows] == ["Amount", "AAAX", "BBBX"]
+
+    def test_a_first_row_with_a_dash_placeholder_is_data(self):
+        body = "| Alpha Fund | AAAX | - |\n| Beta Fund | BBBX | $9.74 |\n"
+        result = parse_markdown_tables(_pages(body, body))
+        assert len(_all_rows(result)) == 4
+
+    def test_a_first_row_blank_in_a_value_column_is_data(self):
+        body = "| Alpha Fund | AAAX |  |\n| Beta Fund | BBBX | $9.74 |\n"
+        result = parse_markdown_tables(_pages(body, body))
+        assert len(_all_rows(result)) == 4
+
+    def test_a_sparse_category_row_is_not_taken_for_the_header(self):
+        body = "| EQUITIES |  |  |\n|  | AAAX |  |\n| Alpha Fund | BBBX | $9.74 |\n"
+        result = parse_markdown_tables(_pages(body, body))
+        assert len(_all_rows(result)) == 6
+
+    def test_duplicate_labels_are_not_promoted(self):
+        body = "|  | Market | Market |\n| Alpha Fund | $1.00 | $2.00 |\n"
+        result = parse_markdown_tables(_pages(body, body))
+        assert len(_all_rows(result)) == 4
+
+    def test_an_all_text_table_is_never_re_headed(self):
+        body = "| Alpha Fund | AAAX | Growth |\n| Beta Fund | BBBX | Value |\n"
+        result = parse_markdown_tables(_pages(body, body))
+        assert len(_all_rows(result)) == 4
+
+    def test_a_label_row_short_of_cells_is_padded_to_the_header(self):
+        body = "| Name | NAV |\n| Alpha Fund | $1.00 | Growth |\n"
+        result = parse_markdown_tables(_pages(body, body))
+        assert result["tables"][0]["columns"] == ["Name", "NAV", "_unnamed_2"]
+        assert len(_all_rows(result)) == 2
+
+    def test_pages_whose_labels_differ_only_in_case_and_punctuation_share_a_header(
+        self,
+    ):
+        result = parse_markdown_tables(
+            _pages(
+                "|  | Ticker | NAV |\n| Alpha Fund | AAAX | $1.00 |\n",
+                "|  | ticker | NAV. |\n| Beta Fund | BBBX | $2.00 |\n",
+            )
+        )
+        assert {tuple(t["columns"]) for t in result["tables"]} == {
+            ("_unnamed_0", "Ticker", "NAV")
+        }
+        assert [r["Ticker"] for r in _all_rows(result)] == ["AAAX", "BBBX"]
+
+    def test_one_over_wide_row_does_not_turn_the_recovery_off(self):
+        result = parse_markdown_tables(
+            _pages(
+                LABELS + "| Alpha Fund | AAAX | $1.00 | $9.99 |\n",
+                LABELS + "| Beta Fund | BBBX | $2.00 |\n",
+            )
+        )
+        assert result["columns"][1:] == ["Ticker", "NAV"]
+        assert [r["Ticker"] for r in _all_rows(result)] == ["AAAX", "BBBX"]
+
+    def test_a_category_row_under_the_labels_on_a_later_page_stays_a_row(self):
+        result = parse_markdown_tables(
+            _pages(
+                LABELS + "| Fund Name |  |  |\n| Alpha Fund | AAAX | $1.00 |\n",
+                LABELS + "| EQUITIES |  |  |\n| Beta Fund | BBBX | $2.00 |\n",
+            )
+        )
+        assert result["columns"] == ["Fund Name", "Ticker", "NAV"]
+        names = [r["Fund Name"] for r in _all_rows(result)]
+        assert names == ["Alpha Fund", "EQUITIES", "Beta Fund"]
+
+    def test_a_label_row_wider_than_the_header_is_left_as_data(self):
+        body = "|  | Ticker | Market | Value |\n| Alpha Fund | AAAX | $1.00 |\n"
+        result = parse_markdown_tables(_pages(body, body))
+        assert all(t["columns"][0] == "_unnamed_0" for t in result["tables"])
+        assert len(_all_rows(result)) == 4
