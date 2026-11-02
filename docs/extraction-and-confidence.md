@@ -399,6 +399,10 @@ extraction:
                                      # parse succeeds (big cost saver; see below)
 ```
 
+When OCR emits a table with a blank header row and the column labels in the rows
+under it, the parser takes those label rows as the header instead of returning
+them as data, so they are not counted as extra items.
+
 > **`lazy_images` (default `true`) — cost optimization for table documents.** When
 > a pre-flight table parse succeeds, page images are **not** attached to the
 > extraction prompt. The deterministic table tool is text/markdown-driven and never

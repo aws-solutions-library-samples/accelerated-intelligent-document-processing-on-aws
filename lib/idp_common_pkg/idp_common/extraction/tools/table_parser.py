@@ -17,6 +17,7 @@ This tool handles the mechanical parsing while the agent handles semantic reason
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from strands import tool
@@ -428,6 +429,57 @@ def _merge_adjacent_tables(
     return merged
 
 
+#: A cell that reads as a value rather than a column label: a number, an amount,
+#: a percentage or a date, optionally signed or with a currency symbol.
+_VALUE_CELL = re.compile(
+    r"^[-+(]?[$€£¥]?\s*[-+]?(\d[\d,]*(\.\d+)?|\.\d+)\s*%?\)?$"
+    r"|^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$"
+    r"|^[$€£¥]\s*-$"
+)
+
+
+def _is_label_row(cells: list[str]) -> bool:
+    """Whether a row holds column labels: some text, and no cell reading as a value."""
+    filled = [c for c in cells if c.strip()]
+    return bool(filled) and not any(_VALUE_CELL.match(c.strip()) for c in filled)
+
+
+def _promote_header_rows(
+    header_line: str, data_lines: list[str]
+) -> tuple[str, list[str], int]:
+    """Recover the column labels when OCR put them below a blank header row.
+
+    Textract sometimes emits a table whose first row is entirely blank, with the
+    real labels in the rows after it, split across lines when a label wraps (one
+    row carries most of the labels and the next carries the one for the first
+    column). Taken as written, the blank row becomes ``_unnamed_*`` columns and
+    the label rows become data, so a 532-row table reads as 534. When the header
+    is blank, the first data row is promoted to the header if it is a label row,
+    and each following label row that only fills header cells still blank is
+    merged in. Returns the header line, the remaining data lines and how many
+    rows were promoted; a table whose first row is data is left as it was.
+    """
+    if any(c.strip() for c in _split_table_row(header_line)) or not data_lines:
+        return header_line, data_lines, 0
+    labels = _split_table_row(data_lines[0])
+    if not _is_label_row(labels):
+        return header_line, data_lines, 0
+    consumed = 1
+    while consumed < len(data_lines):
+        cells = _split_table_row(data_lines[consumed])
+        filled = [i for i, c in enumerate(cells) if c.strip()]
+        if (
+            not filled
+            or not _is_label_row(cells)
+            or any(i >= len(labels) or labels[i].strip() for i in filled)
+        ):
+            break
+        for i in filled:
+            labels[i] = cells[i]
+        consumed += 1
+    return "| " + " | ".join(labels) + " |", data_lines[consumed:], consumed
+
+
 def _parse_single_table(
     header_line: str,
     data_lines: list[str],
@@ -452,6 +504,13 @@ def _parse_single_table(
         - warnings: list of warning messages about parsing issues
     """
     warnings: list[str] = []
+
+    header_line, data_lines, promoted = _promote_header_rows(header_line, data_lines)
+    if promoted:
+        warnings.append(
+            f"Header row was blank; took the column names from the next {promoted} "
+            "row(s)"
+        )
 
     # Parse header columns
     columns = _split_table_row(header_line)

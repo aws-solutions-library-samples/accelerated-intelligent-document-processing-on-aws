@@ -825,3 +825,61 @@ class TestParseSuccessRateRowBased:
         # 2 rows, 1 with error → rate = 0.5
         assert result["quality"]["parse_success_rate"] == 0.5
         assert result["quality"]["consistent_column_count"] is False
+
+
+# =============================================================================
+# Labels below a blank header row
+# =============================================================================
+
+# The shape Textract produced for samples/Nuveen.pdf: a blank header row, the
+# labels in the next row, and the first column's label on a row of its own.
+BLANK_HEADER_TABLE = """\
+|   |        |      |
+|---|--------|------|
+|   | Ticker | NAV  |
+| Fund Name |  |    |
+| Alpha Fund | AAAX | $10.16 |
+| Beta Fund  | BBBX | $9.74  |
+"""
+
+
+class TestLabelsBelowABlankHeader:
+    """A blank header row with the labels under it parses to labelled columns."""
+
+    def test_the_labels_become_the_columns_and_are_not_rows(self):
+        result = parse_markdown_tables(BLANK_HEADER_TABLE)
+        assert result["columns"] == ["Fund Name", "Ticker", "NAV"]
+        assert result["row_count"] == 2
+        assert [r["Ticker"] for r in result["rows"]] == ["AAAX", "BBBX"]
+
+    def test_a_continuation_page_without_the_first_label_keeps_its_rows(self):
+        text = "|  |  |  |\n|--|--|--|\n|  | Ticker | NAV |\n| Gamma Fund | CCCX | $1.00 |\n"
+        result = parse_markdown_tables(text)
+        assert result["columns"][1:] == ["Ticker", "NAV"]
+        assert result["row_count"] == 1
+
+    def test_a_blank_header_over_data_is_left_as_it_was(self):
+        text = "|  |  |\n|--|--|\n| Alpha Fund | $10.16 |\n| Beta Fund | 12/5/2024 |\n"
+        columns, rows, _ = _parse_single_table(
+            header_line="|  |  |",
+            data_lines=["| Alpha Fund | $10.16 |", "| Beta Fund | 12/5/2024 |"],
+        )
+        assert columns == ["_unnamed_0", "_unnamed_1"]
+        assert len(rows) == 2
+        assert parse_markdown_tables(text)["row_count"] == 2
+
+    def test_a_named_header_is_never_replaced(self):
+        columns, rows, _ = _parse_single_table(
+            header_line="| Name | Ticker |",
+            data_lines=["| Label | Other |", "| Alpha Fund | AAAX |"],
+        )
+        assert columns == ["Name", "Ticker"]
+        assert len(rows) == 2
+
+    def test_a_label_row_that_overlaps_the_header_is_data(self):
+        columns, rows, _ = _parse_single_table(
+            header_line="|  |  |",
+            data_lines=["| Name | Ticker |", "| Alpha Fund | AAAX |"],
+        )
+        assert columns == ["Name", "Ticker"]
+        assert rows == [{"Name": "Alpha Fund", "Ticker": "AAAX"}]

@@ -1535,6 +1535,9 @@ When `table_parsing.enabled: true`, the extraction agent gains a `parse_table` t
    - Tolerates empty lines (page breaks) within tables via configurable lookahead
    - Recovers from missing pipe characters in corrupted rows
    - Automatically merges table fragments with identical columns
+   - Recovers the column names when OCR emits a blank header row with the labels in
+     the rows below it (a wrapped label can span two rows): those rows become the
+     header rather than data, and a warning says how many were taken
 3. **Provides quality metrics and warnings**:
    - `parse_success_rate`: Ratio of cleanly parsed rows
    - `avg_confidence`: OCR confidence scores (when available from Textract)
