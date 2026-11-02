@@ -1014,12 +1014,37 @@ class TestSectionClassificationValidation:
         assert call_count == 2
         assert result.sections[0].classification == "unclassified"
         assert result.sections[0].confidence is None
+        # The fallback is not the model's answer, so the section says so, at the
+        # severity the page-level path uses for the same outcome (#1705).
+        issues = result.sections[0].processing_issues or []
+        assert [(i.code, i.severity) for i in issues] == [
+            ("classification_invalid_class_fallback", "warning")
+        ]
+        assert "mystery" in issues[0].root_cause
+        assert issues[0].details == {"page_ids": ["1", "2"]}
+
+    def test_an_accepted_class_records_no_issue(self):
+        service = _service(
+            granularity="packet", enforceValidClasses=True, maxValidationRetries=2
+        )
+        result, _ = self._run(service, ["mystery", "invoice"])
+        assert not result.sections[0].processing_issues
 
     def test_validation_can_be_turned_off(self):
         service = _service(granularity="packet", enforceValidClasses=False)
         result, call_count = self._run(service, ["mystery"])
         assert call_count == 1
         assert result.sections[0].classification == "mystery"
+        assert not result.sections[0].processing_issues
+
+    def test_no_class_with_validation_off_is_unclassified_and_flagged(self):
+        service = _service(granularity="packet", enforceValidClasses=False)
+        result, _ = self._run(service, [""])
+        assert result.sections[0].classification == UNCLASSIFIED_CLASS
+        issues = result.sections[0].processing_issues or []
+        assert [(i.code, i.severity) for i in issues] == [
+            ("classification_failed", "error")
+        ]
 
 
 # --------------------------------------------------------------------------

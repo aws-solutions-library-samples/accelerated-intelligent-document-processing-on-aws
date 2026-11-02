@@ -1064,18 +1064,19 @@ processing issue on the section that holds the page, which is where the Sections
 panel renders it and where `ProcessingIssueCount` on the document counts it. The
 severity says how much attention the case deserves:
 
-> **Scope: the combined strategy at page granularity, plus one split-then-classify case.**
-> These issues are recorded from the page-level path. Packet granularity and
-> split-then-classify make one decision per segment rather than per page and record
-> none of them, with one exception: under split-then-classify, a segment whose section
-> classification call fails or returns no class records `classification_failed` on its
-> section. At packet granularity a page the model places in no segment is appended to
-> no section at all, so it produces neither data nor a record. Extending the rest to
-> the segment-level paths is tracked as follow-up work.
+> **Scope: the combined strategy at page granularity, and section classification under
+> split-then-classify.** On the page-level path every case below is recorded. Under
+> split-then-classify, the section classification step records two of them on the
+> section: `classification_failed` when its call fails (or returns no class with
+> `enforceValidClasses` off), and `classification_invalid_class_fallback` when the
+> fallback class replaced an out-of-vocabulary answer. Packet granularity with the
+> combined strategy records none of them: at packet granularity a page the model
+> places in no segment is appended to no section at all, so it produces neither data
+> nor a record. Extending that path is tracked as follow-up work.
 
 | Issue code | Severity | What happened | What to do |
 |---|---|---|---|
-| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class and nothing was extracted from it. On the Bedrock backend it is produced in one case: the page's text or image could not be read from S3, or a page artifact is missing, so nothing was sent — the root cause names the read that failed, and the document also fails. Otherwise it comes from `classify_page_sagemaker`, which a stack this solution deploys does not use: no template here creates a SageMaker endpoint or UDOP model, and you reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. A Bedrock model call that errors propagates instead and fails the document, where the error appears in the execution history rather than as an issue | For a read failure, check the page's artifacts in the working bucket and reprocess. Otherwise check the ClassificationFunction log group for the page and, if you supplied the endpoint yourself, its health, model access and quota |
+| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class and nothing was extracted from it. On the Bedrock backend it is produced in one case: the page's text or image could not be read from S3, or a page artifact is missing, so nothing was sent — the root cause names the read that failed, and the document also fails. Otherwise it comes from `classify_page_sagemaker`, which a stack this solution deploys does not use: no template here creates a SageMaker endpoint or UDOP model, and you reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the page-level path, a Bedrock model call that errors propagates instead and fails the document, where the error appears in the execution history rather than as an issue. Under split-then-classify, a section classification call that errors is caught per segment: the section is labelled `unclassified`, carries this issue with the call's error as its root cause, and the error is also in the document's errors | For a read failure, check the page's artifacts in the working bucket and reprocess. For a split-then-classify section, check the section classification model call in the ClassificationFunction log group (throttling, model access, quota) and reprocess. Otherwise check the ClassificationFunction log group for the page and, if you supplied the endpoint yourself, its health, model access and quota |
 | `classification_page_no_content` | warning | The page had nothing to classify: no usable OCR text (text that is only whitespace counts as none), and no page image either because none could be loaded or because `modality.images` is off. With images on, a blank page normally still has an image and does not land here; with text-only modality, every page without OCR text does (separator sheets, signature pages, image-only scans). Such an empty page is labelled `unclassified` and the rest of the document is classified and completes normally. A page whose text or image could not be read, or whose page artifact is missing, still fails the document, and the message names the read that failed | Check the OCR step for those pages unless they are genuinely empty. If image-only pages are expected, turn `modality.images` on so they can be classified |
 | `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `fallback_class` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
 
@@ -1355,7 +1356,9 @@ its section and its pages all read `unclassified`, the failure is in the
 document's errors, and the section carries a `classification_failed` processing
 issue in the Sections panel. Its boundaries are still good, and a real class
 guessed in its place would propagate into extraction as though it had been
-decided. Extraction treats `unclassified` as classification having determined no
+decided. A segment whose answer was outside the vocabulary after every retry gets
+the configured `fallback_class` instead, as on the page-level path, and its section
+carries a `classification_invalid_class_fallback` warning. Extraction treats `unclassified` as classification having determined no
 class, rather than as a class missing from the configuration.
 
 `splitting.method` and `section_classification.method` ship with one value,
