@@ -430,18 +430,37 @@ def _merge_adjacent_tables(
 
 
 #: A cell that reads as a value rather than a column label: a number, an amount,
-#: a percentage or a date, optionally signed or with a currency symbol.
+#: a percentage or a date, optionally signed or with a currency symbol, or a
+#: placeholder a data cell uses for "none" (a dash, an em or en dash, N/A).
 _VALUE_CELL = re.compile(
     r"^[-+(]?[$€£¥]?\s*[-+]?(\d[\d,]*(\.\d+)?|\.\d+)\s*%?\)?$"
     r"|^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$"
-    r"|^[$€£¥]\s*-$"
+    r"|^[$€£¥]?\s*[-–—]{1,2}$"
+    r"|^(n/?a|none|nil)$",
+    re.IGNORECASE,
 )
+
+
+def _is_value_cell(cell: str) -> bool:
+    return bool(_VALUE_CELL.match(cell.strip()))
 
 
 def _is_label_row(cells: list[str]) -> bool:
     """Whether a row holds column labels: some text, and no cell reading as a value."""
     filled = [c for c in cells if c.strip()]
-    return bool(filled) and not any(_VALUE_CELL.match(c.strip()) for c in filled)
+    return bool(filled) and not any(_is_value_cell(c) for c in filled)
+
+
+def _value_columns(lines: list[str]) -> set[int]:
+    """Columns in which most of the filled cells of ``lines`` read as values."""
+    counts: dict[int, list[int]] = {}
+    for line in lines:
+        for i, cell in enumerate(_split_table_row(line)):
+            if cell.strip():
+                seen = counts.setdefault(i, [0, 0])
+                seen[0] += _is_value_cell(cell)
+                seen[1] += 1
+    return {i for i, (values, filled) in counts.items() if 2 * values > filled}
 
 
 def _promote_header_rows(
@@ -457,14 +476,18 @@ def _promote_header_rows(
     is blank, the first data row is promoted to the header if it is a label row,
     and each following label row that only fills header cells still blank is
     merged in. Returns the header line, the remaining data lines and how many
-    rows were promoted; a table whose first row is data is left as it was.
+    rows were promoted; anything that fails a guard is left as it was.
 
-    The test is lexical, so two guards keep a data row from being taken for the
-    header: the first label row must fill more than half the header's cells (a
-    sparse category row such as ``EQUITIES`` does not), and some row left below
-    the header must hold a value (an all-text table is never re-headed). A label
-    row that is itself numeric (``| 2023 | 2024 |``) is not recognised, so such a
-    table keeps its ``_unnamed_*`` columns.
+    The test is lexical, so the guards are what keep a data row out of the
+    header. The candidate must fill more than half the header's cells (a sparse
+    category row such as ``EQUITIES`` does not); the rows left below it must have
+    at least one column that mostly holds values, and the candidate must carry a
+    text label in every such column (a data row holds a value or a placeholder
+    there, and an all-text table is never re-headed); and its labels must be
+    distinct, or one column's data would be keyed over another's. Two shapes are
+    deliberately not recovered: an all-numeric label row (``| 2023 | 2024 |``),
+    and a lone first-column row after the labels that is a category rather than a
+    wrapped label, which is merged in as the first column's name.
     """
     header_cells = _split_table_row(header_line)
     if any(c.strip() for c in header_cells) or not data_lines:
@@ -487,11 +510,12 @@ def _promote_header_rows(
         for i in filled:
             labels[i] = cells[i]
         consumed += 1
-    if not any(
-        _VALUE_CELL.match(cell.strip())
-        for line in data_lines[consumed:]
-        for cell in _split_table_row(line)
-        if cell.strip()
+    value_columns = _value_columns(data_lines[consumed:])
+    named = [c.strip().lower() for c in labels if c.strip()]
+    if (
+        not value_columns
+        or any(i >= len(labels) or not labels[i].strip() for i in value_columns)
+        or len(named) != len(set(named))
     ):
         return header_line, data_lines, 0
     return "| " + " | ".join(labels) + " |", data_lines[consumed:], consumed
@@ -708,6 +732,16 @@ def parse_markdown_tables(
         # Find all tables in the text (with lookahead tolerance for OCR artifacts)
         raw_tables = _find_tables_in_text(text, max_empty_line_gap=max_empty_line_gap)
 
+        # Recover labels OCR put under a blank header row, per fragment and before
+        # the merge: a continuation page carries the same artifact, and a merged
+        # table's interior label rows would be out of reach afterwards.
+        for raw_table in raw_tables:
+            (
+                raw_table["header_line"],
+                raw_table["data_lines"],
+                raw_table["promoted_rows"],
+            ) = _promote_header_rows(raw_table["header_line"], raw_table["data_lines"])
+
         # Merge adjacent tables with identical columns (recovers from table splits)
         if auto_merge_adjacent_tables and len(raw_tables) > 1:
             original_count = len(raw_tables)
@@ -740,6 +774,11 @@ def parse_markdown_tables(
                 header_line=raw_table["header_line"],
                 data_lines=raw_table["data_lines"],
             )
+            if raw_table.get("promoted_rows"):
+                warnings.append(
+                    "Header row was blank; took the column names from the next "
+                    f"{raw_table['promoted_rows']} row(s)"
+                )
 
             # Prefix warnings with table index if multiple tables
             if len(raw_tables) > 1:
