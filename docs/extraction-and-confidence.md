@@ -400,9 +400,13 @@ extraction:
 ```
 
 When OCR emits a table with a blank header row and the column labels in the rows
-under it, and the table runs over several pages that each repeat those labels, the
-parser takes the label rows as the header instead of returning them as data, so
-they are not counted as extra items. Three bounds:
+under it, and the table runs over several pages that each start it again (a blank
+header row, the Markdown separator row, then the same labels), the parser takes
+the label rows as the header instead of returning them as data, so they are not
+counted as extra items. Four bounds:
+
+- A page that repeats the labels without its own header and separator rows is part
+  of the previous page's table, not a new one, so it does not count as a repeat.
 
 - A one-page table in that shape is parsed as before, since one page cannot tell a
   short all-text data row from a label row.

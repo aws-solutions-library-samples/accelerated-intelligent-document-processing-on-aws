@@ -1537,7 +1537,8 @@ When `table_parsing.enabled: true`, the extraction agent gains a `parse_table` t
    - Automatically merges table fragments with identical columns
    - Recovers the column names when OCR emits a blank header row with the labels in
      the rows below it (a wrapped label can span two rows), on a table split across
-     pages that repeats those labels: they become the header rather than data, and a
+     pages where each page starts the table again (blank header, separator, the
+     same labels): they become the header rather than data, and a
      warning says how many rows were taken. A one-page table is left as it was,
      because one page cannot tell a short all-text data row from a label row. The
      check runs over the text `parse_table` is given, so on the sharded path a
