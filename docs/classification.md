@@ -1064,12 +1064,14 @@ processing issue on the section that holds the page, which is where the Sections
 panel renders it and where `ProcessingIssueCount` on the document counts it. The
 severity says how much attention the case deserves:
 
-> **Scope: the combined strategy at page granularity only.** These issues are recorded from
-> the page-level path. Packet granularity and split-then-classify make one decision per
-> segment rather than per page and record none of them; at packet granularity a
-> page the model places in no segment is appended to no section at all, so it
-> produces neither data nor a record. Extending this to the segment-level paths is
-> tracked as follow-up work.
+> **Scope: the combined strategy at page granularity, plus one split-then-classify case.**
+> These issues are recorded from the page-level path. Packet granularity and
+> split-then-classify make one decision per segment rather than per page and record
+> none of them, with one exception: under split-then-classify, a segment whose section
+> classification call fails or returns no class records `classification_failed` on its
+> section. At packet granularity a page the model places in no segment is appended to
+> no section at all, so it produces neither data nor a record. Extending the rest to
+> the segment-level paths is tracked as follow-up work.
 
 | Issue code | Severity | What happened | What to do |
 |---|---|---|---|
@@ -1348,11 +1350,13 @@ Four things worth knowing:
   `document_shape.sectionSplitting: disabled` the whole document is one segment, and
   under `page` every page is one, so no splitting call is made.
 
-A segment whose section classification call fails is labelled `unclassified`
-and is reported in the document's errors. Its boundaries are still good, and a
-real class guessed in its place would propagate into extraction as though it had
-been decided. Extraction treats `unclassified` as classification having
-determined no class, rather than as a class missing from the configuration.
+A segment whose section classification call fails is labelled `unclassified`:
+its section and its pages all read `unclassified`, the failure is in the
+document's errors, and the section carries a `classification_failed` processing
+issue in the Sections panel. Its boundaries are still good, and a real class
+guessed in its place would propagate into extraction as though it had been
+decided. Extraction treats `unclassified` as classification having determined no
+class, rather than as a class missing from the configuration.
 
 `splitting.method` and `section_classification.method` ship with one value,
 `llm`. A boundary-detection model, embeddings-based classification and external

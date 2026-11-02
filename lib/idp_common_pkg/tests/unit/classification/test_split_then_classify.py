@@ -856,6 +856,14 @@ class TestSplitThenClassifyPacket:
         assert result.sections[0].classification == "invoice"
         assert result.sections[1].classification == UNCLASSIFIED_CLASS
         assert result.pages["2"].classification == UNCLASSIFIED_CLASS
+        # The Sections panel flags the section that failed, and only that one.
+        issues = result.sections[1].processing_issues or []
+        assert [(i.code, i.severity) for i in issues] == [
+            ("classification_failed", "error")
+        ]
+        assert issues[0].details == {"page_ids": ["2"]}
+        assert "throttled" in issues[0].root_cause
+        assert not result.sections[0].processing_issues
 
 
 # --------------------------------------------------------------------------

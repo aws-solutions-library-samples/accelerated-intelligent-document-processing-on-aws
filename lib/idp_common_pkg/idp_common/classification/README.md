@@ -194,7 +194,10 @@ reads its own model settings through `_call(stage)`. A forced class
 (document-name regex match) skips section classification entirely. Under
 `sectionSplitting: disabled` or `page`, `_segments_from_document_shape` builds the
 segments directly and the splitting call is not made. A segment whose section
-classification call fails keeps `doc_class = None` and is reported — its
+classification call fails (or returns no class) is labelled `unclassified` by
+`split_then_classify_document`, so its section and pages read `unclassified`, and
+its pages are passed to `_record_unclassified_page_issues`, which records
+`classification_failed` on the section. It is never given a real class: its
 boundaries are still good, and an invented class would propagate into extraction
 as though it had been decided.
 

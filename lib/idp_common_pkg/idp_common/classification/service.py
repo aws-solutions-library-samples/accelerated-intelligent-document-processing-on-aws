@@ -5864,6 +5864,7 @@ class ClassificationService:
                 len(document.pages),
             )
 
+            unlabeled_pages: List[PageClassification] = []
             if forced_class:
                 # The document's NAME asserts the class, so there is nothing for
                 # section classification to decide. Skipping it is the whole
@@ -5878,24 +5879,37 @@ class ClassificationService:
                     segment.doc_class = forced_class
                     segment.confidence = None
             else:
-                segments, label_metering, label_errors = self._classify_segments(
-                    document, segments
+                segments, label_metering, label_errors, label_failures = (
+                    self._classify_segments(document, segments)
                 )
                 document.metering = utils.merge_metering_data(
                     document.metering, label_metering
                 )
                 document.errors.extend(label_errors)
-                # A segment whose labeling call failed has no class. Its section
-                # gets the ``unclassified`` sentinel, which extraction reports as
-                # "classification determined no class"; left empty, it reads as a
-                # class missing from the configuration and points the operator at
-                # a config edit that never happened (#1705). The failure itself is
-                # in ``document.errors`` above.
-                for segment in segments:
-                    if not segment.doc_class:
-                        segment.doc_class = UNCLASSIFIED_CLASS
+                # A segment whose labeling call failed (or returned no class) is
+                # labelled with the ``unclassified`` sentinel, so the segment, its
+                # section and its pages all read ``unclassified`` and extraction
+                # reports "classification determined no class". Left empty, it
+                # read as a class missing from the configuration and pointed the
+                # operator at a config edit that never happened (#1705). Its pages
+                # are then recorded as failed below, so the section carries a
+                # ``classification_failed`` issue in the Sections panel.
+                for index, segment in enumerate(segments):
+                    if segment.doc_class:
+                        continue
+                    segment.doc_class = UNCLASSIFIED_CLASS
+                    reason = label_failures.get(
+                        index, "the section classification call returned no class"
+                    )
+                    unlabeled_pages.extend(
+                        self._create_unclassified_result(
+                            page_id=page_id, error_message=reason
+                        )
+                        for page_id in segment.page_ids
+                    )
 
             document = self._sections_from_segments(document, segments)
+            self._record_unclassified_page_issues(document, unlabeled_pages)
             document = self._update_document_status(document)
 
             logger.info(
@@ -6099,7 +6113,7 @@ class ClassificationService:
 
     def _classify_segments(
         self, document: Document, segments: List[Segment]
-    ) -> tuple[List[Segment], Dict[str, Any], List[str]]:
+    ) -> tuple[List[Segment], Dict[str, Any], List[str], Dict[int, str]]:
         """Section classification: one call per segment to decide its class.
 
         **Per segment, not per page** — the other half of the split-then-classify
@@ -6113,8 +6127,10 @@ class ClassificationService:
         recorded in the returned errors. It is **not** given a fallback class:
         the segment's boundaries are still good, and an invented class would
         propagate into extraction as though it had been decided. The caller
-        labels its section with the ``unclassified`` sentinel, which says no
-        class was determined rather than naming one.
+        labels the segment with the ``unclassified`` sentinel, which says no
+        class was determined rather than naming one; the fourth return value maps
+        each failed segment's index to its error, for the issue recorded on its
+        section.
         """
         config = self._get_classification_config(self.STAGE_SECTION_CLASSIFICATION)
         _, send_images = self._resolve_modality(stage=self.STAGE_SECTION_CLASSIFICATION)
@@ -6122,6 +6138,7 @@ class ClassificationService:
 
         metering: Dict[str, Any] = {}
         errors: List[str] = []
+        failures: Dict[int, str] = {}
         lock = threading.Lock()
 
         def label(index: int) -> None:
@@ -6176,13 +6193,14 @@ class ClassificationService:
                     logger.error(error_msg)
                     with lock:
                         errors.append(error_msg)
+                        failures[index] = error_msg
 
         logger.info(
             "Section classification labeled %d/%d segment(s)",
             sum(1 for s in segments if s.doc_class),
             len(segments),
         )
-        return segments, metering, errors
+        return segments, metering, errors, failures
 
     def _section_classification_pages(self, segment: Segment) -> List[str]:
         """Which of a segment's pages section classification sends, per
