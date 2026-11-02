@@ -482,9 +482,12 @@ def _promote_header_rows(
     header. The candidate must fill more than half the header's cells (a sparse
     category row such as ``EQUITIES`` does not); the rows left below it must have
     at least one column that mostly holds values, and the candidate must carry a
-    text label in every such column (a data row holds a value or a placeholder
-    there, and an all-text table is never re-headed); and its labels must be
-    distinct, or one column's data would be keyed over another's. Two shapes are
+    non-value label in every such column (a data row with a value or a
+    placeholder there is refused, and an all-text table is never re-headed); and
+    its labels must be distinct, or one column's data would be keyed over
+    another's. None of that can tell a short all-text data row from a label row,
+    which is why parse_markdown_tables applies a candidate only when another
+    fragment of the document opens with the same labels. Two shapes are
     deliberately not recovered: an all-numeric label row (``| 2023 | 2024 |``),
     and a lone first-column row after the labels that is a category rather than a
     wrapped label, which is merged in as the first column's name.
@@ -521,6 +524,57 @@ def _promote_header_rows(
     return "| " + " | ".join(labels) + " |", data_lines[consumed:], consumed
 
 
+def _normalized_labels(header_line: str) -> tuple[str, ...]:
+    return tuple(
+        re.sub(r"[\s.:]+", " ", c).strip().lower()
+        for c in _split_table_row(header_line)
+    )
+
+
+def _promote_corroborated_headers(raw_tables: list[dict[str, Any]]) -> None:
+    """Apply :func:`_promote_header_rows` where the document corroborates it.
+
+    A candidate header is applied to a fragment only when at least one other
+    fragment opens with the same label row (compared without case, spacing or
+    trailing punctuation). The artifact this recovers repeats on every page of a
+    split table, while a data row that happens to pass the lexical guards does
+    not open several fragments, so a lone candidate is left as data. The group
+    shares one header built from every label its members supply (a wrapped
+    first-column label usually appears on the first page only), so the fragments
+    still merge.
+    A one-fragment table with the artifact therefore keeps its ``_unnamed_*``
+    columns. Sets ``promoted_rows`` on each fragment (0 where nothing changed).
+    """
+    candidates = []
+    for raw_table in raw_tables:
+        raw_table["promoted_rows"] = 0
+        header, rest, promoted = _promote_header_rows(
+            raw_table["header_line"], raw_table["data_lines"]
+        )
+        candidates.append((header, rest, promoted))
+    groups: dict[tuple[str, ...], list[int]] = {}
+    for idx, (_, _, promoted) in enumerate(candidates):
+        if promoted:
+            opening = raw_tables[idx]["data_lines"][0]
+            groups.setdefault(_normalized_labels(opening), []).append(idx)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        labels: list[str] = []
+        for idx in members:
+            for pos, cell in enumerate(_split_table_row(candidates[idx][0])):
+                if pos == len(labels):
+                    labels.append("")
+                if not labels[pos].strip() and cell.strip():
+                    labels[pos] = cell
+        canonical = "| " + " | ".join(labels) + " |"
+        for idx in members:
+            _, rest, promoted = candidates[idx]
+            raw_tables[idx]["header_line"] = canonical
+            raw_tables[idx]["data_lines"] = rest
+            raw_tables[idx]["promoted_rows"] = promoted
+
+
 def _parse_single_table(
     header_line: str,
     data_lines: list[str],
@@ -545,13 +599,6 @@ def _parse_single_table(
         - warnings: list of warning messages about parsing issues
     """
     warnings: list[str] = []
-
-    header_line, data_lines, promoted = _promote_header_rows(header_line, data_lines)
-    if promoted:
-        warnings.append(
-            f"Header row was blank; took the column names from the next {promoted} "
-            "row(s)"
-        )
 
     # Parse header columns
     columns = _split_table_row(header_line)
@@ -735,12 +782,7 @@ def parse_markdown_tables(
         # Recover labels OCR put under a blank header row, per fragment and before
         # the merge: a continuation page carries the same artifact, and a merged
         # table's interior label rows would be out of reach afterwards.
-        for raw_table in raw_tables:
-            (
-                raw_table["header_line"],
-                raw_table["data_lines"],
-                raw_table["promoted_rows"],
-            ) = _promote_header_rows(raw_table["header_line"], raw_table["data_lines"])
+        _promote_corroborated_headers(raw_tables)
 
         # Merge adjacent tables with identical columns (recovers from table splits)
         if auto_merge_adjacent_tables and len(raw_tables) > 1:

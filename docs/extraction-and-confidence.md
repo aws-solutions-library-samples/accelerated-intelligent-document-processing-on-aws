@@ -400,8 +400,10 @@ extraction:
 ```
 
 When OCR emits a table with a blank header row and the column labels in the rows
-under it, the parser takes those label rows as the header instead of returning
-them as data, so they are not counted as extra items.
+under it, and the table runs over several pages that each repeat those labels, the
+parser takes the label rows as the header instead of returning them as data, so
+they are not counted as extra items. A one-page table in that shape is parsed as
+before.
 
 > **`lazy_images` (default `true`) — cost optimization for table documents.** When
 > a pre-flight table parse succeeds, page images are **not** attached to the
