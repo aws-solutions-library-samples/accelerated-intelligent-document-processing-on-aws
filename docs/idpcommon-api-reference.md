@@ -65,7 +65,8 @@ The `Document` dataclass is the central data structure passed through the entire
 | `evaluation_results_uri` | `str` | S3 URI to evaluation results |
 | `rule_validation_result` | `RuleValidationResult` | Rule validation output |
 | `hitl_status` | `str` | Human-in-the-loop review status |
-| `confidence_alert_count` | `int` | Number of low-confidence fields |
+| `confidence_alert_count` | `int` | Number of low-confidence fields (a field with no extracted value is never one) |
+| `missing_required_field_count` | `int` | Number of required fields extraction left absent, summed over sections |
 | `errors` | `List[str]` | Processing error messages |
 
 **Key methods:**
@@ -106,6 +107,7 @@ Represents a logical group of pages with the same document class.
 | `extraction_result_uri` | `str` | S3 URI to extraction results |
 | `attributes` | `Dict` | Extracted attribute values |
 | `confidence_threshold_alerts` | `List[Dict]` | Low-confidence field alerts |
+| `missing_required_fields` | `List[Dict]` | Required fields left absent, in the same shape as an alert |
 
 ### Status Enum
 

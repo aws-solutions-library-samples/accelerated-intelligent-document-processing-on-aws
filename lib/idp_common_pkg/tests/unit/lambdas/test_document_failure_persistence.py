@@ -27,7 +27,6 @@ and a bad keyword is a ``TypeError``.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 from typing import Any, List
@@ -51,6 +50,7 @@ from idp_common.models import (
     Status,
 )
 from idp_common.utils.transient_errors import TransientError
+from tests.unit._handler_loading import load_with_xray_stubbed
 
 _SRC = os.path.join(os.path.dirname(__file__), "../../../../../patterns/unified/src")
 
@@ -63,23 +63,8 @@ def _load(module_name: str, relative_path: str):
     (``rule-validation-function`` contains hyphens). Same mechanism as the sibling
     extraction and assessment suites.
     """
-    recorder = MagicMock()
-    recorder.capture.return_value = lambda fn: fn
-    xray_core = MagicMock()
-    xray_core.patch_all = lambda: None
-    xray_core.xray_recorder = recorder
     os.environ.setdefault("AWS_REGION", "us-east-1")
-    with patch.dict(
-        "sys.modules",
-        {"aws_xray_sdk": MagicMock(), "aws_xray_sdk.core": xray_core},
-    ):
-        spec = importlib.util.spec_from_file_location(
-            module_name, os.path.join(_SRC, relative_path)
-        )
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    return module
+    return load_with_xray_stubbed(module_name, os.path.join(_SRC, relative_path))
 
 
 rule_validation_index = _load(

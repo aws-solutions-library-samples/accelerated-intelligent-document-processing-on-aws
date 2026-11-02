@@ -22,9 +22,7 @@ behind too, and would pass a check of what is left over alone.
 from __future__ import annotations
 
 import ast
-import importlib.util
 import subprocess
-import sys
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -43,6 +41,7 @@ from idp_common.lambda_deadline import (
 )
 from idp_common.models import Document, Section, Status
 from idp_common.utils.transient_errors import TransientError
+from tests.unit._handler_loading import load_with_xray_stubbed
 
 pytestmark = pytest.mark.unit
 
@@ -60,28 +59,7 @@ def _load(module_name: str, relative_path: str) -> ModuleType:
     patch a second copy of ``idp_common.s3`` while the code under test still called
     the first.
     """
-    recorder = MagicMock()
-    recorder.capture.return_value = lambda fn: fn
-    xray_core = MagicMock()
-    xray_core.patch_all = lambda: None
-    xray_core.xray_recorder = recorder
-    stubs = {"aws_xray_sdk": MagicMock(), "aws_xray_sdk.core": xray_core}
-    saved = {name: sys.modules.get(name) for name in stubs}
-    sys.modules.update(stubs)
-    try:
-        spec = importlib.util.spec_from_file_location(
-            module_name, HANDLER_SOURCE_ROOT / relative_path
-        )
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    finally:
-        for name, previous in saved.items():
-            if previous is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = previous
-    return module
+    return load_with_xray_stubbed(module_name, HANDLER_SOURCE_ROOT / relative_path)
 
 
 extraction_index = _load(

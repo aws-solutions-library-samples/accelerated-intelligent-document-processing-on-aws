@@ -31,6 +31,9 @@ definitions and the example IAM roles. Rules specific to feature stacks are in
   conditional KMS and a `Condition` that matches the function's. Point the
   function at it with `LoggingConfig`. Name new groups
   `/${AWS::StackName}/lambda/<LogicalId>`, or leave the name out entirely.
+- Give a custom-resource handler that has a declared log group a role that
+  denies `logs:CreateLogGroup` on that group, so the last log lines of its
+  stack-delete invocation cannot recreate the group after the stack is gone.
 - Only one kind of Lambda may keep Lambda's default log group: one that runs only
   during a stack operation (a custom-resource handler or install hook).
 - Every new Lambda task state in a state machine needs:

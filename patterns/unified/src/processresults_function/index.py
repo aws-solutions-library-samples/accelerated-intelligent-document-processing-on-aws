@@ -131,7 +131,20 @@ def handler(event, context):
         if section_document:
             # Add section to document if present
             if section_document.sections:
-                section = section_document.sections[0]
+                # The section this map iteration was about, by id. A result
+                # document can hold more than that one section — the extraction
+                # skip branch returns the whole document, and an assessment that
+                # then runs keeps it — so sections[0] turned every section of a
+                # reprocessed document into a copy of section 1 (#1686).
+                result_section_id = result.get("section_id")
+                section = next(
+                    (
+                        s
+                        for s in section_document.sections
+                        if s.section_id == result_section_id
+                    ),
+                    section_document.sections[0],
+                )
                 logger.info(f"section: {section}")
                 logger.info(
                     f"section.confidence_threshold_alerts: {section.confidence_threshold_alerts}"
@@ -226,6 +239,12 @@ def handler(event, context):
         for section in document.sections
     )
     logger.info(f"Total confidence alert count: {document.confidence_alert_count}")
+
+    # Required fields left absent, counted separately from confidence alerts
+    # (#1527). Informational: nothing above routes on it.
+    document.missing_required_field_count = sum(
+        len(section.missing_required_fields or []) for section in document.sections
+    )
 
     # Update final status in AppSync / Document Service (includes Review Status)
     logger.info(f"Updating document status to {document.status}")

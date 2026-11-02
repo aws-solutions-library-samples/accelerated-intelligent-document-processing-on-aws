@@ -3839,6 +3839,22 @@ Resources:
                       - "us.anthropic.claude-opus-5:1m"
                       - "us.xai.grok-4.6"
                       - "us.openai.gpt-6-astra"
+                      # The EU twins of the ids above, so an EU stack (whose
+                      # picklists keep only eu. and unprefixed ids) is offered the
+                      # eu.anthropic.claude-sonnet-4-6 default the swap writes.
+                      - "eu.amazon.nova-lite-v1:0"
+                      - "eu.amazon.nova-pro-v1:0"
+                      - "eu.amazon.nova-2-lite-v1:0"
+                      - "eu.anthropic.claude-sonnet-4-6"
+                      - "eu.anthropic.claude-sonnet-5"
+                      - "eu.anthropic.claude-sonnet-5:1m"
+                      - "eu.anthropic.claude-opus-4-6-v1:1m"
+                      - "eu.anthropic.claude-opus-4-7"
+                      - "eu.anthropic.claude-opus-4-7:1m"
+                      - "eu.anthropic.claude-opus-4-8"
+                      - "eu.anthropic.claude-opus-4-8:1m"
+                      - "eu.anthropic.claude-opus-5"
+                      - "eu.anthropic.claude-opus-5:1m"
                     order: 1
                   temperature:
                     type: number
@@ -4931,6 +4947,17 @@ Resources:
                   - lambda:RemovePermission
                 Resource:
                   - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${CodeBuildTriggerLogGroup}"
+                  - !GetAtt CodeBuildTriggerLogGroup.Arn
       ManagedPolicyArns:
         - !If
           - DeployInVPC
@@ -5500,6 +5527,14 @@ Resources:
               Action:
                 - bedrock:ListDataAutomationProjects
               Resource: "*"
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${BDAOCRProjectFunctionLogGroup}"
+                - !GetAtt BDAOCRProjectFunctionLogGroup.Arn
 
   BDAOCRProjectFunctionLogGroup:
     Type: AWS::Logs::LogGroup

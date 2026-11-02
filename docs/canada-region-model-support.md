@@ -144,19 +144,23 @@ alternative is offered in the region before selecting it. See [Document Knowledg
   stack is not rewritten. The picklists hide both, but a stored value stays
   until someone edits it.
 - **Embedding calls are not costed.** Multi-document discovery's embedding
-  model (`global.cohere.embed-v4:0` in Canada, `us.cohere.embed-v4:0`
-  elsewhere) emits no metering entry — `generate_embedding` returns a bare
-  vector — and neither id has a row in `config_library/pricing.yaml`, so
+  model (`global.cohere.embed-v4:0` in Canada, `eu.cohere.embed-v4:0` in EU
+  Regions, `us.cohere.embed-v4:0` elsewhere) emits no metering entry —
+  `generate_embedding` returns a bare vector — and none of these ids has a row
+  in `config_library/pricing.yaml`, so
   embedding usage does not appear in cost reporting. Pre-existing and not
   specific to Canada. The coverage gates record this per id rather than as a
   blanket rule for embeddings: `_COVERAGE_EXEMPT` in
   `lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py` and
   `EMBEDDING_MODELS` in `scripts/tests/test_model_surface_consistency.py` name
   the Knowledge Base embedding models, and `NON_SELECTABLE_DEFAULTS` names
-  `us.cohere.embed-v4:0`. `global.cohere.embed-v4:0` is in none of them, and
-  needs no entry only because it reaches a stack through the swap table rather
-  than through any surface those gates walk — so a shipped preset or code
-  default naming it would fail them with no entry to point at.
+  `us.cohere.embed-v4:0`. `global.cohere.embed-v4:0` and `eu.cohere.embed-v4:0`
+  are in none of them. They reach a stack two ways that those gates do not walk:
+  the swap table, and multi-document discovery's Region-aware code fallbacks in
+  `idp_common/discovery/regional_defaults.py`. The fallbacks are held to the swap
+  table instead, by `src/lambda/update_configuration/test_eu_region.py`. A shipped
+  preset or a `config/models.py` default naming either id would fail the coverage
+  gates with no entry to point at.
 - **ca-west-1 is handled, but the model lists are derived from ca-central-1.**
   A `ca-west-1` stack resolves to the same `ca` region type and gets the same
   picklists, swaps and Knowledge Base default, which is validated for

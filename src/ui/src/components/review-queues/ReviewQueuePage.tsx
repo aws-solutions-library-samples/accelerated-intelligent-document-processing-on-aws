@@ -114,6 +114,12 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
   usePolling(load, { enabled: !roleLoading, intervalMs: POLL_MS, immediate: true });
 
   const definition = useMemo(() => definitions.find((d) => d.id === queueId) ?? null, [definitions, queueId]);
+  // The last definition this queue was read with, which the Settings dialog edits. A
+  // refresh that briefly returns none must not close the dialog (and lose what was
+  // typed); if the queue really is gone, saving says so.
+  const [lastDefinition, setLastDefinition] = useState<ReviewQueueDefinition | null>(null);
+  if (definition && definition !== lastDefinition) setLastDefinition(definition);
+  const settingsQueue = definition ?? (lastDefinition?.id === queueId ? lastDefinition : null);
   const summary = health?.summary ?? mySummary;
   const { run: runRowAction } = useWorkItemActions();
   const supervisor = useSupervisorActions({ queues: definitions, onChanged: load });
@@ -417,8 +423,8 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
       </SpaceBetween>
       {supervisor.modals}
       <QueueDefinitionModal
-        visible={settingsOpen && !!definition}
-        queue={definition}
+        visible={settingsOpen && !!settingsQueue}
+        queue={settingsQueue}
         existingIds={[]}
         annotators={annotators ?? []}
         annotatorsLoading={annotators == null}

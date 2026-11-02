@@ -21,25 +21,20 @@ config field, each tool's behavior, and (lightly) tool selection.
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import MagicMock
+import pytest
 
-import strands  # noqa: E402 — mocked by conftest
+# The factories' tools are decorated with the REAL strands ``@tool`` and called
+# directly: ``DecoratedFunctionTool.__call__`` forwards to the wrapped function.
+# Do not replace the decorator here (``strands.tool``, or the name a production
+# module bound from it): a replacement made at import outlives this module and
+# turns every Strands tool built later in the same process into a plain
+# function, which an Agent then cannot register (#1756). The strands-binding
+# check in tests/conftest.py fails a module that does it.
+DecoratedFunctionTool = pytest.importorskip(
+    "strands.tools.decorator",
+    reason="strands-agents not installed (a conftest stub does not count)",
+).DecoratedFunctionTool
 
-# Make @tool a passthrough decorator so we can call the tools directly.
-strands.tool = lambda fn: fn
-
-for mod_name in [
-    "strands.agent",
-    "strands.agent.conversation_manager",
-    "strands.types",
-    "strands.types.agent",
-    "strands.types.content",
-    "strands.types.media",
-]:
-    sys.modules.setdefault(mod_name, MagicMock())
-
-import pytest  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from idp_common.extraction.agentic_idp import (  # noqa: E402
@@ -311,6 +306,29 @@ class TestTopKCombinedTool:
             topk(candidates={"transactions": []}, agent=agent)
         assert agent.state.get("current_extraction") is None
         assert agent.state.get("field_assessment") is None
+
+
+# =============================================================================
+# The factory returns a real Strands tool
+# =============================================================================
+
+
+class TestStrategyToolsAreStrandsTools:
+    """Each strategy's tool must be registrable with an Agent, not a bare function."""
+
+    def test_each_strategy_tool_is_a_strands_tool(self):
+        names = []
+        for tool_obj in _tools(_Statement):
+            assert isinstance(tool_obj, DecoratedFunctionTool), tool_obj
+            assert (
+                "agent" not in tool_obj.tool_spec["inputSchema"]["json"]["properties"]
+            )
+            names.append(tool_obj.tool_name)
+        assert names == [
+            "extraction_tool",
+            "extraction_with_confidence_tool",
+            "extraction_with_topk_tool",
+        ]
 
 
 if __name__ == "__main__":

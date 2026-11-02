@@ -452,14 +452,14 @@ operations:
     enforced_in: *cfg
     args: {}
   getConfigVersion:
-    # Annotator included deliberately: the annotate view needs the class list to
-    # correct a misclassified section, and that correction's write side
-    # (reextractTestSetDocument) already accepts Annotator. A caller with no group in
+    # Annotator and Reviewer included deliberately: the annotate view needs the class
+    # list to correct a misclassified section, and that correction's write side
+    # (reextractTestSetDocument) already accepts both. A caller with no group in
     # {Admin, Author, Viewer} receives ONLY the class names and descriptions — the
     # resolver reduces the payload via _class_vocabulary_only, so prompts, model ids
     # and every other setting stay out of reach of the lowest-privilege role. The
     # reduction is an allow-list, so a config key added later cannot leak by default.
-    groups: [Admin, Author, Viewer, Annotator]
+    groups: [Admin, Author, Viewer, Annotator, Reviewer]
     kind: read
     scope_checked: true
     enforced_in: *cfg
@@ -742,12 +742,12 @@ operations:
   getTestSetDocuments:
     # Annotator reads its scoped queue's documents; the resolver additionally
     # enforces allowedTestSets per set.
-    groups: [Admin, Author, Annotator]
+    groups: [Admin, Author, Annotator, Reviewer]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   getAnnotationQueue:
-    groups: [Admin, Author, Annotator]
+    groups: [Admin, Author, Annotator, Reviewer]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
@@ -766,7 +766,7 @@ operations:
     note: >-
       Clears test-set document assignments and notifies the former assignee. Admin only.
   skipTestSetDocument:
-    groups: [Admin, Author, Annotator]
+    groups: [Admin, Author, Annotator, Reviewer]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", reason: "Other (see note)" }
@@ -774,21 +774,21 @@ operations:
       Hands a test-set document back to its queue, with a reason from the set's skip list: the assignment ends and the document is unassigned again, not completed. Annotators must hold the set in allowedTestSets and be the document's assignee (NOT_ASSIGNED otherwise).
 
   claimTestSetDocument:
-    groups: [Annotator]
+    groups: [Annotator, Reviewer]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__" }
     note: >-
-      An Annotator listed on the set's queue assigns one of its unassigned, unreviewed documents to themselves. Admins assign test-set documents (assignTestSetDocuments) rather than claim them, so the gateway refuses a caller outside the Annotator group; a user in both Admin and Annotator is admitted. A caller not listed on the queue is refused NOT_ELIGIBLE, and a held or reviewed document is refused (ALREADY_CLAIMED, ALREADY_REVIEWED).
+      An Annotator listed on the set's queue, or a Reviewer whose allowedConfigVersions admit the set's profile (listed or not), assigns one of its unassigned, unreviewed documents to themselves. Admins assign test-set documents (assignTestSetDocuments) rather than claim them, so the gateway refuses a caller outside the Annotator and Reviewer groups; a user in both Admin and Annotator is admitted. An Annotator not listed on the queue is refused NOT_ELIGIBLE, and a held or reviewed document is refused (ALREADY_CLAIMED, ALREADY_REVIEWED).
   saveTestSetDocumentSection:
-    groups: [Admin, Author, Annotator]
+    groups: [Admin, Author, Annotator, Reviewer]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", sectionId: "1" }
     note: >-
       Saves or confirms one section's labels of a test-set document without a review copy. Annotators must hold the set in allowedTestSets and be the document's assignee (NOT_ASSIGNED otherwise); the label is stamped reviewed-human with the token's identity.
   saveTestSetDocumentSectionDraft:
-    groups: [Admin, Author, Annotator]
+    groups: [Admin, Author, Annotator, Reviewer]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", sectionId: "1", data: "{}" }
@@ -802,14 +802,14 @@ operations:
     note: >-
       Sets a test set's queue settings (description, priority, reminder time limit, eligible Annotators, checklist). Admin only.
   listTestSetQueues:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: {}
     note: >-
       Lists test sets as Test Studio queues with their stored counts, from DynamoDB metadata only: every set for an Admin, only the sets whose queue lists the caller for an Annotator.
   listMyTestSetTasks:
-    groups: [Admin, Author, Annotator]
+    groups: [Admin, Author, Annotator, Reviewer]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: {}
@@ -827,14 +827,14 @@ operations:
     # "Could not re-extract this document" — observed on a dev stack. Per-set scope
     # is asserted in the handler, so group membership alone does not expose another
     # set's jobs.
-    groups: [Admin, Author, Annotator]
+    groups: [Admin, Author, Annotator, Reviewer]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", jobId: "__nope__" }
   estimateReviewEffort:
     # Annotator reads it for their own queue's "what review is buying" panel; the
     # resolver additionally enforces allowedTestSets per set.
-    groups: [Admin, Author, Annotator]
+    groups: [Admin, Author, Annotator, Reviewer]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
@@ -857,7 +857,7 @@ operations:
     # set. Note this is the one annotation operation with a side effect on the *set*
     # rather than on a document: it snapshots the baselines being annotated away from,
     # which is what makes the version number refer to bytes.
-    groups: [Admin, Author, Annotator]
+    groups: [Admin, Author, Annotator, Reviewer]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { input: { testSetId: "nonexistent-test-set" } }
@@ -868,7 +868,7 @@ operations:
     # often needed in practice. The resolver additionally enforces allowedTestSets per set,
     # and writes only the grouping and class: field values, labelSource and edit
     # history are preserved.
-    groups: [Admin, Author, Annotator]
+    groups: [Admin, Author, Annotator, Reviewer]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__", sections: [] } }
@@ -876,7 +876,7 @@ operations:
   reextractTestSetDocument:
     # Annotator corrects a misclassified document in their own set; the resolver
     # additionally enforces allowedTestSets per set.
-    groups: [Admin, Author, Annotator]
+    groups: [Admin, Author, Annotator, Reviewer]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__" } }
@@ -1317,33 +1317,36 @@ operations:
   # HITL review queues (idp_common.review_queues)
   # ==========================================================================
   # Queues are system-wide, so one queue holds items of several configuration
-  # profiles. An Admin works every queue; an Annotator works the queues that list
-  # them, claiming items or being assigned them (owner key from verified claims).
+  # profiles. An Admin and a Reviewer work every Production queue; an Annotator
+  # works the queues that list them; each claims items or is assigned them (owner
+  # key from verified claims). On Test Studio queues an Annotator works the sets in
+  # their allowedTestSets, a Reviewer every set whose profile their
+  # allowedConfigVersions admits (testset_scope).
   # Profile scope (allowedConfigVersions) is applied to each item by its own
   # profile, in the listings as in the per-item operations, and an item with no
   # profile is admitted to no scoped caller. Every other operation is Admin only. The mutation args name an item nobody has, so
   # an allowed role gets a benign 404 (ITEM_NOT_FOUND); claimNextReviewItem names
   # an undefined queue (400).
   getMyReviewQueues:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: read
     enforced_in: *rq
     scope_filtered: true
     scope_enforced_in: _caller_context
     args: { itemLimit: 1 }
     note: >-
-      Lists the queues the caller works with their depth, and those queues' items: every queue for an Admin, the queues that list them for an Annotator (Home › Queues). Each listed item is filtered by its own profile against the caller's allowedConfigVersions.
+      Lists the queues the caller works with their depth, and those queues' items: every queue for an Admin or a Reviewer, the queues that list them for an Annotator (Home › Queues). Each listed item is filtered by its own profile against the caller's allowedConfigVersions.
   listReviewQueueItems:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: read
     enforced_in: *rq
     scope_filtered: true
     scope_enforced_in: _caller_context
     args: { limit: 1 }
     note: >-
-      Lists a queue's items, or the items of every queue the caller works, in priority then FIFO order. An Annotator is refused a queue that doesn't list them (NOT_A_MEMBER). Each listed item is filtered by its own profile against the caller's allowedConfigVersions.
+      Lists a queue's items, or the items of every queue the caller works, in priority then FIFO order. An Annotator is refused a queue that doesn't list them (NOT_A_MEMBER); a Reviewer works every Production queue. Each listed item is filtered by its own profile against the caller's allowedConfigVersions.
   listMyReviewWork:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: read
     enforced_in: *rq
     scope_filtered: true
@@ -1352,32 +1355,32 @@ operations:
     note: >-
       Lists only the items the caller holds (owner key from verified claims), each filtered by its own profile against the caller's allowedConfigVersions as they are now.
   getReviewItem:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: read
     enforced_in: *rq
     scope_checked: true
     scope_enforced_in: _caller_context
     args: { objectKey: "__x__" }
     note: >-
-      One queue item, its reasons, drafts and history. An Annotator may open, read-only until they claim it, an item in a queue that lists them, or an item they hold (NOT_A_MEMBER otherwise), and only when the item's own profile is in their allowedConfigVersions (OUT_OF_SCOPE otherwise). A nonexistent key is a benign 404.
+      One queue item, its reasons, drafts and history. An Annotator or a Reviewer may open, read-only until they claim it, an item in a queue they work (every Production queue for a Reviewer), or an item they hold (NOT_A_MEMBER otherwise), and only when the item's own profile is in their allowedConfigVersions (OUT_OF_SCOPE otherwise). A nonexistent key is a benign 404.
   claimReviewItem:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: mutation
     enforced_in: *rq
     scope_checked: true
     scope_enforced_in: _caller_context
     args: { objectKey: "__x__", cycleId: "000000000000000000000" }
     note: >-
-      Takes one queue item for the caller, assigning it to them (no expiry); the claim is one conditional write. An Annotator may claim only in a queue that lists them (NOT_A_MEMBER).
+      Takes one queue item for the caller, assigning it to them (no expiry); the claim is one conditional write. An Annotator may claim only in a queue that lists them (NOT_A_MEMBER); a Reviewer in any Production queue.
   claimNextReviewItem:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: mutation
     enforced_in: *rq
     scope_filtered: true
     scope_enforced_in: _caller_context
     args: { queueProfile: "__x__", queueName: "__x__" }
     note: >-
-      Takes the next eligible item of a queue, or of the caller's queues; an undefined queue is a benign 400 (UNKNOWN_QUEUE). An Annotator draws only from queues that list them, and only items whose own profile is in their allowedConfigVersions.
+      Takes the next eligible item of a queue, or of the caller's queues; an undefined queue is a benign 400 (UNKNOWN_QUEUE). An Annotator draws only from queues that list them, a Reviewer from every Production queue, and only items whose own profile is in their allowedConfigVersions.
   renewReviewLease:
     groups: [Admin]
     kind: mutation
@@ -1388,7 +1391,7 @@ operations:
     note: >-
       Extends the caller's own hold; the owner is checked inside the write condition. Admin only.
   releaseReviewItem:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: mutation
     enforced_in: *rq
     scope_checked: true
@@ -1397,7 +1400,7 @@ operations:
     note: >-
       Returns the caller's own item to its queue, keeping the draft (Skip), with a reason from the queue's skip list. Only the holder may release (NOT_LEASE_HOLDER).
   saveReviewDraft:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: mutation
     enforced_in: *rq
     scope_checked: true
@@ -1406,7 +1409,7 @@ operations:
     note: >-
       Saves a section draft for an item assigned to the caller (bounded size and depth).
   completeReviewItem:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: mutation
     enforced_in: *rq
     scope_checked: true
@@ -1415,7 +1418,7 @@ operations:
     note: >-
       Completes an item assigned to the caller (Admin: any held item) and starts its durable finalize run.
   rejectReviewItem:
-    groups: [Admin, Annotator]
+    groups: [Admin, Annotator, Reviewer]
     kind: mutation
     enforced_in: *rq
     scope_checked: true
@@ -1471,7 +1474,7 @@ operations:
     enforced_in: *rq
     args: {}
     note: >-
-      Lists the emails of the Cognito Annotator group's members, the only users HITL work can be assigned to. Admin only.
+      Lists the emails of the Cognito Annotator group's members, the only users HITL work can be assigned to; Reviewers claim their own work and are never assigned it. Admin only.
   listReviewQueues:
     groups: [Admin]
     kind: read

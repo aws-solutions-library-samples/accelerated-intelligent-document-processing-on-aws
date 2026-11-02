@@ -838,9 +838,12 @@ class TestBdaBlueprintService:
 
     def test_sync_direction_idp_to_bda_only(self, service):
         """Test that version="test-version", sync_direction='idp_to_bda' only syncs from IDP to BDA."""
-        # Mock configuration
+        # Mock configuration. The class needs a field: one with none is not sent
+        # to BDA at all (issue #1755).
         config_obj = MagicMock()
-        config_obj.classes = [build_json_schema(doc_id="W-4")]
+        config_obj.classes = [
+            build_json_schema(doc_id="W-4", properties={"Name": {"type": "string"}})
+        ]
         service.config_manager.get_configuration.return_value = config_obj
 
         # Mock blueprints

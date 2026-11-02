@@ -259,6 +259,17 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${MainStackName}-${FeatureId}-docker-build-run:*"
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DockerBuildRunFunctionLogGroup}"
+                  - !GetAtt DockerBuildRunFunctionLogGroup.Arn
 
   DockerBuildRunFunction:
     Type: AWS::Serverless::Function
@@ -489,6 +500,17 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${MainStackName}-${FeatureId}-runtime-manager:*"
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${AgentCoreRuntimeManagerFunctionLogGroup}"
+                  - !GetAtt AgentCoreRuntimeManagerFunctionLogGroup.Arn
 
   AgentCoreRuntimeManagerFunction:
     Type: AWS::Serverless::Function
@@ -882,6 +904,17 @@ Resources:
                 Action: lambda:InvokeFunction
                 Resource:
                   - { 'Fn::ImportValue': !Sub '${MainStackName}-RegisterFeatureFunctionArn' }
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${UiDeployerFunctionLogGroup}"
+                  - !GetAtt UiDeployerFunctionLogGroup.Arn
 
   UiDeployerFunction:
     Type: AWS::Serverless::Function

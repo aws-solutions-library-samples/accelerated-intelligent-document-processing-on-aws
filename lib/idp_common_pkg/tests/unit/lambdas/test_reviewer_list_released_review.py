@@ -42,7 +42,7 @@ _REVIEW_LAMBDA = os.path.join(_REPO, "src", "lambda", "complete_section_review")
 TABLE = "reviewer-list-released"
 # Handler-local modules that other handler directories also ship under these names.
 _SIBLINGS = ("config_scope", "review_statuses", "log_sanitizer")
-# TypeDateIndex's NonKeyAttributes in template.yaml: a filter can test only these.
+# NonKeyAttributes both list indexes project in template.yaml: a filter can test only these.
 _PROJECTED = [
     "ObjectKey",
     "ObjectStatus",
@@ -245,9 +245,11 @@ def _create_table(dynamodb):
             for name in ("PK", "SK", "ItemType", "InitialEventTime")
         ],
         BillingMode="PAY_PER_REQUEST",
+        # listDocuments reads TypeDateIndexV2 and getDocumentCount reads
+        # TypeDateIndex; both carry these keys and (at least) these attributes.
         GlobalSecondaryIndexes=[
             {
-                "IndexName": "TypeDateIndex",
+                "IndexName": index_name,
                 "KeySchema": [
                     {"AttributeName": "ItemType", "KeyType": "HASH"},
                     {"AttributeName": "InitialEventTime", "KeyType": "RANGE"},
@@ -257,6 +259,7 @@ def _create_table(dynamodb):
                     "NonKeyAttributes": _PROJECTED,
                 },
             }
+            for index_name in ("TypeDateIndex", "TypeDateIndexV2")
         ],
     )
 

@@ -143,7 +143,7 @@ export const lastSkipAllReason = (history: unknown): { reason: string; note?: st
 export const inReviewQueueEditReason = (canWorkReviewQueues: boolean): string =>
   canWorkReviewQueues
     ? 'This document is in a review queue. Choose Edit to work on it there.'
-    : 'This document is in a review queue. An Admin or Annotator reviews it there.';
+    : 'This document is in a review queue. An Admin, Annotator or Reviewer reviews it there.';
 
 export interface StateView {
   label: string;

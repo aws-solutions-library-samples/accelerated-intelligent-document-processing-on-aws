@@ -376,6 +376,15 @@ def create_gateway(props, gateway_name, client: GatewayClient):
         }
     }
 
+    # enable_observability=False: the toolkit's default creates a log group,
+    # /aws/vendedlogs/bedrock-agentcore/gateway/APPLICATION_LOGS/<gatewayId>, and
+    # CloudWatch Logs delivery sources and destinations named after the gateway
+    # id, all outside CloudFormation and none removed when the gateway is
+    # deleted, so every deleted stack left them behind (issue #1731). The group
+    # had no retention and no KMS key, and it never received an event: this
+    # function is not granted logs:CreateDelivery, so the toolkit's delivery step
+    # failed with AccessDenied, which the toolkit logs and swallows. Gateway
+    # deletion below removes what older versions of this function created.
     # Create gateway. Semantic search (natural-language tool discovery) is not
     # available for AgentCore Gateway in GovCloud regions — CreateGateway there
     # raises ValidationException: "SEMANTIC search type is not supported". Fall
@@ -388,6 +397,7 @@ def create_gateway(props, gateway_name, client: GatewayClient):
             role_arn=execution_role_arn,
             authorizer_config=authorizer_config,
             enable_semantic_search=True,
+            enable_observability=False,
         )
     except Exception as e:
         if "SEMANTIC search type is not supported" in str(e):
@@ -401,6 +411,7 @@ def create_gateway(props, gateway_name, client: GatewayClient):
                 role_arn=execution_role_arn,
                 authorizer_config=authorizer_config,
                 enable_semantic_search=False,
+                enable_observability=False,
             )
         else:
             raise
@@ -494,6 +505,56 @@ def delete_gateway(props, gateway_name):
     
     # Wait for gateway deletion to complete
     time.sleep(5)
-    
+
+    deletion_errors.extend(delete_gateway_observability(region, gateway_id))
+
     if deletion_errors:
         raise Exception(f"Partial deletion errors: {'; '.join(deletion_errors)}")
+
+
+#: What bedrock_agentcore_starter_toolkit's enable_observability creates for a
+#: gateway, keyed by the gateway id. Only gateways created before this function
+#: passed enable_observability=False have them; in practice the logs pair and the
+#: log group, because the toolkit stops at the denied CreateDelivery before it
+#: reaches the traces pair. All five names are tried so none is missed.
+OBSERVABILITY_LOG_GROUP = "/aws/vendedlogs/bedrock-agentcore/gateway/APPLICATION_LOGS/{}"
+OBSERVABILITY_DELIVERY_NAMES = ("logs", "traces")
+
+
+def delete_gateway_observability(region, gateway_id):
+    """Delete the log group and delivery resources named after ``gateway_id``.
+
+    Keyed on the id of the gateway this stack owns, never on a name prefix: a
+    gateway id is the lowercased gateway name plus a suffix, so stacks named
+    ``IDP1`` and ``idp1`` share every prefix and a prefix match could delete the
+    other stack's resources. A resource that does not exist is not an error.
+    Returns a list of error strings, one per resource that could not be deleted.
+    """
+    logs = boto3.client("logs", region_name=region)
+    errors = []
+
+    def _delete(description, call, **kwargs):
+        try:
+            call(**kwargs)
+            logger.info(f"Deleted {description}")
+        except logs.exceptions.ResourceNotFoundException:
+            logger.info(f"{description} not found")
+        except Exception as e:
+            logger.warning(f"Failed to delete {description}: {e}")
+            errors.append(f"{description}: {e}")
+
+    for kind in OBSERVABILITY_DELIVERY_NAMES:
+        # Source before destination, the order the toolkit's own
+        # disable_observability uses.
+        source = f"{gateway_id}-{kind}-source"
+        destination = f"{gateway_id}-{kind}-destination"
+        _delete(f"delivery source {source}", logs.delete_delivery_source, name=source)
+        _delete(
+            f"delivery destination {destination}",
+            logs.delete_delivery_destination,
+            name=destination,
+        )
+
+    log_group = OBSERVABILITY_LOG_GROUP.format(gateway_id)
+    _delete(f"log group {log_group}", logs.delete_log_group, logGroupName=log_group)
+    return errors

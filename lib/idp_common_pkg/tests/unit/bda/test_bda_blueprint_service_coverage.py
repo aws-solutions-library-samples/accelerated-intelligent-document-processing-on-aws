@@ -852,7 +852,41 @@ class TestTransformDropsUnsupportedStructures:
         # drop has to be in it and not only in the instance-wide list.
         assert recording.drops == warnings
 
-    def test_a_nested_array_inside_a_definition_is_dropped_and_reported(self, service):
+    def test_an_array_of_objects_inside_a_definition_is_dropped_and_reported(
+        self, service
+    ):
+        schema = _idp_class(
+            properties={"party": {"$ref": "#/$defs/Party"}},
+            **{
+                "$defs": {
+                    "Party": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "phones": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {"number": {"type": "string"}},
+                                },
+                                "description": "Phone numbers",
+                            },
+                        },
+                    }
+                }
+            },
+        )
+
+        with service._recording_drops_for("Invoice"):
+            blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+
+        assert list(blueprint["definitions"]["Party"]["properties"]) == ["name"]
+        warnings = [w for w in service._skipped_properties if w["property"] == "phones"]
+        assert warnings and warnings[0]["type"] == "nested_array"
+        assert warnings[0]["class"] == "Invoice"
+
+    def test_a_primitive_array_inside_a_definition_is_kept(self, service):
+        """CreateBlueprint accepts this shape (issue #1742)."""
         schema = _idp_class(
             properties={"party": {"$ref": "#/$defs/Party"}},
             **{
@@ -872,21 +906,27 @@ class TestTransformDropsUnsupportedStructures:
             },
         )
 
-        with service._recording_drops_for("Invoice"):
+        with service._recording_drops_for("Invoice") as recording:
             blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
 
-        assert list(blueprint["definitions"]["Party"]["properties"]) == ["name"]
-        warnings = [w for w in service._skipped_properties if w["property"] == "phones"]
-        assert warnings and warnings[0]["type"] == "nested_array"
-        assert warnings[0]["class"] == "Invoice"
+        assert blueprint["definitions"]["Party"]["properties"]["phones"] == {
+            "type": "array",
+            "items": {"type": "string"},
+            "instruction": "Phone numbers",
+        }
+        assert recording.drops == []
 
-    def test_a_ref_inside_a_definition_is_rewritten_to_the_draft07_path(self, service):
-        """A `#/$defs/…` ref in a draft-07 blueprint resolves to nothing."""
-        result = service._process_object_properties(
-            {"child": {"$ref": "#/$defs/Child"}}
-        )
+    def test_a_ref_inside_a_definition_is_dropped_and_reported(self, service):
+        """CreateBlueprint rejects a $ref inside a definition (issue #1742)."""
+        with service._recording_drops_for("Invoice") as recording:
+            result = service._process_object_properties(
+                {"child": {"$ref": "#/$defs/Child"}, "name": {"type": "string"}}
+            )
 
-        assert result == {"child": {"$ref": "#/definitions/Child", "instruction": "-"}}
+        assert list(result) == ["name"]
+        assert [(d["property"], d["type"]) for d in recording.drops] == [
+            ("child", "nested_object")
+        ]
 
     def test_a_leaf_inside_a_definition_takes_its_instruction_from_its_description(
         self, service
@@ -1347,14 +1387,30 @@ class TestBdaToIdpImportPath:
         assert list(sanitized["definitions"]["Party"]["properties"]) == ["TotalTax"]
         assert mapping == {"Total & Tax": "TotalTax"}
 
-    def test_an_array_inside_an_object_counts_as_nested_complexity(self, service):
-        """It is the array case that motivated the check — BDA rejects an array inside
-        an object definition — so it must answer True on its own."""
+    def test_an_array_of_objects_inside_an_object_counts_as_nested_complexity(
+        self, service
+    ):
+        """BDA rejects an array of objects inside an object definition, so it must
+        answer True on its own."""
+        assert (
+            service._has_nested_complex_structures(
+                {
+                    "rows": {
+                        "type": "array",
+                        "items": {"type": "object", "properties": {"a": {}}},
+                    }
+                }
+            )
+            is True
+        )
+
+    def test_a_primitive_array_inside_an_object_is_not_nested_complexity(self, service):
+        """BDA accepts an array of a scalar type inside a definition (issue #1742)."""
         assert (
             service._has_nested_complex_structures(
                 {"rows": {"type": "array", "items": {"type": "string"}}}
             )
-            is True
+            is False
         )
 
     def test_a_non_dict_property_is_not_nested_complexity(self, service):

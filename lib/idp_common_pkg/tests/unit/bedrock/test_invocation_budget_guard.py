@@ -74,6 +74,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from botocore.exceptions import (
     ClientError,
+    ConnectionClosedError,
     ConnectTimeoutError,
     EndpointConnectionError,
     ReadTimeoutError,
@@ -237,6 +238,9 @@ def _timeout_error_instances() -> dict[str, BaseException]:
             endpoint_url="https://bedrock.local"
         ),
         "EndpointConnectionError": EndpointConnectionError(
+            endpoint_url="https://bedrock.local"
+        ),
+        "ConnectionClosedError": ConnectionClosedError(
             endpoint_url="https://bedrock.local"
         ),
         "Urllib3ReadTimeoutError": Urllib3ReadTimeoutError(

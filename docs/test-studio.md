@@ -1054,9 +1054,10 @@ assessment settings — but not across prompt tweaks.
 > (written when a set is created by the confbench planner or the synthetic-data
 > generator, and what the class picker and test runner already use); and the
 > configuration the set's **draft-labeling jobs** resolved (every labeling job's run
-> carries the `ConfigVersion` the runner resolved). If the jobs disagree — say one
-> document was re-extracted under another profile — no single curve applies and the
-> combined curve is used, labeled `mixed`. Within that profile it then resolves the
+> carries the `ConfigVersion` the runner resolved). A job that failed labeled nothing
+> and is not counted. If the jobs disagree — say one document was re-extracted under
+> another profile — no single curve applies and the combined curve is used, labeled
+> `mixed`. Within that profile it then resolves the
 > **revision family**: every run records a *confidence fingerprint* — a hash of the
 > confidence-relevant configuration (extraction model and sampling parameters,
 > assessment settings), so a prompt edit keeps the fingerprint and a model swap
@@ -1222,6 +1223,14 @@ packets ranks fewer documents at a time than a set of single-section ones.
 `allowedTestSets` is a separate axis from `allowedConfigVersions` (which restricts
 *which config versions'* documents a user sees). A user can carry both.
 
+A **Reviewer** works Test Studio queues without `allowedTestSets` and without being
+listed on a queue: they see, claim and label the documents of every test set whose
+configuration profile is in their `allowedConfigVersions`, or every test set when they
+have no such restriction. A set drafted under several profiles has no single profile
+and is shown only to Reviewers with no restriction. A labeling or re-extract job that
+failed drafted nothing, so it does not count toward a set's profiles. Reviewers claim their own
+documents; Admins assign documents to Annotators only.
+
 ### Working the queue collaboratively
 
 - **One shared queue per set.** Every annotator pulls from the same worst-first
@@ -1280,25 +1289,67 @@ and synthetic ground truth carries no stamp — nothing produced it through the
 pipeline — so those sets fall to the active config rather than to the built-in
 preset. After a section's class is changed and saved in **Edit Page Grouping**, the
 section says **Fields still reflect the previous class** and offers **Re-extract**,
-which re-runs that one document and waits for the new labels before returning, so you
-are never left looking at fields from the previous class.
+which re-runs that document and waits for the new labels before returning, so you
+are never left looking at fields from the previous class. On a document with one
+section it re-extracts the whole document; on a document with several it re-extracts
+only the section you are looking at (see below).
 
 The corrected class is sent into the re-run itself, not merely written onto the
 existing labels: the document is re-processed with classification **skipped** and
 your chosen class applied to every page, so extraction genuinely runs against that
 class's schema. (Writing it onto the labels alone does not work — the run
 classifies from the source document and would re-derive the class you just
-corrected.)
+corrected.) A configuration that uses Bedrock Data Automation (`use_bda: true`)
+classifies the document itself and does not apply your class, so if the run comes
+back under a different class the re-extract fails with that reason and nothing is
+written: the class stays corrected and the fields stay as they were, for you to
+correct by hand or re-extract under a configuration that does not use Bedrock Data
+Automation.
 
 Two consequences worth knowing:
 
-- **Re-extraction replaces this document's labels**, including confirmed ones.
+- **Re-extraction replaces the labels it re-extracts**, including confirmed ones:
+  the document's on a single-section document, the one section's on a packet.
   Asking to re-extract after correcting the class is a statement that the current
   labels are wrong, so they stop counting as reviewed. Everything else in the set
-  is untouched.
+  is untouched. Authored ground truth (labels with no **Draft** or **Reviewed**
+  source) keeps its field values; only the class is corrected.
 - **A class the configuration does not define stays selectable** if the document
   already carries it, so a class that was later renamed can still be seen and
   corrected rather than silently blanked.
+
+**On a document with more than one section, Re-extract works on one section.**
+Changing the class for the whole document would merge all of its sections into one
+and discard their ground truth, because a whole-document re-run applies one class to
+every page and produces a single section. So on a packet the notice explains this
+and its **Re-extract** button re-extracts only the open section: the document is
+re-run with its grouping fixed, every other section keeping the pages and class its
+ground truth records, and only that section's labels are replaced. Every other
+section's labels, reviewed or not, are left exactly as they were. The re-run still
+extracts every section of the document, so it costs about as much as re-extracting
+the whole document; only the chosen section is written back. Each section must
+record its pages and a class for this to work; set them in **Edit Page Grouping**
+first if one does not. If the run does not come back with that section on the same
+pages under the corrected class, the re-extract fails and the section's fields are
+left as they were, with the reason as the error. That is what happens under a
+configuration that uses Bedrock Data Automation (`use_bda: true`), which does not
+apply a forced grouping.
+
+**Edit Page Grouping cannot save while a re-extract or a draft-labeling job is still
+to write that document.** The job writes its sections over the document's ground
+truth when it finishes, so a grouping saved in between would be overwritten by a
+whole-document re-extract, or would make a section re-extract fail. The save is
+refused with a message saying so; wait for the job to finish (a re-extract usually
+takes under a minute) and save again. A job that has already written the document,
+or one that started more than six hours ago or has no recorded start time, does not
+block the save.
+
+The API follows the same rule. `reextractTestSetDocument` takes an optional
+`sectionId` with `documentClass` to re-extract one section. A `documentClass` without
+`sectionId` on a document whose baseline has more than one section is refused with a
+bad-request error, before anything is written, whose message says to pass `sectionId`
+instead; `generateDraftLabels` refuses a forced class there too, and forces a class
+only onto exactly one named document.
 
 Annotators can do this within their assigned sets; the operation is scope-checked
 per test set like every other annotation operation.
@@ -1357,7 +1408,7 @@ grouping writes the page grouping and the class and nothing else: extracted valu
 their **Reviewed** provenance and the edit history all survive. Those values
 were extracted from a different set of pages, so they may no longer match — the
 warning afterwards names the sections that moved so you know which to check, and
-**Re-extract**, offered after a class change, is there if you would rather the model redo one. It is
+**Re-extract**, offered after a class change (on one section at a time on a document with several), is there if you would rather the model redo it. It is
 never done for you, because re-extraction is exactly the annotation loss this exists
 to avoid.
 
@@ -1714,7 +1765,7 @@ Three kinds are distinguished, because they call for different fixes:
 
 | Issue | Meaning | What to do |
 |---|---|---|
-| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue and re-extract, then re-run. |
+| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue (and re-extract the document, or on a packet the section), then re-run. |
 | **No matching section** | No predicted section the evaluation recorded holds exactly the pages the ground truth expects: the prediction split them, merged them with other pages or left some out, or, where the row says *not recorded*, the evaluation's record of the document is incomplete. The row lists the recorded predicted sections over those pages, with their classes and pages. | A *splitting* problem, not a labelling one — look at how classification groups pages into sections ([`sectionSplitting`](./classification.md#section-splitting)) rather than at the class list. A listed section under another class also means those pages were extracted with that class's schema. A row that says *not recorded* need not be a splitting problem: see the limit on classes excluded from processing below. |
 | **Page order** | Right class and right pages, wrong order. | Extraction is unaffected. This is what "Split Accuracy With Order" penalises and "Without Order" does not. |
 

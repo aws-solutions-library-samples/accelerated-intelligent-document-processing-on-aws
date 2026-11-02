@@ -1915,12 +1915,33 @@ class AssessmentService:
             #
             # Imported here, as the other batching imports in this file are.
             from idp_common.assessment.batching import dedupe_alerts
+            from idp_common.assessment.presence import (
+                collect_missing_required_fields,
+                exclude_absent_value_alerts,
+            )
+
+            # An absent value raises no confidence alert (#1527): its score and
+            # reason stay in explainability_info, and a REQUIRED absent field is
+            # listed separately below. Applied here, at the last statement before
+            # the list is stored, so every producer upstream (the batched merge,
+            # the per-core checks, the retry ladder) is covered by one filter.
+            confidence_threshold_alerts = exclude_absent_value_alerts(
+                confidence_threshold_alerts,
+                enhanced_assessment_data,
+                extraction_results,
+            )
+            missing_required_fields = collect_missing_required_fields(
+                extraction_results,
+                self._get_class_schema(class_label),
+                enhanced_assessment_data,
+            )
 
             for doc_section in document.sections:
                 if doc_section.section_id == section_id:
                     doc_section.confidence_threshold_alerts = dedupe_alerts(
                         confidence_threshold_alerts
                     )
+                    doc_section.missing_required_fields = missing_required_fields
                     # Replace only the assessment-stage issues, keep the rest.
                     # The section write that follows in the assessment Lambda
                     # REPLACES the whole section map, so an unconditional

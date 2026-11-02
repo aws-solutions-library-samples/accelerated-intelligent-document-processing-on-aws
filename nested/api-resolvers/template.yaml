@@ -3368,6 +3368,9 @@ Resources:
                 - dynamodb:Query
               Resource:
                 - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}/index/TypeDateIndex"
+                # listDocuments reads V2 and falls back to TypeDateIndex while V2
+                # backfills; getDocumentCount reads TypeDateIndex.
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}/index/TypeDateIndexV2"
             - Effect: Allow
               Action:
                 - dynamodb:Query

@@ -170,7 +170,15 @@ class TestUnusableFieldThreshold:
         details = {
             "key_value_details": {
                 "1": [
-                    {"key": "A", "confidence": 0.5, "confidence_threshold": threshold}
+                    # ``value`` is always present on a real entry
+                    # (``process_keyvalue_details`` writes it), and a populated
+                    # one is what makes the entry eligible to alert (#1527).
+                    {
+                        "key": "A",
+                        "value": "12.00",
+                        "confidence": 0.5,
+                        "confidence_threshold": threshold,
+                    }
                 ]
             }
         }

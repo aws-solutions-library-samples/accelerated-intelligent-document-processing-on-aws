@@ -106,6 +106,8 @@ def _shape_version(item: Dict[str, Any]) -> Dict[str, Any]:
             # emit empty lists rather than null so the UI's Array.isArray()
             # checks behave the same as on the live document.
             "ConfidenceThresholdAlerts": s.get("ConfidenceThresholdAlerts") or [],
+            # Snapshotted beside the alerts (#1527); same allow-list hazard.
+            "MissingRequiredFields": s.get("MissingRequiredFields") or [],
             "ProcessingIssues": _shape_processing_issues(s),
             # Multi-instance count, snapshotted by create_document_run. This
             # allow-list is explicit, so a key omitted here is silently dropped

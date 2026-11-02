@@ -4103,8 +4103,15 @@ def test_the_harness_revision_is_gits_with_dirty_meaning_a_harness_path_differs(
     tmp_path: Path,
 ) -> None:
     git = ["git", "-C", str(tmp_path)]
+    # A machine may set ``core.hooksPath`` system-wide to a directory of hook
+    # runners that refuse a commit from an unregistered email, which would fail
+    # this fixture's commit for a reason unrelated to the code under test. An
+    # empty hooks directory measures git alone, as test_ai_mr_review.py does.
+    empty_hooks = tmp_path.parent / f"{tmp_path.name}-empty-hooks"
+    empty_hooks.mkdir()
     for argv in (
         ["init", "-q"],
+        ["config", "core.hooksPath", str(empty_hooks)],
         ["config", "user.email", "t@example.invalid"],
         ["config", "user.name", "t"],
     ):

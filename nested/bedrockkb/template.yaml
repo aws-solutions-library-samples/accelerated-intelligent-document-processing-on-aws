@@ -421,8 +421,9 @@ Resources:
               because a mismatch there falls back to deleting the named index. What
               remains unscoped is the Bedrock knowledge base control plane
               (Create/Delete/Get/Update/ListKnowledgeBases), whose knowledge base
-              id is service-generated and does not exist at create time, and
-              iam:PassRole, which is still broader than ideal.
+              id is service-generated and does not exist at create time.
+              iam:PassRole is not granted here; S3VectorManagerPassRolePolicy
+              grants it on KnowledgeBaseServiceRole alone.
     Condition: UseS3Vectors
     Properties:
       AssumeRolePolicyDocument:
@@ -499,10 +500,6 @@ Resources:
                   - bedrock:UpdateKnowledgeBase
                   - bedrock:ListKnowledgeBases
                 Resource: "*"
-              - Effect: Allow
-                Action:
-                  - iam:PassRole
-                Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*"
         - !If
           - IsCustomerManagedKey
           - PolicyName: KMSAccess
@@ -546,6 +543,31 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+
+  # iam:PassRole for the one role the handler passes: the knowledge base's
+  # service role, handed to Bedrock by CreateKnowledgeBase. A standalone policy
+  # rather than a statement in S3VectorManagerRole, because naming the role there
+  # would be circular: KnowledgeBaseServiceRole's policy names the vector index,
+  # the index is created by S3VectorManagerFunction, and the function runs as
+  # S3VectorManagerRole. KnowledgeBaseS3VectorsCustom depends on this policy so
+  # the grant exists before the knowledge base is created and is removed only
+  # after it is deleted.
+  S3VectorManagerPassRolePolicy:
+    Type: AWS::IAM::Policy
+    Condition: UseS3Vectors
+    Properties:
+      PolicyName: PassKnowledgeBaseServiceRole
+      Roles:
+        - !Ref S3VectorManagerRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt KnowledgeBaseServiceRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: !Sub "bedrock.${AWS::URLSuffix}"
 
   S3VectorBucketAndIndex:
     Type: Custom::S3VectorBucketAndIndex
@@ -890,6 +912,7 @@ Resources:
   KnowledgeBaseS3VectorsCustom:
     Type: Custom::S3VectorsKnowledgeBase
     Condition: UseS3Vectors
+    DependsOn: S3VectorManagerPassRolePolicy
     Properties:
       ServiceToken: !GetAtt S3VectorManagerFunction.Arn
       ResourceType: S3VectorsKnowledgeBase

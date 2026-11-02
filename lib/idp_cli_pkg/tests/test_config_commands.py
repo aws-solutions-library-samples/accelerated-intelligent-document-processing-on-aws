@@ -62,7 +62,6 @@ Each of these has a test whose docstring states the consequence:
   `--strict` passes a mistyped nested key. This one is a **decision**, not a backlog
   item: failing on a nested unknown key would reject configurations that pass today
   in the flag built for pipelines, and it was deliberately excluded from #1230.
-- `config-create --features "a,typo"` drops the unknown section silently.
 """
 
 import json
@@ -267,7 +266,10 @@ def test_create_writes_only_loadable_yaml_to_stdout():
     assert result.exit_code == 0, result.output
 
     loaded = yaml.safe_load(result.stdout)
-    assert "classes" in loaded and "extraction" in loaded
+    assert "classification" in loaded and "extraction" in loaded
+    # Empty in the defaults, and an empty list would replace a profile's classes
+    # on upload (issue #1720).
+    assert "classes" not in loaded
     assert result.stderr == "", (
         f"config-create wrote to stderr on success: {result.stderr!r}"
     )
@@ -281,12 +283,26 @@ def test_create_to_a_file_parses_and_names_the_next_steps():
         assert result.exit_code == 0, result.output
         loaded = yaml.safe_load(open("gen.yaml", encoding="utf-8").read())
 
-    assert "classes" in loaded
+    assert "extraction" in loaded and "classes" not in loaded
     assert "gen.yaml" in result.output
     # The three follow-on commands, because a generated template on its own is not
     # yet a deployable configuration.
     assert "config-validate --config-file gen.yaml" in result.output
     assert "deploy" in result.output
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("features", ["min", "core", "all"])
+def test_create_output_passes_config_validate(features):
+    """The file `config-create` writes is one `config-validate` accepts (#1673)."""
+    with write_config("", filename="unused.txt") as runner:
+        created = runner.invoke(
+            cli, ["config-create", "--features", features, "--output", "gen.yaml"]
+        )
+        assert created.exit_code == 0, created.output
+        result = runner.invoke(cli, ["config-validate", "--config-file", "gen.yaml"])
+
+    assert result.exit_code == 0, result.output
 
 
 @pytest.mark.unit
@@ -317,47 +333,90 @@ def test_create_accepts_a_comma_separated_section_list():
 
 
 @pytest.mark.unit
-def test_create_drops_an_unknown_section_from_a_list_without_warning():
-    """
-    DEFECT (`idp_cli/cli.py:4281`, `generate_config_template`): a comma-separated
-    `--features` list containing a section that does not exist is accepted, the
-    unknown name is dropped from the output, and the command exits 0. The name is
-    echoed in the generated header comment — as one of the sections that were
-    *requested* — but there is no warning and nothing distinguishes it from the
-    sections that were actually produced.
+@pytest.mark.parametrize(
+    "features", ["classification,not-a-real-section", "not-a-real-section"]
+)
+def test_create_refuses_an_unknown_section_and_writes_nothing(features):
+    """An unknown section name is refused, whether alone or in a list (#1709).
 
-    Consequence: `--features "classification,extration"` — one transposed letter —
-    produces a template with no extraction section at all, reported as a success. A
-    single unknown name IS rejected outright (the next test), so the two spellings
-    of the same mistake behave oppositely.
-
-    This test pins the current behaviour.
+    It used to be dropped from a list with exit 0, so `--features
+    "classification,extration"` (one transposed letter) produced a template with
+    no extraction section, reported as a success, while the same name alone was
+    rejected.
     """
-    result = CliRunner().invoke(
-        cli, ["config-create", "--features", "classification,not-a-real-section"]
-    )
-    assert result.exit_code == 0
-    loaded = yaml.safe_load(result.stdout)
-    assert "classification" in loaded
-    assert "not-a-real-section" not in loaded, (
-        "the unknown section is dropped from the template body"
-    )
-    # It survives only inside the header comment, which is why `yaml.safe_load`
-    # above cannot see it — and no line calls it out as a problem.
-    assert "not-a-real-section" in result.stdout
-    for marker in ("Invalid", "Unknown", "⚠", "not recognized"):
-        assert marker not in result.stdout, f"{marker!r} would be a warning"
+    with write_config("", filename="unused.txt") as runner:
+        result = runner.invoke(
+            cli, ["config-create", "--features", features, "--output", "gen.yaml"]
+        )
+        written = os.path.exists("gen.yaml")
+
+    assert result.exit_code == 1, result.output
+    assert "Unknown configuration section" in result.stderr
+    assert "'not-a-real-section'" in result.stderr
+    assert "Valid sections:" in result.stderr
+    assert result.stderr.count("✗ Error") == 1, result.stderr
+    assert not written, "a refused request must not leave a template behind"
+
+
+@pytest.mark.unit
+def test_create_accepts_a_single_section_name():
+    """No comma is needed to name one section (#1709)."""
+    single = CliRunner().invoke(cli, ["config-create", "--features", "summarization"])
+    listed = CliRunner().invoke(cli, ["config-create", "--features", "summarization,"])
+
+    assert single.exit_code == 0, single.output
+    assert single.stdout == listed.stdout
+    assert set(yaml.safe_load(single.stdout)) == {"notes", "summarization"}
+
+
+@pytest.mark.unit
+def test_create_reads_a_preset_with_a_trailing_comma_as_the_preset():
+    """docs/idp-cli.md: a trailing comma is harmless for every comma option."""
+    plain = CliRunner().invoke(cli, ["config-create", "--features", "min"])
+    trailing = CliRunner().invoke(cli, ["config-create", "--features", "min,"])
+
+    assert trailing.exit_code == 0, trailing.output
+    assert trailing.stdout == plain.stdout
 
 
 @pytest.mark.unit
 def test_create_refuses_an_unknown_feature_preset_on_stderr():
     result = CliRunner().invoke(cli, ["config-create", "--features", "everything"])
     assert result.exit_code == 1
-    assert "Invalid feature set 'everything'" in result.stderr
+    assert "Unknown configuration section(s) for pattern-2: 'everything'" in (
+        result.stderr
+    )
+    assert "Feature sets, used on their own: min, core, all" in result.stderr
     assert result.stdout == "", (
         "a diagnostic on stdout lands in the redirected config file; that is why "
         "this command's errors go to err_console"
     )
+
+
+@pytest.mark.unit
+def test_create_hands_the_raw_features_value_to_the_sdk():
+    """The CLI does not parse `--features`; the SDK does, once (#1709).
+
+    Recorded at the SDK boundary, so a CLI that split or rewrote the value before
+    calling the SDK, or that called `idp_common` directly, fails here.
+    """
+    from idp_sdk.models import ConfigCreateResult
+    from idp_sdk.operations.config import ConfigOperation
+
+    seen = {}
+
+    def _create(self, **kwargs):
+        seen.update(kwargs)
+        return ConfigCreateResult(yaml_content="notes: x\n", output_path=None)
+
+    with patch.object(ConfigOperation, "create", _create):
+        result = CliRunner().invoke(
+            cli, ["config-create", "--features", " classification, ocr ,"]
+        )
+
+    assert result.exit_code == 0, result.output
+    assert seen["features"] == " classification, ocr ,"
+    assert result.stdout.strip() == "notes: x"
 
 
 @pytest.mark.unit
@@ -366,9 +425,7 @@ def test_create_no_comments_omits_the_header():
     without = CliRunner().invoke(cli, ["config-create", "--no-comments"]).stdout
     assert with_comments.lstrip().startswith("#")
     assert not without.lstrip().startswith("#")
-    assert (
-        yaml.safe_load(without)["classes"] == yaml.safe_load(with_comments)["classes"]
-    )
+    assert yaml.safe_load(without) == yaml.safe_load(with_comments)
 
 
 @pytest.mark.unit
@@ -758,6 +815,170 @@ def test_validate_accepts_an_empty_file_as_pure_defaults():
         result = runner.invoke(cli, ["config-validate", "--config-file", "config.yaml"])
     assert result.exit_code == 0, result.output
     assert "No document classes defined" in result.output
+
+
+@pytest.mark.unit
+def test_validate_reports_the_sdk_verdict_rather_than_computing_its_own():
+    """`config-validate` is a thin call to `client.config.validate` (#1729).
+
+    The SDK result here is one the real validator would never return for this
+    file — a valid config refused with a sentinel error — so the command can only
+    print it, and exit 1, by reporting what the SDK said. A command that validated
+    through `idp_common` itself would accept the file and print "Config is valid!".
+    """
+    from idp_sdk.models import ConfigValidationResult
+
+    with write_config(VALID_MINIMAL) as runner, patched_client() as client:
+        client.config.validate.return_value = ConfigValidationResult(
+            valid=False,
+            errors=["sentinel refusal from the SDK"],
+            warnings=["sentinel warning from the SDK"],
+            class_count=1,
+        )
+        result = runner.invoke(cli, ["config-validate", "--config-file", "config.yaml"])
+
+    assert result.exit_code == 1, result.output
+    assert "sentinel refusal from the SDK" in result.output
+    assert "sentinel warning from the SDK" in result.output
+    assert "Config is valid!" not in result.output
+    client.config.validate.assert_called_once()
+    assert client.config.validate.call_args.kwargs["config_file"] == "config.yaml"
+
+
+@pytest.mark.unit
+def test_validate_stops_at_a_file_the_sdk_could_not_load():
+    """`document_loaded` False is the SDK saying the file never parsed: the command
+    prints the SDK's reason and does not claim the syntax was valid."""
+    from idp_sdk.models import ConfigValidationResult
+
+    with write_config(VALID_MINIMAL) as runner, patched_client() as client:
+        client.config.validate.return_value = ConfigValidationResult(
+            valid=False, document_loaded=False, errors=["sentinel load failure"]
+        )
+        result = runner.invoke(cli, ["config-validate", "--config-file", "config.yaml"])
+
+    assert result.exit_code == 1
+    assert "sentinel load failure" in result.output
+    assert "YAML syntax valid" not in result.output
+    assert "Validation failed" not in result.output
+
+
+@pytest.mark.unit
+def test_validate_takes_the_class_count_and_strict_fields_from_the_sdk():
+    """The class count and `--strict`'s top-level fields come from the result.
+
+    Both disagree with the file on purpose (it defines one class and no extra
+    field), so the output can only match the result if the command read it.
+    """
+    from idp_sdk.models import ConfigValidationResult
+
+    with write_config(VALID_MINIMAL) as runner, patched_client() as client:
+        client.config.validate.return_value = ConfigValidationResult(
+            valid=True, class_count=7
+        )
+        counted = runner.invoke(
+            cli, ["config-validate", "--config-file", "config.yaml"]
+        )
+        client.config.validate.return_value = ConfigValidationResult(
+            valid=True,
+            class_count=1,
+            unknown_fields=["sentinelkey", "classification.nested"],
+            deprecated_fields=["oldkey"],
+        )
+        strict = runner.invoke(
+            cli, ["config-validate", "--config-file", "config.yaml", "--strict"]
+        )
+
+    assert counted.exit_code == 0, counted.output
+    assert "7 document class(es) defined" in counted.output
+    assert strict.exit_code == 1
+    flat = " ".join(strict.output.split())
+    assert "['oldkey', 'sentinelkey']" in flat, strict.output
+
+
+@pytest.mark.unit
+def test_validate_emit_migrated_is_written_by_the_sdk():
+    """`--emit-migrated` is `client.config.migrate(..., output=...)`, not a second
+    migration in the CLI."""
+    from idp_sdk.models import ConfigMigrateResult, ConfigValidationResult
+
+    with write_config(VALID_MINIMAL) as runner, patched_client() as client:
+        client.config.validate.return_value = ConfigValidationResult(
+            valid=True, class_count=1
+        )
+        client.config.migrate.return_value = ConfigMigrateResult(
+            yaml_content="# x\n", output_path="migrated.yaml"
+        )
+        result = runner.invoke(
+            cli,
+            [
+                "config-validate",
+                "--config-file",
+                "config.yaml",
+                "--emit-migrated",
+                "migrated.yaml",
+            ],
+        )
+        written = os.path.exists("migrated.yaml")
+
+    assert result.exit_code == 0, result.output
+    client.config.migrate.assert_called_once_with(
+        config_file="config.yaml", output="migrated.yaml"
+    )
+    # The mock wrote nothing, so a file here would be the CLI migrating by itself.
+    assert not written
+    assert "Migrated config written to: migrated.yaml" in result.output
+
+
+@pytest.mark.unit
+def test_validate_emit_migrated_is_written_even_when_strict_then_refuses():
+    """The migrated copy is the point of `--emit-migrated` for an old file, and an
+    old file is the one `--strict` refuses, so the refusal must come after it."""
+    with write_config("banana: 1\n" + VALID_MINIMAL) as runner:
+        result = runner.invoke(
+            cli,
+            [
+                "config-validate",
+                "--config-file",
+                "config.yaml",
+                "--strict",
+                "--emit-migrated",
+                "migrated.yaml",
+            ],
+        )
+        written = os.path.exists("migrated.yaml")
+
+    assert result.exit_code == 1
+    assert "Strict mode" in result.output
+    assert written, result.output
+
+
+@pytest.mark.unit
+def test_config_validate_imports_nothing_from_idp_common():
+    """The layering rule as a property of the command's code (#1729).
+
+    The behavioural tests above show the command reports the SDK's verdict; they
+    cannot show it does not ALSO consult `idp_common` for part of its output, as it
+    did for the class count and the migration. No import of it may appear in the
+    function.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from idp_cli.cli import config_validate
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(config_validate.callback)))
+    imported = [
+        node.module if isinstance(node, ast.ImportFrom) else alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    ]
+    assert imported, "found no imports at all, so this assertion reads nothing"
+    assert not [name for name in imported if name and name.startswith("idp_common")], (
+        imported
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1558,6 +1779,46 @@ def test_activate_reports_a_partial_bda_sync_as_a_warning_but_still_activates():
     assert "Successfully activated configuration profile: bda-v2" in result.output
 
 
+@pytest.mark.unit
+def test_activate_names_a_class_the_bda_sync_did_not_send():
+    with patched_client() as client:
+        client.config.activate.return_value = MagicMock(
+            success=True,
+            error=None,
+            bda_synced=True,
+            bda_classes_synced=2,
+            bda_classes_failed=0,
+            bda_unsent_classes=["Notice"],
+            bda_orphaned_blueprint_arns=[],
+        )
+        result = invoke(
+            ["config-activate", "--stack-name", STACK, "--config-profile", "bda-v2"]
+        )
+    assert result.exit_code == 0, result.output
+    assert "1 class(es) not sent to BDA" in result.output
+    assert "• Notice" in result.output
+
+
+@pytest.mark.unit
+def test_an_aborted_activation_still_names_a_class_the_bda_sync_did_not_send():
+    with patched_client() as client:
+        client.config.activate.return_value = MagicMock(
+            success=False,
+            error="BDA sync failed for all classes — activation aborted",
+            bda_synced=False,
+            bda_classes_synced=0,
+            bda_classes_failed=1,
+            bda_unsent_classes=["Notice"],
+            bda_orphaned_blueprint_arns=[],
+        )
+        result = invoke(
+            ["config-activate", "--stack-name", STACK, "--config-profile", "bda-v2"]
+        )
+    assert result.exit_code == 1, result.output
+    assert "1 class(es) not sent to BDA" in result.output
+    assert "• Notice" in result.output
+
+
 # --------------------------------------------------------------------------- #
 # config-list
 # --------------------------------------------------------------------------- #
@@ -2074,3 +2335,78 @@ def test_sync_bda_rejects_an_unknown_direction_and_mode_up_front():
     assert "sideways" in bad_direction.output
     assert bad_mode.exit_code == 2
     assert "obliterate" in bad_mode.output
+
+
+@pytest.mark.unit
+def test_create_refuses_a_request_for_only_empty_sections():
+    """`--features classes` has nothing to copy: the system defaults define no
+    classes, and writing `classes: []` emptied a profile's classes on upload
+    (#1720). A file holding only `notes` would report success for nothing."""
+    with write_config("", filename="unused.txt") as runner:
+        result = runner.invoke(
+            cli, ["config-create", "--features", "classes", "--output", "gen.yaml"]
+        )
+        written = os.path.exists("gen.yaml")
+
+    assert result.exit_code == 1, result.output
+    assert "✗ Error (--features): Nothing to generate: classes is empty" in (
+        " ".join(result.stderr.split())
+    )
+    assert "Traceback" not in result.output
+    assert not written, "a refused request must not leave a template behind"
+
+
+@pytest.mark.unit
+def test_sync_bda_names_a_class_it_did_not_send_and_does_not_count_it():
+    """A class with no field a BDA blueprint can hold is not sent (issue #1755). Its
+    status entry is a success, so it used to be listed as synced with nothing
+    saying no blueprint exists for it."""
+    with config_stack() as stack:
+        stack.seed("lending", class_name="invoice", active=True)
+
+        with patched_bda(
+            sync_result=[
+                {"status": "success", "class": "invoice"},
+                {
+                    "status": "success",
+                    "class": "notice",
+                    "warnings": [
+                        {
+                            "class": "notice",
+                            "property": "notice",
+                            "type": "empty_blueprint",
+                            "message": "not sent",
+                        }
+                    ],
+                },
+            ]
+        ):
+            result = invoke(["config-sync-bda", "--stack-name", STACK])
+
+    assert result.exit_code == 0, result.output
+    assert "Classes synced: 1" in result.output
+    assert "• invoice" in result.output
+    assert "1 class(es) not sent to BDA" in result.output
+    assert result.output.count("• notice") == 1
+
+
+@pytest.mark.unit
+def test_a_failed_sync_bda_still_names_a_class_it_did_not_send():
+    with config_stack() as stack:
+        stack.seed("lending", class_name="invoice", active=True)
+
+        with patched_bda(
+            sync_result=[
+                {"status": "failed", "class": "invoice", "error": "boom"},
+                {
+                    "status": "success",
+                    "class": "notice",
+                    "warnings": [{"class": "notice", "type": "empty_blueprint"}],
+                },
+            ]
+        ):
+            result = invoke(["config-sync-bda", "--stack-name", STACK])
+
+    assert result.exit_code == 1, result.output
+    assert "1 class(es) not sent to BDA" in result.output
+    assert "• notice" in result.output

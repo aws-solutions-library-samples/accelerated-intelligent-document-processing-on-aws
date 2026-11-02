@@ -107,6 +107,7 @@ export const SECTION_FIELDS: Record<keyof GqlSection, true> = {
   ExclusionReason: true,
   Id: true,
   InstanceCount: true,
+  MissingRequiredFields: true,
   OutputJSONUri: true,
   PageIds: true,
   ProcessingIssues: true,
@@ -185,7 +186,10 @@ type DocumentUiComputed = {
   metering?: Record<string, unknown>;
   hitlReviewHistory?: Record<string, unknown>[];
   confidenceAlertCount?: number;
-  processingIssueCount?: number;
+  /** Null when the row carries neither the stored count nor its sections. */
+  missingRequiredFieldCount?: number | null;
+  /** Null when the row carries neither the stored count nor its sections. */
+  processingIssueCount?: number | null;
   executionArn?: string;
 };
 

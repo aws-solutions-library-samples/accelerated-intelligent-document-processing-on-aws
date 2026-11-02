@@ -131,6 +131,7 @@ describe('Document Details', () => {
       'Review Completed By',
       'Skip Reason',
       'Confidence Alerts',
+      'Missing Required Fields',
       'Summary',
       'Malware scan',
     ]);

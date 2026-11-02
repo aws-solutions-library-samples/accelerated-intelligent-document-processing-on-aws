@@ -15,6 +15,11 @@ from botocore.exceptions import ClientError
 
 from idp_common.api_adapter import ResourceNotFound  # type: ignore
 from idp_common.config.migrations import migrate_config  # type: ignore
+from idp_common.forced_sections import (  # type: ignore
+    ForcedSectionsError,
+    decode_forced_sections,
+    is_valid_document_class,
+)
 from idp_common.review_queues.statuses import (  # type: ignore
     LegacyHitlStatus,
     normalize_hitl_status,
@@ -115,6 +120,9 @@ def handler(event, context):
         # first N of the set.
         object_keys = input_data.get("objectKeys") or []
         document_class = input_data.get("documentClass")
+        # A whole-document section grouping to force instead of classifying, set by
+        # a section-scoped re-extract (reextractTestSetDocument with sectionId).
+        document_sections = input_data.get("documentSections")
         config_version = input_data.get("configVersion")
         # Revision of that profile to score against. Pinning it is what makes two
         # runs of the same profile comparable — otherwise a run records only which
@@ -124,6 +132,40 @@ def handler(event, context):
         # against it, so it is never evaluated. Carried as its own flag; the
         # free-text `context` is a user-facing label and must not be load-bearing.
         purpose = "draft-labeling" if input_data.get("draftLabeling") else "scoring"
+        if document_sections:
+            # Only a section-scoped re-extract builds one, and it describes exactly
+            # one document's ground truth, so it is refused on any other kind of
+            # run. Decoded here too, so a malformed value is a bad request rather
+            # than a document failing later in the pipeline.
+            if purpose != "draft-labeling" or len(object_keys) != 1:
+                raise ValueError(
+                    "documentSections is accepted only on a draft-labeling run of "
+                    "exactly one document"
+                )
+            try:
+                decode_forced_sections(document_sections)
+            except ForcedSectionsError as e:
+                raise ValueError(f"Invalid documentSections: {e}") from e
+        if document_class is not None and document_class != "":
+            # Replaces classification for every document in the run and is stamped
+            # as S3 object metadata by the copier, so it is held to what the
+            # re-extract that sends it means: one named document, a draft-labeling
+            # run, and a class name metadata can carry (#1728).
+            if not is_valid_document_class(document_class):
+                raise ValueError(
+                    "Invalid documentClass: expected up to 100 characters of "
+                    "letters, digits, spaces, hyphens or underscores"
+                )
+            if purpose != "draft-labeling" or len(object_keys) != 1:
+                raise ValueError(
+                    "documentClass is accepted only on a draft-labeling run of "
+                    "exactly one document"
+                )
+            if document_sections:
+                raise ValueError(
+                    "Pass documentClass or documentSections, not both: a forced "
+                    "grouping already carries every section's class"
+                )
         tracking_table = os.environ["TRACKING_TABLE"]
         config_table = os.environ["CONFIG_TABLE"]
 
@@ -293,6 +335,10 @@ def handler(event, context):
         # point of the request is that the model's own answer was wrong.
         if document_class:
             message_body["documentClass"] = document_class
+        # A re-extract of one section of a multi-section document: the document's
+        # whole grouping, with that section's class corrected, forced the same way.
+        if document_sections:
+            message_body["documentSections"] = document_sections
 
         sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(message_body))
 

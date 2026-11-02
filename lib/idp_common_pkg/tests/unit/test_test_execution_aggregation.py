@@ -2542,6 +2542,111 @@ class TestConfidenceCurveRecording:
         assert recorded == [("ts1", "v1")]
 
 
+class TestDraftingRunsMatchTheResolver:
+    """#1757: the self-measurement guard reads the same drafting runs as the
+    test-set resolver (``idp_common.testset_label_jobs.drafting_run_ids``): the run
+    an older pointer named when it has no job record, the pointer alone on a set
+    with no job record, and no FAILED job, which drafted nothing."""
+
+    def _record(self, items, jobs):
+        return TestConfidenceCurveRecording()._run(
+            import_test_module(), items, jobs=jobs
+        )
+
+    @staticmethod
+    def _items(test_set, runs):
+        items = {
+            ("testrun#run-2", "metadata"): {"TestSetId": "ts1", "ConfigVersion": "v1"},
+            ("testset#ts1", "metadata"): {"labelState": "draft", **test_set},
+        }
+        for run_id, version in runs.items():
+            items[(f"testrun#{run_id}", "metadata")] = {"ConfigVersion": version}
+        return items
+
+    def test_the_run_an_older_pointer_named_is_a_drafting_run(self, mock_env):
+        """v1 drafted the set before job records; one document was re-extracted
+        under v2 since. Scoring v1 measures v1 against its own drafts."""
+        recorded = self._record(
+            self._items(
+                {"labelJobId": "run-reextract"},
+                {"run-legacy": "v1", "run-reextract": "v2"},
+            ),
+            jobs=[{"jobId": "run-reextract", "previousLabelJobId": "run-legacy"}],
+        )
+        assert recorded == []
+
+    def test_the_older_pointer_is_read_from_the_oldest_job(self, mock_env):
+        """The query returns jobs in key order, not creation order."""
+        recorded = self._record(
+            self._items(
+                {"labelJobId": "run-b"},
+                {"run-legacy": "v1", "run-a": "v2", "run-b": "v2"},
+            ),
+            jobs=[
+                {"jobId": "run-a", "createdAt": "2026-01-02T00:00:00Z"},
+                {
+                    "jobId": "run-b",
+                    "createdAt": "2026-01-01T00:00:00Z",
+                    "previousLabelJobId": "run-legacy",
+                },
+            ],
+        )
+        assert recorded == []
+
+    def test_every_page_of_jobs_is_read(self, mock_env):
+        """The legacy run is named on the oldest job, which is on the second page."""
+        index = import_test_module()
+        pages = [
+            {
+                "Items": [{"jobId": "run-a", "createdAt": "2026-01-02T00:00:00Z"}],
+                "LastEvaluatedKey": {"SK": "labeljob#run-a"},
+            },
+            {
+                "Items": [
+                    {
+                        "jobId": "run-b",
+                        "createdAt": "2026-01-01T00:00:00Z",
+                        "previousLabelJobId": "run-legacy",
+                    }
+                ]
+            },
+        ]
+        versions = {"run-legacy": "v0", "run-a": "v1", "run-b": "v2"}
+
+        class PagedTable:
+            def query(self, **kwargs):
+                return pages[1 if "ExclusiveStartKey" in kwargs else 0]
+
+            def get_item(self, Key):  # noqa: N803 — boto3 kwarg name
+                run_id = Key["PK"].split("#", 1)[1]
+                return {"Item": {"ConfigVersion": versions[run_id]}}
+
+        assert index._drafting_config_versions(
+            PagedTable(), "ts1", "run-a", "run-2"
+        ) == {"v0", "v1", "v2"}
+
+    def test_a_set_with_no_job_record_is_drafted_by_its_pointer(self, mock_env):
+        recorded = self._record(
+            self._items({"labelJobId": "run-1"}, {"run-1": "v1"}), jobs=[]
+        )
+        assert recorded == []
+
+    def test_a_failed_job_did_not_draft_the_set(self, mock_env):
+        """A re-extract under v1 that failed wrote no label, so scoring v1 against
+        the v0 drafts is a real measurement."""
+        recorded = self._record(
+            self._items({"labelJobId": "run-f"}, {"run-0": "v0", "run-f": "v1"}),
+            jobs=[{"jobId": "run-0"}, {"jobId": "run-f", "status": "FAILED"}],
+        )
+        assert recorded == [("ts1", TestConfidenceCurveRecording.BINS, "v1")]
+
+    def test_the_scoring_run_itself_is_not_a_drafting_run(self, mock_env):
+        recorded = self._record(
+            self._items({"labelJobId": "run-2"}, {}), jobs=[{"jobId": "run-2"}]
+        )
+        assert recorded == [("ts1", TestConfidenceCurveRecording.BINS, "v1")]
+
+
 class TestPerFieldAccuracyIntervals:
     """Per-field accuracy carries its sample size and margin.
 

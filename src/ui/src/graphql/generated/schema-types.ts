@@ -506,6 +506,7 @@ export type Document = DynamoDbBase & {
   HITLTriggered?: Maybe<Scalars['Boolean']['output']>;
   InitialEventTime?: Maybe<Scalars['AWSDateTime']['output']>;
   Metering?: Maybe<Scalars['AWSJSON']['output']>;
+  MissingRequiredFieldCount?: Maybe<Scalars['Int']['output']>;
   ObjectKey?: Maybe<Scalars['ID']['output']>;
   ObjectStatus?: Maybe<Scalars['String']['output']>;
   PK: Scalars['ID']['output'];
@@ -2242,6 +2243,7 @@ export type ReextractTestSetDocumentInput = {
   configVersion?: InputMaybe<Scalars['String']['input']>;
   documentClass?: InputMaybe<Scalars['String']['input']>;
   objectKey: Scalars['String']['input'];
+  sectionId?: InputMaybe<Scalars['String']['input']>;
   testSetId: Scalars['String']['input'];
 };
 
@@ -2393,6 +2395,7 @@ export type ReviewQueueDefinition = {
   rejectReasons: Array<Scalars['String']['output']>;
   skipReasons: Array<Scalars['String']['output']>;
   timeLimitMinutes: Scalars['Int']['output'];
+  version?: Maybe<Scalars['Int']['output']>;
 };
 
 export type ReviewQueueDefinitionInput = {
@@ -2406,6 +2409,7 @@ export type ReviewQueueDefinitionInput = {
   rejectReasons?: InputMaybe<Array<Scalars['String']['input']>>;
   skipReasons?: InputMaybe<Array<Scalars['String']['input']>>;
   timeLimitMinutes?: InputMaybe<Scalars['Int']['input']>;
+  version?: InputMaybe<Scalars['Int']['input']>;
 };
 
 export type ReviewQueueHealth = {
@@ -2498,6 +2502,7 @@ export type Section = {
   ExclusionReason?: Maybe<Scalars['String']['output']>;
   Id?: Maybe<Scalars['String']['output']>;
   InstanceCount?: Maybe<Scalars['Int']['output']>;
+  MissingRequiredFields?: Maybe<Array<Maybe<ConfidenceThresholdAlert>>>;
   OutputJSONUri?: Maybe<Scalars['String']['output']>;
   PageIds?: Maybe<Array<Maybe<Scalars['Int']['output']>>>;
   ProcessingIssues?: Maybe<Array<Maybe<ProcessingIssue>>>;

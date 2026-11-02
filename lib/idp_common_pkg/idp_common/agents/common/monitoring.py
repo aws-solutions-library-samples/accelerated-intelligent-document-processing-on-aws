@@ -10,26 +10,18 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List
 
-from strands.hooks import HookProvider, HookRegistry
-from strands.hooks.events import (
+from strands.hooks import (
     AfterInvocationEvent,
+    AfterModelCallEvent,
+    AfterToolCallEvent,
     AgentInitializedEvent,
     BeforeInvocationEvent,
+    BeforeModelCallEvent,
+    BeforeToolCallEvent,
+    HookProvider,
+    HookRegistry,
     MessageAddedEvent,
 )
-
-# Try to import experimental events if available
-try:
-    from strands.experimental.hooks import (
-        AfterModelInvocationEvent,
-        AfterToolInvocationEvent,
-        BeforeModelInvocationEvent,
-        BeforeToolInvocationEvent,
-    )
-
-    EXPERIMENTAL_EVENTS_AVAILABLE = True
-except ImportError:
-    EXPERIMENTAL_EVENTS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -89,25 +81,11 @@ class AgentMonitor(HookProvider):
         registry.add_callback(AfterInvocationEvent, self.on_after_invocation)
         registry.add_callback(MessageAddedEvent, self.on_message_added)
 
-        # Experimental events (if available)
-        if EXPERIMENTAL_EVENTS_AVAILABLE:
-            print("\n\n REGISTERING EXPERIMENTAL HOOKS \n\n")
-            registry.add_callback(
-                BeforeToolInvocationEvent, self.on_before_tool_invocation
-            )
-            registry.add_callback(
-                AfterToolInvocationEvent, self.on_after_tool_invocation
-            )
-            registry.add_callback(
-                BeforeModelInvocationEvent, self.on_before_model_invocation
-            )
-            registry.add_callback(
-                AfterModelInvocationEvent, self.on_after_model_invocation
-            )
-        else:
-            self.monitor_logger.warning(
-                "Experimental events not available - tool and model monitoring disabled"
-            )
+        # Tool and model call events
+        registry.add_callback(BeforeToolCallEvent, self.on_before_tool_invocation)
+        registry.add_callback(AfterToolCallEvent, self.on_after_tool_invocation)
+        registry.add_callback(BeforeModelCallEvent, self.on_before_model_invocation)
+        registry.add_callback(AfterModelCallEvent, self.on_after_model_invocation)
 
     def on_agent_initialized(self, event: AgentInitializedEvent) -> None:
         """Handle agent initialization event."""
@@ -174,9 +152,6 @@ class AgentMonitor(HookProvider):
 
     def on_before_tool_invocation(self, event) -> None:
         """Handle before tool invocation event."""
-        if not EXPERIMENTAL_EVENTS_AVAILABLE:
-            return
-
         tool_name = event.tool_use.get("name", "unknown")
         tool_input = event.tool_use.get("input", {})
 
@@ -198,9 +173,6 @@ class AgentMonitor(HookProvider):
 
     def on_after_tool_invocation(self, event) -> None:
         """Handle after tool invocation event."""
-        if not EXPERIMENTAL_EVENTS_AVAILABLE:
-            return
-
         self.execution_stats["tool_invocations"] += 1
 
         tool_name = event.tool_use.get("name", "unknown")
@@ -221,18 +193,12 @@ class AgentMonitor(HookProvider):
 
     def on_before_model_invocation(self, event) -> None:
         """Handle before model invocation event."""
-        if not EXPERIMENTAL_EVENTS_AVAILABLE:
-            return
-
         self.monitor_logger.info("🧠 Invoking language model")
         if self.enable_detailed_logging:
             self.monitor_logger.debug(f"Model invocation details: {event}")
 
     def on_after_model_invocation(self, event) -> None:
         """Handle after model invocation event."""
-        if not EXPERIMENTAL_EVENTS_AVAILABLE:
-            return
-
         self.execution_stats["model_invocations"] += 1
 
         model_info = {
@@ -514,20 +480,10 @@ class ThrottlingMonitor(HookProvider):
 
     def register_hooks(self, registry: HookRegistry, **kwargs: Any) -> None:
         """Register throttling monitoring callbacks."""
-        if EXPERIMENTAL_EVENTS_AVAILABLE:
-            registry.add_callback(
-                AfterModelInvocationEvent, self.on_after_model_invocation
-            )
-        else:
-            self.monitor_logger.warning(
-                "Experimental events not available - throttling monitoring disabled"
-            )
+        registry.add_callback(AfterModelCallEvent, self.on_after_model_invocation)
 
     def on_after_model_invocation(self, event) -> None:
         """Handle after model invocation event to detect throttling."""
-        if not EXPERIMENTAL_EVENTS_AVAILABLE:
-            return
-
         # Check for throttling exceptions
         if event.exception:
             self._handle_model_exception(event.exception)

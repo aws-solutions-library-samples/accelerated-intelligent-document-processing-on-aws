@@ -65,6 +65,7 @@ from .models import (
     ConfigDeleteResult,
     ConfigDownloadResult,
     ConfigListResult,
+    ConfigMigrateResult,
     ConfigRevisionInfo,
     ConfigRevisionListResult,
     ConfigSyncBdaResult,
@@ -213,6 +214,7 @@ __all__ = [
     "SearchDocumentReference",
     # Config models
     "ConfigCreateResult",
+    "ConfigMigrateResult",
     "ConfigValidationResult",
     "ConfigDownloadResult",
     "ConfigUploadResult",

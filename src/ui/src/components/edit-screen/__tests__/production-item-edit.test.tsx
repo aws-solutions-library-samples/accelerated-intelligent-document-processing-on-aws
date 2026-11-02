@@ -34,7 +34,16 @@ const setSuccessMessage = vi.fn();
 const exit = vi.fn();
 const refreshDocument = vi.fn();
 const saveDocumentGrouping = vi.fn();
-const role = { isAdmin: true, isAnnotator: false, canWrite: true };
+const role = {
+  isAdmin: true,
+  isAnnotator: false,
+  isReviewer: false,
+  canWrite: true,
+  // As useUserRole derives it: an Annotator or a Reviewer works Production queues.
+  get isQueueWorker() {
+    return this.isAnnotator || this.isReviewer;
+  },
+};
 /** The props the editor was last rendered with. */
 let editor: {
   isReadOnly: boolean;
@@ -214,6 +223,7 @@ beforeEach(() => {
   editor = null;
   role.isAdmin = true;
   role.isAnnotator = false;
+  role.isReviewer = false;
   role.canWrite = true;
   for (const f of [saveSection, complete, claimItem, releaseItem, takeOverItem, setErrorMessage, setSuccessMessage, exit]) f.mockReset();
   controller.save.mockReset().mockResolvedValue(true);
@@ -561,6 +571,23 @@ describe('the actions', () => {
     expect(readOnly()).toBe(true);
     expect(buttons()).toContain('Claim');
     expect(document.body.textContent).not.toContain('Editing or completing assigns it to you');
+  });
+
+  it('let a Reviewer claim an unassigned item of any queue, with no Admin assignment', async () => {
+    Object.assign(role, { isAdmin: false, isAnnotator: false, isReviewer: true, canWrite: false });
+    renderScreen();
+    expect(buttons()).toContain('Claim');
+    act(() => button('Claim').click());
+    await waitFor(() => expect(claimItem).toHaveBeenCalledTimes(1));
+  });
+
+  it('let a Reviewer holding the item work it: save, Process Changes and Edit Page Grouping', () => {
+    Object.assign(role, { isAdmin: false, isAnnotator: false, isReviewer: true, canWrite: false });
+    server.detail = detailFor({ state: 'CLAIMED', ownerEmail: ANN, isMine: true });
+    renderScreen();
+    expect(readOnly()).toBe(false);
+    expect(buttons()).toEqual(expect.arrayContaining(['Skip', 'Save', 'Process Changes']));
+    expect(regroupItem()).toMatchObject({ disabled: false });
   });
 });
 

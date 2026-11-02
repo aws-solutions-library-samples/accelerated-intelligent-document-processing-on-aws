@@ -294,6 +294,7 @@ def _document_with_two_sections() -> Document:
                 ),
                 attributes={"amount": "10.00"},
                 confidence_threshold_alerts=[{"attribute_name": "amount"}],
+                missing_required_fields=[{"attribute_name": "due_date"}],
             ),
             Section(
                 section_id="2",
@@ -686,6 +687,7 @@ class TestPrepareForExtractionRerun:
             assert section.extraction_result_uri is None
             assert section.attributes is None
             assert section.confidence_threshold_alerts == []
+            assert section.missing_required_fields == []
 
     def test_the_document_is_rewound_to_queued(self, processor, aws):
         document = processor._prepare_for_extraction_rerun(

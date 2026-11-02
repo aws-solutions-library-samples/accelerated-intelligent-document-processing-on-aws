@@ -56,10 +56,11 @@ import yaml
 from moto import mock_aws
 
 from idp_sdk import IDPClient
-from idp_sdk.exceptions import IDPResourceNotFoundError
+from idp_sdk.exceptions import IDPResourceNotFoundError, IDPValidationError
 from idp_sdk.models import (
     ConfigCreateResult,
     ConfigDownloadResult,
+    ConfigMigrateResult,
     ConfigSyncBdaResult,
     ConfigValidationResult,
 )
@@ -203,41 +204,122 @@ def _modules_absent(*names: str):
 @pytest.mark.unit
 @pytest.mark.config
 class TestCreate:
-    def test_a_comma_separated_feature_list_is_split(self):
-        """`features="min,summarization"` is two feature names, not one.
+    def test_a_comma_separated_section_list_is_split(self):
+        """`features="classification,summarization"` is two section names.
 
-        The split is what turns the CLI's `--features min,summarization` into the
-        list `generate_config_template` expects, and it is load-bearing rather
-        than cosmetic: handed the unsplit string the generator refuses it
-        outright, which is asserted here directly so the reason this branch
-        exists is visible. The observable effect of the split is that
-        `summarization` comes out enabled.
+        The split is what turns the CLI's `--features a,b` into the list
+        `generate_config_template` expects, and it is load-bearing rather than
+        cosmetic: handed the unsplit string the generator refuses it outright,
+        which is asserted here directly so the reason the split exists is visible.
         """
         from idp_common.config.merge_utils import generate_config_template
 
-        client = IDPClient()
+        several = IDPClient().config.create(features="classification,summarization")
 
-        one = client.config.create(features="min")
-        several = client.config.create(features="min,summarization")
-
-        assert isinstance(one, ConfigCreateResult)
-        assert yaml.safe_load(one.yaml_content)["summarization"]["enabled"] is False
-        assert yaml.safe_load(several.yaml_content)["summarization"]["enabled"] is True
+        assert isinstance(several, ConfigCreateResult)
+        loaded = yaml.safe_load(several.yaml_content)
+        assert "classification" in loaded and "summarization" in loaded
+        assert "extraction" not in loaded
 
         with pytest.raises(ValueError, match="Invalid feature set"):
             generate_config_template(
-                features="min,summarization",
+                features="classification,summarization",
                 pattern="pattern-2",
                 include_prompts=False,
                 include_comments=True,
             )
 
     def test_whitespace_around_a_feature_name_is_tolerated(self):
-        """`--features "min, summarization"` is what a shell user types."""
-        padded = IDPClient().config.create(features="min , summarization ")
-        tight = IDPClient().config.create(features="min,summarization")
+        """`--features "classification, summarization"` is what a shell user types."""
+        padded = IDPClient().config.create(features=" classification , summarization ")
+        tight = IDPClient().config.create(features="classification,summarization")
 
         assert padded.yaml_content == tight.yaml_content
+        assert IDPClient().config.create(features=" min ").yaml_content == (
+            IDPClient().config.create(features="min").yaml_content
+        )
+
+    def test_a_single_section_name_is_read_like_a_one_item_list(self):
+        """No comma is needed to name one section (#1709)."""
+        single = IDPClient().config.create(features="summarization")
+        listed = IDPClient().config.create(features="summarization,")
+
+        assert single.yaml_content == listed.yaml_content
+        assert set(yaml.safe_load(single.yaml_content)) == {"notes", "summarization"}
+
+    @pytest.mark.parametrize(
+        "features",
+        ["classification,extration", "extration", "min,summarization", "everything"],
+    )
+    def test_an_unknown_name_is_refused_rather_than_dropped(self, features):
+        """A one-letter typo used to produce a template missing the section,
+        reported as a success; `min,summarization` used to mean summarization
+        alone, the preset name dropped without a word (#1709)."""
+        from idp_sdk.exceptions import IDPValidationError
+
+        with pytest.raises(IDPValidationError, match="Unknown configuration section"):
+            IDPClient().config.create(features=features)
+
+    @pytest.mark.parametrize("features", ["classes", ["classes"], "classes, classes"])
+    def test_a_request_for_only_empty_sections_is_refused(self, features):
+        """`classes` is empty in the defaults; writing `classes: []` emptied a
+        profile's classes on upload, and a notes-only file is nothing (#1720)."""
+        from idp_sdk.exceptions import IDPValidationError
+
+        with pytest.raises(IDPValidationError, match="Nothing to generate: classes"):
+            IDPClient().config.create(features=features)
+
+    def test_combining_a_preset_with_sections_says_why_it_is_refused(self):
+        from idp_sdk.exceptions import IDPValidationError
+
+        with pytest.raises(IDPValidationError, match="cannot be combined"):
+            IDPClient().config.create(features="min,summarization")
+
+    @pytest.mark.parametrize("features", ["", ",", " , ,"])
+    def test_a_value_naming_no_section_is_refused(self, features):
+        from idp_sdk.exceptions import IDPValidationError
+
+        with pytest.raises(IDPValidationError, match="contains no section names"):
+            IDPClient().config.create(features=features)
+
+    def test_parse_features_reads_presets_and_lists(self):
+        parse = IDPClient().config.parse_features
+        assert parse("all") == "all"
+        assert parse(" core ") == "core"
+        assert parse("min,") == "min", "a trailing comma is harmless for a preset too"
+        assert parse("ocr") == ["ocr"]
+        assert parse("ocr,,classes,") == ["ocr", "classes"]
+        assert parse(["ocr", " classes "]) == ["ocr", "classes"]
+        assert parse(("ocr",)) == ["ocr"]
+
+    @pytest.mark.parametrize(
+        "features", [["classification", "extraction"], ("extraction",)]
+    )
+    def test_a_list_of_sections_is_accepted_as_before(self, features):
+        """The generator always took a list, and callers passed one through the SDK."""
+        as_list = IDPClient().config.create(features=features)
+        as_text = IDPClient().config.create(features=",".join(features))
+
+        assert as_list.yaml_content == as_text.yaml_content
+
+    @pytest.mark.parametrize("features", [None, 3, ["ocr", 3]])
+    def test_a_value_of_the_wrong_type_is_a_validation_error(self, features):
+        from idp_sdk.exceptions import IDPValidationError
+
+        with pytest.raises(IDPValidationError, match="features must be"):
+            IDPClient().config.create(features=features)
+
+    def test_an_empty_list_is_a_validation_error(self):
+        from idp_sdk.exceptions import IDPValidationError
+
+        with pytest.raises(IDPValidationError, match="No sections requested"):
+            IDPClient().config.create(features=[" "])
+
+    def test_an_unknown_pattern_is_a_validation_error(self):
+        from idp_sdk.exceptions import IDPValidationError
+
+        with pytest.raises(IDPValidationError, match="Invalid pattern"):
+            IDPClient().config.create(features="min", pattern="pattern-9")
 
     def test_the_generated_template_is_written_and_reparses(self, tmp_path):
         output = tmp_path / "config.yaml"
@@ -479,6 +561,171 @@ class TestValidate:
         )
 
 
+@pytest.mark.unit
+@pytest.mark.config
+class TestValidateReportsWhatItRead:
+    """The two fields `idp-cli config-validate` reports from instead of reading the
+    file itself (#1729)."""
+
+    @pytest.mark.parametrize(
+        "text",
+        ["classes: [unclosed\n  nested: {", None],
+        ids=["not-yaml", "unreadable"],
+    )
+    def test_a_file_that_did_not_load_says_so(self, tmp_path, text):
+        path = tmp_path / "c.yaml"
+        if text is not None:
+            path.write_text(text, encoding="utf-8")
+
+        result = IDPClient().config.validate(str(path))
+
+        assert result.document_loaded is False
+        assert result.class_count is None
+        assert result.valid is False
+
+    def test_a_file_that_loaded_says_so_even_when_invalid(self, tmp_path):
+        path = tmp_path / "c.yaml"
+        path.write_text("ocr: not-a-mapping\n", encoding="utf-8")
+
+        result = IDPClient().config.validate(str(path))
+
+        assert result.valid is False
+        assert result.document_loaded is True
+
+    @pytest.mark.parametrize(
+        ("text", "count"),
+        [
+            ("classes:\n  - name: a\n  - name: b\n  - name: c\n", 3),
+            ("ocr: {}\n", 0),
+            ("", 0),
+            ("- first\n- second\n", None),
+            # Not a list of classes, so it defines none; len() of it would count
+            # characters.
+            ("classes: abc\n", 0),
+        ],
+        ids=["three", "no-classes-key", "empty-file", "top-level-list", "not-a-list"],
+    )
+    def test_class_count_is_the_files_own_classes(self, tmp_path, text, count):
+        path = tmp_path / "c.yaml"
+        path.write_text(text, encoding="utf-8")
+
+        result = IDPClient().config.validate(str(path))
+
+        assert result.document_loaded is True
+        assert result.class_count == count
+
+    def test_an_import_failure_before_the_file_is_opened_has_not_loaded_it(
+        self, tmp_path
+    ):
+        path = tmp_path / "c.yaml"
+        path.write_text(yaml.dump({"classes": []}), encoding="utf-8")
+        operation = IDPClient().config
+
+        with _modules_absent("idp_common"):
+            result = operation.validate(str(path))
+
+        assert result.validation_available is False
+        assert result.document_loaded is False
+
+    def test_an_import_failure_inside_the_checks_has_loaded_it(self, tmp_path):
+        import idp_common.config.merge_utils  # noqa: F401
+
+        path = tmp_path / "c.yaml"
+        path.write_text(yaml.dump({"classes": []}), encoding="utf-8")
+        operation = IDPClient().config
+
+        with _modules_absent("idp_common.config.migrations"):
+            result = operation.validate(str(path))
+
+        assert result.validation_available is False
+        assert result.document_loaded is True
+
+
+@pytest.mark.unit
+@pytest.mark.config
+class TestMigrate:
+    """`config.migrate` — what `idp-cli config-validate --emit-migrated` writes."""
+
+    OLD = (
+        "classification:\n"
+        "  model: us.amazon.nova-lite-v1:0\n"
+        "  temperature: 0.2\n"
+        "classes:\n"
+        "  - name: invoice\n"
+    )
+
+    def test_the_result_is_the_loaders_migration_with_a_provenance_header(
+        self, tmp_path
+    ):
+        """The authority is `migrate_config` itself, applied to the same file."""
+        from idp_common.config.migrations import migrate_config
+
+        source = tmp_path / "old.yaml"
+        source.write_text(self.OLD, encoding="utf-8")
+
+        result = IDPClient().config.migrate(str(source))
+
+        assert isinstance(result, ConfigMigrateResult)
+        expected = migrate_config(yaml.safe_load(self.OLD))
+        assert expected != yaml.safe_load(self.OLD), (
+            "the fixture must be one the migration changes, or this compares "
+            "the input with itself"
+        )
+        assert yaml.safe_load(result.yaml_content) == expected
+        version = expected["config_format_version"]
+        assert result.config_format_version == str(version)
+        assert result.yaml_content.startswith(
+            f"# Migrated to config_format_version {version} from: {source}\n"
+        )
+        assert result.output_path is None
+
+    def test_output_writes_exactly_the_returned_content(self, tmp_path):
+        source = tmp_path / "old.yaml"
+        source.write_text(self.OLD, encoding="utf-8")
+        target = tmp_path / "new.yaml"
+
+        result = IDPClient().config.migrate(str(source), output=str(target))
+
+        assert result.output_path == str(target)
+        assert target.read_text(encoding="utf-8") == result.yaml_content
+
+    @pytest.mark.parametrize(
+        ("text", "prefix"),
+        [
+            ("classes: [unclosed\n  nested: {", "YAML syntax error:"),
+            (None, "Failed to load file:"),
+        ],
+        ids=["not-yaml", "unreadable"],
+    )
+    def test_a_file_that_does_not_load_is_a_validation_error(
+        self, tmp_path, text, prefix
+    ):
+        source = tmp_path / "old.yaml"
+        if text is not None:
+            source.write_text(text, encoding="utf-8")
+        target = tmp_path / "new.yaml"
+
+        with pytest.raises(IDPValidationError) as raised:
+            IDPClient().config.migrate(str(source), output=str(target))
+
+        assert str(raised.value).startswith(prefix)
+        assert not target.exists()
+
+    @pytest.mark.parametrize("text", ["- first\n- second\n", "just a string\n"])
+    def test_a_top_level_that_is_not_a_mapping_is_a_validation_error(
+        self, tmp_path, text
+    ):
+        """Not an AttributeError out of the migration (review of #1729)."""
+        source = tmp_path / "old.yaml"
+        source.write_text(text, encoding="utf-8")
+        target = tmp_path / "new.yaml"
+
+        with pytest.raises(IDPValidationError, match="must be a mapping"):
+            IDPClient().config.migrate(str(source), output=str(target))
+
+        assert not target.exists()
+
+
 # --------------------------------------------------------------------------
 # Stack resource resolution
 # --------------------------------------------------------------------------
@@ -612,6 +859,76 @@ class TestUploadWritesRealItems:
         assert _item(aws_credentials, "Config") is None, (
             "a named profile must not be written to the bare Config key"
         )
+
+    @mock_aws
+    @pytest.mark.parametrize("features", ["min", "core", "all"])
+    def test_a_generated_template_validates_and_uploads(
+        self, aws_credentials, config_env, tmp_path, features
+    ):
+        """`create` then `upload(validate=True)`: the SDK accepts its own output.
+
+        The template used to carry a placeholder string in every prompt field it
+        left out, which `validate` read as the prompt and refused (issue #1673).
+        """
+        _create_stack(aws_credentials)
+        client = _client(aws_credentials)
+        out = tmp_path / "generated.yaml"
+        client.config.create(features=features, output=str(out))
+
+        validation = client.config.validate(config_file=str(out))
+        assert validation.valid, validation.errors
+
+        result = client.config.upload(
+            config_file=str(out), config_profile="generated", validate=True
+        )
+        assert result.success is True, result.error
+        assert _item(aws_credentials, "Config#generated") is not None
+
+    @mock_aws
+    @pytest.mark.parametrize("features", ["min", "core", "all"])
+    def test_a_generated_template_keeps_the_profiles_document_classes(
+        self, aws_credentials, config_env, tmp_path, features
+    ):
+        """Uploading a generated template over a profile leaves its classes alone.
+
+        The upload merges the file over the profile's stored configuration and a
+        list is replaced, not merged, so a template carrying ``classes: []``
+        removed every document class the profile had (issue #1720).
+        """
+        from idp_common.config.configuration_manager import ConfigurationManager
+
+        _create_stack(aws_credentials)
+        client = _client(aws_credentials)
+        w2 = {
+            "$id": "W2",
+            "type": "object",
+            "x-aws-idp-document-type": "W2",
+            "properties": {"employer_name": {"type": "string"}},
+        }
+        client.config.upload(
+            config_file=_write_config(tmp_path / "profile.yaml", classes=[w2]),
+            config_profile="tuning",
+            validate=False,
+        )
+
+        def stored_classes():
+            config = ConfigurationManager(region=aws_credentials).get_configuration(
+                "Config", version="tuning"
+            )
+            return config.model_dump(mode="python")["classes"]
+
+        before = stored_classes()
+        assert [c["$id"] for c in before] == ["W2"]
+
+        out = tmp_path / "generated.yaml"
+        client.config.create(features=features, output=str(out))
+        result = client.config.upload(
+            config_file=str(out), config_profile="tuning", validate=True
+        )
+
+        assert result.success is True, result.error
+        assert result.version_created is False
+        assert stored_classes() == before
 
     @mock_aws
     def test_the_second_upload_of_a_profile_is_not_a_creation(

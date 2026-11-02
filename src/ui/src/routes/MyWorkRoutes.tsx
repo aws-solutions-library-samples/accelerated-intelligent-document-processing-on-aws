@@ -18,7 +18,7 @@ import { MY_TASKS_PATH } from './constants';
 const MyWorkRoutes = (): React.JSX.Element => (
   <div>
     <GenAIIDPTopNavigation />
-    <RequireRole roles={['Annotator']}>
+    <RequireRole roles={['Annotator', 'Reviewer']}>
       <Routes>
         <Route
           path="tasks"

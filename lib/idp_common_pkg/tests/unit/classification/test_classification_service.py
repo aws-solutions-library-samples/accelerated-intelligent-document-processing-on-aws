@@ -603,10 +603,12 @@ class TestClassificationService:
         assert result.page_id == "1"
         assert result.classification.doc_type == "unclassified"
         assert result.classification.confidence == 0.0
-        assert (
-            result.classification.metadata["error"]
-            == "No content available for classification"
-        )
+        # The failed read is named, and it is not mistaken for an empty page:
+        # only an empty page is kept out of document.errors (#1677).
+        error = result.classification.metadata["error"]
+        assert error.startswith("No content available for classification")
+        assert "page text could not be read: Failed to load text" in error
+        assert result.classification.metadata["page_empty"] is False
 
         # Verify no model invocation
         mock_invoke.assert_not_called()

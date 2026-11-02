@@ -84,8 +84,8 @@ const LegacyProductionQueueRedirect = (): React.JSX.Element => {
 
 /** Review Management is Admin-only; an Annotator who lands here goes to their Tasks. */
 const AdminOnly = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
-  const { isAdmin, isAnnotator, loading } = useUserRole();
-  if (!loading && !isAdmin && isAnnotator) return <Navigate to={MY_TASKS_PATH} replace />;
+  const { isAdmin, isQueueWorker, loading } = useUserRole();
+  if (!loading && !isAdmin && isQueueWorker) return <Navigate to={MY_TASKS_PATH} replace />;
   return <RequireRole roles={['Admin']}>{children}</RequireRole>;
 };
 
@@ -116,16 +116,16 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
       <Route
         path="test-sets/:testSetId/items/:objectKey"
         element={
-          <RequireRole roles={['Admin', 'Annotator', 'Author']}>
+          <RequireRole roles={['Admin', 'Annotator', 'Author', 'Reviewer']}>
             <TestSetItemPage />
           </RequireRole>
         }
       />
-      {/* A queue's page: Admins, and Annotators from Home › Queues (the API refuses an unlisted queue). */}
+      {/* A queue's page: Admins, and Annotators and Reviewers from Home › Queues (the API refuses a queue the caller doesn't work). */}
       <Route
         path="queues/:queue"
         element={
-          <RequireRole roles={['Admin', 'Annotator']}>
+          <RequireRole roles={['Admin', 'Annotator', 'Reviewer']}>
             <ProductionQueuePage />
           </RequireRole>
         }
@@ -133,7 +133,7 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
       <Route
         path="queues/:profile/:queue"
         element={
-          <RequireRole roles={['Admin', 'Annotator']}>
+          <RequireRole roles={['Admin', 'Annotator', 'Reviewer']}>
             <LegacyProductionQueueRedirect />
           </RequireRole>
         }
@@ -141,7 +141,7 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
       <Route
         path="test-sets/:testSetId"
         element={
-          <RequireRole roles={['Admin', 'Annotator', 'Author']}>
+          <RequireRole roles={['Admin', 'Annotator', 'Author', 'Reviewer']}>
             <TestSetQueuePage />
           </RequireRole>
         }

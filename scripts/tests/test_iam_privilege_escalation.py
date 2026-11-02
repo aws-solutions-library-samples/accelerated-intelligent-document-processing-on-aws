@@ -24,6 +24,11 @@ that mutates IAM permissions** — unless the template is in
 ``DEPLOYMENT_ROLE_TEMPLATES``, which lists, with justification, the few roles
 that exist precisely in order to create the stack's roles.
 
+A statement grants an action when an ``Action`` pattern matches it (IAM
+wildcards, case-insensitive) or, for ``NotAction``, when its list does not
+exclude it: ``Allow`` + ``NotAction: [kms:Decrypt]`` grants every IAM mutation
+(issue #1767). ``NotResource`` counts as every resource it does not name.
+
 ``iam:PassRole`` is deliberately NOT in ``MUTATION_ACTIONS``. Passing a role is
 not adding a permission, and a custom resource that hands an execution role to
 a service legitimately needs it; the risk in ``PassRole`` is its *resource*
@@ -42,8 +47,11 @@ Two known seams, both shared with the sibling gate in
 
 from __future__ import annotations
 
+import ast
 import fnmatch
+import itertools
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
@@ -68,6 +76,10 @@ MUTATION_ACTIONS = frozenset(
         "iam:attachrolepolicy",
         "iam:attachuserpolicy",
         "iam:attachgrouppolicy",
+        # Removing a policy widens a role whenever that policy carries a Deny
+        # (issue #1771).
+        "iam:detachrolepolicy",
+        "iam:deleterolepolicy",
         "iam:createpolicy",
         "iam:createpolicyversion",
         "iam:setdefaultpolicyversion",
@@ -193,33 +205,150 @@ def _statements(node: Any) -> Iterator[dict]:
 
 
 def _actions(statement: dict) -> list[str]:
-    """Literal action strings in a statement, across ``Fn::If`` branches.
+    """Literal ``Action`` strings in a statement, across ``Fn::If`` branches.
 
-    ``NotAction`` is read too: ``NotAction: ["s3:*"]`` with ``Effect: Allow``
-    grants everything else, IAM mutation included.
+    ``NotAction`` is deliberately not read here: its entries are what the
+    statement does *not* grant, so returning them as actions inverts their
+    meaning (an ``Allow`` with ``NotAction: [iam:*]`` used to be reported as
+    granting ``iam:*``). Whether a statement grants a given action is
+    :func:`_grants`, which reads both keys.
     """
     found: list[str] = []
-    for key in ("Action", "NotAction"):
-        for branch in _branches(statement.get(key)):
-            items = branch if isinstance(branch, list) else [branch]
-            for item in items:
-                for leaf in _branches(item):
-                    if isinstance(leaf, str):
-                        found.append(leaf.strip())
+    for branch in _branches(statement.get("Action")):
+        items = branch if isinstance(branch, list) else [branch]
+        for item in items:
+            for leaf in _branches(item):
+                if isinstance(leaf, str):
+                    found.append(leaf.strip())
     return found
 
 
+def _iam_pattern_matches(pattern: str, action: str) -> bool:
+    """Whether an IAM action pattern matches one concrete action.
+
+    IAM's rule, not a shell glob's: ``*`` matches any run of characters, ``?``
+    exactly one, the comparison is case-insensitive, and nothing else is
+    special (``fnmatch`` would read ``[`` as a character class).
+    """
+    regex = "".join(
+        ".*" if char == "*" else "." if char == "?" else re.escape(char)
+        for char in pattern.strip().lower()
+    )
+    return re.fullmatch(regex, action.lower(), flags=re.DOTALL) is not None
+
+
+def _excluded_by(item: Any, action: str) -> bool:
+    """Whether one ``NotAction`` entry excludes ``action`` on every leg.
+
+    An entry is only trusted to exclude when every ``Fn::If`` leg of it is a
+    literal pattern matching the action. A non-literal entry (``!Ref``,
+    ``!Sub``) excludes nothing, because reading an unknown value as "excludes
+    IAM" is the direction that fails open.
+    """
+    legs = _branches(item)
+    return all(
+        isinstance(leg, str) and _iam_pattern_matches(leg, action) for leg in legs
+    )
+
+
+# `!Ref` loads as `Fn::Ref` through this file's loader; JSON spells it `Ref`.
+_NO_VALUE = ({"Ref": "AWS::NoValue"}, {"Fn::Ref": "AWS::NoValue"})
+
+
+def _has_opaque_action(statement: dict) -> bool:
+    """Whether an ``Action`` entry, on some leg, is a value this reader cannot see.
+
+    ``!Sub 'iam:${Verb}'`` or ``!Ref Actions`` may name any action, so it is
+    read as granting every action, the same direction ``NotAction`` takes for
+    an entry it cannot read. ``AWS::NoValue`` removes the entry and grants
+    nothing.
+    """
+    for branch in _branches(statement.get("Action")):
+        items = branch if isinstance(branch, list) else [branch]
+        for item in items:
+            for leaf in _branches(item):
+                if (
+                    leaf is not None
+                    and not isinstance(leaf, str)
+                    and leaf not in _NO_VALUE
+                ):
+                    return True
+    return False
+
+
+def _may_allow(statement: dict) -> bool:
+    """Whether a statement's ``Effect`` is ``Allow`` on some ``Fn::If`` leg.
+
+    A missing ``Effect`` is read as ``Allow``. A non-literal leg is read as
+    ``Allow`` too: skipping it as if it were ``Deny`` is the direction that
+    fails open.
+    """
+    for leg in _branches(statement.get("Effect", "Allow")):
+        if not isinstance(leg, str) or leg.strip().lower() == "allow":
+            return True
+    return False
+
+
+def _grants(statement: dict, action: str) -> bool:
+    """Whether a statement, on some ``Fn::If`` leg, can allow ``action``.
+
+    ``Effect`` is not read here; callers skip ``Deny`` first.
+
+    * ``Action``: granted when any literal pattern on any leg matches, so
+      ``iam:*``, ``*`` and ``iam:Put*`` all grant ``iam:putrolepolicy``.
+    * ``NotAction``: an ``Allow`` with ``NotAction`` grants every action its
+      list does not exclude. The action is granted unless, on every leg of the
+      ``NotAction`` value, some entry excludes it. ``NotAction: [kms:Decrypt]``
+      therefore grants every IAM mutation, and ``NotAction: [iam:*]`` grants
+      none.
+    """
+    for pattern in _actions(statement):
+        if _iam_pattern_matches(pattern, action):
+            return True
+    if _has_opaque_action(statement):
+        return True
+    if "NotAction" not in statement:
+        return False
+    for leg in _branches(statement.get("NotAction")):
+        items = leg if isinstance(leg, list) else [leg]
+        if not any(_excluded_by(item, action) for item in items):
+            return True
+    return False
+
+
+def _mutation_names() -> list[str]:
+    """The concrete actions in ``MUTATION_ACTIONS``, without the ``iam:*`` entry.
+
+    ``iam:*`` is in the set so that the set reads as the rule; matching is
+    against concrete actions, and ``iam:*`` as a pattern matches all of them.
+    """
+    return sorted(a for a in MUTATION_ACTIONS if "*" not in a and "?" not in a)
+
+
 def _offending_actions(doc: Any) -> list[str]:
-    """Permission-mutating actions granted by an ``Allow`` statement in ``doc``."""
+    """Permission-mutating actions granted by an ``Allow`` statement in ``doc``.
+
+    A grant through ``Action`` is reported as the literal pattern that grants
+    it; a grant through ``NotAction`` as ``"<action> (via NotAction)"``, since
+    there is no literal to quote. ``Resource`` and ``NotResource`` are not
+    read: this rule is about which actions are allowed on anything at all.
+    """
     offending = []
+    names = _mutation_names()
     for statement in _statements(doc):
-        if str(statement.get("Effect", "Allow")).strip().lower() != "allow":
+        if not _may_allow(statement):
             continue
-        for action in _actions(statement):
-            lowered = action.lower()
-            # A bare "*" grants every action there is, iam: mutation included.
-            if lowered == "*" or lowered in MUTATION_ACTIONS:
-                offending.append(action)
+        if _has_opaque_action(statement):
+            offending.append(f"{statement.get('Action')!r} (not a literal)")
+        for pattern in _actions(statement):
+            if any(_iam_pattern_matches(pattern, name) for name in names):
+                offending.append(pattern)
+        if "NotAction" in statement:
+            plain = dict(statement)
+            plain.pop("Action", None)
+            for name in names:
+                if _grants(plain, name):
+                    offending.append(f"{name} (via NotAction)")
     return sorted(set(offending))
 
 
@@ -328,14 +457,338 @@ def test_the_agentcore_gateway_manager_policy_stays_scoped() -> None:
         )
 
 
+GATEWAY_MANAGER_SOURCE = REPO_ROOT / "src/lambda/agentcore_gateway_manager/index.py"
+
+
+def _client_service(call: ast.Call) -> object:
+    """The service a ``<x>.client(...)`` call names, or the node if not literal."""
+    node = call.args[0] if call.args else None
+    for keyword in call.keywords:
+        if keyword.arg == "service_name":
+            node = keyword.value
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return node
+
+
+def _logs_calls_in_gateway_manager() -> tuple[set[str], list[str]]:
+    """IAM actions for the CloudWatch Logs APIs the gateway manager calls.
+
+    Returns the actions and the problems that make the derivation unreliable.
+    The rule is about reach, not spelling: ``index.py`` may reach CloudWatch
+    Logs only through a name assigned directly from ``<x>.client("logs")`` and
+    used only as ``name.<method>``. Anything else (a non-literal service name,
+    an inline or annotated client, an alias, ``getattr``) is a problem, because
+    a call made that way could not be read here. This catches the ordinary
+    ways of writing a call and is not a proof of reach: a client built through
+    botocore directly, through a reference to ``boto3.client`` held under
+    another name, through ``locals()``, or in a sibling module, and any call
+    the starter toolkit makes on the handler's behalf, are outside what it
+    reads.
+    """
+    tree = ast.parse(GATEWAY_MANAGER_SOURCE.read_text())
+    parents = {
+        child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
+    }
+    problems: list[str] = []
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "client"
+        ):
+            continue
+        service = _client_service(node)
+        if not isinstance(service, str):
+            problems.append(f"line {node.lineno}: client() with a non-literal service")
+            continue
+        if service != "logs":
+            continue
+        parent = parents.get(node)
+        if (
+            isinstance(parent, ast.Assign)
+            and len(parent.targets) == 1
+            and isinstance(parent.targets[0], ast.Name)
+        ):
+            names.add(parent.targets[0].id)
+        else:
+            problems.append(
+                f"line {node.lineno}: logs client not bound to a plain name"
+            )
+    calls: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Name) and node.id in names):
+            continue
+        if isinstance(node.ctx, ast.Store):
+            continue
+        parent = parents.get(node)
+        if not (isinstance(parent, ast.Attribute) and parent.value is node):
+            problems.append(
+                f"line {node.lineno}: logs client {node.id!r} used other than as name.<method>"
+            )
+            continue
+        if parent.attr != "exceptions":
+            pascal = "".join(part.capitalize() for part in parent.attr.split("_"))
+            calls.add(f"logs:{pascal}")
+    return calls, problems
+
+
+# Retained without having been shown necessary: no call on the handler's code
+# path needs iam:GetRole, and nothing passes a KMS key. Pinned so they cannot
+# grow, not because they were derived.
+_GATEWAY_MANAGER_RETAINED = {
+    "iam:GetRole",
+    "iam:PassRole",
+    "kms:Encrypt",
+    "kms:Decrypt",
+    "kms:ReEncrypt*",
+    "kms:GenerateDataKey*",
+    "kms:DescribeKey",
+}
+
+
+@pytest.mark.unit
+def test_the_agentcore_gateway_manager_grants_only_what_it_calls() -> None:
+    """Issue #1753: the role grants the gateway manager's calls and no more.
+
+    The function needs ``bedrock-agentcore:*`` for the gateway and target
+    lifecycle and exactly the CloudWatch Logs APIs ``index.py`` calls, plus the
+    retained IAM and KMS actions above. It used to also hold the log-delivery
+    create and describe actions the toolkit's observability step needed,
+    ``cognito-idp:DescribeUserPool``, and two prefixes IAM does not have
+    (``bedrock-agent``, ``bedrock-agentcore-control``).
+
+    Read over the role's whole surface: every ``Policies`` item must be an
+    inline statement document (a managed-policy name or a SAM policy template
+    would grant what this cannot see), no ``Allow`` may use ``NotAction`` or
+    ``NotResource``, and no other resource may attach a policy to the role.
+    ``Deny`` statements are not grants and are not compared.
+    """
+    logs_calls, problems = _logs_calls_in_gateway_manager()
+    assert not problems, problems
+    # An empty derivation would make the comparison below vacuous for logs.
+    assert logs_calls, "found no logs client calls in the gateway manager"
+
+    doc = _load_text((REPO_ROOT / "template.yaml").read_text())
+    resources = doc["Resources"]
+    function = resources["AgentCoreGatewayManagerFunction"]
+    properties = function["Properties"]
+    # SAM adds its own grants to a generated role for DeadLetterQueue, Tracing,
+    # VpcConfig, Events and others, so only the properties the function has
+    # today are accepted; a new one has to be judged here before it ships.
+    assert set(properties) <= {
+        "CodeUri",
+        "Environment",
+        "Handler",
+        "LoggingConfig",
+        "MemorySize",
+        "PermissionsBoundary",
+        "Policies",
+        "Runtime",
+        "Timeout",
+    }, sorted(properties)
+
+    shapes = []
+    for item in properties.get("Policies") or []:
+        for branch in _branches(item):
+            if not (
+                isinstance(branch, dict) and set(branch) <= {"Version", "Statement"}
+            ):
+                shapes.append(branch)
+    assert not shapes, f"Policies items that are not inline statements: {shapes}"
+
+    # Anything else naming the function or its role (an attached policy, a
+    # SAM Connector) can grant what the function's own properties do not show.
+    # The custom resource it serves is the one expected reference.
+    attached = sorted(
+        name
+        for name, body in resources.items()
+        if name not in ("AgentCoreGatewayManagerFunction", "AgentCoreGateway")
+        and isinstance(body, dict)
+        and "AgentCoreGatewayManagerFunction" in repr(body)
+    )
+    assert not attached, f"resources that reference the manager or its role: {attached}"
+
+    vended_log_groups = (
+        "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:"
+        "/aws/vendedlogs/bedrock-agentcore/gateway/APPLICATION_LOGS/*"
+    )
+    granted: set[str] = set()
+    for statement in _statements(function):
+        effect = statement.get("Effect")
+        assert effect in ("Allow", "Deny"), f"Effect must be a literal: {statement}"
+        if effect != "Allow":
+            continue
+        if any(action.startswith("kms:") for action in _actions(statement)):
+            assert statement.get("Resource") == {
+                "Fn::GetAtt": "CustomerManagedEncryptionKey.Arn"
+            }, f"the KMS actions must stay on the stack's key: {statement}"
+        assert "NotAction" not in statement and "NotResource" not in statement, (
+            statement
+        )
+        granted.update(_actions(statement))
+        if "logs:DeleteLogGroup" in _actions(statement):
+            assert statement.get("Resource") == {"Fn::Sub": vended_log_groups}, (
+                "logs:DeleteLogGroup must stay scoped to the gateway's vended-log "
+                f"path; got {statement.get('Resource')!r}"
+            )
+
+    expected = {"bedrock-agentcore:*"} | logs_calls | _GATEWAY_MANAGER_RETAINED
+    assert granted == expected, (
+        "AgentCoreGatewayManagerFunction's grants no longer match what "
+        "src/lambda/agentcore_gateway_manager/index.py calls. Extra: "
+        f"{sorted(granted - expected)}; missing: {sorted(expected - granted)}"
+    )
+
+
 # Templates that still grant iam:PassRole on Resource "*". Empty by design —
 # this is a ratchet, so the list may shrink but never grow. If a legitimate case
 # appears, add it here WITH a reason and a follow-up.
 PASS_ROLE_WILDCARD_ALLOWED: dict[str, str] = {}
 
 
+def _resource_is_open(statement: dict) -> bool:
+    """Whether a statement applies to every resource on some ``Fn::If`` leg.
+
+    ``Resource: "*"`` does. So does ``NotResource``: an ``Allow`` with
+    ``NotResource`` applies to every resource it does not name, which for
+    ``iam:PassRole`` is every role in the account but a listed few. A
+    ``NotResource`` leg is closed only when it names ``"*"`` itself, which
+    leaves nothing to apply to.
+    """
+    for branch in _branches(statement.get("Resource")):
+        resources = branch if isinstance(branch, list) else [branch]
+        if any(r == "*" for r in resources if isinstance(r, str)):
+            return True
+    if "NotResource" not in statement:
+        return False
+    for branch in _branches(statement.get("NotResource")):
+        resources = branch if isinstance(branch, list) else [branch]
+        if not any(r == "*" for r in resources if isinstance(r, str)):
+            return True
+    return False
+
+
+# The resource part of two role ARNs no scoped PassRole names: one at the root
+# path, one under a path. An ARN pattern whose resource part matches both is
+# read as naming every role; a prefix (``role/MyStack-*``) or one role matches
+# neither.
+_ARBITRARY_ROLE_RESOURCES = (
+    "role/zq-unrelated-role-1771",
+    "role/service-role/xk-other-name",
+)
+# What every reference (``${X}``, ``!Ref X``, a list-form ``!Sub`` variable
+# that is not a literal) renders as. What it then stands for depends on which
+# ARN field it sits in: see _pattern_names_every_role.
+_UNRESOLVED = "\x01"
+_SUB_REFERENCE = re.compile(r"\$\{([^}!]*)\}")
+
+
+def _renderings(node: Any) -> list[str]:
+    """Every IAM pattern a resource value can render as; empty when none.
+
+    * a literal string is itself;
+    * ``Fn::If`` is every rendering of each leg;
+    * ``Fn::Sub`` (either form) renders each ``${...}`` as ``_UNRESOLVED``,
+      except a list-form variable whose value renders, which is followed;
+    * ``Fn::Join`` joins every combination of its parts' renderings, a part
+      that does not render (``!Ref``, ``!GetAtt``) becoming ``_UNRESOLVED``.
+
+    A ``Fn::If`` inside a ``Fn::Join`` part or a ``Fn::Sub`` variable is
+    therefore expanded too: ``!Join ['', ['...:role/', !If [C, x, '*']]]`` has a
+    ``role/*`` rendering. A whole-value ``!GetAtt``, ``!Ref`` or
+    ``!ImportValue`` renders as nothing: it names one resource the template
+    cannot see into.
+    """
+    if isinstance(node, str):
+        return [node]
+    if not isinstance(node, dict) or len(node) != 1:
+        return []
+    ((key, value),) = node.items()
+    if key == "Fn::If":
+        legs = _branches(node)
+        if legs == [node]:
+            return []
+        return [r for leg in legs for r in _renderings(leg)]
+    if key == "Fn::Sub":
+        template, local = value, {}
+        if isinstance(value, list) and value:
+            template = value[0]
+            if len(value) > 1 and isinstance(value[1], dict):
+                local = value[1]
+        if not isinstance(template, str):
+            return []
+        # re.split with one group alternates literal text and reference names.
+        pieces = _SUB_REFERENCE.split(template)
+        choices: list[list[str]] = []
+        for index, piece in enumerate(pieces):
+            if index % 2 == 0:
+                choices.append([piece])
+            elif piece in local:
+                choices.append(_renderings(local[piece]) or [_UNRESOLVED])
+            else:
+                choices.append([_UNRESOLVED])
+        return ["".join(combo) for combo in itertools.product(*choices)]
+    if key == "Fn::Join" and isinstance(value, list) and len(value) == 2:
+        delimiter, parts = value
+        if not isinstance(delimiter, str) or not isinstance(parts, list):
+            return []
+        choices = [_renderings(part) or [_UNRESOLVED] for part in parts]
+        return [delimiter.join(combo) for combo in itertools.product(*choices)]
+    return []
+
+
+def _pattern_names_every_role(pattern: str) -> bool:
+    """Whether a rendered resource pattern matches every role ARN.
+
+    The pattern is split into the six ARN fields (``maxsplit`` 5, since the
+    resource field may itself hold ``:``); it names every role when its service
+    field can be ``iam`` and its resource field matches both probe resources.
+    The partition, region and account fields are not read: every
+    role in another partition or account is still every role. An unresolved
+    reference in the resource field is read as one name (``role/${KbRole}``),
+    which matches neither probe; in the service field as ``*``. A pattern that
+    is not six fields (``*``, ``arn:*``) is matched whole against probe ARNs.
+    """
+    fields = pattern.split(":", 5)
+    if len(fields) == 6:
+        service = fields[2].replace(_UNRESOLVED, "*")
+        resource = fields[5].replace(_UNRESOLVED, "\x00")
+        if not _iam_pattern_matches(service, "iam"):
+            return False
+        return all(_iam_pattern_matches(resource, r) for r in _ARBITRARY_ROLE_RESOURCES)
+    whole = pattern.replace(_UNRESOLVED, "\x00")
+    return all(
+        _iam_pattern_matches(whole, f"arn:aws:iam::123456789012:{r}")
+        for r in _ARBITRARY_ROLE_RESOURCES
+    )
+
+
+def _resource_matches_every_role(statement: dict) -> bool:
+    """Whether a ``Resource`` entry, on some ``Fn::If`` leg, names every role.
+
+    ``arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*`` does, as do ``*``,
+    ``arn:*`` and the same pattern built with ``!Join`` (issue #1771: only the
+    literal ``"*"`` used to be recognised).
+    """
+    for branch in _branches(statement.get("Resource")):
+        resources = branch if isinstance(branch, list) else [branch]
+        for entry in resources:
+            if any(_pattern_names_every_role(p) for p in _renderings(entry)):
+                return True
+    return False
+
+
 def _wildcard_pass_role(root: Path | None = None) -> dict[str, list[str]]:
-    """``{relative path: statements}`` granting ``iam:PassRole`` on ``"*"``."""
+    """``{relative path: statements}`` granting ``iam:PassRole`` on every role.
+
+    ``Resource: "*"``, ``NotResource``, and any resource pattern matching
+    every role ARN (``role/*``) are reported. An ``iam:PassedToService``
+    condition does not exempt one: it limits the receiving service, not the
+    role, and "every role, to Lambda" is still an escalation path. Name the
+    role instead.
+    """
     root = root or REPO_ROOT
     problems: dict[str, list[str]] = {}
     for path, doc in _templates(root):
@@ -343,20 +796,23 @@ def _wildcard_pass_role(root: Path | None = None) -> dict[str, list[str]]:
         if rel in DEPLOYMENT_ROLE_TEMPLATES or rel in PASS_ROLE_WILDCARD_ALLOWED:
             continue
         for statement in _statements(doc):
-            if str(statement.get("Effect", "Allow")).strip().lower() != "allow":
+            if not _may_allow(statement):
                 continue
-            if not any(a.lower() == "iam:passrole" for a in _actions(statement)):
+            if not _grants(statement, "iam:passrole"):
                 continue
-            for branch in _branches(statement.get("Resource")):
-                resources = branch if isinstance(branch, list) else [branch]
-                if any(r == "*" for r in resources if isinstance(r, str)):
-                    problems.setdefault(rel, []).append(str(statement.get("Action")))
+            if _resource_is_open(statement) or _resource_matches_every_role(statement):
+                problems.setdefault(rel, []).append(
+                    str(statement.get("Action", statement.get("NotAction")))
+                )
     return problems
 
 
 @pytest.mark.unit
 def test_pass_role_is_scoped() -> None:
-    """``iam:PassRole`` on ``Resource: "*"`` lets a role hand ANY role to a service.
+    """``iam:PassRole`` on every role lets a principal hand ANY role to a service.
+
+    ``Resource: "*"``, ``NotResource`` and ``role/*`` patterns all qualify
+    (see :func:`_wildcard_pass_role`).
 
     That is a privilege-escalation primitive in its own right whenever a
     reachable service will assume the passed role, so it is worth a gate even
@@ -365,10 +821,11 @@ def test_pass_role_is_scoped() -> None:
     """
     problems = _wildcard_pass_role()
     assert not problems, (
-        "iam:PassRole granted on Resource '*' — the principal can hand ANY role "
+        "iam:PassRole granted on every role — the principal can hand ANY role "
         f"in the account to a service that will assume it: {problems}. Scope the "
         "statement to the specific role ARN(s), and add an "
-        "iam:PassedToService condition where the service is known."
+        "iam:PassedToService condition where the service is known; the "
+        "condition alone does not satisfy this check."
     )
 
 
@@ -411,6 +868,9 @@ Resources:
         ("create-policy-version", "                - iam:CreatePolicyVersion\n"),
         ("trust-policy", "                - iam:UpdateAssumeRolePolicy\n"),
         ("boundary-removal", "                - iam:DeleteRolePermissionsBoundary\n"),
+        # Removing a policy that carries a Deny widens the role (#1771).
+        ("detach-managed-policy", "                - iam:DetachRolePolicy\n"),
+        ("delete-inline-policy", "                - iam:DeleteRolePolicy\n"),
         ("new-user-credentials", "                - iam:CreateAccessKey\n"),
         ("iam-wildcard", "                - iam:*\n"),
         ("full-wildcard", '                - "*"\n'),
@@ -483,6 +943,244 @@ def test_gate_ignores_deny_and_read_only(tmp_path: Path) -> None:
     assert not _scan(root=tmp_path), "the gate fired on a Deny or a read-only grant"
 
 
+def _probe_statement(tmp_path: Path, statement: str) -> Path:
+    """A one-statement SAM template under ``tmp_path``; ``statement`` is YAML.
+
+    ``statement`` is indented to sit under ``- Effect: ...`` at 14 spaces.
+    """
+    probe = tmp_path / "probe" / "template.yaml"
+    probe.parent.mkdir(parents=True)
+    body = "".join(f"              {line}\n" for line in statement.splitlines())
+    probe.write_text(
+        "Resources:\n"
+        "  MyFn:\n"
+        "    Type: AWS::Serverless::Function\n"
+        "    Properties:\n"
+        "      Policies:\n"
+        "        - Statement:\n"
+        "            - " + body.lstrip()
+    )
+    # A probe that fails to parse is never discovered, and an undiscovered
+    # probe passes every "not reported" assertion below; so is a statement
+    # the walk does not reach.
+    assert _template_paths(root=tmp_path) == [probe]
+    (found,) = list(_statements(_load_text(probe.read_text())))
+    assert found, statement
+    return tmp_path
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case,statement",
+    [
+        # The shape #1767 reported: one unrelated exclusion grants all of IAM.
+        (
+            "excludes-one-kms-action",
+            "Effect: Allow\nNotAction: [kms:Decrypt]\nResource: '*'",
+        ),
+        (
+            "excludes-another-service",
+            "Effect: Allow\nNotAction: ['s3:*']\nResource: '*'",
+        ),
+        ("no-effect-means-allow", "NotAction: ['s3:*']\nResource: '*'"),
+        # Excluding some IAM writes still grants the others (CreateRole, ...).
+        (
+            "excludes-part-of-iam",
+            "Effect: Allow\nNotAction: ['iam:Put*', 'iam:Attach*']\nResource: '*'",
+        ),
+        # IAM wildcards are not shell globs: `[p]` is literal, so it excludes
+        # no real action and everything is granted.
+        ("bracket-is-literal", "Effect: Allow\nNotAction: ['iam:[p]*']\nResource: '*'"),
+        # A value the reader cannot see is not trusted to exclude anything.
+        (
+            "non-literal-entry",
+            "Effect: Allow\nNotAction: [!Ref Excluded]\nResource: '*'",
+        ),
+        # Only one Fn::If leg excludes IAM; the other leg grants it.
+        (
+            "excluded-on-one-leg-only",
+            "Effect: Allow\nNotAction:\n  - !If [C, 'iam:*', 's3:*']\nResource: '*'",
+        ),
+        (
+            "whole-value-behind-fn-if",
+            "Effect: Allow\nNotAction: !If [C, ['iam:*'], ['s3:*']]\nResource: '*'",
+        ),
+        # NotResource does not narrow the action set; the mutation rule is
+        # about which actions are allowed on anything.
+        (
+            "action-with-not-resource",
+            "Effect: Allow\nAction: iam:CreateRole\nNotResource: arn:aws:iam::123456789012:role/x",
+        ),
+        # A wildcard in Action reaches the mutation set as well.
+        ("action-wildcard", "Effect: Allow\nAction: ['iam:Put*']\nResource: '*'"),
+        (
+            "opaque-not-action-value",
+            "Effect: Allow\nNotAction: !Ref Excl\nResource: '*'",
+        ),
+        ("opaque-action", "Effect: Allow\nAction: !Sub 'iam:${Verb}'\nResource: '*'"),
+        ("opaque-action-entry", "Effect: Allow\nAction: [!Ref Verb]\nResource: '*'"),
+        (
+            "effect-behind-fn-if",
+            "Effect: !If [C, Allow, Deny]\nNotAction: ['s3:*']\nResource: '*'",
+        ),
+        (
+            "allow-on-second-leg",
+            "Effect: !If [C, Deny, Allow]\nAction: iam:CreateRole\nResource: '*'",
+        ),
+        # The opaque leg of a whole-value Action: !If is the second one.
+        (
+            "opaque-action-on-second-leg",
+            "Effect: Allow\nAction: !If [C, [iam:GetRole], [!Ref Verb]]\nResource: '*'",
+        ),
+        ("padded-effect", "Effect: ' Allow '\nAction: iam:CreateRole\nResource: '*'"),
+        ("opaque-effect", "Effect: !Ref Effect\nAction: iam:CreateRole\nResource: '*'"),
+        (
+            "padded-pattern",
+            "Effect: Allow\nAction: [' iam:CreateRole ']\nResource: '*'",
+        ),
+        (
+            "action-single-char-wildcard",
+            "Effect: Allow\nAction: ['iam:CreateRol?']\nResource: '*'",
+        ),
+    ],
+)
+def test_gate_catches_not_action_grants(
+    case: str, statement: str, tmp_path: Path
+) -> None:
+    """Issue #1767: an ``Allow`` with ``NotAction`` grants all it does not exclude."""
+    assert _scan(root=_probe_statement(tmp_path, statement)), (
+        f"{case!r} grants an IAM mutation action and was NOT caught"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case,statement",
+    [
+        ("excludes-all-of-iam", "Effect: Allow\nNotAction: ['iam:*']\nResource: '*'"),
+        ("excludes-everything", "Effect: Allow\nNotAction: ['*']\nResource: '*'"),
+        (
+            "case-insensitive",
+            "Effect: Allow\nNotAction: ['IAM:*', 's3:*']\nResource: '*'",
+        ),
+        (
+            "question-mark-wildcard",
+            "Effect: Allow\nNotAction: ['iam:?*']\nResource: '*'",
+        ),
+        (
+            "excluded-on-every-leg",
+            "Effect: Allow\nNotAction:\n  - !If [C, 'iam:*', '*']\nResource: '*'",
+        ),
+        (
+            "deny-is-not-a-grant",
+            "Effect: Deny\nNotAction: [kms:Decrypt]\nResource: '*'",
+        ),
+        (
+            "deny-on-every-leg",
+            "Effect: !If [C, Deny, Deny]\nAction: iam:CreateRole\nResource: '*'",
+        ),
+        (
+            "no-value-action-leg",
+            "Effect: Allow\nAction: [s3:GetObject, !If [C, iam:GetRole, !Ref AWS::NoValue]]\nResource: '*'",
+        ),
+        ("padded-exclusion", "Effect: Allow\nNotAction: [' iam:* ']\nResource: '*'"),
+        (
+            "long-form-no-value",
+            "Effect: Allow\nAction: [s3:GetObject, {Ref: AWS::NoValue}]\nResource: '*'",
+        ),
+        (
+            "read-wildcard",
+            "Effect: Allow\nAction: ['iam:Get*', 'iam:List*']\nResource: '*'",
+        ),
+    ],
+)
+def test_gate_accepts_not_action_that_excludes_iam_mutation(
+    case: str, statement: str, tmp_path: Path
+) -> None:
+    """The other direction: a ``NotAction`` that excludes IAM grants no mutation.
+
+    The reader used to return ``NotAction`` entries as granted actions, so
+    ``NotAction: [iam:*]`` was reported as granting ``iam:*``.
+    """
+    assert not _scan(root=_probe_statement(tmp_path, statement)), (
+        f"{case!r} grants no IAM mutation action but was reported"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case,statement,reported",
+    [
+        (
+            "not-resource",
+            "Effect: Allow\nAction: iam:PassRole\nNotResource: arn:aws:iam::123456789012:role/x",
+            True,
+        ),
+        ("not-action", "Effect: Allow\nNotAction: ['s3:*']\nResource: '*'", True),
+        (
+            "action-wildcard",
+            "Effect: Allow\nAction: ['iam:Pass*']\nResource: '*'",
+            True,
+        ),
+        ("opaque-action", "Effect: Allow\nAction: !Ref Verbs\nResource: '*'", True),
+        (
+            "allow-on-second-leg",
+            "Effect: !If [C, Deny, Allow]\nAction: iam:PassRole\nResource: '*'",
+            True,
+        ),
+        (
+            "not-resource-star-grants-nothing",
+            "Effect: Allow\nAction: iam:PassRole\nNotResource: '*'",
+            False,
+        ),
+        (
+            "not-action-excludes-pass-role",
+            "Effect: Allow\nNotAction: ['iam:PassRole', 'iam:Create*', 'iam:Put*', "
+            "'iam:Attach*', 'iam:Update*', 'iam:Set*', 'iam:Add*', "
+            "'iam:DeleteRolePermissionsBoundary']\nResource: '*'",
+            False,
+        ),
+        (
+            "not-action-on-one-role",
+            "Effect: Allow\nNotAction: ['s3:*']\nResource: arn:aws:iam::123456789012:role/x",
+            False,
+        ),
+    ],
+)
+def test_pass_role_gate_reads_not_action_and_not_resource(
+    case: str, statement: str, reported: bool, tmp_path: Path
+) -> None:
+    """``NotResource`` applies to every resource it does not name.
+
+    So ``iam:PassRole`` with ``NotResource`` can pass any role but the listed
+    ones, and a ``NotAction`` that does not exclude ``iam:PassRole`` grants it.
+    """
+    root = _probe_statement(tmp_path, statement)
+    assert bool(_wildcard_pass_role(root=root)) is reported, case
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "pattern,action,matches",
+    [
+        ("iam:*", "iam:createrole", True),
+        ("IAM:CreateRole", "iam:createrole", True),
+        ("iam:Create*", "iam:createrole", True),
+        ("iam:CreateRol?", "iam:createrole", True),
+        ("*", "iam:createrole", True),
+        ("iam:CreateRole*", "iam:createrole", True),
+        ("iam:Create", "iam:createrole", False),
+        ("iam:CreateRol?", "iam:createroles", False),
+        ("iam:[c]*", "iam:createrole", False),
+        ("iam:.*", "iam:createrole", False),
+        ("s3:*", "iam:createrole", False),
+    ],
+)
+def test_iam_pattern_matching(pattern: str, action: str, matches: bool) -> None:
+    """IAM's wildcard rule: ``*`` and ``?`` only, case-insensitive, whole string."""
+    assert _iam_pattern_matches(pattern, action) is matches
+
+
 @pytest.mark.unit
 def test_pass_role_gate_catches_a_wildcard(tmp_path: Path) -> None:
     """The PassRole ratchet must be able to fail.
@@ -531,6 +1229,286 @@ def test_pass_role_gate_accepts_a_scoped_grant(tmp_path: Path) -> None:
     )
     assert not _wildcard_pass_role(root=tmp_path)
     assert not _scan(root=tmp_path)
+
+
+_ACCOUNT_ROLES = 'Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*"'
+_BEDROCK_ONLY = (
+    "Condition:\n  StringEquals:\n"
+    '    iam:PassedToService: !Sub "bedrock.${AWS::URLSuffix}"'
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case,statement,reported",
+    [
+        # The shape #1771 reported: every role in the account, no condition.
+        (
+            "account-roles-sub",
+            f"Effect: Allow\nAction: iam:PassRole\n{_ACCOUNT_ROLES}",
+            True,
+        ),
+        (
+            "account-roles-sub-list-form",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n"
+            '  - !Sub ["arn:${AWS::Partition}:iam::${Acct}:role/*", {Acct: !Ref AWS::AccountId}]',
+            True,
+        ),
+        (
+            "fn-if-inside-a-list-entry",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n  - !If\n    - C\n    - !GetAtt R.Arn\n"
+            '    - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*"',
+            True,
+        ),
+        (
+            "list-form-named-role",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n"
+            '  - !Sub ["arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${N}", {N: !Ref KbRole}]',
+            False,
+        ),
+        (
+            "list-form-literal-star",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n"
+            '  - !Sub ["arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${N}", {N: "*"}]',
+            True,
+        ),
+        (
+            "account-roles-literal",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:iam::123456789012:role/*",
+            True,
+        ),
+        (
+            "any-account",
+            "Effect: Allow\nAction: iam:PassRole\nResource: 'arn:*:iam::*:*'",
+            True,
+        ),
+        (
+            "second-entry-of-a-list",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n  - !GetAtt R.Arn\n"
+            '  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*"',
+            True,
+        ),
+        (
+            "behind-an-fn-if",
+            "Effect: Allow\nAction: iam:PassRole\nResource: !If\n  - C\n  - !GetAtt R.Arn\n"
+            '  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*"',
+            True,
+        ),
+        # A condition on the receiving service does not exempt it: the grant
+        # still covers every role, and passing every role to one service
+        # (Lambda, CloudFormation) is still an escalation path.
+        (
+            "account-roles-bedrock-only",
+            f"Effect: Allow\nAction: iam:PassRole\n{_ACCOUNT_ROLES}\n{_BEDROCK_ONLY}",
+            True,
+        ),
+        (
+            "account-roles-lambda-only",
+            f"Effect: Allow\nAction: iam:PassRole\n{_ACCOUNT_ROLES}\n"
+            "Condition:\n  StringEquals:\n    iam:PassedToService: lambda.amazonaws.com",
+            True,
+        ),
+        (
+            "star-with-condition",
+            f"Effect: Allow\nAction: iam:PassRole\nResource: '*'\n{_BEDROCK_ONLY}",
+            True,
+        ),
+        (
+            "arn-star-with-condition",
+            f"Effect: Allow\nAction: iam:PassRole\nResource: 'arn:*'\n{_BEDROCK_ONLY}",
+            True,
+        ),
+        # Other spellings of every role.
+        (
+            "fn-join",
+            "Effect: Allow\nAction: iam:PassRole\nResource: !Join\n  - ''\n"
+            "  - ['arn:', !Ref AWS::Partition, ':iam::', !Ref AWS::AccountId, ':role/*']",
+            True,
+        ),
+        (
+            "account-parameter",
+            "Effect: Allow\nAction: iam:PassRole\n"
+            'Resource: !Sub "arn:${AWS::Partition}:iam::${AcctParam}:role/*"',
+            True,
+        ),
+        (
+            "list-form-account-from-getatt",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n"
+            '  - !Sub ["arn:${AWS::Partition}:iam::${A}:role/*", {A: !GetAtt X.AccountId}]',
+            True,
+        ),
+        (
+            "join-service-parameter",
+            "Effect: Allow\nAction: iam:PassRole\nResource: !Join\n  - ':'\n"
+            "  - ['arn', !Ref AWS::Partition, !Ref Svc, '', !Ref AWS::AccountId, 'role/*']",
+            True,
+        ),
+        (
+            "fn-if-inside-a-join-part",
+            "Effect: Allow\nAction: iam:PassRole\nResource: !Join\n  - ''\n"
+            "  - ['arn:aws:iam::123456789012:role/', !If [C, x, '*']]",
+            True,
+        ),
+        (
+            "fn-if-inside-a-sub-variable",
+            "Effect: Allow\nAction: iam:PassRole\nResource:\n"
+            '  - !Sub ["arn:aws:iam::123456789012:role/${N}", {N: !If [C, x, "*"]}]',
+            True,
+        ),
+        (
+            "govcloud-literal",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws-us-gov:iam::123456789012:role/*",
+            True,
+        ),
+        (
+            "question-marks",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:iam::123456789012:rol?/*",
+            True,
+        ),
+        (
+            "mixed-case-service",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:IAM::123456789012:role/*",
+            True,
+        ),
+        (
+            "service-parameter",
+            "Effect: Allow\nAction: iam:PassRole\n"
+            'Resource: !Sub "arn:${AWS::Partition}:${Svc}::${AWS::AccountId}:role/*"',
+            True,
+        ),
+        # Scoped resources are not every role.
+        (
+            "name-prefix",
+            "Effect: Allow\nAction: iam:PassRole\n"
+            'Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-*"',
+            False,
+        ),
+        (
+            "named-role-sub",
+            "Effect: Allow\nAction: iam:PassRole\n"
+            'Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${KbRole}"',
+            False,
+        ),
+        (
+            "whole-arn-from-a-parameter",
+            'Effect: Allow\nAction: iam:PassRole\nResource: !Sub "${KbRoleArn}"',
+            False,
+        ),
+        (
+            "another-service-star",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:s3:::*",
+            False,
+        ),
+        (
+            "short-prefix-not-six-fields",
+            "Effect: Allow\nAction: iam:PassRole\nResource: 'arn:*:role/zq*'",
+            False,
+        ),
+        (
+            "fn-if-every-leg-named",
+            "Effect: Allow\nAction: iam:PassRole\nResource: !Join\n  - ''\n"
+            "  - ['arn:aws:iam::123456789012:role/', !If [C, a, b]]",
+            False,
+        ),
+        (
+            "shared-suffix-is-a-scope",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:iam::123456789012:role/*1771",
+            False,
+        ),
+        (
+            "join-named-role",
+            "Effect: Allow\nAction: iam:PassRole\nResource: !Join\n  - ''\n"
+            "  - ['arn:', !Ref AWS::Partition, ':iam::', !Ref AWS::AccountId, ':role/', !Ref KbRole]",
+            False,
+        ),
+        (
+            "another-service",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:s3:::bucket/*",
+            False,
+        ),
+        # A prefix that one probe ARN happens to start with is still a prefix.
+        (
+            "short-name-prefix",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:iam::123456789012:role/z*",
+            False,
+        ),
+        (
+            "service-role-path",
+            "Effect: Allow\nAction: iam:PassRole\nResource: arn:aws:iam::123456789012:role/service-role/*",
+            False,
+        ),
+        # An every-role pattern on another action is not a PassRole grant.
+        (
+            "not-pass-role",
+            f"Effect: Allow\nAction: iam:GetRole\n{_ACCOUNT_ROLES}",
+            False,
+        ),
+    ],
+)
+def test_pass_role_gate_catches_every_role_patterns(
+    case: str, statement: str, reported: bool, tmp_path: Path
+) -> None:
+    """A resource pattern matching every role is as open as ``"*"`` for PassRole.
+
+    Issue #1771: ``role/*`` under ``!Sub`` passed, because only the literal
+    ``"*"`` was recognised. No condition exempts it; the remedy is to name the
+    role.
+    """
+    root = _probe_statement(tmp_path, statement)
+    assert bool(_wildcard_pass_role(root=root)) is reported, case
+
+
+@pytest.mark.unit
+def test_no_template_is_written_in_json() -> None:
+    """The walk reads YAML only, so it covers every template only while none is JSON.
+
+    A CloudFormation template in JSON would be read by neither rule here (nor by
+    ``scripts/discover_templates.sh``, which also matches ``*.yaml``/``*.yml``).
+    This asserts the premise over every tracked ``.json`` file rather than
+    widening the walk to thousands of non-template JSON files.
+    """
+    import json
+    import subprocess
+
+    listed = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "*.json",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout.decode()
+    names = [n for n in listed.split("\0") if n]
+    assert names, "git ls-files found no JSON at all; the premise was not checked"
+    templates = []
+    for name in names:
+        try:
+            doc = json.loads((REPO_ROOT / name).read_text())
+        except (ValueError, UnicodeDecodeError, OSError):
+            continue
+        if isinstance(doc, dict) and (
+            "AWSTemplateFormatVersion" in doc
+            or (
+                isinstance(doc.get("Resources"), dict)
+                and any(
+                    isinstance(r, dict)
+                    and str(r.get("Type", "")).startswith(("AWS::", "Custom::"))
+                    for r in doc["Resources"].values()
+                )
+            )
+        ):
+            templates.append(name)
+    assert not templates, (
+        f"JSON CloudFormation template(s) {templates}: the IAM gates here read "
+        "only YAML. Teach _templates() to read JSON before adding one."
+    )
 
 
 @pytest.mark.unit

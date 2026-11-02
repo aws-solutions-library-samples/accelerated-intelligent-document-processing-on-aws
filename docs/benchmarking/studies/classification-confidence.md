@@ -19,6 +19,20 @@ title: "Classification Confidence — Does the Score Carry Signal?"
 summarization disabled
 **Pricing:** `config_library/pricing.yaml` (rates as of 2026-08)
 
+> **The Nova 2 Lite `topk` column was re-measured on v0.6.13; the rest of this page was not.**
+> The v0.6.13 classification-variant benchmark
+> ([configuration guidance §5.6](../config-guidance.md#56-classification-granularity-modality-and-strategy))
+> ran the same 20 packets and 298 pages with Nova 2 Lite, `topk` and 3 candidates, and its
+> `page-both` variant is this page's configuration. It reads **page class accuracy 0.839**
+> (here 0.846), **calibration separation +0.033** (here +0.044), mean confidence 0.948 on
+> correct pages and 0.915 on wrong ones (here 0.947 and 0.903), a median of **0.95** on wrong
+> pages (unchanged), 6.0% of pages below 0.9 (here 8.4%) and $0.00095 of classification per
+> page (here $0.00090). So the conclusion below — the default classifies about as accurately
+> as Haiku 4.5 and its confidence barely separates right from wrong — still describes the
+> default on this corpus. Haiku 4.5 and the `off` control were not re-run, so their columns
+> are v0.6.7's. Data: `benchmarks/results/v0.6.13/clsvariants/summary.json`, key
+> `nova2lite-page-both`.
+
 Reproduce with:
 
 ```bash

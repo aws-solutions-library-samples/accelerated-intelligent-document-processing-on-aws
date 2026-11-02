@@ -1191,6 +1191,19 @@ def test_the_history_reads_each_scheduled_nights_digest_by_job_id(
 
 
 @pytest.mark.unit
+def test_a_schedule_that_never_runs_the_job_is_not_a_night(
+    gitlab: _FakeGitlab,
+) -> None:
+    """The weekly probe and region runs carry no story job: left out, not gaps."""
+    gitlab.answer("GET", PIPELINES, [_pipeline(29), _pipeline(28), _pipeline(27)])
+    gitlab.answer("GET", _jobs(29), [_job(2901)])
+    gitlab.answer("GET", _artifact(2901), raw=b"{}")
+    gitlab.answer("GET", _jobs(28), [_job(2801, name="integration_tests")])
+    gitlab.answer("GET", _jobs(27), [_job(2701, status="skipped")])
+    assert _digests(gitlab) == [(29, b"{}"), (27, None)]
+
+
+@pytest.mark.unit
 def test_a_night_that_cannot_be_read_is_a_gap_and_the_history_goes_on(
     gitlab: _FakeGitlab,
 ) -> None:

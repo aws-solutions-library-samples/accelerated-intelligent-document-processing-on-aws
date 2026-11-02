@@ -29,9 +29,9 @@ pip install -e "lib/idp_common_pkg[review_queues]"
 | `models.py` | Pydantic records for the table (`ReviewItemRecord`, `DraftRecord`, `HistoryEntry`), `StatusObject`, `ReviewDecision`, `CallerContext` |
 | `keys.py` | Table key layout and the opaque list cursors |
 | `store.py` | `ReviewStore`: every read and write of `HITLTable`, all conditional on the item `Version` |
-| `annotators.py` | Who the Annotators are: the Cognito `Annotator` group's members (`annotator_emails`, behind `listAnnotators`) and one user's groups (`cognito_user_lookup`, `is_annotator`), used by both assignment paths |
+| `annotators.py` | Who the Annotators are: the Cognito `Annotator` group's members (`annotator_emails`, behind `listAnnotators`) and one user's groups (`cognito_user_lookup`, `is_annotator`), used by both assignment paths. Only Annotators are assigned work; Reviewers claim it |
 | `queue_defs.py` | `QueueDefinition` and `QueueDefStore`: the system-wide queues (`PK=QDEF`, `SK=Q#<id>`), each with an `enabled` switch, cached for 30 s; the Default queue is seeded, enabled, whenever it is missing, and a stored Default is never overwritten |
-| `directory.py` | `QueueDirectory`: which queues exist and who may work them (Admins every queue; Annotators those whose `eligible_annotators` is empty or names them), failing closed |
+| `directory.py` | `QueueDirectory`: which queues exist and who may work them (Admins and Reviewers every queue; Annotators only those whose `eligible_annotators` names them, so an empty list means no Annotators), failing closed |
 | `reasons.py` | `build_reasons`: why a document is held (its sections' `confidence_threshold_alerts`, and in BDA mode a blueprint confidence under `hitl.confidence_threshold`); reads no S3 |
 | `regrouping.py` | `regroup_refusal`: who may change the page grouping of a document in review (only the holder of its `CLAIMED` item). Used by `updateDocumentSections` |
 | `routing.py` | `review_mode` (the `hitl.enabled` and Default-queue gate) and `route_for_review`: the one routing function both ProcessResults steps call |
@@ -97,7 +97,8 @@ In queue mode:
 - **Reasons.** Each of a section's `confidence_threshold_alerts` (computed by
   assessment or extraction in Pipeline mode, and by BDA processing in BDA mode, with
   the field's `x-aws-idp-confidence-threshold` and otherwise
-  `hitl.confidence_threshold`) is a `low_confidence` reason named by its path
+  `hitl.confidence_threshold`, and never raised for a field with no extracted
+  value, see `idp_common.assessment.presence`) is a `low_confidence` reason named by its path
   (`Address.City`, `Rows[0].Amount`), with the alert's confidence and threshold. In
   BDA mode a matched blueprint under `hitl.confidence_threshold` is a
   `blueprint_confidence` reason, and so is a matched blueprint whose confidence is
@@ -107,7 +108,9 @@ In queue mode:
   true), so a reprocess that reloads the document is held again. A section whose segment matched no blueprint is
   unscored too but is not flagged, so it is not held, as legacy HITL does not mark
   it. So routing agrees exactly with the alerts users
-  see, and it reads nothing from S3. A malformed alert is skipped. The module must
+  see, and it reads nothing from S3. A malformed alert is skipped. A section's
+  `missing_required_fields` are not reasons and nothing here reads them; they are
+  the input for routing on missing data, which does not exist yet. The module must
   not import `idp_common.assessment`: the Pipeline ProcessResults Lambda installs
   only the `review_queues` extra. Up to 20 reasons are stored per item, worst gap
   first; `reason_count` keeps the total.
@@ -149,10 +152,42 @@ document, so it finishes with the new grouping.
   `listReviewQueues`, `createReviewQueue`, `updateReviewQueue` and
   `deleteReviewQueue`; the web UI doesn't offer `createReviewQueue`. Only Default can't be deleted (`PROTECTED_QUEUE`); an
   Escalation queue an earlier release seeded is an ordinary queue.
-  `ReviewQueueService.delete_queue` moves a queue's `OPEN` and `CLAIMED` items to
-  Default with `move` (unassigned; an assignee is told), re-points its `HOLDING`
-  items at Default, then deletes the definition. It refuses with
-  `QUEUE_FINALIZING` while one of the queue's items is `FINALIZING`.
+  `ReviewQueueService.delete_queue` refuses with `QUEUE_FINALIZING` while one of
+  the queue's items is `FINALIZING`, then deletes the definition, and only then
+  moves the queue's `OPEN` and `CLAIMED` items to Default with `move` (unassigned;
+  an assignee is told) and re-points its `HOLDING` items at Default. So a delete
+  the store refuses (`QUEUE_CHANGED`, or a fault) has moved nothing. A run that
+  stops part-way leaves items in a queue that is no longer defined, which the rest
+  of the service handles (a `HOLDING` item activates into Default; the overview
+  lists the queue); deleting it again moves the rest, and the web UI offers Delete
+  on such a queue while it still holds items.
+- Every definition carries a `version` (`Version` in the table), which
+  `QueueDefStore.put` sets to 1 on create and bumps by one on every update; a
+  definition stored before versions existed reads as 0, and so does one whose
+  `Version` is not a non-negative whole number (logged as
+  `queue_definition_version_invalid`): it stays listed. A write at version 0
+  matches a missing `Version`, one that is not a number, and a number of 0 or
+  below, and stores a well-formed version. A positive fraction is not matched,
+  because a condition expression cannot test for one, so such a queue stays listed
+  but is refused as `QUEUE_CHANGED`; nothing here writes one. `delete` keeps the last
+  version under `QDEFGONE` / `Q#<id>`, and a create under that id continues from it,
+  so a version never repeats for an id. Both are single transactions conditional on
+  the versions they read (the definition's for a delete, the retired one for a
+  create), retried a few times when a concurrent write moves one; a create or
+  delete that cannot settle is refused with `QUEUE_CHANGED`. Given `expected_version`,
+  an update is a conditional write and is refused with `QUEUE_CHANGED`
+  (`ReviewConflict`) when the stored version has moved on, so two Admins' saves
+  built from one read cannot silently overwrite each other; a missing queue is still
+  `UNKNOWN_QUEUE`. Without it, an update replaces what is stored, retrying a few
+  times if a write lands between its consistent read and its put.
+  `updateReviewQueue` passes the input's optional `version` through, or, when an
+  older client sends none, the version of its own consistent read
+  (`read_current`): the client's fields replace what that read found, and it is
+  refused only if another write lands in between, which protects the fields the
+  resolver merges from the stored definition. So the store's own unversioned path
+  is not reached through the API. `listReviewQueues` calls `list(fresh=True)`, a
+  strongly consistent read past the 30 s cache, since it is what an Admin edits
+  from.
 - `create`/`updateReviewQueue` take `enabled`. A new queue is enabled; an update
   that leaves it out keeps the stored value, and a definition stored without it
   reads as enabled. Queues have no confidence threshold: a `confidenceThreshold`

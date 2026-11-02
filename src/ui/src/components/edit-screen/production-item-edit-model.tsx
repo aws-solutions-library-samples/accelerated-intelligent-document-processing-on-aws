@@ -75,7 +75,7 @@ export const useProductionItemEditModel = (
   const adapter = useProductionItemEdit(objectKey, seed);
   const { detail, loadError, reload } = adapter;
   const { user, setErrorMessage, setSuccessMessage } = useAppContext();
-  const { isAdmin, isAnnotator, canWrite } = useUserRole();
+  const { isAdmin, isQueueWorker, canWrite } = useUserRole();
   const reviewWork = useOptionalReviewWork();
   const leavePath = useLeavePath();
   const [searchParams] = useSearchParams();
@@ -189,7 +189,7 @@ export const useProductionItemEditModel = (
   // An Admin takes over an item assigned to someone else before editing it.
   const canTakeOver = isAdmin && assigned && !assignedToMe;
   // An Annotator (not an Admin, whose edits assign the item) claims an item waiting for review.
-  const canClaim = isAnnotator && !isAdmin && item.state === QueueItemState.OPEN;
+  const canClaim = isQueueWorker && !isAdmin && item.state === QueueItemState.OPEN;
   // Summary and Use as Evaluation Baseline are about the finished document: only once its
   // review is complete and the corrections have been applied.
   const finished = item.state === QueueItemState.COMPLETE;

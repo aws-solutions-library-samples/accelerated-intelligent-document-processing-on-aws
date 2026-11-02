@@ -21,10 +21,12 @@ logger = logging.getLogger(__name__)
 
 
 def apply_forced_document_class(document) -> Optional[str]:
-    """Apply ``document.forced_document_class``, if it is set.
+    """Apply ``document.forced_sections`` or ``document.forced_document_class``.
 
-    Returns the class applied, or ``None`` when there was nothing to force (no
-    class requested, or the document has no pages yet).
+    Returns what was forced — the class for a whole document, or the classes of a
+    forced grouping in section order — or ``None`` when there was nothing to force
+    (neither is set, or the document has no pages yet). A forced grouping takes
+    precedence; see :func:`_apply_forced_sections`.
 
     Does **two** things, and the second is easy to overlook: it stamps the class
     onto every page *and* builds the single section that covers them. Stamping
@@ -43,8 +45,13 @@ def apply_forced_document_class(document) -> Optional[str]:
     here has already been classified once — wrongly, which is why a human
     intervened.
     """
+    if not getattr(document, "pages", None):
+        return None
+    grouping = getattr(document, "forced_sections", None)
+    if grouping:
+        return _apply_forced_sections(document, grouping)
     forced = getattr(document, "forced_document_class", None)
-    if not forced or not getattr(document, "pages", None):
+    if not forced:
         return None
 
     for page in document.pages.values():
@@ -70,3 +77,59 @@ def apply_forced_document_class(document) -> Optional[str]:
         f"them; classification will be skipped"
     )
     return forced
+
+
+def _apply_forced_sections(document, encoded: str) -> str:
+    """Build exactly the sections a forced grouping names, without classifying.
+
+    Test Studio's section-scoped re-extract sends the document's whole ground-truth
+    grouping, with one section's class corrected, so that every other section keeps
+    its pages, its class and its id. Forcing only the corrected section's pages and
+    classifying the rest would let the model regroup the others, and the review
+    flow keys on this run's copy of the document section by section.
+
+    Each section carries its ground truth's 0-based page indices as
+    ``attributes["page_indices"]``, which extraction writes out as
+    ``split_document.page_indices``, so the harvested label records the same pages
+    in the same reading order. Pipeline page ids are 1-based (index + 1).
+
+    Raises ``ValueError`` when the grouping is malformed or names a page the
+    document does not have. Failing the document is the only safe answer: the
+    alternative, classifying it, is the rewrite of every section this exists to
+    avoid. A page no section names keeps no class, and the classification step
+    still skips the model because something was forced.
+    """
+    from idp_common.forced_sections import decode_forced_sections
+    from idp_common.models import Section
+
+    grouping = decode_forced_sections(encoded) or []
+    sections = []
+    for entry in grouping:
+        page_ids = [str(index + 1) for index in entry["page_indices"]]
+        missing = [pid for pid in page_ids if pid not in document.pages]
+        if missing:
+            raise ValueError(
+                f"Forced section '{entry['section_id']}' names page(s) "
+                f"{', '.join(missing)}, which {getattr(document, 'id', 'the document')} "
+                f"does not have ({len(document.pages)} page(s))"
+            )
+        for pid in page_ids:
+            page = document.pages[pid]
+            page.classification = entry["classification"]
+            page.confidence = 1.0
+        sections.append(
+            Section(
+                section_id=entry["section_id"],
+                classification=entry["classification"],
+                confidence=1.0,
+                page_ids=page_ids,
+                attributes={"page_indices": list(entry["page_indices"])},
+            )
+        )
+    document.sections = sections
+    applied = ", ".join(entry["classification"] for entry in grouping)
+    logger.info(
+        f"Applied a forced grouping of {len(sections)} section(s) ({applied}) to "
+        f"{getattr(document, 'id', '<unknown>')}; classification will be skipped"
+    )
+    return applied

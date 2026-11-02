@@ -17,6 +17,7 @@ query ListDocuments($startDateTime: AWSDateTime, $endDateTime: AWSDateTime, $lim
       HITLReviewedBy
       PageCount
       ConfidenceAlertCount
+      MissingRequiredFieldCount
       ProcessingIssueCount
     }
     nextToken

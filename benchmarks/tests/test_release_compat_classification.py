@@ -41,6 +41,8 @@ from idp_common.config.migrations import migrate_config  # noqa: E402
 from idp_common.config.models import IDPConfig  # noqa: E402
 
 PREVIOUS_RELEASE = "v0.6.12"
+# The first release whose own models declare the nested v0.9 blocks.
+NESTED_RELEASE = "v0.6.13"
 
 
 def _cell_config(cell_id, **axes):
@@ -286,6 +288,95 @@ def test_a_flat_key_the_release_does_not_declare_fails(built, release_lib):
     assert any(e.startswith("classification.granularity ") for e in errors), errors
 
 
+# --- against the first release that reads the nested layout (#1674) ----------
+
+needs_nested_release = pytest.mark.skipif(
+    not _tag_available(NESTED_RELEASE),
+    reason=f"git tag {NESTED_RELEASE} is not in this clone (git fetch --tags)",
+)
+
+
+@pytest.fixture(scope="module")
+def nested_release_lib():
+    return release_model_check.extract_release_lib(NESTED_RELEASE)
+
+
+@needs_release
+@needs_nested_release
+def test_only_the_nested_release_reads_the_nested_layout(
+    release_lib, nested_release_lib
+):
+    assert release_model_check.reads_nested_classification(release_lib) is False
+    assert release_model_check.reads_nested_classification(nested_release_lib) is True
+
+
+@needs_nested_release
+@pytest.mark.parametrize(
+    "cid", ["split-disabled", "split-llm-packet", "confidence-off"]
+)
+def test_nested_config_passes_against_the_nested_release(
+    built, nested_release_lib, cid
+):
+    assert release_model_check.check_config(built[cid], nested_release_lib) == []
+
+
+@needs_nested_release
+def test_a_nested_key_the_nested_release_does_not_declare_fails(
+    built, nested_release_lib
+):
+    cfg = copy.deepcopy(built["split-disabled"])
+    cfg["classification"]["document_shape"]["no_such_key"] = 1
+    errors = release_model_check.check_config(cfg, nested_release_lib)
+    assert any(
+        e.startswith("classification.document_shape.no_such_key ") for e in errors
+    ), errors
+
+
+@needs_nested_release
+def test_the_flat_copy_is_refused_against_the_nested_release_in_one_line(
+    built, nested_release_lib
+):
+    compat, _ = classification_flat.with_flat_classification(built["split-disabled"])
+    errors = release_model_check.check_config(compat, nested_release_lib)
+    assert len(errors) == 1 and "flat key" in errors[0], errors
+
+
+@needs_nested_release
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("model", "us.amazon.nova-micro-v1:0"),
+        ("temperature", 0.9),
+        ("sectionSplitting", "page"),
+        ("task_prompt", "OVERRIDE"),
+    ],
+)
+def test_a_single_flat_key_is_refused_against_the_nested_release(
+    built, nested_release_lib, key, value
+):
+    """Without classificationMethod the release still converts the key on read and
+    uses it instead of the nested value, and it never shows up as dropped."""
+    cfg = copy.deepcopy(built["split-disabled"])
+    cfg["classification"][key] = value
+    errors = release_model_check.check_config(cfg, nested_release_lib)
+    assert len(errors) == 1 and key in errors[0], errors
+
+
+@needs_nested_release
+def test_prepare_native_configs_passes_against_the_nested_release(built, tmp_path):
+    """The shape #1674 reported: the run stopped on every cell."""
+    pytest.importorskip("boto3")
+    run_matrix = harness_module("run_matrix")
+    cells = [
+        _write_cell(tmp_path, "bench-split-disabled", built["split-disabled"]),
+        _write_cell(tmp_path, "bench-packet", built["split-llm-packet"]),
+    ]
+    prepared, problems = run_matrix.prepare_native_configs(cells, NESTED_RELEASE)
+    assert problems == []
+    assert prepared["bench-split-disabled"] == built["split-disabled"]
+    assert prepared["bench-packet"] == built["split-llm-packet"]
+
+
 # --- run_matrix stops on a problem --------------------------------------------
 
 
@@ -308,6 +399,9 @@ def test_prepare_native_configs_reports_problems_and_prepares_the_rest(
         _write_cell(tmp_path, "bench-dropped", built["split-llm"]),
     ]
     monkeypatch.setattr(release_model_check, "extract_release_lib", lambda tag: "/x")
+    monkeypatch.setattr(
+        release_model_check, "reads_nested_classification", lambda lib_root: False
+    )
 
     def fake_check(cfg, lib_root):
         # The prepared copy is what gets checked; fail one version only.
@@ -324,6 +418,100 @@ def test_prepare_native_configs_reports_problems_and_prepares_the_rest(
         p.startswith("bench-split:") and "split-then-classify" in p for p in problems
     )
     assert any(p.startswith("bench-dropped:") for p in problems)
+
+
+def test_prepare_native_configs_uploads_the_file_unchanged_to_a_nested_reader(
+    built, tmp_path, monkeypatch
+):
+    """#1674: a release that reads the nested blocks (v0.6.13 onward) gets the
+    cell's file as generated. Adding the flat keys there made every cell fail the
+    check, and would have let the flat keys override the nested blocks on read."""
+    pytest.importorskip("boto3")
+    run_matrix = harness_module("run_matrix")
+    split_then_classify = copy.deepcopy(built["split-llm"])
+    split_then_classify["classification"]["strategy"] = "split_then_classify"
+    cells = [
+        _write_cell(tmp_path, "bench-ok", built["split-disabled"]),
+        _write_cell(tmp_path, "bench-split", split_then_classify),
+    ]
+    monkeypatch.setattr(release_model_check, "extract_release_lib", lambda tag: "/x")
+    monkeypatch.setattr(
+        release_model_check, "reads_nested_classification", lambda lib_root: True
+    )
+    checked = []
+
+    def fake_check(cfg, lib_root):
+        checked.append(cfg)
+        return []
+
+    monkeypatch.setattr(release_model_check, "check_config", fake_check)
+    prepared, problems = run_matrix.prepare_native_configs(cells, NESTED_RELEASE)
+    assert problems == []
+    # A split-then-classify cell is not refused: this release has the strategy.
+    assert prepared == {
+        "bench-ok": built["split-disabled"],
+        "bench-split": split_then_classify,
+    }
+    assert checked == list(prepared.values())
+
+
+# --- reads_nested_classification, against synthetic release trees -------------
+
+
+def _fake_release(root, classification_fields):
+    """A minimal ``idp_common`` whose ClassificationConfig declares the given
+    fields; ``"name:alias"`` declares ``name`` under ``alias``."""
+    pkg = root / "idp_common"
+    (pkg / "config").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "config" / "__init__.py").write_text("")
+    body = "\n".join(
+        f"    {name}: object = None"
+        if ":" not in name
+        else f"    {name.split(':')[0]}: object = Field(None, alias={name.split(':')[1]!r})"
+        for name in classification_fields
+    )
+    (pkg / "config" / "models.py").write_text(
+        "from pydantic import BaseModel, Field\n\n"
+        "class ClassificationConfig(BaseModel):\n"
+        f"{body or '    pass'}\n\n"
+        "class IDPConfig(BaseModel):\n"
+        "    classification: ClassificationConfig = ClassificationConfig()\n"
+    )
+    return str(root)
+
+
+@pytest.mark.parametrize(
+    "fields,expected",
+    [
+        (list(classification_flat.V09_BLOCKS) + ["model"], True),
+        (["model", "classificationMethod", "sectionSplitting"], False),
+        # Only some of the blocks: not a nested reader, so the flat keys are kept
+        # and check_config reports what the release drops.
+        ([b for b in classification_flat.V09_BLOCKS if b != "document_shape"], False),
+        # A block declared under an alias is read like the field name.
+        (
+            [b for b in classification_flat.V09_BLOCKS if b != "document_shape"]
+            + ["shape:document_shape"],
+            True,
+        ),
+    ],
+    ids=["nested", "flat", "partial", "alias"],
+)
+def test_reads_nested_classification_reads_the_target_release_model(
+    tmp_path, fields, expected
+):
+    lib_root = _fake_release(tmp_path, fields)
+    assert release_model_check.reads_nested_classification(lib_root) is expected
+
+
+def test_classification_fields_refuses_a_tree_without_idp_common(tmp_path):
+    # Either nothing imports, or an installed idp_common from elsewhere does and
+    # the provenance check refuses it; both must raise rather than answer.
+    with pytest.raises(
+        RuntimeError, match="cannot read the classification model|resolved to"
+    ):
+        release_model_check.classification_fields(str(tmp_path))
 
 
 def test_native_upload_refuses_an_unprepared_config():
