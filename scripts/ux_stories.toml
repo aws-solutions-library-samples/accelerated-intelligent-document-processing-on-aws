@@ -68,7 +68,7 @@ description = "a shipped sample waiting in the Default queue under a HITL profil
 [fixtures.test-set-review-queue]
 description = "a test set whose queue lists the review stack's Annotator, with documents nobody holds"
 
-# ---- p0: 7 stories, 13 flows --------------------------------------------------------
+# ---- p0 ----------------------------------------------------------------------------
 
 [[stories]]
 id = "find-where-to-start"
@@ -190,7 +190,7 @@ rbac = "Upload documents"
 docs = ["web-ui.md#upload-documents"]
 terms = ["upload documents"]
 
-# ---- p1: 20 stories, 26 flows --------------------------------------------------------
+# ---- p1 ----------------------------------------------------------------------------
 
 [[stories]]
 id = "read-document-history"
@@ -456,7 +456,7 @@ as = { platform-admin = "allowed" }
 tier = "p1"
 since = "0.6.13"
 origin = "changelog"
-claims = [{ lead = "HITL review queues, worked by Annotators." }]
+claims = [{ lead = "HITL review queues, worked by Reviewers and Annotators." }]
 
 [stories.match]
 docs = ["review-queues.md#turning-review-queues-on"]

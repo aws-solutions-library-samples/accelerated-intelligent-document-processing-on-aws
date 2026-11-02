@@ -161,7 +161,9 @@ py scripts\ux_test_session.py setup <stack> --group Annotator --long-lived --key
 Merge each printed `persona` entry into the JSON object, base64 it, and export that.
 An Annotator, and any persona given `--profiles`, is created through the stack's own
 user management, which writes the users-table row an Annotator and a profile limit
-are read from. A persona is deleted only deliberately, with
+are read from. That path applies the stack's `AllowedSignUpEmailDomain`, so on a
+stack that sets one, the persona's `example.invalid` address is refused and the
+command stops naming the domain. A persona is deleted only deliberately, with
 `python3 scripts/ux_test_session.py teardown <stack> --email <email> --long-lived --region <region>`.
 
 **Credentials by host.** An SSO or IAM-user session cannot re-assume its own role,
@@ -680,7 +682,7 @@ not redacted. Its operator, not a story run, does these once:
 | `feature-platform` | the platform is on by default; install **Sample: Health Insurance Review** from **Extensions → Browse catalog**. Its pipeline hook is what `change-hook-update-setting` looks for, and installing it never changes the active configuration | the two extension stories |
 | `review-queue-item` | a profile with HITL on: `idp-cli config-download --stack-name idp-ux-nightly --config-profile default --format full --output hitl.yaml`, set `hitl.enabled: true` and `hitl.confidence_threshold: 0.99` so the sample raises alerts, and `idp-cli config-upload --stack-name idp-ux-nightly --config-file hitl.yaml --config-profile ux-fixture-hitl`; list both Annotator personas in the Default queue's **Eligible Annotators** (**Review Studio › Review Management**, the queue's **Settings**); then `idp-cli process --stack-name idp-ux-nightly --dir samples --file-pattern lending_package.pdf --no-recursive --batch-id ux-fixture-hitl-pending --config-profile ux-fixture-hitl`, which leaves it `HITL_IN_PROGRESS`. `default` keeps HITL off, so no other story's document is held | `find-my-review-work`, `take-a-review`, `assign-review-work` |
 | `assigned-review-item` | the same with `--batch-id ux-fixture-hitl-assigned`, then **Assign to…** the Annotator persona from the Default queue's page | `why-is-it-in-review`, `finish-a-review`, `hand-back-a-review`, `open-an-assignment`, `who-is-reviewing` |
-| `out-of-scope-review-item` | a second HITL profile, `ux-fixture-hitl-other`, uploaded the same way, and the same sample with `--batch-id ux-fixture-hitl-other --config-profile ux-fixture-hitl-other`: a queued document outside `Annotator-scoped`'s limit | the profile-limited Annotator's flows |
+| `out-of-scope-review-item` | a second HITL profile, `ux-fixture-hitl-other`, uploaded the same way, and the same sample with `--batch-id ux-fixture-hitl-other --config-profile ux-fixture-hitl-other`: a queued document outside `Annotator-scoped`'s limit. No verdict can fail on it: a limited Annotator shown it reaches the same verdict, and the leak surfaces only as a **Docs vs screen** note, because the docs say such an item is not listed | the profile-limited Annotator's flows |
 | `test-set-review-queue` | list the Annotator persona on a test set's queue, in **Review Management**'s Test Studio queues, the queue's **Settings** | `check-test-labels` |
 
 The HITL stories stop before they claim, assign, skip or finish anything, so these

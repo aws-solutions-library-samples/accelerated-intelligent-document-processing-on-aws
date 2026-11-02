@@ -378,6 +378,10 @@ _OVER_LIMIT_LINE = (
 )
 _NOT_RENDERED_LINE = "_The video of `{key}` could not be rendered._"
 _DROPPED_CAVEAT = "not run as {persona}: UX_TEST_PERSONAS has no {key} entry"
+_UNCONFIRMED = (
+    "so until another persona's page confirms the stack, a flow whose page shows "
+    "none keeps no video"
+)
 _SINCE_CAVEAT = (
     "the stack's version could not be read, so no story's `since` was checked"
 )
@@ -3157,6 +3161,12 @@ class StoryRun:
         when no attempt of this run has confirmed the stack yet: the facts it reads
         are noted for :meth:`stack_facts` when its socket audit is clean, and its
         browser is closed before ``flow`` starts.
+
+        It is tried at most once per run, whatever the outcome, so a failed sign-in
+        is not paid again before every such flow. A check that fails, or whose
+        socket audit is not clean, leaves the stack unconfirmed, and every such
+        flow of the run then has its video withheld, unless an attempt of another
+        group confirms the stack first.
         """
         if (
             flow.persona.group not in session.HIDDEN_DEPLOYMENT_INFO_GROUPS
@@ -3175,7 +3185,10 @@ class StoryRun:
             None,
         )
         if key is None:
-            self.say("stack check: no persona whose page shows the stack")
+            self.say(
+                "stack check: no persona whose page shows the stack, so a flow "
+                "whose page shows none keeps no video"
+            )
             return
         base = "/tmp" if os.path.isdir("/tmp") else None  # nosec B108 - see FlowSession
         run_dir = Path(tempfile.mkdtemp(prefix="ux-stack-check-", dir=base))
@@ -3188,7 +3201,7 @@ class StoryRun:
                 self._plan(key, f"stack check ({key})", run_dir, dismiss_welcome=True)
             ).facts
         except (signin.SignInError, *_STEP_FAILURES) as error:
-            self.say(f"stack check: {type(error).__name__}")
+            self.say(f"stack check: {type(error).__name__}, {_UNCONFIRMED}")
         finally:
             for step in (
                 browser.close_session,
@@ -3204,7 +3217,7 @@ class StoryRun:
         if facts is None:
             return
         if not audits or audits[-1].state != "clean":
-            self.say("stack check: socket audit not clean, so its facts are not used")
+            self.say(f"stack check: socket audit not clean, {_UNCONFIRMED}")
             return
         self.note_facts(facts)
         self.say(
@@ -3212,6 +3225,7 @@ class StoryRun:
         )
 
     def note_facts(self, facts: signin.PageFacts) -> None:
+        """Keep a page's facts: an attempt's, or the stack check's of another persona."""
         self.facts_seen.append(facts)
 
     def records(self, attempt: Attempt) -> bool:

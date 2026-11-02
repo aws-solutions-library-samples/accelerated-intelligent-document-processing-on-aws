@@ -150,7 +150,8 @@ VIDEO_LINE_RE = re.compile(
     r"^!\[UX test\]\(/uploads/[0-9a-f]{16,64}/[A-Za-z0-9._-]{1,128}\)$", re.M
 )
 
-#: One icon per outcome. An outcome outside this table is refused at parse time.
+#: One icon per outcome. An outcome outside this table is kept as
+#: UNRECOGNISED_OUTCOME and shown with UNRECOGNISED_ICON.
 OUTCOME_ICONS = {"works": "✅", "broken": "❌", "blocked": "⏭️", "not_covered": "⚪"}
 UNRECOGNISED_OUTCOME = "unrecognised"
 UNRECOGNISED_ICON = "❔"

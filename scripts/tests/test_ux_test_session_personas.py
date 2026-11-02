@@ -577,6 +577,19 @@ def test_the_users_row_is_found_by_its_email(monkeypatch):
 
 
 @pytest.mark.unit
+def test_a_stack_with_no_users_table_has_no_users_row(monkeypatch):
+    module = _load_module()
+
+    def fake_aws(*args: str, region: str | None = None) -> object:
+        raise AssertionError(f"no table to query, but ran aws {args}")
+
+    monkeypatch.setattr(module, "aws", fake_aws)
+
+    ctx = {**_CTX, "users_table": ""}
+    assert module._users_row_id(ctx, "x@example.invalid") is None
+
+
+@pytest.mark.unit
 def test_teardown_of_a_throwaway_user_needs_no_flag(monkeypatch):
     pool = _Pool()
     module = _module_with(pool, monkeypatch)

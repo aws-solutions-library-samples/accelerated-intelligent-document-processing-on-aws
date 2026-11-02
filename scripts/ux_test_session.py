@@ -258,7 +258,12 @@ def _user_management(ctx: dict, field: str, arguments: dict) -> object:
 
 
 def _users_row_id(ctx: dict, email: str) -> str | None:
-    """The ``userId`` of the users-table row holding ``email``, or None."""
+    """The ``userId`` of the users-table row holding ``email``, or None.
+
+    None too for a stack with no UsersTable, which holds no such row.
+    """
+    if not ctx.get("users_table"):
+        return None
     found = aws(
         "dynamodb",
         "query",
