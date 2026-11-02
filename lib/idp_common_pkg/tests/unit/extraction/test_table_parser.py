@@ -950,3 +950,13 @@ class TestLabelsBelowABlankHeader:
             ("_unnamed_0", "Ticker", "NAV")
         }
         assert [r["Ticker"] for r in _all_rows(result)] == ["AAAX", "BBBX"]
+
+    def test_one_over_wide_row_does_not_turn_the_recovery_off(self):
+        result = parse_markdown_tables(
+            _pages(
+                LABELS + "| Alpha Fund | AAAX | $1.00 | $9.99 |\n",
+                LABELS + "| Beta Fund | BBBX | $2.00 |\n",
+            )
+        )
+        assert result["columns"][1:] == ["Ticker", "NAV"]
+        assert [r["Ticker"] for r in _all_rows(result)] == ["AAAX", "BBBX"]

@@ -517,7 +517,11 @@ def _promote_header_rows(
         for i in filled:
             labels[i] = cells[i]
         consumed += 1
-    value_columns = _value_columns(data_lines[consumed:])
+    # Only the header's own columns: one over-wide OCR row (an extra trailing
+    # cell, truncated later) must not turn the recovery off for the fragment.
+    value_columns = {
+        i for i in _value_columns(data_lines[consumed:]) if i < len(labels)
+    }
     named = [c.strip().lower() for c in labels if c.strip()]
     if (
         not value_columns
