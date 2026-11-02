@@ -5016,7 +5016,7 @@ def remove_residual_resources_from_deleted_stacks(
 @click.option(
     "--features",
     default="min",
-    help="Feature set: 'min' (classification, extraction; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all', or one or more section names, comma-separated. An unknown section name is refused",
+    help="Feature set: 'min' (classification, extraction; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all' (every section except hitl, chat and rule_validation, which keep the deployment's own setting unless named), or one or more section names, comma-separated. An unknown section name is refused",
 )
 @click.option(
     "--output",

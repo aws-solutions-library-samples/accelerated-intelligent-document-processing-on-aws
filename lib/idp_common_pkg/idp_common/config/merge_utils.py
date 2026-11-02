@@ -44,7 +44,10 @@ VALID_PATTERNS = ["pattern-1", "pattern-2"]
 # not a section of its own: it lives in ``extraction.confidence``, so it comes with
 # ``extraction``. tests/unit/config/test_generated_template_validates.py derives the
 # sections from the defaults and fails on a name that is not one, and on a section
-# that neither ``all`` nor its ``AWAITING_DECISION`` set accounts for.
+# that neither ``all`` nor its ``EXCLUDED_FROM_ALL`` set accounts for. ``all``
+# leaves out ``hitl``, ``chat`` and ``rule_validation`` on purpose: copied at their
+# defaults and uploaded, they would switch those features on or off on a
+# deployment whose preset or profile set them differently (issue #1691).
 FEATURE_SETS = {
     "min": ["classification", "extraction", "classes"],
     "core": ["ocr", "classification", "extraction", "classes"],
