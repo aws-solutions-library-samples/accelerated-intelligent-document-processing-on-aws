@@ -5,11 +5,11 @@
 # Classification (minimal — single doc type for testing)
 # ============================================================================
 classification:
-  # No `one_stage.granularity` here on purpose, so this runs at the default
+  # No `combined.granularity` here on purpose, so this runs at the default
   # page granularity. The task prompt below asks for a `pages` array that
   # neither the page nor the packet parser reads, and the notebook using this
   # file does not classify, so the classification settings are placeholders.
-  one_stage:
+  combined:
     llm:
       model: us.anthropic.claude-sonnet-4-6
       temperature: '0'
@@ -26,8 +26,8 @@ classification:
         {DOCUMENT_TEXT}
 
         Return JSON: {"pages": [{"page_id": "1", "classification": "invoice", "confidence": 0.99}]}
-  two_stage:
-    boundary_detection:
+  split_then_classify:
+    splitting:
       llm:
         model: us.anthropic.claude-sonnet-4-6
         temperature: '0'

@@ -428,9 +428,9 @@ graph LR
     E --> F[Discovered Classes + Schemas]
 ```
 
-1. **Embed** — Each document's first page is rendered to an image and embedded as a vector using Amazon Bedrock (`us.cohere.embed-v4:0` by default)
+1. **Embed** — Each document's first page is rendered to an image and embedded as a vector using Amazon Bedrock (`us.cohere.embed-v4:0` by default; a stack deployed in an EU Region uses `eu.cohere.embed-v4:0` and one in Canada `global.cohere.embed-v4:0`, because the `us.` profile cannot be called from either — see [EU Region Model Support](eu-region-model-support.md))
 2. **Cluster** — Embeddings are clustered using KMeans with automatic K selection via silhouette analysis (scikit-learn). Clusters with fewer than `min_cluster_size` (default: 2) documents are filtered as noise.
-3. **Analyze** — For each cluster, a Strands agent with Claude (`us.anthropic.claude-sonnet-4-6`) examines sample document images and generates a classification name + JSON Schema definition
+3. **Analyze** — For each cluster, a Strands agent with Claude (`us.anthropic.claude-sonnet-4-6` by default; `eu.anthropic.claude-sonnet-4-6` in an EU Region) examines sample document images and generates a classification name + JSON Schema definition
 4. **Reflect** — The agent produces a Markdown reflection report reviewing all discovered classes, their relationships, and potential overlaps
 
 #### Supported File Types
@@ -1654,11 +1654,13 @@ BDA currently has limitations with complex nested structures that affect sync op
 }
 ```
 
-**Nested Arrays Not Supported:**
-Arrays within object definitions are not supported by BDA:
+A top-level object like `employee` can be written inline, as above, or under `$defs` and referenced with `$ref`. BDA itself accepts only the second form, so the sync converts an inline object into a blueprint definition and a reference to it. The field keeps its name in the blueprint either way.
+
+**Arrays of Objects Within Objects Not Supported:**
+BDA does not accept an array of objects inside an object definition:
 
 ```json
-// ❌ NOT SUPPORTED: Arrays within object definitions
+// ❌ NOT SUPPORTED: An array of objects within an object definition
 {
   "Employee": {
     "type": "object",
@@ -1679,6 +1681,22 @@ Arrays within object definitions are not supported by BDA:
   }
 }
 ```
+
+An array of plain values, such as `{"type": "array", "items": {"type": "string"}}`, is kept inside an object definition, as long as no top-level array uses that object as its items. BDA rejects an array nested inside an array's items, so in an object such as `Employee` above, which `employees` uses as its items, an array of plain values is dropped too. Each dropped field is reported as a warning for the class.
+
+**Characters BDA does not accept in descriptions:**
+BDA rejects a whole blueprint when the class description or any field's description (which becomes the field's instruction) contains a character outside the set it accepts. That set is ASCII without `^`, `` ` ``, `{`, `}` and `~`, plus the accented Latin letters and a few symbols such as `€`, `£`, `°` and `©`. Typographic dashes, the left single quote (`‘`), the ellipsis, the no-break space, bullets, Greek, Cyrillic, CJK and emoji are all rejected. The right single quote and both curly double quotes are accepted.
+
+The sync therefore rewrites those characters in the blueprint it sends. Your configuration is not changed. Where an equivalent exists, the character is replaced: dashes become `-`, the left single quote and backticks become `'`, other curly quotes outside the set become straight quotes, `…` becomes `...`, unusual spaces become a plain space, a bullet becomes `-`, `×` becomes `x`, `→` becomes `->`, and `{` and `}` become `(` and `)`. Accented letters outside the set lose the accent, so `ý` becomes `y`. A character with no equivalent, such as a CJK character, `^` or `~`, is removed. Each removal is reported as an `unsupported_characters` warning for the class, and a description that is blank, or has nothing left after removal, becomes `-`.
+
+**Characters BDA does not accept in a class name:**
+The class name becomes the blueprint's `class`, which BDA limits to the same characters as descriptions and to 60 characters. The sync does not replace the characters there, because the class name is what comes back from BDA: a sync from BDA to IDP reads it as the class name. Instead, each character BDA does not accept is written as `_x` followed by its code point and `_`, so `Invoice — {EU}` reaches BDA as `Invoice _x2014_ _x007B_EU_x007D_`, and the accelerator turns it back into `Invoice — {EU}` when it reads the class from BDA, including in the results it stores for each document. A class name that only uses characters BDA accepts is sent unchanged. A class whose name is longer than 60 characters after this escaping fails to sync with a message that says so; shorten the name.
+
+**Integer fields:**
+BDA rejects a whole blueprint that declares `"type": "integer"` anywhere. The sync sends such a field as `number` and adds `(a whole number)` to its instruction, or `(whole numbers)` for a list of integers, so BDA is still told to return a whole number. Your configuration is not changed. A later sync from BDA to IDP reads the field back as `number`.
+
+**Classes with no fields BDA can hold:**
+BDA rejects a blueprint with no fields. A class that has no properties, such as one describing boilerplate pages, or whose every field is dropped for one of the reasons above, is therefore not sent to BDA. The sync names it in a warning, alongside the fields it dropped from it, and does not count it as synced; the rest of the sync goes ahead. The Web UI shows the warning in the sync message, `idp-cli config-sync-bda` and `config-activate` list the class as not sent, and the SDK returns it in `unsent_classes` (`bda_unsent_classes` from `activate`). In replace mode, a blueprint synced for that class earlier is removed. In merge mode it is kept, with the fields it had when it was last synced. To have BDA recognise such a document type, give the class at least one field BDA can represent.
 
 ##### AWS Standard Blueprint Handling
 
@@ -1775,7 +1793,7 @@ Flatten complex structures — avoid nested objects and place arrays at the top 
 
 **3. Pre-Sync Validation Checklist:**
 - ✅ No nested objects within object definitions
-- ✅ No arrays within object definitions  
+- ✅ No arrays of objects within object definitions, and no arrays at all in an object used as a top-level array's items
 - ✅ All array properties have description or instruction fields
 - ✅ Field names follow BDA naming conventions (no special characters like &, /)
 - ✅ Schema uses supported data types (string, number, boolean)

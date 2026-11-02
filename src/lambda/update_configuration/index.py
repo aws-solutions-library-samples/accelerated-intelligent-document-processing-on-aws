@@ -101,6 +101,11 @@ MODEL_MAPPINGS = {
     # that stack pointing at a dead model.
     "us.amazon.nova-premier-v1:0": "eu.anthropic.claude-sonnet-4-6",
     "us.amazon.nova-2-lite-v1:0": "eu.amazon.nova-2-lite-v1:0",
+    # The multi-document discovery embedding default. `us.cohere.embed-v4:0` is
+    # rejected as an invalid model identifier from an EU Region, so without this
+    # row an EU stack kept a default its embed step could not call. A twin row:
+    # the EU geo profile of the same model, 1024 dimensions like the US one.
+    "us.cohere.embed-v4:0": "eu.cohere.embed-v4:0",
     # Retired source -> LIVE target. Claude 3 Haiku reached end of life in both
     # regions, so mapping it onto its EU twin rewrote a stored config from one dead
     # model to another. Claude Haiku 4.5 is the current Haiku-class model.
@@ -466,10 +471,10 @@ def apply_custom_model_arns(config: Dict[str, Any], properties: Dict[str, Any]) 
     """Write the stack's custom/fine-tuned model ARNs into a merged config.
 
     ``CustomClassificationModelARN`` replaces the model of the call that assigns
-    the class under the active strategy — ``one_stage.llm`` for a single pass,
-    ``two_stage.section_classification.llm`` for two stages. Boundary detection keeps
-    its own model: it only finds boundaries, which is not what a classification
-    model was trained to do. ``CustomExtractionModelARN`` replaces
+    the class under the active strategy — ``combined.llm`` for the combined
+    strategy, ``split_then_classify.section_classification.llm`` for
+    split-then-classify. The splitting call keeps its own model: it only finds
+    boundaries, which is not what a classification model was trained to do. ``CustomExtractionModelARN`` replaces
     ``extraction.model``. An empty or absent ARN changes nothing.
     """
     from idp_common.config.models import class_assigning_llm_path

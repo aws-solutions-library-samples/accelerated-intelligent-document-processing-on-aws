@@ -56,6 +56,8 @@ export interface TestSetItemEditModel {
   loadError: string | null;
   /** Re-read the document; resolves to the fresh row, or null when the read failed. */
   reload: () => Promise<QueueItem | null>;
+  /** The same read as `reload`, for Refresh: a failed read throws rather than showing the load error. */
+  refresh: () => Promise<void>;
   /** The open version transition; null until annotation has begun on the set. */
   draft: AnnotationDraft | null;
   openDraft: () => Promise<AnnotationDraft | null>;
@@ -90,38 +92,47 @@ export const useTestSetItemEdit = (testSetId: string, objectKey: string): TestSe
   const draftUris = useRef<Record<string, string>>({});
   const revisions = useRef<Record<string, number>>({});
 
-  const reload = useCallback(async (): Promise<QueueItem | null> => {
-    if (!testSetId || !objectKey) return null;
-    setLoading(true);
-    try {
-      const r = await client.graphql({ query: getAnnotationQueueDocument, variables: { testSetId, objectKey } });
-      const data = r.data?.getAnnotationQueue ?? null;
-      if (!data) {
-        setLoadError('The document could not be loaded.');
+  const read = useCallback(
+    async (rethrow: boolean): Promise<QueueItem | null> => {
+      if (!testSetId || !objectKey) return null;
+      setLoading(true);
+      try {
+        const r = await client.graphql({ query: getAnnotationQueueDocument, variables: { testSetId, objectKey } });
+        const data = r.data?.getAnnotationQueue ?? null;
+        if (!data) {
+          if (rethrow) throw new Error('The document could not be loaded.');
+          setLoadError('The document could not be loaded.');
+          return null;
+        }
+        const fresh = data.documents.find((d) => d.objectKey === objectKey) ?? null;
+        draftUris.current = {};
+        revisions.current = {};
+        for (const d of fresh?.draftSections ?? []) {
+          draftUris.current[d.sectionId] = d.draftUri;
+          revisions.current[d.sectionId] = d.revision;
+        }
+        setQueue(data);
+        setLoadError(null);
+        return fresh;
+      } catch (err) {
+        logger.error('getAnnotationQueue failed', err);
+        if (rethrow) throw err;
+        setLoadError(
+          isAuthorizationError(err) || reviewErrorCode(err) === 'NOT_ASSIGNED'
+            ? NOT_ASSIGNED_MESSAGE
+            : describeApiError(err, 'load the document'),
+        );
         return null;
+      } finally {
+        setLoading(false);
       }
-      const fresh = data.documents.find((d) => d.objectKey === objectKey) ?? null;
-      draftUris.current = {};
-      revisions.current = {};
-      for (const d of fresh?.draftSections ?? []) {
-        draftUris.current[d.sectionId] = d.draftUri;
-        revisions.current[d.sectionId] = d.revision;
-      }
-      setQueue(data);
-      setLoadError(null);
-      return fresh;
-    } catch (err) {
-      logger.error('getAnnotationQueue failed', err);
-      setLoadError(
-        isAuthorizationError(err) || reviewErrorCode(err) === 'NOT_ASSIGNED'
-          ? NOT_ASSIGNED_MESSAGE
-          : describeApiError(err, 'load the document'),
-      );
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, [testSetId, objectKey]);
+    },
+    [testSetId, objectKey],
+  );
+  const reload = useCallback(() => read(false), [read]);
+  const refresh = useCallback(async () => {
+    await read(true);
+  }, [read]);
 
   useEffect(() => {
     setQueue(null);
@@ -214,6 +225,7 @@ export const useTestSetItemEdit = (testSetId: string, objectKey: string): TestSe
     loading,
     loadError,
     reload,
+    refresh,
     draft: currentDraft(queue, openedDraft),
     openDraft,
     saveDraft,

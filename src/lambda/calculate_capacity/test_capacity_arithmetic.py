@@ -1698,9 +1698,9 @@ def test_the_variance_threshold_is_a_named_constant_at_three():
 
 
 @pytest.mark.unit
-def test_the_headline_names_the_volume_and_the_pattern(monkeypatch):
+def test_the_headline_names_the_volume_and_the_mode(monkeypatch):
     first = recommend(monkeypatch, docs_per_hour=2500)[0]
-    assert "Processing 2500 documents/hour using PATTERN-2" in first
+    assert "Processing 2500 documents/hour in pipeline mode" in first
 
 
 DATA_SOURCE_FIELD_NAMES = frozenset({"dataSource", "data_source"})

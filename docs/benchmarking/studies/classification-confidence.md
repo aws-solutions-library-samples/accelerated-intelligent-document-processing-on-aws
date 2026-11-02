@@ -14,10 +14,24 @@ title: "Classification Confidence — Does the Score Carry Signal?"
 **Region:** us-west-2 · **Stack:** `IDPBench066`
 **Test set:** `docsplit` (DocSplit-Poly-Seq — RVL-CDIP-derived packets, 13 classes)
 · first **20 packets**, **298 pages** per model per mode, one run each, no failures
-**Config:** `config_library/unified/docsplit/config.yaml`, `classification.one_stage.llm.confidence.mode`
+**Config:** `config_library/unified/docsplit/config.yaml`, `classification.combined.llm.confidence.mode`
 ∈ {`topk` (`top_k_candidates: 3`), `off`}, everything else at system defaults;
 summarization disabled
 **Pricing:** `config_library/pricing.yaml` (rates as of 2026-08)
+
+> **The Nova 2 Lite `topk` column was re-measured on v0.6.13; the rest of this page was not.**
+> The v0.6.13 classification-variant benchmark
+> ([configuration guidance §5.6](../config-guidance.md#56-classification-granularity-modality-and-strategy))
+> ran the same 20 packets and 298 pages with Nova 2 Lite, `topk` and 3 candidates, and its
+> `page-both` variant is this page's configuration. It reads **page class accuracy 0.839**
+> (here 0.846), **calibration separation +0.033** (here +0.044), mean confidence 0.948 on
+> correct pages and 0.915 on wrong ones (here 0.947 and 0.903), a median of **0.95** on wrong
+> pages (unchanged), 6.0% of pages below 0.9 (here 8.4%) and $0.00095 of classification per
+> page (here $0.00090). So the conclusion below — the default classifies about as accurately
+> as Haiku 4.5 and its confidence barely separates right from wrong — still describes the
+> default on this corpus. Haiku 4.5 and the `off` control were not re-run, so their columns
+> are v0.6.7's. Data: `benchmarks/results/v0.6.13/clsvariants/summary.json`, key
+> `nova2lite-page-both`.
 
 Reproduce with:
 
@@ -94,7 +108,7 @@ of scans per packet, with extraction and assessment dominating). A deployment wi
 very cheap extraction and very long documents will see classification — and this
 setting — take a larger share.
 
-## 2. Headline numbers
+## 2. Results
 
 | Metric | Nova 2 Lite (default) | Claude Haiku 4.5 |
 |---|---|---|
@@ -114,7 +128,7 @@ Accuracy being equal is itself worth noting: on this corpus the cheaper default
 classifies as well as the 6× model. The difference is entirely in *knowing when it
 is wrong*.
 
-## 3. The failure mode, quantified
+## 3. How confidence is distributed across pages
 
 Confidence distribution over all 298 pages:
 
@@ -137,7 +151,7 @@ wrong), so the signal is a coarse two-level flag rather than a probability.
 
 Haiku 4.5's distribution is graded, and its errors concentrate in the low bins.
 
-## 4. What it buys you: escalation at a threshold
+## 4. Escalating low-confidence pages at a threshold
 
 Flag pages below a confidence threshold for review. *Error recall* = share of the
 model's misclassifications caught; *precision* = share of flagged pages that really
@@ -165,7 +179,7 @@ Haiku dominates on both axes at its best operating point: fewer *wasted* reviews
 Nova's ceiling is structural — 23 errors are indistinguishable at 0.95, so no
 threshold can reach them.
 
-## 5. Prompt caching does not engage for Haiku here
+## 5. Prompt caching with Haiku
 
 Measured per page: Nova 2 Lite served **~934 input tokens/page from prompt cache**;
 Haiku 4.5 reported **zero** cache reads and zero cache writes, paying its full
@@ -185,17 +199,17 @@ cost of an Anthropic classifier. The 6.4× figure above is what you actually pay
 
 ## 6. Guidance
 
-⚠️ **Every path on this page is the `single_pass` one, and under `two_stage` the
+⚠️ **Every path on this page is the `combined` one, and under `split_then_classify` the
 block you must edit is a different one.** This study ran
-`classification.strategy: single_pass`, so `mode` and the threshold below mean
-`classification.one_stage.llm.confidence.…`. Under `classification.strategy:
-two_stage` the call that assigns a class is section classification, so the same
+`classification.strategy: combined`, so `mode` and the threshold below mean
+`classification.combined.llm.confidence.…`. Under `classification.strategy:
+split_then_classify` the call that assigns a class is section classification, so the same
 settings live at
-`classification.two_stage.section_classification.llm.confidence.…` and the
-`one_stage` block is not read at all — editing it there changes nothing and
-produces no error. The boundary detection call has no confidence block, because it
-assigns no class. The cost figures also assume single-pass metering: a two-stage
-run's classification spend is reported under `BoundaryDetection/` and
+`classification.split_then_classify.section_classification.llm.confidence.…` and the
+`combined` block is not read at all — editing it there changes nothing and
+produces no error. The splitting call has no confidence block, because it
+assigns no class. The cost figures also assume combined metering: a split-then-classify
+run's classification spend is reported under `Splitting/` and
 `SectionClassification/` rather than `Classification/`.
 
 1. **`topk` is on by default, and that is the right default** — ~0.5 % of the bill
@@ -214,7 +228,7 @@ run's classification spend is reported under `BoundaryDetection/` and
    The harness prints `class_calibration_separation`, `class_accuracy` and
    `n_class_scored_pages` for exactly this purpose.
 
-## 7. Honesty / limits
+## 7. Limitations
 
 - **One run per model per mode, 20 packets, 298 pages.** No repeats, so neither the
   0.7-point between-model accuracy gap nor the ±1-point off-vs-topk deltas are claims

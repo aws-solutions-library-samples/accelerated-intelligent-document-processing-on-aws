@@ -3,6 +3,7 @@
 
 import { getDocumentConfidenceAlertCount } from './confidence-alerts-utils';
 import { getDocumentProcessingIssueCount } from './processing-issues-utils';
+import { resolveMissingRequiredFieldCount } from './missing-required-fields-utils';
 import { parseMetering, parseHITLReviewHistory } from '../../graphql/awsjson-parsers';
 import { isHitlReviewFinished } from './review-status';
 
@@ -37,6 +38,7 @@ interface DocumentApiItem {
   HITLReviewedByEmail?: string;
   HITLReviewHistory?: string | Record<string, unknown>[];
   ConfidenceAlertCount?: number;
+  MissingRequiredFieldCount?: number | null;
   ProcessingIssueCount?: number;
   ConfigVersion?: string;
   ConfigRevision?: number | null;
@@ -135,12 +137,25 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
         : getDocumentConfidenceAlertCount((sections ?? null) as Parameters<typeof getDocumentConfidenceAlertCount>[0]);
 
     // Processing-issue count: prefer the server-side ProcessingIssueCount (GSI /
-    // getDocument), else derive from the sections' ProcessingIssues arrays.
+    // getDocument), else derive from the sections' ProcessingIssues arrays, else
+    // null. A list row carries no Sections, so a row whose index entry lacks the
+    // count (served while the list index backfills, or written before the count
+    // existed) has nothing to derive from, and a 0 would be a claim it cannot make.
     const apiProcessingIssueCount = item.ProcessingIssueCount;
     const processingIssueCount =
       apiProcessingIssueCount != null
         ? apiProcessingIssueCount
-        : getDocumentProcessingIssueCount((sections ?? null) as Parameters<typeof getDocumentProcessingIssueCount>[0]);
+        : Array.isArray(sections)
+          ? getDocumentProcessingIssueCount(sections as Parameters<typeof getDocumentProcessingIssueCount>[0])
+          : null;
+
+    // Missing required fields (#1527): the stored count when present, else the
+    // sum of the sections' lists, else null — a list row whose index entry lacks
+    // the count carries neither, and a 0 there would claim something it cannot know.
+    const missingRequiredFieldCount = resolveMissingRequiredFieldCount(
+      item.MissingRequiredFieldCount,
+      (sections ?? null) as Parameters<typeof resolveMissingRequiredFieldCount>[1],
+    );
 
     // Extract HITL metadata - use HITLTriggered from backend, fallback to status check
     const hitlTriggered = item.HITLTriggered === true || (hitlStatus && hitlStatus !== 'N/A');
@@ -175,6 +190,7 @@ const mapDocumentsAttributes = (documents: DocumentApiItem[]): Record<string, un
       summaryReportUri,
       ruleValidationResultUri,
       confidenceAlertCount,
+      missingRequiredFieldCount,
       processingIssueCount,
       listPK,
       listSK,

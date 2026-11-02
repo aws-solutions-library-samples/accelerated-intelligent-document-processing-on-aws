@@ -33,10 +33,9 @@ and pin the boundary:
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import botocore.exceptions
 import pytest
@@ -44,6 +43,7 @@ import pytest
 from idp_common import metrics
 from idp_common.models import Document, Section, Status
 from idp_common.utils.transient_errors import TransientError
+from tests.unit._handler_loading import load_with_xray_stubbed
 
 _INDEX_PATH = os.path.join(
     os.path.dirname(__file__),
@@ -57,23 +57,7 @@ def _load_module():
     ``patch_all()`` and the ``@xray_recorder.capture`` decorator run at import
     time; neither is under test and both need a tracing context.
     """
-    recorder = MagicMock()
-    recorder.capture.return_value = lambda fn: fn
-    xray_core = MagicMock()
-    xray_core.patch_all = lambda: None
-    xray_core.xray_recorder = recorder
-    with patch.dict(
-        "sys.modules",
-        {
-            "aws_xray_sdk": MagicMock(),
-            "aws_xray_sdk.core": xray_core,
-        },
-    ):
-        spec = importlib.util.spec_from_file_location("assessment_index", _INDEX_PATH)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    return module
+    return load_with_xray_stubbed("assessment_index", _INDEX_PATH)
 
 
 assessment_index = _load_module()

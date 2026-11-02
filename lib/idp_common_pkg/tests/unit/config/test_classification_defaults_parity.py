@@ -85,23 +85,23 @@ DEFAULTS_OMISSION_EXEMPT_SUBTREES: Dict[str, str] = {
         "configured; the field is an empty list and an empty list has no value to "
         "ship. Computed by test_an_omitted_collection_has_nothing_to_ship."
     ),
-    "classification.two_stage.boundary_detection.boundary_model": (
+    "classification.split_then_classify.splitting.boundary_model": (
         "Declared for a boundary-detection model (#1329) and not implemented: "
-        "boundary_detection.method refuses 'boundary_model', so a default here would be a "
+        "splitting.method refuses 'boundary_model', so a default here would be a "
         "setting nothing can reach. Computed by "
         "test_the_method_reaching_an_omitted_block_is_refused."
     ),
-    "classification.two_stage.section_classification.embeddings": (
+    "classification.split_then_classify.section_classification.embeddings": (
         "Declared for embeddings-based section classification (#1329) and not "
         "implemented: section_classification.method refuses 'embeddings'. Computed "
         "by test_the_method_reaching_an_omitted_block_is_refused."
     ),
-    "classification.two_stage.section_classification.decision_model": (
+    "classification.split_then_classify.section_classification.decision_model": (
         "Declared for an external classifier endpoint (#1329) and not implemented: "
         "section_classification.method refuses 'decision_model'. Computed by "
         "test_the_method_reaching_an_omitted_block_is_refused."
     ),
-    "classification.two_stage.section_classification.low_confidence": (
+    "classification.split_then_classify.section_classification.low_confidence": (
         "Applies only when section_classification.method is NOT 'llm' — it decides "
         "what happens when a non-LLM classifier is unsure — and no such method is "
         "accepted, so no document can reach it. Its witness is any non-llm value "
@@ -116,9 +116,9 @@ DEFAULTS_OMISSION_EXEMPT_SUBTREES: Dict[str, str] = {
 DEFAULTS_OMISSION_EXEMPT_FIELDS: Dict[str, str] = {}
 
 for _call in (
-    "classification.one_stage.llm",
-    "classification.two_stage.boundary_detection.llm",
-    "classification.two_stage.section_classification.llm",
+    "classification.combined.llm",
+    "classification.split_then_classify.splitting.llm",
+    "classification.split_then_classify.section_classification.llm",
 ):
     DEFAULTS_OMISSION_EXEMPT_FIELDS[f"{_call}.image.dpi"] = (
         "ImageConfig is shared by every stage's image panel, but dpi governs the "
@@ -135,7 +135,7 @@ del _call
 
 for _key in sorted(SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS):
     DEFAULTS_OMISSION_EXEMPT_FIELDS[
-        f"classification.two_stage.section_classification.llm.confidence.{_key}"
+        f"classification.split_then_classify.section_classification.llm.confidence.{_key}"
     ] = (
         "The per-segment confidence block, on a call that is one call per section "
         "and returns one class. The service takes this shape only for a call that "
@@ -149,20 +149,20 @@ del _key
 #: The non-llm `method` value whose acceptance would make each omitted sub-block
 #: reachable. The premise for those four entries, as a per-member table.
 _METHOD_REACHING_OMITTED_BLOCK: Dict[str, Tuple[str, str]] = {
-    "classification.two_stage.boundary_detection.boundary_model": (
-        "classification.two_stage.boundary_detection.method",
+    "classification.split_then_classify.splitting.boundary_model": (
+        "classification.split_then_classify.splitting.method",
         "boundary_model",
     ),
-    "classification.two_stage.section_classification.embeddings": (
-        "classification.two_stage.section_classification.method",
+    "classification.split_then_classify.section_classification.embeddings": (
+        "classification.split_then_classify.section_classification.method",
         "embeddings",
     ),
-    "classification.two_stage.section_classification.decision_model": (
-        "classification.two_stage.section_classification.method",
+    "classification.split_then_classify.section_classification.decision_model": (
+        "classification.split_then_classify.section_classification.method",
         "decision_model",
     ),
-    "classification.two_stage.section_classification.low_confidence": (
-        "classification.two_stage.section_classification.method",
+    "classification.split_then_classify.section_classification.low_confidence": (
+        "classification.split_then_classify.section_classification.method",
         "embeddings",
     ),
 }
@@ -394,7 +394,7 @@ def test_the_method_reaching_an_omitted_block_is_refused(
     it down.
     """
     path = method_path.split(".")[1:]  # drop the leading `classification`
-    payload: Dict[str, Any] = {"strategy": "two_stage"}
+    payload: Dict[str, Any] = {"strategy": "split_then_classify"}
     node = payload
     for key in path[:-1]:
         node = node.setdefault(key, {})
@@ -430,16 +430,16 @@ def test_an_omitted_ocr_only_image_field_has_its_default_where_it_is_read(path: 
     )
 
 
-def _stage_b_prompt_with(key: str, marker: str) -> str:
-    """The Stage B task prompt the service composes with ``marker`` in ``key``."""
+def _section_classification_prompt_with(key: str, marker: str) -> str:
+    """The section classification task prompt composed with ``marker`` in ``key``."""
     from idp_common.classification.service import ClassificationService
 
     config = merge_config_with_defaults(
         {
             "classification": {
-                "strategy": "two_stage",
-                "two_stage": {
-                    "boundary_detection": {"llm": {"granularity": "packet"}},
+                "strategy": "split_then_classify",
+                "split_then_classify": {
+                    "splitting": {"llm": {"granularity": "packet"}},
                     "section_classification": {
                         "llm": {"confidence": {"mode": "topk", key: marker}}
                     },
@@ -461,14 +461,15 @@ def _stage_b_prompt_with(key: str, marker: str) -> str:
 def test_an_omitted_packet_confidence_block_is_not_read_here(key: str):
     """The premise for the two per-segment confidence blocks, per block.
 
-    Computed by composing the real Stage B prompt with a marker in the key and
-    checking the marker does not appear. ``test_two_stage.py``'s
-    ``test_stage_b_uses_the_per_page_shaped_confidence_block`` asserts the same
-    behaviour from the service's side; this evaluates it as *this* exemption's
-    premise, which is what keeps the omission from outliving the reason for it.
+    Computed by composing the real section classification prompt with a marker in
+    the key and checking the marker does not appear. ``test_split_then_classify.py``'s
+    ``test_section_classification_uses_the_per_page_shaped_confidence_block``
+    asserts the same behaviour from the service's side; this evaluates it as *this*
+    exemption's premise, which is what keeps the omission from outliving the reason
+    for it.
     """
     marker = f"MARKER-{key}"
-    assert marker not in _stage_b_prompt_with(key, marker), (
+    assert marker not in _section_classification_prompt_with(key, marker), (
         f"section classification DID read {key}, so shipping no default for it is a "
         "real omission rather than a deliberate one — give it a default and delete "
         "the exemption"
@@ -483,9 +484,9 @@ def test_the_packet_confidence_premise_is_not_passing_by_reading_nothing():
     "the key is not read" and "nothing was read" look identical from one assertion.
     """
     marker = "MARKER-page-shape"
-    assert marker in _stage_b_prompt_with("task_prompt_topk", marker), (
-        "the page-shaped confidence block did not reach the Stage B prompt either, so "
-        "the premise test above is measuring nothing"
+    assert marker in _section_classification_prompt_with("task_prompt_topk", marker), (
+        "the page-shaped confidence block did not reach the section classification "
+        "prompt either, so the premise test above is measuring nothing"
     )
 
 

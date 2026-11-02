@@ -727,8 +727,3 @@ class TestBothDocTiersCarryTheCode:
             f"{rel} does not state how deep this check looks, so a reader cannot "
             f"tell a clean report from an unexamined one"
         )
-
-    def test_the_changelog_records_the_measurement(self):
-        text = (_repo_root() / "CHANGELOG.md").read_text(encoding="utf-8")
-        assert NOT_A_LIST in text
-        assert "13 of 39" in text

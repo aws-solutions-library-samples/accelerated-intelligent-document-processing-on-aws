@@ -119,7 +119,8 @@ def _assert_annotator_scope(event, object_key):
 
     Shape follows `src/lambda/complete_section_review/index.py`'s helper of the same
     name, including that a document carrying no `TestSetId` is production work and is
-    refused rather than read as unscoped. Two things differ, both because this
+    not read as unscoped: an Annotator may re-group it only while holding its
+    review-queue item (`_assert_holds_review_item`), and is refused otherwise. Two things differ, both because this
     resolver's handler is shaped differently from that one's:
 
     * **The refusal class.** This resolver's own group floor raises `PermissionError`,
@@ -172,17 +173,84 @@ def _assert_annotator_scope(event, object_key):
 
     test_set_id = (item.get("Item") or {}).get("TestSetId")
     if not test_set_id:
-        logger.warning(
-            "Forbidden: annotator attempted to re-group a non-test-set document"
-        )
-        raise ResourceAccessDenied(
-            "Unauthorized: annotators may only re-group test-set documents"
-        )
+        # A production document: an Annotator may re-group it only while holding its
+        # review-queue item, within their profile scope (`_assert_holds_review_item`).
+        # Whether the document is in review, and the holder check itself, are decided
+        # again below by `regroup_refusal`, as for every caller.
+        _assert_holds_review_item(event, object_key)
+        return
 
     try:
         assert_can_access_test_set(event, test_set_id)
     except TestSetAccessDenied as e:
         raise ResourceAccessDenied(str(e)) from e
+
+
+def _assert_holds_review_item(event, object_key):
+    """Verify an Annotator holds this production document's review-queue item.
+
+    Regrouping is part of review, so the Annotator a Production item is assigned to
+    may correct the document's split while working it, as an Admin holding it may.
+    Admitted only when all of these hold: the stack has review queues, the document
+    has a review item, the item is CLAIMED by the caller (the owner key a claim
+    records, from verified claims), and the item's own profile is within the caller's
+    ``allowedConfigVersions`` (``scope_allows``, which admits no item without a
+    profile to a scoped caller). Every other case is refused, and so is a lookup that
+    cannot be answered: as in `_assert_annotator_scope`, an authorization question
+    that cannot be answered resolves to refused.
+    """
+    from idp_common.config_scope import ScopeLookupError, scope_allows
+    from idp_common.review_queues.statuses import QueueItemState
+
+    refused = ResourceAccessDenied(
+        "Unauthorized: annotators may re-group only test-set documents and review "
+        "items assigned to them"
+    )
+    if _REVIEW_STORE is None:
+        logger.warning(
+            "Forbidden: annotator re-group of a document with no review queues"
+        )
+        raise refused
+    try:
+        review_item = _REVIEW_STORE.get_item(object_key)
+    except Exception as e:  # noqa: BLE001 — fail closed, see the docstring
+        logger.error(
+            "Refusing updateDocumentSections: the document's review item could not be "
+            "read, so the caller's assignment could not be evaluated: %s",
+            e,
+        )
+        raise ResourceAccessDenied(
+            "Unauthorized: your review assignment could not be verified"
+        ) from e
+    caller_key = _caller_key(event)
+    if (
+        review_item is None
+        or review_item.state != QueueItemState.CLAIMED.value
+        or not caller_key
+        or review_item.owner_key != caller_key
+    ):
+        logger.warning(
+            "Forbidden: annotator attempted to re-group a document whose review item "
+            "they do not hold"
+        )
+        raise refused
+    claims = (event.get("identity") or {}).get("claims") or {}
+    try:
+        scope = _caller_config_scope(claims)
+    except ScopeLookupError as e:
+        logger.error(
+            "Refusing updateDocumentSections: config-version scope unresolved: %s", e
+        )
+        raise ResourceAccessDenied(
+            "Unauthorized: your configuration scope could not be verified"
+        ) from e
+    if not scope_allows(scope, review_item.profile):
+        logger.warning(
+            "Forbidden: annotator re-group of a review item outside their configuration scope"
+        )
+        raise ResourceAccessDenied(
+            "Access denied: this document is outside your allowed configuration scope"
+        )
 
 
 def _refusal(message):

@@ -257,9 +257,9 @@ class TestConfigModelsIntegration:
         # The flat classification keys migrate into every call's block, and are
         # coerced there.
         for call in (
-            config.classification.one_stage.llm,
-            config.classification.two_stage.boundary_detection.llm,
-            config.classification.two_stage.section_classification.llm,
+            config.classification.combined.llm,
+            config.classification.split_then_classify.splitting.llm,
+            config.classification.split_then_classify.section_classification.llm,
         ):
             assert call.temperature == 0.5
             assert isinstance(call.temperature, float)
@@ -329,7 +329,7 @@ class TestConfigModelsIntegration:
         assert config.extraction.model == config2.extraction.model
         assert config.extraction.agentic.enabled == config2.extraction.agentic.enabled
         assert (
-            config.classification.one_stage.llm.temperature
-            == config2.classification.one_stage.llm.temperature
+            config.classification.combined.llm.temperature
+            == config2.classification.combined.llm.temperature
         )
-        assert config.classification.one_stage.llm.temperature is not None
+        assert config.classification.combined.llm.temperature is not None

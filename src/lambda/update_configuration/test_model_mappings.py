@@ -37,10 +37,10 @@ import pytest
 
 
 def _load_handler() -> ModuleType:
-    """Import ``index`` with the Lambda-provided ``cfnresponse`` stubbed out.
+    """Import ``index`` with ``cfnresponse`` stubbed out.
 
-    ``cfnresponse`` is injected by the CloudFormation custom-resource runtime and
-    is not installable, so a unit test has to supply it. ``idp_common`` is NOT
+    ``cfnresponse`` is vendored as ``cfnresponse.py`` beside ``index.py`` and would
+    PUT to a real URL, so a unit test supplies a stub. ``idp_common`` is NOT
     stubbed — the handler reads ``base_model_id`` out of it, which is the point of
     the same-model comparison below, and the provenance guard in
     ``src/lambda/conftest.py`` is what pins which checkout it comes from.

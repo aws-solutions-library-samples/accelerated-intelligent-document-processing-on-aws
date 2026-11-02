@@ -117,8 +117,8 @@ class TestBoundaryAndLabelAccuracy:
         assert result["boundary_accuracy"] == 0.5
 
     def test_an_unlabeled_prediction_fails_the_label_half_only(self):
-        """The shape two-stage Stage A produces, and the shape a segment whose
-        Stage B call failed keeps: boundaries good, no class."""
+        """The shape the split-then-classify splitting call produces, and the
+        shape a segment whose section classification call failed keeps: boundaries good, no class."""
         gt = [_section([0, 1], "invoice")]
         pred = [_section([0, 1], None)]
         result = compute_boundary_and_label_accuracy(gt, pred)

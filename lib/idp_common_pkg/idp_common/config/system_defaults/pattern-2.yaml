@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: MIT-0
 
 # =============================================================================
-# PATTERN-2 SYSTEM DEFAULTS (Bedrock LLM-Based Processing)
+# PIPELINE MODE SYSTEM DEFAULTS (Bedrock LLM-Based Processing, `use_bda: false`)
 # =============================================================================
-# Pattern-2 uses Amazon Bedrock foundation models for all processing:
+# Pipeline mode uses Amazon Bedrock foundation models for all processing:
 #   - OCR: AWS Textract
 #   - Classification: LLM-based document classification  
 #   - Extraction: LLM-based information extraction
 #   - Assessment: LLM-based confidence scoring
 #
-# This is the "full stack" pattern that inherits everything from base.yaml.
-# No pattern-specific overrides needed - all defaults come from base modules.
+# This is the "full stack" mode that inherits everything from base.yaml.
+# No mode-specific overrides needed - all defaults come from base modules.
 # =============================================================================
 
 # BDA not used - step-by-step pipeline
@@ -19,4 +19,4 @@ use_bda: false
 
 _inherits: base.yaml
 
-notes: "Pattern-2 default configuration - Bedrock LLM-based processing"
+notes: "Pipeline mode default configuration - Bedrock LLM-based processing"

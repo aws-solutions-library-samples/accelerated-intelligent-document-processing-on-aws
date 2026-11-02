@@ -69,7 +69,7 @@ class IDPPublisher:
         self.public = False
         self.main_template = "idp-main.yaml"
         self.use_container_flag = ""
-        self.pattern2_use_containers = True  # Default to containers for Pattern-2
+        self.pattern2_use_containers = True  # Default to container-image Lambdas
 
         self.s3_client = None
         self.cf_client = None
@@ -760,7 +760,7 @@ STDERR:
         build_start = time.time()
 
         try:
-            # Pattern-2 uses containers - images built separately by build_and_push_pattern2_containers()
+            # Container-image Lambdas are built during stack deployment by CodeBuild
             # SAM build with SkipBuild: True just prepares template
             cmd = ["sam", "build", "--template-file", "template.yaml"]
 
@@ -4241,10 +4241,10 @@ STDERR:
                     f"[green]Auto-detected {self.max_workers} concurrent workers (CPUs: {cpu_count})[/green]"
                 )
 
-            # All pattern Docker images (Pattern-1, Pattern-2) are built during CloudFormation deployment via CodeBuild
+            # All container images are built during CloudFormation deployment via CodeBuild
             # CodeBuild will download source from S3 and build images - no pre-build required
             self.console.print(
-                "\n[cyan]ℹ️  Pattern Docker images (Pattern-1/2) will be built during stack deployment via CodeBuild[/cyan]"
+                "\n[cyan]ℹ️  Container images will be built during stack deployment via CodeBuild[/cyan]"
             )
 
             # Build nested and patterns concurrently (no dependencies on each other)

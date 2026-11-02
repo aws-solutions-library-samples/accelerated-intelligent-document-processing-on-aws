@@ -78,6 +78,18 @@ beforeEach(() => {
 });
 
 describe('the Test Studio adapter', () => {
+  it('Refresh reads the document once more, and a failed read throws rather than showing the load error', async () => {
+    const hook = await renderAdapter({});
+    const reads = () => callsOf(getAnnotationQueueDocument).length;
+    const before = reads();
+    await act(() => hook.result.current.refresh());
+    expect(reads()).toBe(before + 1);
+    graphql.mockRejectedValueOnce(new Error('offline'));
+    await expect(act(() => hook.result.current.refresh())).rejects.toThrow('offline');
+    expect(hook.result.current.loadError).toBeNull();
+    expect(hook.result.current.doc).not.toBeNull();
+  });
+
   it('saves a draft, naming the revision it edits, and nothing that reviews', async () => {
     const { result } = await renderAdapter({ reviewObjectKey: 'run/a.pdf' });
     await act(() => result.current.saveDraft('2', { inference_result: { Total: 2 } }));

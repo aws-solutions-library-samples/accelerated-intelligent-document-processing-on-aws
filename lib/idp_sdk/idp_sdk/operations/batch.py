@@ -213,6 +213,8 @@ class BatchOperation:
                     s3_kwargs["config_version"] = config_version
                 if "config_revision" in sig.parameters and config_revision is not None:
                     s3_kwargs["config_revision"] = config_revision
+                if "number_of_files" in sig.parameters and number_of_files:
+                    s3_kwargs["number_of_files"] = number_of_files
                 result = processor.process_batch_from_s3_uri(**s3_kwargs)
 
             return BatchProcessResult(

@@ -300,16 +300,18 @@ def test_remove_deleted_stack_resources_refuses_a_regions_value_of_only_commas(r
 def test_config_create_refuses_a_features_value_of_only_commas(runner):
     """`--features ","` used to ask for two configuration sections named `""`.
 
-    The comma is what tells a list apart from a preset name, so that branch is unchanged
-    and `--features min` still reaches the preset path. Only a list whose every segment
-    is blank is refused -- asserted against both, because a refusal that also caught the
-    presets would break the default invocation.
+    A value that is exactly a preset name is the preset, so `--features min` still
+    reaches the preset path. Only a value whose every segment is blank is refused --
+    asserted against both, because a refusal that also caught the presets would break
+    the default invocation.
     """
     refused = runner.invoke(cli, ["config-create", "--features", ","])
     assert refused.exit_code == 1, refused.output
-    assert "--features contains no section names" in refused.output
+    assert "--features" in refused.stderr
+    assert "contains no section names" in refused.stderr
+    assert refused.stdout == "", "a diagnostic on stdout lands in the redirected file"
 
-    # The preset path is untouched: no comma, so it never reaches the parser.
+    # The preset path is untouched.
     preset = runner.invoke(cli, ["config-create", "--features", "min"])
     assert preset.exit_code == 0, preset.output
     assert preset.stdout.strip(), "the preset path must still generate a template"

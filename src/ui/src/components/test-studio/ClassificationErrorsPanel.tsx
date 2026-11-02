@@ -174,7 +174,7 @@ const ClassificationErrorsPanel = ({ classificationErrors, testSetId }: Classifi
                 // everything after the first '#' is the fragment — so HashRouter
                 // saw a path of '#/test-studio/...', matched nothing, dropped the
                 // query, and every row landed on the app root.
-                <Link href={testSetAnnotateHref(testSetId, item.doc_key)}>{item.doc_key}</Link>
+                <Link href={testSetAnnotateHref(testSetId, item.doc_key, 'test-studio')}>{item.doc_key}</Link>
               ) : (
                 (item.doc_key ?? '—')
               ),

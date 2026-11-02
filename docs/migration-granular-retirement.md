@@ -43,7 +43,7 @@ geometry** — whereas granular actually produced **0% geometry**.
 > [#966](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/966).
 > A re-measured figure, if one is published, will come with a committed results
 > directory under `benchmarks/results/` per the
-> [reproducibility rules](benchmarking/index.md#reproducibility--honesty-rules).
+> [reproducibility rules](benchmarking/index.md#reproducibility-and-reporting-rules).
 
 Its capability is now fully covered by **standalone large-list batching** (see
 below).

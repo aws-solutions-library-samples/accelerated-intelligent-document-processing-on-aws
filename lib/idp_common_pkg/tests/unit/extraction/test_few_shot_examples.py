@@ -109,15 +109,15 @@ class TestShippedPromptsCarryPlaceholder:
     @pytest.mark.parametrize(
         "path",
         [
-            ("one_stage", "page", "task_prompt"),
-            ("one_stage", "packet", "task_prompt"),
-            ("two_stage", "section_classification", "llm", "task_prompt"),
+            ("combined", "page", "task_prompt"),
+            ("combined", "packet", "task_prompt"),
+            ("split_then_classify", "section_classification", "llm", "task_prompt"),
         ],
         ids=".".join,
     )
     def test_default_classification_prompt_includes_few_shot_placeholder(self, path):
         """Every class-assigning classification prompt carries it too — same
-        silent-drop failure otherwise. Boundary detection assigns no class, so its
+        silent-drop failure otherwise. The splitting call assigns no class, so its
         prompts take no examples."""
         prompt = load_system_defaults("pattern-2")["classification"]
         for key in path:

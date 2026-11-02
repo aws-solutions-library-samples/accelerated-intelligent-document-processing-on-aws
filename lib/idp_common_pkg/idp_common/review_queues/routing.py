@@ -5,8 +5,7 @@
 
 ProcessResults (Pipeline and BDA) call :func:`route_for_review` after their own
 work. Queue mode is on when HITL is enabled in the document's configuration, the
-stack has a review table and its Default queue is enabled (HITL › Queue
-Management); otherwise ``review_mode`` is ``"legacy"`` and the handlers keep the
+stack has a review table and its Default queue is enabled (Review Studio › Review Management); otherwise ``review_mode`` is ``"legacy"`` and the handlers keep the
 HITL marking through :func:`legacy_section_triggers` and
 :func:`bda_segment_triggers`. In queue mode it either recognises the finalize run
 of a disposed item, or (a fresh run) builds reasons from the sections'

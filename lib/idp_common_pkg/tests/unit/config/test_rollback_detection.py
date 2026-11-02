@@ -32,8 +32,8 @@ TABLE = "ConfigurationTable-test"
 def update_config_module(monkeypatch):
     """Import src/lambda/update_configuration/index.py with cfnresponse stubbed."""
     monkeypatch.setenv("CONFIGURATION_TABLE_NAME", TABLE)
-    # cfnresponse is provided by the Lambda runtime, not the package.
-    sys.modules.setdefault("cfnresponse", MagicMock())
+    # cfnresponse (vendored beside index.py) would PUT to a real URL.
+    monkeypatch.setitem(sys.modules, "cfnresponse", MagicMock())
     monkeypatch.syspath_prepend(str(_LAMBDA_DIR))
     if "index" in sys.modules:
         del sys.modules["index"]

@@ -701,9 +701,9 @@ def test_comparing_a_pre_0_9_run_with_a_current_one_lines_up_classification():
     nested = {
         "config_format_version": "0.9",
         "classification": {
-            "one_stage": {"llm": {"model": "m2", "temperature": 0}},
-            "two_stage": {
-                "boundary_detection": {"llm": {"model": "m1", "temperature": 0}},
+            "combined": {"llm": {"model": "m2", "temperature": 0}},
+            "split_then_classify": {
+                "splitting": {"llm": {"model": "m1", "temperature": 0}},
                 "section_classification": {"llm": {"model": "m1", "temperature": 0}},
             },
         },
@@ -728,7 +728,7 @@ def test_comparing_a_pre_0_9_run_with_a_current_one_lines_up_classification():
 
     assert differences == [
         {
-            "setting": "classification.one_stage.llm.model",
+            "setting": "classification.combined.llm.model",
             "values": {"old": "m1", "new": "m2"},
         }
     ]

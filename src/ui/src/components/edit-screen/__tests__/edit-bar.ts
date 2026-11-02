@@ -15,7 +15,7 @@ const ITEM_IDS: Record<string, string> = {
   History: 'history',
   Summary: 'summary',
   'Processing Report': 'report',
-  'Edit Page Class': 'regroup',
+  'Edit Page Grouping': 'regroup',
   'Use As Evaluation Baseline': 'baseline',
 };
 

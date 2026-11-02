@@ -92,7 +92,7 @@ ME = 4242
 HEAD = "0123456789abcdef" * 2 + "01234567"
 BASE = "fedcba9876543210" * 2 + "fedcba98"
 NEWER = "89abcdef" * 5
-DOCS_TREE = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+DOCS_TREE = "abcdef12" * 5
 UI_TREE = "1234abcd" * 5
 ACCOUNT = "123456789012"
 PARTITION = "aws"
@@ -101,8 +101,8 @@ CREDENTIAL = "test-review-credential-value"
 AWS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
 AWS_KEY_TEXT = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 AWS_SESSION_TEXT = "FwoGZXIvYXdzEXAMPLEambientsessionvalue"
-SCOPED = ("ASIAIOSFODNN7SCOPED1", "scopedSecretKeyValue01", "scopedSessionValue0001")
-POLLY = ("ASIAIOSFODNN7POLLY01", "pollySecretKeyValue001", "pollySessionValue00001")
+SCOPED = ("ASIASCOPEDKEYEXAMPLE", "scopedSecretKeyValue01", "scopedSessionValue0001")
+POLLY = ("ASIAPOLLYKEY0EXAMPLE", "pollySecretKeyValue001", "pollySessionValue00001")
 WEB_HOST = "d111111abcdef8.cloudfront.net"
 WEB_URL = f"https://{WEB_HOST}/"
 UPLOAD_HASH = "0123456789abcdef0123456789abcdef"
@@ -4103,8 +4103,15 @@ def test_the_harness_revision_is_gits_with_dirty_meaning_a_harness_path_differs(
     tmp_path: Path,
 ) -> None:
     git = ["git", "-C", str(tmp_path)]
+    # A machine may set ``core.hooksPath`` system-wide to a directory of hook
+    # runners that refuse a commit from an unregistered email, which would fail
+    # this fixture's commit for a reason unrelated to the code under test. An
+    # empty hooks directory measures git alone, as test_ai_mr_review.py does.
+    empty_hooks = tmp_path.parent / f"{tmp_path.name}-empty-hooks"
+    empty_hooks.mkdir()
     for argv in (
         ["init", "-q"],
+        ["config", "core.hooksPath", str(empty_hooks)],
         ["config", "user.email", "t@example.invalid"],
         ["config", "user.name", "t"],
     ):

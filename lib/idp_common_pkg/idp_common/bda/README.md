@@ -192,13 +192,63 @@ a server error on `GetDataAutomationProject` raises: it says nothing about wheth
 project still exists, and creating one anyway overwrites the tracking row and orphans
 the first project's blueprints while the version's config names the new, empty one.
 
+### An inline object becomes a definition
+
+BDA accepts an object only as an entry in `definitions` referenced by `$ref`. An object written inline under `properties`, or as an array's `items`, fails `CreateBlueprint` with "Request has invalid blueprint schema" (measured against the control plane; no catalog blueprint uses the inline form). So the transform hoists a top-level inline object, and the inline-object `items` of a top-level array, into `definitions` on both of its paths: `_extract_complex_objects` for a schema without `$defs`, and `_hoist_inline_object_property` for one with `$defs` (issue #1732).
+
+The two paths differ in what they do with nesting. The flat path drops an object that has any nested object or array, as a whole. The `$defs` path processes the hoisted object exactly like a `$defs` entry, so only the nested members are dropped, each recorded, and an object left with no members is dropped and recorded as a whole. On both paths the property keeps its name, so the blueprint's field paths are unchanged. The definition takes the property's name (`<name>Item` for array items), suffixed with a number if a definition of that name already exists. A later BDA → IDP sync reads such a class back with the object under `$defs`.
+
+Shapes this does not convert. They leave an inline object or a malformed field and were not probed:
+
+- a `$defs` entry that is itself an array of inline objects;
+- an object property with no `properties`, or with a list-valued `type` such as `["object", "null"]`.
+
+An object or array that omits `"type"` is converted as the object or array its `properties` or `items` make it, on both paths and inside definitions (`_schema_type`; issue #1742). A declared `type` always wins.
+
+### Text BDA rejects is rewritten before the blueprint is sent
+
+`CreateBlueprint` rejects a whole blueprint with "Request has invalid blueprint schema" when one `instruction` or `description` holds a character outside `_BDA_TEXT_CHARS` (issue #1741: one em dash in the `ds11-passport-application` preset). That set was measured against the control plane with the schema serialised by `json.dumps`, which is how this module sends it. It is ASCII without `^`, `` ` ``, `{`, `}` and `~`, plus the non-ASCII characters the API's own regular expression names for the schema string, less the CJK, kana and hangul ranges, plus four characters the check was measured to accept although the expression does not list them (`’`, `“`, `”` and U+200B). That regular expression is shown only when the schema is sent as raw UTF-8, and the post-parse check still rejects those three ranges. The left single quote `‘` is rejected. The set holds the same for a leaf `instruction` and for the blueprint `description`. `tests/unit/bda/test_blueprint_text_characters.py` records the probes, asserts that the constant equals the probed set, and converts every class of every `config_library/unified` preset.
+
+`_normalize_blueprint_text` runs last in `_transform_json_schema_to_bedrock_blueprint`, over the finished blueprint, so it covers both transform paths and the defaults they fill in. It touches only string values under those two keys, so a property named `description` is still recursed into. Text that is already accepted is returned unchanged, so an already-synced blueprint is not re-versioned. Otherwise the text is NFC-composed, each character outside the set is replaced from `_BDA_TEXT_REPLACEMENTS` or reduced through NFKD, and a character that leaves nothing acceptable behind is removed and recorded as an `unsupported_characters` drop. A text that is blank, or left blank, becomes `"-"`, because a blank instruction is rejected too.
+
+The blueprint's `class` value is not rewritten this way, because a BDA → IDP sync reads it back as the class id; see the next section.
+
+### The class id is carried in `class` reversibly
+
+`class` takes the same characters as blueprint text (`BDA_TEXT_CHARS`), and at most `BDA_CLASS_MAX_LENGTH` (60) of them; blank and whitespace-only values are rejected. All three were measured, and `GetBlueprint` returns the value exactly as sent. Both constants, and the codec, live in `blueprint_class.py`, which imports only `re` so that the BDA results Lambda can use it. `to_blueprint_class` escapes each character outside the set as `_xHHHH_` (its code point, four to six upper-case hex digits), and `from_blueprint_class` reverses it, so the round trip is exact for every string (issue #1755). A class id that BDA already accepts is unchanged, so no blueprint that synced before is re-versioned, with one exception: an id that already contains text of the escape's shape, such as `A_x0041_`, has the `_` that starts it escaped as `_x005F_`. That is what keeps the decode exact, and it changes the `class` of such a blueprint once.
+
+The escape is applied in `_create_base_blueprint_structure` and reversed in `transform_bda_blueprint_to_idp_class_schema`, in `_convert_single_aws_blueprint`'s check for an existing class, and in the BDA results Lambda (`bda_document_class`) before the reported type is matched to a class. The Lambda also writes the class id, not the escaped value, into the `result.json` it stores for each section, because the SDK's result downloads and the test-set summaries read the class from that file; it decodes once, so an id that itself contains escape-shaped text is not decoded twice. That `document_class.type` in BDA's results is the blueprint's `class` was not measured here (no document was processed); the decode is the identity on any value without an escape, so it is harmless if it is not. `_process_single_class` fails a class whose escaped `class` would exceed 60 characters, naming the limit, instead of sending it. BDA classifies with the escaped value, so `Invoice — {EU}` is offered to BDA's classifier as `Invoice _x2014_ _x007B_EU_x007D_`. A blueprint written by an earlier release whose class id already contained the escape's shape decodes to a different id when read back; no catalog class contains `_x`.
+
+### An integer is sent as a number
+
+`CreateBlueprint` rejects `"type": "integer"` wherever it appears: on a leaf, on an array's `items`, and on a member of a definition. It accepts `number` in each of those places (measured; catalog blueprints use only `string`, `number` and `boolean`). Four classes of the shipped `ocr-benchmark` preset were rejected over it (issue #1755). `_convert_integer_types` runs over the finished blueprint and sends each one as `number`, appending `(a whole number)` to a leaf's instruction, or `(whole numbers)` to an array's, so the meaning reaches BDA. It visits only schema positions, so a property named `type` is not rewritten. An array of integers counts as a primitive array inside a definition (`_PRIMITIVE_ARRAY_ITEM_TYPES`), because it is sent as an array of numbers. A BDA → IDP sync reads such a field back as `number`, with the note in its description.
+
+### A class with nothing to send is skipped, with a warning
+
+`CreateBlueprint` rejects a blueprint with no properties: an empty `properties`, none at all, or only `definitions` (measured). A class with no fields, or whose every field is dropped as unrepresentable, was sent anyway and failed. Three shipped preset classes did (issue #1755). `_skip_if_nothing_to_send` converts the class first, in its own drop recording, and when the blueprint would be empty it creates and updates nothing. The class's result is a `success` whose `warnings` carry the drops that emptied it and a final `empty_blueprint` entry naming the class, so it reaches the caller on the same channel as a dropped property. `classes_not_sent(statuses)` names such classes from a status list (by the `EMPTY_BLUEPRINT_WARNING` type), and every caller counts them apart from synced classes: the sync resolver names them in a `WARNING` sentence in each outcome's message, and the SDK returns them in `ConfigSyncBdaResult.unsent_classes` and `ConfigActivateResult.bda_unsent_classes`, which the CLI prints. Because no blueprint is created or updated for the class, a replace-mode sync removes a blueprint synced for it earlier, as it does for a deleted class; a merge-mode sync leaves it as it was. When the class is not skipped, the trial recording is discarded, so its drops are reported once, by the create or update that follows.
+
+### Property names are sanitized at every object level
+
+`_sanitize_property_names` removes characters outside `[a-zA-Z0-9_-]` from property names before the transform, recursing into nested objects and array items. An object or array that omits `"type"` is recursed into as well: an object is recognised by `properties` (`_is_inline_object`, the same test the transform hoists by) and an array by `items`. Before issue #1742 only a declared `"type": "object"` was recursed into, so an untyped inline object kept names such as `Name & Title` and the blueprint was rejected. A property that declares a scalar `type` is not recursed into, even with `properties` beside it.
+
+The update check, `_check_for_updates`, sanitizes a copy of the class before transforming it, as the create and update paths do. It compares against a blueprint built from the sanitized class, so comparing the unsanitized one reported a change in every renamed property on every sync and re-versioned the blueprint each time (issue #1742).
+
 ### Every dropped property is a warning, not just a log line
 
 BDA supports neither objects inside objects nor arrays whose items nest further, so the
-transform drops those properties. Each drop is recorded in `_skipped_properties`, which
+transform drops those properties. A `$ref` member inside a definition is dropped as a
+`nested_object` for the same reason: it nests one definition in another, and
+`CreateBlueprint` was measured to reject it (issue #1742).
+
+An array of a scalar type (`items: {"type": "string"}` and the like) is not dropped from a
+definition: `CreateBlueprint` accepts it there, and catalog blueprints such as receipt carry
+it. The exception is a definition that a top-level array uses as its `items`, where the same
+member nests an array in an array and is rejected. Which use a definition gets is known only
+once the blueprint is built, so `_drop_arrays_from_item_definitions` runs over the finished
+blueprint and drops, and records, every array member of such a definition. Each drop is recorded in `_skipped_properties`, which
 `_process_single_class` returns as per-class `warnings` and the sync resolver surfaces in
-its response. The recorded `type` values are `nested_object`, `nested_array` and
-`invalid_property_schema` (a property whose value is not a JSON Schema object — `null`,
+its response. The recorded `type` values are `nested_object`, `nested_array`,
+`unsupported_characters` (see above), `empty_blueprint` (a whole class not sent; see above) and `invalid_property_schema` (a property whose value is not a JSON Schema object — `null`,
 or a bare string — which cannot be described to BDA at all and used to fail the whole
 class with a raw `TypeError`).
 

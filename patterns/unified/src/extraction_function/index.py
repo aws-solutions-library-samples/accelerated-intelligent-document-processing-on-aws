@@ -277,6 +277,13 @@ def _handle(event, context):
             f"Skipping extraction for section {section_id} - already has extraction data: {section.extraction_result_uri}"
         )
 
+        # The section result carries only what this invocation spent, as the
+        # extraction branch below does. ProcessResults merges every section's
+        # metering onto the document metering it already holds, so returning the
+        # incoming metering here counted the stored total once more per skipped
+        # section on every reprocess (#1665).
+        full_document.metering = {}
+
         # Add Lambda metering for extraction skip execution
         try:
             lambda_metering = calculate_lambda_metering(

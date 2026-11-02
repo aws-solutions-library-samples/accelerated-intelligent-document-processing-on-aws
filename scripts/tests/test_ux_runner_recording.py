@@ -792,7 +792,7 @@ def test_write_review_md_writes_the_file_render_reads_its_findings_from(
 
 RENDER_HOME = Path("/run/ux/render-home")
 SCOPED = {
-    "AWS_ACCESS_KEY_ID": "ASIAIOSFODNN7POLLY01",
+    "AWS_ACCESS_KEY_ID": "ASIAPOLLYKEY0EXAMPLE",
     "AWS_SECRET_ACCESS_KEY": "polly-scoped-key-material",
     "AWS_SESSION_TOKEN": "polly-scoped-session-value",
 }

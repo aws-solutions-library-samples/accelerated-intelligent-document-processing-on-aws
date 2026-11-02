@@ -273,10 +273,10 @@ Expect the document to process to completion with comparable extracted values.
 Some drift is normal and NOT a regression: LLM non-determinism, and any
 config-shape changes the v0.5→v0.6 migration intentionally introduces (e.g.
 confidence/assessment structure, new metering fields). Across config format 0.9 the
-two-stage section-classification metering context is `SectionClassification`;
+split-then-classify section-classification metering context is `SectionClassification`;
 development builds before the release called it `Labeling`, so mapping the two
-only matters when the FROM side is a develop build that ran `strategy: two_stage`
-— a released v0.6.12 has neither key, and one-stage runs meter under
+only matters when the FROM side is a develop build that ran `strategy: split_then_classify`
+— a released v0.6.12 has neither key, and combined runs meter under
 `Classification` on both sides. What you're ruling out
 is a **functional break** — empty extractions, a workflow that errors/times
 out, classes no longer detected, or confidence collapsing to null across the

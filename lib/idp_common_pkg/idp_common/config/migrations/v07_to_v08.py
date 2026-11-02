@@ -218,9 +218,10 @@ def _relocate_packet_prompts(classification: Dict[str, Any]) -> None:
     ``packet.task_prompt`` held, because on a merged config that is the shipped
     default rather than a deliberate choice.
 
-    The flat prompts are **copied, not cleared**, for two reasons: two-stage
-    Stage B falls back to them, and a config whose granularity is later switched
-    back to ``page`` would otherwise have no page prompt at all.
+    The flat prompts are **copied, not cleared**, for two reasons: section
+    classification in a split-then-classify configuration falls back to them, and
+    a config whose granularity is later switched back to ``page`` would otherwise
+    have no page prompt at all.
     """
     flat_task = classification.get("task_prompt")
     if not _is_packet_shaped(flat_task):

@@ -34,7 +34,7 @@ classes:
     description: >-
       An annual tax document provided by employers to employees reporting wages earned and 
       taxes withheld during the tax year for federal and state income tax filing purposes.
-    # Page content regex - works with multi-modal page-level classification
+    # Page content regex - applies under the combined strategy at page granularity
     # When page content matches this pattern, the page is instantly classified as W2
     document_page_content_regex: "(?i)(form\\s+w-?2|wage\\s+and\\s+tax|employer\\s+identification|social\\s+security)"
     attributes:
@@ -124,7 +124,7 @@ classes:
 # - "(?i).*invoice.*"                  # Matches filenames containing invoice
 # - "(?i).*w-?2.*"                     # Matches W2, W-2, w2, w-2 in filename
 #
-# Page Content Regex (multi-modal page-level only):
+# Page Content Regex (combined strategy, page granularity only):
 # - "(?i)(gross\\s+pay|net\\s+pay)"      # Matches payroll terminology with flexible spacing
 # - "(?i)(invoice\\s+number|bill\\s+to)" # Matches invoice-specific terms
 # - "(?i)(form\\s+w-?2|wage\\s+and\\s+tax)" # Matches W2 tax form content

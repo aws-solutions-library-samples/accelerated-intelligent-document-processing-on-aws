@@ -38,17 +38,21 @@ logger = logging.getLogger(__name__)
 # Valid pattern names
 VALID_PATTERNS = ["pattern-1", "pattern-2"]
 
-# Feature sets for create-config command
+# Feature sets for the create-config command. Each entry names top-level sections
+# of the system defaults; a name a pattern's defaults lack is skipped for that
+# pattern (pattern-1 has no ``ocr`` or ``classification``). Confidence scoring is
+# not a section of its own: it lives in ``extraction.confidence``, so it comes with
+# ``extraction``. tests/unit/config/test_generated_template_validates.py derives the
+# sections from the defaults and fails on a name that is not one, and on a section
+# that neither ``all`` nor its ``AWAITING_DECISION`` set accounts for.
 FEATURE_SETS = {
     "min": ["classification", "extraction", "classes"],
-    "core": ["ocr", "classification", "extraction", "assessment", "classes"],
+    "core": ["ocr", "classification", "extraction", "classes"],
     "all": [
         "ocr",
         "classification",
         "extraction",
-        "assessment",
         "summarization",
-        "criteria_validation",
         "evaluation",
         "discovery",
         "agents",
@@ -427,7 +431,7 @@ def merge_config_with_defaults(
 
     Example:
         user_config = {
-            "classification": {"one_stage": {"llm": {"model": "us.amazon.nova-lite-v1:0"}}},
+            "classification": {"combined": {"llm": {"model": "us.amazon.nova-lite-v1:0"}}},
             "classes": [...]
         }
         result = merge_config_with_defaults(user_config, "pattern-2")
@@ -478,6 +482,118 @@ def merge_config_with_defaults(
     return result
 
 
+# Sections the ``min`` set writes as a one-key ``enabled: false`` stub rather than
+# copying, so that leaving them out switches them off instead of keeping whatever
+# the configuration underneath has. Confidence scoring is not among them: it is
+# ``extraction.confidence``, which ``min`` copies, so it stays on.
+MIN_DISABLED_SECTIONS = ["summarization", "evaluation"]
+
+
+def template_sections(pattern: str = "pattern-2") -> List[str]:
+    """The section names ``generate_config_template`` accepts for ``pattern``.
+
+    A section is a top-level key of the pattern's system defaults holding a mapping
+    or a list, in the order the defaults declare them; ``notes`` and ``use_bda`` are
+    scalars and are not sections.
+    """
+    return [
+        key
+        for key, value in load_system_defaults(pattern).items()
+        if isinstance(value, (dict, list))
+    ]
+
+
+def _resolve_sections(features: Union[str, List[str]], pattern: str) -> List[str]:
+    """The section list a preset name or an explicit list stands for.
+
+    A preset may name a section a pattern's defaults lack (pattern-1 has no ``ocr``
+    or ``classification``), and those are skipped. An explicit list is the caller's
+    own request, so a name that is not a section of ``pattern`` is refused rather
+    than dropped: dropping it turned a one-letter typo into a template missing the
+    section, reported as a success.
+    """
+    if isinstance(features, str):
+        if features not in FEATURE_SETS:
+            raise ValueError(
+                f"Invalid feature set '{features}'. Valid: {list(FEATURE_SETS.keys())}"
+            )
+        return FEATURE_SETS[features]
+
+    if not features:
+        raise ValueError(
+            "No sections requested. Give a feature set "
+            f"({', '.join(FEATURE_SETS)}) or one or more section names."
+        )
+    valid = template_sections(pattern)
+    unknown = [name for name in features if name not in valid]
+    if unknown:
+        message = (
+            f"Unknown configuration section(s) for {pattern}: "
+            f"{', '.join(repr(n) for n in unknown)}. "
+            f"Valid sections: {', '.join(valid)}. "
+            f"Feature sets, used on their own: {', '.join(FEATURE_SETS)}."
+        )
+        if any(name in FEATURE_SETS for name in unknown):
+            message += " A feature set cannot be combined with section names."
+        raise ValueError(message)
+    return list(dict.fromkeys(features))
+
+
+def _template_header(
+    features: Union[str, List[str]],
+    pattern: str,
+    written: List[str],
+    disabled: List[str],
+    include_prompts: bool,
+    confidence_mode: Optional[str],
+    empty: Optional[List[str]] = None,
+) -> str:
+    """The comment block that opens a generated template, describing that file."""
+    label = features if isinstance(features, str) else ", ".join(features)
+    omitted = [s for s in template_sections(pattern) if s not in written + disabled]
+
+    lines = [
+        "# IDP Configuration Template",
+        f"# Generated for: {pattern}",
+        f"# Feature set: {label}",
+        "#",
+        f"# Sections copied from the system defaults: {', '.join(written)}.",
+    ]
+    if disabled:
+        lines.append(f"# Sections switched off: {', '.join(disabled)}.")
+    if confidence_mode and confidence_mode != "off":
+        lines.append(
+            "# Confidence scoring stays on (extraction.confidence.mode: "
+            f"{confidence_mode})."
+        )
+    if omitted:
+        lines.append(f"# Sections not in this file: {', '.join(omitted)}.")
+    if empty:
+        lines.append(
+            f"# Empty in the system defaults, so left out: {', '.join(empty)}."
+        )
+        lines.append("# Written empty, it would replace the profile's own on upload;")
+        lines.append("# add yours under that top-level key.")
+    if not include_prompts:
+        lines.append(
+            "# Long system_prompt, task_prompt and user_prompt values are left out;"
+        )
+        lines.append("# other prompt fields are written in full.")
+    lines += [
+        "#",
+        "# Anything not in this file keeps the value of the configuration it is",
+        "# merged over: the system defaults when validating or deploying, or the",
+        "# stack's default configuration (or the profile's current one) when",
+        "# uploading.",
+        "# Edit only the values you need to customize.",
+        "#",
+        "# Documentation: https://github.com/aws-solutions-library-samples/"
+        "accelerated-intelligent-document-processing-on-aws/blob/main/docs/"
+        "configuration.md",
+    ]
+    return "\n".join(lines) + "\n\n"
+
+
 def generate_config_template(
     features: Union[str, List[str]] = "min",
     pattern: str = "pattern-2",
@@ -488,7 +604,10 @@ def generate_config_template(
     Generate a configuration template YAML string.
 
     Args:
-        features: Feature set name ("min", "core", "all") or list of section names
+        features: Feature set name ("min", "core", "all") or a list of section
+            names (see ``template_sections``). An unknown name in a list raises
+            ``ValueError``, as does a request whose sections are all empty in
+            the defaults (``["classes"]``), which has nothing to write.
         pattern: Pattern to base the template on
         include_prompts: If True, include full prompt templates
         include_comments: If True, include helpful comments
@@ -496,15 +615,7 @@ def generate_config_template(
     Returns:
         YAML string for the configuration template
     """
-    # Determine which sections to include
-    if isinstance(features, str):
-        if features not in FEATURE_SETS:
-            raise ValueError(
-                f"Invalid feature set '{features}'. Valid: {list(FEATURE_SETS.keys())}"
-            )
-        sections = FEATURE_SETS[features]
-    else:
-        sections = features
+    sections = _resolve_sections(features, pattern)
 
     # Load full defaults
     defaults = load_system_defaults(pattern)
@@ -515,8 +626,18 @@ def generate_config_template(
     # Always include notes
     template["notes"] = "My IDP Configuration - customize as needed"
 
+    written: List[str] = []
+    empty: List[str] = []
     for section in sections:
         if section in defaults:
+            # A list the defaults leave empty (``classes: []``) has nothing to
+            # copy, and writing it is not neutral: an uploaded file is merged over
+            # the profile's current configuration, and a list there is replaced
+            # rather than merged, so ``classes: []`` emptied the profile's document
+            # classes (issue #1720). Leaving the key out keeps them.
+            if defaults[section] == []:
+                empty.append(section)
+                continue
             section_data = deepcopy(defaults[section])
 
             # Optionally strip prompts for cleaner output
@@ -524,12 +645,24 @@ def generate_config_template(
                 section_data = _strip_prompts(section_data)
 
             template[section] = section_data
+            written.append(section)
+
+    if not written:
+        # Only empty sections were requested, so the file would hold nothing but
+        # ``notes``, and uploading it would only overwrite the profile's notes.
+        raise ValueError(
+            f"Nothing to generate: {', '.join(empty)} "
+            f"{'is' if len(empty) == 1 else 'are'} empty in the system defaults. "
+            "Write your document classes under a top-level 'classes:' key in your "
+            "own file, or request a section that has defaults."
+        )
 
     # Add disabled flags for sections not in the template
+    disabled: List[str] = []
     if features == "min":
-        template["summarization"] = {"enabled": False}
-        template["assessment"] = {"enabled": False}
-        template["evaluation"] = {"enabled": False}
+        for section in MIN_DISABLED_SECTIONS:
+            template[section] = {"enabled": False}
+            disabled.append(section)
 
     # Convert to YAML
     yaml_str = yaml.dump(
@@ -542,17 +675,21 @@ def generate_config_template(
 
     # Add header comments if requested
     if include_comments:
-        header = f"""# IDP Configuration Template
-# Generated for: {pattern}
-# Feature set: {features}
-#
-# This is a minimal configuration - unspecified fields use system defaults.
-# Edit only the values you need to customize.
-#
-# Documentation: https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/docs/configuration.md
-
-"""
-        yaml_str = header + yaml_str
+        confidence_mode = (
+            (template.get("extraction") or {}).get("confidence") or {}
+        ).get("mode")
+        yaml_str = (
+            _template_header(
+                features,
+                pattern,
+                written,
+                disabled,
+                include_prompts,
+                confidence_mode,
+                empty,
+            )
+            + yaml_str
+        )
 
     return yaml_str
 
@@ -561,16 +698,18 @@ def _strip_prompts(data: Any) -> Any:
     """
     Recursively strip prompt fields from a config section.
 
-    Replaces long prompt strings with placeholder comments.
+    A long prompt is omitted rather than replaced: the template is a delta that
+    ``merge_config_with_defaults`` lays over the system defaults, so an absent key
+    is what "use the default prompt" means. Any string left in its place would be
+    read as the prompt itself -- by ``validate_config``'s placeholder checks, which
+    then refuse the file, and at runtime by every prompt field no check covers.
     """
     if isinstance(data, dict):
         result = {}
         for key, value in data.items():
             if key in ("system_prompt", "task_prompt", "user_prompt"):
-                # Replace prompts with placeholder
-                if value and len(str(value)) > 50:
-                    result[key] = "# Uses system default prompt"
-                else:
+                # Omit long prompts so the system default applies
+                if not (value and len(str(value)) > 50):
                     result[key] = value
             else:
                 result[key] = _strip_prompts(value)
@@ -1202,9 +1341,9 @@ def _nested_classification(merged_config: Dict[str, Any]) -> Dict[str, Any]:
     return migrate_v08_to_v09(merged_config)
 
 
-def _classification_is_two_stage(merged_config: Dict[str, Any]) -> bool:
+def _classification_is_split_then_classify(merged_config: Dict[str, Any]) -> bool:
     strategy = _dict_at(merged_config, "classification").get("strategy")
-    return str(strategy or "").strip().lower() == "two_stage"
+    return str(strategy or "").strip().lower() == "split_then_classify"
 
 
 def _classification_calls(merged_config: Dict[str, Any]) -> List[tuple]:
@@ -1217,13 +1356,13 @@ def _classification_calls(merged_config: Dict[str, Any]) -> List[tuple]:
     save over it would block an unrelated edit.
     """
     merged_config = _nested_classification(merged_config)
-    if _classification_is_two_stage(merged_config):
+    if _classification_is_split_then_classify(merged_config):
         paths = [
-            ("two_stage", "boundary_detection", "llm"),
-            ("two_stage", "section_classification", "llm"),
+            ("split_then_classify", "splitting", "llm"),
+            ("split_then_classify", "section_classification", "llm"),
         ]
     else:
-        paths = [("one_stage", "llm")]
+        paths = [("combined", "llm")]
     return [
         (
             "classification." + ".".join(path),
@@ -1251,7 +1390,8 @@ def _classification_task_prompts(merged_config: Dict[str, Any]) -> List[tuple]:
         granularity = str(block.get("granularity") or "page").strip().lower()
         side = "packet" if granularity == "packet" else "page"
         # The prompt sits under page/packet; the modality is on the llm block, which
-        # for one stage is a sibling of them and for boundary detection is `block` itself.
+        # for the combined call is a sibling of them and for the splitting call is
+        # `block` itself.
         llm = block if path[-1] == "llm" else _dict_at(block, "llm")
         return (
             "classification." + ".".join(path + (side, "task_prompt")),
@@ -1259,17 +1399,19 @@ def _classification_task_prompts(merged_config: Dict[str, Any]) -> List[tuple]:
             _dict_at(llm, "modality"),
         )
 
-    if _classification_is_two_stage(merged_config):
-        section_llm = _dict_at(cls, "two_stage", "section_classification", "llm")
+    if _classification_is_split_then_classify(merged_config):
+        section_llm = _dict_at(
+            cls, "split_then_classify", "section_classification", "llm"
+        )
         return [
-            reader("two_stage", "boundary_detection", "llm"),
+            reader("split_then_classify", "splitting", "llm"),
             (
-                "classification.two_stage.section_classification.llm.task_prompt",
+                "classification.split_then_classify.section_classification.llm.task_prompt",
                 section_llm.get("task_prompt", ""),
                 _dict_at(section_llm, "modality"),
             ),
         ]
-    return [reader("one_stage")]
+    return [reader("combined")]
 
 
 def _modality_supplies_content(modality: Dict[str, Any]) -> bool:

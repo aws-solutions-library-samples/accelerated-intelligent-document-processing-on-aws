@@ -129,9 +129,9 @@ After deployment, choose the processing method that fits your use case:
 For batch processing, automation, or evaluation workflows:
 
 ```bash
-# Install the CLI, from the repository root. All three first-party packages go in
-# ONE pip invocation, so the sibling names they require resolve from this checkout.
-pip install -e lib/idp_common_pkg -e lib/idp_sdk -e lib/idp_cli_pkg
+# Install the CLI, from the repository root (needs uv; see below)
+make setup-venv
+source .venv/bin/activate
 
 # Process documents
 idp-cli run-inference \
@@ -146,11 +146,14 @@ idp-cli download-results \
     --output-dir ./results/
 ```
 
-`make setup` (or `make setup-venv`) installs the same three packages the same way,
-along with the rest of the development dependencies. Either way the packages must
-come from a path and go in a single command: the names they require of each other
-are registered on public PyPI by unrelated parties, so a one-at-a-time install can
-resolve a sibling from the index instead of from `lib/`. See
+`make setup-venv` installs every first-party package into `.venv` against the
+dependency lock, `lib/idp_common_pkg/uv.lock`, so the versions are the ones CI tests;
+it needs [`uv`](https://docs.astral.sh/uv/) on `PATH` to read the lock. On Windows
+without `make`, follow [the native Windows guide](./docs/setup-development-env-windows.md),
+which gives the same steps by hand. Install the packages from a path and in a single
+command, never one at a time: the names they require of each other are registered on
+public PyPI by unrelated parties, so a one-at-a-time install can resolve a sibling from
+the index instead of from `lib/`. See
 [Installing First-Party Packages Safely](./docs/dependency-confusion.md).
 
 **See [IDP CLI Documentation](./docs/idp-cli.md)** for:
@@ -247,7 +250,7 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 Security artifacts live under [`security/`](./security/README.md) so that coverage
 and results are auditable rather than asserted.
 
-- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 99 threats
+- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 104 threats
   across the architecture, pipeline, web UI and API, agent and chat
   features, extension points and analytics stack. Each entry records the controls
   that address it and, where they do not fully cover it, the residual risk. Threats

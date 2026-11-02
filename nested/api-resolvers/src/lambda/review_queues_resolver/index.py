@@ -62,9 +62,10 @@ _SERVICE = create_review_queue_service()
 _DYNAMODB = boto3.resource("dynamodb")
 _SCOPE_CACHE: dict = {}
 
-# Annotators work the queues that list them: they claim items (or an Admin assigns
-# them) and work their own. Admins manage the queues and assign the work.
-_WORKERS = frozenset({"Admin", "Annotator"})
+# Annotators work the queues that list them and Reviewers every Production queue: they
+# claim items (or an Admin assigns them) and work their own. Admins manage the queues
+# and assign the work.
+_WORKERS = frozenset({"Admin", "Annotator", "Reviewer"})
 _ADMIN = frozenset({"Admin"})
 
 #: Mirrors scripts/api_rbac_expectations.yaml.
@@ -74,9 +75,10 @@ _FIELD_GROUPS: dict[str, frozenset] = {
     "saveReviewDraft": _WORKERS,
     "completeReviewItem": _WORKERS,
     "rejectReviewItem": _WORKERS,
-    # My Work › Queues: an Annotator lists the queues that list them, opens their
-    # items, claims one (assigning it to themselves) and releases it (Skip). The
-    # service limits each to the queues the caller is listed on.
+    # Home › Queues: an Annotator lists the queues that list them, a Reviewer every
+    # Production queue; either opens their items, claims one (assigning it to
+    # themselves) and releases it (Skip). The service limits each to the queues the
+    # caller works (`QueueDirectory.is_member`).
     "getMyReviewQueues": _WORKERS,
     "listReviewQueueItems": _WORKERS,
     "claimReviewItem": _WORKERS,
@@ -268,6 +270,7 @@ def _queue_view(d: QueueDefinition) -> dict:
         "eligibleAnnotators": list(d.eligible_annotators),
         "isDefaultQueue": d.id == DEFAULT_QUEUE_ID,
         "enabled": d.enabled,
+        "version": d.version,
     }
 
 
@@ -304,7 +307,8 @@ def _queue_input(raw: Any, existing: QueueDefinition | None = None) -> QueueDefi
 
 
 def _list_annotators(c, args):
-    """The members of the Cognito Annotator group: who HITL work can go to."""
+    """The members of the Cognito Annotator group: who HITL work can be assigned to.
+    Reviewers are never assigned work; they claim it."""
     NoArgs.model_validate(args)
     pool = os.environ.get("USER_POOL_ID", "")
     if not pool:
@@ -314,7 +318,10 @@ def _list_annotators(c, args):
 
 def _list_queues(c, args):
     NoArgs.model_validate(args)
-    return [_queue_view(d) for d in _SERVICE.directory.queue_defs.list()]
+    # A fresh, strongly consistent read past this instance's cache: the list is what
+    # an Admin edits a queue from, and the version an update is checked against comes
+    # from it.
+    return [_queue_view(d) for d in _SERVICE.directory.queue_defs.list(fresh=True)]
 
 
 def _create_queue(c, args):
@@ -322,17 +329,43 @@ def _create_queue(c, args):
     return _queue_view(_SERVICE.directory.queue_defs.put(d, create=True))
 
 
+def _expected_version(raw: Any) -> int | None:
+    """The ``version`` an update was built from, or None if the caller sent none."""
+    version = raw.get("version") if isinstance(raw, dict) else None
+    if version is None:
+        return None
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+        raise ValueError("BAD_ARGUMENT: version must be a non-negative integer")
+    return version
+
+
 def _update_queue(c, args):
+    """Replace a queue's definition.
+
+    The input's ``version`` is the one the caller read; if the queue has been written
+    since, the update is refused with ``QUEUE_CHANGED`` rather than undoing that write.
+    A caller that sends no version (an older client) is checked against the version
+    of the consistent read made here: its fields replace whatever that read found,
+    and it is refused only if another write lands between that read and this one,
+    which protects the fields this merges from the stored definition (``enabled``,
+    ``skipReasons``).
+    """
     raw = args.get("input")
     queue_id = str((raw or {}).get("id") or "") if isinstance(raw, dict) else ""
+    expected = _expected_version(raw)
     defs = _SERVICE.directory.queue_defs
     defs.invalidate()
-    d = _queue_input(raw, defs.get(queue_id) if queue_id else None)
-    return _queue_view(defs.put(d, create=False))
+    # A consistent read, so the version taken for a caller that sent none is current;
+    # get() as well, which seeds the Default queue if it was never listed.
+    existing = (defs.read_current(queue_id) or defs.get(queue_id)) if queue_id else None
+    d = _queue_input(raw, existing)
+    if expected is None and existing is not None:
+        expected = existing.version
+    return _queue_view(defs.put(d, create=False, expected_version=expected))
 
 
 def _delete_queue(c, args):
-    """Delete a queue; its items move to the Default queue first."""
+    """Delete a queue; its items then move to the Default queue."""
     queue_id = str(args.get("id") or "").strip().lower()
     if not queue_id:
         raise ValueError("BAD_ARGUMENT: id is required")

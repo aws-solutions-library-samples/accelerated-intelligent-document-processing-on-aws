@@ -199,13 +199,13 @@ const TroubleshootModal = ({
     }
   };
 
-  // Auto-submit when modal opens or resume existing job
+  // On open: resume a job still running, show the last result of one that finished
+  // (each run is a paid agent job, so a new one starts only on Run again), or start one.
   useEffect(() => {
     if (visible) {
       setMinimized(false); // always reopen expanded
-      if (existingJob && ['PENDING', 'PROCESSING'].includes(existingJob.status)) {
-        // Resume existing active job
-        logger.info('Resuming existing troubleshoot job:', existingJob.jobId);
+      if (existingJob && ['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED'].includes(existingJob.status)) {
+        logger.info('Reopening troubleshoot job:', existingJob.jobId, existingJob.status);
         setJobId(existingJob.jobId);
         setJobStatus(existingJob.status);
         setJobResult(existingJob.result ?? null);
@@ -213,7 +213,6 @@ const TroubleshootModal = ({
         setError(existingJob.error ?? null);
         subscribeToJobCompletion(existingJob.jobId);
       } else {
-        // Create new job (no existing job OR previous job is COMPLETED/FAILED)
         logger.info('Starting new troubleshoot job for document:', documentItem?.objectKey);
         submitTroubleshootQuery();
       }
@@ -344,6 +343,11 @@ const TroubleshootModal = ({
             {canReport && (
               <Button iconName="bug" href={reportIssueUrl} target="_blank" rel="noopener noreferrer">
                 Report this issue on GitHub
+              </Button>
+            )}
+            {isTerminal && (
+              <Button iconName="refresh" loading={isSubmitting} onClick={() => void submitTroubleshootQuery()}>
+                Run again
               </Button>
             )}
             <Button iconName="treeview-collapse" onClick={() => setMinimized(true)}>

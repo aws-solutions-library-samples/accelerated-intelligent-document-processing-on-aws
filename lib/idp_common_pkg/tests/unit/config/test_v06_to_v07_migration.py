@@ -418,7 +418,7 @@ class TestVersionComparatorIsShared:
         spec = importlib.util.spec_from_file_location("_uc_index", path)
         assert spec and spec.loader
         mod = importlib.util.module_from_spec(spec)
-        # cfnresponse ships with the Lambda runtime, not with the test env, so it
+        # cfnresponse (vendored beside index.py) would PUT to a real URL, so it
         # is stubbed for the exec. Scoped rather than left in sys.modules: a
         # global stub made this test pass only when some earlier test in the same
         # worker happened to install one.

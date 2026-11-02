@@ -11,12 +11,16 @@ import logging
 import os
 import random
 import re
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import TYPE_CHECKING, Unpack
 
 import botocore.exceptions
+import urllib3.exceptions
+
+from idp_common.failed_attempt import drop_failed_attempt
 
 # The invocation deadline, the sleep clamp and the pre-attempt budget gate. They live
 # in a standard-library-only leaf module and are re-exported from here, because the
@@ -250,6 +254,11 @@ _IMAGE_REJECTION_MARKERS = (
     "image dimension",
     "too many images",
     "image is too large",
+    # Claude Haiku 4.5's wording for the per-request image cap, which the other
+    # Claude models word as "too many images and documents: 101 + 0 > 100".
+    # Measured against Bedrock Converse, 2026-11-01: "Too much media: 0 document
+    # pages + 101 images > 100".
+    "too much media",
 )
 
 
@@ -277,6 +286,32 @@ def is_image_request_rejection(error: BaseException) -> bool:
         return False
     msg = str(error).lower()
     return any(marker in msg for marker in _IMAGE_REJECTION_MARKERS)
+
+
+#: The subset of ``_IMAGE_REJECTION_MARKERS`` whose limit depends on how MANY
+#: images one request carries rather than on any single image: the cap on images
+#: per request, and the tighter per-image dimension cap that applies only above a
+#: count threshold ("... for many-image requests"). Sending the same pages in two
+#: smaller requests fixes these; it does nothing for an image that is too large on
+#: its own, which is why the per-image markers are not here.
+_IMAGE_COUNT_REJECTION_MARKERS = (
+    "too many images",
+    "many-image request",
+    "too much media",
+)
+
+
+def is_image_count_rejection(error: BaseException) -> bool:
+    """True if ``error`` is an image rejection that fewer images per request fixes.
+
+    Narrower than :func:`is_image_request_rejection`, and judged through it first,
+    so the error-code guard applies unchanged: a throttle that happens to say "too
+    many images" is not a rejection of the request's shape.
+    """
+    if not is_image_request_rejection(error):
+        return False
+    msg = str(error).lower()
+    return any(marker in msg for marker in _IMAGE_COUNT_REJECTION_MARKERS)
 
 
 def is_input_token_overflow(error: BaseException) -> bool:
@@ -409,15 +444,14 @@ DEFAULT_RETRYABLE_ERRORS = {
     "InternalServerError",  # Variant of InternalServerException
     "RequestTimeout",
     "RequestTimeoutException",
-    # Transient network/read timeouts to Bedrock. These surface as botocore
-    # ReadTimeoutError / ConnectTimeoutError, or are wrapped by Strands in an
-    # EventLoopException whose message contains the urllib3 pool text. We match
-    # the timeout-SPECIFIC markers (by exception name and as message substrings
-    # — see the generic-Exception branch), NOT the generic "EventLoopException"
-    # wrapper name (which also wraps non-retryable failures), so a slow/oversized
-    # request retries with backoff instead of failing the whole section after the
-    # full read timeout. The durable fix for oversized requests is image capping
-    # + sharding (below); this just prevents a hard fail on a transient blip.
+    # Transient network/read timeouts to Bedrock, matched by exception name and as
+    # message substrings in the generic-Exception branch — NOT the generic
+    # "EventLoopException" wrapper name (which also wraps non-retryable failures),
+    # so a slow/oversized request retries with backoff instead of failing the whole
+    # section after the full read timeout. The durable fix for oversized requests is
+    # image capping + sharding (below); this just prevents a hard fail on a
+    # transient blip. botocore's own transport failures, raw or wrapped by Strands,
+    # are recognised by TYPE instead: see _RETRYABLE_TRANSPORT_EXCEPTION_TYPES.
     "ReadTimeoutError",
     "ConnectTimeoutError",
     "Read timed out",
@@ -427,11 +461,75 @@ DEFAULT_RETRYABLE_ERRORS = {
 # Pre-folded for case-insensitive comparison.
 _DEFAULT_RETRYABLE_ERRORS_LOWER = {err.lower() for err in DEFAULT_RETRYABLE_ERRORS}
 
-# Default retryable exception types (caught by isinstance check)
-# Only include ModelThrottledException if strands is available
+# botocore's transport failures for a Bedrock call that got no response: a read
+# timeout, a connect timeout, a connection that could not be opened at all
+# (``EndpointConnectionError``: refused, unreachable, or the endpoint name did not
+# resolve, so the request never left this process), and a connection closed before
+# the response arrived (``ConnectionClosedError``, which botocore raises for urllib3's
+# ``ProtocolError``). The synchronous ladder in ``bedrock/client.py`` retries all four
+# among its transport failures (#1706, #1745).
+#
+# Matched by type, and anywhere on the explicit ``raise ... from`` chain, because
+# Strands 1.48 delivers them in two forms (measured with a real Agent and a real
+# botocore client, only urllib3's ``urlopen`` replaced, on both ``converse`` and
+# ``converse_stream``): raw from the first model
+# call of an invocation, and wrapped in ``EventLoopException`` — ``__cause__`` the
+# botocore error, message its ``str()`` — from the model call of every cycle after a
+# tool use, which on the agentic extraction path is most of them. Neither form
+# carries a name or a message the substring vocabulary above matches: before this,
+# a dropped connection was never retried, and a read timeout was retried only on the
+# first cycle, because botocore words it "Read timeout on endpoint URL" (#1730).
+#
+# A connection reset PARTWAY through a streamed response (``converse_stream``, after
+# botocore has returned the event stream) is not rewrapped by botocore at all: it
+# reaches here as urllib3's own ``ProtocolError``, raw or wrapped in the same way
+# (#1745). Retrying it is safe for the same reason it is safe before the response:
+# Strands 1.48 appends the assistant message, and starts any tool the model asked
+# for, only after the stream has been read to its end (``process_stream`` yields
+# its result after the loop over chunks; ``_handle_model_execution`` appends it
+# after that). Measured with hand-built event streams cut after a complete
+# ``toolUse`` block and ``messageStop``: the tool ran zero times and
+# ``agent.messages`` was unchanged, so the retry resumes the same conversation an
+# unanswered attempt leaves. A mid-stream read STALL is urllib3's
+# ``ReadTimeoutError``, retried by name above. The one visible side effect is
+# that the chunks already streamed were delivered to the agent's callback handler.
+_RETRYABLE_TRANSPORT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
+    botocore.exceptions.ReadTimeoutError,
+    botocore.exceptions.ConnectTimeoutError,
+    botocore.exceptions.EndpointConnectionError,
+    botocore.exceptions.ConnectionClosedError,
+    urllib3.exceptions.ProtocolError,
+)
+
+# Default retryable exception types, matched by isinstance against the exception and
+# its ``__cause__`` chain (see :func:`_raised_from`). ModelThrottledException is
+# included only if strands is available.
 DEFAULT_RETRYABLE_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     (ModelThrottledException,) if _STRANDS_AVAILABLE else ()
-)
+) + _RETRYABLE_TRANSPORT_EXCEPTION_TYPES
+
+# Bounds the ``__cause__`` walk; a real chain here is two or three links.
+_MAX_CAUSE_CHAIN = 16
+
+
+def _raised_from(error: BaseException, types: tuple[type[BaseException], ...]) -> bool:
+    """Whether ``error``, or an exception it was explicitly raised ``from``, is one
+    of ``types``.
+
+    Only ``__cause__`` is followed, never ``__context__``: Python sets the context on
+    any exception raised while another is being handled, so a deterministic failure
+    raised inside a caller's ``except`` would inherit the transience of whatever the
+    caller was handling. ``transient_errors`` follows the same rule for the same
+    reason. Cycle-safe and bounded.
+    """
+    seen: set[int] = set()
+    node: BaseException | None = error
+    while node is not None and id(node) not in seen and len(seen) < _MAX_CAUSE_CHAIN:
+        if isinstance(node, types):
+            return True
+        seen.add(id(node))
+        node = node.__cause__
+    return False
 
 
 def async_exponential_backoff_retry[T, **P](
@@ -484,6 +582,9 @@ def async_exponential_backoff_retry[T, **P](
             # reset the comparison and re-license an attempt that cannot return.
             # Measured rather than assumed: see lambda_deadline.attempt_cannot_finish.
             worst_attempt_seconds: float | None = None
+            # Whatever the CALLER was handling when it awaited this. Not ours to
+            # touch: see ``drop_failed_attempt``'s ``stop_at``.
+            caller_exception = sys.exc_info()[1]
 
             for attempt in range(max_retries):
                 attempt_started = time.time()
@@ -554,10 +655,9 @@ def async_exponential_backoff_retry[T, **P](
                     if is_image_request_rejection(e):
                         log_bedrock_invocation_error(e, attempt + 1)
                         raise
-                    # Check if this is a retryable exception type (e.g., Strands ModelThrottledException)
-                    is_retryable_type = retryable_exception_types and isinstance(
-                        e, retryable_exception_types
-                    )
+                    # A retryable exception type (Strands' ModelThrottledException,
+                    # botocore's transport failures), raw or raised ``from`` one.
+                    is_retryable_type = _raised_from(e, retryable_exception_types)
 
                     # Also check if exception name or message contains retryable error patterns
                     exception_name = type(e).__name__
@@ -591,6 +691,19 @@ def async_exponential_backoff_retry[T, **P](
                         await asyncio.sleep(backoff)
                         total_slept += backoff
                         delay = min(delay * exponential_base, max_delay)
+                        # The next attempt starts after this handler exits, so the
+                        # failure is unreachable by then; but a botocore timeout
+                        # leaves botocore's reference cycle behind it (see
+                        # ``drop_failed_attempt``), so without this the failed
+                        # attempt's serialised request stayed in memory until the
+                        # cyclic collector ran. Measured with a real botocore client
+                        # and an 8 MB request, cyclic collector off: 8, 16, 24 and
+                        # 32 MB still held at attempts 2-5 with read timeouts, and
+                        # the same with each raised ``from`` a Strands exception. A
+                        # botocore throttle (``ClientError``) leaves no cycle and
+                        # measured flat, which is why the branch above has no call
+                        # (#1706).
+                        drop_failed_attempt(e, stop_at=caller_exception)
                         continue
 
                     # Log bedrock invocation details for non-retryable exceptions

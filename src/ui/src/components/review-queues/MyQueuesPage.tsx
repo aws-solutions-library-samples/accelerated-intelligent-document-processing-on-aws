@@ -144,7 +144,7 @@ const MyQueuesPage = (): React.JSX.Element => {
     filtering: {
       empty: (
         <Box textAlign="center" color="inherit" padding="s">
-          No queues list you yet. An Admin adds you to a queue&apos;s Eligible Annotators in Queue Management; its queue then appears here.
+          No queues list you yet. An Admin adds you to a queue&apos;s Eligible Annotators in Review Management; its queue then appears here.
         </Box>
       ),
       noMatch: <TableNoMatchState onClearFilter={() => collectionActions.setFiltering('')} />,

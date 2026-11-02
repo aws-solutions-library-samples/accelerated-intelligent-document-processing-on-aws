@@ -161,7 +161,7 @@ class TestModalityIsLeftAlone:
         merged = merge_config_with_defaults(out, validate=False)
         merged["classification"]["task_prompt"] = text_only
         config = IDPConfig(**merged)
-        assert config.classification.one_stage.llm.modality.images is None
+        assert config.classification.combined.llm.modality.images is None
 
     def test_an_explicit_modality_survives(self):
         out = migrate_v07_to_v08(
@@ -194,8 +194,8 @@ class TestHolisticPromptRelocation:
         assert packet["system_prompt"] == "You split packets."
 
     def test_the_flat_prompts_are_copied_not_cleared(self):
-        """Two-stage Stage B falls back to them, and a config later switched
-        back to `page` would otherwise have no page prompt at all."""
+        """Split-then-classify section classification falls back to them, and a
+        config later switched back to `page` would otherwise have no page prompt at all."""
         out = migrate_v07_to_v08(
             {
                 "classification": {
@@ -309,8 +309,8 @@ class TestHolisticPromptRelocation:
             validate=False,
         )
         config = IDPConfig(**merged)
-        assert config.classification.one_stage.granularity == "packet"
-        assert config.classification.one_stage.packet.task_prompt == hand_written
+        assert config.classification.combined.granularity == "packet"
+        assert config.classification.combined.packet.task_prompt == hand_written
 
     def test_the_relocated_prompt_is_what_the_service_resolves(self):
         """End to end: a legacy holistic config must still run ITS OWN prompt.
@@ -416,7 +416,7 @@ class TestTheWholeChainAndTheMergePath:
                 }
             }
         )
-        assert out["classification"]["one_stage"]["granularity"] == "packet"
+        assert out["classification"]["combined"]["granularity"] == "packet"
         assert "classificationMethod" not in json.dumps(out)
 
     def test_a_v05_config_reaches_v08(self):
@@ -430,7 +430,7 @@ class TestTheWholeChainAndTheMergePath:
             }
         )
         assert out["config_format_version"] == CONFIG_FORMAT_VERSION
-        assert out["classification"]["one_stage"]["granularity"] == "page"
+        assert out["classification"]["combined"]["granularity"] == "page"
 
     def test_a_sparse_override_delta_survives_the_merge(self):
         """⚠️ The call-site risk, and the P0 shape #1079's sibling test pins for
@@ -444,8 +444,8 @@ class TestTheWholeChainAndTheMergePath:
         }
         merged = merge_config_with_defaults(delta, validate=False)
         config = IDPConfig(**merged)
-        assert config.classification.one_stage.granularity == "packet"
-        assert config.classification.one_stage.packet.task_prompt == PACKET_PROMPT
+        assert config.classification.combined.granularity == "packet"
+        assert config.classification.combined.packet.task_prompt == PACKET_PROMPT
 
     def test_the_model_drops_the_legacy_key(self):
         """It is no longer a field, and `extra="ignore"` means a config still
@@ -459,7 +459,7 @@ class TestTheWholeChainAndTheMergePath:
             }
         )
         assert not hasattr(config.classification, "classificationMethod")
-        assert config.classification.one_stage.granularity == "packet"
+        assert config.classification.combined.granularity == "packet"
 
     def test_the_shipped_defaults_carry_no_legacy_key(self):
         """Item 4 of the tidy-up: the default config uses the new settings."""
@@ -476,7 +476,7 @@ class TestTheWholeChainAndTheMergePath:
         )
         raw = yaml.safe_load(defaults.read_text())["classification"]
         assert "classificationMethod" not in raw
-        assert raw["one_stage"]["granularity"] == "page"
+        assert raw["combined"]["granularity"] == "page"
 
     def test_an_explicit_packet_granularity_blocks_the_relocation(self):
         """⚠️ The mirror image of the relocation's own purpose. A config that

@@ -216,29 +216,39 @@ not a CloudFormation parameter — the `EnableHITL` parameter was removed in v0.
 
 For comprehensive HITL documentation including workflow details, configuration steps, best practices, and troubleshooting, see the [Human-in-the-Loop Review Guide](./human-review.md). 
 
-## Edit Mode (Data-Only)
+## Editing BDA Documents
 
-A document processed in BDA mode (its configuration profile sets `use_bda`) gets a data-only Edit Mode in the Web UI, allowing users to edit extraction data (predictions and ground truth) without re-invoking Bedrock Data Automation. The Web UI decides this from the document's configuration profile, and the `processChanges` operation refuses any section or page change to such a document for every role; see [BDA-mode documents offer data-only editing](./web-ui.md#bda-mode-documents-offer-data-only-editing).
+A document processed in BDA mode (its configuration profile sets `use_bda`) is corrected
+on its edit page, without re-invoking Bedrock Data Automation. The Web UI decides this
+from the document's configuration profile, and the `processChanges` operation refuses any
+section or page change to such a document for every role; see
+[BDA-mode documents offer data-only editing](./web-ui.md#bda-mode-documents-offer-data-only-editing).
 
 ### Capabilities
 
-- **Edit Extraction Data**: Use **Edit Data** on a section (or **Edit** on the document page) to open the document's edit page, whose **Visual Editor** tab edits the fields
+- **Edit Extraction Data**: Choose **Edit Data** in a section row's **⋮** menu (or
+  **Edit** in the document page's action bar) to open the document's edit page, whose
+  **Visual Editor** tab edits the fields
 - **Modify Predictions**: Update predicted field values and review confidence scores
 - **Edit the evaluation baseline**: With **Show Evaluation** on, edit the baseline values the document is evaluated against. A test set's ground truth is edited in Test Studio
-- **Reprocess**: "Save and Reprocess" triggers evaluation and summarization without BDA re-invocation
+- **Process the corrections**: The edit page's **Process Changes** saves the edits and
+  re-runs evaluation and summarization on them, without BDA re-invocation
+- **Regroup pages**: **More Actions › Edit Page Grouping › Save page grouping** on the
+  document page saves a new page grouping and keeps the extracted values; nothing is
+  reprocessed
 
 ### Limitations
 
-Since Pattern-1 uses BDA to split the document into sections and classify them:
-
-- **Section Structure**: Read-only - cannot add, delete, or modify sections
-- **Page Assignments**: Read-only - BDA controls which pages belong to which sections, and the page-grouping board is not offered
-- **Classification**: Read-only - each section's class is determined by BDA blueprints
-- **Page Edits**: Not offered - a page class reset or a page text edit would clear section values that a BDA reprocess does not regenerate
+BDA splits the document into sections, classifies them and extracts their data, so
+the document page's structural and re-extraction actions are disabled in BDA mode: **Edit
+Page Class** (on the document page and the edit page), **Save and Re-extract**,
+**Re-extract Sections**, **Edit Page Text** and **Reset Page Class** show the reason.
+Correct values with **Edit Data** (the edit page) instead.
 
 ### How It Works
 
-When you click "Save and Reprocess" with existing pages and sections data:
+When the edit page's **Process Changes** runs on a document with existing pages and
+sections data:
 
 1. The workflow detects existing document data (pages > 0 and sections present)
 2. BDA invocation step is automatically skipped

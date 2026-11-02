@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The queue tables in HITL › Queue Management. What has to hold: there is no Create
+ * The queue tables in Review Studio › Review Management. What has to hold: there is no Create
  * queue control (queues other than Default stay listed and usable); both tables show
  * exactly Queue, Items, Pending, Assigned, Annotators and the actions menu, in that
  * order (Assigned counts every assigned item, started or not; the other settings
  * stay in the queue's Settings dialog); every production queue but Default can be
  * deleted, even one that holds items, and the confirmation says those items move to
- * the Default queue; a refusal while an item is being completed is shown in the
+ * the Default queue; so can a queue that is no longer defined but still holds items
+ * (what a delete that stopped part-way leaves), moving the rest; a refusal while an item is being completed is shown in the
  * dialog.
  */
 
@@ -61,9 +62,9 @@ const health = (name: string, depth: number, claimed = 0, inProgress = 0) => ({
   summary: { name, displayName: name, depth, unclaimed: depth - claimed, claimed, inProgress },
 });
 
-const renderPage = async () => {
+const renderPage = async (path = '/') => {
   render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <QueuesPage />
     </MemoryRouter>,
   );
@@ -71,7 +72,12 @@ const renderPage = async () => {
 };
 
 const table = () => createWrapper(document.body).findTable()!;
-const testSetTable = () => createWrapper(document.body).findAllTables()[1]!;
+const testSetTable = () => createWrapper(document.body).findTable()!;
+const tableTitles = () =>
+  createWrapper(document.body)
+    .findAllTables()
+    .map((t) => t.findHeaderSlot()?.findHeader()?.findHeadingText().getElement().textContent);
+const viewSwitch = () => createWrapper(document.body).findSegmentedControl()!;
 const headers = (t = table()) => t.findColumnHeaders().map((h) => h.getElement().textContent);
 const cell = (queue: string, header: string): string => {
   const col = headers().indexOf(header);
@@ -159,6 +165,29 @@ describe('the Production Queues table', () => {
     await waitFor(() => expect(setSuccessMessage).toHaveBeenCalledWith(expect.stringContaining('moved to the Default queue')));
   });
 
+  it('lets a queue that is no longer defined but holds items be deleted again, moving them', async () => {
+    // What a delete that stopped part-way leaves: the definition is gone first, the items after.
+    fetchQueuesOverview.mockResolvedValue({
+      queues: [
+        health('default', 0),
+        health('claims', 3, 2, 1),
+        { ...health('gone', 2), summary: { ...health('gone', 2).summary, displayName: 'Gone Queue' } },
+      ],
+    });
+    await renderPage();
+    await waitFor(() => expect(table().findRows().length).toBe(3));
+    const menu = openMenu('Gone Queue');
+    expect(itemDisabled(menu.findItemById('delete')!)).toBe(false);
+    expect(itemDisabled(menu.findItemById('edit')!)).toBe(true);
+    menu.findItemById('delete')!.click();
+    const modal = deleteModal();
+    expect(modal.findContent().getElement().textContent).toBe(
+      "Delete the queue Gone Queue (gone)? This can't be undone. 2 items will move to the Default queue.",
+    );
+    fireEvent.click(modal.findFooter()!.findAllButtons().at(-1)!.getElement());
+    await waitFor(() => expect(deleteReviewQueue).toHaveBeenCalledWith('gone'));
+  });
+
   it('keeps the Default queue from being deleted', async () => {
     await renderPage();
     const del = openMenu('Default').findItemById('delete')!;
@@ -177,9 +206,31 @@ describe('the Production Queues table', () => {
   });
 });
 
+describe('the Production | Test Studio switch', () => {
+  it('shows the Production Queues alone by default, and reads only them', async () => {
+    await renderPage();
+    expect(tableTitles()).toEqual(['Production Queues']);
+    expect(viewSwitch().findSelectedSegment()!.getElement().textContent).toBe('Production');
+    expect(listTestSetQueues).not.toHaveBeenCalled();
+  });
+
+  it('shows the Test Studio Queues alone once switched, and reads them', async () => {
+    await renderPage();
+    viewSwitch().findSegments()[1].click();
+    await waitFor(() => expect(tableTitles()).toEqual(['Test Studio Queues']));
+    expect(listTestSetQueues).toHaveBeenCalled();
+  });
+
+  it('opens on the Test Studio Queues for ?view=test, as the queue pages’ breadcrumbs link', async () => {
+    await renderPage('/?view=test');
+    expect(tableTitles()).toEqual(['Test Studio Queues']);
+    expect(listReviewQueues).not.toHaveBeenCalled();
+  });
+});
+
 describe('the Test Studio Queues table', () => {
   it('shows the same columns as the production table, Assigned counting started documents too', async () => {
-    await renderPage();
+    await renderPage('/?view=test');
     await waitFor(() => expect(testSetTable().findRows().length).toBe(1));
     expect(headers(testSetTable())).toEqual(['Queue', 'Items', 'Pending', 'Assigned', 'Annotators', 'Actions']);
     const row = (header: string) =>
@@ -197,6 +248,10 @@ describe('the table helpers', () => {
     expect(deleteDisabledReason(def('default'))).toBe("The default queue can't be deleted");
     expect(deleteDisabledReason(def('escalation'))).toBeUndefined();
     expect(deleteDisabledReason(null)).toBe('This queue is not defined');
+    expect(deleteDisabledReason(null, 0)).toBe('This queue is not defined');
+    expect(deleteDisabledReason(null, 1)).toBeUndefined();
+    expect(deleteDisabledReason(null, 2)).toBeUndefined();
+    expect(deleteDisabledReason(def('default'), 2)).toBe("The default queue can't be deleted");
   });
 
   it('names the items that will move only when there are some', () => {

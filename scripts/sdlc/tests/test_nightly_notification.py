@@ -192,3 +192,248 @@ def test_the_heredoc_terminator_is_unindented(script):
         "the heredoc terminator is indented after YAML's block-scalar dedent, so "
         "the shell never closes it and the job fails to parse at runtime."
     )
+
+
+# ---------------------------------------------------------------------------
+# The cause in the post. "Open the pipeline to see which job failed" made every
+# reader leave Slack to learn something the job could have said: on 2026-10-28
+# the scheduled run was red because a HIGH advisory had been published that day
+# against the UI's GraphQL tooling, and the post named neither the job nor the
+# advisory. These run the embedded functions against the log shapes those jobs
+# actually emit.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def notifier(script):
+    body = textwrap.dedent(
+        re.search(r"<<'PY'\n(.*?)\n\s*PY\s*$", script, re.S).group(1)
+    )
+    namespace = {"__name__": "nightly_notification"}
+    exec(compile(body, "nightly_notification", "exec"), namespace)  # noqa: S102  # nosec B102 - executes this repo's own shipped CI script under test
+    return namespace
+
+
+def _trace(*lines):
+    """A GitLab job trace: timestamp prefixes, ANSI colour, runner sections."""
+    stamped = [
+        f"2026-10-29T00:10:0{i % 10}.000000Z 01O {line}" for i, line in enumerate(lines)
+    ]
+    return "\n".join(
+        stamped
+        + [
+            # GitLab's real marker shape: the erase sequence after a \r.
+            "2026-10-29T00:11:00.000000Z 00O section_end:1793244593:step_script\r\x1b[0K",
+            "2026-10-29T00:11:00.000000Z 00O+\x1b[0K\x1b[36;1mUploading artifacts for failed job\x1b[0;m",
+            "2026-10-29T00:11:01.000000Z 01O lines after the script must not be quoted",
+            "2026-10-29T00:11:02.000000Z 00O \x1b[31;1mERROR: Job failed: exit code 1\x1b[0;m",
+        ]
+    )
+
+
+def test_section_markers_survive_the_carriage_return(notifier):
+    lines = notifier["clean_trace"](
+        "2026-10-29T00:11:00.000000Z 00O section_start:1:step_script\r\x1b[0K\n"
+        "2026-10-29T00:11:00.000000Z 01O real output\n"
+        "2026-10-29T00:11:00.000000Z 00O section_end:2:step_script\r\x1b[0K"
+    )
+    assert lines == ["real output", "section_end:2:step_script"]
+
+
+def test_main_runs_when_the_script_is_executed(script):
+    """The functions are exec'd under another name here, so main() never runs.
+
+    Without the guard and its call the job would exit 0 having posted nothing.
+    """
+    assert re.search(r'^\s*if __name__ == "__main__":\n\s+main\(\)\s*$', script, re.M)
+
+
+def test_a_dep_audit_failure_quotes_the_gating_advisory_only(notifier):
+    trace = _trace(
+        "Fetching severity for 22 advisories...",
+        "",
+        "GATING — at or above HIGH (1)",
+        "-" * 100,
+        "  HIGH           npm:@graphql-tools/executor-legacy-ws@1.1.35",
+        "    GHSA-434m-5hcj-pxf3  fixed in: 1.1.36",
+        "",
+        "ALLOWLISTED (triaged, not gating) (6)",
+        "  HIGH           PyPI:strands-agents@1.14.0",
+    )
+    cause = notifier["failure_cause"](trace)
+    assert "  HIGH           npm:@graphql-tools/executor-legacy-ws@1.1.35" in cause
+    assert "    GHSA-434m-5hcj-pxf3  fixed in: 1.1.36" in cause
+    assert not any("strands-agents" in line for line in cause), (
+        "an allowlisted advisory is not why the job failed"
+    )
+    assert not any(set(line.strip()) <= {"-"} for line in cause)
+
+
+def test_a_pytest_failure_quotes_the_failed_test_and_the_tally(notifier):
+    trace = _trace(
+        "\x1b[32mtests/unit/ocr/test_x.py ....\x1b[0m",
+        "FAILED tests/unit/ocr/test_x.py::TestA::test_b - AssertionError: boom",
+        "==== 1 failed, 16657 passed, 17 skipped in 196.70s (0:03:16) =====",
+        "make: *** [Makefile:81: test-unit-cicd] Error 1",
+    )
+    cause = notifier["failure_cause"](trace)
+    assert cause == [
+        "FAILED tests/unit/ocr/test_x.py::TestA::test_b - AssertionError: boom",
+        "==== 1 failed, 16657 passed, 17 skipped in 196.70s (0:03:16) =====",
+        "make: *** [Makefile:81: test-unit-cicd] Error 1",
+    ]
+
+
+def test_an_unrecognised_failure_falls_back_to_the_script_tail(notifier):
+    trace = _trace(*[f"step {n}" for n in range(30)], "something broke")
+    cause = notifier["failure_cause"](trace)
+    assert cause[-1] == "something broke"
+    assert len(cause) == notifier["MAX_CAUSE_LINES"]
+    assert not any("must not be quoted" in line for line in cause), (
+        "the runner's after-script bookkeeping is not the job's failure"
+    )
+
+
+def test_allowed_failures_are_not_reported_as_the_cause(notifier):
+    jobs = [
+        {"name": "ai_mr_review", "status": "failed", "allow_failure": True},
+        {"name": "dep_audit", "status": "failed", "allow_failure": False},
+        {"name": "unit_tests", "status": "success", "allow_failure": False},
+    ]
+    assert [j["name"] for j in notifier["blocking_failures"](jobs)] == ["dep_audit"]
+    # With only allowed failures there is no cause to name; the link is posted.
+    assert notifier["blocking_failures"](jobs[:1]) == []
+
+
+def test_many_failed_tests_do_not_push_out_the_tally(notifier):
+    trace = _trace(
+        *[f"FAILED tests/test_x.py::test_{n} - boom" for n in range(40)],
+        "==== 40 failed, 10 passed in 3.00s =====",
+        "make: *** [Makefile:81: test-unit-cicd] Error 1",
+    )
+    cause = notifier["failure_cause"](trace)
+    assert len(cause) == notifier["MAX_CAUSE_LINES"]
+    assert cause[-2:] == [
+        "==== 40 failed, 10 passed in 3.00s =====",
+        "make: *** [Makefile:81: test-unit-cicd] Error 1",
+    ]
+    assert cause[-3].startswith("… and ")
+
+
+def test_describe_names_the_job_and_only_an_unusual_failure_reason(notifier):
+    job = {"name": "unit_tests", "stage": "fast_checks", "web_url": "https://j/1"}
+    plain = notifier["describe"]({**job, "failure_reason": "script_failure"}, ["x"])
+    assert plain == "• unit_tests (fast_checks) failed: https://j/1\n    x"
+    timed_out = notifier["describe"](
+        {**job, "failure_reason": "job_execution_timeout"}, []
+    )
+    assert "job execution timeout" in timed_out
+
+
+def test_a_failed_deploy_job_is_not_described_as_never_deploying(notifier):
+    """integration_tests can die before writing deployment_summary.txt."""
+    status, body = notifier["no_summary_message"](["integration_tests"], "cause")
+    assert "BEFORE THE DEPLOY" not in status
+    assert "NOTHING was" not in body
+    assert "stack may have been" in body
+    status, body = notifier["no_summary_message"](["dep_audit"], "cause")
+    assert status == "❌ FAILED BEFORE THE DEPLOY (dep_audit)"
+    assert "NOTHING was" in body and body.endswith("cause")
+
+
+def test_the_status_stays_short_when_a_whole_stage_is_red(notifier):
+    names = [f"job_{n}" for n in range(7)]
+    status, _ = notifier["no_summary_message"](names, "cause")
+    assert status == "❌ FAILED BEFORE THE DEPLOY (job_0, job_1, job_2 +4)"
+
+
+@pytest.mark.parametrize("payload", ['{"message": "403 Forbidden"}', "42", "[1, 2]"])
+def test_an_unexpected_api_answer_degrades_to_the_link(notifier, monkeypatch, payload):
+    """Any error reading the cause must still leave a post to send."""
+    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", "t")
+    monkeypatch.setenv("CI_PROJECT_ID", "1")
+    monkeypatch.setenv("CI_PIPELINE_ID", "2")
+    monkeypatch.setitem(notifier, "api_get", lambda path, token: payload)
+    names, why = notifier["read_causes"]()
+    assert names is None
+    assert why
+
+
+def test_the_cause_falls_back_to_the_link_without_a_token(notifier, monkeypatch):
+    monkeypatch.delenv("GITLAB_REVIEW_TOKEN", raising=False)
+    names, why = notifier["read_causes"]()
+    assert names is None
+    assert "GITLAB_REVIEW_TOKEN" in why
+
+
+def test_a_failure_reason_never_carries_the_token(notifier, monkeypatch):
+    """The reason reaches Slack, where GitLab's variable masking does not apply."""
+    token = "glpat-secretvalue\n"
+    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", token)
+    monkeypatch.setenv("CI_PROJECT_ID", "1")
+    monkeypatch.setenv("CI_PIPELINE_ID", "2")
+    monkeypatch.setenv("CI_API_V4_URL", "https://gitlab.invalid/api/v4")
+
+    def refuse(request, timeout):
+        # What http.client raises for a header value holding a newline.
+        raise ValueError(f"Invalid header value {token!r}")
+
+    monkeypatch.setattr(notifier["urllib"].request, "urlopen", refuse)
+    names, why = notifier["read_causes"]()
+    assert names is None
+    assert "secretvalue" not in why
+    assert "[token]" in why
+
+
+def test_every_described_job_keeps_its_header_and_totals(notifier, monkeypatch):
+    """Four verbose red jobs must each survive the body cap, not just the first."""
+    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", "t")
+    monkeypatch.setenv("CI_PROJECT_ID", "1")
+    monkeypatch.setenv("CI_PIPELINE_ID", "2")
+    jobs = [
+        {
+            "id": n,
+            "name": f"job_{n}",
+            "stage": "fast_checks",
+            "status": "failed",
+            "allow_failure": False,
+            "web_url": f"https://j/{n}",
+        }
+        for n in range(4)
+    ]
+    long = "x" * 190
+    trace = _trace(
+        *[f"FAILED tests/test_{n}.py::t - {long}" for n in range(30)],
+        "==== 30 failed in 1.00s =====",
+        "make: *** [Makefile:1: t] Error 1",
+    )
+
+    def fake_get(path, token):
+        if path.endswith("/trace"):
+            if "/jobs/2/" in path:
+                raise OSError("gone")
+            return trace
+        return __import__("json").dumps(jobs)
+
+    monkeypatch.setitem(notifier, "api_get", fake_get)
+    names, causes = notifier["read_causes"]()
+    assert names == ["job_0", "job_1", "job_2", "job_3"]
+    _, body = notifier["no_summary_message"](names, causes)
+    assert len(body) <= notifier["MAX_BODY"]
+    for n in (0, 1, 3):
+        assert f"• job_{n} (fast_checks) failed" in body
+    assert body.count("make: *** [Makefile:1: t] Error 1") == 3
+    assert "(log not readable: OSError)" in body, "one bad log must not cost the rest"
+
+
+def test_a_lint_failure_quotes_why_not_only_which_target(notifier):
+    """Every gate runs through make, so make's line alone names no cause."""
+    trace = _trace(
+        "All checks passed!",
+        "Would reformat: scripts/sdlc/tests/test_x.py",
+        "1 file would be reformatted, 1686 files already formatted",
+        "make: *** [Makefile:209: lint-cicd] Error 1",
+    )
+    cause = notifier["failure_cause"](trace)
+    assert "Would reformat: scripts/sdlc/tests/test_x.py" in cause
+    assert cause[-1] == "make: *** [Makefile:209: lint-cicd] Error 1"

@@ -838,9 +838,11 @@ def scheduled_digests(
     Newest first, with ``own_pipeline`` left out: one listing of at most
     ``limit`` pipelines, then each pipeline's jobs, then the newest finished
     ``job``'s file, read by job id and refused past ``max_bytes``. A pipeline
-    whose job is absent or unfinished, or whose jobs or file cannot be read, is
-    paired with None, a gap rather than the end of the history, and so is every
-    pipeline not yet reached at ``deadline`` on ``clock``. A listing that cannot
+    whose jobs name no ``job`` at all is left out: it is a schedule that never
+    runs it (the weekly variant-probe and region runs), not a night. A pipeline
+    whose job is unfinished, or whose jobs or file cannot be read, is paired with
+    None, a gap rather than the end of the history, and so is every pipeline not
+    yet reached at ``deadline`` on ``clock``. A listing that cannot
     be read raises, as any other request here does.
     """
     found: list[tuple[int, bytes | None]] = []
@@ -850,7 +852,13 @@ def scheduled_digests(
         raw: bytes | None = None
         if clock() < deadline:
             try:
-                ident = _finished_job(forge.pipeline_jobs(pipeline_id), job)
+                jobs = forge.pipeline_jobs(pipeline_id)
+                if not any(
+                    isinstance(item, Mapping) and item.get("name") == job
+                    for item in jobs
+                ):
+                    continue
+                ident = _finished_job(jobs, job)
                 if ident is not None:
                     raw = forge.job_artifact(ident, artifact, limit=max_bytes)
             except (review.Skip, review.Failure):

@@ -47,6 +47,8 @@ export interface DocumentEditModel {
   loading: boolean;
   loadError: string | null;
   reload: () => Promise<void>;
+  /** The same read as `reload`, for Refresh: a failed read throws (a missing document still shows as not found). */
+  refresh: () => Promise<void>;
   pages: ReviewPage[];
   sections: ReviewSectionRef[];
   loadSection: (sectionId: string) => Promise<LoadedSection>;
@@ -77,26 +79,32 @@ export const useDocumentEdit = (objectKey: string, seed?: { document: RawDocumen
   // Each section's result as loaded or last saved: what an edit is compared with.
   const originals = useRef<Record<string, Record<string, unknown>>>({});
 
-  const reload = useCallback(async () => {
-    if (!objectKey) return;
-    setLoading(true);
-    try {
-      const result = await client.graphql({ query: getDocumentQuery, variables: { objectKey } });
-      const raw = result.data?.getDocument;
-      if (!raw) {
-        setDocument(null);
-        setLoadError('NOT_FOUND');
-        return;
+  const read = useCallback(
+    async (rethrow: boolean) => {
+      if (!objectKey) return;
+      setLoading(true);
+      try {
+        const result = await client.graphql({ query: getDocumentQuery, variables: { objectKey } });
+        const raw = result.data?.getDocument;
+        if (!raw) {
+          setDocument(null);
+          setLoadError('NOT_FOUND');
+          return;
+        }
+        setDocument(mapDocument(raw));
+        setLoadError(null);
+      } catch (err) {
+        logger.error('getDocument failed', err);
+        if (rethrow) throw err;
+        setLoadError(err instanceof Error ? err.message : 'The document could not be loaded.');
+      } finally {
+        setLoading(false);
       }
-      setDocument(mapDocument(raw));
-      setLoadError(null);
-    } catch (err) {
-      logger.error('getDocument failed', err);
-      setLoadError(err instanceof Error ? err.message : 'The document could not be loaded.');
-    } finally {
-      setLoading(false);
-    }
-  }, [objectKey]);
+    },
+    [objectKey],
+  );
+  const reload = useCallback(() => read(false), [read]);
+  const refresh = useCallback(() => read(true), [read]);
 
   useEffect(() => {
     originals.current = {};
@@ -170,6 +178,7 @@ export const useDocumentEdit = (objectKey: string, seed?: { document: RawDocumen
     loading,
     loadError,
     reload,
+    refresh,
     pages,
     sections,
     loadSection,

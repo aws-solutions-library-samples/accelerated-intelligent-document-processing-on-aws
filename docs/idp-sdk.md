@@ -138,6 +138,7 @@ client.search.query(...)
 # Configuration operations
 client.config.create(...)
 client.config.validate(...)
+client.config.migrate(...)
 client.config.upload(...)
 client.config.download(...)
 client.config.list()
@@ -747,7 +748,7 @@ result = client.evaluation.create_baseline(
 ### evaluation.use_as_baseline()
 
 Promote a processed document's output to the evaluation baseline — the
-programmatic equivalent of the web UI's **Use as Evaluation Baseline** button.
+programmatic equivalent of the web UI's **More Actions › Use As Evaluation Baseline** (Admin, Author).
 Copies the document's output into the evaluation baseline bucket and sets its
 `EvaluationStatus` to `BASELINE_AVAILABLE`. Runs synchronously.
 
@@ -1480,13 +1481,15 @@ Operations for managing IDP configurations.
 Generate an IDP configuration template.
 
 **Parameters:**
-- `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or comma-separated (default: `"min"`)
+- `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or one or more section names, comma-separated or as a list (default: `"min"`). A single section name is read the same way as a list, and blank segments are dropped. `"min"` switches summarization and evaluation off and leaves confidence scoring (`extraction.confidence`) on. No template carries a `classes` section: the system defaults have no document classes, and an empty list uploaded over a profile would replace its classes with none
 - `pattern` (str, optional): Pattern to use — `"pattern-1"` or `"pattern-2"` (default: `"pattern-2"`)
 - `output` (str, optional): Output file path
-- `include_prompts` (bool, optional): Include prompt templates (default: False)
+- `include_prompts` (bool, optional): Include prompt templates (default: False). When False, the long `system_prompt`, `task_prompt` and `user_prompt` values are left out of the template, so they take whatever value the configuration is merged over
 - `include_comments` (bool, optional): Include explanatory comments (default: True)
 
 **Returns:** `ConfigCreateResult` with `yaml_content` and `output_path`
+
+**Raises:** `IDPValidationError` when `features` names no section, an unknown feature set or section, or a feature set combined with section names, or only `classes` (empty in the system defaults, so there is nothing to write), and when `pattern` is not a known pattern. The message lists the valid sections. `config.parse_features(features)` returns how a value is read (a feature-set name, or a list of section names) without generating anything.
 
 ```python
 result = client.config.create(
@@ -1510,7 +1513,14 @@ Validate a configuration file against system defaults.
 - `show_merged` (bool, optional): Include merged configuration in result (default: False)
 - `strict` (bool, optional): Report deprecated/unknown fields as errors (default: False)
 
-**Returns:** `ConfigValidationResult` with `valid`, `validation_available`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+**Returns:** `ConfigValidationResult` with `valid`, `validation_available`, `document_loaded`, `class_count`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+
+`document_loaded` is False when the file could not be read or is not valid YAML; the
+one error then starts `Failed to load file:` or `YAML syntax error:`, which have
+different remedies. `class_count` is the number of document classes the file itself
+defines, not counting the system defaults, and is None when the file did not load or
+its top level is not a mapping. `idp-cli config-validate` reports from these fields
+rather than reading the file itself.
 
 `validation_available` is False when this installation could not run the checks at
 all — `idp_common`, which does the checking, is not importable — and the missing
@@ -1534,6 +1544,32 @@ else:
 
 for warning in result.warnings:
     print(f"Warning: {warning}")
+```
+
+### config.migrate()
+
+Convert a configuration file to the current configuration format, the way the loader
+converts it on every read (for example, the pre-0.9 flat classification keys). Nothing
+is validated; call `config.validate()` for that. `idp-cli config-validate
+--emit-migrated <path>` is this method.
+
+**Parameters:**
+- `config_file` (str, required): Path to the configuration file
+- `output` (str, optional): Path to write the migrated YAML to
+
+**Returns:** `ConfigMigrateResult` with `yaml_content` (headed by a comment naming the
+format version and the source file), `config_format_version` and `output_path`
+
+**Raises:** `IDPValidationError` when the file is not valid YAML or cannot be read,
+with the same two messages `config.validate()` reports, or when its top level is not a
+mapping
+
+```python
+result = client.config.migrate(
+    config_file="./old-config.yaml",
+    output="./config-current.yaml",
+)
+print(result.config_format_version)
 ```
 
 ### config.upload()
@@ -2014,8 +2050,8 @@ Discover document classes from a collection of documents using embedding-based c
 **Parameters:**
 - `document_dir` (str, optional): Directory path containing documents to analyze (recursive scan)
 - `document_paths` (list[str], optional): List of individual document file paths
-- `embedding_model_id` (str, optional): Bedrock embedding model ID (default: `us.cohere.embed-v4:0`)
-- `analysis_model_id` (str, optional): Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`)
+- `embedding_model_id` (str, optional): Bedrock embedding model ID (default: `us.cohere.embed-v4:0`; `eu.cohere.embed-v4:0` in EU Regions, `global.cohere.embed-v4:0` in Canada)
+- `analysis_model_id` (str, optional): Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`; `eu.anthropic.claude-sonnet-4-6` in EU Regions)
 - `output_dir` (str, optional): Directory to write individual JSON schema files per discovered class
 - `save_to_config` (bool, optional): Save discovered schemas to the stack's configuration (default: False)
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to save schemas to (required with `save_to_config`)
@@ -2325,6 +2361,7 @@ from idp_sdk import (
 
     # Config models
     ConfigCreateResult,
+    ConfigMigrateResult,
     ConfigValidationResult,
     ConfigUploadResult,
     ConfigDownloadResult,

@@ -151,9 +151,9 @@ def compute_boundary_and_label_accuracy(
     and a wrong label are reported as the same failure. That is the defect
     GitHub issue #1329 names: tuning effort goes to the wrong place, because the
     number cannot say whether the model is splitting the packet wrongly or
-    naming the pieces wrongly. Two-stage classification makes the distinction
-    actionable — the two halves are separate calls that can use separate models
-    — but the distinction is worth having on single-pass too, and it costs
+    naming the pieces wrongly. The split-then-classify strategy makes the
+    distinction actionable — the two halves are separate calls that can use
+    separate models — but the distinction is worth having on combined runs too, and it costs
     nothing to compute from data already loaded.
 
     The decomposition is exact rather than approximate:

@@ -299,7 +299,7 @@ The solution creates various IAM roles to run different components of the system
   * `s3vectors:CreateIndex`, `s3vectors:DeleteIndex` on `bucket/*/index/<index name>` (the index name is exact)
   * `s3vectors:ListIndexes`, and `s3vectors:DeleteIndex` on any index, on the stack's own vector bucket only, named exactly — deleting the stack deletes every index in that bucket before the bucket, because S3 Vectors will not delete a bucket that still holds an index. Not granted when `pS3VectorBucketName` names the bucket
   * `bedrock:CreateKnowledgeBase`, `bedrock:DeleteKnowledgeBase`, `bedrock:GetKnowledgeBase`, `bedrock:UpdateKnowledgeBase`, `bedrock:ListKnowledgeBases`
-  * `iam:PassRole` (to hand the Knowledge Base Service Role to Bedrock)
+  * `iam:PassRole` on the Knowledge Base Service Role only, with an `iam:PassedToService` condition naming Bedrock (granted in a separate policy, because naming that role in this one would be a circular dependency)
 
 #### Monitoring & Evaluation Roles
 * **CloudWatch Dashboard Role**:
@@ -388,6 +388,12 @@ The solution creates various IAM roles to run different components of the system
   * `kms:Decrypt`, `kms:GenerateDataKey` on the stack's customer-managed key, conditioned on `kms:ViaService: s3.<region>.<url-suffix>`. ⚠️ **Required, not optional:** the input bucket is SSE-KMS, so without this every scan returns `ACCESS_DENIED` and — failing closed — every document is refused.
   * No wildcard resource in any statement, asserted by `scripts/tests/test_malware_scanning_template.py`.
   * Accepts `PermissionsBoundaryArn` and attaches it when set.
+
+* **AgentCore Gateway Manager Role** (optional MCP integration, `EnableMCP: true`) — the custom-resource function that creates, updates and deletes the gateway:
+  * `bedrock-agentcore:*` — gateway and gateway target lifecycle (list, get, create, update, delete). `Resource: "*"`: the gateway id is assigned by the service.
+  * `logs:DeleteDeliverySource`, `logs:DeleteDeliveryDestination` on `Resource: "*"`, and `logs:DeleteLogGroup` on `/aws/vendedlogs/bedrock-agentcore/gateway/APPLICATION_LOGS/*` only — on delete, removes the log group and delivery resources that gateways created by earlier versions have. Nothing in the function creates them.
+  * `iam:GetRole`, `iam:PassRole` on the gateway execution role only — no IAM write.
+  * `kms:Encrypt`, `Decrypt`, `ReEncrypt*`, `GenerateDataKey*`, `DescribeKey` on the stack's customer-managed key.
 
 * **AgentCore Gateway Execution Role** (optional MCP integration, `EnableMCP: true`):
   * `lambda:InvokeFunction` (MCP handler)

@@ -4,5 +4,4 @@ huggingface-hub==0.20.0
 # For reading parquet metadata files efficiently
 pyarrow==23.0.1
 
-# For CloudFormation custom resource responses
-cfnresponse
+# cfnresponse is vendored as cfnresponse.py beside index.py, not installed.

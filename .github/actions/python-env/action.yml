@@ -101,20 +101,31 @@ runs:
       env:
         WANT_CFN_LINT: ${{ inputs.cfn-lint }}
       run: |
+        # Every install below is constrained to lib/idp_common_pkg/uv.lock, so CI
+        # tests the dependency set the lock records rather than whatever the index
+        # resolves to today. The tool pins take the same `-c`, so a tool installed
+        # first cannot hold a shared dependency at an unlocked version, and
+        # `install-first-party` applies it itself. Passed per command rather than
+        # as UV_CONSTRAINT, which would reach every later `uv` call in the job,
+        # including the layer builds a publish test could start. Same file, same
+        # form as `.python_setup` in .gitlab-ci.yml; see LOCK_CONSTRAINTS in the
+        # Makefile (#1707).
+        export LOCK_CONSTRAINTS="$GITHUB_WORKSPACE/build/lock-constraints/idp_common_pkg.txt"
+        make lock-constraints
         # Pinned for the same reason as cfn-lint below: an unpinned linter on a
         # blocking gate can red-line develop with no code change. Keep in step
         # with RUFF_VERSION in the Makefile, which is the single source of truth
         # — scripts/tests/test_ci_gate_parity.py fails if this, .gitlab-ci.yml
         # and the Makefile disagree.
-        uv pip install 'ruff==0.15.13'
+        uv pip install -c "$LOCK_CONSTRAINTS" 'ruff==0.15.13'
         if [ "$WANT_CFN_LINT" = "true" ]; then
           # Pinned: cfn-lint gates templates via `make lint-cicd`, and an unpinned
           # linter can red-line develop with no code change when a new release
           # promotes a check to ERROR class. Keep in step with CFN_LINT_VERSION in
           # the Makefile.
-          uv pip install 'cfn-lint==1.51.0'
+          uv pip install -c "$LOCK_CONSTRAINTS" 'cfn-lint==1.51.0'
         fi
-        uv pip install typer rich boto3
+        uv pip install -c "$LOCK_CONSTRAINTS" typer rich boto3
         # ALL first-party packages in a single pip pass. They depend on each other
         # by bare name and those names are squatted on public PyPI, so a split
         # install would resolve a sibling from PyPI — see the FIRST_PARTY_EDITABLES

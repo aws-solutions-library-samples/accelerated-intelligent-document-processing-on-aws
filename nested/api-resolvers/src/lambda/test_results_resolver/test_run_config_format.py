@@ -87,7 +87,7 @@ def test_a_pre_0_9_run_is_read_back_nested(module, as_item):
     body = _read_back(module, item)["Config"]
 
     assert "model" not in body["classification"]
-    assert body["classification"]["one_stage"]["llm"]["model"] == "flat-model"
+    assert body["classification"]["combined"]["llm"]["model"] == "flat-model"
     assert body["config_format_version"] == CONFIG_FORMAT_VERSION
     # The stored capture is not rewritten.
     assert capture == _flat_capture()

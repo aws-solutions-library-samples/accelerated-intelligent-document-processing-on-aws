@@ -126,7 +126,7 @@ def corpus_located():
     carve-out has to name the grid it applies to, or it would shield the same shape
     anywhere — so that one check reads this instead.
     """
-    return [(f"{suite}", row) for _v, suite, row in _rows()]
+    return [(f"{release}/{suite}", row) for release, suite, row in _rows()]
 
 
 def _defined(corpus):
@@ -464,7 +464,7 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
     a hole if those runs were producing rows the measurement could not see. They are
     not: every such run with a synthetic row count recorded returned no list at all.
 
-    ``rows_extracted == 0`` is how that reads on all but four runs, and the exception
+    ``rows_extracted == 0`` is how that reads on all but six runs, and the exception
     is this scorer rather than the walk — see the carve-out below, which is the one
     place in this suite where a non-zero row count does not mean rows.
     """
@@ -476,9 +476,10 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
         if isinstance(r.get("rows_extracted"), (int, float)) and r["rows_extracted"]
     ]
 
-    # ⚠️ Four runs record a non-zero `rows_extracted` here, and the defect is in
-    # THIS SCORER rather than in the coverage walk (#1505). On four
-    # `coresynth__extraction-model-sonnet55` runs over `med_narrow.pdf` the
+    # ⚠️ Six runs record a non-zero `rows_extracted` here, and the defect is in
+    # THIS SCORER rather than in the coverage walk (#1505). On six
+    # `coresynth__extraction-model-sonnet55` runs over `med_narrow.pdf` — four in the
+    # v0.6.12 grid and two in the v0.6.13 grid — the
     # `Transactions` field came back as a prose refusal — "The statement contains 400
     # transactions (SEQ00000 to SEQ00399). They are too many to list in full here
     # ..." — so there was no array, and `expected_rows == 0` is the coverage walk
@@ -491,18 +492,23 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
     #
     # So the carve-out stands but the premise it carves out of is intact: no rows were
     # extracted on these runs, and the extraction-side signal for the shape is
-    # `extraction_list_field_not_a_list` (#1505), which postdates this grid.
+    # `extraction_list_field_not_a_list` (#1505). It postdates the v0.6.12 grid, and
+    # both v0.6.13 instances carry it, which is the detection working on the shape
+    # rather than a new defect.
     # `rows_extracted` is deliberately NOT re-derived: the raw section objects these
     # grids were scored from are not committed, so a changed scan cannot be
     # re-measured over them and would leave two incomparable definitions in one
     # corpus.
     #
-    # Carved out BY NAME and COUNT-PINNED rather than filtered by shape, so a fifth
-    # instance — or the same shape on another model or document — fails here.
+    # Carved out BY NAME and COUNT-PINNED PER GRID rather than filtered by shape, so
+    # another instance in either grid — or the same shape in another release's grid,
+    # on another model or on another document — fails here. The key carries the
+    # release directory, so a later release's grid of the same suite is not shielded
+    # by an entry written for an earlier one.
     KNOWN_UNDEFINED_WITH_ROWS = {
-        ("coresynth__extraction-model-sonnet55", "med_narrow.pdf"),
+        ("v0.6.12/coresynth__extraction-model-sonnet55", "med_narrow.pdf"): 4,
+        ("v0.6.13/coresynth__extraction-model-sonnet55", "med_narrow.pdf"): 2,
     }
-    EXPECTED_KNOWN = 4
 
     known = [(g, r) for g, r in with_rows if (g, r["doc"]) in KNOWN_UNDEFINED_WITH_ROWS]
     unknown = [pair for pair in with_rows if pair not in known]
@@ -515,9 +521,11 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
         "#1505 carve-out above. Establish which before relaxing anything. First "
         f"few: {[(g, r['doc'], r['cell'], r['rows_extracted']) for g, r in unknown[:5]]}"
     )
-    assert len(known) == EXPECTED_KNOWN, (
-        f"the #1505 carve-out now shields {len(known)} runs, not {EXPECTED_KNOWN}. "
-        "If the count grew, a new instance has appeared and belongs on that issue; if "
-        "it shrank to 0 the grids carrying it are gone and this carve-out should be "
-        "deleted along with it."
-    )
+    for key, expected in KNOWN_UNDEFINED_WITH_ROWS.items():
+        shielded = sum(1 for g, r in known if (g, r["doc"]) == key)
+        assert shielded == expected, (
+            f"the #1505 carve-out for {key} now shields {shielded} runs, not "
+            f"{expected}. If the count grew, a new instance has appeared and belongs on "
+            "that issue; if it shrank to 0 the grid carrying it is gone and this entry "
+            "should be deleted along with it."
+        )

@@ -74,11 +74,19 @@ interface UseGraphQlApiParams {
   initialPeriodsToLoad?: number;
 }
 
+/** How getDocumentDetailsFromIds reports a refused read. */
+export interface DocumentDetailsOptions {
+  /** Raise the shared error banner (default true). */
+  reportErrors?: boolean;
+  /** Told each key whose read was refused, with the reason. */
+  onError?: (objectKey: string, error: unknown) => void;
+}
+
 interface UseGraphQlApiReturn {
   documents: Document[];
   isDocumentsListLoading: boolean;
   hasListBeenLoaded: boolean;
-  getDocumentDetailsFromIds: (objectKeys: string[], options?: { reportErrors?: boolean }) => Promise<Document[]>;
+  getDocumentDetailsFromIds: (objectKeys: string[], options?: DocumentDetailsOptions) => Promise<Document[]>;
   setIsDocumentsListLoading: React.Dispatch<React.SetStateAction<boolean>>;
   setPeriodsToLoad: React.Dispatch<React.SetStateAction<number>>;
   periodsToLoad: number;
@@ -226,7 +234,7 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
    * re-renders the detail view — not just returned to the caller.
    */
   const getDocumentDetailsFromIds = useCallback(
-    async (objectKeys: string[], { reportErrors = true }: { reportErrors?: boolean } = {}): Promise<Document[]> => {
+    async (objectKeys: string[], { reportErrors = true, onError }: DocumentDetailsOptions = {}): Promise<Document[]> => {
       logger.debug('getDocumentDetailsFromIds', objectKeys);
       const getDocumentPromises = objectKeys.map((objectKey) => client.graphql({ query: getDocument, variables: { objectKey } }));
       const getDocumentResolutions = await Promise.allSettled(getDocumentPromises);
@@ -246,6 +254,11 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
       const firstRejection = getDocumentResolutions.find((r) => r.status === 'rejected');
       // `reportErrors: false` is for a caller that reads many documents and says
       // itself how many it could not, rather than raising the shared banner per call.
+      // `onError` is told each key whose read was refused, so a caller can tell a
+      // failed read from a document that does not exist (which resolves to nothing).
+      getDocumentResolutions.forEach((r, i) => {
+        if (r.status === 'rejected') onError?.(objectKeys[i], r.reason);
+      });
       if (firstRejection) {
         const reason = (firstRejection as PromiseRejectedResult).reason;
         if (reportErrors) setErrorMessage(describeApiError(reason, 'load this document'));

@@ -134,7 +134,7 @@ _OPERATION_REQUIRED_GROUPS = {
     # Annotator included so the annotate view can populate its class dropdown, and
     # ONLY for that: the response is reduced to the class vocabulary for a caller who
     # is not otherwise entitled to the configuration. See _class_vocabulary_only.
-    "getConfigVersion": {"Admin", "Author", "Viewer", "Annotator"},
+    "getConfigVersion": {"Admin", "Author", "Viewer", "Annotator", "Reviewer"},
     # Not Annotator: revision history serves no annotator flow, and unlike
     # getConfigVersion there is no reduced payload for it to receive.
     "listConfigProfileRevisions": {"Admin", "Author", "Viewer"},

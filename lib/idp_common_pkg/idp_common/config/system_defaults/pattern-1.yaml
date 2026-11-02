@@ -2,27 +2,27 @@
 # SPDX-License-Identifier: MIT-0
 
 # =============================================================================
-# PATTERN-1 SYSTEM DEFAULTS (Bedrock Data Automation)
+# BDA MODE SYSTEM DEFAULTS (Bedrock Data Automation, `use_bda: true`)
 # =============================================================================
-# Pattern-1 uses Amazon Bedrock Data Automation (BDA) which provides:
+# BDA mode uses Amazon Bedrock Data Automation (BDA), which provides:
 #   - Built-in OCR (no separate Textract step)
 #   - Built-in classification via BDA Blueprints
 #   - Built-in extraction via BDA Blueprints
 #
 # BDA handles OCR, classification, and extraction internally via Blueprints,
-# so these sections are NOT included in this pattern's defaults.
+# so these sections are NOT included in BDA mode's defaults.
 # Only LLM-based features (confidence, summarization, agents, etc.) are configured.
 # =============================================================================
 
 # Processing mode: bda = Bedrock Data Automation
 use_bda: true
 
-# Only inherit modules relevant to Pattern-1
+# Only inherit modules relevant to BDA mode
 # Note: base-ocr, base-classification, base-extraction are NOT inherited.
 # base-confidence.yaml + base-geometry.yaml are the v0.6 homes of what was formerly
 # one assessment module: per-field confidence moved to `extraction.confidence`,
 # bounding-box geometry to `extraction.geometry`, and the HITL knobs to top-level
-# `hitl`. Both are inherited here — as they are in base.yaml — so this pattern keeps
+# `hitl`. Both are inherited here — as they are in base.yaml — so BDA mode keeps
 # the confidence/geometry/HITL defaults it carried before that split. They
 # contribute only the `confidence` and `geometry` sub-sections of `extraction`,
 # never the LLM extraction settings BDA does not use.
@@ -36,4 +36,4 @@ _inherits:
   - base-agents.yaml
   - base-discovery.yaml
 
-notes: "Pattern-1 default configuration - Bedrock Data Automation (BDA)"
+notes: "BDA mode default configuration - Bedrock Data Automation (BDA)"

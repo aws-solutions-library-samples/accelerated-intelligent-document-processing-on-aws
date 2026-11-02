@@ -58,10 +58,10 @@ status column on the document's own page, which reads the section's
 which :func:`persist_failed_section` uses — that writer emits a single
 ``SET Sections[i] = :section`` and touches no counter. So a failure recorded through
 the section path is visible on the document's page and may leave the list's badge
-reading its previous (often zero) value. Neither list resolver recovers it: the
-range resolver returns the stored value, the GSI resolver cannot return the counter
-at all (it is absent from that index's INCLUDE projection) and returns no
-``Sections`` either, and the UI prefers any non-null stored value over deriving one.
+reading its previous (often zero) value. Neither list resolver recovers it: both
+return the stored value (the GSI resolver through ``TypeDateIndexV2``'s projection),
+neither returns ``Sections`` to derive from, and the UI prefers any non-null stored
+value over deriving one.
 
 That is deliberate rather than an oversight, and the reason is that the correct
 count is not knowable from that writer. ``update_document_section`` does not read the

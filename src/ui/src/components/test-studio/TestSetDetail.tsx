@@ -1241,7 +1241,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   id: 'objectKey',
                   header: 'Document',
                   cell: (item: TestSetDocumentItem) => (
-                    <Link href={testSetAnnotateHref(testSetId ?? '', item.objectKey)}>{item.objectKey}</Link>
+                    <Link href={testSetAnnotateHref(testSetId ?? '', item.objectKey, 'test-studio')}>{item.objectKey}</Link>
                   ),
                   sortingComparator: compareByObjectKey,
                 },
@@ -1292,7 +1292,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   width: 120,
                   cell: (item: TestSetDocumentItem) => (
                     <Box variant="span" fontSize="body-s">
-                      <Link href={testSetAnnotateHref(testSetId ?? '', item.objectKey)}>Edit</Link>
+                      <Link href={testSetAnnotateHref(testSetId ?? '', item.objectKey, 'test-studio')}>Edit</Link>
                     </Box>
                   ),
                 },

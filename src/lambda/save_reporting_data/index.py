@@ -52,7 +52,8 @@ def _document_config(
     except Exception as e:
         logger.warning(
             f"Could not read revision r{config_revision} of configuration profile "
-            f"'{config_version}': {e}. Building the report from the profile head."
+            f"'{config_version}': {e}. Building the report from the profile head.",
+            exc_info=True,
         )
         return get_config(
             table_name=config_table_name, as_model=True, version=config_version

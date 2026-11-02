@@ -11,18 +11,19 @@
 // item directly: the first draft save, or Process Changes, assigns it to them. An item
 // assigned to someone else is view-only for an Admin until they Take over.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { Box, Button, Link } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
-import { MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH, documentEditHref, productionQueuePath } from '../../routes/constants';
+import { MY_QUEUES_PATH, documentEditHref, parseEditOrigin, productionQueuePath } from '../../routes/constants';
 import type { ReviewItem, ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/copy-to-baseline';
-import { saveDocumentGrouping } from '../common/document-grouping';
+import { saveDocumentGroupingOrThrow } from '../common/document-grouping';
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
+import { editActiveHref, editTrail } from '../review-queues/breadcrumbs';
 import { claimItem, documentName, releaseItem, reviewErrorCode, takeOverItem } from '../review-queues/review-api';
 import ReviewTaskContext from '../review-queues/ReviewTaskContext';
 import { productionWorkItemId } from '../review-queues/work-item-ids';
@@ -36,13 +37,16 @@ import type { EditorSession } from './use-editor-session';
 /** Why Summary and Use As Evaluation Baseline wait: they are about the reviewed document. */
 const REVIEW_NOT_COMPLETE = 'Available once the review is complete';
 
-/** On a Production item only an Admin holding it may regroup: an Annotator regroups only test-set documents. */
-export const QUEUE_REGROUP_ROLE_REASON = 'Edit Page Class needs the Admin role on a review queue item.';
+/**
+ * Why an Annotator who may claim the item can't regroup it yet: only the item's holder
+ * may change its page grouping (the server's rule), so the Annotator claims it first.
+ */
+export const CLAIM_TO_REGROUP_REASON = 'Claim this item first to change its page grouping';
 
 /** Notices for the in-review states that are not open for editing, each saying what happens next. */
 export const HOLDING_NOTICE = 'This item is being prepared for review. It can be edited once it reaches its queue.';
 export const FINALIZE_FAILED_NOTICE =
-  "Applying this review's corrections failed, so it can no longer be edited here. An Admin can see it in Queue Management.";
+  "Applying this review's corrections failed, so it can no longer be edited here. An Admin can see it in Review Management.";
 
 /** What a failed action was trying to do, in the error it reports. */
 const FAILED_ACTION: Record<EditAction, string> = {
@@ -53,6 +57,7 @@ const FAILED_ACTION: Record<EditAction, string> = {
   process: 'process the changes',
   save: 'save your draft',
   cancel: 'leave the item',
+  refresh: 'reload the item',
 };
 
 /** An Annotator was assigned the item between the Admin opening it and editing it. */
@@ -70,10 +75,11 @@ export const useProductionItemEditModel = (
   const adapter = useProductionItemEdit(objectKey, seed);
   const { detail, loadError, reload } = adapter;
   const { user, setErrorMessage, setSuccessMessage } = useAppContext();
-  const { isAdmin, isAnnotator, canWrite } = useUserRole();
+  const { isAdmin, isQueueWorker, canWrite } = useUserRole();
   const reviewWork = useOptionalReviewWork();
   const leavePath = useLeavePath();
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const focusField = searchParams.get('field');
   const initialSectionId = searchParams.get('section');
   const [takingOver, setTakingOver] = useState(false);
@@ -134,12 +140,17 @@ export const useProductionItemEditModel = (
 
   const queueId = detail?.item.queue;
   const queueCrumb = queueId ? { text: detail?.queueName || queueId, href: `#${productionQueuePath(queueId)}` } : null;
+  // The trail the user came by; without one, an Admin works items from Review Management
+  // and an Annotator from Tasks.
+  const origin = parseEditOrigin(location.search) ?? (isAdmin ? 'review' : 'tasks');
   const navigation: EditNavigation = {
-    // Home only until the item, and so its queue, is known.
-    root: queueCrumb,
-    crumbs: queueCrumb ? [{ text: documentName(objectKey), href: '#' }] : [],
-    // An Admin works items from Queue Management; an Annotator from Tasks.
-    activeHref: isAdmin ? `#${REVIEW_QUEUES_PATH}` : `#${MY_TASKS_PATH}`,
+    trail: editTrail({
+      origin,
+      objectKey,
+      name: documentName(objectKey),
+      queue: queueCrumb ? { crumb: queueCrumb, view: 'production' } : null,
+    }),
+    activeHref: editActiveHref(origin),
   };
 
   if (loadError && !detail) {
@@ -178,7 +189,7 @@ export const useProductionItemEditModel = (
   // An Admin takes over an item assigned to someone else before editing it.
   const canTakeOver = isAdmin && assigned && !assignedToMe;
   // An Annotator (not an Admin, whose edits assign the item) claims an item waiting for review.
-  const canClaim = isAnnotator && !isAdmin && item.state === QueueItemState.OPEN;
+  const canClaim = isQueueWorker && !isAdmin && item.state === QueueItemState.OPEN;
   // Summary and Use as Evaluation Baseline are about the finished document: only once its
   // review is complete and the corrections have been applied.
   const finished = item.state === QueueItemState.COMPLETE;
@@ -276,11 +287,12 @@ export const useProductionItemEditModel = (
         cancelDisabledReason: saving ? 'Saving your latest edits…' : undefined,
         showSave: canEdit,
         saveDisabledReason: !dirty ? 'No changes to save' : saving ? 'Saving your latest edits…' : undefined,
+        showRefresh: true,
+        refreshDisabledReason: saving ? 'Saving your latest edits…' : undefined,
         showRegroup: true,
         regroupDisabledReason:
-          lockedReason ??
-          (canEdit && !isAdmin ? QUEUE_REGROUP_ROLE_REASON : undefined) ??
-          (dirty ? 'Saving your latest edits…' : undefined),
+          // The item's holder regroups, Annotator or Admin, as the server allows.
+          (!terminal && canClaim ? CLAIM_TO_REGROUP_REASON : lockedReason) ?? (dirty ? 'Saving your latest edits…' : undefined),
         // copyToBaseline is Admin and Author (canWrite), as on the document page.
         showBaseline: canWrite,
         baselineDisabledReason: finished ? baselineCopyBlockedReason(adapter.evaluationStatus) : REVIEW_NOT_COMPLETE,
@@ -328,15 +340,9 @@ export const useProductionItemEditModel = (
           return true;
         },
         save: async (next) => {
-          let result;
-          try {
-            result = await saveDocumentGrouping(objectKey, next);
-          } catch (err) {
-            throw new Error(describeApiError(err, 'save the page grouping'));
-          }
-          if (!result.success) throw new Error(result.message ?? 'The page grouping could not be saved.');
+          const message = await saveDocumentGroupingOrThrow(objectKey, next, (err) => describeApiError(err, 'save the page grouping'));
           await Promise.all([reload(), adapter.refreshDocument()]);
-          return result.message ?? null;
+          return message;
         },
       },
       history: { reviewActivity: detail.history },
@@ -378,6 +384,7 @@ export const useProductionItemEditModel = (
         void adapter.refreshDocument();
         return `Copying ${name} to the evaluation baseline.`;
       },
+      refresh: adapter.refresh,
       cancelTo: leavePath(queuePath),
       failures: {
         surface: 'flash',

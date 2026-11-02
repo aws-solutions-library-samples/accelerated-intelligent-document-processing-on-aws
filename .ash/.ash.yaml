@@ -124,19 +124,6 @@ global_settings:
         SheetJS ReDoS, affected range "< 0.20.2". src/ui pins exactly 0.20.2 from
         cdn.sheetjs.com — the version the advisory names as the fix. Same
         open-ended-range artifact as GHSA-4r6h-8v6p-xvw6.
-    - rule_id: 'GHSA-vfj7-8cjw-p6xm'
-      path: 'src/ui/**'
-      reason: >-
-        braces: not reachable. It reaches src/ui only as a development dependency
-        of micromatch (build and lint tooling); the browser bundle does not include
-        it, and the patterns it expands come from this repository's configuration.
-        No fixed release exists yet.
-    - rule_id: 'GHSA-ch52-4w7c-c8xp'
-      path: 'docs-site/**'
-      reason: >-
-        http-cache-semantics: not reachable. It reaches the repository only through
-        astro in docs-site, which CI builds into static files; no deployed component
-        runs astro or a shared HTTP cache on it. No fixed release exists yet.
     - rule_id: 'GHSA-c4qx-w738-7hr3'
       path: 'src/ui/**'
       reason: >-
@@ -144,34 +131,6 @@ global_settings:
         through the @graphql-codegen dev tooling and nothing under src/ui/src
         imports it. The fixed releases need Node 22.15, newer than the Node 22.14
         the UI build pins under engine-strict. Revisit when the Node pin moves.
-    - rule_id: 'GHSA-4v6f-7vjh-6x4m'
-      path: 'lib/idp_common_pkg/**'
-      reason: >-
-        strands-agents: not reachable. The advisory is in the SDK's Agent2Agent
-        (A2A) server, which this repo never starts: nothing imports
-        strands.multiagent.a2a and the a2a extra is installed nowhere. The fix
-        (1.43.0) is far past the 1.14.0 pin and needs its own upgrade change.
-    - rule_id: 'GHSA-4v6f-7vjh-6x4m'
-      path: 'nested/multi-doc-discovery/**'
-      reason: >-
-        strands-agents, pinned at 1.14.0 again in the discovery stack's
-        requirements: not reachable, for the reason the lib/idp_common_pkg entry
-        for this advisory gives.
-    - rule_id: 'GHSA-3w55-933p-8pv5'
-      path: 'lib/idp_common_pkg/**'
-      reason: >-
-        strands-agents: not reachable. The advisory is in FileSessionManager's
-        default storage under the system temp dir. Agent's session_manager
-        defaults to None, the SDK never creates one itself, and nothing in this
-        repo passes one, so no session files are written. The fix is 1.48.0,
-        past the 1.43.0 that GHSA-4v6f-7vjh-6x4m needs, so one upgrade to 1.48.0
-        or later clears both.
-    - rule_id: 'GHSA-3w55-933p-8pv5'
-      path: 'nested/multi-doc-discovery/**'
-      reason: >-
-        strands-agents, pinned at 1.14.0 again in the discovery stack's
-        requirements: not reachable, for the reason the lib/idp_common_pkg entry
-        for this advisory gives.
 
 # NOT suppressed, deliberately:
 #

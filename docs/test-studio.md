@@ -95,9 +95,9 @@ During stack deployment, the system automatically:
 
 Use with: the stack-managed `realkie-fcc-verified` profile (`config_library/managed_config/realkie-fcc-verified/config.yaml`)
 
-Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. That profile sets `classification.document_shape.sectionSplitting: disabled`, because every document is one invoice: all of a document's pages form one `Invoice` section, and with a single class, classification makes no model call. A run on that profile therefore scores classification and splitting at 1.0 by construction, and measures extraction. `idp-cli process --test-set` and the SDK's `batch.process(test_set=...)` run on the active profile unless you name one, so pass `--config-profile realkie-fcc-verified` (`config_profile="realkie-fcc-verified"` in the SDK) for the same result. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; set **Section splitting** to `disabled` in its classification settings to match.
+Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. That profile sets `classification.document_shape.sectionSplitting: disabled`, because every document is one invoice: all of a document's pages form one `Invoice` section, and with a single class, classification makes no model call. A run on that profile therefore scores classification and splitting at 1.0 by construction, and measures extraction. `idp-cli process --test-set` and the SDK's `batch.process(test_set=...)` run on the active profile unless you name one, so pass `--config-profile realkie-fcc-verified` (`config_profile="realkie-fcc-verified"` in the SDK) for the same result. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; to match, open *Advanced — known document shape* in its classification settings and set **Section splitting** to **One section** (stored as `sectionSplitting: disabled`).
 
-The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, does not set `classification.document_shape.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the strategy that divides a packet into sections. To get one section per document in a profile built from the preset, set **Section splitting** to `disabled` in it.
+The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, does not set `classification.document_shape.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the `sectionSplitting` value that divides a packet into sections. To get one section per document in a profile built from the preset, set **Section splitting** under *Advanced — known document shape* to **One section** (stored as `sectionSplitting: disabled`) in it.
 
 ---
 
@@ -1029,7 +1029,7 @@ be sized off. When a partial sample holds only ground truth, the dialog says how
 much of the set it read rather than reporting the set as fully labelled, and still
 lets you continue to the annotation queue, which lists every document.
 
-### The curve is measured, and it improves
+### How the curve is measured and refined
 
 The curve comes from three sources of increasing fidelity:
 
@@ -1054,9 +1054,10 @@ assessment settings — but not across prompt tweaks.
 > (written when a set is created by the confbench planner or the synthetic-data
 > generator, and what the class picker and test runner already use); and the
 > configuration the set's **draft-labeling jobs** resolved (every labeling job's run
-> carries the `ConfigVersion` the runner resolved). If the jobs disagree — say one
-> document was re-extracted under another profile — no single curve applies and the
-> combined curve is used, labeled `mixed`. Within that profile it then resolves the
+> carries the `ConfigVersion` the runner resolved). A job that failed labeled nothing
+> and is not counted. If the jobs disagree — say one document was re-extracted under
+> another profile — no single curve applies and the combined curve is used, labeled
+> `mixed`. Within that profile it then resolves the
 > **revision family**: every run records a *confidence fingerprint* — a hash of the
 > confidence-relevant configuration (extraction model and sampling parameters,
 > assessment settings), so a prompt edit keeps the fingerprint and a model swap
@@ -1196,9 +1197,10 @@ The queue page shows:
 Per-document actions sit in one bar at the top of the edit screen (the same screen as
 production review items), so finishing a long document does not mean scrolling past
 every field to reach them: **Edit | View**, **Reports** (**History**, **Processing
-Report**), **More Actions** (**Edit Page Class**), **Skip**, **Cancel**, **Save** and
-**Process Changes**, or the view switch, **Reports** and **Claim** for an Annotator
-viewing an unassigned document. **Save** keeps the open section's changes as a
+Report**), **Skip**, **Cancel**, **Save** and **Process Changes**, or the view switch,
+**Reports** and **Claim** for an Annotator viewing an unassigned document. **Edit Page
+Grouping** is on the **Document Editor** panel, beside its **Section** and **Show Fields**
+dropdowns. **Save** keeps the open section's changes as a
 draft, which is not reviewed: you, a later session or the next assignee after a
 **Skip** open the document with it, and switching sections with unsaved changes asks
 first. **Process Changes** saves the open section's changes, applies every section's
@@ -1220,6 +1222,14 @@ packets ranks fewer documents at a time than a set of single-section ones.
 
 `allowedTestSets` is a separate axis from `allowedConfigVersions` (which restricts
 *which config versions'* documents a user sees). A user can carry both.
+
+A **Reviewer** works Test Studio queues without `allowedTestSets` and without being
+listed on a queue: they see, claim and label the documents of every test set whose
+configuration profile is in their `allowedConfigVersions`, or every test set when they
+have no such restriction. A set drafted under several profiles has no single profile
+and is shown only to Reviewers with no restriction. A labeling or re-extract job that
+failed drafted nothing, so it does not count toward a set's profiles. Reviewers claim their own
+documents; Admins assign documents to Annotators only.
 
 ### Working the queue collaboratively
 
@@ -1266,7 +1276,7 @@ To find misclassifications *measured against a baseline*, use the
 [Classification errors](#finding-classification-errors) panel on a test run.
 
 
-A section's class is changed in **Edit Page Class**, whose class list holds the classes defined by the config
+A section's class is changed in **Edit Page Grouping**, whose class list holds the classes defined by the config
 version that produced these labels — not the deployment's currently active
 configuration, which may have moved on since. A badge above the fields always
 names which config the class list came from, and says so explicitly when it is a
@@ -1277,27 +1287,69 @@ The order is: the config stamped on the baseline; failing that the test set's ow
 declared version; failing that the deployment's **active** config. Hand-uploaded
 and synthetic ground truth carries no stamp — nothing produced it through the
 pipeline — so those sets fall to the active config rather than to the built-in
-preset. After a section's class is changed and saved in **Edit Page Class**, the
+preset. After a section's class is changed and saved in **Edit Page Grouping**, the
 section says **Fields still reflect the previous class** and offers **Re-extract**,
-which re-runs that one document and waits for the new labels before returning, so you
-are never left looking at fields from the previous class.
+which re-runs that document and waits for the new labels before returning, so you
+are never left looking at fields from the previous class. On a document with one
+section it re-extracts the whole document; on a document with several it re-extracts
+only the section you are looking at (see below).
 
 The corrected class is sent into the re-run itself, not merely written onto the
 existing labels: the document is re-processed with classification **skipped** and
 your chosen class applied to every page, so extraction genuinely runs against that
 class's schema. (Writing it onto the labels alone does not work — the run
 classifies from the source document and would re-derive the class you just
-corrected.)
+corrected.) A configuration that uses Bedrock Data Automation (`use_bda: true`)
+classifies the document itself and does not apply your class, so if the run comes
+back under a different class the re-extract fails with that reason and nothing is
+written: the class stays corrected and the fields stay as they were, for you to
+correct by hand or re-extract under a configuration that does not use Bedrock Data
+Automation.
 
 Two consequences worth knowing:
 
-- **Re-extraction replaces this document's labels**, including confirmed ones.
+- **Re-extraction replaces the labels it re-extracts**, including confirmed ones:
+  the document's on a single-section document, the one section's on a packet.
   Asking to re-extract after correcting the class is a statement that the current
   labels are wrong, so they stop counting as reviewed. Everything else in the set
-  is untouched.
+  is untouched. Authored ground truth (labels with no **Draft** or **Reviewed**
+  source) keeps its field values; only the class is corrected.
 - **A class the configuration does not define stays selectable** if the document
   already carries it, so a class that was later renamed can still be seen and
   corrected rather than silently blanked.
+
+**On a document with more than one section, Re-extract works on one section.**
+Changing the class for the whole document would merge all of its sections into one
+and discard their ground truth, because a whole-document re-run applies one class to
+every page and produces a single section. So on a packet the notice explains this
+and its **Re-extract** button re-extracts only the open section: the document is
+re-run with its grouping fixed, every other section keeping the pages and class its
+ground truth records, and only that section's labels are replaced. Every other
+section's labels, reviewed or not, are left exactly as they were. The re-run still
+extracts every section of the document, so it costs about as much as re-extracting
+the whole document; only the chosen section is written back. Each section must
+record its pages and a class for this to work; set them in **Edit Page Grouping**
+first if one does not. If the run does not come back with that section on the same
+pages under the corrected class, the re-extract fails and the section's fields are
+left as they were, with the reason as the error. That is what happens under a
+configuration that uses Bedrock Data Automation (`use_bda: true`), which does not
+apply a forced grouping.
+
+**Edit Page Grouping cannot save while a re-extract or a draft-labeling job is still
+to write that document.** The job writes its sections over the document's ground
+truth when it finishes, so a grouping saved in between would be overwritten by a
+whole-document re-extract, or would make a section re-extract fail. The save is
+refused with a message saying so; wait for the job to finish (a re-extract usually
+takes under a minute) and save again. A job that has already written the document,
+or one that started more than six hours ago or has no recorded start time, does not
+block the save.
+
+The API follows the same rule. `reextractTestSetDocument` takes an optional
+`sectionId` with `documentClass` to re-extract one section. A `documentClass` without
+`sectionId` on a document whose baseline has more than one section is refused with a
+bad-request error, before anything is written, whose message says to pass `sectionId`
+instead; `generateDraftLabels` refuses a forced class there too, and forces a class
+only onto exactly one named document.
 
 Annotators can do this within their assigned sets; the operation is scope-checked
 per test set like every other annotation operation.
@@ -1315,7 +1367,7 @@ should be one. That grouping **is** ground truth — `split_document.page_indice
 what the doc-split metrics score classification against — so a wrong split makes the
 classification ground truth wrong, not merely untidy.
 
-**Edit Page Class** opens a board with every section side by side and each page as a
+**Edit Page Grouping** opens a board with every section side by side and each page as a
 thumbnail, where a section's pages and its class are changed. On the queue's edit screen it is in the action bar at the top and opens
 the board in a dialog (dismissing the dialog cancels); elsewhere it sits beside the
 section selector at the top of the document. Either way it is kept away from the
@@ -1356,7 +1408,7 @@ grouping writes the page grouping and the class and nothing else: extracted valu
 their **Reviewed** provenance and the edit history all survive. Those values
 were extracted from a different set of pages, so they may no longer match — the
 warning afterwards names the sections that moved so you know which to check, and
-**Re-extract**, offered after a class change, is there if you would rather the model redo one. It is
+**Re-extract**, offered after a class change (on one section at a time on a document with several), is there if you would rather the model redo it. It is
 never done for you, because re-extraction is exactly the annotation loss this exists
 to avoid.
 
@@ -1380,8 +1432,8 @@ Non-contiguous sections are supported, because the pipeline can produce them.
 Annotators can do this within their assigned sets, scope-checked per test set like
 every other annotation operation.
 
-The same board is available on a processed document, from **Document Sections** in
-the document view — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
+The same board is available on a processed document, from **More Actions › Edit Page
+Class** on the document page — see [web-ui.md](web-ui.md#re-grouping-a-processed-documents-pages)
 for the one difference that matters there.
 
 ### A section with no field values
@@ -1390,11 +1442,11 @@ A section can legitimately have nothing extracted, and the editor says which of 
 things happened rather than showing an empty form:
 
 - **No document class.** With no class there is no schema, so extraction had nothing to
-  extract against. This is the actionable one: set the class in **Edit Page Class** first —
+  extract against. This is the actionable one: set the class in **Edit Page Grouping** first —
   re-extracting before that produces nothing. A section in this state is marked **(no
   class)** in the **Section** list. It
   often means the packet split is wrong and the pages belong with a neighbouring section,
-  which **Edit Page Class** can merge.
+  which **Edit Page Grouping** can merge.
 - **Extraction ran and produced nothing**, on a section that does have a class.
 - **A section added by re-grouping**, which starts with no values because nothing has
   extracted those pages as a group yet.
@@ -1587,7 +1639,7 @@ The abort then waits for the run's documents to reach a final status. A document
 Lowest Weighted Overall Scores* lands on its detail page, where any section or
 page whose class disagrees with ground truth carries a **Class mismatch** alert
 next to its Class/Type value — hover it for the expected class. The edit page
-(**Edit Data**, or **View Data** for a read-only role) shows the section's class
+(**Edit Data** in a section row's **⋮** menu, or **View Data** for a read-only role) shows the section's class
 comparison in its **Visual Editor** tab as soon as it opens,
 without needing the **Show Evaluation** toggle, which adds the per-field
 comparison. Check the class before reading the extraction scores: a misclassified
@@ -1713,8 +1765,8 @@ Three kinds are distinguished, because they call for different fixes:
 
 | Issue | Meaning | What to do |
 |---|---|---|
-| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue and re-extract, then re-run. |
-| **No matching section** | No predicted section the evaluation recorded holds exactly the pages the ground truth expects: the prediction split them, merged them with other pages or left some out, or, where the row says *not recorded*, the evaluation's record of the document is incomplete. The row lists the recorded predicted sections over those pages, with their classes and pages. | A *splitting* problem, not a labelling one — look at how classification groups pages into sections ([`sectionSplitting`](./classification.md#section-splitting-strategies)) rather than at the class list. A listed section under another class also means those pages were extracted with that class's schema. A row that says *not recorded* need not be a splitting problem: see the limit on classes excluded from processing below. |
+| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue (and re-extract the document, or on a packet the section), then re-run. |
+| **No matching section** | No predicted section the evaluation recorded holds exactly the pages the ground truth expects: the prediction split them, merged them with other pages or left some out, or, where the row says *not recorded*, the evaluation's record of the document is incomplete. The row lists the recorded predicted sections over those pages, with their classes and pages. | A *splitting* problem, not a labelling one — look at how classification groups pages into sections ([`sectionSplitting`](./classification.md#section-splitting)) rather than at the class list. A listed section under another class also means those pages were extracted with that class's schema. A row that says *not recorded* need not be a splitting problem: see the limit on classes excluded from processing below. |
 | **Page order** | Right class and right pages, wrong order. | Extraction is unaffected. This is what "Split Accuracy With Order" penalises and "Without Order" does not. |
 
 A row is **Wrong class** only when the prediction has a section on exactly the

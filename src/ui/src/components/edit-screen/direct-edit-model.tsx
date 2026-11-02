@@ -6,7 +6,7 @@
 // Save writes the edits without reprocessing; Process Changes saves them, confirms,
 // then submits them through processChanges, so evaluation and summarization re-run on
 // them and OCR, classification and extraction are not repeated; Cancel leaves for the
-// document's page. Edit Page Class saves a new grouping.
+// document's page. Edit Page Grouping saves a new grouping.
 //
 // A document in a review queue opens here read-only (for a role that does not work
 // queues, or while the queue's mirror lags): it is edited from its queue item, and
@@ -16,24 +16,32 @@
 // open review. A document processed in BDA mode keeps its page grouping. The server
 // enforces all of these.
 import React, { useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { Link } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
 import useConfiguration from '../../hooks/use-configuration';
 import useUserRole from '../../hooks/use-user-role';
-import { DOCUMENTS_PATH, MY_TASKS_PATH, documentDetailHref, documentEditHref } from '../../routes/constants';
+import { DOCUMENTS_PATH, MY_TASKS_PATH, documentEditHref, parseEditOrigin } from '../../routes/constants';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { isBdaModeConfig } from '../../utils/processing-mode';
 import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/copy-to-baseline';
 import { getConfigClassOptions } from '../common/config-class-options';
-import { saveDocumentGrouping } from '../common/document-grouping';
+import { saveDocumentGroupingOrThrow } from '../common/document-grouping';
 import { inReviewQueueEditReason, isInReviewQueue, normalizeHitlStatus } from '../common/review-status';
 import type { GroupedSection } from '../common/section-grouping';
+import { HOME_CRUMB, editActiveHref, editTrail } from '../review-queues/breadcrumbs';
 import { documentName } from '../review-queues/review-api';
 import { useDocumentEdit } from './document-edit-adapter';
 import type { DirectEditDocument } from './document-edit-adapter';
-import { PROCESSING_REASON, isEditableStatus } from './document-edit-status';
+import {
+  BDA_REGROUP_REASON,
+  IN_REVIEW_SHORT_REASON,
+  NO_SECTIONS_REASON,
+  NO_SUMMARY_REASON,
+  PROCESSING_REASON,
+  isEditableStatus,
+} from './document-edit-status';
 import type { EditModel, EditNavigation, ReviewActivity } from './edit-model';
 import type { DirectLock } from './edit-mode';
 import type { RawDocument } from './use-edit-mode';
@@ -43,15 +51,10 @@ import useSectionEvaluation from './use-section-evaluation';
 export const PROCESS_ROLE_REASON = 'Process Changes needs the Admin or Reviewer role.';
 export const PROCESS_OWNER_REASON =
   "Process Changes needs an Admin, or the reviewer who holds this document's open review. Start the review first.";
-/**
- * Why Edit Page Class is not offered in BDA mode. A BDA reprocess keeps the sections a
- * document already has, so a structural change is not carried through it.
- */
-export const BDA_REGROUP_REASON =
-  'Page grouping cannot be changed for a document processed with Bedrock Data Automation (BDA). Field values can still be edited.';
+export { BDA_REGROUP_REASON };
 export const EDIT_ROLE_REASON = "Editing needs the Admin or Author role, or a Reviewer who holds this document's review.";
 /** updateDocumentSections is Admin, Reviewer and Annotator; an Annotator regroups only test-set documents. */
-export const REGROUP_ROLE_REASON = 'Edit Page Class needs the Admin or Reviewer role.';
+export const REGROUP_ROLE_REASON = 'Edit Page Grouping needs the Admin or Reviewer role.';
 /** The tracking row says in review, but the review item is missing or has finished (the mirror lags). */
 export const MIRROR_LAG_REASON = "This document's review is being updated. Reload in a moment.";
 
@@ -85,14 +88,13 @@ export interface DirectEditOptions {
   seed?: { document: RawDocument; lock?: DirectLock; reviewActivity?: ReviewActivity };
 }
 
-const TASKS_CRUMB = { text: 'Tasks', href: `#${MY_TASKS_PATH}` };
-
 export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }: DirectEditOptions, session: EditorSession): EditModel => {
   const adapter = useDocumentEdit(objectKey, seed);
   const { document: doc, loading, loadError, reload } = adapter;
   const { user } = useAppContext();
   const { isAdmin, isReviewer, canWrite, isAnnotatorOnly } = useUserRole();
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const focusField = searchParams.get('field');
   const { mergedConfig } = useConfiguration(doc?.configVersion || 'default');
   const selectedSection = adapter.sections.find((s) => s.sectionId === session.selectedSectionId) ?? null;
@@ -116,15 +118,11 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
   // The document's page: where Cancel and Process Changes leave to; an Annotator-only
   // user, who has no Documents, goes back to Tasks.
   const leaveTo = isAnnotatorOnly ? MY_TASKS_PATH : `${DOCUMENTS_PATH}/${encodeURIComponent(objectKey)}`;
-  const navigation: EditNavigation = isAnnotatorOnly
-    ? { root: TASKS_CRUMB, crumbs: [{ text: name, href: '#' }], activeHref: `#${MY_TASKS_PATH}` }
-    : {
-        root: { text: 'Documents', href: `#${DOCUMENTS_PATH}` },
-        crumbs: [{ text: name, href: documentDetailHref(objectKey) }],
-        activeHref: `#${DOCUMENTS_PATH}`,
-      };
+  // The trail the user came by; without one, Tasks for an Annotator-only user, the document's page otherwise.
+  const origin = parseEditOrigin(location.search) ?? (isAnnotatorOnly ? 'tasks' : 'document');
+  const navigation: EditNavigation = { trail: editTrail({ origin, objectKey, name }), activeHref: editActiveHref(origin) };
   // Home only until the document is known.
-  const unloaded: EditNavigation = { root: null, crumbs: [], activeHref: null };
+  const unloaded: EditNavigation = { trail: [HOME_CRUMB], activeHref: null };
 
   if (loading && !doc) return { navigation: unloaded, state: { kind: 'loading', text: 'Loading document…' } };
   if (!doc) {
@@ -170,11 +168,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
   // processing, nor one in a review queue, whose results change when its review ends.
   const finished = !inReview && isEditableStatus(status);
   // Why they are unavailable, for the menus (an item that does not apply stays, disabled).
-  const unfinishedReason = inReview
-    ? 'This document is in a review queue'
-    : !isEditableStatus(status)
-      ? 'Available when processing finishes'
-      : undefined;
+  const unfinishedReason = inReview ? IN_REVIEW_SHORT_REASON : !isEditableStatus(status) ? PROCESSING_REASON : undefined;
   const readOnly = readOnlyReason !== undefined;
   // In review, the editing actions stay on the bar, disabled with the in-review reason.
   const showEditing = !readOnly || inReview;
@@ -211,7 +205,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
         source: { objectKey },
         summary: {
           reportUri: finished ? doc.summaryReportUri || undefined : undefined,
-          unavailableReason: unfinishedReason ?? 'This document has no summary',
+          unavailableReason: unfinishedReason ?? NO_SUMMARY_REASON,
         },
         offerReport: true,
       },
@@ -241,12 +235,14 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
           readOnlyReason ??
           (!(isAdmin || isReviewer) ? REGROUP_ROLE_REASON : undefined) ??
           (bdaMode ? BDA_REGROUP_REASON : undefined) ??
-          (boardSections.length === 0 ? 'This document has no sections' : undefined),
+          (boardSections.length === 0 ? NO_SECTIONS_REASON : undefined),
         // copyToBaseline is Admin and Author (canWrite), as on the document page.
         showBaseline: canWrite,
         baselineDisabledReason: unfinishedReason ?? baselineCopyBlockedReason(doc.evaluationStatus),
         showCancel: !readOnly,
         cancelDisabledReason: saving ? 'Saving your changes…' : undefined,
+        showRefresh: true,
+        refreshDisabledReason: saving ? 'Saving your changes…' : undefined,
         primaryDisabledReason: processReason,
         primaryHint:
           'Save your changes and process them: evaluation and summarization re-run; OCR, classification and extraction are not repeated.',
@@ -273,21 +269,15 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
         consequence: (
           <>
             Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted field values are <b>kept</b> and the document
-            is <b>not</b> reprocessed, so they may no longer match their pages. To have the pipeline redo them, use the document page&apos;s{' '}
-            <b>Edit Mode → Process Changes</b> afterwards: this screen&apos;s <b>Process Changes</b> re-runs evaluation and summarization
-            only.
+            is <b>not</b> reprocessed, so they may no longer match their pages. To have the pipeline redo them, open the document
+            page&apos;s <b>More Actions › Edit Page Grouping</b> and choose <b>Save and Re-extract</b>: this screen&apos;s{' '}
+            <b>Process Changes</b> re-runs evaluation and summarization only.
           </>
         ),
         save: async (next) => {
-          let result;
-          try {
-            result = await saveDocumentGrouping(objectKey, next);
-          } catch (err) {
-            throw new Error(`Could not save the page grouping: ${getErrorMessage(err)}`);
-          }
-          if (!result.success) throw new Error(result.message ?? 'The page grouping could not be saved.');
+          const message = await saveDocumentGroupingOrThrow(objectKey, next);
           await reload();
-          return result.message ?? null;
+          return message;
         },
       },
       // A finished queue review's activity, then the document's own review events.
@@ -308,12 +298,14 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
         return `Copying ${name} to the evaluation baseline. Its evaluation status shows when the copy is done.`;
       },
       savedMessage: `Saved your changes to ${name}.`,
+      refresh: adapter.refresh,
       cancelTo: leaveTo,
       failures: {
         surface: 'notice',
         describe: (action, err) => {
           if (action === 'process') return `Could not process the changes: ${getErrorMessage(err)}`;
           if (action === 'baseline') return `Could not use ${name} as the evaluation baseline: ${getErrorMessage(err)}`;
+          if (action === 'refresh') return `Could not reload ${name}: ${getErrorMessage(err)}`;
           return getErrorMessage(err);
         },
       },

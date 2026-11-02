@@ -174,9 +174,9 @@ def test_a_retired_model_id_still_loads_in_a_stored_config(model_id: str):
     # shape a pre-0.9 profile has) migrates into every one of them.
     classification = models.ClassificationConfig.model_validate({"model": model_id})
     for call in (
-        classification.one_stage.llm,
-        classification.two_stage.boundary_detection.llm,
-        classification.two_stage.section_classification.llm,
+        classification.combined.llm,
+        classification.split_then_classify.splitting.llm,
+        classification.split_then_classify.section_classification.llm,
     ):
         assert call.model == model_id
 

@@ -57,6 +57,11 @@ def handler(event, context):
             # the class; stamped onto the copied object so classification honours
             # it instead of re-deriving the class it already got wrong.
             forced_document_class = message.get("documentClass")
+            # Set only by a re-extract of ONE section of a multi-section document:
+            # the document's whole ground-truth grouping with that section's class
+            # corrected (idp_common.forced_sections). Stamped as metadata so the
+            # classification step builds exactly those sections.
+            forced_sections = message.get("documentSections")
             tracking_table = message["trackingTable"]
 
             # Get environment variables
@@ -158,6 +163,7 @@ def handler(event, context):
                 test_set_id=test_set_id,
                 forced_document_class=forced_document_class,
                 config_revision=config_revision,
+                forced_sections=forced_sections,
             )
 
             # Copy baseline files from test set bucket to baseline bucket with
@@ -288,6 +294,7 @@ def _copy_files_to_bucket(
     test_set_id=None,
     forced_document_class=None,
     config_revision=None,
+    forced_sections=None,
 ):
     """Copy files from source bucket to destination bucket - track failures"""
     successful_files = []
@@ -328,6 +335,11 @@ def _copy_files_to_bucket(
                 # only for a single-document re-extract after a reviewer
                 # corrected the class.
                 metadata["document-class"] = forced_document_class
+            if forced_sections:
+                # Read by Document.from_s3_event; the classification step builds
+                # these sections instead of classifying. Already encoded to fit
+                # S3's user-metadata limit by the resolver that built it.
+                metadata["document-sections"] = forced_sections
             if metadata:
                 copy_args["Metadata"] = metadata
                 copy_args["MetadataDirective"] = "REPLACE"

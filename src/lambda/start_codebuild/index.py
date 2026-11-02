@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""CodeBuild starter and ECR cleanup Lambda function used by Pattern 2 deployments."""
+"""CodeBuild starter and ECR cleanup Lambda for deploy-time CodeBuild jobs."""
 import logging
 from os import getenv
 import json

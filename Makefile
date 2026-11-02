@@ -70,9 +70,52 @@ help: ## Show this help message
 .DEFAULT_GOAL := all
 all: lint test ## Run lint + test (default)
 
+# lib/idp_common_pkg/uv.lock, as a constraints file. Without it the install
+# resolved every dependency afresh against the index, so CI tested a different
+# dependency set from the one the lock records — and the one Dependabot bumps and
+# `make dep-audit` audits. Measured on a fresh environment built with each CI's
+# recipe: about half of the packages present in both the environment and the lock
+# were at a version other than the locked one; constrained to this export, none
+# were (#1707).
+#
+# Constraints rather than `uv sync`: the lock is idp_common_pkg's alone, while CI
+# installs all five first-party packages into one environment in one pass. A
+# constraint pins a package only if something asks for it, so the extras each CI
+# selects still decide WHAT is installed and the lock decides AT WHICH VERSION.
+# A package only the other four first-party packages require would therefore not
+# be pinned at all, so idp_common_pkg's `first-party-siblings` dependency group
+# names those and the lock records them too; scripts/tests/test_ci_gate_parity.py
+# fails on a first-party requirement the lock does not record (#1729).
+#
+# --locked, not --frozen: --frozen exports whatever the lock holds even when
+# pyproject.toml has moved on, so a dependency added without re-locking would be
+# left out of the constraints and resolve from the index with every check green.
+# --locked refuses a lock that no longer matches pyproject.toml; the remedy is
+# `uv lock` in lib/idp_common_pkg. Every extra and group is exported because a
+# constraint that nothing requests has no effect.
+#
+# ⚠️ This makes CI test the LOCKED versions. What is deployed does not use the
+# lock: the Lambda requirements and layers that publish.py builds resolve
+# against the index when they are built. So CI is now faithful to the lock, which
+# is what Dependabot bumps and `make dep-audit` audits, and not to a deployed
+# artifact. Closing that gap means building the artifacts from the lock too, which
+# is a separate change.
+#
+# Overridable, and both CI configs set it, so each passes the same file to `-c`.
+LOCK_CONSTRAINTS ?= $(CURDIR)/build/lock-constraints/idp_common_pkg.txt
+
+.PHONY: lock-constraints
+lock-constraints: ## Export lib/idp_common_pkg/uv.lock as a pip constraints file (needs uv)
+	@command -v uv >/dev/null 2>&1 || { \
+		echo -e "$(RED)ERROR: uv is required to read lib/idp_common_pkg/uv.lock, which make setup, make setup-venv and CI install against. Install it with pip install uv, or see https://docs.astral.sh/uv/.$(NC)"; \
+		exit 1; }
+	@mkdir -p "$(dir $(LOCK_CONSTRAINTS))"
+	uv export --locked --project lib/idp_common_pkg --all-extras --all-groups \
+		--no-emit-project --no-hashes --quiet --output-file "$(LOCK_CONSTRAINTS)"
+
 ##@ Setup
 .PHONY: install-first-party
-install-first-party: ## Install ALL first-party packages in ONE pip pass (CI: make install-first-party PIP="uv pip")
+install-first-party: lock-constraints ## Install ALL first-party packages in ONE pip pass, constrained to uv.lock (CI: make install-first-party PIP="uv pip")
 	@# ONE invocation, deliberately — see the dependency-confusion note on
 	@# FIRST_PARTY_EDITABLES above. Splitting this lets pip resolve a
 	@# not-yet-installed sibling ("idp-sdk", "idp_common") from public PyPI, where
@@ -80,12 +123,18 @@ install-first-party: ## Install ALL first-party packages in ONE pip pass (CI: ma
 	@#
 	@# PIP is overridable because CI builds its venv with `uv venv`, which does not
 	@# install pip into it; CI passes PIP="uv pip".
-	$(PIP) install $(FIRST_PARTY_EDITABLES)
+	@#
+	@# -c: the versions come from lib/idp_common_pkg/uv.lock — see LOCK_CONSTRAINTS.
+	$(PIP) install -c "$(LOCK_CONSTRAINTS)" $(FIRST_PARTY_EDITABLES)
 	@# Fails if any first-party package resolved from PyPI rather than the checkout.
 	$(PYTHON) scripts/check_first_party_deps.py
 
-setup: ## Install all packages into current Python environment (no venv)
-	@# Always use the current shell's pip, ignoring .venv even if it exists
+setup: lock-constraints ## Install all packages into current Python environment (no venv), constrained to uv.lock
+	@# Always use the current shell's pip, ignoring .venv even if it exists.
+	@# Every package install takes -c $(LOCK_CONSTRAINTS), the same lock export both
+	@# CIs install against, so a local environment holds the versions CI tests
+	@# (#1729). Only pip's own upgrade is unconstrained: it is the installer, not
+	@# part of the environment under test.
 	@SETUP_PIP=$$(python3 -m pip --version >/dev/null 2>&1 && echo "python3 -m pip" || echo "pip3"); \
 	SETUP_PYTHON=$$(command -v python3 2>/dev/null || echo python); \
 	echo "Installing packages into current Python environment..."; \
@@ -95,20 +144,20 @@ setup: ## Install all packages into current Python environment (no venv)
 	echo "Upgrading pip..."; \
 	$$SETUP_PIP install --upgrade pip && \
 	echo "Installing all first-party packages (single resolution pass)..." && \
-	$$SETUP_PIP install $(FIRST_PARTY_EDITABLES) && \
+	$$SETUP_PIP install -c "$(LOCK_CONSTRAINTS)" $(FIRST_PARTY_EDITABLES) && \
 	echo "Verifying first-party packages resolved locally (not from PyPI)..." && \
 	$$SETUP_PYTHON scripts/check_first_party_deps.py && \
 	echo "Installing capacity planning test dependencies..." && \
-	$$SETUP_PIP install -r src/lambda/calculate_capacity/requirements-test.txt && \
+	$$SETUP_PIP install -c "$(LOCK_CONSTRAINTS)" -r src/lambda/calculate_capacity/requirements-test.txt && \
 	echo "Installing cfn-lint for CloudFormation template validation..." && \
-	$$SETUP_PIP install cfn-lint==$(CFN_LINT_VERSION) && \
+	$$SETUP_PIP install -c "$(LOCK_CONSTRAINTS)" cfn-lint==$(CFN_LINT_VERSION) && \
 	echo "Installing the pinned ruff for the lint gates..." && \
-	$$SETUP_PIP install ruff==$(RUFF_VERSION) && \
+	$$SETUP_PIP install -c "$(LOCK_CONSTRAINTS)" ruff==$(RUFF_VERSION) && \
 	echo "" && \
 	echo -e "$(GREEN)✅ Setup complete! idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)" && \
 	echo -e "$(YELLOW)   Tip: Use 'make setup-venv' instead to install into an isolated virtual environment.$(NC)"
 
-setup-venv: ## Create .venv and install all packages into it
+setup-venv: lock-constraints ## Create .venv and install all packages into it, constrained to uv.lock
 	@echo "Creating virtual environment in $(VENV_DIR)..."
 	@PYENV_PYTHON=$$(pyenv which python 2>/dev/null); \
 	SYS_PYTHON=$$(command -v python3 2>/dev/null); \
@@ -122,18 +171,19 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo "Upgrading pip..."
 	$(VENV_DIR)/bin/pip install --upgrade pip
 	@echo "Installing all first-party packages (single resolution pass)..."
-	$(VENV_DIR)/bin/pip install $(FIRST_PARTY_EDITABLES)
+	@# -c on every package install, as in `setup` above (#1729).
+	$(VENV_DIR)/bin/pip install -c "$(LOCK_CONSTRAINTS)" $(FIRST_PARTY_EDITABLES)
 	@echo "Verifying first-party packages resolved locally (not from PyPI)..."
 	$(VENV_DIR)/bin/python scripts/check_first_party_deps.py
 	@echo "Installing capacity planning test dependencies..."
-	$(VENV_DIR)/bin/pip install -r src/lambda/calculate_capacity/requirements-test.txt
+	$(VENV_DIR)/bin/pip install -c "$(LOCK_CONSTRAINTS)" -r src/lambda/calculate_capacity/requirements-test.txt
 	@echo "Installing cfn-lint for CloudFormation template validation..."
-	$(VENV_DIR)/bin/pip install cfn-lint==$(CFN_LINT_VERSION)
+	$(VENV_DIR)/bin/pip install -c "$(LOCK_CONSTRAINTS)" cfn-lint==$(CFN_LINT_VERSION)
 	@# lib/idp_common_pkg declares ruff as a RANGE (>=0.14.0,<0.16), so the pass
 	@# above resolves to whatever the newest matching release is on the day. This
 	@# narrows it to the exact version CI runs — see RUFF_VERSION.
 	@echo "Installing the pinned ruff for the lint gates..."
-	$(VENV_DIR)/bin/pip install ruff==$(RUFF_VERSION)
+	$(VENV_DIR)/bin/pip install -c "$(LOCK_CONSTRAINTS)" ruff==$(RUFF_VERSION)
 	@echo ""
 	@echo -e "$(GREEN)✅ Setup complete! Virtual environment created at $(VENV_DIR)$(NC)"
 	@echo -e "$(GREEN)   idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)"
@@ -165,7 +215,7 @@ fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-id
 # version inside that range the tree is formatted against.
 #
 # This is the SINGLE SOURCE OF TRUTH for the ruff version. Both CI configs
-# install this exact version, scripts/setup/dev_setup_ubuntu.sh installs it, and
+# install this exact version, `make setup` and `make setup-venv` install it, and
 # scripts/check_lint_debt.py reads it from here so that a finding-count mismatch
 # measured under a different ruff says so instead of looking like a code change.
 # scripts/tests/test_ci_gate_parity.py fails if any of those drift from this.
@@ -696,7 +746,7 @@ check-branch-protection: ## Report whether branch protection actually requires t
 	@$(PYTHON) scripts/sdlc/check_branch_protection.py $(BRANCH_PROTECTION_ARGS)
 
 check-retired-models: ## Ask Bedrock whether any model this repo offers has been retired (opt-in, needs AWS credentials; NOT a CI gate)
-	@$(PYTHON) scripts/sdlc/check_retired_models.py $(RETIRED_MODELS_ARGS)
+	@$(RUN_FIRST_PARTY) scripts/sdlc/check_retired_models.py $(RETIRED_MODELS_ARGS)
 
 ##@ Type Checking
 # `typecheck` is THE type gate, and it is what both CIs run. It reads
@@ -881,6 +931,11 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# index.py -- which also means this needs no region pin, as every boto3 client
 	@# is a MagicMock.
 	cd src/lambda/start_codebuild && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# AgentCore gateway custom resource: no toolkit observability on create, and
+	@# Delete removes the log group and delivery resources older versions left
+	@# (#1731). The toolkit is stubbed in sys.modules; the logs client is a real
+	@# botocore client behind a Stubber with an explicit region.
+	cd src/lambda/agentcore_gateway_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/test_file_copier && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/update_configuration && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/user_management && $(PYTEST_HERMETIC) -q -p no:cacheprovider
@@ -1041,8 +1096,8 @@ api-test-static: ## Static RBAC/authorization scan of all API operations (no AWS
 # the way running them all at once in one pipeline did.
 #
 # The deploy-variant stack-tests (APIGateway hosting, WAF, PRIVATE/VPC, Jobs API,
-# ZAP DAST) in particular no longer run automatically in CI; run them here on
-# demand, each on its own stack. Two modes:
+# ZAP DAST) in particular run in CI only on the weekly variant-probe schedule,
+# never on the nightly; run them here on demand, each on its own stack. Two modes:
 #   * STACK_NAME=<existing>  → validate that already-deployed stack (fast)
 #   * omit STACK_NAME        → self-deploy a throwaway stack + validate + teardown
 #     (needs TEMPLATE_URL from publish.py).
@@ -1054,7 +1109,7 @@ _STACKTEST_VPC_ARGS = $(if $(VPC_ID),--vpc-id $(VPC_ID),) $(if $(SUBNET_IDS),--s
 _STACKTEST_ARGS = $(if $(STACK_NAME),--stack-name $(STACK_NAME),) $(if $(REGION),--region $(REGION),) $(if $(TEMPLATE_URL),--template-url $(TEMPLATE_URL),) $(if $(ADMIN_EMAIL),--admin-email $(ADMIN_EMAIL),) $(_STACKTEST_VPC_ARGS)
 
 stacktest-list: ## List the available deploy-variant stack-tests
-	$(PYTHON) scripts/sdlc/run_stacktest.py --list
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py --list
 
 # Usage: make api-test STACK_NAME=<stack-name> [REGION=<region>] [REPORT_DIR=<dir>] [NO_TEARDOWN=1]
 # Full RBAC test: runs the offline static scan (api-test-static) first, then
@@ -1095,13 +1150,14 @@ endif
 # under a temporary profile, claims it, saves a draft and completes it through
 # the REST API with a real Annotator ID token, then waits for the finalize
 # run and the final review status object. Creates and removes a temporary
-# profile, user and document (CHECK_EVENTS=1 adds a temporary EventBridge rule
-# and SQS queue). Exit 0 = PASS, 1 = FAIL, 2 = a check errored or was skipped.
-stacktest-review-queues: ## Review queues live check: routes a document, claims, completes and waits for the final status object (STACK_NAME=...; creates and removes a temporary profile and user)
+# profile, Annotator, Admin and document, and lists the Annotator on the Default
+# queue for the run (CHECK_EVENTS=1 adds a temporary EventBridge rule and SQS
+# queue). Exit 0 = PASS, 1 = FAIL, 2 = a check errored or was skipped.
+stacktest-review-queues: ## Review queues live check: routes a document, claims, completes and waits for the final status object (STACK_NAME=...; creates and removes a temporary profile and users)
 ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=...])
 endif
-	$(PYTHON) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
+	$(RUN_FIRST_PARTY) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
 
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state
@@ -1155,19 +1211,19 @@ ux-record-deps: ## Check the tools the UX review recorder needs (ffmpeg, ffprobe
 # Reports default under ./scratch (gitignored) so a manual run never litters the
 # working tree; override the location with REPORT_DIR=.
 stacktest-zap: ## ZAP DAST scan (STACK_NAME=... [REPORT_DIR=./dir] or self-deploy w/ TEMPLATE_URL=...)
-	IDP_ZAP_REPORT_DIR=$(if $(REPORT_DIR),$(REPORT_DIR),./scratch/zap-reports) $(PYTHON) scripts/sdlc/run_stacktest.py zapdast $(_STACKTEST_ARGS)
+	IDP_ZAP_REPORT_DIR=$(if $(REPORT_DIR),$(REPORT_DIR),./scratch/zap-reports) $(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py zapdast $(_STACKTEST_ARGS)
 
 stacktest-hosting-global: ## APIGateway GLOBAL hosting variant
-	$(PYTHON) scripts/sdlc/run_stacktest.py apigw $(_STACKTEST_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py apigw $(_STACKTEST_ARGS)
 
 stacktest-waf: ## WAF-enabled hosting variant
-	$(PYTHON) scripts/sdlc/run_stacktest.py waf $(_STACKTEST_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py waf $(_STACKTEST_ARGS)
 
 stacktest-hosting-private: ## APIGateway PRIVATE (VPC) hosting variant (needs VPC_ID=...)
-	$(PYTHON) scripts/sdlc/run_stacktest.py apigwpriv $(_STACKTEST_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py apigwpriv $(_STACKTEST_ARGS)
 
 stacktest-jobsapi: ## Jobs API (VPC) variant (needs VPC_ID=...)
-	$(PYTHON) scripts/sdlc/run_stacktest.py jobsapi $(_STACKTEST_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py jobsapi $(_STACKTEST_ARGS)
 
 # --- Template-TRANSFORM deploy tests (--headless / --govcloud) ---------------
 # These do NOT go through run_stacktest.py: every probe there deploys the
@@ -1185,16 +1241,16 @@ _TRANSFORM_ARGS = $(if $(REGION),--region $(REGION),) \
 	$(if $(JSON_OUT),--json-out $(JSON_OUT),)
 
 transform-deploy-test-list: ## List the transform deploy-tests
-	$(PYTHON) scripts/sdlc/transform_deploy_test.py --list
+	$(RUN_FIRST_PARTY) scripts/sdlc/transform_deploy_test.py --list
 
 transform-deploy-test-headless: ## Deploy a REAL --headless stack + process a sample doc
-	$(PYTHON) scripts/sdlc/transform_deploy_test.py headless $(_TRANSFORM_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/transform_deploy_test.py headless $(_TRANSFORM_ARGS)
 
 transform-deploy-test-govcloud: ## Deploy a REAL --govcloud stack + process a sample doc (REGION=us-gov-west-1 for a true GovCloud run)
-	$(PYTHON) scripts/sdlc/transform_deploy_test.py govcloud $(_TRANSFORM_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/transform_deploy_test.py govcloud $(_TRANSFORM_ARGS)
 
 transform-deploy-test-all: ## Both transform deploy-tests, one after the other
-	$(PYTHON) scripts/sdlc/transform_deploy_test.py both $(_TRANSFORM_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/transform_deploy_test.py both $(_TRANSFORM_ARGS)
 
 # Seller Entitlement Service e2e. Not a main-stack variant, so it does not go
 # through run_stacktest.py: it deploys its own standalone stack (into a seller
@@ -1594,11 +1650,13 @@ dep-manifest: ## Generate dependency manifests for artifact repository mirroring
 # pin. This target closes that gap by matching the generated manifests against
 # OSV. Findings that are genuinely unreachable go in
 # scripts/security/dep_audit_allowlist.json WITH a justification.
+# DEP_AUDIT_ARGS passes flags through, e.g. DEP_AUDIT_ARGS=--no-unmapped to skip
+# the unmapped-advisory report and its ~330 GitHub API requests.
 dep-audit: ## Audit all pinned Python + Node dependencies against OSV (fails on HIGH+)
-	@$(PYTHON) scripts/security/dep_audit.py
+	@$(PYTHON) scripts/security/dep_audit.py $(DEP_AUDIT_ARGS)
 
 dep-audit-fast: ## Same as dep-audit but reuses existing dist/manifests (no regeneration)
-	@$(PYTHON) scripts/security/dep_audit.py --no-generate
+	@$(PYTHON) scripts/security/dep_audit.py --no-generate $(DEP_AUDIT_ARGS)
 
 ##@ Automated review (advisory — reviews an MR, gates nothing)
 # Runs Claude Code over open GitLab MRs or GitHub PRs with

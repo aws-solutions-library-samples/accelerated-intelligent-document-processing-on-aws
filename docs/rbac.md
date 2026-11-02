@@ -26,9 +26,9 @@ Each role is a Cognito User Pool group (the `AWS::Cognito::UserPoolGroup` resour
 |------|--------------|-------------|
 | **Admin** | `Admin` | Full access to all operations including user management and pricing |
 | **Author** | `Author` | Read + write access to documents, configuration, tests, discovery |
-| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility |
+| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility. A Reviewer-only console (Home: Inbox, Tasks, Queues; Deployment Info). Works every Production review queue (Home: Tasks, Queues): claims, saves, finishes and skips its items, as an Annotator does, with no Admin assignment needed; and works every Test Studio queue whose test set's configuration profile is in their `allowedConfigVersions` |
 | **Viewer** | `Viewer` | Read-only access to documents, configuration, agent chat |
-| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
+| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues; Deployment Info). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
 
 ### Multi-Group Support
 
@@ -60,9 +60,15 @@ owner's decision, not an annotator's.
 
 **Two-layer enforcement.** Group membership only reaches the operation; every one
 of the above additionally asserts the target test set is in the caller's
-`allowedTestSets`. The check is centralized in
+`allowedTestSets`, or, for a Reviewer, that the set's configuration profile is in
+their `allowedConfigVersions`. The check is centralized in
 `idp_common/testset_scope.py::assert_can_access_test_set` and **fails closed** — an
-unreadable users record, a missing attribute, or an empty list all deny. Reaching a
+unreadable users record, a missing attribute, or an empty list all deny an Annotator,
+and a Reviewer whose scope or set profile cannot be read is denied. A set's profile is
+resolved once by the Test Studio resolver (declared, bound, or from its drafting run),
+recorded on the set as `ScopeProfile` so every check reads the same value, and
+resolved again after a new drafting run; a set with no single profile is admitted only
+to Reviewers with no profile restriction. Reaching a
 test-set operation is never the same as being allowed to see a given set.
 
 For the HITL operations the scope is resolved from the document rather than an
@@ -86,8 +92,17 @@ user locked out for the full TTL.
 
 ## Annotators and review queues
 
-[Review queues](./review-queues.md) are worked by the Annotators listed on them. An
-Annotator claims an item from one of their queues, or an Admin assigns it to them.
+[Review queues](./review-queues.md) are worked by the Annotators listed on them and,
+for Production queues, by every Reviewer. An Annotator claims an item from one of their
+queues, or an Admin assigns it to them; a Reviewer claims their own items and is never
+assigned them (`reassignReviewItem` refuses a Reviewer). A Reviewer has the same
+Production review-queue operations as an Annotator (`getMyReviewQueues`,
+`listReviewQueueItems`, `listMyReviewWork`, `getReviewItem`, `claimReviewItem`,
+`claimNextReviewItem`, `releaseReviewItem`, `saveReviewDraft`, `completeReviewItem`,
+`rejectReviewItem`), within their `allowedConfigVersions`, and the Test Studio
+operations an Annotator has, for every test set whose configuration profile their
+`allowedConfigVersions` admits (every set when they have none), without being listed
+on its queue (`testset_scope.reviewer_may_access_test_set`).
 
 - **What an Annotator can call.**
   - Their queues: `getMyReviewQueues`, `listReviewQueueItems`, `claimReviewItem`,
@@ -98,6 +113,9 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
     `claimTestSetDocument` is Annotator-only, at the gateway as well as in the
     resolver: Admins assign test-set documents (`assignTestSetDocuments`) rather than
     claim them. A user in both Admin and Annotator may claim.
+  - Within those queues, an Annotator with `allowedConfigVersions` sees and works only
+    the Production items whose own profile is in that scope, in every listing as well
+    as when an item is opened or claimed.
   - Their work: `listMyReviewWork`, `getReviewItem`, `saveReviewDraft`,
     `completeReviewItem` and `rejectReviewItem`. `getReviewItem` is read-only for an
     item the caller doesn't hold; saving and the dispositions need the claim.
@@ -112,7 +130,7 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   - The `ANY_GROUP` operations every role gets: its own profile, the Inbox and
     document reads.
 - **What is Admin-only.**
-  - Queue Management: `listReviewQueues`, `createReviewQueue`, `updateReviewQueue`,
+  - Review Management: `listReviewQueues`, `createReviewQueue`, `updateReviewQueue`,
     `deleteReviewQueue`, `updateTestSetQueue`, `listAnnotators`,
     `getReviewQueuesOverview`, and `listTestSetQueues` across every set.
   - Assignment: `reassignReviewItem` (assign), `takeOverReviewItem` (take an item
@@ -138,15 +156,22 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
   navigation, with their **Inbox**, and the notifications bell; the Inbox operations
   are `ANY_GROUP`, scoped to the caller's own messages. A user in `Annotator` also
   has **Tasks** and **Queues** under Home, and a user whose only app group is
-  `Annotator` sees exactly that: Home (Inbox, Tasks and Queues), plus a document's
-  edit page (`#/documents/<document>/edit`), which Tasks and Inbox messages link to;
-  the rest of the documents app isn't routed for them. **HITL › Queue Management** is
+  `Annotator`, or a `Reviewer` with no `Admin`, `Author` or `Viewer` group, sees exactly
+  that: Home (Inbox, Tasks and Queues) and Deployment Info, plus a document's
+  edit page (`#/documents/<document>/edit`), which Tasks and Inbox messages link to.
+  Both land on Home › Tasks. For an Annotator-only user the rest of the documents app
+  isn't routed; a Reviewer-only user's Document List is out of the navigation but still
+  routed, its documents filtered server-side to the caller's scope as for every role. Navigation is
+  a convenience, not the boundary: every queue operation applies the caller's
+  `allowedConfigVersions` to each item. **Review Studio › Review Management** is
   Admin-only.
 - **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
   `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`,
   `saveSectionReviewEdits`) are unchanged; `saveSectionReviewEdits` is not open to
   Annotators. `claimReview` and `releaseReview` refuse a finished review
-  (`REVIEW_FINISHED`) for every role, and `skipAllSectionsReview` refuses a caller
+  (`REVIEW_FINISHED`) for every role, `claimReview` also refuses a document no
+  review was raised on (`NO_REVIEW_PENDING`) for every role, and
+  `skipAllSectionsReview` refuses a caller
   who is not an Admin unless a review was raised on the document and has not
   finished (`REVIEW_FINISHED`, `NO_REVIEW_PENDING`), which is where the web UI offers
   **Skip All Reviews**.
@@ -163,77 +188,81 @@ Annotator claims an item from one of their queues, or an Admin assigns it to the
 ## Permission Matrix
 
 ```
-Feature / API                    Admin   Author   Reviewer   Viewer
-──────────────────────────────────────────────────────────────────────
+Feature / API                     Admin   Author   Reviewer   Viewer
+───────────────────────────────────────────────────────────────────────
 DOCUMENTS
-  List documents                  ✅      ✅†      ✅*†      ✅†
-  View document details           ✅      ✅†      ✅*†      ✅†
-  Upload documents                ✅      ✅       ❌        ❌
-  Delete documents                ✅      ✅       ❌        ❌
-  Reprocess documents             ✅      ✅       ❌        ❌
-  Abort workflows                 ✅      ✅       ❌        ❌
+  List documents                   ✅      ✅†      ✅*†      ✅†
+  View document details            ✅      ✅†      ✅*†      ✅†
+  Upload documents                 ✅      ✅       ❌        ❌
+  Delete documents                 ✅      ✅       ❌        ❌
+  Reprocess documents              ✅      ✅       ❌        ❌
+  Abort workflows                  ✅      ✅       ❌        ❌
+  Copy to evaluation baseline      ✅      ✅       ❌        ❌
+  Regroup pages (Edit Page Grouping)  ✅      ❌       ✅        ❌
+  Troubleshoot                     ✅      ✅       ❌        ✅
 
 HITL REVIEW
-  Claim/Release review            ✅      ❌       ✅        ❌
-  Complete section review         ✅      ❌       ✅        ❌
-  Skip all section reviews        ✅      ❌       ✅        ❌
-  Process changes (edit mode)     ✅      ❌       ✅        ❌
+  Claim/Release review             ✅      ❌       ✅        ❌
+  Complete section review          ✅      ❌       ✅        ❌
+  Skip all section reviews         ✅      ❌       ✅        ❌
+  Process changes                  ✅      ❌       ✅        ❌
 
 CONFIGURATION
-  View config profiles            ✅      ✅†      ❌        ✅†
-  View/Edit configuration         ✅      ✅†      ❌        ❌
-  Save as Profile (new profile)   ✅      ❌       ❌        ❌
-  Save as Default                 ✅      ❌       ❌        ❌
-  Delete config profile           ✅      ❌       ❌        ❌
-  Set active profile              ✅      ✅†      ❌        ❌
-  Sync BDA                        ✅      ✅†      ❌        ❌
-  Manage prefix mappings          ✅      ❌       ❌        ❌
+  View config profiles             ✅      ✅†      ❌        ✅†
+  View/Edit configuration          ✅      ✅†      ❌        ❌
+  Save as Profile (new profile)    ✅      ❌       ❌        ❌
+  Save as Default                  ✅      ❌       ❌        ❌
+  Delete config profile            ✅      ❌       ❌        ❌
+  Set active profile               ✅      ✅†      ❌        ❌
+  Sync BDA                         ✅      ✅†      ❌        ❌
+  Manage prefix mappings           ✅      ❌       ❌        ❌
 
 CONFIGURATION PROFILE REVISIONS
-  View/compare revisions          ✅      ✅†      ❌        ✅†
-  Restore a revision              ✅      ✅†      ❌        ❌
-  Label a revision                ✅      ✅†      ❌        ❌
-  Delete a revision               ✅      ❌       ❌        ❌
+  View/compare revisions           ✅      ✅†      ❌        ✅†
+  Restore a revision               ✅      ✅†      ❌        ❌
+  Label a revision                 ✅      ✅†      ❌        ❌
+  Delete a revision                ✅      ❌       ❌        ❌
 
 DISCOVERY
-  List/run discovery jobs         ✅      ✅       ❌        ❌
+  List/run discovery jobs          ✅      ✅       ❌        ❌
 
 AGENT CHAT & CODE EXPLORER
-  Chat with agent                 ✅      ✅       ❌        ✅
-  Code intelligence               ✅      ✅       ❌        ✅
+  Chat with agent                  ✅      ✅       ❌        ✅
+  Code intelligence                ✅      ✅       ❌        ✅
 
 TEST STUDIO
-  View/run test sets              ✅      ✅       ❌        ❌
-  Create/delete test sets         ✅      ✅       ❌        ❌
+  View/run test sets               ✅      ✅       ❌        ❌
+  Create/delete test sets          ✅      ✅       ❌        ❌
 
 CUSTOM MODEL FINE-TUNING
-  List/view fine-tuning jobs      ✅      ✅       ❌        ❌
-  Create fine-tuning jobs         ✅      ✅       ❌        ❌
-  Delete fine-tuning jobs         ✅      ✅       ❌        ❌
-  List available models           ✅      ✅       ❌        ❌
+  List/view fine-tuning jobs       ✅      ✅       ❌        ❌
+  Create fine-tuning jobs          ✅      ✅       ❌        ❌
+  Delete fine-tuning jobs          ✅      ✅       ❌        ❌
+  List available models            ✅      ✅       ❌        ❌
 
 CAPACITY PLANNING
-  Calculate capacity              ✅      ✅       ❌        ✅
+  Calculate capacity               ✅      ✅       ❌        ✅
 
 INBOX
-  Own messages and preferences    ✅      ✅       ✅        ✅
+  Own messages and preferences     ✅      ✅       ✅        ✅
 
 USER MANAGEMENT
-  List all users                  ✅      ❌       ❌        ❌
-  Create/delete users             ✅      ❌       ❌        ❌
-  Edit user scope                 ✅      ❌       ❌        ❌
-  View own profile                ✅      ✅       ✅        ✅
+  List all users                   ✅      ❌       ❌        ❌
+  Create/delete users              ✅      ❌       ❌        ❌
+  Edit user scope                  ✅      ❌       ❌        ❌
+  View own profile                 ✅      ✅       ✅        ✅
 
 PRICING
-  View pricing                    ✅      ✅       ❌        ✅
-  Edit pricing                    ✅      ❌       ❌        ❌
+  View pricing                     ✅      ✅       ❌        ✅
+  Edit pricing                     ✅      ❌       ❌        ❌
 
 MODEL LIMITS
-  View model limits               ✅      ✅       ❌        ✅
-  Edit model limits               ✅      ❌       ❌        ❌
+  View model limits                ✅      ✅       ❌        ✅
+  Edit model limits                ✅      ❌       ❌        ❌
 
 ✅* = Reviewer sees only docs awaiting review that are unclaimed (pending, or released back to the queue) or claimed by them (server-side filtered); see Document Filtering below
 ✅† = Scoped by allowedConfigVersions if set (see Configuration-Profile Scoping below)
+Regroup pages: the server also admits an Annotator for documents in their test sets; the document page doesn't offer it
 ```
 
 ## Configuration-Profile Scoping (Use Case Isolation)
@@ -1020,7 +1049,7 @@ filtering based on the caller's identity:
 
 The UI adapts based on the user's role and scope:
 - Navigation sidebar shows only relevant features per role
-- Action buttons (delete, reprocess, upload, save, import) are hidden for roles that can't perform those actions
+- Action buttons and menu items (delete, reprocess, upload, save, import, and the document page's actions) are hidden for roles that can never perform them; disabled, with the reason, when they don't apply now (for example a past version, a document in a review queue or still processing, or BDA mode)
 - Version dropdowns are automatically filtered to show only scoped versions
 - The top navigation badge shows the user's role with color coding (blue=Admin, green=Author, grey=Reviewer/Viewer)
 - **Admin-only buttons**: "Save as Profile", "Save as Default" in Configuration; Import/Restore/Save in Pricing and Model Limits

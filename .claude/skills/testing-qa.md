@@ -229,6 +229,29 @@ def test_s3_operation():
     # ... operations happen against moto mock
 ```
 
+## Fake credentials in fixtures
+
+Secret scanners read this repository, and a fixture that looks like a real AWS
+credential is reported as a hardcoded-credential finding exactly as a leaked key
+would be. Marking the finding a false positive does not stop the same line being
+reported again, so write fixtures the scanners recognise as placeholders. That is
+the shape AWS's own documentation uses:
+
+| Value | Write | Never |
+|---|---|---|
+| Access key ID | `AKIAIOSFODNN7EXAMPLE`, `ASIAIOSFODNN7EXAMPLE`. For several distinct ones keep the prefix and the 20 characters, and end in `EXAMPLE`: `ASIASCOPEDKEYEXAMPLE`, `ASIAPOLLYKEY0EXAMPLE` | an AWS prefix followed by 16 characters that do not end in `EXAMPLE` (do not write one even as a counter-example in a document: the scanner reads Markdown too) |
+| IAM unique ID (`AROA…`, `AIDA…`) | `AROADBQP57FF2AEXAMPLE` | the same shape without `EXAMPLE` |
+| Secret access key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`, or plain words that are not 40 characters long (`polly-scoped-key-material`) | 40 characters of `[A-Za-z0-9/+=]` |
+| Git SHA or tree hash, **in a file that also holds a key ID** | an expression: `"1234abcd" * 5` | a 40-character literal, which a scanner pairs with the key ID as its secret |
+
+Keep the `AKIA`/`ASIA` prefix and the 20-character length rather than inventing a
+stand-in with no AWS shape: `scripts/ux_runner/redact.py` recognises a key ID by
+exactly that shape, so a fixture without it stops exercising the redactor.
+
+`scripts/tests/test_fake_aws_credentials.py` enforces the key-ID rule and the
+40-character rule over every file git tracks or would track, so a violation fails
+locally and in both CIs before a scanner reports it.
+
 ## Local Lambda Testing
 ```bash
 cd patterns/unified/

@@ -526,7 +526,7 @@ class _Sts:
         if self.refuse:
             raise RuntimeError("AccessDenied")
         issued = {
-            "AccessKeyId": "ASIAIOSFODNN7SCOPED1",
+            "AccessKeyId": "ASIASCOPEDKEYEXAMPLE",
             "SecretAccessKey": "scopedSecretKeyValue0001",
             "SessionToken": "scopedSessionValue000001",
         }
@@ -550,7 +550,7 @@ def test_each_mint_is_one_assume_of_the_jobs_role_for_its_own_actions(
 ) -> None:
     sts = _Sts()
     assert mint(sts, ROLE_SESSION, "ux-test-812") == {
-        "AWS_ACCESS_KEY_ID": "ASIAIOSFODNN7SCOPED1",
+        "AWS_ACCESS_KEY_ID": "ASIASCOPEDKEYEXAMPLE",
         "AWS_SECRET_ACCESS_KEY": "scopedSecretKeyValue0001",
         "AWS_SESSION_TOKEN": "scopedSessionValue000001",
     }

@@ -40,6 +40,8 @@ export interface ProductionItemEditModel {
   documentSections: ReviewSectionRef[];
   /** Re-read the document's pages and sections (after a regroup). */
   refreshDocument: () => Promise<void>;
+  /** Refresh: re-read the item (a failed read throws), then the document. */
+  refresh: () => Promise<void>;
   /** The document's summary report, once summarization has run (after the review). */
   summaryReportUri: string | null;
   /** The document's evaluation status (BASELINE_COPYING while a baseline copy runs). */
@@ -97,20 +99,24 @@ export const useProductionItemEdit = (
   // The first item and document reads are the seed's; the key they belong to is the first one.
   const seededKey = useRef<string | null>(seed ? objectKey : null);
 
+  const readItem = useCallback(async (): Promise<ReviewItemDetail> => {
+    const result = await fetchReviewItem(objectKey);
+    setDetail(result);
+    setLoadError(null);
+    revisionsRef.current = revisionsOf(result, revisionsRef.current);
+    return result;
+  }, [objectKey]);
+
   const reload = useCallback(async (): Promise<ReviewItemDetail | null> => {
     if (!objectKey) return null;
     try {
-      const result = await fetchReviewItem(objectKey);
-      setDetail(result);
-      setLoadError(null);
-      revisionsRef.current = revisionsOf(result, revisionsRef.current);
-      return result;
+      return await readItem();
     } catch (err) {
       logger.error('getReviewItem failed', err);
       setLoadError(err);
       return null;
     }
-  }, [objectKey]);
+  }, [objectKey, readItem]);
 
   useEffect(() => {
     if (seededKey.current === objectKey) return;
@@ -158,6 +164,11 @@ export const useProductionItemEdit = (
       documentRead.current += 1;
     };
   }, [refreshDocument]);
+
+  const refresh = useCallback(async (): Promise<void> => {
+    await readItem();
+    await refreshDocument();
+  }, [readItem, refreshDocument]);
 
   const sections: ReviewSectionRef[] = useMemo(
     () =>
@@ -221,6 +232,7 @@ export const useProductionItemEdit = (
     sections,
     documentSections,
     refreshDocument,
+    refresh,
     summaryReportUri,
     evaluationStatus,
     reloadToken,

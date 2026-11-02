@@ -2512,8 +2512,11 @@ class TestMemorySamplerBody:
             patch.object(psutil, "Process", return_value=fake_process),
         ):
             shutdown = service._start_memory_monitoring()
+            # Wait for this sampler's own reading, not any "Memory usage" line:
+            # caplog sees every thread, and a sampler left running by an earlier
+            # test logs the real RSS, which would end the wait before ours logs.
             for _ in range(200):
-                if "Memory usage" in caplog.text:
+                if "Memory usage: 200.0 MB" in caplog.text:
                     break
                 time_module.sleep(0.01)
             shutdown.set()

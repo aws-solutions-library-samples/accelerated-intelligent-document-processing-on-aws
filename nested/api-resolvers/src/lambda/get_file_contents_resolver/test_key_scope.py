@@ -452,15 +452,9 @@ class TestTestSetKeyScope:
             None,
         )
 
-    @pytest.mark.parametrize("group", ["Viewer", "Reviewer"])
-    def test_roles_with_no_test_set_route_are_refused(self, resolver, group):
-        """Consistent with the metadata path rather than stricter than it.
-
-        `getTestSetDocuments` is `[Admin, Author, Annotator]`, so a Viewer or Reviewer
-        has no way to discover a Test-Set-bucket key in the first place; serving the
-        bytes to them would be the only route they had. Production HITL review is a
-        different axis and grants nothing here.
-        """
+    def test_a_viewer_is_refused(self, resolver):
+        """`getTestSetDocuments` admits no Viewer, so a Viewer has no route to a
+        Test-Set-bucket key; serving the bytes would be the only one they had."""
         index, _ = resolver
 
         with pytest.raises(PermissionError, match="^Unauthorized"):
@@ -469,10 +463,121 @@ class TestTestSetKeyScope:
                     "getFileContents",
                     TEST_SET_BUCKET,
                     _test_set_keys(MY_SET)[0],
-                    groups=(group,),
+                    groups=("Viewer",),
                 ),
                 None,
             )
+
+    def test_a_reviewer_with_no_profile_restriction_reads_every_set(self, resolver):
+        """A Reviewer works every test set their profile scope admits, and with no
+        `allowedConfigVersions` that is every set."""
+        index, table = resolver
+        _put_user(table, "user@example.test")
+
+        assert index.handler(
+            _event(
+                "getFileContents",
+                TEST_SET_BUCKET,
+                _test_set_keys(THEIR_SET)[0],
+                groups=("Reviewer",),
+            ),
+            None,
+        )
+
+    @pytest.mark.parametrize(
+        "test_set_id, recorded, admitted",
+        [
+            (MY_SET, MINE, True),
+            (THEIR_SET, THEIRS, False),
+            (THEIR_SET, "", False),
+            (THEIR_SET, None, False),
+        ],
+        ids=[
+            "profile-in-scope",
+            "profile-out-of-scope",
+            "no-single-profile",
+            "none-recorded",
+        ],
+    )
+    def test_a_scoped_reviewer_reads_a_set_only_when_its_recorded_profile_is_in_scope(
+        self, resolver, monkeypatch, test_set_id, recorded, admitted
+    ):
+        """The same rule the Test Studio resolver applies, read from the set's
+        recorded `ScopeProfile`; a set with no single profile, or none recorded yet,
+        is refused rather than read as unrestricted."""
+        index, table = resolver
+        _put_user(table, "user@example.test", allowedConfigVersions=[MINE])
+        tracking = "IDP-TrackingTable"
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        ddb.create_table(
+            TableName=tracking,
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        item = {"PK": f"testset#{test_set_id}", "SK": "metadata"}
+        if recorded is not None:
+            item["ScopeProfile"] = recorded
+        boto3.resource("dynamodb", region_name="us-east-1").Table(tracking).put_item(
+            Item=item
+        )
+        monkeypatch.setenv("TRACKING_TABLE_NAME", tracking)
+        event = _event(
+            "getFileContents",
+            TEST_SET_BUCKET,
+            _test_set_keys(test_set_id)[0],
+            groups=("Reviewer",),
+        )
+
+        if admitted:
+            assert index.handler(event, None)
+        else:
+            with pytest.raises(PermissionError, match="^Unauthorized"):
+                index.handler(event, None)
+
+    def test_a_scoped_reviewer_is_refused_when_the_sets_profile_cannot_be_read(
+        self, resolver, monkeypatch
+    ):
+        """No tracking table to read the recorded profile from refuses: an unreadable
+        profile is never read as unrestricted."""
+        index, table = resolver
+        _put_user(table, "user@example.test", allowedConfigVersions=[MINE])
+        monkeypatch.delenv("TRACKING_TABLE_NAME", raising=False)
+        monkeypatch.delenv("TRACKING_TABLE", raising=False)
+        event = _event(
+            "getFileContents",
+            TEST_SET_BUCKET,
+            _test_set_keys(MY_SET)[0],
+            groups=("Reviewer",),
+        )
+        with pytest.raises(PermissionError, match="^Unauthorized"):
+            index.handler(event, None)
+
+    def test_a_reviewer_whose_scope_cannot_be_resolved_is_refused(
+        self, resolver, monkeypatch
+    ):
+        """A failed scope lookup refuses rather than admitting an unrestricted read."""
+        index, _ = resolver
+        config_scope = importlib.import_module("config_scope")
+
+        def broken(*_a, **_k):
+            raise config_scope.ScopeLookupError("users table unavailable")
+
+        monkeypatch.setattr(config_scope, "resolve_allowed_config_versions", broken)
+        event = _event(
+            "getFileContents",
+            TEST_SET_BUCKET,
+            _test_set_keys(MY_SET)[0],
+            groups=("Reviewer",),
+        )
+        with pytest.raises(PermissionError, match="^Unauthorized"):
+            index.handler(event, None)
 
 
 # ---------------------------------------------------------------------------

@@ -150,8 +150,17 @@ jobs:
       # Regenerates the manifests then audits ~1800 pinned packages against OSV.
       # Fails on HIGH/CRITICAL. Exit 2 means the audit could not run (OSV
       # unreachable) and is NOT a pass — dep_audit.py distinguishes the two.
+      #
+      # --no-unmapped, on purpose. The unmapped-advisory report reads
+      # about 330 pages of GitHub's advisory API per run, and the Actions token's
+      # limit is 1,000 requests an hour shared by every job in this repository,
+      # so a few pull-request runs in an hour would starve the others. This job
+      # exposes no token today, so the pass would skip itself anyway; the flag
+      # keeps it skipped if a later change puts a token in the environment, since
+      # the script also reads GH_TOKEN and `gh auth token`. GitLab's dep_audit
+      # job runs the report with its own token. It never changes the exit code.
       - name: Run dependency audit
-        run: python3 scripts/security/dep_audit.py --json dep-audit-report.json
+        run: python3 scripts/security/dep_audit.py --no-unmapped --json dep-audit-report.json
 
       - name: Upload dependency audit report
         if: always()

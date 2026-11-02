@@ -186,10 +186,11 @@ flowchart TD
 
 #### Accessing the Troubleshoot Modal
 
-1. **Navigate to Dashboard**: Open the GenAI IDP Web UI
-2. **Find Failed Document**: Locate a document with `FAILED` status
-3. **Click Troubleshoot Button**: Opens the TroubleshootModal
-4. **Automatic Analysis**: Agent immediately begins analyzing the failure
+1. **Open the document**: In the GenAI IDP Web UI's document list, open the document
+   to analyze (typically one with `FAILED` status) to reach its document page
+2. **Click Troubleshoot**: Choose **Troubleshoot** in the document page's action bar
+   to open the TroubleshootModal. It is offered to the Admin, Author and Viewer roles
+3. **Automatic Analysis**: Agent immediately begins analyzing the failure
 
 #### Understanding the Interface
 
@@ -203,7 +204,8 @@ The TroubleshootModal displays:
   - `FAILED`: Analysis encountered an error
 - **Agent Messages**: Live progress updates during processing
 - **Results Display**: Formatted analysis with collapsible sections
-- **Job Resumption**: If you close and reopen the modal, the existing job resumes
+- **Last result**: Reopening **Troubleshoot** on the same document shows the last
+  analysis (or the one still running); **Run again** starts a new analysis
 
 #### Reading Analysis Results
 

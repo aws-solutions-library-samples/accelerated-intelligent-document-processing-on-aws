@@ -363,7 +363,7 @@ def _is_a_migrated_legacy_key(reached: Reached, key: str) -> bool:
     """Whether the migration chain consumes ``key`` written at ``reached``.
 
     Such a key is not dropped — it is a legacy spelling the chain relocates
-    (``classification.granularity`` becomes ``classification.one_stage.granularity``)
+    (``classification.granularity`` becomes ``classification.combined.granularity``)
     — so it is not a mis-nesting. Measured through the real chain rather than
     listed, so a new migration is accounted for without an edit here.
     """

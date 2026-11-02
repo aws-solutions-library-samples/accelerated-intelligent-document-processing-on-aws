@@ -148,9 +148,9 @@ interface SchemaProperty {
   // it the negation dependsOn also lacks.
   //
   // `field` resolves in the NEAREST ENCLOSING SCOPE that has it: from
-  // `classification.one_stage.llm.image.target_width`, the field
+  // `classification.combined.llm.image.target_width`, the field
   // `modality.images` is looked for at `...llm.image.modality.images`, then
-  // `classification.one_stage.llm.modality.images`, and so on up to
+  // `classification.combined.llm.modality.images`, and so on up to
   // `modality.images`. That is what lets
   // a condition reference a sibling object's field without spelling out the
   // whole path, which dependsOn (sibling-then-root only) cannot do.
@@ -170,8 +170,9 @@ interface SchemaProperty {
   // whose two flags both default to empty, is permanently in that state.
   sectionLabel?: string;
   // Display text for enum values, keyed by the stored value. The stored value
-  // never changes; only what the dropdown shows does (e.g. `single_pass` reads
-  // "One stage"). A value with no entry shows as itself.
+  // never changes; only what the dropdown shows does (e.g. `combined` reads
+  // "Split and classify together (one call)"). A value with no entry shows as
+  // itself.
   enumLabels?: Record<string, string>;
   // Only Admins may change this object: other users see its fields read-only.
   adminOnly?: boolean | string;

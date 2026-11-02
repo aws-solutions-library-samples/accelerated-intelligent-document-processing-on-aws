@@ -587,7 +587,7 @@ Type coercion occurs automatically during evaluation:
 
 ## Assessment Confidence Integration
 
-The evaluation framework automatically integrates with the assessment feature to provide enhanced quality insights. When documents have been processed with assessment enabled via the configuration `assessment.enabled: true` property, the evaluation reports include confidence scores alongside traditional accuracy metrics.
+The evaluation framework automatically integrates with the assessment feature to provide enhanced quality insights. When documents have been processed with confidence scoring on — `extraction.confidence.mode` set to `separate` (the default) or `integrated` rather than `off` — the evaluation reports include confidence scores alongside traditional accuracy metrics. See [Enable/Disable Confidence](configuration.md#enabledisable-confidence).
 
 ### Confidence Score Display
 
@@ -1034,9 +1034,9 @@ have to cross-reference.
 disagrees with ground truth carries a **Class mismatch** alert beside its
 Class/Type value. Hovering it shows what ground truth expects, what this run
 assigned, and the page range involved. Nothing is added to a row that matches,
-and nothing at all is added for a document with no ground truth — the tables
-look exactly as they did before. The alert also appears in **Edit mode**, next
-to the class dropdown, which is where the class can actually be corrected.
+and nothing at all is added for a document with no ground truth. The alert also
+appears on the edit page's section editor, next to the section's class. A class is
+corrected with **More Actions › Edit Page Grouping** on the document page.
 
 A section's verdict is derived from **its pages**, not by pairing it with a
 ground-truth section. When the split itself is wrong there is no single
@@ -1046,8 +1046,8 @@ classes it spans ("Section spans more than one ground-truth class") instead of
 an unhelpful "no match". A section is flagged even when one of the classes it
 spans equals its own, because in that case the boundary is what is wrong.
 
-**The edit page's Visual Editor tab** (opened with **Edit Data**, or **View Data**
-for a read-only role). The class comparison appears above the field list on any
+**The edit page's Visual Editor tab** (opened with **Edit Data** in a section row's **⋮**
+menu, or **View Data** for a read-only role). The class comparison appears above the field list on any
 document that has an evaluation baseline — the class this run
 assigned, the class ground truth expects, and a match/mismatch verdict. Both
 values are shown whether or not they agree.
@@ -1242,7 +1242,8 @@ baseline-bucket/
 Once documents are processed with baselines:
 
 1. In the Web UI, select a document from the Documents list
-2. Click "View Evaluation Report" button
+2. Choose **Reports › Evaluation Report** in the document page's action bar (it is
+   disabled, with the reason, when the document has no evaluation report)
 3. The report displays:
    - Section classification accuracy
    - Field-by-field comparison with visual indicators (✅/❌)
@@ -1273,7 +1274,7 @@ Once documents are processed with baselines:
 
 - **Choose appropriate evaluation methods**: Match methods to your data types (EXACT for IDs, FUZZY for names, SEMANTIC for descriptions)
 - **Set realistic thresholds**: Start with strict thresholds (0.9+) and adjust based on your accuracy requirements
-- **Configure confidence tracking**: Enable assessment to get confidence scores in evaluation reports
+- **Configure confidence tracking**: Leave `extraction.confidence.mode` at `separate` or `integrated` (not `off`) to get confidence scores in evaluation reports
 
 ## Automatic Field Discovery
 

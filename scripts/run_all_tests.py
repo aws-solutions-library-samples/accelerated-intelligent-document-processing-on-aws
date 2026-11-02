@@ -208,6 +208,7 @@ RUN_ROOTS = [
     # invokes each root in its own subprocess, so it runs clean here, and six
     # green tests that were excluded from every gate are now gated.
     "samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency",
+    "src/lambda/agentcore_gateway_manager",
     "src/lambda/api_handler",
     "src/lambda/batch_pre_processor",
     "src/lambda/bda_ocr_project/tests",

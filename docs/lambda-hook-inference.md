@@ -36,7 +36,7 @@ in both processing modes**, so a hook there applies to BDA mode as well:
 | Step | Config Field | Description |
 |------|-------------|-------------|
 | **OCR** (Bedrock backend) | `ocr.model_id` | LLM-based OCR when `backend=bedrock` |
-| **Classification** | `classification.one_stage.llm.model` (or the `model` of either two-stage call) | Document type classification |
+| **Classification** | `classification.combined.llm.model` (or the `model` of either split-then-classify call) | Document type classification |
 | **Extraction** | `extraction.model` | Structured data extraction |
 | **Assessment** | `extraction.confidence.model` | Confidence scoring |
 | **Summarization** | `summarization.model` | Document summarization |
@@ -48,13 +48,14 @@ in both processing modes**, so a hook there applies to BDA mode as well:
 1. Navigate to the **Configuration** page
 2. Select the step you want to customize (e.g., Extraction)
 3. In the **Model** dropdown, select **"LambdaHook"** (first option)
-4. Enter your Lambda function ARN in the **Model Lambda Hook ARN** field
+4. Enter your Lambda function ARN in the **Model Lambda hook ARN** field
 5. Save the configuration
 
 For **Classification** there is one *Model* dropdown per model call, and which
-ones appear depends on **Strategy**: *One stage* (`strategy: single_pass` in the
-JSON and YAML views) shows one, and *Two stage* (`strategy: two_stage`) shows one
-under *Boundary detection* and one under *Section classification*. Hooking only one of
+ones appear depends on **Strategy**: *Split and classify together (one call)*
+(`strategy: combined` in the JSON and YAML views) shows one, and *Split first, then
+classify each section* (`strategy: split_then_classify`) shows one under *Splitting*
+and one under *Section classification*. Hooking only one of
 the two leaves the other on its Bedrock model, which is a supported
 configuration — the hook receives a different `context` for each, so one Lambda
 can serve both.
@@ -132,14 +133,14 @@ Your Lambda function receives a **Converse API-compatible** payload:
 2. **`<<CACHEPOINT>>` tags are stripped** — These Bedrock-specific tags are removed from text content before sending to your Lambda.
 
 3. **`context` field is added** — Indicates which stage is calling: `OCR`,
-   `Classification`, `BoundaryDetection`, `SectionClassification`, `Extraction`,
+   `Classification`, `Splitting`, `SectionClassification`, `Extraction`,
    `Assessment` or `Summarization`. ⚠️ Classification contributes **three**
    possible values, because the context names the stage rather than the step. A
-   `single_pass` configuration calls your hook with `Classification`; a
-   `two_stage` configuration calls it with `BoundaryDetection` for the boundary pass
-   and `SectionClassification` for the class pass, and never with
+   `combined` configuration calls your hook with `Classification`; a
+   `split_then_classify` configuration calls it with `Splitting` for the splitting call
+   and `SectionClassification` for section classification, and never with
    `Classification`. A hook that branches on `context == "Classification"` falls
-   through under two stage — match all three.
+   through under split-then-classify — match all three.
 
 ## Expected Response
 
@@ -595,6 +596,18 @@ The Lambda Hook includes built-in retry logic:
 - **Transient errors** (throttling, timeout): Retried with exponential backoff (same as Bedrock)
 - **Function errors**: Retried for unhandled exceptions (cold start issues, etc.)
 - **Permanent errors**: Raised immediately (invalid ARN, missing permissions, etc.)
+
+One request makes at most `max_retries + 1` invocations of your hook, whatever mix of
+these failures it meets, where `max_retries` is the IDP Bedrock client's retry count
+(7 unless the caller sets another, so at most 8 invocations). Each retry re-runs whatever the hook charges for, so the
+bound is worth knowing when you price a hook. A function error followed by a
+throttle or a timeout used to be retried at more than one level at once: measured,
+one request could make 40 invocations at the default retry count.
+
+The client publishes `LambdaHookRequestsFailed` to CloudWatch once for each request
+that ends in failure, after its retries, and never for one that recovers. A request
+that met a function error used to be counted several times over, up to 11 times for
+one request at the default retry count.
 
 ## Metering and Cost Tracking
 

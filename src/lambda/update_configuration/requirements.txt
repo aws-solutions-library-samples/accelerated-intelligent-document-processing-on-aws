@@ -1,1 +1,2 @@
-cfnresponse
+# No third-party dependencies. cfnresponse is vendored as cfnresponse.py beside
+# index.py rather than installed from the package index.

@@ -79,6 +79,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
 ### Prerequisites
 
 - Python 3.12 or higher
+- [`uv`](https://docs.astral.sh/uv/) on `PATH`, which `make setup-venv` uses to read the dependency lock
 - AWS credentials configured (via AWS CLI or environment variables)
 - An active IDP Accelerator CloudFormation stack
 
@@ -305,9 +306,10 @@ For evaluation workflows with accuracy metrics, see the [Complete Evaluation Wor
 
 > **Comma-separated options:** every option documented below as comma-separated
 > (`--document-ids`, `--test-run-ids`, `--file-types`, `--check-stack-regions`,
-> `--features`, `--tags`) parses through one shared helper that **drops blank
-> segments**, so a trailing or doubled comma is
-> harmless — `--document-ids "a,b,"` names two documents, not three.
+> `--features`, `--tags`) **drops blank segments**, so a trailing or doubled comma
+> is harmless — `--document-ids "a,b,"` names two documents, not three. All but
+> `--features` parse through one shared helper; `--features` is parsed by the SDK's
+> `config.create`, by the same rule.
 >
 > For all of them **except `--tags`**, a value containing **no** non-blank segment is
 > **refused** with exit 1 rather than treated as one value that is the empty string.
@@ -1413,7 +1415,7 @@ idp-cli download-results \
 ### `use-as-baseline`
 
 Promote a processed document's output to the evaluation baseline — the
-scriptable equivalent of the web UI's **Use as Evaluation Baseline** button.
+scriptable equivalent of the web UI's **More Actions › Use As Evaluation Baseline** (Admin, Author).
 Copies every output object for the document into the evaluation baseline bucket
 and sets the document's `EvaluationStatus` to `BASELINE_AVAILABLE`. Runs
 synchronously (returns once the copy is complete).
@@ -2481,12 +2483,14 @@ idp-cli config-create [OPTIONS]
 
 **Options:**
 - `--features`: Feature set (default: `min`)
-  - `min`: classification, extraction, classes only (simplest)
-  - `core`: min + ocr, assessment
+  - `min`: classification and extraction only (simplest). It also writes `enabled: false` for summarization and evaluation, so those are switched off. It leaves **confidence scoring on**: confidence is configured under `extraction.confidence`, which comes with `extraction` at its default `mode: separate`. To turn it off, set `extraction.confidence.mode: off` in the generated file
+  - `core`: the sections of min plus ocr. Unlike min, it does not turn summarization or evaluation off. Confidence scoring is configured under `extraction.confidence`, so it comes with `extraction`
   - `all`: all sections with full defaults
-  - Or comma-separated list: `"classification,extraction,summarization"`
+  - Or one or more section names, comma-separated: `summarization`, or `"classification,extraction,summarization"`. A single name and a list are read the same way. A name that is not a section of the configuration is **refused** with exit 1 and the list of valid sections, rather than dropped, and a feature set cannot be combined with section names
+- No feature set writes a `classes` section. The system defaults define no document classes, and an empty `classes: []` uploaded over a profile would replace the profile's classes with none, so the key is left out and the profile keeps its own. `--features classes` on its own is refused for the same reason. Add your classes under a top-level `classes:` key
+- The header comment of the generated file states which sections it copies, which it switches off, which it leaves out, and whether confidence scoring is on
 - `--output`, `-o`: Output file path (default: stdout)
-- `--include-prompts`: Include full prompt templates (default: stripped for readability)
+- `--include-prompts`: Include full prompt templates. By default the long `system_prompt`, `task_prompt` and `user_prompt` values are left out of the file, so they take whatever value the configuration is merged over: the system defaults when validating or deploying, or the stack's default (or the profile's current) configuration when uploading
 - `--no-comments`: Omit explanatory header comments
 
 **Examples:**
@@ -2500,6 +2504,9 @@ idp-cli config-create --features all --output full-config.yaml
 
 # Custom section selection
 idp-cli config-create --features "classification,extraction,summarization" --output config.yaml
+
+# A single section
+idp-cli config-create --features summarization
 ```
 
 ---
@@ -2514,7 +2521,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
 - **Model IDs** - Verifies Bedrock model IDs are valid (checked against pricing.yaml)
 - **Placeholder Validation** - Ensures required placeholders are present in custom task_prompts:
   - `ocr.task_prompt` (bedrock only): Requires `{DOCUMENT_IMAGE}`
-  - The task prompt of each classification call the strategy makes (for example `classification.one_stage.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
+  - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `extraction.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `assessment.task_prompt`: Requires `{DOCUMENT_IMAGE}`, `{OCR_TEXT_CONFIDENCE}`, `{EXTRACTION_RESULTS}`
   - `summarization.task_prompt`: Requires `{DOCUMENT_TEXT}`, `{EXTRACTION_RESULTS}`
@@ -2539,6 +2546,7 @@ idp-cli config-validate [OPTIONS]
 - `--config-file`, `-f` (required): Path to configuration file to validate
 - `--show-merged`: Show the full merged configuration
 - `--strict`: Fail validation if config contains unknown or deprecated fields
+- `--emit-migrated <path>`: Write the file converted to the current configuration format to `<path>`, headed by a comment naming the format version and the source file
 
 **Examples:**
 
@@ -2555,6 +2563,7 @@ idp-cli config-validate --config-file ./config.yaml --strict
 
 **Notes:**
 - The `config-upload` command runs validation by default before uploading to protect production stacks.
+- The command calls the SDK's `client.config.validate()` and, for `--emit-migrated`, `client.config.migrate()`, so the CLI and the SDK give the same verdict on a file. See [config.validate()](idp-sdk.md#configvalidate).
 - Model ID validation requires `config_library/pricing.yaml`. Ensure `idp-cli` is run from the repository root, or set the `IDP_PROJECT_ROOT` environment variable to the repo root for validation to work correctly.
 
 ---
@@ -3009,7 +3018,7 @@ idp-cli test-compare \
 
 **Configuration Differences:**
 - Automatically detects and displays configuration differences between test runs
-- Shows nested config paths (e.g., `classification.one_stage.llm.model`, `extraction.temperature`)
+- Shows nested config paths (e.g., `classification.combined.llm.model`, `extraction.temperature`)
 - Highlights values that differ across test runs
 
 **Requirements:**
@@ -3153,8 +3162,8 @@ idp-cli discover-multidoc [OPTIONS]
 |--------|-------------|
 | `--dir` | Directory containing documents to analyze (recursive scan) |
 | `-d, --document` | Individual document files (repeatable: `-d doc1.pdf -d doc2.png`) |
-| `--embedding-model` | Bedrock embedding model ID (default: `us.cohere.embed-v4:0`) |
-| `--analysis-model` | Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`) |
+| `--embedding-model` | Bedrock embedding model ID (default: `us.cohere.embed-v4:0`; `eu.cohere.embed-v4:0` in EU Regions, `global.cohere.embed-v4:0` in Canada) |
+| `--analysis-model` | Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`; `eu.anthropic.claude-sonnet-4-6` in EU Regions) |
 | `-o, --output` | Output directory for discovered JSON schemas |
 | `--stack-name` | CloudFormation stack name (required for `--save-to-config`) |
 | `--config-profile` (alias: `--config-version`) | Configuration profile to save schemas to |

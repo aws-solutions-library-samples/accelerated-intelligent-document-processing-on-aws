@@ -10,6 +10,7 @@ import {
   LATEST_PERIODS,
   TEST_RUN_COLUMN_ID,
   buildDownloadMenuItems,
+  isClaimableForReview,
   resolveInitialPeriodsToLoad,
   testRunIdFromObjectKey,
   type MappedDocument,
@@ -144,6 +145,29 @@ describe('COLUMN_DEFINITIONS_MAIN', () => {
   });
 });
 
+describe('per-document count columns', () => {
+  const cell = (id: string, overrides: Partial<MappedDocument>) => {
+    const column = COLUMN_DEFINITIONS_MAIN([]).find((c) => c.id === id);
+    if (!column) throw new Error(`No column ${id}`);
+    return column.cell(row(overrides));
+  };
+  // The text a cell shows: a string, or the children of the StatusIndicator it renders.
+  const text = (value: unknown): string =>
+    typeof value === 'string' || typeof value === 'number'
+      ? String(value)
+      : String((value as { props: { children: unknown } }).props.children);
+
+  it.each(['missingRequiredFieldCount', 'processingIssueCount'])('%s shows a dash for a row that does not carry the count', (id) => {
+    expect(cell(id, { [id]: null })).toBe('-');
+    expect(cell(id, {})).toBe('-');
+  });
+
+  it.each(['missingRequiredFieldCount', 'processingIssueCount'])('%s shows a carried count, including zero', (id) => {
+    expect(text(cell(id, { [id]: 0 }))).toBe('0');
+    expect(text(cell(id, { [id]: 3 }))).toBe('3');
+  });
+});
+
 describe('resolveDateRange', () => {
   it('returns no bounds for Latest, so the query runs newest-first over the whole partition', () => {
     expect(resolveDateRange(LATEST_PERIODS, null)).toBeNull();
@@ -200,5 +224,23 @@ describe('resolveInitialPeriodsToLoad', () => {
     expect(resolveInitialPeriodsToLoad(undefined)).toBe(LATEST_PERIODS);
     expect(resolveInitialPeriodsToLoad(Number.NaN)).toBe(LATEST_PERIODS);
     expect(resolveInitialPeriodsToLoad(Number.POSITIVE_INFINITY)).toBe(LATEST_PERIODS);
+  });
+});
+
+describe('isClaimableForReview', () => {
+  it('claims a raised, unfinished, unowned review', () => {
+    expect(isClaimableForReview(row({ hitlTriggered: true, hitlStatus: 'Review Pending' }))).toBe(true);
+    expect(isClaimableForReview(row({ hitlTriggered: true, hitlStatus: 'PendingReview' }))).toBe(true);
+  });
+
+  it('does not send a claim the server refuses', () => {
+    // No review raised: NO_REVIEW_PENDING.
+    expect(isClaimableForReview(row({ hitlTriggered: false }))).toBe(false);
+    expect(isClaimableForReview(row({ hitlTriggered: false, hitlStatus: 'N/A' }))).toBe(false);
+    // Finished: REVIEW_FINISHED.
+    expect(isClaimableForReview(row({ hitlTriggered: true, hitlCompleted: true, hitlStatus: 'Completed' }))).toBe(false);
+    // Owned, or in a review queue.
+    expect(isClaimableForReview(row({ hitlTriggered: true, hitlReviewOwner: 'bob', hitlStatus: 'InProgress' }))).toBe(false);
+    expect(isClaimableForReview(row({ hitlTriggered: true, hitlStatus: 'in_review' }))).toBe(false);
   });
 });

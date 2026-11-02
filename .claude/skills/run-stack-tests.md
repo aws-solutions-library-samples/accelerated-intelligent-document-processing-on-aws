@@ -8,7 +8,14 @@ used to run automatically on every integration pipeline; they were moved to
 on-demand `make stacktest-*` targets because standing up ~6 stacks at once in one
 pipeline burst the account-wide AWS control planes (CloudWatch Logs
 create-consistency, CodeBuild role-trust propagation, IAM CreatePolicy rate
-limit) and caused flaky failures unrelated to the code under test.
+limit) and caused flaky failures unrelated to the code under test. In CI the
+deploy-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE, Jobs API)
+run only on the **weekly variant-probe schedule** (a GitLab project setting; they
+run only while it is active), never on the nightly;
+`stacktest-rbac` is `make api-test`, which every integration run already executes
+as a step of the primary suite, and the other `stacktest-*` targets run only by
+hand; see
+`scripts/sdlc/docs/CI_TEST_COVERAGE.md` (Pipeline stages & triggers).
 
 ## The stacktest family
 
@@ -18,7 +25,7 @@ limit) and caused flaky failures unrelated to the code under test.
 | `make stacktest-rbac STACK_NAME=…` | Full RBAC/authorization matrix (alias of `api-test`) | live stack |
 | `make stacktest-zap` | OWASP ZAP DAST scan of the UI API | stack or self-deploy |
 | `make stacktest-inbox STACK_NAME=…` | Inbox end to end: posts through `idp_common.notifications` (direct, group fan-out, idempotency, dedupe) and reads back through the REST API (list, unread count, mark read, cross-user 404). Creates and removes a temporary Cognito group `inbox-live-check-<rand>`, two temporary users and their Inbox items, and restores the app client's auth flows. Exit 0 = PASS, 1 = FAIL, 2 = errored or skipped | live stack deployed **with the Inbox** (`NotificationsTableName` output; an older stack reports SKIP) |
-| `make stacktest-review-queues STACK_NAME=…` | Review queues end to end: uploads a sample under a temporary profile with review queues on (`hitl.confidence_threshold: 0.99`), waits for `review/status.json` = `in_review`, then claims, saves a draft and completes through the REST API as a temporary Annotator, and waits for `complete`, tracking `COMPLETED`, an unchanged machine manifest and a final manifest. Removes the profile, user, document and its queue and tracking rows, and restores the app client's auth flows. `CHECK_EVENTS=1` also expects the two status-object EventBridge events via a temporary rule and SQS queue. Costs one document's processing. Exit 0 = PASS, 1 = FAIL, 2 = errored or skipped | live stack deployed **with review queues** (`HITLTableName` output; an older or headless stack reports SKIP). ⚠️ The flow self-claims from a per-profile `default` queue, which predates system-wide queues and Admin assignment; see the note at the top of `scripts/review_queues_live_check.py` |
+| `make stacktest-review-queues STACK_NAME=…` | Review queues end to end on the Annotator path: uploads a sample under a temporary profile with HITL on (`hitl.confidence_threshold: 0.99`), creates a temporary Annotator and a temporary Admin, checks the Annotator sees no queue while unlisted, has the Admin add the Annotator to the Default queue's Eligible Annotators through `updateReviewQueue` (sending back the settings an update would otherwise reset, and leaving out `enabled` and the skip reasons, which an update keeps), waits for `review/status.json` = `in_review`, then lists, claims, saves a draft and completes through the REST API as the Annotator, and waits for `complete`, tracking `COMPLETED`, an unchanged machine manifest and a final manifest. Cleanup takes only that Annotator off the Default queue's list, from a fresh read, and removes the profile, both users, the document and its queue and tracking rows, and restores the app client's auth flows. A disabled Default queue is reported as could-not-run rather than switched on. `CHECK_EVENTS=1` also expects the two status-object EventBridge events via a temporary rule and SQS queue. Costs one document's processing. Exit 0 = PASS, 1 = FAIL, 2 = errored or skipped | live stack deployed **with review queues** (`HITLTableName` output; an older or headless stack reports SKIP) and its Default queue enabled (the seeded state). ⚠️ While it runs, the Default queue lists one extra Annotator, and a cleanup that cannot remove it is reported as a FAIL naming the user. `updateReviewQueue` writes the whole definition unconditionally from a read the resolver may have cached for up to 30 seconds, so an Admin edit to the Default queue's name, description, priority, checklist, reject reasons, time limit or Eligible Annotators within about 30 seconds of either of the check's two writes can be lost, and two concurrent runs can drop each other's Annotator. Run it when nobody is editing that queue |
 | `make stacktest-hosting-global` | APIGateway GLOBAL hosting variant | stack or self-deploy |
 | `make stacktest-waf` | WAF IP-allow-list WebACL association | stack or self-deploy |
 | `make stacktest-hosting-private` | PRIVATE (VPC) API hosting | **VPC** + stack/self-deploy |
@@ -118,8 +125,11 @@ over creating one. Procedure:
   (`scripts/sdlc/run_stacktest.py`) imports `codebuild_deployment.py` and drives
   its internal deploy-variant table, so results match what CI would have produced
   — no drift.
-- To temporarily re-enable the deploy-variant tests inside a pipeline run (rarely
-  needed), set `IDP_RUN_PROBES=true`. Default is off.
+- To run all the deploy-variant tests inside a pipeline, press **Run** on the
+  weekly variant-probe schedule (a GitLab project setting under **Build › Pipeline
+  schedules**, carrying `IDP_RUN_PROBES=true`; the button exists only once the schedule does). `IDP_RUN_PROBES=true` is honoured only on a
+  scheduled pipeline, so setting it on a manual or merge-request run does nothing;
+  on the build side it is off unless the buildspec sets it.
 - Permissions boundary is now verified only by the primary suite (Step 13,
   `test_step13_permission_boundaries`); the deploy-variant tests deploy without
   one.

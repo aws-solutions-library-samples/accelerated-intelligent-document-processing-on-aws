@@ -76,6 +76,10 @@ flows:
     priority: p0
     paths:
       - src/ui/src/components/document-details/**
+      - src/ui/src/components/document-panel/**
+      - src/ui/src/components/document-actions/**
+      - src/ui/src/components/sections-panel/**
+      - src/ui/src/components/pages-panel/**
       - src/ui/src/components/document-viewer/**
       - src/ui/src/components/edit-screen/SectionEditor.tsx
       - src/ui/src/components/edit-screen/use-section-evaluation.ts
@@ -95,8 +99,8 @@ flows:
         (see the comment above), not via flow 6.2.
     steps:
       - Open the document's detail page.
-      - Choose Edit on the document page (or Edit Data on a section) and turn on
-        Show Evaluation.
+      - Choose Edit on the document page (or Edit Data in a section's ⋮ menu) and
+        turn on Show Evaluation.
     expect:
       - The classification comparison is shown, naming both the expected and the
         predicted class.

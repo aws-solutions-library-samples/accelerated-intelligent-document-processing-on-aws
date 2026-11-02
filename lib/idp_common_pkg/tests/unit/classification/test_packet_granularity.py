@@ -39,7 +39,7 @@ import pytest
 from idp_common.classification.models import Segment
 from idp_common.classification.service import ClassificationService
 from idp_common.config.merge_utils import merge_config_with_defaults
-from idp_common.models import Document, Page
+from idp_common.models import Document, Page, Status
 
 PACKET_PROMPT = (
     "<document-types>\n{CLASS_NAMES_AND_DESCRIPTIONS}\n</document-types>\n"
@@ -471,6 +471,118 @@ class TestMergeWindowSegments:
         covered = [pid for s in merged for pid in s.page_ids]
         assert covered == ["1", "3"]
 
+    def test_overlapping_segments_in_one_call_keep_each_page_once(self, caplog):
+        """#1654: one call reporting segments that share pages. The rule is the
+        windowed one — the segment reported first keeps the page — so the
+        answer does not depend on whether the packet was windowed."""
+        import logging
+
+        service = _service()
+        with caplog.at_level(logging.WARNING):
+            merged = service._merge_window_segments(
+                [
+                    [
+                        Segment(page_ids=["1", "2", "3"], doc_class="invoice"),
+                        Segment(page_ids=["3", "4"], doc_class="receipt"),
+                        Segment(page_ids=["4"], doc_class="receipt"),
+                    ]
+                ],
+                ["1", "2", "3", "4"],
+            )
+        assert [(s.page_ids, s.doc_class) for s in merged] == [
+            (["1", "2", "3"], "invoice"),
+            (["4"], "receipt"),
+        ]
+        assert "overlapping segments" in caplog.text
+
+    def test_an_overlap_does_not_merge_two_documents_of_one_class(self):
+        """The later segment lost its first page to an earlier segment of the
+        same call, so its first remaining page still opens a document. Without
+        that, the fold would join two invoices into one section silently."""
+        service = _service()
+        merged = service._merge_window_segments(
+            [
+                [
+                    Segment(page_ids=["1", "2", "3"], doc_class="invoice"),
+                    Segment(page_ids=["3", "4", "5", "6"], doc_class="invoice"),
+                ]
+            ],
+            ["1", "2", "3", "4", "5", "6"],
+        )
+        assert [s.page_ids for s in merged] == [["1", "2", "3"], ["4", "5", "6"]]
+
+    def test_an_unlabelled_splitting_overlap_keeps_its_boundary(self):
+        """The splitting call returns no class, so every page folds under one
+        label and only the boundary separates documents."""
+        service = _service()
+        merged = service._merge_window_segments(
+            [[Segment(page_ids=["1", "2", "3"]), Segment(page_ids=["3", "4"])]],
+            ["1", "2", "3", "4"],
+        )
+        assert [s.page_ids for s in merged] == [["1", "2", "3"], ["4"]]
+
+    def test_a_segment_resuming_after_a_claimed_run_opens_a_document(self):
+        service = _service()
+        merged = service._merge_window_segments(
+            [
+                [
+                    Segment(page_ids=["2", "3"], doc_class="invoice"),
+                    Segment(page_ids=["1", "2", "3", "4", "5"], doc_class="invoice"),
+                ]
+            ],
+            ["1", "2", "3", "4", "5"],
+        )
+        assert [s.page_ids for s in merged] == [["1"], ["2", "3"], ["4", "5"]]
+
+    def test_a_leading_overlap_lost_to_an_earlier_window_still_continues(self):
+        """Across windows the leading overlap is the earlier window's, and the
+        pages after it continue that window's document — unchanged."""
+        service = _service()
+        merged = service._merge_window_segments(
+            [
+                [Segment(page_ids=["1", "2", "3"], doc_class="invoice")],
+                [Segment(page_ids=["3", "4", "5"], doc_class="invoice")],
+            ],
+            ["1", "2", "3", "4", "5"],
+        )
+        assert [s.page_ids for s in merged] == [["1", "2", "3", "4", "5"]]
+
+    def test_candidates_survive_where_a_segment_is_one_reported_segment(self):
+        service = _service()
+        ranked = [{"class": "invoice", "probability": 0.9}]
+        other = [{"class": "receipt", "probability": 0.8}]
+        merged = service._merge_window_segments(
+            [
+                [
+                    Segment(
+                        page_ids=["1", "2"], doc_class="invoice", candidates=ranked
+                    ),
+                    Segment(page_ids=["2", "3"], doc_class="receipt", candidates=other),
+                ]
+            ],
+            ["1", "2", "3"],
+        )
+        assert [(s.page_ids, s.candidates) for s in merged] == [
+            (["1", "2"], ranked),
+            (["3"], other),
+        ]
+
+    def test_one_call_and_two_windows_resolve_an_overlap_the_same_way(self):
+        """The same page claims, delivered as one call or split across two
+        windows, produce the same segments."""
+        service = _service()
+        first = Segment(page_ids=["1", "2", "3"], doc_class="invoice")
+        second = Segment(page_ids=["2", "3", "4"], doc_class="receipt")
+        one_call = service._merge_window_segments(
+            [[first, second]], ["1", "2", "3", "4"]
+        )
+        two_windows = service._merge_window_segments(
+            [[first], [second]], ["1", "2", "3", "4"]
+        )
+        assert [(s.page_ids, s.doc_class) for s in one_call] == [
+            (s.page_ids, s.doc_class) for s in two_windows
+        ]
+
     def test_a_segment_confidence_survives_the_merge(self):
         service = _service()
         merged = service._merge_window_segments(
@@ -617,6 +729,32 @@ class TestPacketClassifyDocument:
         assert [s.page_ids for s in result.sections] == [["1", "2"], ["3", "4"]]
         assert [s.classification for s in result.sections] == ["invoice", "receipt"]
 
+    def test_overlapping_segments_never_put_a_page_in_two_sections(self):
+        """#1654, through the real parse and section builder: a wide segment
+        followed by narrower ones covering some of the same pages."""
+        service = _service()
+        document = _document(4)
+        with (
+            patch("idp_common.s3.get_text_content", return_value="page text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model") as invoke,
+        ):
+            invoke.return_value = _bedrock_reply(
+                [
+                    {"ordinal_start_page": 1, "ordinal_end_page": 3, "type": "invoice"},
+                    {"ordinal_start_page": 2, "ordinal_end_page": 2, "type": "receipt"},
+                    {"ordinal_start_page": 3, "ordinal_end_page": 4, "type": "receipt"},
+                ]
+            )
+            result = service.packet_classify_document(document)
+
+        placed = [pid for s in result.sections for pid in s.page_ids]
+        assert sorted(placed) == ["1", "2", "3", "4"]
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3"], "invoice"),
+            (["4"], "receipt"),
+        ]
+
     def test_a_long_packet_makes_one_call_per_window_and_merges(self):
         service = _service(packet={"window_pages": "4", "overlap_pages": "1"})
         document = _document(8)
@@ -761,6 +899,376 @@ class TestPacketClassifyDocument:
 
 # --------------------------------------------------------------------------
 # The OCR-none trap
+@pytest.mark.unit
+class TestAWindowTooLargeForTheModelIsSplit:
+    """#1676: ``window_pages`` is a page count, so a window under it can still
+    exceed the model's input once its page images are attached. Such a window
+    is split and retried rather than failing the document.
+
+    The fake sits under ``_invoke_bedrock_model`` (at ``bedrock.invoke_model``)
+    so the production wrapper, including its error annotation, is on the path,
+    and it refuses with the real botocore exception shape and Bedrock wording.
+    """
+
+    LIMIT = 4  # page images one request may carry before the fake refuses
+    #: What the fake says when it refuses. Overridden by the image-count subclass.
+    REFUSAL_MESSAGE = "Input is too long for requested model."
+    REFUSAL_CODE = "ValidationException"
+    # Ground truth the fake answers from: pages 1-6 are one invoice, 7 onwards one
+    # receipt. Each call reports a segment per document it can see.
+    TRUTH = {str(p): ("invoice" if p <= 6 else "receipt") for p in range(1, 21)}
+
+    def _fake_bedrock(
+        self, calls: List[List[str]], limit: Optional[int] = None, refuse=None
+    ):
+        import re
+
+        from botocore.exceptions import ClientError
+
+        limit = self.LIMIT if limit is None else limit
+
+        def invoke_model(**kwargs):
+            content = kwargs["content"]
+            text = "".join(
+                block.get("text", "") for block in content if isinstance(block, dict)
+            )
+            # Each page is named in its text block and again in its image label.
+            page_ids = list(dict.fromkeys(re.findall(r"\(document page (\d+)\)", text)))
+            calls.append(page_ids)
+            images = sum(1 for block in content if "image" in block)
+            if refuse(page_ids) if refuse else images > limit:
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": self.REFUSAL_CODE,
+                            "Message": self.REFUSAL_MESSAGE,
+                        }
+                    },
+                    "Converse",
+                )
+            segments: List[Dict[str, Any]] = []
+            for ordinal, page_id in enumerate(page_ids, start=1):
+                doc_class = self.TRUTH[page_id]
+                if segments and segments[-1]["type"] == doc_class:
+                    segments[-1]["ordinal_end_page"] = ordinal
+                else:
+                    segments.append(
+                        {
+                            "ordinal_start_page": ordinal,
+                            "ordinal_end_page": ordinal,
+                            "type": doc_class,
+                        }
+                    )
+            return _bedrock_reply(segments)
+
+        return invoke_model
+
+    def _run(
+        self, *, pages: int = 10, limit: Optional[int] = None, refuse=None, **packet
+    ):
+        service = _service(
+            packet={"window_pages": "20", "overlap_pages": "1", **packet},
+            modality={"images": True},
+        )
+        document = _document(pages)
+        calls: List[List[str]] = []
+        with (
+            patch("idp_common.s3.get_text_content", return_value="page text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch(
+                "idp_common.bedrock.invoke_model",
+                side_effect=self._fake_bedrock(calls, limit, refuse),
+            ),
+        ):
+            result = service.packet_classify_document(document)
+        return result, calls
+
+    def _run_with(self, message: str, code: str = "ValidationException"):
+        self.REFUSAL_MESSAGE, self.REFUSAL_CODE = message, code
+        return self._run()
+
+    def test_the_document_is_classified_instead_of_failed(self):
+        result, calls = self._run()
+
+        assert result.status != Status.FAILED
+        assert result.errors == []
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4", "5", "6"], "invoice"),
+            (["7", "8", "9", "10"], "receipt"),
+        ]
+        # The first call was the whole 10-page window, refused.
+        assert calls[0] == [str(p) for p in range(1, 11)]
+        assert len(calls) > 1
+
+    def test_every_page_lands_in_exactly_one_section(self):
+        result, _ = self._run()
+        placed = [pid for s in result.sections for pid in s.page_ids]
+        assert sorted(placed, key=int) == [str(p) for p in range(1, 11)]
+
+    def test_the_halves_repeat_the_overlap_pages_as_context(self):
+        _, calls = self._run(overlap_pages="1")
+        # 10 -> [1-5] refused -> [1-2] ok, [2-5] ok ; [5-10] refused -> ...
+        assert calls[1] == ["1", "2", "3", "4", "5"]
+        assert calls[2] == ["1", "2"]
+        assert calls[3] == ["2", "3", "4", "5"]
+        assert calls[4] == ["5", "6", "7", "8", "9", "10"]
+
+    def test_a_single_page_that_does_not_fit_is_reported_not_retried_forever(self):
+        result, calls = self._run(pages=3, limit=0)
+
+        assert result.status == Status.FAILED
+        # Every call is refused. Splitting stops at one page, and each one-page
+        # window is reported once rather than retried.
+        assert calls == [["1", "2", "3"], ["1"], ["2", "3"], ["2"], ["3"]]
+        refused = [e for e in result.errors if e.startswith("Packet window")]
+        assert [e.split("(pages ")[1].split(")")[0] for e in refused] == [
+            "1-1",
+            "2-2",
+            "3-3",
+        ]
+
+    def test_a_split_that_does_not_shrink_is_not_retried(self):
+        """The loop checks termination itself instead of trusting the helper.
+        The fake gives up with a non-overflow error after a few calls, so a
+        missing check fails this test instead of looping forever."""
+        from botocore.exceptions import ClientError
+
+        service = _service(packet={"window_pages": "20"}, modality={"images": True})
+        calls = []
+
+        def invoke_model(**kwargs):
+            calls.append(1)
+            if len(calls) > 5:
+                raise RuntimeError("runaway retry loop")
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "ValidationException",
+                        "Message": "Input is too long for requested model.",
+                    }
+                },
+                "Converse",
+            )
+
+        with (
+            patch("idp_common.s3.get_text_content", return_value="page text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch("idp_common.bedrock.invoke_model", side_effect=invoke_model),
+            patch.object(
+                service,
+                "_split_overflowing_window",
+                # Distinct from the window, so the de-duplication cannot hide
+                # a missing guard; the first half shrinks and the second does
+                # not, so a guard that accepts either half shrinking fails too.
+                side_effect=lambda ids: (ids[:1], ids[1:] + ids[:1]),
+            ),
+        ):
+            result = service.packet_classify_document(_document(4))
+
+        assert len(calls) == 1
+        assert result.status == Status.FAILED
+
+    def test_a_re_prompt_failing_for_another_reason_still_raises(self, monkeypatch):
+        """Only an overflowing re-prompt keeps the first answer; a throttle on
+        the re-prompt fails the window as it always did."""
+        service = _service(packet={"window_pages": "20"})
+        bad = {"ordinal_start_page": 1, "ordinal_end_page": 2, "type": "po"}
+        replies = [_segments_reply(bad), RuntimeError("ThrottlingException")]
+
+        def invoke(*, content, config):
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        monkeypatch.setattr(service, "_invoke_bedrock_model", invoke)
+        with patch("idp_common.s3.get_text_content", return_value="page text"):
+            merged, _, errors = service._packet_segments(_document(2))
+
+        assert merged == []
+        assert any("ThrottlingException" in e for e in errors)
+
+    def test_window_pages_zero_is_never_split(self):
+        """``0`` asks for one call over the whole packet and documents that it
+        fails outright rather than degrading, so it keeps doing exactly that."""
+        result, calls = self._run(window_pages="0")
+
+        assert result.status == Status.FAILED
+        assert calls == [[str(p) for p in range(1, 11)]]
+
+    def test_a_model_that_refuses_everything_costs_a_bounded_number_of_calls(self):
+        """Every request refused, down to single pages: the calls made for
+        split windows stop at twice the page count, and the rest are reported."""
+        result, calls = self._run(pages=20, refuse=lambda ids: True, overlap_pages="2")
+
+        assert len(calls) == 1 + 2 * 20
+        assert result.status == Status.FAILED
+        assert any("used all 40 calls allowed" in e for e in result.errors)
+
+    def test_no_window_is_requested_twice(self):
+        """The overlap makes neighbouring halves produce the same smaller
+        window; it is requested once."""
+        _, calls = self._run(pages=20, refuse=lambda ids: "7" in ids, overlap_pages="2")
+        assert len({tuple(c) for c in calls}) == len(calls)
+
+    def test_one_page_too_large_on_its_own_fails_only_that_page(self):
+        result, calls = self._run(
+            pages=20, refuse=lambda ids: "7" in ids, overlap_pages="2"
+        )
+
+        window_errors = [e for e in result.errors if e.startswith("Packet window")]
+        assert len(window_errors) == 1 and "(pages 7-7)" in window_errors[0]
+        placed = sorted((pid for s in result.sections for pid in s.page_ids), key=int)
+        assert placed == [str(p) for p in range(1, 21) if p != 7]
+        assert len(calls) <= 1 + 2 * 20
+
+    def test_a_re_prompt_that_overflows_keeps_the_first_answer_and_its_metering(
+        self, monkeypatch, caplog
+    ):
+        """The class-validation re-prompt is longer than the first request, so
+        it can be the one refused. The first answer's billed tokens stay in the
+        metering, its invalid segment gets the fallback, and the window is not
+        split over a request the model already answered."""
+        from botocore.exceptions import ClientError
+
+        service = _service(packet={"window_pages": "20"})
+        bad = {"ordinal_start_page": 1, "ordinal_end_page": 2, "type": "po"}
+        replies = [
+            {**_segments_reply(bad), "metering": {"m": {"inputTokens": 700}}},
+            ClientError(
+                {
+                    "Error": {
+                        "Code": "ValidationException",
+                        "Message": "Input is too long for requested model.",
+                    }
+                },
+                "Converse",
+            ),
+        ]
+        invoked = []
+
+        def invoke(*, content, config):
+            invoked.append(1)
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        monkeypatch.setattr(service, "_invoke_bedrock_model", invoke)
+        with patch("idp_common.s3.get_text_content", return_value="page text"):
+            merged, metering, errors = service._packet_segments(_document(2))
+
+        assert len(invoked) == 2
+        assert [(s.page_ids, s.doc_class) for s in merged] == [
+            (["1", "2"], "unclassified")
+        ]
+        assert metering == {"m": {"inputTokens": 700}}
+        assert errors == []
+        # The fallback line counts the answers actually received.
+        assert "invalid class(es) after 1 attempt(s)" in caplog.text
+
+    def test_another_error_is_not_split(self):
+        service = _service(packet={"window_pages": "20"}, modality={"images": True})
+        document = _document(6)
+        with (
+            patch("idp_common.s3.get_text_content", return_value="page text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch(
+                "idp_common.bedrock.invoke_model",
+                side_effect=RuntimeError("ThrottlingException: slow down"),
+            ) as invoke,
+        ):
+            result = service.packet_classify_document(document)
+
+        assert invoke.call_count == 1
+        assert result.status == Status.FAILED
+
+    @pytest.mark.parametrize("overlap", [0, 1, 2, 5, 19])
+    def test_splitting_always_shrinks_and_covers_the_window(self, overlap):
+        service = _service(packet={"window_pages": "20", "overlap_pages": "0"})
+        service._page_input().packet.overlap_pages = overlap
+        for total in range(2, 31):
+            window = [str(p) for p in range(1, total + 1)]
+            first, second = service._split_overflowing_window(window)
+            assert 0 < len(first) < total
+            assert 0 < len(second) < total
+            assert first[0] == window[0] and second[-1] == window[-1]
+            assert set(first) | set(second) == set(window)
+            # Each split must shrink by a fraction of the window, not by one
+            # page, or the number of calls grows far faster than the pages.
+            if total >= 8:
+                assert len(second) <= 3 * total // 4 + 1, (total, overlap)
+        assert service._split_overflowing_window(["1"]) is None
+
+
+@pytest.mark.unit
+class TestAWindowWithTooManyImagesIsSplit(TestAWindowTooLargeForTheModelIsSplit):
+    """#1705: the Converse API limits how many images one message may carry, so
+    with page images on a window can be refused for its image count however few
+    tokens it holds — a rejection worded as an image rejection, not as an input
+    overflow, which the split used not to recognise. Halving the window fixes
+    that refusal exactly as it fixes an overflow.
+
+    The inherited tests re-run with the image-count wording. Only those whose
+    first call is refused and split actually depend on it (the classified
+    document, the halves, the single page, the bounded and refused-page cases);
+    the rest pass with or without the feature and are inherited for the bounds
+    they pin, not as coverage of it. The wording itself is the one
+    ``is_image_request_rejection`` records; the refusals Bedrock actually returns
+    are pinned verbatim in ``MEASURED_IMAGE_COUNT_REFUSALS`` below."""
+
+    REFUSAL_MESSAGE = "too many images in request"
+
+
+#: What Bedrock Converse returned, verbatim, for a request over the model's
+#: images-per-request cap (measured 2026-11-01 with 101 and 1001 small images).
+#: The two Claude families word the same limit differently, so both are pinned.
+#: Nova 2 Lite accepted 1001 images, and Nova Pro refused that many as an input
+#: token overflow, which the split already handled.
+MEASURED_IMAGE_COUNT_REFUSALS = (
+    # Claude Sonnet 4.5 (limit 100) and Sonnet 4.6 (limit 600).
+    "An error occurred (ValidationException) when calling the Converse operation "
+    "(reached max retries: 0): The model returned the following errors: too many "
+    "images and documents: 101 + 0 > 100",
+    # Claude Haiku 4.5 (limit 100).
+    "An error occurred (ValidationException) when calling the Converse operation "
+    "(reached max retries: 0): The model returned the following errors: Too much "
+    "media: 0 document pages + 101 images > 100",
+)
+
+
+@pytest.mark.unit
+class TestOnlyARefusalAboutImageCountIsSplit:
+    """The split is for refusals a smaller request fixes. These are judged
+    through the shared matchers in ``bedrock_utils``, the ones extraction uses."""
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "too many images in request",
+            "image exceed max allowed size for many-image requests: 2000 pixels",
+            *MEASURED_IMAGE_COUNT_REFUSALS,
+        ],
+    )
+    def test_a_count_dependent_rejection_is_split(self, message):
+        _, calls = TestAWindowWithTooManyImagesIsSplit()._run_with(message)
+        assert len(calls) > 1
+
+    @pytest.mark.parametrize(
+        ("code", "message"),
+        [
+            # One image too large on its own: no window is small enough.
+            ("ValidationException", "image exceeds maximum size of 5 MB"),
+            ("ValidationException", "image dimensions exceed 8000 pixels"),
+            # A throttle that happens to mention images.
+            ("ThrottlingException", "Rate exceeded: too many images in flight"),
+        ],
+    )
+    def test_any_other_image_error_is_not_split(self, code, message):
+        _, calls = TestAWindowWithTooManyImagesIsSplit()._run_with(message, code=code)
+        assert len(calls) == 1
+
+
 # --------------------------------------------------------------------------
 
 
@@ -986,7 +1494,7 @@ class TestAModelRefusingImagesNamesTheSetting:
     ⚠️ **These drive `_invoke_bedrock_model` with `bedrock.invoke_model` patched,
     not the other way round**, because that is where the annotation lives — and it
     lives there because it is the one choke point every classification request
-    goes through: page-level, packet, Stage A and Stage B. An earlier version
+    goes through: page-level, packet, splitting and section classification. An earlier version
     annotated only the packet call site, which would have missed page
     granularity, the default. Stubbing `_invoke_bedrock_model` instead, as these
     tests first did, bypasses the code under test entirely.
@@ -1042,6 +1550,44 @@ class TestAModelRefusingImagesNamesTheSetting:
         ):
             assert not _looks_like_an_image_refusal(Exception(message)), message
 
+    #: Each mentions an image, a vision or a multimodal input, so the
+    #: capability markers match it — and each is a request the model accepts
+    #: images on, refused for its size or its image count.
+    SIZE_REFUSALS = (
+        "Input is too long for requested model: the request carries 25 page images",
+        "prompt is too long: 230000 tokens > 200000 maximum (multimodal input)",
+        "Input Tokens Exceeded for vision request",
+        "too many images in request",
+        "image exceed max allowed size for many-image requests: 2000 pixels",
+        *MEASURED_IMAGE_COUNT_REFUSALS,
+    )
+
+    @pytest.mark.parametrize("message", SIZE_REFUSALS)
+    def test_an_overflow_or_image_rejection_gets_no_capability_hint(
+        self, monkeypatch, message
+    ):
+        """#1705: "set modality.images to false" is the wrong advice for a
+        request that was too large or carried too many images on a model that
+        accepts them. Classified by the shared ``bedrock_utils`` matchers."""
+        from botocore.exceptions import ClientError
+
+        from idp_common.classification.service import _IMAGE_REFUSAL_MARKERS
+        from idp_common.utils import bedrock_utils
+
+        # Premises, so the case cannot pass vacuously: a capability marker is
+        # present, and the shared matchers do classify the message.
+        assert any(m in message.lower() for m in _IMAGE_REFUSAL_MARKERS)
+        err = ClientError(
+            {"Error": {"Code": "ValidationException", "Message": message}}, "Converse"
+        )
+        assert bedrock_utils.is_input_token_overflow(
+            err
+        ) or bedrock_utils.is_image_request_rejection(err)
+
+        raised = self._invoke(monkeypatch, err, [{"image": {}}])
+        assert "modality.images" not in str(raised)
+        assert message in str(raised)
+
     def test_image_blocks_are_counted_at_any_nesting(self):
         from idp_common.classification.service import _count_image_blocks
 
@@ -1066,28 +1612,28 @@ class TestAModelRefusingImagesNamesTheSetting:
         raised = self._invoke(monkeypatch, err, [{"image": {}}])
         message = str(raised)
         assert self.REFUSAL in message, "the original error must survive"
-        assert "classification.one_stage.llm.modality.images" in message
+        assert "classification.combined.llm.modality.images" in message
         assert "nova-micro" in message
         assert isinstance(raised, ClientError), "the class must be preserved"
 
     @pytest.mark.parametrize(
         ("stage", "setting"),
         [
-            ("classification", "classification.one_stage.llm.modality.images"),
+            ("classification", "classification.combined.llm.modality.images"),
             (
-                "boundary_detection",
-                "classification.two_stage.boundary_detection.llm.modality.images",
+                "splitting",
+                "classification.split_then_classify.splitting.llm.modality.images",
             ),
             (
                 "section_classification",
-                "classification.two_stage.section_classification.llm.modality.images",
+                "classification.split_then_classify.section_classification.llm.modality.images",
             ),
         ],
     )
     def test_the_hint_names_the_setting_of_the_call_that_failed(self, stage, setting):
         """Each call has its own modality (config format 0.9), so the hint must
-        name the one that sent the images — pointing a two-stage user at the
-        one-stage setting would send them to a block their strategy never runs."""
+        name the one that sent the images — pointing a split-then-classify user
+        at the combined setting would send them to a block their strategy never runs."""
         from idp_common.classification.service import _annotate_image_refusal
 
         exc = ValueError(self.REFUSAL)
@@ -1150,7 +1696,7 @@ class TestAModelRefusingImagesNamesTheSetting:
             service._invoke_bedrock_model(
                 content=[{"image": {}}], config=dict(self.CONFIG)
             )
-        assert "classification.one_stage.llm.modality.images" in str(excinfo.value)
+        assert "classification.combined.llm.modality.images" in str(excinfo.value)
 
 
 def _segments_reply(*segments: Dict[str, Any]) -> Dict[str, Any]:
@@ -1169,8 +1715,8 @@ def _segments_reply(*segments: Dict[str, Any]) -> Dict[str, Any]:
 @pytest.mark.unit
 class TestPacketGranularityHonoursClassValidation:
     """⚠️ `enforceValidClasses`, `maxValidationRetries` and the fallback class now
-    apply on single-pass PACKET granularity, as they already did on page
-    granularity and on Stage B.
+    apply on combined PACKET granularity, as they already did on page
+    granularity and on section classification.
 
     They used not to. An out-of-vocabulary segment class was logged "using
     anyway" and kept, so the three settings were silently inert on one of the

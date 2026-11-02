@@ -14,7 +14,7 @@ chat:
   enabled: true
 
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |-
         <reasoning-guidelines> When determining the document type: - First identify the document's primary purpose and function - Note specific visual elements (letterhead, forms, tables, signatures) - Identify key textual indicators (terminology, phrases, structure) - Consider the document's intended audience and use case - Provide specific evidence from both visual and textual analysis </reasoning-guidelines>

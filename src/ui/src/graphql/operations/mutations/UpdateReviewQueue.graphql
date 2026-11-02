@@ -11,5 +11,6 @@ mutation UpdateReviewQueue($input: ReviewQueueDefinitionInput!) {
     eligibleAnnotators
     isDefaultQueue
     enabled
+    version
   }
 }

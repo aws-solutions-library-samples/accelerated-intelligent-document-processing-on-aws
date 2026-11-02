@@ -1,8 +1,8 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The HITL pages' AppLayout (the InboxLayout shape): shared navigation and Flashbar,
-// breadcrumbs Home › Queue Management › page (or Home › Home › page).
+// The Review Studio pages' AppLayout (the InboxLayout shape): shared navigation and
+// Flashbar, and the page's breadcrumbs (see breadcrumbs.ts).
 import React, { useState } from 'react';
 import { AppLayout, BreadcrumbGroup, Flashbar } from '@cloudscape-design/components';
 import type { BreadcrumbGroupProps } from '@cloudscape-design/components';
@@ -12,16 +12,11 @@ import useNotifications from '../../hooks/use-notifications';
 import { mapNotificationsToFlashbar } from '../common/notification-flashbar';
 import { appLayoutLabels } from '../common/labels';
 import Navigation from '../genaiidp-layout/navigation';
-import { REVIEW_QUEUES_PATH } from '../../routes/constants';
-
-/** HITL › Queue Management. */
-const QUEUE_MANAGEMENT_CRUMB: BreadcrumbGroupProps.Item = { text: 'Queue Management', href: `#${REVIEW_QUEUES_PATH}` };
+import { reviewManagementTrail } from './breadcrumbs';
 
 interface ReviewQueuesLayoutProps {
-  /** Breadcrumbs after "Home › Queue Management" (or after `root`). */
-  crumbs?: BreadcrumbGroupProps.Item[];
-  /** The section crumb; Queue Management (HITL) by default; null for none (Home only, then `crumbs`). */
-  root?: BreadcrumbGroupProps.Item | null;
+  /** The whole trail; Review Studio › Review Management by default. */
+  trail?: BreadcrumbGroupProps.Item[];
   children: React.ReactNode;
   contentType?: 'default' | 'table' | 'wizard';
   /** The info panel the info icon opens, as on the document pages; omitted, there is none. */
@@ -31,8 +26,7 @@ interface ReviewQueuesLayoutProps {
 }
 
 const ReviewQueuesLayout = ({
-  crumbs = [],
-  root,
+  trail,
   children,
   contentType = 'default',
   tools,
@@ -42,7 +36,7 @@ const ReviewQueuesLayout = ({
   const flashItems = mapNotificationsToFlashbar(useNotifications());
   // Closed until asked for, as on the document pages.
   const [toolsOpen, setToolsOpen] = useState(false);
-  const items = [{ text: 'Home', href: '#/' }, ...(root === null ? [] : [root ?? QUEUE_MANAGEMENT_CRUMB]), ...crumbs];
+  const items = trail ?? reviewManagementTrail();
 
   return (
     <AppLayout

@@ -322,6 +322,11 @@ def process_bda_sections(
                 Bucket=bda_result_bucket, Prefix=section_path
             )
 
+            # Whether the result.json written for this section already carries
+            # the class id rather than BDA's escaped class value (issue #1755),
+            # so that reading it back below does not decode it a second time.
+            class_id_written = False
+
             # Copy each file to the output bucket
             for file_obj in section_files.get("Contents", []):
                 src_key = file_obj["Key"]
@@ -356,6 +361,14 @@ def process_bda_sections(
                                 f"Added schema-aware confidence thresholds to explainability_info in section {section_id}"
                             )
 
+                        # Write the class id, not BDA's escaped class value: SDK
+                        # downloads, test-set summaries and reporting read the
+                        # class from this file rather than from the section. Last,
+                        # because the threshold lookup above decodes it itself.
+                        document_class = result_data.get("document_class")
+                        if isinstance(document_class, dict):
+                            document_class["type"] = bda_document_class(result_data)
+
                         # Write the modified result.json to the target location
                         write_content(
                             result_data,
@@ -363,6 +376,7 @@ def process_bda_sections(
                             target_key,
                             content_type="application/json",
                         )
+                        class_id_written = True
                         logger.info(f"Processed and copied {src_key} to {target_key}")
 
                     except Exception as e:
@@ -398,7 +412,11 @@ def process_bda_sections(
                 result_data = json.loads(result_obj["Body"].read().decode("utf-8"))
 
                 # Extract required fields
-                doc_class = result_data.get("document_class", {}).get("type", "")
+                doc_class = (
+                    (result_data.get("document_class") or {}).get("type", "")
+                    if class_id_written
+                    else bda_document_class(result_data)
+                )
                 page_indices = result_data.get("split_document", {}).get(
                     "page_indices", []
                 )
@@ -513,6 +531,25 @@ def add_confidence_thresholds_to_explainability(
         return explainability_data
 
 
+def bda_document_class(result_data):
+    """The IDP class id of the document class a BDA result reports.
+
+    The type is taken to be the blueprint's ``class`` value, which carries the
+    class id with the characters BDA does not accept there escaped (issue
+    #1755); this reads it back to the id. That BDA reports ``class`` here is
+    inferred, not measured. A value that needed no escaping is returned unchanged, a
+    value that is not a string is passed through, and a result with no
+    ``document_class`` object reads as ``""``.
+    """
+    from idp_common.bda.blueprint_class import from_blueprint_class
+
+    document_class = (
+        result_data.get("document_class") if isinstance(result_data, dict) else None
+    )
+    value = document_class.get("type", "") if isinstance(document_class, dict) else ""
+    return from_blueprint_class(value) if isinstance(value, str) else value
+
+
 def resolve_class_schema(doc_class, config):
     """Look up the JSON Schema for a document class from the config.
 
@@ -562,7 +599,7 @@ def add_confidence_thresholds_to_explainability_schema_aware(
         The modified explainability data with per-field confidence thresholds.
     """
     # Determine the document class from result_data
-    doc_class = (result_data.get("document_class") or {}).get("type", "")
+    doc_class = bda_document_class(result_data)
     class_schema = resolve_class_schema(doc_class, config)
 
     if not class_schema:
@@ -1137,6 +1174,8 @@ def create_confidence_threshold_alerts(
     Returns:
         List of confidence threshold alert dictionaries matching AppSync service expectations
     """
+    from idp_common.assessment.presence import has_extracted_value
+
     alerts = []
 
     # Process key-value details from all pages
@@ -1144,6 +1183,12 @@ def create_confidence_threshold_alerts(
         "key_value_details", {}
     ).items():
         for kv_entry in kv_details:
+            # A field BDA found no value for raises no confidence alert — the
+            # same rule pipeline mode applies (#1527). Its score stays in the
+            # explainability data, and a required absent field is counted in the
+            # section's missing_required_fields instead.
+            if not has_extracted_value(kv_entry.get("value")):
+                continue
             # A null, non-numeric or non-finite (NaN, infinite) confidence is
             # an unscored field, read as 0.0 so it alerts and goes to review,
             # which is the fail-safe direction. A missing key already reads as 0.0
@@ -1263,12 +1308,7 @@ def process_segments(
             page_indices_1based = [idx + 1 for idx in page_indices]
             # Resolve this segment's class schema so per-field thresholds
             # (including $ref/$defs array items) are honored instead of a flat one
-            document_class = custom_output.get("document_class")
-            segment_doc_class = (
-                document_class.get("type", "")
-                if isinstance(document_class, dict)
-                else ""
-            )
+            segment_doc_class = bda_document_class(custom_output)
             segment_class_schema = resolve_class_schema(segment_doc_class, config)
             pagespecific_details = process_keyvalue_details(
                 explainability_data,
@@ -1280,6 +1320,19 @@ def process_segments(
             # Create confidence threshold alerts for UI display
             confidence_threshold_alerts = create_confidence_threshold_alerts(
                 pagespecific_details, confidence_threshold
+            )
+            # Required fields BDA left absent (#1527), against the same class
+            # schema the thresholds were resolved from.
+            from idp_common.assessment.presence import (
+                collect_missing_required_fields,
+            )
+
+            missing_required_fields = collect_missing_required_fields(
+                custom_output.get("inference_result"),
+                segment_class_schema,
+                explainability_data[0]
+                if explainability_data and isinstance(explainability_data[0], dict)
+                else None,
             )
 
             # A MATCH segment whose custom output carries no usable
@@ -1318,6 +1371,7 @@ def process_segments(
                 # Check if this section's pages match the current segment's pages
                 if set(section.page_ids) == set(page_ids_str):
                     section.confidence_threshold_alerts = confidence_threshold_alerts
+                    section.missing_required_fields = missing_required_fields
                     # BDA's matched-blueprint confidence IS the classification
                     # confidence in this mode: the matched blueprint is what
                     # determines the section's class. It was already read below
@@ -1852,6 +1906,9 @@ def handler(event, context):
         for section in document.sections
     )
     logger.info(f"Total confidence alert count: {document.confidence_alert_count}")
+    document.missing_required_field_count = sum(
+        len(section.missing_required_fields or []) for section in document.sections
+    )
 
     # Update document (includes Review Status)
     document_service.update_document(document)

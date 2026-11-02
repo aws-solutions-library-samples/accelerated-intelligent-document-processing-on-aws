@@ -355,7 +355,7 @@ does not stop the revision's body expiring `DataRetentionInDays` after it was cu
 > observations of its own — treat the estimate as provisional while that note is
 > showing. Revisions cut before this existed contribute only to the pooled curve.
 > See the fuller note in
-> [Test Studio](./test-studio.md#the-curve-is-measured-and-it-improves).
+> [Test Studio](./test-studio.md#how-the-curve-is-measured-and-refined).
 
 ### Retention
 

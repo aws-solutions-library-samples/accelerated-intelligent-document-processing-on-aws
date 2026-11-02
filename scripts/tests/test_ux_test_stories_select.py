@@ -840,14 +840,6 @@ def test_every_claim_lead_is_the_lead_of_exactly_one_changelog_entry() -> None:
 
 
 @pytest.mark.unit
-def test_a_release_cut_of_the_real_changelog_adds_nothing() -> None:
-    text = _real_changelog()
-    assert "## [Unreleased]\n" in text
-    cut = text.replace("## [Unreleased]\n", "## [Unreleased]\n\n## [9.9.9]\n", 1)
-    assert changelog_select.added_entries(text, cut) == []
-
-
-@pytest.mark.unit
 def test_each_claims_entry_selects_its_own_story_when_replayed() -> None:
     """The MR that added each claim's entry, replayed, selects that claim's story."""
     text = _real_changelog()

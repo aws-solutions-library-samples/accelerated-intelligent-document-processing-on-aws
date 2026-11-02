@@ -351,11 +351,11 @@ class TestMergedConfigurationLegacySparsePath:
 
         assert merged is not None
         assert merged.notes == "profile-note", "the delta must win"
-        assert merged.classification.one_stage.llm.model == SEEDED_MODEL, (
+        assert merged.classification.combined.llm.model == SEEDED_MODEL, (
             "unset keys must come from Config#default, not from IDPConfig's "
             "field defaults"
         )
-        assert merged.classification.one_stage.llm.model != PYDANTIC_DEFAULT_MODEL
+        assert merged.classification.combined.llm.model != PYDANTIC_DEFAULT_MODEL
 
     def test_the_delta_overrides_the_default_within_a_nested_section(self, monkeypatch):
         """Sibling keys inside an overridden section survive the merge."""
@@ -369,8 +369,8 @@ class TestMergedConfigurationLegacySparsePath:
         merged = manager.get_merged_configuration("legacy")
 
         assert merged is not None
-        assert merged.classification.one_stage.llm.temperature == pytest.approx(0.7)
-        assert merged.classification.one_stage.llm.model == SEEDED_MODEL, (
+        assert merged.classification.combined.llm.temperature == pytest.approx(0.7)
+        assert merged.classification.combined.llm.model == SEEDED_MODEL, (
             "overriding one key in `classification` must not drop the rest of "
             "the section"
         )
@@ -389,7 +389,7 @@ class TestMergedConfigurationLegacySparsePath:
         raw = manager.get_raw_configuration(CONFIG_TYPE_CONFIG, "legacy")
         assert raw is not None
         assert _is_full_config(raw) is True
-        assert raw["classification"]["one_stage"]["llm"]["model"] == SEEDED_MODEL
+        assert raw["classification"]["combined"]["llm"]["model"] == SEEDED_MODEL
 
         # Second read must not rewrite the record.
         with patch.object(manager, "save_configuration") as spy:
@@ -421,7 +421,7 @@ class TestMergedConfigurationLegacySparsePath:
 
         assert merged is not None
         assert merged.notes == "profile-note"
-        assert merged.classification.one_stage.llm.model == SEEDED_MODEL
+        assert merged.classification.combined.llm.model == SEEDED_MODEL
 
     def test_a_non_idpconfig_default_record_returns_none_not_a_partial_merge(
         self, monkeypatch
@@ -461,7 +461,7 @@ class TestMergedConfigurationLegacySparsePath:
 
         assert merged is not None
         assert merged.notes == "profile-note"
-        assert merged.classification.one_stage.llm.model == SEEDED_MODEL
+        assert merged.classification.combined.llm.model == SEEDED_MODEL
 
     def test_a_sparse_profile_with_no_default_returns_none(self, monkeypatch):
         """Not a half-merged config: None, so the caller fails loudly."""
@@ -1404,7 +1404,7 @@ class TestHandleUpdateCustomConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "lending")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "seeded-default-notes"
-        assert loaded.classification.one_stage.llm.model == SEEDED_MODEL
+        assert loaded.classification.combined.llm.model == SEEDED_MODEL
 
     def test_reset_to_default_with_no_default_leaves_the_profile_untouched(
         self, monkeypatch
@@ -1480,7 +1480,7 @@ class TestHandleUpdateCustomConfiguration:
 
         promoted = manager.get_configuration(CONFIG_TYPE_CONFIG, DEFAULT_VERSION)
         assert isinstance(promoted, IDPConfig)
-        assert promoted.classification.one_stage.llm.model == PYDANTIC_DEFAULT_MODEL, (
+        assert promoted.classification.combined.llm.model == PYDANTIC_DEFAULT_MODEL, (
             "saveAsDefault replaces the default wholesale; unsent keys revert "
             "to IDPConfig's field defaults rather than being preserved"
         )
@@ -1497,7 +1497,7 @@ class TestHandleUpdateCustomConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "fresh")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "new-profile"
-        assert loaded.classification.one_stage.llm.model == SEEDED_MODEL, (
+        assert loaded.classification.combined.llm.model == SEEDED_MODEL, (
             "a new profile inherits the stack default for keys it did not send"
         )
 
@@ -1514,7 +1514,7 @@ class TestHandleUpdateCustomConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "fresh")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "new-profile"
-        assert loaded.classification.one_stage.llm.model == PYDANTIC_DEFAULT_MODEL
+        assert loaded.classification.combined.llm.model == PYDANTIC_DEFAULT_MODEL
 
     def test_a_json_string_payload_is_parsed(self, monkeypatch):
         _make_table()
@@ -1615,7 +1615,7 @@ class TestHandleUpdateCustomConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "fresh")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "brand-new"
-        assert loaded.classification.one_stage.llm.model == SEEDED_MODEL
+        assert loaded.classification.combined.llm.model == SEEDED_MODEL
 
     def test_an_update_with_neither_profile_nor_default_starts_from_empty(
         self, monkeypatch
@@ -1631,7 +1631,7 @@ class TestHandleUpdateCustomConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "fresh")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "brand-new"
-        assert loaded.classification.one_stage.llm.model == PYDANTIC_DEFAULT_MODEL
+        assert loaded.classification.combined.llm.model == PYDANTIC_DEFAULT_MODEL
 
     def test_a_normal_update_leaves_untouched_sections_alone(self, monkeypatch):
         """The delta is applied over the profile's *current* full config, not
@@ -1651,7 +1651,7 @@ class TestHandleUpdateCustomConfiguration:
 
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "lending")
         assert isinstance(loaded, IDPConfig)
-        assert loaded.classification.one_stage.llm.temperature == pytest.approx(0.25)
+        assert loaded.classification.combined.llm.temperature == pytest.approx(0.25)
         assert loaded.summarization.model == "pinned-summ-model"
         assert loaded.notes == "mine"
 
@@ -1737,8 +1737,8 @@ class TestNullMeansRestoreToDefault:
         )
 
         assert target["classification"] == expected
-        assert target["classification"]["one_stage"]["llm"]["model"] == SEEDED_MODEL
-        assert target["classification"]["one_stage"]["llm"]["temperature"] != 0.99
+        assert target["classification"]["combined"]["llm"]["model"] == SEEDED_MODEL
+        assert target["classification"]["combined"]["llm"]["temperature"] != 0.99
 
     @pytest.mark.parametrize("falsy", [False, 0, "", []])
     def test_a_falsy_value_is_applied_and_is_not_treated_as_a_restore(
@@ -1861,8 +1861,8 @@ class TestGetFullConfigForVersion:
 
         assert result is not None
         assert result.notes == "delta-only"
-        assert result.classification.one_stage.llm.model == SEEDED_MODEL
-        assert result.classification.one_stage.llm.model != PYDANTIC_DEFAULT_MODEL
+        assert result.classification.combined.llm.model == SEEDED_MODEL
+        assert result.classification.combined.llm.model != PYDANTIC_DEFAULT_MODEL
 
     def test_a_full_marked_body_that_cannot_be_validated_returns_none(
         self, monkeypatch
@@ -1938,7 +1938,7 @@ class TestSaveRawConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "lending")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "seeded-default-notes"
-        assert loaded.classification.one_stage.llm.model == SEEDED_MODEL
+        assert loaded.classification.combined.llm.model == SEEDED_MODEL
 
     def test_an_empty_body_with_no_default_writes_nothing(self, monkeypatch):
         """No default to copy, so the profile must be left as it was rather
@@ -1976,7 +1976,7 @@ class TestSaveRawConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "lending")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "uploaded"
-        assert loaded.classification.one_stage.llm.model == PYDANTIC_DEFAULT_MODEL, (
+        assert loaded.classification.combined.llm.model == PYDANTIC_DEFAULT_MODEL, (
             "a full upload is authoritative; it does not inherit the default"
         )
 
@@ -1994,7 +1994,7 @@ class TestSaveRawConfiguration:
         loaded = manager.get_configuration(CONFIG_TYPE_CONFIG, "lending")
         assert isinstance(loaded, IDPConfig)
         assert loaded.notes == "delta-only"
-        assert loaded.classification.one_stage.llm.model == SEEDED_MODEL
+        assert loaded.classification.combined.llm.model == SEEDED_MODEL
         assert loaded.summarization.model == SEEDED_MODEL
 
     def test_what_is_stored_is_the_full_merged_config_not_the_delta(self, monkeypatch):
@@ -2669,7 +2669,7 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
     Reported from a live stack, and the reason this class exists: a Custom
     profile saved before `classification.packet` / `.segmentation` / `.labeling`
     existed read those prompts back EMPTY, so switching it to `strategy:
-    two_stage` + `granularity: packet` made Stage A send the page prompt, the
+    split_then_classify` + `granularity: packet` made the splitting call send the page prompt, the
     model answer in page shape, and the segments parser find nothing — every
     document FAILED in ~28s with "produced no segments". A profile created after
     the upgrade worked, so the feature looked fine and the profile looked cursed.
@@ -2718,10 +2718,10 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
                     "task_prompt": "SHIPPED PACKET: segments ordinal_start_page"
                 },
                 "segmentation": {
-                    "task_prompt": "SHIPPED STAGE A",
-                    "packet": {"task_prompt": "SHIPPED STAGE A PACKET"},
+                    "task_prompt": "SHIPPED SPLITTING",
+                    "packet": {"task_prompt": "SHIPPED SPLITTING PACKET"},
                 },
-                "labeling": {"task_prompt": "SHIPPED STAGE B"},
+                "labeling": {"task_prompt": "SHIPPED SECTION CLASSIFICATION"},
             },
             summarization={"model": SEEDED_MODEL},
         )
@@ -2739,14 +2739,17 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
 
         assert merged is not None
         cls = merged.classification
-        seg = cls.two_stage.boundary_detection.llm
+        seg = cls.split_then_classify.splitting.llm
         assert (
-            cls.one_stage.packet.task_prompt
+            cls.combined.packet.task_prompt
             == "SHIPPED PACKET: segments ordinal_start_page"
         )
-        assert seg.packet.task_prompt == "SHIPPED STAGE A PACKET"
-        assert seg.page.task_prompt == "SHIPPED STAGE A"
-        assert cls.two_stage.section_classification.llm.task_prompt == "SHIPPED STAGE B"
+        assert seg.packet.task_prompt == "SHIPPED SPLITTING PACKET"
+        assert seg.page.task_prompt == "SHIPPED SPLITTING"
+        assert (
+            cls.split_then_classify.section_classification.llm.task_prompt
+            == "SHIPPED SECTION CLASSIFICATION"
+        )
 
     def test_the_profiles_own_value_still_wins(self, monkeypatch):
         table = _make_table()
@@ -2762,7 +2765,7 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
 
         assert merged is not None
         assert (
-            merged.classification.one_stage.packet.task_prompt == "MY OWN PACKET PROMPT"
+            merged.classification.combined.packet.task_prompt == "MY OWN PACKET PROMPT"
         )
 
     def test_a_value_deliberately_set_empty_is_not_overwritten(self, monkeypatch):
@@ -2778,7 +2781,7 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
         merged = manager.get_merged_configuration("cleared")
 
         assert merged is not None
-        assert merged.classification.one_stage.packet.task_prompt == ""
+        assert merged.classification.combined.packet.task_prompt == ""
 
     def test_any_field_added_later_is_backfilled_not_only_the_reported_ones(
         self, monkeypatch
@@ -2816,7 +2819,7 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
 
         raw = manager.get_raw_configuration(CONFIG_TYPE_CONFIG, "pre-upgrade")
         assert raw is not None
-        assert raw["classification"]["one_stage"]["packet"]["task_prompt"].startswith(
+        assert raw["classification"]["combined"]["packet"]["task_prompt"].startswith(
             "SHIPPED PACKET"
         )
 
@@ -2833,7 +2836,7 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
             again = manager.get_merged_configuration("pre-upgrade")
         spy.assert_not_called()
         assert again is not None
-        assert again.classification.one_stage.packet.task_prompt.startswith(
+        assert again.classification.combined.packet.task_prompt.startswith(
             "SHIPPED PACKET"
         )
 
@@ -2850,7 +2853,7 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
         merged = manager.get_merged_configuration("orphan")
 
         assert merged is not None
-        assert merged.classification.one_stage.llm.model == "us.amazon.nova-2-lite-v1:0"
+        assert merged.classification.combined.llm.model == "us.amazon.nova-2-lite-v1:0"
 
 
 @pytest.mark.unit
@@ -2929,7 +2932,7 @@ class TestTheBackfillWriteBackPreservesRevisionProofs:
             monkeypatch, {"revision": 1, "createdAt": "2026-01-01T00:00:00Z"}
         )
         assert merged is not None
-        assert merged.classification.one_stage.llm.model == "us.amazon.nova-2-lite-v1:0"
+        assert merged.classification.combined.llm.model == "us.amazon.nova-2-lite-v1:0"
         # Backfilled on THIS read even though nothing was persisted.
         assert merged.summarization.model == SEEDED_MODEL
         spy.assert_not_called()
@@ -3058,7 +3061,7 @@ class TestAnUnmergeableProfileIsReturnedUnresolved:
             merged = manager.get_merged_configuration("clash")
 
         assert merged is not None, "the read must not fail the document"
-        assert merged.classification.one_stage.packet.overlap_pages == 15
+        assert merged.classification.combined.packet.overlap_pages == 15
         assert "returning it unresolved" in caplog.text
 
     def test_a_sparse_profile_that_cannot_merge_still_raises(self, monkeypatch):

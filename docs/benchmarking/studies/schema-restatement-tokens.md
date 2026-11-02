@@ -5,7 +5,7 @@ title: "Schema Restatement — What Turning It Off Actually Costs"
 <!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
 <!-- SPDX-License-Identifier: MIT-0 -->
 
-# Dropping the duplicated schema copy — 50 runs, and the cost goes the other way
+# Schema Restatement — What Turning It Off Actually Costs
 
 > **Why this page exists.** Advanced (agentic) extraction sends the class schema
 > three times per request, and `extraction.agentic.restate_schema_in_system_prompt:
@@ -39,7 +39,7 @@ dominated by which documents happened to be in the grid.
 
 ---
 
-## 1. Quality: nothing was lost, and the ceiling is why that is a weak statement
+## 1. Extraction quality
 
 All 50 runs reached `COMPLETED`; there were no failures in either arm. In **every
 one** of the 50 runs, `completeness_recall`, `cell_accuracy` and `scalar_accuracy`
@@ -65,7 +65,7 @@ rather than conflating:
 
 ---
 
-## 2. Input tokens: a real saving on the list-heavy documents, and a reversal on the third
+## 2. Input tokens
 
 "Input-side extraction tokens" below means the Extraction phase's
 `inputTokens + cacheReadInputTokens + cacheWriteInputTokens` — every token billed on
@@ -91,7 +91,7 @@ turn re-reads the cached prefix. Input-side total is therefore
 effect is swamped. **Read the saving as "5–7% on a document whose agent loop is
 stable", not as a property of the knob.**
 
-### The saving is entirely in the cached portion of the prefix
+### Where the input-token saving comes from
 
 This is what makes the token saving cheap in dollars, and it is measured directly
 rather than assumed:
@@ -108,7 +108,7 @@ reads — billed at a tenth of input price on this model.
 
 ---
 
-## 3. Output tokens rise, and the structure is bimodal rather than "chattier"
+## 3. Output tokens
 
 | Document | n/arm | restate **on** | restate **off** | Δ | % | Mann-Whitney *p* |
 |---|---:|---:|---:|---:|---:|---:|
@@ -137,7 +137,7 @@ observation of the agent's turns.
 
 ---
 
-## 4. Cost: the point estimate is positive on all three documents, and none of it is significant
+## 4. Cost
 
 | Document | n/arm | Extraction $ on | off | % | *p* (MWU / Welch) | Total $ on | off | % |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -156,7 +156,7 @@ single binary event is roughly four times the size of the arm effect, which is
 exactly why the rank test on cost sees nothing while the rank test on the underlying
 token counts is decisive.
 
-### The token deltas account for the cost delta exactly
+### Reconciling the token and cost changes
 
 `manylists_400`, Sonnet 4.6 rates from `config_library/pricing.yaml`: input
 $3.30/M, output $16.50/M, cache read $0.33/M, cache write $4.125/M.
@@ -203,7 +203,7 @@ numbers.
 
 ---
 
-## 6. The harness prices cache reads correctly
+## 6. Checking how the harness prices cache reads
 
 Cost claims in this study depend on cache reads being priced as cache reads.
 `benchmarks/harness/lib.py::price_metering` matches **both** the pricing-table model

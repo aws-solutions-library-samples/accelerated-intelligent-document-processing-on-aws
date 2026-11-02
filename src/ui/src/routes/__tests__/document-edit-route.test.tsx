@@ -161,7 +161,7 @@ describe('the edit route', () => {
     expect(screen.queryByTestId('direct-edit')).toBeNull();
   });
 
-  it('has the breadcrumbs Home › queue › document for a queue item, linking to the queue', async () => {
+  it('has the breadcrumbs Review Studio › Review Management › queue › document for an Admin’s queue item, linking to the queue', async () => {
     state.realMode = true;
     graphql.mockImplementation(async ({ query }: { query: unknown }) => {
       if (query === getDocument) return { data: { getDocument: DOC } };
@@ -170,9 +170,21 @@ describe('the edit route', () => {
     });
     renderAt('/documents/a%2Fb.pdf/edit');
     expect(await screen.findByTestId('editor')).toBeTruthy();
-    expect(crumbs()).toEqual(['Home', 'Default', 'b.pdf']);
-    const queueCrumb = createWrapper(document.body).findBreadcrumbGroup()!.findBreadcrumbLinks()[1].getElement();
+    expect(crumbs()).toEqual(['Review Studio', 'Review Management', 'Default', 'b.pdf']);
+    const queueCrumb = createWrapper(document.body).findBreadcrumbGroup()!.findBreadcrumbLinks()[2].getElement();
     expect(queueCrumb.getAttribute('href')).toBe('#/review-queues/queues/default');
+  });
+
+  it('has the document page’s trail for a queue item opened from the document page', async () => {
+    state.realMode = true;
+    graphql.mockImplementation(async ({ query }: { query: unknown }) => {
+      if (query === getDocument) return { data: { getDocument: DOC } };
+      if (query === getReviewItem) return { data: { getReviewItem: DETAIL } };
+      return { data: {} };
+    });
+    renderAt('/documents/a%2Fb.pdf/edit?from=document');
+    expect(await screen.findByTestId('editor')).toBeTruthy();
+    expect(crumbs()).toEqual(['Document Processing', 'Documents', 'b.pdf', 'Edit']);
   });
 
   it('costs no read beyond the document and the item, and polls the item on its interval', async () => {

@@ -140,7 +140,14 @@ class BatchProcessor:
             )
         elif s3_uri:
             return self.process_batch_from_s3_uri(
-                s3_uri, file_pattern, recursive, output_prefix, batch_id
+                s3_uri,
+                file_pattern=file_pattern,
+                recursive=recursive,
+                output_prefix=output_prefix,
+                batch_id=batch_id,
+                config_version=config_version,
+                config_revision=config_revision,
+                number_of_files=number_of_files,
             )
         else:
             raise ValueError("Must specify one of: manifest_path, directory, or s3_uri")
@@ -245,6 +252,7 @@ class BatchProcessor:
             output_prefix,
             dir_path,
             config_version,
+            config_revision,
             base_dir=dir_path,
         )
 
@@ -255,6 +263,9 @@ class BatchProcessor:
         recursive: bool = True,
         output_prefix: str = "cli-batch",
         batch_id: Optional[str] = None,
+        config_version: Optional[str] = None,
+        config_revision: Optional[int] = None,
+        number_of_files: Optional[int] = None,
     ) -> Dict:
         """
         Process batch of documents from S3 URI
@@ -265,6 +276,9 @@ class BatchProcessor:
             recursive: Include sub-prefixes
             output_prefix: Prefix for output organization
             batch_id: Optional custom batch ID (auto-generated if not provided)
+            config_version: Configuration profile to process the documents under
+            config_revision: Revision of that profile to pin
+            number_of_files: Limit number of files to process
 
         Returns:
             Dictionary with batch processing results
@@ -295,12 +309,18 @@ class BatchProcessor:
                 f"No documents found matching pattern '{file_pattern}' in {s3_uri}"
             )
 
+        if number_of_files is not None and number_of_files > 0:
+            documents = documents[:number_of_files]
+            logger.info(f"Limited to {len(documents)} documents for processing")
+
         # Process documents
         return self._process_documents(
             documents,
             batch_id,
             output_prefix,
             s3_uri,
+            config_version,
+            config_revision,
         )
 
     def _process_documents(

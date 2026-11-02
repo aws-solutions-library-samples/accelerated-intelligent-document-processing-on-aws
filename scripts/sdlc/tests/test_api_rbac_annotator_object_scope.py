@@ -99,7 +99,14 @@ _REVIEW_QUEUE_RESOLVER = (
 _REVIEW_QUEUE_SERVICE = _REPO / "lib/idp_common_pkg/idp_common/review_queues/service.py"
 _REVIEW_QUEUE_SERVICE_CLASS = "ReviewQueueService"
 REVIEW_QUEUE_MEMBERSHIP_RULES = ("_check_access", "_caller_refs")
-_MEMBERSHIP_HALVES = ("self.directory.in_scope(", "self.directory.is_member(")
+# Each rule's two halves: the caller's `allowedConfigVersions`, and the queue's
+# eligible Annotators. An item is scoped by its own profile (`_sees`, over
+# `scope_allows`); a queue reference, which has no profile, by `in_scope`.
+_MEMBERSHIP_HALVES = {
+    "_check_access": ("self._sees(", "self.directory.is_member("),
+    "_caller_refs": ("self.directory.in_scope(", "self.directory.is_member("),
+}
+_ITEM_SCOPE_RULE = "_sees"
 
 # Test Studio queue reads an Annotator reaches across sets, which a single
 # `testSetId` cannot confine: the queue list is filtered to the sets whose queue
@@ -352,8 +359,9 @@ def test_the_review_queue_membership_rules_check_scope_and_membership():
     """The review-queue axis rests on code, so the code is asserted too.
 
     Each rule credited as the review-queue axis must call both halves of the rule:
-    the caller's `allowedConfigVersions` (`in_scope`) and the queue's eligible
-    Annotators (`is_member`). A rule that lost either half would still be credited
+    the caller's `allowedConfigVersions` (`_sees` for an item, by its own profile;
+    `in_scope` for a queue reference) and the queue's eligible Annotators
+    (`is_member`). A rule that lost either half would still be credited
     by the closure check above, so it is pinned here. And the axis must be reached by
     at least one Annotator mutation, or it credits nothing and this is vacuous.
     """
@@ -361,8 +369,16 @@ def test_the_review_queue_membership_rules_check_scope_and_membership():
     for rule in REVIEW_QUEUE_MEMBERSHIP_RULES:
         assert rule in methods, f"{_REVIEW_QUEUE_SERVICE_CLASS}.{rule} not found"
         body = ast.unparse(methods[rule])
-        for half in _MEMBERSHIP_HALVES:
+        for half in _MEMBERSHIP_HALVES[rule]:
             assert half in body, f"{rule} no longer calls {half}"
+    # The item rule compares the item's own profile with `scope_allows`.
+    assert _ITEM_SCOPE_RULE in methods, (
+        f"{_REVIEW_QUEUE_SERVICE_CLASS}.{_ITEM_SCOPE_RULE} not found"
+    )
+    item_rule = ast.unparse(methods[_ITEM_SCOPE_RULE])
+    assert "scope_allows(caller.allowed_versions, record.profile)" in item_rule, (
+        f"{_ITEM_SCOPE_RULE} no longer compares the item's own profile with scope_allows"
+    )
 
     ops = _operations()
     credited = [

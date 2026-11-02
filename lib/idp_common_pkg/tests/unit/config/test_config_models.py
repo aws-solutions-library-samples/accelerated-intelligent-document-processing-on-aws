@@ -140,8 +140,8 @@ class TestConfigModels:
         assert config.extraction.confidence.enabled is True
 
         # Numbers from strings
-        assert config.classification.one_stage.llm.temperature == 0.0
-        assert config.classification.one_stage.llm.max_tokens == 4096
+        assert config.classification.combined.llm.temperature == 0.0
+        assert config.classification.combined.llm.max_tokens == 4096
 
         # Numbers from natives
         assert config.extraction.top_p == 0.1
@@ -152,7 +152,7 @@ class TestConfigModels:
         from idp_common.config.models import ClassificationConfig
 
         cfg = ClassificationConfig()
-        validation = cfg.one_stage.llm.validation
+        validation = cfg.combined.llm.validation
         assert validation.enforceValidClasses is True
         assert validation.maxValidationRetries == 2
         assert cfg.fallback_class == "unclassified"
@@ -171,8 +171,8 @@ class TestConfigModels:
         # Flat (pre-0.9) keys passed straight to the model are migrated, not
         # dropped: direct construction is a second entry point to protect.
         for validation in (
-            cfg.one_stage.llm.validation,
-            cfg.two_stage.section_classification.llm.validation,
+            cfg.combined.llm.validation,
+            cfg.split_then_classify.section_classification.llm.validation,
         ):
             assert validation.enforceValidClasses is False
             assert validation.maxValidationRetries == 3
@@ -180,7 +180,7 @@ class TestConfigModels:
 
         # Negative retries are clamped to 0.
         clamped = ClassificationConfig.model_validate({"maxValidationRetries": "-1"})
-        assert clamped.one_stage.llm.validation.maxValidationRetries == 0
+        assert clamped.combined.llm.validation.maxValidationRetries == 0
 
     def test_config_type_hints(self):
         """Test that config can be used as type hint"""
@@ -473,7 +473,7 @@ class TestPipelineHookPreservation:
         )
         assert len(cfg.rule_validation.postHook) == 1
         # classification still has its default model (not wiped out).
-        assert cfg.classification.one_stage.llm.model
+        assert cfg.classification.combined.llm.model
 
 
 @pytest.mark.unit
@@ -768,8 +768,8 @@ class TestDirectConstructionRunsTheWholeMigrationChain:
         from idp_common.config.models import ClassificationConfig
 
         cfg = ClassificationConfig(**self.FLAT_HOLISTIC)
-        assert cfg.one_stage.granularity == "packet"
-        assert "ordinal_start_page" in cfg.one_stage.packet.task_prompt
+        assert cfg.combined.granularity == "packet"
+        assert "ordinal_start_page" in cfg.combined.packet.task_prompt
 
     def test_both_routes_now_agree(self):
         """The property the docstring claims, asserted as an equality.

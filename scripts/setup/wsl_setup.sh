@@ -10,7 +10,7 @@
 # on Windows Subsystem for Linux (WSL) Ubuntu systems. It installs Python 3, AWS CLI, 
 # SAM CLI, Node.js, and other essential development tools.
 #
-# Usage: ./wsl_setup.sh
+# Usage: ./scripts/setup/wsl_setup.sh (from the repository root)
 # Note: Run this script inside WSL Ubuntu environment
 ##############################################################################################
 
@@ -52,8 +52,7 @@ sam --version
 
 echo "DONE - WSL development environment setup complete."
 echo "Next steps:"
-echo "1. Create Python virtual environment: python3 -m venv venv"
-echo "2. Activate virtual environment: source venv/bin/activate"
-echo "3. Install Python packages: pip install setuptools wheel boto3 rich PyYAML botocore ruff pytest"
-echo "4. Install IDP common package: pip install -e lib/idp_common_pkg/"
-echo "5. Configure AWS CLI: aws configure"
+echo "1. Install uv (https://docs.astral.sh/uv/): make setup-venv reads the dependency lock with it"
+echo "2. From the repository root, install the Python packages: make setup-venv"
+echo "3. Activate the virtual environment: source .venv/bin/activate"
+echo "4. Configure AWS CLI: aws configure"

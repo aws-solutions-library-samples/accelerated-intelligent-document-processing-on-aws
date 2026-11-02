@@ -10,7 +10,7 @@ group check ran before the argument was used, and its positive arms can only ask
 nothing — whether the resolver refused this caller before or after doing the work
 is exactly what a 500 does not say — so ``inconclusive()`` records it as ERROR and
 the cell is reported as a check that could not be run. Fifteen operations 500ed on
-a not-found, and the **32 positive cells** over them (derived below, not quoted)
+a not-found, and the **39 positive cells** over them (derived below, not quoted)
 were unproven rather than passed.
 
 The resolver-side half of the fix — ``ResourceNotFound`` for a named object that is
@@ -19,7 +19,7 @@ absent, ``ValueError``/``KeyError`` for a malformed argument — is pinned by
 asserts, it asserts by reading source text.** Its own docstring bounds that: it
 reads the literal at the raise site, and it matches not-found wording. What it
 therefore cannot see is whether the refusal it found is the refusal the matrix
-*provokes*. Three ways to lose all 32 cells again with that gate green:
+*provokes*. Three ways to lose all 39 cells again with that gate green:
 
 * the probe argument in ``scripts/api_rbac_expectations.yaml`` changes, so the
   request takes a branch that never reaches the ``ResourceNotFound`` line;
@@ -155,7 +155,7 @@ PROBED_OPERATIONS = {
 # file carries a note about the harness reaping such sets). A 200 is conclusive —
 # "not denied" is observed, which is what the positive arm asks — so the cell
 # proves its point without a 4xx. It still belongs in the derivation below, and in
-# the verdict assertions, because it is one of the 15 and two of the 32.
+# the verdict assertions, because it is one of the 15 and two of the 39.
 CREATES_ON_A_BOGUS_ARGUMENT = "createEmptyTestSet"
 
 # The three operations #1304 listed that are served by `feature-platform/` Lambdas
@@ -163,7 +163,7 @@ CREATES_ON_A_BOGUS_ARGUMENT = "createEmptyTestSet"
 # suite under `feature-platform/main-stack-extensions/tests/`, with an id the
 # deployment does not have and an assertion on `ResourceNotFound` — the launch-URL
 # one uses the live harness's own `"__nope__"`, the other two a plausible feature
-# id, which is the same condition. They are named here so the derivation of 32
+# id, which is the same condition. They are named here so the derivation of 39
 # covers all fifteen operations, and they are not re-driven; the mapping from name
 # to suite is checked below rather than left as a claim in this comment.
 FEATURE_PLATFORM_OPERATIONS = {
@@ -418,7 +418,7 @@ def _probe_arguments(expectations, field):
 
 
 # ===========================================================================
-# the derivation: where 32 comes from
+# the derivation: where 39 comes from
 # ===========================================================================
 def test_the_fifteen_operations_are_still_declared_operations(expectations):
     """Guards the guard. A renamed operation would leave every parametrised case
@@ -434,8 +434,8 @@ def test_the_fifteen_operations_are_still_declared_operations(expectations):
     )
 
 
-def test_the_unproven_cell_count_is_derived_and_is_thirty_two(expectations, harness):
-    """The 32 is a consequence of two files, so compute it from them.
+def test_the_unproven_cell_count_is_derived_and_is_thirty_nine(expectations, harness):
+    """The 39 is a consequence of two files, so compute it from them.
 
     A *positive* authorization assertion is one cell of the group matrix where the
     role is admitted: the arm that can only ask "was this caller NOT denied?" and
@@ -443,7 +443,8 @@ def test_the_unproven_cell_count_is_derived_and_is_thirty_two(expectations, harn
     the roles the live matrix actually drives, and that population changed: issue
     #1065 added ``Annotator`` to ``ROLES``, so the seven test-set operations that
     admit it contribute three cells each where they contributed two, and the total
-    moved from **25 to 32**. The derivation is what reported the move; nothing here
+    moved from **25 to 32**; Reviewers then gained those seven operations (they work
+    the test sets their profile scope admits), each a fourth cell, so **32 to 39**. The derivation is what reported the move; nothing here
     was retuned to accommodate it.
 
     Quoting the number instead of deriving it is how a count goes stale while
@@ -463,9 +464,9 @@ def test_the_unproven_cell_count_is_derived_and_is_thirty_two(expectations, harn
         f"drives, so it contributes no positive cell: {per_operation}"
     )
     total = sum(len(roles) for roles in per_operation.values())
-    assert total == 32, (
+    assert total == 39, (
         "the positive cells over the fifteen operations #1304 named, for the roles "
-        f"scripts/test_api_rbac.py drives, now number {total} rather than 32. If "
+        f"scripts/test_api_rbac.py drives, now number {total} rather than 39. If "
         "that is intended, say what the new number is and why; it is the count of "
         "assertions this module exists to keep conclusive.\n"
         + "\n".join(f"  {op}: {roles}" for op, roles in per_operation.items())
@@ -476,9 +477,9 @@ def test_the_unproven_cell_count_is_derived_and_is_thirty_two(expectations, harn
 def test_the_three_feature_platform_operations_are_driven_in_their_own_suite(field):
     """The three operations this module does not drive are driven somewhere.
 
-    They are counted in the 32 above, so a prose note saying "covered elsewhere"
+    They are counted in the 39 above, so a prose note saying "covered elsewhere"
     is the one thing that must not be left unchecked: delete those suites and the
-    derivation would still report 32 while three of them were measured by nothing.
+    derivation would still report 39 while three of them were measured by nothing.
     Checked by AST rather than by substring — a mention of ``ResourceNotFound`` in
     a comment or a docstring would satisfy a textual search, and in those files
     most mentions are prose.
@@ -486,7 +487,7 @@ def test_the_three_feature_platform_operations_are_driven_in_their_own_suite(fie
     path = _FEATURE_PLATFORM_TESTS / FEATURE_PLATFORM_OPERATIONS[field]
     assert path.is_file(), (
         f"{path.relative_to(_REPO)} is gone, so {field}'s not-found answer — one "
-        "of the 32 cells derived above — is measured nowhere"
+        "of the 39 cells derived above — is measured nowhere"
     )
     tree = ast.parse(path.read_text())
     raises_not_found = False
@@ -734,9 +735,9 @@ def test_every_positive_cell_over_these_operations_is_now_conclusive(
         for role in harness.ROLES
         if role in (expectations[field].get("groups") or [])
     )
-    assert judged == 29, (
+    assert judged == 36, (
         f"this module drives twelve of the fifteen operations and judged {judged} "
-        "of the 32 positive cells; the other three are the feature-platform "
+        "of the 39 positive cells; the other three are the feature-platform "
         "resolvers named in FEATURE_PLATFORM_OPERATIONS and are driven in their "
         "own suite"
     )
@@ -778,7 +779,7 @@ def test_the_same_cells_would_be_inconclusive_again_at_five_hundred(
 def test_a_four_oh_four_is_not_read_as_a_refusal(harness):
     """The other direction of the same discrimination.
 
-    A harness that treated any non-2xx as a denial would turn all 32 of these
+    A harness that treated any non-2xx as a denial would turn all 39 of these
     cells into failures the moment the fix landed — the mirror-image defect, and a
     tempting one, since "not 200" is the easy reading. ``_denied`` must answer on
     401/403 and an ``Unauthorized`` errorType and on nothing else here.

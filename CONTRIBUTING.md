@@ -138,7 +138,10 @@ npm install -g basedpyright    # the type-check gate; neither target above insta
 `make setup` and `make setup-venv` install `idp_common`, `idp_cli`, `idp_sdk`,
 `idp_mcp_connector`, `idp_feature_sdk`, the capacity-planning test dependencies,
 and the pinned `cfn-lint` and `ruff`, then verify that every first-party package
-resolved from the checkout. Use them in preference to hand-rolling `pip install` lines.
+resolved from the checkout. Every install is constrained to
+`lib/idp_common_pkg/uv.lock`, the same constraints both CI systems install against,
+so a local environment holds the versions CI tests; exporting the lock is why both
+targets need `uv`. Use them in preference to hand-rolling `pip install` lines.
 
 **Activate the virtual environment if you used `make setup-venv`.** The
 `Makefile` resolves `$(PYTHON)` and `$(PIP)` to `.venv/bin/` when `.venv`
@@ -195,7 +198,7 @@ checkouts are worked on at once and `python3` resolves to a shared interpreter, 
 when they disagree. This runs in both CI systems and inside `make setup`. The full
 explanation is in [docs/dependency-confusion.md](docs/dependency-confusion.md), and
 what it means for a test run is in
-[docs/testing.md](docs/testing.md#a-run-can-measure-the-wrong-checkout-and-the-make-targets-pin-against-it).
+[docs/testing.md](docs/testing.md#making-sure-a-run-tests-this-checkout).
 
 ### Modular extras, and why Lambda package size matters
 
@@ -588,7 +591,7 @@ editable install pointing at another tree cannot decide what the gate reads. Run
 `lib/idp_common_pkg`, because the packages import each other — and a guard wired into
 several conftests will put the roots on `sys.path` for you and say so, or refuse the
 run when it cannot.
-[docs/testing.md](docs/testing.md#a-run-can-measure-the-wrong-checkout-and-the-make-targets-pin-against-it)
+[docs/testing.md](docs/testing.md#making-sure-a-run-tests-this-checkout)
 has the detail; the short version is that a refusal from that guard means the run
 **did not happen**, rather than that something failed.
 
@@ -789,9 +792,9 @@ documented in [docs/deployment.md](docs/deployment.md) and
 
 | Command | Description |
 |---|---|
-| `make setup` | Install all first-party packages into the current Python environment |
-| `make setup-venv` | Create `.venv` and install everything into it |
-| `make install-first-party` | Install just the first-party editables in one pip pass |
+| `make setup` | Install all first-party packages into the current Python environment, constrained to `lib/idp_common_pkg/uv.lock` (needs `uv`) |
+| `make setup-venv` | Create `.venv` and install everything into it, constrained to the same lock (needs `uv`) |
+| `make install-first-party` | Install just the first-party editables in one pip pass, constrained to `lib/idp_common_pkg/uv.lock` (needs `uv`) |
 
 ### Code quality
 

@@ -65,7 +65,7 @@ The configuration defines 13 document classes, each with specific attributes to 
 ### Classification Settings
 
 - **Model**: Amazon Nova2 Lite
-- **Strategy / granularity**: One stage, page granularity
+- **Strategy / granularity**: Combined, page granularity
 - **Temperature**: 0 (deterministic outputs)
 - **Top-k**: 5
 

@@ -1,12 +1,14 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// HITL › Queue Management (Admin): Admins edit the Default queue's settings and see
-// every queue here, along with the Test Studio queues, one per test set.
+// Review Studio › Review Management (Admin): Admins edit the Default queue's settings and see
+// every queue here, or, with the Production | Test Studio switch, the Test Studio queues,
+// one per test set. One table shows at a time, and only it is polled; the choice is in
+// the URL (`?view=test`), so Back and the queue pages' breadcrumbs return to it.
 // Open a queue to assign its items to Annotators, unassign, move or remove them.
 // Deleting a queue moves its items to the Default queue.
 import React, { useCallback, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { ButtonDropdownProps, TableProps } from '@cloudscape-design/components';
@@ -20,6 +22,7 @@ import {
   Link,
   Modal,
   Pagination,
+  SegmentedControl,
   SpaceBetween,
   StatusIndicator,
   Table,
@@ -32,6 +35,7 @@ import usePolling from '../../hooks/use-polling';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { formatDateTime } from '../../utils/date-time';
 import { productionQueuePath, testSetQueuePath } from '../../routes/constants';
+import type { ReviewManagementView } from '../../routes/constants';
 import { paginationLabels } from '../common/labels';
 import { NoDataState, TableNoMatchState, getFilterCounterText } from '../common/table';
 import QueueDefinitionModal from './QueueDefinitionModal';
@@ -62,9 +66,19 @@ interface TestSetRow {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** Why a queue can't be deleted, or undefined when it can. A queue that holds items can: they move to Default. */
-export const deleteDisabledReason = (definition: ReviewQueueDefinition | null): string | undefined =>
-  !definition ? 'This queue is not defined' : definition.isDefaultQueue ? "The default queue can't be deleted" : undefined;
+/**
+ * Why a queue can't be deleted, or undefined when it can. A queue that holds items can: they move to Default.
+ * So can a queue that is no longer defined but still holds items — what a delete that stopped part-way
+ * leaves, since the definition goes first — and deleting it again moves the rest.
+ */
+export const deleteDisabledReason = (definition: ReviewQueueDefinition | null, depth = 0): string | undefined =>
+  !definition
+    ? depth > 0
+      ? undefined
+      : 'This queue is not defined'
+    : definition.isDefaultQueue
+      ? "The default queue can't be deleted"
+      : undefined;
 
 /** The delete confirmation text, naming where a non-empty queue's items go. */
 export const deleteConfirmText = (queue: { id: string; name: string }, depth: number): string =>
@@ -83,6 +97,9 @@ export const AnnotatorsCell = ({ eligible }: { eligible: readonly string[] | nul
 
 const QueuesPage = (): React.JSX.Element => {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const view: ReviewManagementView = searchParams.get('view') === 'test' ? 'test' : 'production';
+  const setView = (next: ReviewManagementView) => setSearchParams(next === 'test' ? { view: 'test' } : {}, { replace: true });
   const { setSuccessMessage } = useAppContext();
 
   const [definitions, setDefinitions] = useState<ReviewQueueDefinition[] | null>(null);
@@ -95,7 +112,7 @@ const QueuesPage = (): React.JSX.Element => {
   const [annotators, setAnnotators] = useState<string[] | null>(null);
   const [annotatorsLoading, setAnnotatorsLoading] = useState(false);
   const [editing, setEditing] = useState<{ queue: ReviewQueueDefinition } | null>(null);
-  const [deleting, setDeleting] = useState<{ queue: ReviewQueueDefinition; depth: number } | null>(null);
+  const [deleting, setDeleting] = useState<{ queue: { id: string; name: string }; depth: number } | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [settingsTarget, setSettingsTarget] = useState<TestSetQueueTarget | null>(null);
@@ -124,7 +141,7 @@ const QueuesPage = (): React.JSX.Element => {
     }
   }, [savedDefinitions]);
 
-  usePolling(loadProduction, { enabled: true, intervalMs: QUEUES_POLL_INTERVAL_MS, immediate: true });
+  usePolling(loadProduction, { enabled: view === 'production', intervalMs: QUEUES_POLL_INTERVAL_MS, immediate: true });
 
   // Test Studio queues: one DynamoDB-only call returns every set with its stored
   // counts (kept by the background summary build, assignments and reviews), so the
@@ -143,7 +160,7 @@ const QueuesPage = (): React.JSX.Element => {
     }
   }, []);
 
-  usePolling(loadTestSets, { enabled: true, intervalMs: QUEUES_POLL_INTERVAL_MS, immediate: true });
+  usePolling(loadTestSets, { enabled: view === 'test', intervalMs: QUEUES_POLL_INTERVAL_MS, immediate: true });
 
   const loadAnnotators = useCallback(async () => {
     if (annotators != null || annotatorsLoading) return;
@@ -158,9 +175,10 @@ const QueuesPage = (): React.JSX.Element => {
     }
   }, [annotators, annotatorsLoading]);
 
+  // Refresh reads the table on show.
   const refresh = useCallback(async () => {
-    await Promise.all([loadProduction(), loadTestSets()]);
-  }, [loadProduction, loadTestSets]);
+    await (view === 'test' ? loadTestSets() : loadProduction());
+  }, [view, loadProduction, loadTestSets]);
 
   // ------------------------------------------------------------- rows
   const productionRows: ProductionRow[] = useMemo(() => {
@@ -254,7 +272,7 @@ const QueuesPage = (): React.JSX.Element => {
 
   const productionMenu = (row: ProductionRow): ButtonDropdownProps.Item[] => {
     const d = row.definition;
-    const deleteReason = deleteDisabledReason(d);
+    const deleteReason = deleteDisabledReason(d, row.health?.summary.depth ?? 0);
     return [
       { id: 'view', text: 'View' },
       { id: 'edit', text: 'Settings', disabled: !d, disabledReason: d ? undefined : 'This queue is not defined' },
@@ -265,9 +283,12 @@ const QueuesPage = (): React.JSX.Element => {
   const onProductionAction = (row: ProductionRow, action: string) => {
     if (action === 'view') navigate(row.href.replace(/^#/, ''));
     else if (action === 'edit' && row.definition) openEditor(row.definition);
-    else if (action === 'delete' && row.definition) {
+    else if (action === 'delete' && !deleteDisabledReason(row.definition, row.health?.summary.depth ?? 0)) {
       setDeleteError(null);
-      setDeleting({ queue: row.definition, depth: row.health?.summary.depth ?? 0 });
+      setDeleting({
+        queue: { id: row.id, name: row.definition?.name || row.name },
+        depth: row.health?.summary.depth ?? 0,
+      });
     }
   };
 
@@ -424,7 +445,7 @@ const QueuesPage = (): React.JSX.Element => {
   const productionInitial = definitions == null && productionError == null;
   const testSetsInitial = testSetRefs == null && testSetError == null;
   const preparingSets = (testSetRefs ?? []).filter((t) => t.summaryStatus === 'BUILDING').length;
-  const anyLoading = productionLoading || listingTestSets;
+  const shownLoading = view === 'test' ? listingTestSets : productionLoading;
 
   return (
     <ContentLayout
@@ -433,91 +454,110 @@ const QueuesPage = (): React.JSX.Element => {
           variant="h1"
           description="Set up the Default review queue and list the Annotators who work it."
           actions={
-            <Button iconName="refresh" loading={anyLoading} onClick={() => void refresh()} ariaLabel="Refresh queues">
-              Refresh
-            </Button>
+            <SpaceBetween direction="horizontal" size="xs">
+              <SegmentedControl
+                selectedId={view}
+                onChange={({ detail }) => setView(detail.selectedId as ReviewManagementView)}
+                label="Queues to show"
+                options={[
+                  { id: 'production', text: 'Production' },
+                  { id: 'test', text: 'Test Studio' },
+                ]}
+              />
+              <Button iconName="refresh" loading={shownLoading} onClick={() => void refresh()} ariaLabel="Refresh queues">
+                Refresh
+              </Button>
+            </SpaceBetween>
           }
         >
-          Queue Management
+          Review Management
         </Header>
       }
     >
       <SpaceBetween size="l">
-        {productionError != null && (
-          <Alert
-            type={definitions ? 'warning' : 'error'}
-            header={definitions ? 'Showing the last loaded queues' : "Couldn't load the review queues"}
-            action={<Button onClick={() => void loadProduction()}>Retry</Button>}
-          >
-            {describeApiError(productionError, 'load the review queues')}
-          </Alert>
-        )}
-        <Table<ProductionRow>
-          {...production.collectionProps}
-          variant="container"
-          items={production.items}
-          trackBy="id"
-          columnDefinitions={productionColumns}
-          loading={productionInitial}
-          loadingText="Loading queues"
-          header={
-            <Header
-              counter={productionInitial ? undefined : `(${productionRows.length})`}
-              description="System-wide queues for processed documents. When HITL is enabled in a document's configuration and the Default queue is enabled, a document that raised confidence alerts arrives in the Default queue."
-            >
-              Production Queues
-            </Header>
-          }
-          filter={
-            <TextFilter
-              {...production.filterProps}
-              filteringPlaceholder="Find queues"
-              filteringAriaLabel="Find production queues"
-              countText={getFilterCounterText(production.filteredItemsCount ?? 0)}
-            />
-          }
-          pagination={<Pagination {...production.paginationProps} ariaLabels={paginationLabels} />}
-        />
-        {testSetError != null && (
-          <Alert
-            type={testSetRefs ? 'warning' : 'error'}
-            header={testSetRefs ? 'Showing the last loaded test sets' : "Couldn't load the test sets"}
-            action={<Button onClick={() => void loadTestSets()}>Retry</Button>}
-          >
-            {describeApiError(testSetError, 'load the test sets')}
-          </Alert>
-        )}
-        <Table<TestSetRow>
-          {...testStudio.collectionProps}
-          variant="container"
-          items={testStudio.items}
-          trackBy="id"
-          columnDefinitions={testSetColumns}
-          loading={testSetsInitial}
-          loadingText="Loading Test Studio queues"
-          header={
-            <Header
-              counter={testSetsInitial ? undefined : `(${testSetRows.length})`}
-              description="Each test set is a queue of documents whose ground truth needs confirming. Open one to assign its documents."
-              actions={
-                preparingSets > 0 ? (
-                  <StatusIndicator type="loading">{`Preparing ${plural(preparingSets, 'test set')}…`}</StatusIndicator>
-                ) : undefined
+        {view === 'production' && (
+          <>
+            {productionError != null && (
+              <Alert
+                type={definitions ? 'warning' : 'error'}
+                header={definitions ? 'Showing the last loaded queues' : "Couldn't load the review queues"}
+                action={<Button onClick={() => void loadProduction()}>Retry</Button>}
+              >
+                {describeApiError(productionError, 'load the review queues')}
+              </Alert>
+            )}
+            <Table<ProductionRow>
+              {...production.collectionProps}
+              variant="container"
+              items={production.items}
+              trackBy="id"
+              columnDefinitions={productionColumns}
+              loading={productionInitial}
+              loadingText="Loading queues"
+              header={
+                <Header
+                  counter={productionInitial ? undefined : `(${productionRows.length})`}
+                  description="System-wide queues for processed documents. When HITL is enabled in a document's configuration and the Default queue is enabled, a document that raised confidence alerts arrives in the Default queue."
+                >
+                  Production Queues
+                </Header>
               }
-            >
-              Test Studio Queues
-            </Header>
-          }
-          filter={
-            <TextFilter
-              {...testStudio.filterProps}
-              filteringPlaceholder="Find test sets"
-              filteringAriaLabel="Find Test Studio queues"
-              countText={getFilterCounterText(testStudio.filteredItemsCount ?? 0)}
+              filter={
+                <TextFilter
+                  {...production.filterProps}
+                  filteringPlaceholder="Find queues"
+                  filteringAriaLabel="Find production queues"
+                  countText={getFilterCounterText(production.filteredItemsCount ?? 0)}
+                />
+              }
+              pagination={<Pagination {...production.paginationProps} ariaLabels={paginationLabels} />}
             />
-          }
-          pagination={<Pagination {...testStudio.paginationProps} ariaLabels={paginationLabels} />}
-        />
+          </>
+        )}
+        {view === 'test' && (
+          <>
+            {testSetError != null && (
+              <Alert
+                type={testSetRefs ? 'warning' : 'error'}
+                header={testSetRefs ? 'Showing the last loaded test sets' : "Couldn't load the test sets"}
+                action={<Button onClick={() => void loadTestSets()}>Retry</Button>}
+              >
+                {describeApiError(testSetError, 'load the test sets')}
+              </Alert>
+            )}
+            <Table<TestSetRow>
+              {...testStudio.collectionProps}
+              variant="container"
+              items={testStudio.items}
+              trackBy="id"
+              columnDefinitions={testSetColumns}
+              loading={testSetsInitial}
+              loadingText="Loading Test Studio queues"
+              header={
+                <Header
+                  counter={testSetsInitial ? undefined : `(${testSetRows.length})`}
+                  description="Each test set is a queue of documents whose ground truth needs confirming. Open one to assign its documents."
+                  actions={
+                    preparingSets > 0 ? (
+                      <StatusIndicator type="loading">{`Preparing ${plural(preparingSets, 'test set')}…`}</StatusIndicator>
+                    ) : undefined
+                  }
+                >
+                  Test Studio Queues
+                </Header>
+              }
+              filter={
+                <TextFilter
+                  {...testStudio.filterProps}
+                  filteringPlaceholder="Find test sets"
+                  filteringAriaLabel="Find Test Studio queues"
+                  countText={getFilterCounterText(testStudio.filteredItemsCount ?? 0)}
+                />
+              }
+              pagination={<Pagination {...testStudio.paginationProps} ariaLabels={paginationLabels} />}
+            />
+          </>
+        )}
       </SpaceBetween>
       <QueueDefinitionModal
         visible={!!editing}

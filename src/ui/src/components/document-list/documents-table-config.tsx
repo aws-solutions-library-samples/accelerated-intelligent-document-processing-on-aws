@@ -39,7 +39,8 @@ export interface MappedDocument {
   configRevision?: number | null;
   evaluationStatus: string;
   confidenceAlertCount: number;
-  processingIssueCount: number;
+  missingRequiredFieldCount?: number | null;
+  processingIssueCount?: number | null;
   hitlStatus: string;
   hitlReviewOwner: string;
   hitlReviewOwnerEmail: string;
@@ -262,10 +263,23 @@ export const COLUMN_DEFINITIONS_MAIN = (
     width: 150,
   },
   {
+    id: 'missingRequiredFieldCount',
+    header: 'Missing Required Fields',
+    // Null when this row does not carry the count (written before the count
+    // existed, or served while the list index backfills after an upgrade): a
+    // dash, not a 0 the row cannot substantiate.
+    cell: (item) => (item.missingRequiredFieldCount == null ? '-' : item.missingRequiredFieldCount),
+    sortingField: 'missingRequiredFieldCount',
+    width: 180,
+  },
+  {
     id: 'processingIssueCount',
     header: 'Processing Issues',
+    // A dash when the row does not carry the count, for the same reason as the
+    // column above; a green 0 would claim the document was checked and clean.
     cell: (item) => {
-      const count = item.processingIssueCount || 0;
+      const count = item.processingIssueCount;
+      if (count == null) return '-';
       return count === 0 ? <StatusIndicator type="success">0</StatusIndicator> : <StatusIndicator type="warning">{count}</StatusIndicator>;
     },
     sortingField: 'processingIssueCount',
@@ -274,7 +288,7 @@ export const COLUMN_DEFINITIONS_MAIN = (
   {
     id: 'hitlStatus',
     header: 'Review Status',
-    cell: (item) => renderHitlStatus(item, canWorkReviewQueues ? documentEditHref(item.objectKey) : undefined),
+    cell: (item) => renderHitlStatus(item, canWorkReviewQueues ? documentEditHref(item.objectKey, { from: 'document' }) : undefined),
     sortingField: 'hitlStatus',
     width: 150,
   },
@@ -320,6 +334,7 @@ const VISIBLE_CONTENT_OPTIONS = [
       { id: 'configVersion', label: 'Config Profile' },
       { id: 'evaluationStatus', label: 'Evaluation' },
       { id: 'confidenceAlertCount', label: 'Confidence Alerts' },
+      { id: 'missingRequiredFieldCount', label: 'Missing Required Fields' },
       { id: 'processingIssueCount', label: 'Processing Issues' },
       { id: 'hitlStatus', label: 'Review Status' },
       { id: 'hitlReviewOwner', label: 'Review Owner' },
@@ -473,6 +488,24 @@ export const DocumentViewSelector = ({
   />
 );
 
+/**
+ * Whether Start Review can claim this document: a review was raised on it, it has
+ * not finished, and nobody owns it. The server refuses a claim where no review was
+ * raised (`NO_REVIEW_PENDING`) or the review has finished (`REVIEW_FINISHED`). A
+ * queued document is claimed from its queue item, so it never counts here.
+ */
+export const isClaimableForReview = (item: MappedDocument): boolean =>
+  Boolean(item.hitlTriggered && !item.hitlCompleted && !item.hitlReviewOwner && !isQueueManaged(item.hitlStatus));
+
+/**
+ * Whether Release Review can release this document: somebody has claimed it and
+ * its review has not finished. The server refuses a release nobody claimed
+ * (`NOT_CLAIMED`) or of a finished review (`REVIEW_FINISHED`). A queued document
+ * is released from its queue item, so it never counts here.
+ */
+export const isReleasableForReview = (item: MappedDocument): boolean =>
+  Boolean(item.hitlReviewOwner && !item.hitlCompleted && !isQueueManaged(item.hitlStatus));
+
 export const DocumentsCommonHeader = ({
   resourceName = 'Documents',
   selectedItems = [],
@@ -524,12 +557,8 @@ export const DocumentsCommonHeader = ({
   // Check if any selected items can be aborted
   const hasAbortableItems = selectedItems.some((item) => ABORTABLE_STATUSES.includes(item.objectStatus));
   // Check if any selected items can be claimed (pending HITL and not owned)
-  // A queued document is claimed from its queue item, so it never counts here.
-  const hasClaimableItems = selectedItems.some(
-    (item) => item.hitlTriggered && !item.hitlCompleted && !item.hitlReviewOwner && !isQueueManaged(item.hitlStatus),
-  );
-  // Check if any selected items can be released (has review owner and HITL not completed)
-  const hasReleasableItems = selectedItems.some((item) => item.hitlReviewOwner && !item.hitlCompleted && !isQueueManaged(item.hitlStatus));
+  const hasClaimableItems = selectedItems.some(isClaimableForReview);
+  const hasReleasableItems = selectedItems.some(isReleasableForReview);
   // Reprocess re-queues a document directly, bypassing the malware-scanning
   // ingest gate — the refused file is still in the input bucket, so reprocessing
   // a quarantined document would push it into OCR and Bedrock. The resolver

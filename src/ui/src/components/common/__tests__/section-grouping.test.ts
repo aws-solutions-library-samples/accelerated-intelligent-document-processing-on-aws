@@ -14,6 +14,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  changedSections,
   insertPageIds,
   isAscending,
   nudgePageIds,
@@ -334,5 +335,40 @@ describe('sortPageIds and isAscending', () => {
     expect(isAscending([1, 5, 9])).toBe(true);
     expect(isAscending([7])).toBe(true);
     expect(isAscending([])).toBe(true);
+  });
+});
+
+describe('changedSections', () => {
+  const BEFORE = [
+    { sectionId: '1', documentClass: 'FieldTicket', pageIds: [1, 2] },
+    { sectionId: '2', documentClass: 'Invoice', pageIds: [3, 4] },
+  ];
+
+  it('lists a new section', () => {
+    const after = [...BEFORE, { sectionId: '3', documentClass: 'Invoice', pageIds: [5] }];
+    expect(changedSections(BEFORE, after).map((s) => s.sectionId)).toEqual(['3']);
+  });
+
+  it('lists a reclassified section', () => {
+    const after = [BEFORE[0], { ...BEFORE[1], documentClass: 'DeliveryNote' }];
+    expect(changedSections(BEFORE, after).map((s) => s.sectionId)).toEqual(['2']);
+  });
+
+  it('lists both sections a page moved between', () => {
+    const after = [
+      { ...BEFORE[0], pageIds: [1, 2, 3] },
+      { ...BEFORE[1], pageIds: [4] },
+    ];
+    expect(changedSections(BEFORE, after).map((s) => s.sectionId)).toEqual(['1', '2']);
+  });
+
+  it('does not list a section whose pages were only reordered', () => {
+    const after = [{ ...BEFORE[0], pageIds: [2, 1] }, BEFORE[1]];
+    expect(changedSections(BEFORE, after)).toEqual([]);
+  });
+
+  it('does not list a deleted section', () => {
+    const after = [{ ...BEFORE[0], pageIds: [1, 2, 3, 4] }];
+    expect(changedSections(BEFORE, after).map((s) => s.sectionId)).toEqual(['1']);
   });
 });

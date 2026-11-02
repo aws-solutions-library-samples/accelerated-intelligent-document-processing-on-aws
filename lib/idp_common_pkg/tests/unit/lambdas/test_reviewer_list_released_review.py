@@ -23,7 +23,8 @@ The widening is to released reviews only. ``EXPECTED`` writes out, per lifecycle
 caller, what each list shows; ``WAS_HIDDEN`` names the only cells the change moved.
 ``releaseReview`` on a document nobody has claimed is refused, since it would
 otherwise list a never-reviewed document, or a finished review recognised only by
-its status, for every Reviewer.
+its status, for every Reviewer. ``claimReview`` on a document no review was raised
+on is refused too, so claiming and then releasing cannot list one either.
 """
 
 import importlib.util
@@ -41,7 +42,7 @@ _REVIEW_LAMBDA = os.path.join(_REPO, "src", "lambda", "complete_section_review")
 TABLE = "reviewer-list-released"
 # Handler-local modules that other handler directories also ship under these names.
 _SIBLINGS = ("config_scope", "review_statuses", "log_sanitizer")
-# TypeDateIndex's NonKeyAttributes in template.yaml: a filter can test only these.
+# NonKeyAttributes both list indexes project in template.yaml: a filter can test only these.
 _PROJECTED = [
     "ObjectKey",
     "ObjectStatus",
@@ -147,12 +148,11 @@ LIFECYCLES = {
     # Release acts on every selected row, so an Admin can send one by accident.
     "unreviewed-release-by-admin": [("refused", "releaseReview", "admin")],
     "unreviewed-release-by-rev": [("refused", "releaseReview", "rev")],
-    # claimReview does not check that a review is owed, so a claim followed by a
-    # release still puts a never-reviewed document back in the queue. It is then a
-    # released review like any other.
-    "unreviewed-claimed-then-released-by-other": [
-        ("claimReview", "other"),
-        ("releaseReview", "other"),
+    # Nor can it be claimed: a claim needs a review to have been raised, so a
+    # never-reviewed document cannot reach the queue through claim then release.
+    "unreviewed-claim-then-release-by-other": [
+        ("refused", "claimReview", "other", "NO_REVIEW_PENDING"),
+        ("refused", "releaseReview", "other"),
     ],
 }
 
@@ -168,7 +168,6 @@ EXPECTED = {
             "released-by-rev",
             "released-by-admin",
             "released-then-claimed-by-rev",
-            "unreviewed-claimed-then-released-by-other",
         }
     ),
     "other": frozenset(
@@ -179,7 +178,6 @@ EXPECTED = {
             "released-by-rev",
             "released-by-admin",
             "released-then-claimed-by-other",
-            "unreviewed-claimed-then-released-by-other",
         }
     ),
     "admin": ALL,
@@ -191,7 +189,6 @@ WAS_HIDDEN = {
         {
             "released-by-rev",
             "released-by-admin",
-            "unreviewed-claimed-then-released-by-other",
             "pending-released-by-admin-unclaimed",
         }
     ),
@@ -199,7 +196,6 @@ WAS_HIDDEN = {
         {
             "released-by-rev",
             "released-by-admin",
-            "unreviewed-claimed-then-released-by-other",
             "pending-released-by-admin-unclaimed",
         }
     ),
@@ -249,9 +245,11 @@ def _create_table(dynamodb):
             for name in ("PK", "SK", "ItemType", "InitialEventTime")
         ],
         BillingMode="PAY_PER_REQUEST",
+        # listDocuments reads TypeDateIndexV2 and getDocumentCount reads
+        # TypeDateIndex; both carry these keys and (at least) these attributes.
         GlobalSecondaryIndexes=[
             {
-                "IndexName": "TypeDateIndex",
+                "IndexName": index_name,
                 "KeySchema": [
                     {"AttributeName": "ItemType", "KeyType": "HASH"},
                     {"AttributeName": "InitialEventTime", "KeyType": "RANGE"},
@@ -261,6 +259,7 @@ def _create_table(dynamodb):
                     "NonKeyAttributes": _PROJECTED,
                 },
             }
+            for index_name in ("TypeDateIndex", "TypeDateIndexV2")
         ],
     )
 
@@ -458,6 +457,7 @@ def test_the_writers_leave_the_rows_this_test_describes(written):
         "not-hitl",
         "unreviewed-release-by-admin",
         "unreviewed-release-by-rev",
+        "unreviewed-claim-then-release-by-other",
     ):
         for attribute in ("HITLStatus", "HITLReviewOwner", "HITLPendingReview"):
             assert attribute not in rows[name], (name, attribute)

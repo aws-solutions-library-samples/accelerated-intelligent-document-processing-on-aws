@@ -31,8 +31,8 @@ describe('isInReviewQueue', () => {
   });
 
   it('tells a caller without queue access who reviews it', () => {
-    expect(inReviewQueueEditReason(true)).toMatch(/Choose Review/);
-    expect(inReviewQueueEditReason(false)).toMatch(/Admin or Annotator/);
+    expect(inReviewQueueEditReason(true)).toMatch(/Choose Edit/);
+    expect(inReviewQueueEditReason(false)).toMatch(/Admin, Annotator or Reviewer/);
   });
 });
 

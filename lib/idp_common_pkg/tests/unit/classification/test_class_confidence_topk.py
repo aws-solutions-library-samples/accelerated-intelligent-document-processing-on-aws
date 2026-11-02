@@ -285,8 +285,8 @@ class TestShippedDefault:
         from idp_common.config.models import IDPConfig
 
         cfg = IDPConfig()
-        assert cfg.classification.one_stage.llm.confidence.mode == "topk"
-        assert cfg.classification.one_stage.llm.confidence.top_k_candidates == 3
+        assert cfg.classification.combined.llm.confidence.mode == "topk"
+        assert cfg.classification.combined.llm.confidence.top_k_candidates == 3
 
     def test_system_defaults_agree_with_the_model_default(self):
         """The stored default and the Pydantic default must not drift apart."""
@@ -304,18 +304,18 @@ class TestShippedDefault:
         )
         stored = _yaml.safe_load(open(os.path.normpath(path)))
         cls = stored["classification"]
-        # Both class-assigning calls carry confidence; boundary detection does not.
-        assert cls["one_stage"]["llm"]["confidence"]["mode"] == "topk"
-        section = cls["two_stage"]["section_classification"]["llm"]
+        # Both class-assigning calls carry confidence; the splitting call does not.
+        assert cls["combined"]["llm"]["confidence"]["mode"] == "topk"
+        section = cls["split_then_classify"]["section_classification"]["llm"]
         assert section["confidence"]["mode"] == "topk"
-        assert "confidence" not in cls["two_stage"]["boundary_detection"]["llm"]
+        assert "confidence" not in cls["split_then_classify"]["splitting"]["llm"]
 
     def test_the_shipped_prompt_block_is_present_and_asks_for_candidates(self):
         """A default of `topk` with an empty block would silently ask nothing."""
         from idp_common.config.merge_utils import merge_config_with_defaults
 
         merged = merge_config_with_defaults({}, validate=False)
-        block = merged["classification"]["one_stage"]["llm"]["confidence"][
+        block = merged["classification"]["combined"]["llm"]["confidence"][
             "task_prompt_topk"
         ]
         assert "<class-confidence>" in block
@@ -330,7 +330,7 @@ class TestPromptComposition:
         service = _service(_config("off"))
         composed = service._get_classification_config()["task_prompt"]
         assert "<class-confidence>" not in composed
-        assert composed == service.config.classification.one_stage.page.task_prompt
+        assert composed == service.config.classification.combined.page.task_prompt
 
     def test_topk_splices_the_block_with_the_resolved_count(self):
         service = _service(_config("topk"))

@@ -47,6 +47,9 @@ const EditScreenToolsPanel = (): React.JSX.Element => (
           <b>Edit | View</b> switches between the Document Editor and the original file. Unsaved edits are kept while the file is shown.
         </li>
         <li>
+          <b>Refresh</b> reloads the document; with unsaved edits it asks first.
+        </li>
+        <li>
           <b>Skip</b> (queue items) gives the item back to its queue with a reason. It is not finished, and saved work is kept.
         </li>
         <li>
@@ -75,17 +78,18 @@ const EditScreenToolsPanel = (): React.JSX.Element => (
       <h3>More Actions</h3>
       <ul>
         <li>
-          <b>Edit Page Class</b>: move pages between sections, and change a section&apos;s class.
-        </li>
-        <li>
           <b>Use As Evaluation Baseline</b> (Admin and Author): copy a finished document&apos;s results into the evaluation baseline.
         </li>
       </ul>
       <p>A menu item that does not apply yet stays in its menu, disabled; hover it to see why.</p>
       <h3>Document Editor</h3>
       <ul>
+        <li>
+          Its buttons, right of its title: <b>Show Evaluation</b> (where the document has an evaluation baseline), <b>Section</b>,{' '}
+          <b>Show Fields</b> and <b>Edit Page Grouping</b>, which moves pages between sections and changes a section&apos;s class.
+        </li>
         <li>Choose a section from the Section list. The page image stays in view while you scroll the fields.</li>
-        <li>Click a field to highlight it on the page. Fields to show narrows the list to confidence alerts.</li>
+        <li>Click a field to highlight it on the page. Show Fields narrows the list to confidence alerts or evaluation mismatches.</li>
         <li>A queue item&apos;s Review Reason, above the editor, lists why it is in review, worst first.</li>
       </ul>
     </div>

@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The info panels (the right-hand panel the info icon opens) of HITL › Queue Management
+// The info panels (the right-hand panel the info icon opens) of Review Studio › Review Management
 // and of a queue's page, Production or Test Studio.
 import React from 'react';
 import { HelpPanel, Icon } from '@cloudscape-design/components';
@@ -33,10 +33,13 @@ const LearnMore = (): React.JSX.Element => (
   </div>
 );
 
-export const QueueManagementToolsPanel = (): React.JSX.Element => (
-  <HelpPanel header={<h2>Queue Management</h2>} footer={<LearnMore />}>
+export const ReviewManagementToolsPanel = (): React.JSX.Element => (
+  <HelpPanel header={<h2>Review Management</h2>} footer={<LearnMore />}>
     <div>
-      <p>Every review queue in one place: the Production queues documents are routed to, and one Test Studio queue per test set.</p>
+      <p>
+        Every review queue in one place: the Production queues documents are routed to, and one Test Studio queue per test set. The{' '}
+        <b>Production | Test Studio</b> switch chooses which table is shown.
+      </p>
       <h3>Production queues</h3>
       <ul>
         <li>A document whose fields raised confidence alerts goes to the Default queue, when HITL is enabled in its configuration.</li>

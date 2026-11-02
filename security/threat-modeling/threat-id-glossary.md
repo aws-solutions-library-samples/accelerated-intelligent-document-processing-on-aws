@@ -8,7 +8,7 @@
 | **Last Updated** | 2026-09-19 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threat IDs** | 99 |
+| **Total Threat IDs** | 104 |
 
 ## 1. Threat ID Naming Convention
 
@@ -31,10 +31,11 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | **JOB** | Jobs API | Machine-to-machine Jobs REST API threats | [feature-threats/jobs-api.md](feature-threats/jobs-api.md) |
 | **PII** | PII Anonymization | Preprocessing hook + PII redaction extension threats | [feature-threats/pii-anonymization.md](feature-threats/pii-anonymization.md) |
 | **SELL** | Seller Entitlement Service | Seller-account activation endpoint for paid extensions (only doc whose assets belong to the SELLER, not the customer) | [feature-threats/seller-entitlement-service.md](feature-threats/seller-entitlement-service.md) |
+| **HITL** | Review Queues | HITL review queues, the per-user Inbox, the review finalize execution | [feature-threats/review-queues.md](feature-threats/review-queues.md) |
 
 ## 2. Complete Threat ID Reference
 
-### PM — Pipeline Mode (8 threats)
+### PM — Pipeline Mode (9 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -46,6 +47,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | PM.T06 | Configuration tampering | Tampering, EoP | 8 (Critical) |
 | PM.T07 | Few-shot example poisoning | Tampering | 2 (Low) |
 | PM.T08 | Document content sent to a non-Anthropic model family (OpenAI via `bedrock-mantle`) | ID | 4 (Medium) |
+| PM.T09 | Weaponized document exploits a file parser on the processing path | EoP, DoS | 3 (Medium) |
 
 ### BDA — BDA Mode (5 threats)
 
@@ -116,16 +118,16 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | AUTH.T12 | Missing input-shape validation (type confusion via lost schema validation) | Tampering, DoS | 3 (Medium) |
 | AUTH.T13 | Group assignment from a user-writable attribute (external IdP mapping) | Spoofing, EoP | 4 (Medium) |
 | AUTH.T14 | Alternate entry path bypassing an operation's group check (streaming Function URL) | EoP, Spoofing | 3 (Medium) |
-| AUTH.T15 | Authentication material in resolver logs (divergent redaction denylists) | ID | 4 (Medium) |
-| AUTH.T16 | Authorization is opt-in per resolver — no default deny at the dispatcher | EoP | 6 (High) |
+| AUTH.T15 | Authentication material in resolver logs (name-based redaction denylist) | ID | 4 (Medium) |
+| AUTH.T16 | Per-object authorization is opt-in per resolver — the default deny covers the group floor only | EoP | 6 (High) |
 
 > **`AUTH.T14` and `AUTH.T16` are not in sequence with the rest, on purpose.**
 > `AUTH.T14` is the alternate-entry-path threat on the streaming Function URL;
 > its code-level residual is named `GAP-07` in
 > `scripts/api_rbac_expectations.yaml` and in `.claude/skills/api-rbac-test.md`,
 > and the *code* comments cite `GAP-07` rather than the threat id, so do not
-> expect to find `AUTH.T14` there. `AUTH.T16` — authorization being opt-in per
-> resolver, with no default deny at the dispatcher — was drafted as `AUTH.T14` and
+> expect to find `AUTH.T14` there. `AUTH.T16` — per-object authorization being opt-in
+> per resolver — was drafted as `AUTH.T14` and
 > renumbered, because a concurrent change had already assigned that identifier to
 > the threat above. A threat identifier is this model's primary key; two threats
 > sharing one is worse than a renumbering.
@@ -221,6 +223,15 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | SELL.T08 | Activation-service outage locks out paying customers | DoS | 6 (High) |
 | SELL.T09 | Customer roster disclosure | ID | 4 (Medium) |
 | SELL.T10 | Allow-list bypass left enabled in production | EoP | 4 (Medium) |
+
+### HITL — Review Queues (4 threats)
+
+| ID | Short Name | STRIDE | Risk |
+|----|-----------|--------|------|
+| HITL.T01 | Queue listings show items outside the caller's profile scope | ID | 2 (Low) |
+| HITL.T02 | Reviewer-controlled drafts become the document's final output | Tampering, R | 3 (Medium) |
+| HITL.T03 | Review metadata reaches readers beyond the queue's audience | ID | 2 (Low) |
+| HITL.T04 | Resolvers serving Annotator operations hold write grants on authorization and workflow state | EoP | 3 (Medium) |
 
 ## 3. STRIDE Abbreviations
 

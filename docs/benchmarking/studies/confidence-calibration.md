@@ -5,7 +5,7 @@ title: "Confidence Calibration — Can the Score Route Human Review?"
 <!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
 <!-- SPDX-License-Identifier: MIT-0 -->
 
-# Confidence calibration on exact ground truth — 466,000 cells, and the default grader cannot rank errors
+# Confidence Calibration — Can the Score Route Human Review?
 
 > **Why this page exists.** Every extracted field carries a confidence score, and the
 > product's review-effort estimator turns those scores into "review the worst *N*
@@ -70,7 +70,7 @@ They are live in CI, which installs the `test` extra.
 
 ---
 
-## 1. The headline: same extraction, same error count, opposite verdicts
+## 1. Same extraction, two confidence graders
 
 The cleanest contrast in the grid is a single-axis one. Two arms differ in exactly the
 confidence model and nothing else — same extraction model (Sonnet 4.6), same
@@ -119,7 +119,7 @@ where a worst-first queue reaches them first.
 
 ---
 
-## 2. Why a passing ECE says nothing here
+## 2. Why a low calibration error (ECE) is not enough
 
 Every arm in the grid passes calibration. The largest mean-confidence ECE anywhere
 above is 0.0244, against a gate that fires at 0.15. Two of the arms also pass with a
@@ -161,7 +161,7 @@ the reliability diagram plots. The harness records both, as
 
 ---
 
-## 3. The verdict that does not depend on a statistical estimate
+## 3. How many confidence bins each grader uses
 
 `bin_coverage` is the column to trust most, because it is a structural fact rather
 than an estimate. `MIN_BINS_FOR_SIGNAL` is 3: a confidence score occupying fewer than
@@ -191,7 +191,7 @@ doubt, though the second decimal place is.
 
 ---
 
-## 4. What `integrated` mode could and could not be measured on
+## 4. What `integrated` mode could be measured on
 
 Six of the seven `integrated`-mode arms returned **zero** wrong cells: 8,814 to 8,820
 cells per arm, all correct. Discrimination is undefined when one class is absent — there
@@ -256,7 +256,7 @@ places:
 
 ---
 
-## 6. What this does and does not license
+## 6. What these results do and do not show
 
 **Which shipped configuration can support worst-first human review.** On this corpus,
 only `confidence.model: us.anthropic.claude-sonnet-5` can. The shipped default,

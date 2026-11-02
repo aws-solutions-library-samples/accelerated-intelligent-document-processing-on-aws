@@ -766,6 +766,10 @@ def merge_shard_dicts(
         merged_assessment, merged_alerts = collated
         merged_metering["_merged_assessment"] = merged_assessment
         merged_metering["_merged_assessment_alerts"] = merged_alerts
+        # The shards' own alerts, concatenated: each row index counts from its
+        # shard's first row (upstream #813), so nothing may match them against
+        # the merged data by path (#1527).
+        merged_metering["_merged_assessment_alerts_shard_local"] = True
         agg_split = _aggregate_shard_split_stats(tuples)
         if agg_split is not None:
             merged_metering["_merged_assessment_split_stats"] = agg_split
@@ -1017,6 +1021,10 @@ def _finalize_merge(
         merged_assessment, merged_alerts = collated
         merged_metering["_merged_assessment"] = merged_assessment
         merged_metering["_merged_assessment_alerts"] = merged_alerts
+        # The shards' own alerts, concatenated: each row index counts from its
+        # shard's first row (upstream #813), so nothing may match them against
+        # the merged data by path (#1527).
+        merged_metering["_merged_assessment_alerts_shard_local"] = True
         agg_split = _aggregate_shard_split_stats(results)
         if agg_split is not None:
             merged_metering["_merged_assessment_split_stats"] = agg_split

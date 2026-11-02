@@ -11,7 +11,7 @@ release's own models and reports, as errors:
   would drop (walked recursively into its sub-models);
 * when the file carries the back-compat flat keys written by
   ``classification_flat.with_flat_classification``, every flat setting whose value
-  the old release resolves differently from what the file's nested one-stage
+  the old release resolves differently from what the file's nested combined
   blocks ask for (read by the current reader with the flat keys removed). In that
   case the v0.9 blocks themselves
   (``classification_flat.V09_BLOCKS``) are expected to be dropped by the old
@@ -168,6 +168,60 @@ def resolve_in_release(cfg: Dict[str, Any], lib_root: str) -> Dict[str, Any]:
     return json.loads(lines[-1])
 
 
+# A second child: the field names the TARGET release's ClassificationConfig declares.
+# Same isolation and same provenance check as _CHILD.
+_FIELDS_CHILD = r"""
+import json, os, sys
+lib_root = sys.argv[1]
+sys.path.insert(0, lib_root)
+import idp_common
+where = os.path.realpath(idp_common.__file__)
+if not where.startswith(os.path.realpath(lib_root) + os.sep):
+    print(json.dumps({"fatal": f"idp_common resolved to {where}, not {lib_root}"}))
+    sys.exit(0)
+from idp_common.config.models import IDPConfig
+model = IDPConfig.model_fields["classification"].annotation
+names = set(model.model_fields)
+names.update(f.alias for f in model.model_fields.values() if f.alias)
+print(json.dumps({"fields": sorted(names)}))
+"""
+
+
+@functools.lru_cache(maxsize=None)
+def classification_fields(lib_root: str) -> frozenset:
+    """The keys the release at ``lib_root`` declares on ``classification``."""
+    child = subprocess.run(  # nosec B603 - fixed argv
+        [sys.executable, "-I", "-c", _FIELDS_CHILD, lib_root],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    lines = [ln for ln in child.stdout.splitlines() if ln.startswith("{")]
+    if child.returncode != 0 or not lines:
+        raise RuntimeError(
+            f"cannot read the classification model at {lib_root}: "
+            f"{child.stderr.strip()[-800:]}"
+        )
+    answer = json.loads(lines[-1])
+    if answer.get("fatal"):
+        raise RuntimeError(answer["fatal"])
+    return frozenset(answer["fields"])
+
+
+def reads_nested_classification(lib_root: str) -> bool:
+    """True when the release at ``lib_root`` declares every v0.9 classification block.
+
+    Such a release (v0.6.13 onward) reads the cell's nested blocks as they are, so
+    a native upload sends the file unchanged rather than adding the pre-0.9 flat
+    keys: its own model has no flat key to compare them against, and it has the
+    split-then-classify strategy the flat layout cannot express.
+    A release declaring only some of the blocks is not treated as one, so its
+    native upload keeps the flat keys and :func:`check_config` reports what it
+    drops.
+    """
+    return set(V09_BLOCKS) <= classification_fields(lib_root)
+
+
 def _get(node: Any, path: Tuple[str, ...]) -> Any:
     for key in path:
         if not isinstance(node, dict):
@@ -177,8 +231,8 @@ def _get(node: Any, path: Tuple[str, ...]) -> Any:
 
 
 def resolved_flat_pairs(granularity: str) -> List[Tuple[str, Tuple[str, ...]]]:
-    """(old flat field, current nested path) pairs a single-pass run reads."""
-    llm = ("one_stage", "llm")
+    """(old flat field, current nested path) pairs a combined run reads."""
+    llm = ("combined", "llm")
     pairs: List[Tuple[str, Tuple[str, ...]]] = [
         (key, llm + (key,))
         for key in (
@@ -193,9 +247,9 @@ def resolved_flat_pairs(granularity: str) -> List[Tuple[str, Tuple[str, ...]]]:
         )
     ]
     pairs += [
-        ("system_prompt", ("one_stage", granularity, "system_prompt")),
-        ("task_prompt", ("one_stage", granularity, "task_prompt")),
-        ("contextPagesCount", ("one_stage", "page", "contextPagesCount")),
+        ("system_prompt", ("combined", granularity, "system_prompt")),
+        ("task_prompt", ("combined", granularity, "task_prompt")),
+        ("contextPagesCount", ("combined", "page", "contextPagesCount")),
         ("enforceValidClasses", llm + ("validation", "enforceValidClasses")),
         ("maxValidationRetries", llm + ("validation", "maxValidationRetries")),
         ("invalidClassFallback", ("fallback_class",)),
@@ -205,12 +259,22 @@ def resolved_flat_pairs(granularity: str) -> List[Tuple[str, Tuple[str, ...]]]:
     return pairs
 
 
+def _flat_keys() -> frozenset:
+    """The pre-0.9 flat classification keys, as the CURRENT reader defines them."""
+    current_lib = os.path.join(_REPO, "lib", "idp_common_pkg")
+    if current_lib not in sys.path:
+        sys.path.insert(0, current_lib)
+    from idp_common.config.migrations.v08_to_v09 import FLAT_KEYS
+
+    return frozenset(FLAT_KEYS | {"classificationMethod"})
+
+
 def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
     """Errors for ``cfg`` against the release whose ``idp_common`` is at ``lib_root``.
 
     An empty list means every classification key in the file is one the release
     reads and, for a back-compat file, that the release resolves each flat setting
-    to the value the file's nested one-stage blocks ask for.
+    to the value the file's nested combined blocks ask for.
     """
     answer = resolve_in_release(cfg, lib_root)
     if answer.get("fatal"):
@@ -221,6 +285,21 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
 
     classification = cfg.get("classification") or {}
     has_flat = "classificationMethod" in classification
+    if reads_nested_classification(lib_root):
+        # Any one flat key is converted on read and wins over its nested block,
+        # and the migration consumes it before ``dropped`` is computed, so the
+        # dropped-key check above never sees it. Refuse every one, not only a
+        # file that also carries ``classificationMethod``.
+        flat_present = sorted(set(classification) & _flat_keys())
+        if flat_present:
+            errors.append(
+                f"classification carries pre-0.9 flat key(s) {', '.join(flat_present)}, "
+                f"but this release reads the nested v0.9 classification blocks: it "
+                f"converts them on read and they take precedence over the nested "
+                f"values. Remove them (run_matrix --native-upload sends such a "
+                f"release the config without them)."
+            )
+            return errors
     for path in answer["dropped"]:
         root = path.split(".")[1]
         if has_flat and root in V09_BLOCKS:
@@ -253,12 +332,12 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
         migrate_config(nested_only)
     ).classification.model_dump(mode="json")
     old = answer["classification"]
-    granularity = str(_get(current, ("one_stage", "granularity")) or "page")
+    granularity = str(_get(current, ("combined", "granularity")) or "page")
     expected_method = METHOD_FOR_GRANULARITY.get(granularity)
     if old.get("classificationMethod") != expected_method:
         errors.append(
             f"classificationMethod resolves to {old.get('classificationMethod')!r} on "
-            f"this release; one_stage.granularity {granularity!r} needs "
+            f"this release; combined.granularity {granularity!r} needs "
             f"{expected_method!r}"
         )
     for flat_key, nested in resolved_flat_pairs(granularity):
@@ -275,12 +354,12 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
                 f"but classification.{'.'.join(nested)} asks for {_short(want)}"
             )
     old_conf = old.get("confidence") or {}
-    new_conf = _get(current, ("one_stage", "llm", "confidence")) or {}
+    new_conf = _get(current, ("combined", "llm", "confidence")) or {}
     for key, got in old_conf.items():
         if got != new_conf.get(key):
             errors.append(
                 f"classification.confidence.{key} resolves to {_short(got)} on this "
-                f"release but one_stage.llm.confidence.{key} asks for "
+                f"release but combined.llm.confidence.{key} asks for "
                 f"{_short(new_conf.get(key))}"
             )
     return errors

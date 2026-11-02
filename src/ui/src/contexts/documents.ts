@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useContext, createContext } from 'react';
 import { Document } from '../types/documents';
-import type { DocumentView } from '../hooks/use-graphql-api';
+import type { DocumentDetailsOptions, DocumentView } from '../hooks/use-graphql-api';
 
 export type { DocumentView };
 
@@ -13,7 +13,7 @@ export interface DateRange {
 
 export interface DocumentsContextValue {
   documents: Document[];
-  getDocumentDetailsFromIds: (objectKeys: string[], options?: { reportErrors?: boolean }) => Promise<Document[]>;
+  getDocumentDetailsFromIds: (objectKeys: string[], options?: DocumentDetailsOptions) => Promise<Document[]>;
   isDocumentsListLoading: boolean;
   hasListBeenLoaded: boolean;
   selectedItems: Document[];

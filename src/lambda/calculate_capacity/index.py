@@ -531,7 +531,7 @@ def generate_adaptive_recommendations(
             data_source, f"unrecognised source '{data_source}'"
         )
         recommendations.append(
-            f"Processing {int(total_docs_per_hour)} documents/hour using {pattern.upper()} (based on {source_text})"
+            f"Processing {int(total_docs_per_hour)} documents/hour in pipeline mode (based on {source_text})"
         )
 
         # Complexity analysis - requires environment configuration
@@ -1935,7 +1935,7 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         if pattern.startswith("PATTERN-"):
             pattern = pattern.lower()
 
-        # Unified pattern uses the same Bedrock pipeline as Pattern-2
+        # The unified pattern's pipeline mode is what the `pattern-2` sizing path models
         if pattern == "unified":
             print(f"ℹ️ Unified pattern detected, treating as pattern-2 for capacity planning")
             pattern = "pattern-2"
@@ -1944,7 +1944,7 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             print(f"❌ Unsupported pattern: {pattern}")
             error_result = {
                 "success": False,
-                "errorMessage": f"Only Pattern 2 and Unified patterns are supported for capacity planning. Received: {pattern}",
+                "errorMessage": f"Capacity planning supports pipeline mode (Textract + Bedrock) only; BDA mode is not supported. Received pattern: {pattern}",
                 "metrics": [
                     {"label": "Status", "value": "Unsupported Pattern"},
                     {"label": "Pattern", "value": pattern},
@@ -1956,7 +1956,7 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                     "exceedsLimit": False, "maxAllowed": "0s",
                 },
                 "calculationDetails": {"quotasUsed": {"bedrock_models": {}}},
-                "recommendations": [f"❌ Only Pattern 2 and Unified patterns are supported. Received: {pattern}"],
+                "recommendations": [f"❌ Capacity planning supports pipeline mode only. Received pattern: {pattern}"],
             }
             if "body" in event:
                 return {"statusCode": 400, "body": json.dumps(error_result)}

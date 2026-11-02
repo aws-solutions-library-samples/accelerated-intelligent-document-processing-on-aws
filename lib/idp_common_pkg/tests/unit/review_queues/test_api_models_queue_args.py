@@ -3,7 +3,7 @@
 
 """Naming a queue in listReviewQueueItems / claimNextReviewItem arguments.
 
-Queues are system-wide, so Queue Management opens a queue by ``queueName`` alone.
+Queues are system-wide, so Review Management opens a queue by ``queueName`` alone.
 Requiring ``queueProfile`` alongside it refused every queue page with BAD_ARGUMENT.
 """
 

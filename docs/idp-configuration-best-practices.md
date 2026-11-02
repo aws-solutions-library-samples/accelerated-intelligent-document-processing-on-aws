@@ -396,12 +396,12 @@ properties:
 
 ## Classification Prompt Customization
 
-### Packet granularity (`one_stage.granularity: packet`)
+### Packet granularity (`combined.granularity: packet`)
 
 This approach analyzes an entire packet in one call to identify its section boundaries.
-Its prompts live at `classification.one_stage.packet.system_prompt` and
-`classification.one_stage.packet.task_prompt`. No preset in `config_library/unified/`
-sets packet granularity; set `classification.one_stage.granularity: packet` to use it.
+Its prompts live at `classification.combined.packet.system_prompt` and
+`classification.combined.packet.task_prompt`. No preset in `config_library/unified/`
+sets packet granularity; set `classification.combined.granularity: packet` to use it.
 See [Classification](./classification.md#packet-granularity-one-call-per-packet).
 
 #### Key Components
@@ -409,7 +409,7 @@ See [Classification](./classification.md#packet-granularity-one-call-per-packet)
 **System Prompt Design:**
 ```yaml
 classification:
-  one_stage:
+  combined:
     packet:
       system_prompt: >-
         You are a document classification expert who can analyze and classify multiple documents
@@ -421,7 +421,7 @@ classification:
 **Task Prompt Structure:**
 ```yaml
 classification:
-  one_stage:
+  combined:
     packet:
       task_prompt: >-
         <task-description>
@@ -477,14 +477,14 @@ classification:
   `ordinal_start_page`, `ordinal_end_page` and `type` are the keys it needs, and
   a packet prompt that asks for a single class instead cannot be parsed
 - Both `{DOCUMENT_TEXT}` and `{DOCUMENT_IMAGE}`. An unset
-  `one_stage.llm.modality.images` is inferred from this prompt, so omitting the
+  `combined.llm.modality.images` is inferred from this prompt, so omitting the
   image placeholder makes the call text-only without saying so
 
-### Page granularity (`one_stage.granularity: page`, the default)
+### Page granularity (`combined.granularity: page`, the default)
 
 This approach classifies individual pages using both visual and textual information.
-Its prompts live at `classification.one_stage.page.system_prompt` and
-`classification.one_stage.page.task_prompt`. It is the default, so presets that carry
+Its prompts live at `classification.combined.page.system_prompt` and
+`classification.combined.page.task_prompt`. It is the default, so presets that carry
 no classification block of their own, such as `lending-package-sample` and `rvl-cdip`,
 run this way.
 
@@ -493,7 +493,7 @@ run this way.
 **System Prompt Design:**
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       system_prompt: >-
         You are a multimodal document classification expert that analyzes business documents using
@@ -505,7 +505,7 @@ classification:
 **Task Prompt with Image Integration:**
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: >-
         <task-description>
@@ -552,7 +552,7 @@ classification:
 - Multi-modal analysis (visual + textual)
 - Step-by-step classification process
 - Image placement control with `{DOCUMENT_IMAGE}` — and both placeholders
-  present, since an unset `one_stage.llm.modality` flag is inferred from this
+  present, since an unset `combined.llm.modality` flag is inferred from this
   prompt
 - Strict constraint on using only defined document types
 - An `<output-format>` asking for `document_boundary` as well as `class`. That
@@ -909,7 +909,7 @@ Few-shot examples are automatically integrated using the `{FEW_SHOT_EXAMPLES}` p
 **Classification with Few-Shot Examples:**
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       task_prompt: |
         Classify this document into exactly one of these categories:
@@ -1034,9 +1034,9 @@ For models supporting cache checkpoints:
 
 ⚠️ **The snippets in this section show values, not paths.** Each parameter lives
 inside the model block of the call that uses it, and classification has three of
-them: `classification.one_stage.llm`,
-`classification.two_stage.boundary_detection.llm` and
-`classification.two_stage.section_classification.llm`. There is no
+them: `classification.combined.llm`,
+`classification.split_then_classify.splitting.llm` and
+`classification.split_then_classify.section_classification.llm`. There is no
 `classification.temperature`. Writing one anyway is not an error — it is a
 pre-0.9 flat key, so it is converted on read and **copied into all three call
 blocks**, which means a flat parameter silently retunes the two calls you were
@@ -1216,20 +1216,20 @@ other classification setting has to go in:
 
 | `classification.strategy` | Configuration editor label | What it does |
 |---|---|---|
-| `single_pass` (default) | **One stage** | One call per page, or per packet, returns the section boundaries and the classes together |
-| `two_stage` | **Two stage** | A boundary pass that is sent no class vocabulary, then one call per detected section to classify that section |
+| `combined` (default) | **Split and classify together (one call)** | One call per page, or per packet, returns the section boundaries and the classes together |
+| `split_then_classify` | **Split first, then classify each section** | A splitting call that is sent no class vocabulary, then one call per detected section to classify that section |
 
-The stored value is `single_pass` or `two_stage`. *One stage* and *Two stage* are
-the labels the configuration editor's form view shows; in its YAML or JSON view,
-and in a file you upload, write the stored value — the form labels are not
-accepted as values.
+The stored value is `combined` or `split_then_classify`. *Split and classify together
+(one call)* and *Split first, then classify each section* are the labels the
+configuration editor's form view shows; in its YAML or JSON view, and in a file you
+upload, write the stored value — the form labels are not accepted as values.
 [Classification](./classification.md#choosing-granularity-modality-and-strategy)
 has the full comparison and the cost argument.
 
 **Granularity is then read from the chosen strategy's own block.** Under
-`single_pass` it is `classification.one_stage.granularity`; under `two_stage` it
-is `classification.two_stage.boundary_detection.llm.granularity`, and
-`one_stage.granularity` is not read at all. The same applies to the page and
+`combined` it is `classification.combined.granularity`; under `split_then_classify` it
+is `classification.split_then_classify.splitting.llm.granularity`, and
+`combined.granularity` is not read at all. The same applies to the page and
 packet settings underneath each — `contextPagesCount`, `window_pages`,
 `overlap_pages` and the prompts exist in both blocks, and only the active
 strategy's copy is read.
@@ -1239,17 +1239,17 @@ strategy's copy is read.
 | Aspect | Packet granularity | Page granularity (default) |
 |--------|------------------------|---------------------------|
 | **Primary Use Case** | Packets whose section boundaries need the whole packet in view | Single-section documents and packets alike (the default) |
-| **Input Data** | OCR text + page images (subject to `one_stage.llm.modality`) | OCR text + page image (subject to `one_stage.llm.modality`) |
+| **Input Data** | OCR text + page images (subject to `combined.llm.modality`) | OCR text + page image (subject to `combined.llm.modality`) |
 | **Processing Method** | One call per packet (or window of `window_pages` pages) returning segments | One call per page returning a class and a start/continue boundary marker |
-| **Example Config** | None shipped; set `one_stage.granularity: packet` | `lending-package-sample`, `rvl-cdip` |
+| **Example Config** | None shipped; set `combined.granularity: packet` | `lending-package-sample`, `rvl-cdip` |
 | **Configuration Complexity** | Higher (boundary rules) | Lower (direct classification) |
 | **Output Format** | Segmented page ranges | Per-page class and boundary marker |
 
-The paths in that table are the `single_pass` ones. Under `two_stage`, read
-`classification.two_stage.boundary_detection.llm.…` for each of them — that is the
+The paths in that table are the `combined` ones. Under `split_then_classify`, read
+`classification.split_then_classify.splitting.llm.…` for each of them — that is the
 call that reads pages — and note that the class no longer comes from it: the
-boundary pass returns page ranges only, and
-`classification.two_stage.section_classification` classifies each range.
+splitting call returns page ranges only, and
+`classification.split_then_classify.section_classification` classifies each range.
 
 ### Configuration Structure
 
@@ -1348,7 +1348,7 @@ setting:
 
 ```yaml
 classification:
-  one_stage:
+  combined:
     llm:
       model: us.amazon.nova-2-lite-v1:0
       # Image processing settings - preserves original resolution
@@ -1357,9 +1357,9 @@ classification:
         target_height: ""    # Empty string = no resizing (recommended)
 ```
 
-Under `strategy: two_stage` the equivalent blocks are
-`classification.two_stage.boundary_detection.llm.image` and
-`classification.two_stage.section_classification.llm.image`; the `one_stage`
+Under `strategy: split_then_classify` the equivalent blocks are
+`classification.split_then_classify.splitting.llm.image` and
+`classification.split_then_classify.section_classification.llm.image`; the `combined`
 block above is not read. A classification call's `image` block honours only
 `target_width` and `target_height` — `dpi` and `preprocessing` validate there and
 do nothing, because they are OCR-stage settings and belong under `ocr.image`.
@@ -1371,7 +1371,7 @@ Configure specific dimensions when performance optimization is needed:
 ```yaml
 # For high-accuracy processing with controlled dimensions
 classification:
-  one_stage:
+  combined:
     llm:
       image:
         target_width: "1200"   # Resize to 1200 pixels wide
@@ -1379,7 +1379,7 @@ classification:
 
 # For fast processing with lower resolution
 classification:
-  one_stage:
+  combined:
     llm:
       image:
         target_width: "600"    # Smaller for faster processing
@@ -1402,7 +1402,7 @@ For documents with multiple pages, the system provides comprehensive image suppo
 - **No cap on page count**: there is no limit on how many pages a document may
   have. There is, however, a consequence to how many images one *request*
   carries: above 20 image blocks in a single Bedrock request every image in it is
-  downscaled to 2,000 px. That is why `classification.one_stage.packet.window_pages`
+  downscaled to 2,000 px. That is why `classification.combined.packet.window_pages`
   ships at 20 — raising it buys fewer calls at the price of resolution on all of
   them. Separately, a single image fails outright above 3.75 MiB stored or
   8,000 px on a side
@@ -1874,13 +1874,14 @@ properties:
 
 ### Prompt Templates
 
-**Classification Template** (one stage, page granularity — under
-`strategy: two_stage` the equivalents are
-`classification.two_stage.boundary_detection.llm.page.*` for the boundary pass and
-`classification.two_stage.section_classification.llm.*` for the class pass):
+**Classification Template** (combined strategy, page granularity — under
+`strategy: split_then_classify` the equivalents are
+`classification.split_then_classify.splitting.llm.page.*` for the splitting call and
+`classification.split_then_classify.section_classification.llm.*` for section
+classification):
 ```yaml
 classification:
-  one_stage:
+  combined:
     page:
       system_prompt: "Classification expert with domain knowledge"
       task_prompt: >-

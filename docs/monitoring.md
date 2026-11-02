@@ -460,11 +460,11 @@ and two of the three causes report nothing here:
 ⚠️ **That last case is not always rare, and which configuration you run decides
 it.** With `enforceValidClasses` on (the default) — it lives in each
 class-assigning call's `validation` block, at
-`classification.one_stage.llm.validation.enforceValidClasses` and
-`classification.two_stage.section_classification.llm.validation.enforceValidClasses`
+`classification.combined.llm.validation.enforceValidClasses` and
+`classification.split_then_classify.section_classification.llm.validation.enforceValidClasses`
 — every call that
-assigns a class — one stage at page or packet granularity, and two-stage section
-classification — re-prompts on an out-of-vocabulary prediction and then assigns
+assigns a class — combined classification at page or packet granularity, and
+split-then-classify section classification — re-prompts on an out-of-vocabulary prediction and then assigns
 `fallback_class`, so it becomes the silent `unclassified` case above and the count
 really is bounded by configuration edits. With `enforceValidClasses: false` the
 model's invented class name is stored verbatim, and there the rate follows model
@@ -1069,7 +1069,7 @@ report normal operation as a problem. Because it is an average, one slow documen
 in a busy 5-minute window will not trip it — this is a "the whole pipeline is
 slow" signal, not a per-document one.
 
-### The queue alarms — the gap both of the above leave
+### Queue alarms
 
 Both alarms above read the **state machine**, so neither can see a document that
 never got an execution ([#761](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/761)):

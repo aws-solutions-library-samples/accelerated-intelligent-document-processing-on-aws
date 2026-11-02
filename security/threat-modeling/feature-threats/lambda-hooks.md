@@ -15,8 +15,9 @@
 Lambda Hooks provide extensibility points for customer-managed code execution within the processing pipeline:
 
 ### 1.1 Inference Hook
-- Invoked during extraction step as an alternative or supplement to Bedrock inference
-- Receives document data and context, returns structured extraction results
+- Invoked in place of a Bedrock model by a processing step configured with a model Lambda hook (OCR, extraction, assessment, summarization, and each classification call — the combined call and, under `split_then_classify`, the splitting and section-classification calls, each with its own setting)
+- Receives the request and a `context` naming the calling step (for classification: `Classification`, `Splitting` or `SectionClassification`), returns the model response
+- The step roles may invoke only functions whose name matches `GENAIIDP-*`, enforced by both the resource ARN and a `lambda:FunctionName` condition
 - Enables integration with custom models, external ML services, or specialized processing logic
 
 ### 1.2 Post-Processing Hook
@@ -178,9 +179,20 @@ flowchart TD
 
 ## 5. Hook Points (v0.6)
 
-| Hook point | Runs | Sees | Can halt? | `onError: fail` terminal? |
-|---|---|---|---|---|
-| `preprocessing` | First, before mode routing; both modes; even with OCR disabled | **Raw source document** | **Yes** (`halt: true`) | **Yes** |
-| `postOcr`, `postClassification`, `postExtraction` | After the named step | Derived results for that step | No | **No** — catch routes forward (HOOK.T07, issue #919) |
-| `postRuleValidation`, `postSummarization` | After the named step — `postRuleValidation` **including the skip paths** (no-policy-match, rule-validation-disabled) | Results for that step | No | **No** — catch routes forward (HOOK.T07, issue #919) |
-| `PostProcessingLambdaHookFunctionArn` | After document finalization (incl. HITL "Skip All Reviews") | Full document results | No | **No** — catch routes forward (HOOK.T07, issue #919) |
+| Hook point | Runs | Sees | Can halt? | `onError: fail` terminal? | Under queue review (v0.6.13) |
+|---|---|---|---|---|---|
+| `preprocessing` | First, before mode routing; both modes; even with OCR disabled | **Raw source document** | **Yes** (`halt: true`) | **Yes** — any error is caught to `PreprocessingHookFailed` | Runs in **both** executions |
+| `postOcr`, `postClassification`, `postExtraction` | After the named step | Derived results for that step | No | **Yes** — `HookFatalError`, which `onError: fail` raises, is caught first and routed to `PostStepHookFailed` / `PostExtractionHookFailed`; any other error routes forward | Run in **both** executions |
+| `postRuleValidation`, `postSummarization` | After the named step — `postRuleValidation` **including the skip paths** (no-policy-match, rule-validation-disabled) | Results for that step | No | **Yes** — as above | Finalize execution only; never for a rejected document |
+| `postprocessing` (pipeline hook) | Last state of the shared tail, both modes | Full document results | No | **Yes** — as above | Finalize execution only; never for a rejected document |
+| `PostProcessingLambdaHookFunctionArn` | Invoked by an EventBridge rule through the Decompressor Lambda **after** the execution has succeeded | Full document results | No | **Not applicable** — it runs outside the state machine, after the document is complete, so it can neither halt nor fail it | Skipped for `HITL_IN_PROGRESS` and `REJECTED` (and for `REDACTED_SUPERSEDED`); fires after the finalize execution |
+
+A document held by a review queue is processed by **two** executions: the first
+ends `HITL_IN_PROGRESS` once the review hold is recorded, and a second (finalize)
+execution, started from `DocumentQueue` when a reviewer completes or rejects the
+item and named from a single-use finalize token, re-enters the state machine at
+`preprocessing`. The four hook points before the review point therefore run twice
+for such a document, and a hook with side effects outside the stack — a delivery
+to a downstream system, a write keyed on the document — must be idempotent. That
+is a property each customer hook has to provide; nothing in the dispatcher
+de-duplicates it (HOOK.T04).

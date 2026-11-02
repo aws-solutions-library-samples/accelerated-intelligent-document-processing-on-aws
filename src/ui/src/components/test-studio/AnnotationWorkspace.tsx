@@ -145,7 +145,9 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
   const requestedVersion = searchParams.get('v');
   const { settings } = useSettingsContext();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
-  const { canAnnotate, isAdmin, isAnnotator, isAnnotatorOnly, loading: roleLoading } = useUserRole();
+  const { canAnnotate, isAdmin, isAnnotatorOnly, isQueueWorker, loading: roleLoading } = useUserRole();
+  // An item opened from here keeps this page in its breadcrumbs: under Review Management for an Admin, Queues otherwise.
+  const itemOrigin = isAdmin ? 'review' : 'queues';
   const reviewWork = useOptionalReviewWork();
   // The Annotators listed on this set's queue (Admin): read with the page, and replaced by
   // a saved settings dialog at once rather than waiting for the next read.
@@ -159,8 +161,8 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
         setEligibleAnnotators([]);
       });
   }, [isAdmin, testSetId]);
-  // A non-Admin Annotator claims documents rather than assigning them.
-  const claimsWork = isAnnotator && !isAdmin;
+  // A non-Admin Annotator or Reviewer claims documents rather than assigning them.
+  const claimsWork = isQueueWorker && !isAdmin;
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
 
   const [queue, setQueue] = useState<AnnotationQueue | null>(null);
@@ -504,8 +506,8 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
   const estimateDecimals = decimalsFor(impact?.estimateConfidence);
 
   const onRowAction = (item: QueueItem, action: string) => {
-    if (action === 'view') navigate(`${testSetItemPath(testSetId, item.objectKey)}?view=source`);
-    else if (action === 'annotate') navigate(testSetItemPath(testSetId, item.objectKey));
+    if (action === 'view') navigate(`${testSetItemPath(testSetId, item.objectKey)}?view=source&from=${itemOrigin}`);
+    else if (action === 'annotate') navigate(`${testSetItemPath(testSetId, item.objectKey)}?from=${itemOrigin}`);
     else if (action === 'claim') void handleClaim(item);
     else if (action === 'assign') {
       setSelectedRows([item]);
@@ -837,7 +839,7 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
                 id: 'document',
                 header: 'Document',
                 isRowHeader: true,
-                cell: (item) => <Link href={`#${testSetItemPath(testSetId, item.objectKey)}`}>{item.objectKey}</Link>,
+                cell: (item) => <Link href={testSetAnnotateHref(testSetId, item.objectKey, itemOrigin)}>{item.objectKey}</Link>,
               },
               { id: 'labels', header: 'Labels', cell: (item) => renderLabelSource(item.labelSource) ?? '—' },
               {

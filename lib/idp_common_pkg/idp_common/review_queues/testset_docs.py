@@ -661,7 +661,7 @@ def store_assigned_count(
 ) -> None:
     """Recount the set's queue counts onto its metadata (``QueuePendingDocs``,
     ``QueueAssignedDocs``, ``QueueInProgressDocs``, ``QueueAnnotators``), so
-    HITL › Queue Management lists every set from the metadata alone. Never raises."""
+    Review Studio › Review Management lists every set from the metadata alone. Never raises."""
     try:
         counts = assignment_counts(store, test_set_id)
         tracking_table.update_item(

@@ -27,7 +27,7 @@ summarization:
   enabled: false
 
 classification:
-  one_stage:
+  combined:
     llm:
       # Replace with your own deployment to run the fine-tuned arm:
       #   model: arn:aws:bedrock:<region>:<your-account-id>:custom-model-deployment/<deployment-id>
