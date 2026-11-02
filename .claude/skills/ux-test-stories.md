@@ -732,13 +732,10 @@ Finish with exactly one report, report_done or report_blocked, once what is on s
   rendered, and the reply, or `section.md` in a dry run, says the video was
   withheld. A page that does not show the stack's name, even the review stack's
   own, costs the video the same way, and its line says the stack could not be
-  confirmed as the review stack. An Annotator's navigation has no Deployment Info,
-  so its page never shows the stack: before such a flow the run signs in once as a
-  persona whose page does, a `stack check:` line in the log, and when that page
-  names the review stack and its socket audit is clean, its answer stands for the
-  run, which shares one `UX_TEST_UI_ENV` and one user pool. A run with no other
-  persona's entry withholds its Annotator videos. No option renders a video of
-  another stack: watch a run on your own stack instead.
+  confirmed as the review stack. Every group's navigation, an Annotator's
+  included, shows Deployment Info, and no other persona's page stands in for one
+  that does not. No option renders a video of another stack: watch a run on your
+  own stack instead.
 - **Screenshots are not held to that check.** A flow's `screens/` are kept whatever
   the stack, so point a run only at a stack holding shipped example data.
   Everything a local run writes is under gitignored `scratch/`: never commit it or

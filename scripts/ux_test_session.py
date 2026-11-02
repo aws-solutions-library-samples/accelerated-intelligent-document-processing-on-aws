@@ -395,6 +395,18 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
         )
     email = persona_email(key)
     exists = _user_exists(ctx, email)
+    needs_row = args.group == "Annotator" or profiles is not None
+    if needs_row and exists != (_users_row_id(ctx, email) is not None):
+        held = (
+            "the user pool but not the users table"
+            if exists
+            else ("the users table but not the user pool")
+        )
+        raise SystemExit(
+            f"{email} is in {held} of {args.stack}, so it is not the persona "
+            f"asked for. Remove it with teardown --email {email} --long-lived, "
+            "then run setup again"
+        )
     if exists and getattr(args, "rotate", False) is not True:
         _name_persona(ctx, email, key)
         shown = " ".join(persona_display_name(key))
@@ -405,11 +417,16 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
             "until it is updated. Re-run with --rotate to do that deliberately."
         )
     password = _password()
-    if not exists and (args.group == "Annotator" or profiles is not None):
+    if not exists and needs_row:
         arguments: dict[str, object] = {"email": email, "persona": args.group}
         if profiles is not None:
             arguments["allowedConfigVersions"] = profiles
         _user_management(ctx, "createUser", arguments)
+        if _users_row_id(ctx, email) is None:
+            raise SystemExit(
+                f"the stack's user management answered createUser, but no "
+                f"users-table row holds {email}"
+            )
     create_cognito_user(ctx, email, args.group, password)
     _name_persona(ctx, email, key)
 
@@ -442,10 +459,21 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
+    long_lived = getattr(args, "long_lived", False) is True
+    given = [
+        f"--{name}"
+        for name in ("key", "profiles")
+        if isinstance(getattr(args, name, None), str)
+    ]
+    if given and not long_lived:
+        raise SystemExit(
+            f"{' and '.join(given)} name a long-lived persona; add --long-lived, "
+            "or drop them for a throwaway user"
+        )
     ctx = _resolve_or_explain(args.stack, args.region)
     url = _web_url(args.stack, args.region)
 
-    if getattr(args, "long_lived", False) is True:
+    if long_lived:
         return _setup_long_lived(args, ctx, url)
 
     email = f"ux-test-{secrets.token_hex(4)}@example.invalid"

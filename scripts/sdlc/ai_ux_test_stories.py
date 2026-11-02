@@ -378,10 +378,6 @@ _OVER_LIMIT_LINE = (
 )
 _NOT_RENDERED_LINE = "_The video of `{key}` could not be rendered._"
 _DROPPED_CAVEAT = "not run as {persona}: UX_TEST_PERSONAS has no {key} entry"
-_UNCONFIRMED = (
-    "so until another persona's page confirms the stack, a flow whose page shows "
-    "none keeps no video"
-)
 _SINCE_CAVEAT = (
     "the stack's version could not be read, so no story's `since` was checked"
 )
@@ -2184,13 +2180,12 @@ class FlowSession:
         attempt.opened = True
         attempt.facts = opened.facts
         run.note_facts(opened.facts)
-        shown, version = run.stack_facts(flow, opened.facts)
         attempt.withheld = session.review_stack_problem(
-            run.plan_stack, run.ui_env, shown
+            run.plan_stack, run.ui_env, opened.facts.stack_name
         )
         if attempt.withheld:
             run.say(f"video: withheld for {flow.key}, because {attempt.withheld}")
-        reached = stories.since_reached(flow.story.since, version)
+        reached = stories.since_reached(flow.story.since, opened.facts.version)
         if reached is False:
             self.not_run_reason = "since"
             run.say(
@@ -2797,7 +2792,6 @@ class StoryRun:
         self.attempts: list[Attempt] = []
         self.spent = 0.0
         self.refused_groups: set[str] = set()
-        self.stack_checked = False
         self.facts_seen: list[signin.PageFacts] = []
         self.reruns_not_run: list[dict[str, str]] = []
         self.current: FlowSession | WatchSession | None = None
@@ -3097,135 +3091,22 @@ class StoryRun:
 
     def browser_plan(self, flow: Flow, run_dir: Path) -> session.BrowserPlan:
         """The confined browser one attempt of ``flow`` is opened with."""
-        return self._plan(
-            flow.persona.credentials_key,
-            f"{flow.key.persona} ({flow.persona.group})",
-            run_dir,
-            dismiss_welcome=not flow.story.first_visit,
-        )
-
-    def _plan(
-        self, key: str, label: str, run_dir: Path, *, dismiss_welcome: bool
-    ) -> session.BrowserPlan:
         plan = self.planned
+        persona = self.prepared.personas[flow.persona.credentials_key]
         return session.BrowserPlan(
             toolchain=self.toolchain,
             run_dir=run_dir,
             ui_env=self.ui_env,
             stack=plan.stack,
-            persona=self.prepared.personas[key],
-            persona_label=label,
+            persona=persona,
+            persona_label=f"{flow.key.persona} ({flow.persona.group})",
             build_dir=plan.build_dir if plan.ui_kind == "build" else None,
             dev_unconfined=self.args.dev_unconfined,
             web_url=plan.web_url if plan.ui_kind == "deployed" else None,
-            dismiss_welcome=dismiss_welcome,
-        )
-
-    def stack_facts(
-        self, flow: Flow, facts: signin.PageFacts
-    ) -> tuple[str | None, str | None]:
-        """The stack name and version an attempt is judged by.
-
-        A page reports both from its sidebar's Deployment Info, which the
-        navigation of a group in ``session.HIDDEN_DEPLOYMENT_INFO_GROUPS`` does not
-        render. For such a persona only, a stack and version another persona's page
-        confirmed earlier in this run stand in, since every attempt of the run
-        shares one ``UX_TEST_UI_ENV`` and one user pool. A page that does report a
-        stack is always judged by its own answer.
-        """
-        if (
-            facts.stack_name is not None
-            or flow.persona.group not in session.HIDDEN_DEPLOYMENT_INFO_GROUPS
-        ):
-            return facts.stack_name, facts.version
-        confirmed = self.confirmed_facts()
-        if confirmed is None:
-            return None, facts.version
-        return confirmed.stack_name, facts.version or confirmed.version
-
-    def confirmed_facts(self) -> signin.PageFacts | None:
-        """The latest page facts of this run that name the review stack."""
-        return next(
-            (
-                facts
-                for facts in reversed(self.facts_seen)
-                if facts.stack_name == session.REVIEW_STACK
-            ),
-            None,
-        )
-
-    def confirm_stack(self, flow: Flow) -> None:
-        """Sign in once as a persona whose page shows the stack, before ``flow``.
-
-        Only for a flow whose group's navigation hides Deployment Info, and only
-        when no attempt of this run has confirmed the stack yet: the facts it reads
-        are noted for :meth:`stack_facts` when its socket audit is clean, and its
-        browser is closed before ``flow`` starts.
-
-        It is tried at most once per run, whatever the outcome, so a failed sign-in
-        is not paid again before every such flow. A check that fails, or whose
-        socket audit is not clean, leaves the stack unconfirmed, and every such
-        flow of the run then has its video withheld, unless an attempt of another
-        group confirms the stack first.
-        """
-        if (
-            flow.persona.group not in session.HIDDEN_DEPLOYMENT_INFO_GROUPS
-            or self.confirmed_facts() is not None
-            or self.stack_checked
-        ):
-            return
-        self.stack_checked = True
-        key = next(
-            (
-                group
-                for group in stories.SIGN_IN_GROUPS
-                if group not in session.HIDDEN_DEPLOYMENT_INFO_GROUPS
-                and group in self.prepared.personas
-            ),
-            None,
-        )
-        if key is None:
-            self.say(
-                "stack check: no persona whose page shows the stack, so a flow "
-                "whose page shows none keeps no video"
-            )
-            return
-        base = "/tmp" if os.path.isdir("/tmp") else None  # nosec B108 - see FlowSession
-        run_dir = Path(tempfile.mkdtemp(prefix="ux-stack-check-", dir=base))
-        os.chmod(run_dir, 0o711)  # nosec B103 - traverse-only, no listing
-        browser = session.ConfinedBrowser(self.runtime, say=self.say)
-        audits: list[chrome.SocketAudit] = []
-        facts: signin.PageFacts | None = None
-        try:
-            facts = browser.open(
-                self._plan(key, f"stack check ({key})", run_dir, dismiss_welcome=True)
-            ).facts
-        except (signin.SignInError, *_STEP_FAILURES) as error:
-            self.say(f"stack check: {type(error).__name__}, {_UNCONFIRMED}")
-        finally:
-            for step in (
-                browser.close_session,
-                browser.stop_chrome,
-                lambda: browser.stop_watch(on_audit=audits.append),
-                browser.stop_proxy,
-            ):
-                try:
-                    step()
-                except Exception as error:  # noqa: BLE001
-                    self.say(f"stack check: cleanup: {type(error).__name__}")
-            shutil.rmtree(run_dir, ignore_errors=True)
-        if facts is None:
-            return
-        if not audits or audits[-1].state != "clean":
-            self.say(f"stack check: socket audit not clean, {_UNCONFIRMED}")
-            return
-        self.note_facts(facts)
-        self.say(
-            f"stack check: signed in as {key}; the page reports {facts.stack_name}"
+            dismiss_welcome=not flow.story.first_visit,
         )
 
     def note_facts(self, facts: signin.PageFacts) -> None:
-        """Keep a page's facts: an attempt's, or the stack check's of another persona."""
         self.facts_seen.append(facts)
 
     def records(self, attempt: Attempt) -> bool:
@@ -3484,7 +3365,6 @@ class StoryRun:
         in, whose answer is never read, counts at its whole cap.
         """
         self.attempts.append(attempt)
-        self.confirm_stack(attempt.flow)
         flow_session = FlowSession(self, attempt)
         self.current = flow_session
         try:

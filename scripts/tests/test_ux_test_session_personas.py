@@ -411,12 +411,89 @@ def test_an_admin_limit_an_empty_limit_or_a_bad_key_is_refused(monkeypatch, over
 def test_rotating_an_existing_annotator_does_not_create_it_again(monkeypatch):
     email = "ux-persona-annotator@example.invalid"
     pool = _Pool(existing={email})
+    pool.rows[email] = "user-1"
     module = _module_with(pool, monkeypatch)
 
     module.cmd_setup(_setup_args(group="Annotator", rotate=True))
 
     assert pool.managed == []
     assert [(e, g) for e, g, _ in pool.created] == [(email, "Annotator")]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rotate", [False, True])
+def test_an_annotator_in_the_pool_with_no_users_row_is_refused(monkeypatch, rotate):
+    """Its row is what an Annotator is read from, so neither keeping nor rotating
+    it would leave the persona that was asked for."""
+    email = "ux-persona-annotator@example.invalid"
+    pool = _Pool(existing={email})
+    module = _module_with(pool, monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.cmd_setup(_setup_args(group="Annotator", rotate=rotate))
+
+    assert "the user pool but not the users table" in str(excinfo.value)
+    assert f"teardown --email {email} --long-lived" in str(excinfo.value)
+    assert pool.managed == [] and pool.created == []
+
+
+@pytest.mark.unit
+def test_a_users_row_with_no_pool_user_is_refused(monkeypatch):
+    email = "ux-persona-annotator@example.invalid"
+    pool = _Pool()
+    pool.rows[email] = "user-1"
+    module = _module_with(pool, monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.cmd_setup(_setup_args(group="Annotator"))
+
+    assert "the users table but not the user pool" in str(excinfo.value)
+    assert pool.managed == [] and pool.created == []
+
+
+@pytest.mark.unit
+def test_a_create_user_that_leaves_no_users_row_stops_setup(monkeypatch):
+    pool = _Pool()
+    module = _module_with(pool, monkeypatch)
+
+    def answered_without_a_row(ctx: dict, field: str, arguments: dict) -> object:
+        pool.managed.append((field, dict(arguments)))
+        return {"ok": True}
+
+    monkeypatch.setattr(module, "_user_management", answered_without_a_row)
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.cmd_setup(_setup_args(group="Annotator"))
+
+    assert "no users-table row holds" in str(excinfo.value)
+    assert [field for field, _ in pool.managed] == ["createUser"]
+    assert pool.created == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("overrides", "named"),
+    [
+        ({"key": "Annotator-scoped"}, "--key"),
+        ({"profiles": "ux-fixture-hitl"}, "--profiles"),
+        (
+            {"key": "Annotator-scoped", "profiles": "ux-fixture-hitl"},
+            "--key and --profiles",
+        ),
+    ],
+)
+def test_a_long_lived_option_without_long_lived_is_refused(
+    monkeypatch, overrides, named
+):
+    """Taken as a throwaway user, it would be wider than the persona asked for."""
+    pool = _Pool()
+    module = _module_with(pool, monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.cmd_setup(_setup_args(group="Annotator", long_lived=False, **overrides))
+
+    assert str(excinfo.value).startswith(f"{named} name a long-lived persona")
+    assert pool.resolved == [] and pool.created == [] and pool.managed == []
 
 
 @pytest.mark.unit

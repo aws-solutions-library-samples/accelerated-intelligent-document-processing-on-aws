@@ -4456,7 +4456,7 @@ ANNOTATORS = {
         "Ux!3cretive-scope-9aZ",
     ),
 }
-NO_DEPLOYMENT_INFO = signin.PageFacts(None, None, None, (1600, 1000, 1.0), None)
+NO_STACK_SHOWN = signin.PageFacts(None, None, None, (1600, 1000, 1.0), None)
 
 
 def _personas_and_annotators(*groups: str, annotators: tuple[str, ...] = ()) -> str:
@@ -4481,63 +4481,33 @@ def _annotator_run(
     harness.default_facts = dataclasses.replace(
         harness.default_facts, version="0.6.13.dev6"
     )
-    for key in ANNOTATORS:
-        harness.facts[key] = NO_DEPLOYMENT_INFO
 
 
 @pytest.mark.unit
-def test_an_annotator_flow_confirms_the_stack_by_signing_in_once_as_another_persona(
-    harness: StoryHarness,
-) -> None:
-    """An Annotator's navigation has no Deployment Info, so its page reports no
-    stack; the run signs in once as a persona whose page does, before the flow,
-    and the flow's video is then made like any other's."""
+def test_an_annotator_flow_is_judged_by_its_own_page(harness: StoryHarness) -> None:
+    """An Annotator's navigation shows Deployment Info like every other group's, so
+    its own page releases its video and no other persona signs in for it."""
     _annotator_run(harness, "Admin", annotators=("Annotator",))
     harness.script = {"why-is-it-in-review@queue-annotator": ["help"]}
     assert harness.main(story="why-is-it-in-review") == 0
-    assert [name for name, _ in harness.sign_ins] == ["Admin", "Annotator"]
+    assert [name for name, _ in harness.sign_ins] == ["Annotator"]
     assert harness.results()["flows"][0]["verdict"] == "done"
     assert harness.record()["video_withheld"] is None
     assert harness.calls.count("render_video") == 1
 
 
 @pytest.mark.unit
-def test_the_stack_is_checked_once_per_run_however_many_annotator_flows_follow(
+def test_an_annotator_page_that_shows_no_stack_withholds_its_video(
     harness: StoryHarness,
 ) -> None:
-    _annotator_run(harness, "Admin")
-    assert harness.main(story="find-my-review-work") == 0
-    assert [name for name, _ in harness.sign_ins] == [
-        "Admin",
-        "Annotator",
-        "Annotator-scoped",
-    ]
-    assert harness.record()["video_withheld"] is None
-
-
-@pytest.mark.unit
-def test_a_stack_check_whose_socket_audit_is_not_clean_confirms_nothing(
-    harness: StoryHarness, monkeypatch: pytest.MonkeyPatch
-) -> None:
+    """No other persona's page stands in for one that shows no stack, whatever
+    the group."""
     _annotator_run(harness, "Admin", annotators=("Annotator",))
-    states = iter(["violations", "clean"])
-    monkeypatch.setattr(
-        harness, "_socket_watch", lambda uid: FakeWatch(next(states), harness.calls)
-    )
-    assert harness.main(story="why-is-it-in-review") == 0
-    assert [name for name, _ in harness.sign_ins] == ["Admin", "Annotator"]
-    assert harness.record()["video_withheld"] == PAGE_REASON
-    assert "render_video" not in harness.calls
-
-
-@pytest.mark.unit
-def test_an_annotator_with_no_other_persona_to_check_the_stack_withholds_its_video(
-    harness: StoryHarness,
-) -> None:
-    _annotator_run(harness, annotators=("Annotator",))
+    harness.facts["Annotator"] = NO_STACK_SHOWN
     assert harness.main(story="why-is-it-in-review") == 0
     assert [name for name, _ in harness.sign_ins] == ["Annotator"]
     assert harness.record()["video_withheld"] == PAGE_REASON
+    assert "render_video" not in harness.calls
 
 
 @pytest.mark.unit
@@ -4548,7 +4518,7 @@ def test_a_persona_with_its_own_credentials_is_never_signed_in_with_its_groups(
     it the flow is not run, rather than run as the unlimited Annotator."""
     _annotator_run(harness, "Admin", annotators=("Annotator",))
     assert harness.main(story="find-my-review-work") == 0
-    assert [name for name, _ in harness.sign_ins] == ["Admin", "Annotator"]
+    assert [name for name, _ in harness.sign_ins] == ["Annotator"]
     verdicts = {flow["key"]: flow["verdict"] for flow in harness.results()["flows"]}
     assert verdicts["find-my-review-work@queue-annotator"] == "done"
     assert verdicts["find-my-review-work@scoped-annotator"] == "not_run"

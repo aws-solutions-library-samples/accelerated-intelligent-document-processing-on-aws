@@ -354,9 +354,10 @@ def select(
     ``available_groups`` holds the ``UX_TEST_PERSONAS`` entries a run can sign in
     with, and a persona whose own entry (``Persona.credentials_key``) is not among
     them is reported in ``dropped_personas`` only when its flow would otherwise
-    have been taken, since that is the flow the MR lost. ``uncovered`` holds the leads of added entries that select no story of
-    the catalogue on their own, as :func:`uncovered_unreleased` reads the nightly's,
-    so an entry whose story the caps left out is not called uncovered.
+    have been taken, since that is the flow the MR lost. ``uncovered`` holds the
+    leads of added entries that select no story of the catalogue on their own, as
+    :func:`uncovered_unreleased` reads the nightly's, so an entry whose story the
+    caps left out is not called uncovered.
     """
     by_id = {story.id: story for story in catalogue.stories}
     scores = [
