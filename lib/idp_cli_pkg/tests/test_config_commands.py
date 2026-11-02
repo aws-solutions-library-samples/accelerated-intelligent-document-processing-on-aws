@@ -2420,7 +2420,8 @@ def _named_after_every_section_except(text):
     flat = " ".join(text.replace("`", "").split())
     found = []
     for match in re.finditer(
-        r"every section(?: at its default values,)? except ([a-z_, ]+?)(?:[;.(]|$)",
+        r"every section(?: at its default values,)? except "
+        r"([a-z_]+(?:(?:,\s*|\s+and\s+)[a-z_]+)*)",
         flat,
     ):
         names = re.split(r",\s*|\s+and\s+", match.group(1).strip())

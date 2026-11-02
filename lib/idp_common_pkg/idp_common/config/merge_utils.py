@@ -45,9 +45,10 @@ VALID_PATTERNS = ["pattern-1", "pattern-2"]
 # ``extraction``. tests/unit/config/test_generated_template_validates.py derives the
 # sections from the defaults and fails on a name that is not one, and on a section
 # that neither ``all`` nor its ``EXCLUDED_FROM_ALL`` set accounts for. Every
-# section a set copies is written at its defaults, and an upload is merged over the
-# deployment's configuration, so it resets those sections there (``summarization``
-# and ``evaluation`` switch back on where a preset turned them off). ``all`` leaves
+# section a set copies is written at its defaults (less the long prompts, unless
+# ``include_prompts``), and an upload is merged over the deployment's configuration,
+# so every setting written is reset there (``summarization`` and ``evaluation``
+# switch back on where a preset turned them off). ``all`` leaves
 # out ``hitl``, ``chat`` and ``rule_validation`` on purpose so that reset does not
 # also switch those features on or off (issue #1691).
 FEATURE_SETS = {

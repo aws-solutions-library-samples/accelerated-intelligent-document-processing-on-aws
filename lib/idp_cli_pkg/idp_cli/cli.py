@@ -5016,7 +5016,7 @@ def remove_residual_resources_from_deleted_stacks(
 @click.option(
     "--features",
     default="min",
-    help="Feature set: 'min' (classification, extraction; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all' (every section except hitl, chat and rule_validation; on upload every section it carries resets that deployment's settings to the defaults, so edit it first), or one or more section names, comma-separated. An unknown section name is refused",
+    help="Feature set: 'min' (classification, extraction; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all' (every section except hitl, chat and rule_validation; on upload every setting it writes resets that deployment's value to the default, so edit it first), or one or more section names, comma-separated. An unknown section name is refused",
 )
 @click.option(
     "--output",
@@ -5051,9 +5051,9 @@ def config_create(
             summarization and evaluation off and leaves confidence scoring on
       core: min + ocr, with summarization and evaluation left at their defaults
       all:  every section except hitl, chat and rule_validation. Uploaded
-            unedited, each section it carries resets the deployment's
-            settings to the defaults (summarization and evaluation switch
-            back on where a preset turned them off)
+            unedited, every setting it writes resets the deployment's value
+            to the default (summarization and evaluation switch back on where
+            a preset turned them off; prompts left out keep their own)
 
     Or name one or more sections, comma-separated (an unknown name is refused):
       --features summarization
