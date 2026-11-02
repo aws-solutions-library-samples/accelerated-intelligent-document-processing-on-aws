@@ -960,3 +960,14 @@ class TestLabelsBelowABlankHeader:
         )
         assert result["columns"][1:] == ["Ticker", "NAV"]
         assert [r["Ticker"] for r in _all_rows(result)] == ["AAAX", "BBBX"]
+
+    def test_a_category_row_under_the_labels_on_a_later_page_stays_a_row(self):
+        result = parse_markdown_tables(
+            _pages(
+                LABELS + "| Fund Name |  |  |\n| Alpha Fund | AAAX | $1.00 |\n",
+                LABELS + "| EQUITIES |  |  |\n| Beta Fund | BBBX | $2.00 |\n",
+            )
+        )
+        assert result["columns"] == ["Fund Name", "Ticker", "NAV"]
+        names = [r["Fund Name"] for r in _all_rows(result)]
+        assert names == ["Alpha Fund", "EQUITIES", "Beta Fund"]

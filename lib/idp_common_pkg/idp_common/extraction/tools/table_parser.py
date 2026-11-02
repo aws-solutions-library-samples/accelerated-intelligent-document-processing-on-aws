@@ -547,10 +547,11 @@ def _promote_corroborated_headers(raw_tables: list[dict[str, Any]]) -> None:
     trailing punctuation). The artifact this recovers repeats on every page of a
     split table, while a data row that happens to pass the lexical guards does
     not open several fragments, so a lone candidate is left as data. The group
-    shares one header built from every label its members supply (a wrapped
-    first-column label usually appears on the first page only), so the fragments
-    still merge.
-    A one-fragment table with the artifact therefore keeps its ``_unnamed_*``
+    shares one header built from every label its members supply, so the
+    fragments still merge. A wrapped first-column label is taken from the
+    group's first fragment only, where it occurs; on every later fragment only
+    the corroborated label row leaves the data, so a category row under it there
+    stays a row. A one-fragment table with the artifact keeps its ``_unnamed_*``
     columns. Sets ``promoted_rows`` on each fragment (0 where nothing changed).
     """
     candidates = []
@@ -568,16 +569,20 @@ def _promote_corroborated_headers(raw_tables: list[dict[str, Any]]) -> None:
     for members in groups.values():
         if len(members) < 2:
             continue
+        first, later = members[0], members[1:]
+        applied = {first: candidates[first]}
+        for idx in later:
+            lines = raw_tables[idx]["data_lines"]
+            applied[idx] = (lines[0], lines[1:], 1)
         labels: list[str] = []
-        for idx in members:
-            for pos, cell in enumerate(_split_table_row(candidates[idx][0])):
+        for header, _, _ in applied.values():
+            for pos, cell in enumerate(_split_table_row(header)):
                 if pos == len(labels):
                     labels.append("")
                 if not labels[pos].strip() and cell.strip():
                     labels[pos] = cell
         canonical = "| " + " | ".join(labels) + " |"
-        for idx in members:
-            _, rest, promoted = candidates[idx]
+        for idx, (_, rest, promoted) in applied.items():
             raw_tables[idx]["header_line"] = canonical
             raw_tables[idx]["data_lines"] = rest
             raw_tables[idx]["promoted_rows"] = promoted
