@@ -5050,7 +5050,8 @@ def config_create(
       min:  classification, extraction (simplest); switches
             summarization and evaluation off and leaves confidence scoring on
       core: min + ocr, with summarization and evaluation left at their defaults
-      all:  all sections with full defaults
+      all:  every section except hitl, chat and rule_validation, which
+            keep the deployment's own setting unless named
 
     Or name one or more sections, comma-separated (an unknown name is refused):
       --features summarization
@@ -5061,7 +5062,7 @@ def config_create(
       # Generate minimal config to stdout
       idp-cli config-create
 
-      # Generate full config with all sections
+      # Generate a config with every section except hitl, chat and rule_validation
       idp-cli config-create --features all --output full-config.yaml
 
       # Include full prompts (verbose)
