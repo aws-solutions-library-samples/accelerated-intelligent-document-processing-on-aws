@@ -879,7 +879,34 @@ class TestLabelsBelowABlankHeader:
     def test_a_label_row_that_overlaps_the_header_is_data(self):
         columns, rows, _ = _parse_single_table(
             header_line="|  |  |",
-            data_lines=["| Name | Ticker |", "| Alpha Fund | AAAX |"],
+            data_lines=["| Name | Price |", "| Alpha Fund | $1.00 |"],
         )
-        assert columns == ["Name", "Ticker"]
-        assert rows == [{"Name": "Alpha Fund", "Ticker": "AAAX"}]
+        assert columns == ["Name", "Price"]
+        assert rows == [{"Name": "Alpha Fund", "Price": "$1.00"}]
+
+    def test_an_all_text_table_under_a_blank_header_keeps_its_first_row(self):
+        text = "|  |  |\n|--|--|\n| Alpha Fund | AAAX |\n| Beta Fund | BBBX |\n"
+        result = parse_markdown_tables(text)
+        assert result["columns"] == ["_unnamed_0", "_unnamed_1"]
+        assert result["row_count"] == 2
+
+    def test_a_sparse_category_row_is_not_taken_for_the_header(self):
+        text = (
+            "|  |  |  |\n|--|--|--|\n"
+            "| EQUITIES |  |  |\n"
+            "|  | AAAX |  |\n"
+            "| Alpha Fund | BBBX | $9.74 |\n"
+        )
+        result = parse_markdown_tables(text)
+        assert result["columns"] == ["_unnamed_0", "_unnamed_1", "_unnamed_2"]
+        assert result["row_count"] == 3
+
+    def test_a_label_row_short_of_cells_is_padded_to_the_header(self):
+        text = (
+            "|  |  |  |\n|--|--|--|\n| Name | Ticker |\n| Alpha Fund | AAAX | $1.00 |\n"
+        )
+        result = parse_markdown_tables(text)
+        assert result["columns"] == ["Name", "Ticker", "_unnamed_2"]
+        assert result["rows"] == [
+            {"Name": "Alpha Fund", "Ticker": "AAAX", "_unnamed_2": "$1.00"}
+        ]

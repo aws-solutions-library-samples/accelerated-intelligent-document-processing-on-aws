@@ -458,11 +458,21 @@ def _promote_header_rows(
     and each following label row that only fills header cells still blank is
     merged in. Returns the header line, the remaining data lines and how many
     rows were promoted; a table whose first row is data is left as it was.
+
+    The test is lexical, so two guards keep a data row from being taken for the
+    header: the first label row must fill more than half the header's cells (a
+    sparse category row such as ``EQUITIES`` does not), and some row left below
+    the header must hold a value (an all-text table is never re-headed). A label
+    row that is itself numeric (``| 2023 | 2024 |``) is not recognised, so such a
+    table keeps its ``_unnamed_*`` columns.
     """
-    if any(c.strip() for c in _split_table_row(header_line)) or not data_lines:
+    header_cells = _split_table_row(header_line)
+    if any(c.strip() for c in header_cells) or not data_lines:
         return header_line, data_lines, 0
     labels = _split_table_row(data_lines[0])
-    if not _is_label_row(labels):
+    width = max(len(header_cells), len(labels))
+    labels.extend([""] * (width - len(labels)))
+    if not _is_label_row(labels) or 2 * sum(1 for c in labels if c.strip()) <= width:
         return header_line, data_lines, 0
     consumed = 1
     while consumed < len(data_lines):
@@ -477,6 +487,13 @@ def _promote_header_rows(
         for i in filled:
             labels[i] = cells[i]
         consumed += 1
+    if not any(
+        _VALUE_CELL.match(cell.strip())
+        for line in data_lines[consumed:]
+        for cell in _split_table_row(line)
+        if cell.strip()
+    ):
+        return header_line, data_lines, 0
     return "| " + " | ".join(labels) + " |", data_lines[consumed:], consumed
 
 
@@ -1243,7 +1260,6 @@ def create_map_table_to_schema_tool():
             page and first row of the next get concatenated.  Detection:
             look for columns with two dollar amounts, two quantities, etc.
             """
-            import re
 
             # Find columns with multiple dollar values (e.g. "$57.9 $55.11")
             multi_dollar = re.compile(r"\$[\d,.]+\s+\$[\d,.]+")
