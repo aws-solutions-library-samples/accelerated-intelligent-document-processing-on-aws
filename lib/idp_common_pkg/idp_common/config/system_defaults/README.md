@@ -152,8 +152,12 @@ evaluation and copies `extraction`, so confidence scoring
 leave empty is not written: `classes` is `[]` in the defaults, and an uploaded
 file replaces a list rather than merging it, so writing it would empty the
 profile's classes; a request naming only such sections (`["classes"]`) raises
-`ValueError`, since the file would hold nothing else. The header comment lists the sections the file copies,
-switches off and leaves out.
+`ValueError`, since the file would hold nothing else. `all` is every section except
+`hitl`, `chat` and `rule_validation`: an uploaded template is merged over the
+deployment's configuration, so every setting it writes is reset to its default
+there, and those three are left out so the reset cannot also switch human review,
+chat or rule validation on or off. The header comment lists the sections the file
+copies, switches off and leaves out.
 
 ## Example: Minimal User Config
 

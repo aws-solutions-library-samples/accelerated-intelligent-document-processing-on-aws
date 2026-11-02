@@ -5864,6 +5864,7 @@ class ClassificationService:
                 len(document.pages),
             )
 
+            unlabeled_pages: List[PageClassification] = []
             if forced_class:
                 # The document's NAME asserts the class, so there is nothing for
                 # section classification to decide. Skipping it is the whole
@@ -5878,15 +5879,47 @@ class ClassificationService:
                     segment.doc_class = forced_class
                     segment.confidence = None
             else:
-                segments, label_metering, label_errors = self._classify_segments(
-                    document, segments
+                segments, label_metering, label_errors, label_issues = (
+                    self._classify_segments(document, segments)
                 )
                 document.metering = utils.merge_metering_data(
                     document.metering, label_metering
                 )
                 document.errors.extend(label_errors)
+                # A segment whose labeling call failed, or returned no class with
+                # class validation off, is labelled with the ``unclassified``
+                # sentinel, so the segment, its section and its pages all read
+                # ``unclassified`` and extraction reports "classification
+                # determined no class". Left empty, it read as a class missing
+                # from the configuration and pointed the operator at a config
+                # edit that never happened (#1705). Those pages are recorded
+                # below as ``classification_failed`` (error); a segment whose
+                # class was replaced by the fallback is recorded as
+                # ``classification_invalid_class_fallback`` (warning), as on the
+                # page-level path, so the Sections panel says why either way.
+                for index, segment in enumerate(segments):
+                    issue = label_issues.get(index)
+                    if not segment.doc_class:
+                        segment.doc_class = UNCLASSIFIED_CLASS
+                        issue = issue or {
+                            "error": "the section classification call returned no class"
+                        }
+                    if not issue:
+                        continue
+                    unlabeled_pages.extend(
+                        PageClassification(
+                            page_id=page_id,
+                            classification=DocumentClassification(
+                                doc_type=segment.doc_class,
+                                confidence=None,
+                                metadata=dict(issue),
+                            ),
+                        )
+                        for page_id in segment.page_ids
+                    )
 
             document = self._sections_from_segments(document, segments)
+            self._record_unclassified_page_issues(document, unlabeled_pages)
             document = self._update_document_status(document)
 
             logger.info(
@@ -6090,7 +6123,7 @@ class ClassificationService:
 
     def _classify_segments(
         self, document: Document, segments: List[Segment]
-    ) -> tuple[List[Segment], Dict[str, Any], List[str]]:
+    ) -> tuple[List[Segment], Dict[str, Any], List[str], Dict[int, Dict[str, str]]]:
         """Section classification: one call per segment to decide its class.
 
         **Per segment, not per page** — the other half of the split-then-classify
@@ -6103,7 +6136,13 @@ class ClassificationService:
         A segment whose labeling call fails keeps ``doc_class = None`` and is
         recorded in the returned errors. It is **not** given a fallback class:
         the segment's boundaries are still good, and an invented class would
-        propagate into extraction as though it had been decided.
+        propagate into extraction as though it had been decided. The caller
+        labels the segment with the ``unclassified`` sentinel, which says no
+        class was determined rather than naming one. The fourth return value maps
+        a segment's index to what went wrong with its label — ``{"error": ...}``
+        for a failed call, ``{"validation_error": ...}`` for a class outside the
+        vocabulary replaced by the fallback — for the issue recorded on its
+        section.
         """
         config = self._get_classification_config(self.STAGE_SECTION_CLASSIFICATION)
         _, send_images = self._resolve_modality(stage=self.STAGE_SECTION_CLASSIFICATION)
@@ -6111,6 +6150,7 @@ class ClassificationService:
 
         metering: Dict[str, Any] = {}
         errors: List[str] = []
+        issues: Dict[int, Dict[str, str]] = {}
         lock = threading.Lock()
 
         def label(index: int) -> None:
@@ -6128,7 +6168,7 @@ class ClassificationService:
                 config["task_prompt"], paged_text, page_images, stage=config["stage"]
             )
 
-            doc_type, confidence, candidates, reason, call_metering = (
+            doc_type, confidence, candidates, reason, call_metering, invalid = (
                 self._invoke_with_class_validation(
                     content=content,
                     config=config,
@@ -6139,6 +6179,8 @@ class ClassificationService:
             with lock:
                 segment.doc_class = doc_type
                 segment.confidence = confidence
+                if invalid:
+                    issues[index] = {"validation_error": invalid}
                 metering.update(utils.merge_metering_data(metering, call_metering))
                 for page_id in segment.page_ids:
                     if page_id not in document.pages:
@@ -6165,13 +6207,14 @@ class ClassificationService:
                     logger.error(error_msg)
                     with lock:
                         errors.append(error_msg)
+                        issues[index] = {"error": error_msg}
 
         logger.info(
             "Section classification labeled %d/%d segment(s)",
             sum(1 for s in segments if s.doc_class),
             len(segments),
         )
-        return segments, metering, errors
+        return segments, metering, errors, issues
 
     def _section_classification_pages(self, segment: Segment) -> List[str]:
         """Which of a segment's pages section classification sends, per
@@ -6189,14 +6232,20 @@ class ClassificationService:
         config: Dict[str, Any],
         label: str,
     ) -> tuple[
-        str, Optional[float], List[Dict[str, Any]], Optional[str], Dict[str, Any]
+        str,
+        Optional[float],
+        List[Dict[str, Any]],
+        Optional[str],
+        Dict[str, Any],
+        Optional[str],
     ]:
         """Invoke one labeling call, re-prompting on an out-of-vocabulary class.
 
         Same contract as the page-level validation loop — ``enforceValidClasses``,
         ``maxValidationRetries`` and ``invalidClassFallback`` all apply, because
         a class outside the vocabulary is exactly as wrong whether a page or a
-        segment produced it.
+        segment produced it. The last value is the validation error when the
+        fallback class was assigned, and None when the model's class was kept.
         """
         enforce = self._class_validation_enforced()
         max_retries = self._class_validation_retries() if enforce else 0
@@ -6249,7 +6298,7 @@ class ClassificationService:
                 doc_type = ""
 
             if not enforce or doc_type in self.valid_doc_types:
-                return doc_type, confidence, candidates, reason, metering
+                return doc_type, confidence, candidates, reason, metering, None
 
             validation_error = (
                 f"Model returned invalid class '{doc_type or '(empty)'}' for {label}"
@@ -6281,4 +6330,4 @@ class ClassificationService:
             fallback,
         )
         # The fallback is not a prediction, so it carries no score.
-        return fallback, None, [], reason, metering
+        return fallback, None, [], reason, metering, validation_error

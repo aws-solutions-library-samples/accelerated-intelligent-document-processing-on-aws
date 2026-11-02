@@ -222,7 +222,10 @@ class ConfigOperation:
         Args:
             features: A feature set (``min``, ``core``, ``all``), or one or more
                 section names, comma-separated or as a list (see
-                ``parse_features``)
+                ``parse_features``). ``all`` is every section except hitl, chat
+                and rule_validation. Uploaded, every setting the template
+                writes resets the deployment's value to the default, so edit it
+                first
             pattern: Pattern to use (pattern-1, pattern-2)
             output: Optional output file path
             include_prompts: Include prompt templates

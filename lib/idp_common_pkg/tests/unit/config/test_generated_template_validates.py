@@ -171,14 +171,15 @@ def test_the_derived_section_universe_is_not_empty():
     assert {"classes", "extraction"} <= ALL_SECTIONS
 
 
-# Sections the defaults carry that ``all`` leaves out, pending a product decision
-# (issue #1691), each with its own reason. ``all`` copies each section's default
-# values, and an uploaded file is merged over the stack's preset or the profile's
-# current configuration rather than over the system defaults, so a section added
-# to ``all`` reverts whatever that configuration changed in it. A section placed in
-# neither ``all`` nor here is unaccounted for and fails the closure test below.
-# Delete a name here when it is added to ``all``.
-PENDING_DECISION = {
+# Sections the defaults carry that ``all`` leaves out on purpose (decided in issue
+# #1691), each with its own reason. ``all`` copies each section's default values,
+# and an uploaded file is merged over the stack's preset or the profile's current
+# configuration rather than over the system defaults, so a section in ``all``
+# reverts whatever that configuration changed in it. For these three the revert
+# would switch a feature on or off, so they keep the deployment's own setting
+# unless asked for by name. A section placed in neither ``all`` nor here is
+# unaccounted for and fails the closure test below.
+EXCLUDED_FROM_ALL = {
     "rule_validation": (
         "on in the system defaults and off in most presets, so adding it would "
         "start running rule validation, an extra model call per document, on those"
@@ -205,13 +206,13 @@ def test_every_name_in_a_feature_set_is_a_real_section(features):
 
 @pytest.mark.unit
 def test_all_accounts_for_every_section_the_defaults_carry():
-    """``all`` plus the sections awaiting a decision is exactly the derived set, so
-    a section added to the defaults fails here until someone places it, and a
-    pending name that ``all`` gains, or the defaults lose, fails too."""
-    pending = set(PENDING_DECISION)
-    assert pending <= ALL_SECTIONS
-    assert not pending & set(FEATURE_SETS["all"])
-    assert set(FEATURE_SETS["all"]) | pending == ALL_SECTIONS
+    """``all`` plus the sections it deliberately leaves out is exactly the derived
+    set, so a section added to the defaults fails here until someone places it,
+    and an excluded name that ``all`` gains, or the defaults lose, fails too."""
+    excluded = set(EXCLUDED_FROM_ALL)
+    assert excluded <= ALL_SECTIONS
+    assert not excluded & set(FEATURE_SETS["all"])
+    assert set(FEATURE_SETS["all"]) | excluded == ALL_SECTIONS
 
 
 @pytest.mark.unit
@@ -220,7 +221,7 @@ def test_the_all_template_carries_every_placed_section_of_its_pattern(pattern):
     template = yaml.safe_load(generate_config_template(features="all", pattern=pattern))
 
     defaults = load_system_defaults(pattern)
-    placed = SECTIONS_BY_PATTERN[pattern] - set(PENDING_DECISION)
+    placed = SECTIONS_BY_PATTERN[pattern] - set(EXCLUDED_FROM_ALL)
 
     assert _sections(template) == set(_copied(placed, defaults))
 
