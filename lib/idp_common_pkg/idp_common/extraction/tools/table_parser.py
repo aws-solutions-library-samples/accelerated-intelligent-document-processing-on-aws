@@ -500,7 +500,11 @@ def _promote_header_rows(
     if any(c.strip() for c in header_cells) or not data_lines:
         return header_line, data_lines, 0
     labels = _split_table_row(data_lines[0])
-    width = max(len(header_cells), len(labels))
+    width = len(header_cells)
+    if len(labels) > width:
+        # A label OCR split across cells would widen the header past every data
+        # row and fail the whole parse; leave the fragment as it was.
+        return header_line, data_lines, 0
     labels.extend([""] * (width - len(labels)))
     if not _is_label_row(labels) or 2 * sum(1 for c in labels if c.strip()) <= width:
         return header_line, data_lines, 0

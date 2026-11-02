@@ -402,11 +402,16 @@ extraction:
 When OCR emits a table with a blank header row and the column labels in the rows
 under it, and the table runs over several pages that each repeat those labels, the
 parser takes the label rows as the header instead of returning them as data, so
-they are not counted as extra items. A one-page table in that shape is parsed as
-before. A first-column row directly under the labels is read as a wrapped label, so a
-category row in that position, such as `EQUITIES`, becomes the first column's
-name rather than a row; the parse
-warning gives the number of rows taken as the header.
+they are not counted as extra items. Three bounds:
+
+- A one-page table in that shape is parsed as before, since one page cannot tell a
+  short all-text data row from a label row.
+- The check runs over the text the parser is given, so on the sharded path a shard
+  holding a single page of the table is not recovered.
+- On the table's first page, a first-column row directly under the labels is read
+  as a wrapped label, so a category row there, such as `EQUITIES`, becomes the first
+  column's name rather than a row. On later pages it stays a row. The parse warning
+  gives the number of rows taken as the header.
 
 > **`lazy_images` (default `true`) — cost optimization for table documents.** When
 > a pre-flight table parse succeeds, page images are **not** attached to the

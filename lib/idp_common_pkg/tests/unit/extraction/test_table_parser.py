@@ -971,3 +971,9 @@ class TestLabelsBelowABlankHeader:
         assert result["columns"] == ["Fund Name", "Ticker", "NAV"]
         names = [r["Fund Name"] for r in _all_rows(result)]
         assert names == ["Alpha Fund", "EQUITIES", "Beta Fund"]
+
+    def test_a_label_row_wider_than_the_header_is_left_as_data(self):
+        body = "|  | Ticker | Market | Value |\n| Alpha Fund | AAAX | $1.00 |\n"
+        result = parse_markdown_tables(_pages(body, body))
+        assert all(t["columns"][0] == "_unnamed_0" for t in result["tables"])
+        assert len(_all_rows(result)) == 4

@@ -1540,9 +1540,8 @@ When `table_parsing.enabled: true`, the extraction agent gains a `parse_table` t
      pages that repeats those labels: they become the header rather than data, and a
      warning says how many rows were taken. A one-page table is left as it was,
      because one page cannot tell a short all-text data row from a label row. The
-     check runs over the text `parse_table` is given, so with sharding
-     (`max_concurrent_batches > 1`) a shard holding a single page of the table is
-     not recovered; the whole-section pre-flight parse sees every page
+     check runs over the text `parse_table` is given, so on the sharded path a
+     shard holding a single page of the table is not recovered; the whole-section pre-flight parse sees every page
 3. **Provides quality metrics and warnings**:
    - `parse_success_rate`: Ratio of cleanly parsed rows
    - `avg_confidence`: OCR confidence scores (when available from Textract)
