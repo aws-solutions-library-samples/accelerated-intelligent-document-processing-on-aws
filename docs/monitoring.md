@@ -447,7 +447,7 @@ and two of the three causes report nothing here:
   `unclassified` — a blank page, a page whose classification failed, or any page in
   a deployment with no document types configured. The [classification
   stage](./classification.md#pages-classification-could-not-classify) reports this
-  one, at the severity it can judge and with a remedy that points at the right
+  one on the paths that scope note lists, at the severity it can judge and with a remedy that points at the right
   place. An error indicator and an alarm data point per blank page would make both
   this page's alarm and that indicator useless;
 - **the section's named class is absent from the configuration in force** — renamed
