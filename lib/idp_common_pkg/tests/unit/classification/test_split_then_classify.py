@@ -41,6 +41,7 @@ from unittest.mock import patch
 import pytest
 
 from idp_common.classification.service import ClassificationService
+from idp_common.config.schema_constants import UNCLASSIFIED_CLASS
 from idp_common.models import Document, Page
 
 SEG_PAGE_PROMPT = (
@@ -822,7 +823,9 @@ class TestSplitThenClassifyPacket:
 
     def test_a_segment_whose_labeling_fails_is_reported_not_invented(self):
         """Its boundaries are still good, and an invented class would propagate
-        into extraction as though it had been decided."""
+        into extraction as though it had been decided. It carries the
+        ``unclassified`` sentinel, not an empty class: extraction reports an empty
+        class as one missing from the configuration (#1705)."""
         service = _service(granularity="packet")
 
         def flaky(content, config):
@@ -851,7 +854,8 @@ class TestSplitThenClassifyPacket:
 
         assert any("Section classification failed" in e for e in result.errors)
         assert result.sections[0].classification == "invoice"
-        assert result.sections[1].classification is None
+        assert result.sections[1].classification == UNCLASSIFIED_CLASS
+        assert result.pages["2"].classification == UNCLASSIFIED_CLASS
 
 
 # --------------------------------------------------------------------------

@@ -5885,6 +5885,15 @@ class ClassificationService:
                     document.metering, label_metering
                 )
                 document.errors.extend(label_errors)
+                # A segment whose labeling call failed has no class. Its section
+                # gets the ``unclassified`` sentinel, which extraction reports as
+                # "classification determined no class"; left empty, it reads as a
+                # class missing from the configuration and points the operator at
+                # a config edit that never happened (#1705). The failure itself is
+                # in ``document.errors`` above.
+                for segment in segments:
+                    if not segment.doc_class:
+                        segment.doc_class = UNCLASSIFIED_CLASS
 
             document = self._sections_from_segments(document, segments)
             document = self._update_document_status(document)
@@ -6103,7 +6112,9 @@ class ClassificationService:
         A segment whose labeling call fails keeps ``doc_class = None`` and is
         recorded in the returned errors. It is **not** given a fallback class:
         the segment's boundaries are still good, and an invented class would
-        propagate into extraction as though it had been decided.
+        propagate into extraction as though it had been decided. The caller
+        labels its section with the ``unclassified`` sentinel, which says no
+        class was determined rather than naming one.
         """
         config = self._get_classification_config(self.STAGE_SECTION_CLASSIFICATION)
         _, send_images = self._resolve_modality(stage=self.STAGE_SECTION_CLASSIFICATION)

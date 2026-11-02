@@ -1348,9 +1348,11 @@ Four things worth knowing:
   `document_shape.sectionSplitting: disabled` the whole document is one segment, and
   under `page` every page is one, so no splitting call is made.
 
-A segment whose section classification call fails keeps **no class** and is
-reported in the document's errors. Its boundaries are still good, and an
-invented class would propagate into extraction as though it had been decided.
+A segment whose section classification call fails is labelled `unclassified`
+and is reported in the document's errors. Its boundaries are still good, and a
+real class guessed in its place would propagate into extraction as though it had
+been decided. Extraction treats `unclassified` as classification having
+determined no class, rather than as a class missing from the configuration.
 
 `splitting.method` and `section_classification.method` ship with one value,
 `llm`. A boundary-detection model, embeddings-based classification and external
