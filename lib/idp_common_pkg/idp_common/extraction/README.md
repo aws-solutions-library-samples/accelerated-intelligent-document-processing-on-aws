@@ -1535,6 +1535,14 @@ When `table_parsing.enabled: true`, the extraction agent gains a `parse_table` t
    - Tolerates empty lines (page breaks) within tables via configurable lookahead
    - Recovers from missing pipe characters in corrupted rows
    - Automatically merges table fragments with identical columns
+   - Recovers the column names when OCR emits a blank header row with the labels in
+     the rows below it (a wrapped label can span two rows), on a table split across
+     pages where each page starts the table again (blank header, separator, the
+     same labels): they become the header rather than data, and a
+     warning says how many rows were taken. A one-page table is left as it was,
+     because one page cannot tell a short all-text data row from a label row. The
+     check runs over the text `parse_table` is given, so on the sharded path a
+     shard holding a single page of the table is not recovered; the whole-section pre-flight parse sees every page
 3. **Provides quality metrics and warnings**:
    - `parse_success_rate`: Ratio of cleanly parsed rows
    - `avg_confidence`: OCR confidence scores (when available from Textract)
