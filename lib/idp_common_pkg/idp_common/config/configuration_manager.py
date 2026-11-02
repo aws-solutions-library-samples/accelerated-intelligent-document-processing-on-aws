@@ -41,7 +41,7 @@ from .constants import (
     VALID_CONFIG_TYPES,
     DEFAULT_VERSION,
 )
-from .revisions import ConfigRevisionStore
+from .revisions import ConfigRevisionStore, RevisionNotRecordedError
 
 logger = logging.getLogger(__name__)
 
@@ -844,15 +844,45 @@ class ConfigurationManager:
         else:
             record = ConfigurationRecord(configuration_type=config_type, config=config)
 
+        # A profile that already has a published revision runs that revision: every
+        # new document is pinned to it. A save there that records no revision
+        # changes what the editor shows and not what processing uses, with nothing
+        # failing (#1778), so for such a profile recording the revision is part of
+        # the save. A profile with no history runs its head, and there history
+        # stays best-effort: losing an entry is recoverable, refusing the save is
+        # an outage.
+        published_before = (
+            coerce_int((existing_item or {}).get("PublishedRevision"))
+            if config_type == CONFIG_TYPE_CONFIG
+            else 0
+        )
+        revision_required = bool(
+            config_type == CONFIG_TYPE_CONFIG
+            and version
+            and cut_revision
+            and published_before >= 1
+        )
+        if revision_required and not self.revisions.enabled:
+            raise RevisionNotRecordedError(
+                f"Refusing to save configuration profile '{version}': it has revision "
+                f"history, and this process cannot record a revision "
+                f"(CONFIGURATION_BUCKET is not set). Saving it would change the "
+                f"profile while new documents keep running r{published_before}."
+            )
+        raw_previous_head = (
+            self.table.get_item(
+                Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{version}"}
+            ).get("Item")
+            if revision_required
+            else None
+        )
+
         # Write to DynamoDB (adds full config marker automatically)
         stored_hash = self._write_record(record)
 
         if config_type == CONFIG_TYPE_CONFIG and version and cut_revision:
-            # History is best-effort by design: a configuration save must never
-            # fail because the revision could not be recorded. Losing a history
-            # entry is recoverable; refusing a save is an outage.
             try:
-                self._record_revisions(
+                cut = self._record_revisions(
                     profile=version,
                     previous=existing_record,
                     config=config,
@@ -861,10 +891,82 @@ class ConfigurationManager:
                     stored_hash=stored_hash,
                     previous_head=existing_item,
                 )
+                if revision_required and cut is not None:
+                    # `set_published` logs rather than raises, so the head's
+                    # counter is the evidence that documents now run this save.
+                    self._require_published(version, cut)
             except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    f"Saved profile '{version}' but could not record its revision: {e}"
-                )
+                if not revision_required:
+                    logger.warning(
+                        f"Saved profile '{version}' but could not record its revision: {e}"
+                    )
+                    return
+                restored = self._restore_head(version, raw_previous_head)
+                raise RevisionNotRecordedError(
+                    f"Could not record a revision for configuration profile "
+                    f"'{version}', so the save was "
+                    + (
+                        "undone"
+                        if restored
+                        else "NOT undone: the profile now differs from the revision "
+                        f"new documents run (r{published_before} or later)"
+                    )
+                    + f". Cause: {e}"
+                ) from e
+
+    def _require_published(self, profile: str, revision: int) -> None:
+        """Raise unless the profile head names `revision` (or later) as published."""
+        head = (
+            self.table.get_item(
+                Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}"},
+                ProjectionExpression="PublishedRevision",
+            ).get("Item")
+            or {}
+        )
+        published = coerce_int(head.get("PublishedRevision"))
+        # A concurrent save may already have published a later revision, which
+        # also replaced this save's head; only an older counter is a failure.
+        if published < revision:
+            raise RevisionNotRecordedError(
+                f"revision r{revision} was recorded but not published "
+                f"(the profile still names r{published})"
+            )
+
+    def _restore_head(
+        self, profile: str, raw_previous_head: Optional[Dict[str, Any]]
+    ) -> bool:
+        """
+        Put back the head a failed save replaced, keeping its current head fields.
+
+        Every field other writers own (`_PRESERVED_HEAD_FIELDS`) is taken from the
+        head as it is now, not from the one being restored. For the counters that
+        is load-bearing: a failed cut may already have allocated a revision number,
+        and restoring the older `LatestRevision` would hand that number out again
+        and overwrite its body. For the BDA fields it keeps a link made while the
+        save was in flight. Returns whether the head was restored.
+        """
+        if raw_previous_head is None:
+            return False
+        key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}"}
+        try:
+            current = (
+                self.table.get_item(
+                    Key=key, ProjectionExpression=", ".join(_PRESERVED_HEAD_FIELDS)
+                ).get("Item")
+                or {}
+            )
+            item = dict(raw_previous_head)
+            for field in _PRESERVED_HEAD_FIELDS:
+                if field in current:
+                    item[field] = current[field]
+            self.table.put_item(Item=item)
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                f"Could not restore configuration profile '{profile}' after a failed "
+                f"revision: {e}"
+            )
+            return False
 
     def _record_revisions(
         self,
@@ -899,7 +1001,6 @@ class ConfigurationManager:
         `_refresh_published_stored_hash`).
         """
         if not self.revisions.enabled:
-            self._warn_if_history_left_behind(profile, previous_head)
             return None
 
         head = self.table.get_item(
@@ -958,32 +1059,6 @@ class ConfigurationManager:
         )
 
     @staticmethod
-    def _warn_if_history_left_behind(
-        profile: str, previous_head: Optional[Dict[str, Any]]
-    ) -> None:
-        """
-        Warn when a save could not cut a revision for a profile that has history.
-
-        A process without `CONFIGURATION_BUCKET` has its revision store disabled,
-        which is harmless for a profile with no history: documents then run the
-        head. A profile that already has a published revision is different. Every
-        new document is pinned to that revision, so this save changed what the
-        configuration editor shows and not what processing uses, and nothing else
-        reports it (#1778). The counters on the head this save replaced say which
-        revision documents will keep running.
-        """
-        # Revision numbers start at 1, so 0 (coerce_int's default) means no history.
-        published = coerce_int((previous_head or {}).get("PublishedRevision"))
-        if published < 1:
-            return
-        logger.warning(
-            f"Saved configuration profile '{profile}' without recording a revision: "
-            f"revision history is disabled in this process (CONFIGURATION_BUCKET is "
-            f"not set). The profile's published revision is still r{published}, so "
-            f"new documents keep running r{published} rather than this save."
-        )
-
-    @staticmethod
     def _config_to_dict(config: Any) -> Dict[str, Any]:
         """Serialize a config model (or passthrough a dict) for revision storage."""
         if isinstance(config, dict):
@@ -1013,6 +1088,33 @@ class ConfigurationManager:
         for entry in entries:
             entry["published"] = entry["revision"] == published_num
         return entries
+
+    def head_matches_published(self, profile: str) -> Optional[bool]:
+        """
+        Whether the profile's configuration is the revision new documents run.
+
+        True when the head holds exactly its published revision, False when it has
+        been changed since that revision was recorded (a save that cut none, as
+        discovery's saves did before #1778), and None when there is nothing to
+        compare: no head, no revision history, history disabled in this process, or
+        no index entry for the published revision. The proof is the one a pinned
+        read applies (`_head_is_revision`): the stored-content hash the revision
+        recorded or, for a revision cut before that hash existed, the head not
+        having been written since. A False is what the editor reports, so that the
+        configuration it shows is never presented as the one documents run.
+        """
+        item = self.table.get_item(
+            Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}"}
+        ).get("Item")
+        if not item:
+            return None
+        published = coerce_int(item.get("PublishedRevision"))
+        if published < 1:
+            return None
+        entry = self.revisions.get_entry(profile, published)
+        if entry is None:
+            return None
+        return self._head_is_revision(self._decompress_item(item), entry)
 
     def get_revision(self, profile: str, revision: int) -> Optional[Dict[str, Any]]:
         """

@@ -21,7 +21,6 @@ revision equal to the head, and that without it the divergence is no longer sile
 from __future__ import annotations
 
 import importlib
-import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -34,6 +33,7 @@ from idp_common.config import get_config
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.constants import CONFIG_TYPE_CONFIG
 from idp_common.config.models import IDPConfig
+from idp_common.config.revisions import ConfigRevisionStore, RevisionNotRecordedError
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 _DISCOVERY_UPLOAD_DIR = (
@@ -165,9 +165,20 @@ class TestDiscoverySaveWithHistory:
         assert len(revisions) == 3
 
 
+def _published() -> int:
+    published = ConfigurationManager().resolve_published_revision(PROFILE)
+    assert published is not None
+    return published
+
+
 @pytest.mark.unit
-class TestDiscoverySaveWithoutHistory:
-    """A process with no `CONFIGURATION_BUCKET`: what the deployed Lambdas were."""
+class TestASaveThatCannotRecordARevisionIsRefused:
+    """A process with no `CONFIGURATION_BUCKET`: what the deployed Lambdas were.
+
+    Saving there used to rewrite the head and leave `PublishedRevision` behind,
+    which is the reported divergence. The profile already has history, so the
+    save is now refused and the profile is left exactly as it was.
+    """
 
     @pytest.fixture(autouse=True)
     def _aws(self, monkeypatch):
@@ -178,45 +189,146 @@ class TestDiscoverySaveWithoutHistory:
             monkeypatch.delenv("CONFIGURATION_BUCKET")
             yield
 
-    def test_the_divergence_the_report_describes(self):
-        _replace_mode_clear()
-        _discovery_merge("Form-I-9")
-
-        assert _head_class_ids() == ["Form-I-9"]
-        assert ConfigurationManager().resolve_published_revision(PROFILE) == 1
-
-    def test_the_save_says_documents_keep_running_the_published_revision(self, caplog):
-        with caplog.at_level(
-            logging.WARNING, logger="idp_common.config.configuration_manager"
-        ):
+    def test_the_discovery_merge_is_refused_and_changes_nothing(self):
+        with pytest.raises(RevisionNotRecordedError) as refused:
             _discovery_merge("Form-I-9")
 
-        warnings = [
-            r.getMessage()
-            for r in caplog.records
-            if r.levelno == logging.WARNING
-            and "without recording a revision" in r.getMessage()
-        ]
-        assert len(warnings) == 1, caplog.text
-        assert f"'{PROFILE}'" in warnings[0]
-        assert "CONFIGURATION_BUCKET" in warnings[0]
-        assert "r1" in warnings[0]
+        assert "CONFIGURATION_BUCKET" in str(refused.value)
+        assert "r1" in str(refused.value)
+        assert _head_class_ids() == ["W2", "Payslip"]
+        assert _published() == 1
+
+    def test_the_replace_mode_clear_is_refused_and_changes_nothing(self):
+        with pytest.raises(RevisionNotRecordedError):
+            _replace_mode_clear()
+
+        assert _head_class_ids() == ["W2", "Payslip"]
 
 
 @pytest.mark.unit
-def test_no_warning_for_a_profile_that_never_had_history(monkeypatch, caplog):
-    """Without history, documents run the head, so a save there diverges from nothing."""
+class TestASaveWhoseRevisionFailsIsUndone:
+    """History is enabled, but recording this save's revision fails."""
+
+    @pytest.fixture(autouse=True)
+    def _aws(self, monkeypatch):
+        _env(monkeypatch, with_bucket=True)
+        with mock_aws():
+            _create_resources()
+            _create_profile_as_copy_of_default()
+            yield
+
+    def test_a_failed_body_write_puts_the_profile_back(self, monkeypatch):
+        def refuse(*_args, **_kwargs):
+            raise RuntimeError("S3 refused the revision body")
+
+        monkeypatch.setattr(ConfigRevisionStore, "put_body", refuse)
+        with pytest.raises(RevisionNotRecordedError) as refused:
+            _discovery_merge("Form-I-9")
+
+        assert "undone" in str(refused.value)
+        assert "S3 refused the revision body" in str(refused.value)
+        assert _head_class_ids() == ["W2", "Payslip"]
+        assert _published() == 1
+        assert ConfigurationManager().head_matches_published(PROFILE) is True
+
+    def test_a_revision_recorded_but_not_published_puts_the_profile_back(
+        self, monkeypatch
+    ):
+        # `set_published` logs a failed update rather than raising, so this is
+        # the shape a throttled or refused counter update takes.
+        monkeypatch.setattr(ConfigRevisionStore, "set_published", lambda *_a: None)
+        with pytest.raises(RevisionNotRecordedError) as refused:
+            _discovery_merge("Form-I-9")
+
+        assert "not published" in str(refused.value)
+        assert _head_class_ids() == ["W2", "Payslip"]
+        assert _published() == 1
+
+    def test_the_next_save_after_a_failure_records_a_fresh_revision(self, monkeypatch):
+        def refuse(*_args, **_kwargs):
+            raise RuntimeError("S3 refused the revision body")
+
+        with monkeypatch.context() as patched:
+            patched.setattr(ConfigRevisionStore, "put_body", refuse)
+            with pytest.raises(RevisionNotRecordedError):
+                _discovery_merge("Form-I-9")
+
+        _discovery_merge("Form-I-9")
+
+        # The failed attempt allocated r2 and the restore kept that counter, so
+        # the retry is r3 rather than a second r2 over a number already handed out.
+        assert _published() == 3
+        assert _class_ids_a_new_document_runs() == ["W2", "Payslip", "Form-I-9"]
+        assert ConfigurationManager().head_matches_published(PROFILE) is True
+
+
+@pytest.mark.unit
+def test_a_profile_without_history_still_saves_without_the_bucket(monkeypatch):
+    """With no history, documents run the head, so there is nothing to diverge from."""
     _env(monkeypatch, with_bucket=False)
     with mock_aws():
         _create_resources()
         manager = ConfigurationManager()
-        with caplog.at_level(
-            logging.WARNING, logger="idp_common.config.configuration_manager"
-        ):
-            manager.save_configuration(
-                CONFIG_TYPE_CONFIG, IDPConfig(notes="first"), version=PROFILE
-            )
-            manager.save_configuration(
-                CONFIG_TYPE_CONFIG, IDPConfig(notes="second"), version=PROFILE
-            )
-    assert "without recording a revision" not in caplog.text
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, IDPConfig(notes="first"), version=PROFILE
+        )
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, IDPConfig(notes="second"), version=PROFILE
+        )
+        raw = manager.get_raw_configuration(CONFIG_TYPE_CONFIG, PROFILE)
+        assert raw["notes"] == "second"
+        assert manager.resolve_published_revision(PROFILE) is None
+
+
+@pytest.mark.unit
+class TestHeadMatchesPublished:
+    """The signal the configuration editor shows a warning on."""
+
+    @pytest.fixture(autouse=True)
+    def _aws(self, monkeypatch):
+        _env(monkeypatch, with_bucket=True)
+        with mock_aws():
+            _create_resources()
+            yield
+
+    def test_a_profile_saved_normally_matches(self):
+        _create_profile_as_copy_of_default()
+        _discovery_merge("Form-I-9")
+        assert ConfigurationManager().head_matches_published(PROFILE) is True
+
+    def test_a_profile_changed_without_a_revision_does_not_match(self):
+        # The state the reported profile was left in: a head rewritten after its
+        # published revision without a revision of its own. `cut_revision=False`
+        # is the one sanctioned way left to write that.
+        _create_profile_as_copy_of_default()
+        manager = ConfigurationManager()
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            IDPConfig(classes=[_class("Form-I-9")]),
+            version=PROFILE,
+            cut_revision=False,
+        )
+        assert manager.resolve_published_revision(PROFILE) == 1
+        assert manager.head_matches_published(PROFILE) is False
+
+    def test_the_mismatch_clears_once_a_save_records_a_revision(self):
+        _create_profile_as_copy_of_default()
+        manager = ConfigurationManager()
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            IDPConfig(classes=[_class("Form-I-9")]),
+            version=PROFILE,
+            cut_revision=False,
+        )
+        _discovery_merge("Form-I-9-Supplement")
+        assert manager.head_matches_published(PROFILE) is True
+        assert _class_ids_a_new_document_runs() == _head_class_ids()
+
+    def test_nothing_to_compare_is_none_not_false(self, monkeypatch):
+        assert ConfigurationManager().head_matches_published(PROFILE) is None
+        monkeypatch.delenv("CONFIGURATION_BUCKET")
+        manager = ConfigurationManager()
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, IDPConfig(notes="no history"), version=PROFILE
+        )
+        assert manager.head_matches_published(PROFILE) is None

@@ -19,15 +19,17 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import createWrapper from '@cloudscape-design/components/test-utils/dom';
 
 import ConfigRevisionSelector from '../ConfigRevisionSelector';
 import type { ConfigProfileRevision } from '../../../hooks/use-config-profile-revisions';
 
 const state: {
   revisions: ConfigProfileRevision[];
+  profileMatchesPublished: boolean | null;
   loading: boolean;
   error: string | null;
-} = { revisions: [], loading: false, error: null };
+} = { revisions: [], profileMatchesPublished: null, loading: false, error: null };
 
 const loadRevisions = vi.fn();
 
@@ -43,6 +45,7 @@ const REVISIONS: ConfigProfileRevision[] = [
 
 beforeEach(() => {
   state.revisions = [];
+  state.profileMatchesPublished = null;
   state.loading = false;
   state.error = null;
   loadRevisions.mockClear();
@@ -132,5 +135,28 @@ describe('ConfigRevisionSelector', () => {
     state.error = 'Failed to load revision history';
     render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />);
     expect(screen.getByText('Failed to load revision history')).toBeInTheDocument();
+  });
+
+  it('says when the current revision is not the configuration the editor shows', () => {
+    // #1778: a save that recorded no revision left the profile different from the
+    // revision unpinned work runs, while this option named that revision as if
+    // the two were the same.
+    state.revisions = REVISIONS;
+    state.profileMatchesPublished = false;
+    const { container } = render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />);
+    createWrapper(container).findSelect()!.openDropdown();
+    expect(screen.getByText("r7, which differs from the profile's configuration in the editor")).toBeInTheDocument();
+  });
+
+  it('keeps the ordinary description when the profile matches or cannot be compared', () => {
+    state.revisions = REVISIONS;
+    for (const matches of [true, null]) {
+      state.profileMatchesPublished = matches;
+      const { container, unmount } = render(<ConfigRevisionSelector profileName="lending" value={null} onChange={vi.fn()} />);
+      createWrapper(container).findSelect()!.openDropdown();
+      expect(screen.getByText('Whatever the profile holds when the work runs')).toBeInTheDocument();
+      expect(screen.queryByText(/differs from the profile/)).not.toBeInTheDocument();
+      unmount();
+    }
   });
 });

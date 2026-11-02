@@ -35,7 +35,7 @@ const ConfigRevisionSelector = ({
   description = 'Defaults to the profile’s current configuration. Pick an earlier revision to run against exactly what it recorded.',
   disabled = false,
 }: ConfigRevisionSelectorProps): React.JSX.Element | null => {
-  const { revisions, loading, error, loadRevisions } = useConfigProfileRevisions();
+  const { revisions, profileMatchesPublished, loading, error, loadRevisions } = useConfigProfileRevisions();
 
   useEffect(() => {
     if (profileName) loadRevisions(profileName);
@@ -68,7 +68,12 @@ const ConfigRevisionSelector = ({
     const current: SelectProps.Option = {
       value: CURRENT,
       label: published ? `Current (r${published.revision})` : 'Current',
-      description: 'Whatever the profile holds when the work runs',
+      // The work runs the published revision. When the profile was changed
+      // without recording one, that is not the configuration its editor shows.
+      description:
+        profileMatchesPublished === false && published
+          ? `r${published.revision}, which differs from the profile's configuration in the editor`
+          : 'Whatever the profile holds when the work runs',
     };
     const older = revisions
       .filter((r) => !r.published)
@@ -78,7 +83,7 @@ const ConfigRevisionSelector = ({
         description: [r.label, r.notes, r.createdAt ? new Date(r.createdAt).toLocaleString() : null].filter(Boolean).join(' — '),
       }));
     return [current, ...older];
-  }, [revisions]);
+  }, [revisions, profileMatchesPublished]);
 
   if (!profileName) return null;
   if (loading) return <StatusIndicator type="loading">Loading revisions…</StatusIndicator>;

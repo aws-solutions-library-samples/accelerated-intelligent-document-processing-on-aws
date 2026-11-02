@@ -1715,6 +1715,7 @@ export const listConfigProfileRevisions = /* GraphQL */ `
         pinned
         published
       }
+      profileMatchesPublished
       error {
         type
         message

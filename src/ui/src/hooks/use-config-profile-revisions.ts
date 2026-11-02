@@ -41,24 +41,34 @@ const useConfigProfileRevisions = () => {
   const [revisions, setRevisions] = useState<ConfigProfileRevision[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * False when the profile's configuration was changed without recording a
+   * revision: new documents then run the published revision, not what the
+   * editor shows. Null when there is nothing to compare.
+   */
+  const [profileMatchesPublished, setProfileMatchesPublished] = useState<boolean | null>(null);
 
   const loadRevisions = useCallback(async (profileName: string) => {
     if (!profileName) return;
     setLoading(true);
     setError(null);
+    setProfileMatchesPublished(null);
     try {
       const result = await client.graphql({ query: listConfigProfileRevisions, variables: { profileName } });
       const response = result.data.listConfigProfileRevisions;
       if (!response?.success) {
         setError(errorMessage(response?.error, 'Failed to load revision history'));
         setRevisions([]);
+        setProfileMatchesPublished(null);
         return;
       }
       setRevisions((response.revisions ?? []).filter(Boolean) as ConfigProfileRevision[]);
+      setProfileMatchesPublished(response.profileMatchesPublished ?? null);
     } catch (err) {
       logger.error('Error loading configuration profile revisions', err);
       setError('Failed to load revision history');
       setRevisions([]);
+      setProfileMatchesPublished(null);
     } finally {
       setLoading(false);
     }
@@ -149,6 +159,7 @@ const useConfigProfileRevisions = () => {
 
   return {
     revisions,
+    profileMatchesPublished,
     loading,
     error,
     setError,

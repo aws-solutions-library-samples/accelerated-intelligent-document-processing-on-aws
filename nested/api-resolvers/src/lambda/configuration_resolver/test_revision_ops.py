@@ -59,6 +59,7 @@ def manager(monkeypatch):
         {"revision": 1, "createdBy": "system", "published": False},
     ]
     fake.get_revision.return_value = {"notes": "hello"}
+    fake.head_matches_published.return_value = True
     fake.restore_revision.return_value = 3
     fake.label_revision.return_value = True
     fake.delete_revision.return_value = True
@@ -75,6 +76,25 @@ class TestHappyPath:
         assert result["success"] is True
         assert [r["revision"] for r in result["revisions"]] == [2, 1]
         manager.list_revisions.assert_called_once_with("lending")
+
+    @pytest.mark.parametrize("matches", [True, False, None])
+    def test_list_reports_whether_the_profile_is_its_published_revision(
+        self, manager, matches
+    ):
+        # #1778: the editor warns on False, so a profile changed without a
+        # revision is never shown as the revision its documents run.
+        manager.head_matches_published.return_value = matches
+        result = index.handler(_event("listConfigProfileRevisions", {"profileName": "lending"}), None)
+        assert result["success"] is True
+        assert result["profileMatchesPublished"] is matches
+        manager.head_matches_published.assert_called_once_with("lending")
+
+    def test_a_failed_comparison_still_returns_the_history(self, manager):
+        manager.head_matches_published.side_effect = RuntimeError("index unreadable")
+        result = index.handler(_event("listConfigProfileRevisions", {"profileName": "lending"}), None)
+        assert result["success"] is True
+        assert [r["revision"] for r in result["revisions"]] == [2, 1]
+        assert result["profileMatchesPublished"] is None
 
     def test_get_returns_the_configuration_as_json(self, manager):
         result = index.handler(

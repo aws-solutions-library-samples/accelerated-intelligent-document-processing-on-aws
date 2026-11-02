@@ -1357,7 +1357,20 @@ def handle_list_profile_revisions(manager, profile):
     """Revision history for one Configuration Profile, newest first."""
     try:
         revisions = manager.list_revisions(profile)
-        return {"success": True, "revisions": revisions}
+        # Whether the configuration the editor shows is the revision new documents
+        # run. Advisory: a failure to work it out must not hide the history.
+        try:
+            matches = manager.head_matches_published(profile)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Could not compare '{profile}' with its published revision: {e}"
+            )
+            matches = None
+        return {
+            "success": True,
+            "revisions": revisions,
+            "profileMatchesPublished": matches,
+        }
     except Exception as e:
         logger.error(f"Error listing revisions for '{profile}': {e}")
         return {
