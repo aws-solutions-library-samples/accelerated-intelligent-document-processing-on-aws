@@ -403,7 +403,10 @@ When OCR emits a table with a blank header row and the column labels in the rows
 under it, and the table runs over several pages that each repeat those labels, the
 parser takes the label rows as the header instead of returning them as data, so
 they are not counted as extra items. A one-page table in that shape is parsed as
-before.
+before. A first-column row directly under the labels is read as a wrapped label
+(as `Fund Name` is in the shape above), so a category row in that position, such
+as `EQUITIES`, becomes the first column's name rather than a row; the parse
+warning gives the number of rows taken as the header.
 
 > **`lazy_images` (default `true`) — cost optimization for table documents.** When
 > a pre-flight table parse succeeds, page images are **not** attached to the

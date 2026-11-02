@@ -412,6 +412,10 @@ def _merge_adjacent_tables(
             prev["gaps_recovered"] = prev.get("gaps_recovered", 0) + table.get(
                 "gaps_recovered", 0
             )
+            # And the label rows taken as the header, so the warning counts them all
+            prev["promoted_rows"] = prev.get("promoted_rows", 0) + table.get(
+                "promoted_rows", 0
+            )
 
             # Track number of additional tables merged (not including the original)
             if "merged_tables" not in prev:

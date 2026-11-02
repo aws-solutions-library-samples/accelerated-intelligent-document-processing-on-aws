@@ -857,11 +857,14 @@ class TestLabelsBelowABlankHeader:
                 LABELS + "| Beta Fund | BBBX | $9.74 |\n",
             )
         )
-        assert [t["columns"] for t in result["tables"]] == [
-            ["Fund Name", "Ticker", "NAV"]
-        ] * len(result["tables"])
-        assert [r["Ticker"] for r in _all_rows(result)] == ["AAAX", "BBBX"]
-        assert any("Header row was blank" in w for w in result["warnings"])
+        assert result["table_count"] == 1
+        assert result["columns"] == ["Fund Name", "Ticker", "NAV"]
+        assert result["row_count"] == 2
+        assert [r["Ticker"] for r in result["rows"]] == ["AAAX", "BBBX"]
+        assert (
+            "Header row was blank; took the column names from the next 3 row(s)"
+            in result["warnings"]
+        )
 
     def test_a_lone_candidate_is_left_as_data(self):
         """A short all-text data row passes every lexical guard; one page cannot tell."""
