@@ -450,6 +450,16 @@ Four decisions worth knowing before changing this code:
   save is an outage. `ConfigRevisionStore.enabled` is False when no
   `CONFIGURATION_BUCKET` is configured, so older deployments and unit tests keep
   working unchanged.
+- ⚠️ **A process that saves profiles must have the bucket.** New documents are
+  pinned to `PublishedRevision`, so a save that cuts no revision changes what the
+  configuration editor shows and not what processing runs. On a profile that
+  already has history, such a save logs a WARNING naming the revision documents
+  will keep running. Every deployed Lambda that saves a profile therefore needs
+  `CONFIGURATION_BUCKET` plus `s3:GetObject`/`PutObject`/`DeleteObject` on
+  `config_revisions/*` and `s3:ListBucket` limited to that prefix; the set is
+  derived from source and enforced by
+  `scripts/tests/test_config_profile_writer_wiring.py`, so a new writer is held to
+  it without being listed.
 
 `_record_revisions()` skips the cut entirely when the saved configuration equals
 what was already stored. Every deployment re-saves `default` and each managed

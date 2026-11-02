@@ -324,6 +324,23 @@ unchanged, or changing only its description, cuts nothing.
   profile with **Create profile** and process its documents under the copy, which
   starts with a revision of its own.
 
+### Saves by discovery, BDA and the Quick Start agent
+
+Discovery (single- and multi-document, in both **Add** and **Replace** save mode),
+BDA blueprint optimization and sync, the Quick Start agent and the Test Set
+Generator's bootstrap all save a profile, and each save records and publishes a
+revision exactly as an editor save does. Replace mode records two: one for clearing
+the existing classes and one for the discovered class.
+
+On versions before this was fixed
+([#1778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1778)),
+those saves updated the profile without recording a revision. The editor then
+showed the new classes under the label of the older revision (**Current (r1)**),
+while new documents kept running that older revision. A profile left in that state
+is repaired the same way as above: make any change to it in the editor and save,
+which records a revision matching what the editor shows. Saving it unchanged does
+not.
+
 ### Test Studio: comparing two revisions of one profile
 
 Run the same test set twice, pinning a different revision each time. Each run

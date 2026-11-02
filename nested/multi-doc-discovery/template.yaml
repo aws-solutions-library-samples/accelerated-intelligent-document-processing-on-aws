@@ -27,6 +27,9 @@ Parameters:
   ConfigurationTableName:
     Type: String
     Description: Configuration DynamoDB table name
+  ConfigurationBucketName:
+    Type: String
+    Description: Configuration S3 bucket name (holds configuration-profile revision bodies under config_revisions/)
   ConfigurationTableArn:
     Type: String
     Description: Configuration DynamoDB table ARN
@@ -695,6 +698,7 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           DISCOVERY_BUCKET: !Ref DiscoveryBucketName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTableName
           BEDROCK_ASSUME_ROLE_ARN:
             !If [HasBedrockHubRole, !Ref BedrockHubRoleArn, !Ref AWS::NoValue]
@@ -705,6 +709,26 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref MultiDocDiscoverySaveFunctionLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3CrudPolicy:
             BucketName: !Ref DiscoveryBucketName
         - DynamoDBCrudPolicy:

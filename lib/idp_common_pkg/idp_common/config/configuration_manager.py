@@ -899,6 +899,7 @@ class ConfigurationManager:
         `_refresh_published_stored_hash`).
         """
         if not self.revisions.enabled:
+            self._warn_if_history_left_behind(profile, previous_head)
             return None
 
         head = self.table.get_item(
@@ -954,6 +955,32 @@ class ConfigurationManager:
             created_by=created_by,
             notes=notes,
             stored_hash=stored_hash,
+        )
+
+    @staticmethod
+    def _warn_if_history_left_behind(
+        profile: str, previous_head: Optional[Dict[str, Any]]
+    ) -> None:
+        """
+        Warn when a save could not cut a revision for a profile that has history.
+
+        A process without `CONFIGURATION_BUCKET` has its revision store disabled,
+        which is harmless for a profile with no history: documents then run the
+        head. A profile that already has a published revision is different. Every
+        new document is pinned to that revision, so this save changed what the
+        configuration editor shows and not what processing uses, and nothing else
+        reports it (#1778). The counters on the head this save replaced say which
+        revision documents will keep running.
+        """
+        # Revision numbers start at 1, so 0 (coerce_int's default) means no history.
+        published = coerce_int((previous_head or {}).get("PublishedRevision"))
+        if published < 1:
+            return
+        logger.warning(
+            f"Saved configuration profile '{profile}' without recording a revision: "
+            f"revision history is disabled in this process (CONFIGURATION_BUCKET is "
+            f"not set). The profile's published revision is still r{published}, so "
+            f"new documents keep running r{published} rather than this save."
         )
 
     @staticmethod
