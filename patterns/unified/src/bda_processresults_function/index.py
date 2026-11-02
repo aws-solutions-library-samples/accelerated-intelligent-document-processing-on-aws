@@ -14,6 +14,7 @@ from botocore.exceptions import ClientError
 from idp_common import metrics
 from idp_common.config import get_config
 from idp_common.docs_service import create_document_service
+from idp_common.image.pdf_pages import load_page_for_render
 from idp_common.models import Document, HitlMetadata, Page, Section, Status
 from idp_common.review_queues.routing import (
     bda_segment_triggers,
@@ -235,14 +236,10 @@ def create_pdf_page_images(bda_result_bucket, output_bucket, object_key):
         # Process each page
         for page_num in range(len(pdf_document)):
             # Render page to a PIL image
-            page = pdf_document[page_num]
-            # Flatten form fields into page content before rendering.
-            # Many fillable PDFs (e.g., government forms) lack appearance
-            # streams for form fields — flatten() forces PDFium to generate
-            # them and merge into page content so render() can display them.
-            # Only applies when PDF has form fields (formenv is set by init_forms).
-            if page.formenv is not None:
-                page.flatten()
+            # Flattens form fields and annotations into the page content and
+            # reloads the page, so filled-in values reach the image whether
+            # they are held in AcroForm fields or in annotations (#240, #1780).
+            page = load_page_for_render(pdf_document, page_num)
             pil_img = page.render(scale=150 / 72).to_pil()
 
             # Save the image to a BytesIO object as JPEG
