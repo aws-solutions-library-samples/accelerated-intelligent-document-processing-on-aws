@@ -66,7 +66,9 @@ Each of these has a test whose docstring states the consequence:
 
 import json
 import os
+import re
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import boto3
@@ -2410,3 +2412,44 @@ def test_a_failed_sync_bda_still_names_a_class_it_did_not_send():
     assert result.exit_code == 1, result.output
     assert "1 class(es) not sent to BDA" in result.output
     assert "• notice" in result.output
+
+
+def _named_after_every_section_except(text):
+    """Every list of section names written after "every section ... except" in ``text``,
+    each as a set: the hand-written statements of what ``--features all`` omits."""
+    flat = " ".join(text.replace("`", "").split())
+    found = []
+    for match in re.finditer(
+        r"every section(?: at its default values,)? except "
+        r"([a-z_]+(?:(?:,\s*|\s+and\s+)[a-z_]+)*)",
+        flat,
+    ):
+        names = re.split(r",\s*|\s+and\s+", match.group(1).strip())
+        found.append({name for name in names if name})
+    return found
+
+
+@pytest.mark.unit
+def test_every_statement_of_what_all_omits_names_the_derived_set():
+    """The CLI help and the CLI page write out which sections ``--features all``
+    leaves out; the authoritative set is what the defaults carry minus ``all``. A
+    section added to or promoted out of that set would otherwise leave these
+    sentences wrong with every other test green (#1691)."""
+    from idp_common.config.merge_utils import FEATURE_SETS, template_sections
+
+    excluded = set(template_sections("pattern-2")) - set(FEATURE_SETS["all"])
+    assert excluded, "the derived set is empty, so this test would compare nothing"
+
+    help_text = CliRunner().invoke(cli, ["config-create", "--help"]).output
+    page = (Path(__file__).resolve().parents[3] / "docs" / "idp-cli.md").read_text(
+        encoding="utf-8"
+    )
+    page = page[page.index("### `config-create`") :]
+    page = page[: page.index("\n### ", 1)]
+
+    for source, text in (("config-create --help", help_text), ("docs", page)):
+        statements = _named_after_every_section_except(text)
+        # Option help and docstring in the help; one bullet on the page.
+        assert statements, f"{source} no longer says what `all` leaves out"
+        for named in statements:
+            assert named == excluded, (source, named, excluded)
