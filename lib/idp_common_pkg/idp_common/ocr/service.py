@@ -26,6 +26,7 @@ from botocore.config import Config
 
 from idp_common import bedrock, image, s3, utils
 from idp_common.config.models import IDPConfig
+from idp_common.image.pdf_pages import load_page_for_render
 from idp_common.models import Document, Page, Status
 from idp_common.ocr.document_converter import (
     DocumentConverter,
@@ -455,14 +456,11 @@ class OcrService:
                     )
                     page_images: Dict[int, bytes] = {}
                     for i in pages_to_render:
-                        page = pdf_document[i]
-                        # Flatten form fields into page content before rendering.
-                        # Many fillable PDFs (e.g., government forms) lack appearance
-                        # streams for form fields — flatten() forces PDFium to generate
-                        # them and merge into page content so render() can display them.
-                        # Only applies when PDF has form fields (formenv is set by init_forms).
-                        if page.formenv is not None:
-                            page.flatten()
+                        # Flattens form fields and annotations into the page
+                        # content and reloads the page, so filled-in values reach
+                        # the image whether they are held in AcroForm fields or
+                        # in annotations (#240, #1780).
+                        page = load_page_for_render(pdf_document, i)
                         page_images[i] = self._extract_page_image(page, True, i + 1)
 
                     pdf_document.close()

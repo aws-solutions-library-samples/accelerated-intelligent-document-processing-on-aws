@@ -202,6 +202,7 @@
         "idp_common/forced_sections.py": 95.88,
         "idp_common/hooks/__init__.py": 100.0,
         "idp_common/image/__init__.py": 79.01,
+        "idp_common/image/pdf_pages.py": 100.0,
         "idp_common/job_completion.py": 100.0,
         "idp_common/job_service.py": 0.0,
         "idp_common/lambda_deadline.py": 100.0,

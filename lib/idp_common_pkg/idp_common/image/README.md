@@ -23,6 +23,7 @@ This module handles image preparation for multimodal LLM prompts and OCR process
 | `max_dimension_for_image_count(image_count)` | The per-image dimension cap that applies to a request carrying `image_count` image blocks (8,000 px, or 2,000 px above 20) |
 | `bedrock_image_format(image_data)` | The Bedrock `format` string for these bytes (`jpeg`/`png`/`gif`/`webp`); raises `ValueError` otherwise |
 | `base64_encoded_size(raw_size)` | Bytes a payload occupies once base64-encoded — the number Bedrock compares against its limit |
+| `pdf_pages.load_page_for_render(pdf_document, page_index)` | Load a PDF page so its filled-in form values appear when rendered: flattens form fields and annotations, then reloads the page |
 
 ## Usage
 
@@ -205,6 +206,45 @@ Two residual gaps this does not close:
   requested model` wording — so a long enough request crosses a limit again at any
   per-image resolution. At roughly 0.35 MB per clamped page that is on the order of
   60 pages in one request.
+
+### Rendering filled-in PDF forms (#240, #1780)
+
+A filled-in PDF can hold its values in two different places, and each needs
+something different to render:
+
+- **AcroForm fields** (Widget annotations) often store the value only in `/V`, with
+  an appearance stream that is empty or stale. PDFium draws the value only when the
+  document's form engine is initialised with `init_forms()` (#240).
+- **Markup annotations** such as FreeText, written by "fill & sign" tools, carry a
+  complete appearance stream and render without the form engine.
+
+The two renderers that produce the pipeline's page images, the OCR service and the
+BDA results processor, call `init_forms()` and then `load_page_for_render`, which flattens any page with a
+form environment and **reloads it**. The reload is the important step. Flattening
+moves the annotations into the page content, but the already-loaded page handle is
+not refreshed, so rendering that handle shows neither the annotations nor the
+merged content. Every FreeText value disappeared that way in a document that also
+had an AcroForm dictionary (#1780), while widget values survived only because the
+form engine still drew them.
+
+```python
+import pypdfium2 as pdfium
+from idp_common.image.pdf_pages import load_page_for_render
+
+pdf = pdfium.PdfDocument(pdf_bytes)
+pdf.init_forms()               # must precede loading any page
+for i in range(len(pdf)):
+    page = load_page_for_render(pdf, i)
+    image = page.render(scale=150 / 72).to_pil()
+```
+
+The discovery embedding service and the fine-tuning data utilities also render PDF
+pages, and call neither, so AcroForm values held only in `/V` are absent from the
+images they produce.
+
+`tests/unit/ocr/test_pdf_form_rendering.py` renders one synthetic PDF per shape
+through both production paths and checks the pixels, rather than asserting that
+`flatten()` was called.
 
 ### Adaptive Binarization for OCR
 
