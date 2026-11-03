@@ -107,7 +107,7 @@ class TenantAuditResult(BaseModel):
 class TenantVerifyOutcome(str, Enum):
     """The outcome of one live check. Only PASS is a pass."""
 
-    PASS = "PASS"
+    PASS = "PASS"  # nosec B105 - an outcome label, not a credential
     FAIL = "FAIL"
     SKIP = "SKIP"
     ERROR = "ERROR"

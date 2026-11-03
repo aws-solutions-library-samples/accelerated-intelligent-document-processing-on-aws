@@ -24,7 +24,7 @@ err_console = Console(stderr=True)
 
 # Exit codes for `verify`, one per outcome, so a script can tell "isolation is
 # broken" from "the check could not run" from "nothing was checked".
-VERIFY_EXIT = {"PASS": 0, "FAIL": 1, "ERROR": 2, "SKIP": 3}
+VERIFY_EXIT = {"PASS": 0, "FAIL": 1, "ERROR": 2, "SKIP": 3}  # nosec B105 - outcome labels, not a credential
 
 
 def _client(stack_name: str, region: Optional[str]):
@@ -367,7 +367,7 @@ def verify(
         payload["outcome"] = outcome
         _emit_json(payload)
     else:
-        colour = {"PASS": "green", "FAIL": "red", "ERROR": "red", "SKIP": "yellow"}
+        colour = {"PASS": "green", "FAIL": "red", "ERROR": "red", "SKIP": "yellow"}  # nosec B105 - outcome labels
         for c in result.checks:
             err_console.print(
                 f"[{colour[c.outcome.value]}]{c.outcome.value:>5}[/{colour[c.outcome.value]}]  "
