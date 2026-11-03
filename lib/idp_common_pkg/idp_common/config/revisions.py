@@ -548,7 +548,15 @@ class ConfigRevisionStore:
             f"Cut revision r{revision} of configuration profile '{profile}' "
             f"({size:,} bytes uncompressed)"
         )
-        self.prune(profile, published=revision if publish else None)
+        # Housekeeping, after the revision is recorded and published: a failed
+        # prune has no bearing on whether this save's revision exists, and raising
+        # here would make the caller treat a published revision as unrecorded.
+        try:
+            self.prune(profile, published=revision if publish else None)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Recorded r{revision} of '{profile}' but could not prune old revisions: {e}"
+            )
         return revision
 
     def prune(self, profile: str, published: Optional[int] = None) -> List[int]:

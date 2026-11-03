@@ -851,6 +851,10 @@ class ConfigurationManager:
         # the save. A profile with no history runs its head, and there history
         # stays best-effort: losing an entry is recoverable, refusing the save is
         # an outage.
+        # Keyed on PublishedRevision, not on LatestRevision as `_record_revisions`'
+        # backfill test is: a head with a published counter and no LatestRevision
+        # (only reachable by hand) takes the backfill branch, which also cuts and
+        # publishes this save, and the read-back below then applies to it.
         published_before = (
             coerce_int((existing_item or {}).get("PublishedRevision"))
             if config_type == CONFIG_TYPE_CONFIG
@@ -901,6 +905,19 @@ class ConfigurationManager:
                         f"Saved profile '{version}' but could not record its revision: {e}"
                     )
                     return
+                # If the counter has already moved past the revision this save
+                # started from, a revision was published after this head was
+                # written: this save's (the failure came after its publish) or a
+                # concurrent save's. Either way documents no longer run the old
+                # revision, and restoring the old head would recreate the
+                # divergence the other way round.
+                now_published = self._published_counter(version)
+                if now_published is not None and now_published > published_before:
+                    logger.warning(
+                        f"Saved profile '{version}' and r{now_published} is published, "
+                        f"but a later step of recording it failed: {e}"
+                    )
+                    return
                 restored = self._restore_head(version, raw_previous_head)
                 raise RevisionNotRecordedError(
                     f"Could not record a revision for configuration profile "
@@ -913,6 +930,20 @@ class ConfigurationManager:
                     )
                     + f". Cause: {e}"
                 ) from e
+
+    def _published_counter(self, profile: str) -> Optional[int]:
+        """The head's `PublishedRevision`, or None if it cannot be read."""
+        try:
+            head = (
+                self.table.get_item(
+                    Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}"},
+                    ProjectionExpression="PublishedRevision",
+                ).get("Item")
+                or {}
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        return coerce_int(head.get("PublishedRevision"))
 
     def _require_published(self, profile: str, revision: int) -> None:
         """Raise unless the profile head names `revision` (or later) as published."""

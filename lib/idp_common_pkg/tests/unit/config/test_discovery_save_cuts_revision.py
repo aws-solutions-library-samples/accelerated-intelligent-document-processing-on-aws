@@ -332,3 +332,83 @@ class TestHeadMatchesPublished:
             CONFIG_TYPE_CONFIG, IDPConfig(notes="no history"), version=PROFILE
         )
         assert manager.head_matches_published(PROFILE) is None
+
+
+@pytest.mark.unit
+class TestAFailureAfterThePublishIsNotUndone:
+    """Once the save's revision is published, restoring the old head would invert
+    the divergence: the editor showing the old configuration while documents run
+    the new one, under a message saying the save was undone."""
+
+    @pytest.fixture(autouse=True)
+    def _aws(self, monkeypatch):
+        _env(monkeypatch, with_bucket=True)
+        with mock_aws():
+            _create_resources()
+            _create_profile_as_copy_of_default()
+            yield
+
+    def test_a_failed_prune_does_not_fail_the_save(self, monkeypatch):
+        def refuse(*_args, **_kwargs):
+            raise RuntimeError("index rewrite throttled")
+
+        monkeypatch.setattr(ConfigRevisionStore, "prune", refuse)
+        _discovery_merge("Form-I-9")
+
+        assert _head_class_ids() == ["W2", "Payslip", "Form-I-9"]
+        assert _class_ids_a_new_document_runs() == _head_class_ids()
+        assert ConfigurationManager().head_matches_published(PROFILE) is True
+
+    def test_the_store_reports_a_published_revision_despite_a_failed_prune(
+        self, monkeypatch
+    ):
+        """The store-level half: `cut` returns the revision it published."""
+
+        def refuse(*_args, **_kwargs):
+            raise RuntimeError("index rewrite throttled")
+
+        monkeypatch.setattr(ConfigRevisionStore, "prune", refuse)
+        store = ConfigurationManager().revisions
+        revision = store.cut(PROFILE, {"notes": "direct"})
+        assert revision == 2
+        assert _published() == 2
+
+    def test_a_failure_after_the_publish_keeps_the_saved_head(self, monkeypatch):
+        def fail_after_publish(*_args, **_kwargs):
+            raise RuntimeError("read-back failed")
+
+        monkeypatch.setattr(
+            ConfigurationManager, "_require_published", fail_after_publish
+        )
+        _discovery_merge("Form-I-9")
+
+        assert _published() == 2
+        assert _head_class_ids() == ["W2", "Payslip", "Form-I-9"]
+        assert ConfigurationManager().head_matches_published(PROFILE) is True
+
+
+@pytest.mark.unit
+def test_discovery_keeps_the_refusal_type(monkeypatch):
+    """`discovery_classes_with_document` re-wraps failures as a bare Exception;
+    a refused save must reach the job status as itself."""
+    from idp_common.discovery.classes_discovery import ClassesDiscovery
+
+    discovery = object.__new__(ClassesDiscovery)
+
+    def refuse(*_args, **_kwargs):
+        raise RevisionNotRecordedError("Refusing to save configuration profile 'p'")
+
+    monkeypatch.setattr(discovery, "_extract_data_from_document", refuse, raising=False)
+    with pytest.raises(RevisionNotRecordedError, match="Refusing to save"):
+        discovery.discovery_classes_with_document(
+            "bucket", "doc.png", file_bytes=b"not an image"
+        )
+
+    def other(*_args, **_kwargs):
+        raise ValueError("model refused")
+
+    monkeypatch.setattr(discovery, "_extract_data_from_document", other, raising=False)
+    with pytest.raises(Exception, match="Failed to process document doc.png"):
+        discovery.discovery_classes_with_document(
+            "bucket", "doc.png", file_bytes=b"not an image"
+        )
