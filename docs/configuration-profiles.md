@@ -335,7 +335,9 @@ the existing classes and one for the discovered class.
 For a profile that already has revision history, recording the revision is part of
 the save. If it cannot be recorded, the save fails with an error saying so and the
 profile is left as it was, rather than changing what the editor shows while new
-documents keep running the earlier revision. A profile with no history yet saves
+documents keep running the earlier revision. If the failure came after the revision
+was recorded, that revision stays in the history, unpublished, with the notes
+**Save failed; not published** and the revision the profile was restored to. A profile with no history yet saves
 without one, because its documents run its current configuration.
 
 `idp-cli` and the SDK find the stack's configuration bucket themselves. Your own

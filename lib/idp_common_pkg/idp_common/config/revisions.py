@@ -528,6 +528,8 @@ class ConfigRevisionStore:
             return None
         revision = self.next_number(profile)
         _, size = self.put_body(profile, revision, config_dict)
+        # The body is written before its index entry, so an entry that cannot be
+        # appended would leave an object no listing shows and no prune removes.
         entry = {
             "revision": revision,
             "createdAt": _now(),
@@ -541,7 +543,11 @@ class ConfigRevisionStore:
         }
         if stored_hash:
             entry["storedHash"] = stored_hash
-        self.append_index(profile, entry)
+        try:
+            self.append_index(profile, entry)
+        except Exception:
+            self.delete_body(profile, revision)
+            raise
         if publish:
             self.set_published(profile, revision)
         logger.info(

@@ -256,6 +256,28 @@ class TestASaveWhoseRevisionFailsIsUndone:
         assert _head_class_ids() == ["W2", "Payslip"]
         assert _published() == 1
 
+        # #1784: the entry the failed save left is kept, and says what it is.
+        entries = {
+            r["revision"]: r for r in ConfigurationManager().list_revisions(PROFILE)
+        }
+        assert set(entries) == {1, 2}
+        assert entries[2]["published"] is False
+        assert entries[2]["notes"].startswith(ConfigurationManager.FAILED_SAVE_NOTES)
+        assert "r1" in entries[2]["notes"]
+
+    def test_a_body_whose_index_entry_fails_is_not_left_behind(self, monkeypatch):
+        def refuse(*_args, **_kwargs):
+            raise RuntimeError("index append throttled")
+
+        monkeypatch.setattr(ConfigRevisionStore, "append_index", refuse)
+        with pytest.raises(RevisionNotRecordedError):
+            _discovery_merge("Form-I-9")
+
+        store = ConfigurationManager().revisions
+        assert store.get_body(PROFILE, 2) is None
+        assert [r["revision"] for r in store.list(PROFILE)] == [1]
+        assert _head_class_ids() == ["W2", "Payslip"]
+
     def test_the_next_save_after_a_failure_records_a_fresh_revision(self, monkeypatch):
         def refuse(*_args, **_kwargs):
             raise RuntimeError("S3 refused the revision body")
