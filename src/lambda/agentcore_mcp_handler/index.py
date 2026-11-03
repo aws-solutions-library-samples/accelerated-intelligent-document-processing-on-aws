@@ -51,6 +51,20 @@ else:
             return "<redactor unavailable: idp_common not importable>"
 
 
+# Whether the stack runs with TenantIsolationMode=Strict. The shared helper is the
+# one definition of that answer; the fallback exists only for the no-layer case
+# above and fails CLOSED, because refusing every tool is the safe reading of a mode
+# this function cannot evaluate.
+_MODE_UNKNOWN = False
+try:
+    from idp_common.config_scope import is_strict_isolation
+except ImportError:  # pragma: no cover - only reachable with no agents layer
+    _MODE_UNKNOWN = True
+
+    def is_strict_isolation(environ=None) -> bool:  # type: ignore[misc]
+        return True
+
+
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
@@ -99,7 +113,40 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         tool_name = tool_name[1:]
     
     logger.info(f"Tool name from context: {tool_name_full} -> {tool_name}")
-    
+
+    # Strict tenant isolation: every tool here (search, batch status, results,
+    # reprocess) acts across the whole deployment, and the gateway hands this
+    # function no user identity -- only a machine client's -- so there is no
+    # tenant to scope a call to and no way to tell an Admin from anyone else.
+    if is_strict_isolation():
+        if _MODE_UNKNOWN:
+            # Kept distinguishable from a configured Strict refusal: the mode could
+            # not be read at all, so the refusal is the fail-closed default.
+            logger.error(
+                f"Rejecting MCP tool {tool_name!r}: the tenant isolation mode cannot "
+                f"be determined (idp_common is not importable), so every tool is "
+                f"refused"
+            )
+            message = (
+                "The tenant isolation mode of this deployment could not be "
+                "determined, so MCP tools are refused. Check that the function's "
+                "idp_common layer is attached."
+            )
+        else:
+            logger.warning(
+                f"Rejecting MCP tool {tool_name!r}: strict tenant isolation refuses "
+                f"MCP calls, which carry no user identity to scope"
+            )
+            message = (
+                "This deployment runs in strict tenant isolation. MCP tools act "
+                "across every tenant's documents and the gateway supplies no "
+                "user identity to scope them, so they are disabled."
+            )
+        return {
+            'statusCode': 403,
+            'body': json.dumps({'error': message, 'tool_name': tool_name})
+        }
+
     try:
         logger.info(f"Looking up tool: {tool_name}")
         tool = get_tool(tool_name)

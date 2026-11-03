@@ -32,6 +32,7 @@ import useConfigPrefixMappings, {
   MetadataPrecedence,
 } from '../../hooks/use-config-prefix-mappings';
 import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
+import TenantsSection from './TenantsSection';
 import { prefixError, storedPrefix, type MatchMode } from '../../utils/config-prefix-key';
 
 /**
@@ -419,6 +420,10 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
 
   return (
     <SpaceBetween size="l">
+      {/* Mounted only past the admin gates above, so a non-admin never asks for
+          the tenant list. Tenants come first because they constrain every mapping
+          below them. */}
+      <TenantsSection />
       <Container
         header={
           <Header

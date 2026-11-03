@@ -314,6 +314,10 @@ FIELD_ALIASES: Dict[str, str] = {
     "putConfigPrefixMapping": "deleteConfigVersion",
     "deleteConfigPrefixMapping": "deleteConfigVersion",
     "resolveConfigPrefixMapping": "deleteConfigVersion",
+    # Tenant declarations, served by the same configuration resolver.
+    "listTenants": "deleteConfigVersion",
+    "putTenant": "deleteConfigVersion",
+    "deleteTenant": "deleteConfigVersion",
     "getConfigVersion": "deleteConfigVersion",
     "getConfigVersions": "deleteConfigVersion",
     "getConfigurationLibraryFile": "deleteConfigVersion",

@@ -289,8 +289,9 @@ effort-to-value:
    merges. The prerequisite neither issue currently covers is a **verified
    subject**: the browser presenting its Cognito ID token alongside the signed
    request.
-2. **Document ownership for read scoping (UI.T06)** — give documents an ownership or
-   tenancy attribute and derive the permitted key from it, instead of trusting the
+2. **Document ownership for read scoping (UI.T06)** — give documents a per-user
+   ownership attribute (tenancy is now expressed through tenant declarations and
+   `TenantIsolationMode: Strict`) and derive the permitted key from it, instead of trusting the
    supplied `s3Uri`. Three of the four controls this needs are in place (#1033): the
    Identity Pool role is narrowed to no S3 at all, so every document read is an API
    call; the bucket allow-list fails closed; and all three axes the product records

@@ -106,7 +106,7 @@ Information disclosure threats involve exposure of sensitive data to unauthorize
 | Threat | Component | Risk | Mitigations |
 |--------|-----------|------|-------------|
 | **Document data sent to AI services** — PII/sensitive content in LLM prompts | Bedrock, Textract | High | AWS data processing policies (no training), TLS, IAM roles |
-| **Cross-user data leakage via Athena** — accessing other users' documents | Analytics Agent | High | RBAC, single-tenant deployment, query scoping |
+| **Cross-user data leakage via Athena** — accessing other users' documents | Analytics Agent | High | RBAC, single-tenant deployment or Admin-only under `TenantIsolationMode: Strict` in a shared one, query scoping |
 | **Athena query results exposure** — stored results accessible | Reporting | High | Workgroup restrictions, result lifecycle policies, IAM |
 | **Conversation history exposure** — sensitive chat content | Companion Chat | High | DynamoDB encryption, user-scoped access, TTL policies |
 | **Data exfiltration via MCP tools** — sending data to external services | MCP Integration | Critical | IAM least-privilege, VPC egress controls, audit logging |

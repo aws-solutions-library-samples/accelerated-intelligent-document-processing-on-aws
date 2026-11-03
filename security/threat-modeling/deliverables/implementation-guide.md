@@ -164,12 +164,15 @@ and mapped to the specific threats they address.
 
 > **Read-scoping residual (UI.T06).** The per-document check runs on the
 > configuration-profile axis, because that is the only per-document axis the
-> product records — nothing says which user or tenant a document belongs to. For a
+> product records — nothing says which *user* a document belongs to, and a tenant is
+> expressed only as a set of profiles (tenant declarations). For a
 > **scoped** caller it is a real refusal; for an **unscoped** one (no
 > `allowedConfigVersions`, which is a user row's default, since scoping is opt-in
 > per user) it is a deliberate no-op, so a caller holding any one of the five
-> groups still reads any document's bytes through the resolver. Closing the rest
-> needs a document ownership model — issue #1033. Partially Mitigated.
+> groups still reads any document's bytes through the resolver. That is the default,
+> `TenantIsolationMode: Off`; under `Strict` an unscoped non-admin is refused every
+> document instead. Closing the rest needs a per-user document ownership model —
+> issue #1033. Partially Mitigated.
 
 ## 4. Data Protection
 

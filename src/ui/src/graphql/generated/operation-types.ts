@@ -938,6 +938,7 @@ export type Mutation = {
   deleteFinetuningJob?: Maybe<Scalars['Boolean']['output']>;
   deleteInboxMessages?: Maybe<InboxMutationResult>;
   deleteReviewQueue?: Maybe<Scalars['Boolean']['output']>;
+  deleteTenant?: Maybe<TenantMutationResponse>;
   deleteTestSets: Scalars['Boolean']['output'];
   deleteTests: Scalars['Boolean']['output'];
   deleteUser?: Maybe<Scalars['Boolean']['output']>;
@@ -955,6 +956,7 @@ export type Mutation = {
   publishCircuitBreakerStatus?: Maybe<CircuitBreakerStatus>;
   publishTestSetVersion?: Maybe<TestSetVersion>;
   putConfigPrefixMapping?: Maybe<ConfigPrefixMappingMutationResponse>;
+  putTenant?: Maybe<TenantMutationResponse>;
   reassignReviewItem?: Maybe<ReviewItem>;
   reextractTestSetDocument?: Maybe<DraftLabelJob>;
   /** Called by a feature stack's RegisterFeature custom resource once the stack has deployed. */
@@ -1257,6 +1259,11 @@ export type MutationDeleteReviewQueueArgs = {
 };
 
 
+export type MutationDeleteTenantArgs = {
+  tenantId: Scalars['String']['input'];
+};
+
+
 export type MutationDeleteTestSetsArgs = {
   testSetIds: Array<Scalars['String']['input']>;
 };
@@ -1348,6 +1355,14 @@ export type MutationPutConfigPrefixMappingArgs = {
   enabled?: InputMaybe<Scalars['Boolean']['input']>;
   metadataPrecedence?: InputMaybe<Scalars['String']['input']>;
   prefix: Scalars['String']['input'];
+};
+
+
+export type MutationPutTenantArgs = {
+  description?: InputMaybe<Scalars['String']['input']>;
+  prefixes: Array<Scalars['String']['input']>;
+  profilePattern: Scalars['String']['input'];
+  tenantId: Scalars['String']['input'];
 };
 
 
@@ -1920,6 +1935,7 @@ export type Query = {
   listReviewQueueItems?: Maybe<ReviewItemPage>;
   listReviewQueues?: Maybe<Array<ReviewQueueDefinition>>;
   listSampleDocuments?: Maybe<SampleDocumentListResponse>;
+  listTenants?: Maybe<TenantsResponse>;
   listTestSetQueues?: Maybe<Array<TestSetQueueSummary>>;
   listUsers?: Maybe<UserList>;
   queryKnowledgeBase?: Maybe<Scalars['String']['output']>;
@@ -2594,6 +2610,31 @@ export type SyncBdaIdpResponse = {
   message?: Maybe<Scalars['String']['output']>;
   processedClasses?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   success: Scalars['Boolean']['output'];
+};
+
+export type Tenant = {
+  createdAt?: Maybe<Scalars['String']['output']>;
+  createdBy?: Maybe<Scalars['String']['output']>;
+  description?: Maybe<Scalars['String']['output']>;
+  prefixes: Array<Scalars['String']['output']>;
+  profilePattern: Scalars['String']['output'];
+  tenantId: Scalars['String']['output'];
+  updatedAt?: Maybe<Scalars['String']['output']>;
+  updatedBy?: Maybe<Scalars['String']['output']>;
+};
+
+export type TenantMutationResponse = {
+  error?: Maybe<ConfigurationError>;
+  message?: Maybe<Scalars['String']['output']>;
+  success: Scalars['Boolean']['output'];
+  tenant?: Maybe<Tenant>;
+};
+
+export type TenantsResponse = {
+  error?: Maybe<ConfigurationError>;
+  isolationMode?: Maybe<Scalars['String']['output']>;
+  success: Scalars['Boolean']['output'];
+  tenants?: Maybe<Array<Maybe<Tenant>>>;
 };
 
 export type TestRun = {
@@ -3271,6 +3312,13 @@ export type DeleteReviewQueueMutationVariables = Exact<{
 
 export type DeleteReviewQueueMutation = { deleteReviewQueue?: boolean | null };
 
+export type DeleteTenantMutationVariables = Exact<{
+  tenantId: Scalars['String']['input'];
+}>;
+
+
+export type DeleteTenantMutation = { deleteTenant?: { success: boolean, message?: string | null, error?: { type?: string | null, message?: string | null } | null } | null };
+
 export type DeleteTestSetsMutationVariables = Exact<{
   testSetIds: Array<Scalars['String']['input']> | Scalars['String']['input'];
 }>;
@@ -3387,6 +3435,16 @@ export type PutConfigPrefixMappingMutationVariables = Exact<{
 
 
 export type PutConfigPrefixMappingMutation = { putConfigPrefixMapping?: { success: boolean, message?: string | null, mapping?: { prefix: string, matchKind?: string | null, configProfile: string, configRevision?: number | null, metadataPrecedence?: string | null, enabled?: boolean | null, description?: string | null, createdAt?: string | null, createdBy?: string | null, updatedAt?: string | null, updatedBy?: string | null } | null, error?: { type?: string | null, message?: string | null } | null } | null };
+
+export type PutTenantMutationVariables = Exact<{
+  tenantId: Scalars['String']['input'];
+  prefixes: Array<Scalars['String']['input']> | Scalars['String']['input'];
+  profilePattern: Scalars['String']['input'];
+  description?: InputMaybe<Scalars['String']['input']>;
+}>;
+
+
+export type PutTenantMutation = { putTenant?: { success: boolean, message?: string | null, tenant?: { tenantId: string, prefixes: Array<string>, profilePattern: string, description?: string | null, createdAt?: string | null, createdBy?: string | null, updatedAt?: string | null, updatedBy?: string | null } | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type ReassignReviewItemMutationVariables = Exact<{
   objectKey: Scalars['String']['input'];
@@ -4194,6 +4252,11 @@ export type ListSampleDocumentsQueryVariables = Exact<{ [key: string]: never; }>
 
 
 export type ListSampleDocumentsQuery = { listSampleDocuments?: { success: boolean, error?: string | null, samples?: Array<{ id: string, name: string, description?: string | null, s3Key: string, kind: string, fileCount?: number | null, configId?: string | null } | null> | null } | null };
+
+export type ListTenantsQueryVariables = Exact<{ [key: string]: never; }>;
+
+
+export type ListTenantsQuery = { listTenants?: { success: boolean, isolationMode?: string | null, tenants?: Array<{ tenantId: string, prefixes: Array<string>, profilePattern: string, description?: string | null, createdAt?: string | null, createdBy?: string | null, updatedAt?: string | null, updatedBy?: string | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type ListTestSetQueuesQueryVariables = Exact<{ [key: string]: never; }>;
 

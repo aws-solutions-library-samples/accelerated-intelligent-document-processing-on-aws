@@ -697,7 +697,10 @@ It can also set `x-amz-meta-submission-source`, which is the stronger of the two
 levers — an object carrying it is exempt from mappings **entirely**, so a refusing
 mapping does not refuse it. Neither is reachable through the web UI: the presigned
 POST it mints lists the fields the browser may send, and S3 rejects any other, so a
-UI upload cannot claim to be an internal producer. Bound direct writers with IAM on
+UI upload cannot claim to be an internal producer. [Strict tenant
+isolation](multi-tenancy.md#strict-mode) closes the visibility half of this — a document
+is refused when its key's tenant and its resolved profile's tenant disagree, whatever
+metadata it carries — but not the write itself. Bound direct writers with IAM on
 whatever writes there, and see [RBAC](rbac.md) for what the API layer does and does
 not enforce.
 

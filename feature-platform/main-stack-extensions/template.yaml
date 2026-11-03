@@ -109,6 +109,14 @@ Parameters:
       / `-UsersTableArn` so a feature can RBAC-gate a sensitive view by the
       caller's config-version access (has an EmailIndex GSI). Leave blank to skip.
 
+  TenantIsolationMode:
+    Type: String
+    Default: "Off"
+    AllowedValues: ["Off", "Strict"]
+    Description: The main stack's TenantIsolationMode, published as the SSM
+      parameter `/<MainStackName>/tenant-isolation-mode` so a feature that resolves
+      a caller's configuration scope applies the same strict-mode rule the host does.
+
   UsersTableArn:
     Type: String
     Default: ''
@@ -859,6 +867,21 @@ Resources:
   # to write under features/<id>/*. The ui-deployer custom resource in each
   # feature stack assumes a role that carries that session tag.
   ###########################################################################
+  # The host's TenantIsolationMode, for feature stacks that resolve a caller's
+  # configuration scope. An SSM parameter rather than a stack export, deliberately:
+  # CloudFormation refuses to change the value of an export another stack imports,
+  # so an exported mode would make TenantIsolationMode impossible to change once a
+  # feature imported it. The parameter's NAME is fixed by convention and its VALUE
+  # follows the main stack's parameter on every update; a feature reads it at run
+  # time (see the PII anonymizer's feature API).
+  TenantIsolationModeParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${MainStackName}/tenant-isolation-mode'
+      Type: String
+      Description: The main stack's TenantIsolationMode (Off or Strict), read at run time by feature stacks.
+      Value: !Ref TenantIsolationMode
+
   InstalledFeaturesTableNameParam:
     Type: AWS::SSM::Parameter
     Properties:

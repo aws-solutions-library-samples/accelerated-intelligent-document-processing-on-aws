@@ -237,6 +237,11 @@ class TestTestRunnerRBAC:
             ) as _mock_store_metadata,
             patch.object(test_runner_index.sqs, "send_message") as mock_sqs,
             patch("datetime.datetime") as mock_datetime,
+            # An unscoped Author: this test is about the group gate, and the
+            # profile-scope check that follows it is covered in test_run_scope.py.
+            patch.object(
+                test_runner_index, "resolve_allowed_config_versions", return_value=None
+            ),
         ):
             # Mock return values
             mock_get_test_set.return_value = {

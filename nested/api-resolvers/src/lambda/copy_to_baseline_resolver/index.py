@@ -10,6 +10,8 @@ import time
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+
+from idp_common import document_scope
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -218,6 +220,10 @@ def copy_files_async(object_key, source_bucket, destination_bucket):
             'failed': 0,
             'elapsed_seconds': time.time() - start_time
         }
+
+# Per-container cache of callers' configuration scopes (see config_scope).
+_user_scope_cache: dict = {}
+
 
 def update_document_copy_status(object_key, evaluation_status=None):
     """
@@ -434,6 +440,20 @@ def handler(event, context):
             # Extract parameters from the GraphQL event
             object_key = event['arguments']['objectKey']
             logger.info(f"GraphQL mutation parameters: object_key={object_key}")
+
+            # The copy reads every output object under the document's key, so the
+            # document must be in the caller's configuration scope. Admins skip the
+            # lookup. (The async self-invocation above is reached only from here,
+            # after this check.)
+            dynamodb = boto3.resource('dynamodb')
+            document_scope.require_document_scope(
+                event,
+                [object_key],
+                users_table_name=os.environ.get('USERS_TABLE_NAME', ''),
+                dynamodb=dynamodb,
+                tracking_table=lambda: dynamodb.Table(os.environ['TRACKING_TABLE']),
+                cache=_user_scope_cache,
+            )
             
             # Get bucket names from environment variables
             source_bucket = os.environ['OUTPUT_BUCKET']

@@ -18,7 +18,13 @@ from idp_common.config.prefix_mappings import (
     canonical_key,
     resolve_config_assignment,
 )
+from idp_common.config.tenants import (
+    TenantStore,
+    ingest_rejection_reason,
+    is_strict_isolation,
+)
 from idp_common.config_scope import (
+    STRICT_UNSCOPED_DENY,
     ScopeLookupError,
     caller_email_from_claims,
     caller_sub_from_claims,
@@ -227,6 +233,33 @@ def _prefix_mappings():
         return []
 
 
+def _tenant_boundary_reason(object_key, profile):
+    """Strict mode: why ingest would refuse this upload on tenant grounds, or ``None``.
+
+    The same rule ``queue_sender`` applies a moment later
+    (``idp_common.config.tenants.ingest_rejection_reason``), asked here so the
+    caller gets a 400 instead of a presigned POST for a document that is going to
+    be recorded FAILED. Fails closed, unlike ``_prefix_mappings``: ingest refuses
+    to process when the tenant set cannot be read, so minting a URL here would only
+    defer the same refusal. ``submission_source`` is ``None`` because a web
+    upload can never carry one (the presigned POST does not list the field).
+
+    Uncached on purpose, unlike the scope lookup beside it: the tenant index is one
+    small consistent read, and caching it would let an upload be approved against a
+    tenant set an Admin has just changed.
+    """
+    if not is_strict_isolation():
+        return None
+    table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
+    if not table_name:
+        raise RuntimeError(
+            "CONFIGURATION_TABLE_NAME is not set, so the tenant boundary for this "
+            "upload cannot be checked"
+        )
+    tenants = TenantStore(_dynamodb.Table(table_name)).list()
+    return ingest_rejection_reason(object_key, profile, tenants)
+
+
 def _allowed_config_versions(event):
     """The caller's configuration scope, or a refusal.
 
@@ -237,13 +270,22 @@ def _allowed_config_versions(event):
     """
     claims = (event.get("identity") or {}).get("claims", {}) or {}
     try:
-        return resolve_allowed_config_versions(
+        scope = resolve_allowed_config_versions(
             caller_email_from_claims(claims),
             users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
             dynamodb=_dynamodb,
             caller_sub=caller_sub_from_claims(claims),
             cache=_user_scope_cache,
         )
+        # This resolver looks Admins up as well, and has always held an Admin who
+        # carries a scope row to it. Strict isolation must not weaken that, so the
+        # only thing an Admin is spared here is the deny-everything sentinel an
+        # UNSCOPED caller resolves to under Strict, which would otherwise leave an
+        # Admin with no scope row unable to upload at all. A scoped Admin stays
+        # scoped in both modes, so Strict is never looser than Off.
+        if scope == [STRICT_UNSCOPED_DENY] and _caller_in_groups(event, ("Admin",)):
+            return None
+        return scope
     except ScopeLookupError:
         logger.warning(
             "Denying an upload: the caller's configuration scope could not be evaluated"
@@ -413,6 +455,10 @@ def resolve_destination(
         )
     if assignment.rejected:
         raise ValueError(assignment.reason)
+    boundary = _tenant_boundary_reason(object_key, assignment.profile)
+    if boundary:
+        logger.warning("Rejecting an upload to %r: %s", object_key, boundary)
+        raise ValueError(boundary)
     return assignment
 
 
