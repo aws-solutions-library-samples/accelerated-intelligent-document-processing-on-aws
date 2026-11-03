@@ -117,6 +117,14 @@ anywhere, in both modes.
 
 ### Turning strict mode on
 
+**Prerequisite:** only the people who deploy the generated access point template may
+hold `s3:CreateAccessPoint` and `s3:PutAccessPointPolicy` in the stack's account. In
+strict mode the bucket policies delegate to *any* access point the account owns, so
+the generated access points' denies are the whole confinement, and a principal able to
+create its own access point is outside it (see [Confine each tenant's writers and
+readers to its prefixes](#confine-each-tenants-writers-and-readers-to-its-prefixes)).
+Enforce this with IAM or an SCP before switching.
+
 1. Declare every tenant (Configuration → Prefix Mappings → **Tenants**, or `idp-cli
    tenancy apply`).
 2. Run `idp-cli tenancy audit` and fix every finding: mappings that cross a boundary,

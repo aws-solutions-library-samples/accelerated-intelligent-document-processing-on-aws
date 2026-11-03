@@ -3070,6 +3070,8 @@ acme:
   kmsKeyArn: arn:aws:kms:us-east-1:123456789012:key/EXAMPLE   # optional
 ```
 
+In AWS GovCloud (US) the ARNs use the `aws-us-gov` partition (`arn:aws-us-gov:iam::…`).
+
 Output-bucket keys begin with the document's input key, so a tenant's output access
 point is confined to the same prefixes as its input one. The generated template
 creates only the access points. The stack's bucket policies delegate to access points

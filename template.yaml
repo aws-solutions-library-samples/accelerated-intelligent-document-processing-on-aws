@@ -3897,8 +3897,8 @@ Resources:
               # bucket, and nothing outside the solution needs to read or list it.
               Action:
                 - "s3:PutObject"
+              # Objects only: s3:PutObject never evaluates against the bucket ARN.
               Resource:
-                - !GetAtt InputBucket.Arn
                 - !Sub "${InputBucket.Arn}/*"
               Condition:
                 StringEquals:
