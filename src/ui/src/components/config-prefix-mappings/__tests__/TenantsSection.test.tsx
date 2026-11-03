@@ -101,6 +101,16 @@ describe('TenantsSection', () => {
     expect(await screen.findByText('No tenants')).toBeInTheDocument();
   });
 
+  it('says what an empty tenant list means under strict isolation', async () => {
+    mockGraphql.mockImplementation(({ query }: { query: string }) =>
+      query.includes('listTenants')
+        ? Promise.resolve({ data: { listTenants: { success: true, isolationMode: 'Strict', tenants: [] } } })
+        : routeGraphql({ query }),
+    );
+    render(<TenantsSection />);
+    expect(await screen.findByText(/Once the first tenant is declared, every upload outside/)).toBeInTheDocument();
+  });
+
   it('shows a failed list instead of an empty table', async () => {
     mockGraphql.mockImplementation(({ query }: { query: string }) =>
       query.includes('listTenants')

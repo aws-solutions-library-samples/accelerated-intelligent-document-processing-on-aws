@@ -230,7 +230,8 @@ const TenantsSection = (): React.JSX.Element => {
           {isolationMode === 'Off' && (
             <Alert type="info" header="Tenant isolation mode is Off">
               Tenant boundaries are checked when mappings, tenants and user scopes are saved, but uploads are not checked at ingest and
-              users with no configuration scope still see every document. Deploy with TenantIsolationMode set to Strict to enforce both.
+              users with no configuration scope still see every document. Update the stack with TenantIsolationMode set to Strict to enforce
+              both.
             </Alert>
           )}
 
@@ -245,7 +246,9 @@ const TenantsSection = (): React.JSX.Element => {
                 <SpaceBetween size="s">
                   <b>No tenants</b>
                   <Box color="text-body-secondary">
-                    Without tenants, prefix mappings and user scopes are not checked against any boundary.
+                    {isolationMode === 'Strict'
+                      ? "No tenant boundary is checked yet, so uploads are processed as before, while users with no configuration scope see no documents. Once the first tenant is declared, every upload outside every tenant's prefixes is refused at ingest, so declare all of them before relying on it."
+                      : 'Without tenants, prefix mappings and user scopes are not checked against any boundary.'}
                   </Box>
                   <Button onClick={openCreate}>Create tenant</Button>
                 </SpaceBetween>

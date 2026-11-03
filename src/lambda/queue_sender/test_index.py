@@ -2934,10 +2934,13 @@ class TestStrictTenantIsolationAtTheVerdict:
     during the scan must not admit a document the upload path would have refused."""
 
     @staticmethod
-    def _run(assignment, key, *, mode="Strict"):
+    def _run(assignment, key, *, mode="Strict", row_source=None):
         import index
 
         doc = _mock_document(key)
+        # What a failed object-metadata read leaves: no submission source on the
+        # document built from the verdict, so only the row knows it.
+        doc.submission_source = None
         store = MagicMock()
         store.return_value.list.return_value = [ACME, GLOBEX]
         with (
@@ -2960,7 +2963,9 @@ class TestStrictTenantIsolationAtTheVerdict:
             patch.object(index, "_config_table", return_value=MagicMock()),
             patch.object(index.xray_recorder, "current_segment", return_value=None),
         ):
-            mock_doc_service.get_document.return_value = _row_double()
+            row = _row_double()
+            row.submission_source = row_source
+            mock_doc_service.get_document.return_value = row
             response = index.handler(make_scan_result_event(key=key), None)
         return response, doc, mock_sqs, mock_doc_service, store
 
@@ -2978,6 +2983,17 @@ class TestStrictTenantIsolationAtTheVerdict:
     def test_a_clean_verdict_for_an_in_tenant_document_is_admitted(self):
         _, doc, mock_sqs, _, _ = self._run(
             FakeAssignment(profile="acme-invoices"), "clients/acme/x.pdf"
+        )
+        assert doc.status == Status.QUEUED
+        mock_sqs.send_message.assert_called_once()
+
+    def test_the_rows_submission_source_decides_when_the_metadata_read_failed(self):
+        """An internal producer's document outside every tenant is admitted on the
+        row's authority. Checked before the overlay, it would be refused."""
+        _, doc, mock_sqs, _, _ = self._run(
+            FakeAssignment(profile="lending"),
+            "redacted/x.pdf",
+            row_source="pii-anonymizer",
         )
         assert doc.status == Status.QUEUED
         mock_sqs.send_message.assert_called_once()

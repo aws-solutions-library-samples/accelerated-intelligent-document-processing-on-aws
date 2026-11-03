@@ -965,19 +965,6 @@ def handle_scan_result(event):
             exc_info=True,
         )
         assignment = None
-    # Strict isolation re-checks the tenant boundary here, because the
-    # configuration was just re-resolved: a tenant or mapping change while the scan
-    # was in flight could otherwise admit a document the upload path would have
-    # refused. Unlike a mapping rejection (see above) this one is acted on, since
-    # admitting it would place the document in another tenant's view. Raises, so
-    # the verdict is re-delivered, when the boundary cannot be evaluated.
-    boundary = enforce_tenant_boundary(document, object_key, assignment)
-    tenant_refusal = (
-        boundary.reason
-        if boundary is not None and boundary is not assignment and boundary.rejected
-        else None
-    )
-
     existing = document_service.get_document(object_key)
     if existing is None:
         # The verdict beat the upload event. Handled the same way as a lost
@@ -1001,6 +988,24 @@ def handle_scan_result(event):
         existing.submission_source or document.submission_source
     )
     document.test_set_id = existing.test_set_id or document.test_set_id
+
+    # Strict isolation re-checks the tenant boundary here, because the
+    # configuration was just re-resolved: a tenant or mapping change while the scan
+    # was in flight could otherwise admit a document the upload path would have
+    # refused. Unlike a mapping rejection (see above) this one is acted on, since
+    # admitting it would place the document in another tenant's view. Raises, so
+    # the verdict is re-delivered, when the boundary cannot be evaluated.
+    #
+    # It runs AFTER the row overlay above on purpose. `submission_source` decides
+    # the internal-producer and Test Studio branches of the rule, and the copy read
+    # from object metadata is lost whenever that read fails, while the row's is
+    # authoritative -- checking first would refuse a legitimate internal document.
+    boundary = enforce_tenant_boundary(document, object_key, assignment)
+    tenant_refusal = (
+        boundary.reason
+        if boundary is not None and boundary is not assignment and boundary.rejected
+        else None
+    )
 
     document.malware_scan_status = scan_status
     document.malware_scan_result = result_status

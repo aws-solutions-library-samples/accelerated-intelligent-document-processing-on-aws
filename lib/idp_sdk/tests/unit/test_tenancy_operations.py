@@ -302,14 +302,20 @@ def test_generate_policies_template(tenancy):
     assert set(denies) == {
         "DenyPrincipalsOfOtherTenants",
         "DenyObjectsOutsideTenantPrefixes",
+        "DenyListingOutsideTenantPrefixes",
     }
     assert denies["DenyPrincipalsOfOtherTenants"]["Condition"] == {
         "ArnNotEquals": {"aws:PrincipalArn": [UPLOADER]}
     }
-    assert denies["DenyObjectsOutsideTenantPrefixes"]["Action"] == "s3:PutObject"
-    assert (
-        denies["DenyObjectsOutsideTenantPrefixes"]["NotResource"] == stmt[0]["Resource"]
+    # Every action, so the guarantee does not depend on which actions the bucket
+    # policy happens to delegate; the access point root is left to the list Deny.
+    outside = denies["DenyObjectsOutsideTenantPrefixes"]
+    assert outside["Action"] == "s3:*"
+    root, *objects = outside["NotResource"]
+    assert root["Fn::Sub"].endswith(
+        "accesspoint/" + tp.access_point_name(STACK, "acme", "in")
     )
+    assert objects == stmt[0]["Resource"]
     (resource,) = stmt[0]["Resource"]
     assert resource["Fn::Sub"].startswith("arn:${AWS::Partition}:s3:")
     assert resource["Fn::Sub"].endswith("/object/clients/acme/*")
@@ -328,7 +334,7 @@ def test_generate_policies_template(tenancy):
     assert out_denies["DenyListingOutsideTenantPrefixes"]["Condition"] == {
         "StringNotLike": {"s3:prefix": ["clients/acme/*"]}
     }
-    assert out_denies["DenyObjectsOutsideTenantPrefixes"]["Action"] == "s3:GetObject"
+    assert out_denies["DenyObjectsOutsideTenantPrefixes"]["Action"] == "s3:*"
     assert actions["s3:ListBucket"]["Condition"] == {
         "StringLike": {"s3:prefix": ["clients/acme/*"]}
     }

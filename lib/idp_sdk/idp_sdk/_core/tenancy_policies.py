@@ -223,9 +223,9 @@ def access_point_policy(
     # — measured on a deployed stack. Explicit Denies win over any Allow, so these
     # three are the confinement, and they hold whatever the roles' own policies say:
     #   * nobody but this tenant's principals may use this access point at all;
-    #   * nobody may touch an object outside this tenant's prefixes through it;
-    #   * (reads) nobody may list outside them.
-    object_action = "s3:PutObject" if direction == DIRECTION_IN else "s3:GetObject"
+    #   * no action at all may reach an object outside this tenant's prefixes
+    #     through it, whichever actions the bucket policy delegates;
+    #   * nobody may list outside them.
     statements.append(
         {
             "Sid": "DenyPrincipalsOfOtherTenants",
@@ -236,32 +236,38 @@ def access_point_policy(
             "Condition": {"ArnNotEquals": {"aws:PrincipalArn": list(principals)}},
         }
     )
+    # Every action, not just the one this access point grants. Confining only the
+    # granted action would make the guarantee depend on the bucket policy happening
+    # to delegate that one action too: delegating s3:DeleteObject later, say, would
+    # leave the tenant's own role free to delete under any prefix through here. The
+    # access point root stays outside this Deny so that ListBucket is decided by the
+    # prefix condition below rather than refused outright.
     statements.append(
         {
             "Sid": "DenyObjectsOutsideTenantPrefixes",
             "Effect": "Deny",
             "Principal": "*",
-            "Action": object_action,
-            "NotResource": [arn(f"/object/{_prefix_pattern(p)}") for p in prefixes],
+            "Action": "s3:*",
+            "NotResource": [
+                arn(""),
+                *[arn(f"/object/{_prefix_pattern(p)}") for p in prefixes],
+            ],
         }
     )
-    if direction != DIRECTION_IN:
-        statements.append(
-            {
-                "Sid": "DenyListingOutsideTenantPrefixes",
-                "Effect": "Deny",
-                "Principal": "*",
-                "Action": "s3:ListBucket",
-                "Resource": arn(""),
-                # A negated operator matches when s3:prefix is absent, so an
-                # unprefixed listing of the whole bucket is refused too.
-                "Condition": {
-                    "StringNotLike": {
-                        "s3:prefix": [_prefix_pattern(p) for p in prefixes]
-                    }
-                },
-            }
-        )
+    statements.append(
+        {
+            "Sid": "DenyListingOutsideTenantPrefixes",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:ListBucket",
+            "Resource": arn(""),
+            # A negated operator matches when s3:prefix is absent, so an unprefixed
+            # listing of the whole bucket is refused too.
+            "Condition": {
+                "StringNotLike": {"s3:prefix": [_prefix_pattern(p) for p in prefixes]}
+            },
+        }
+    )
     return {"Version": "2012-10-17", "Statement": statements}
 
 

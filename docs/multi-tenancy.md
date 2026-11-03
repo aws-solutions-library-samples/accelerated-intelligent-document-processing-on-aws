@@ -79,7 +79,7 @@ behaviour.
 |---|---|---|
 | Non-admin user with no scope | Sees every document | Sees **nothing** until an admin sets a scope |
 | Upload under tenant T processed under a profile of another tenant (via upload metadata, `submission-source`, or an ancestor mapping) | Processed | **Refused** at ingest, recorded as Failed with the reason |
-| Upload outside every tenant's prefixes | Processed under the active profile | **Refused** at ingest (internal producers excepted, below) |
+| Upload outside every tenant's prefixes | Processed under the active profile | **Refused** at ingest once at least one tenant is declared (internal producers excepted, below) |
 | Document chat | Streams through the chat Function URL | Uses the REST path, which carries the caller's verified identity and so can be scoped; the Function URL refuses |
 | Agent Chat, agent queries and Knowledge Base queries, which read across documents | Available to their usual groups | **Admin only** |
 | MCP tools | Available | **Refused**: the gateway passes no user identity to scope by |

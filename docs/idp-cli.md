@@ -3075,7 +3075,7 @@ point is confined to the same prefixes as its input one. The generated template
 creates only the access points. The stack's bucket policies delegate to access points
 in its own account when `TenantIsolationMode=Strict`. Each access point policy confines
 with explicit denies — no other principal may use it, and nothing outside the tenant's
-prefixes may be read or written through it — so the confinement holds whatever the
+prefixes may be reached through it by any action — so the confinement holds whatever the
 roles' own policies allow. A role in the stack's account needs no S3 permission of its
 own; a role in another account needs an identity policy allowing its own access point.
 Every role needs use of the stack's KMS key. The command prints what is needed.
