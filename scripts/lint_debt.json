@@ -416,7 +416,6 @@
     "scripts/tests/test_secure_transport_deny.py",
     "scripts/tests/test_state_machine_retry_policies.py",
     "scripts/tests/test_threat_model_currency.py",
-    "scripts/tests/test_well_architected_doc.py",
     "security/threat-modeling/scripts/build_threat_model.py",
     "src/lambda/agent_chat_processor/index.py",
     "src/lambda/agent_processor/index.py",
@@ -493,6 +492,6 @@
   "highWaterMark": {
     "lintDebtFiles": 72,
     "lintFindings": 176,
-    "formatDebtFiles": 165
+    "formatDebtFiles": 164
   }
 }
