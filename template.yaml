@@ -117,7 +117,9 @@ Parameters:
       every tenant's prefixes is refused; Agent Chat, agent queries and Knowledge
       Base queries are Admin-only and MCP tools are refused, because none can be
       scoped to a tenant; and the Input and Output bucket policies delegate to S3
-      Access Points in this account. Declare tenants before switching to Strict.
+      Access Points in this account, so restrict s3:CreateAccessPoint and
+      s3:PutAccessPointPolicy to the access point deployer first. Declare tenants
+      before switching to Strict.
 
   # External Identity Provider (Federation)
 

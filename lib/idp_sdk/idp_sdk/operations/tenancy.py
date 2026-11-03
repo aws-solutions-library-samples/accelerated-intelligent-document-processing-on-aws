@@ -153,11 +153,28 @@ class TenancyOperation:
     def isolation_mode(self, stack_name: Optional[str] = None) -> str:
         """The stack's ``TenantIsolationMode`` parameter, or ``Unknown``."""
         name = self._client._require_stack(stack_name)
-        stacks = self._boto("cloudformation").describe_stacks(StackName=name)["Stacks"]
-        for p in stacks[0].get("Parameters") or []:
-            if p.get("ParameterKey") == ISOLATION_PARAMETER:
-                return p.get("ParameterValue") or UNKNOWN_MODE
-        return UNKNOWN_MODE
+        return self._parameter(name, ISOLATION_PARAMETER) or UNKNOWN_MODE
+
+    def verify_email_domain(
+        self, stack_name: Optional[str] = None, email_domain: Optional[str] = None
+    ) -> str:
+        """The domain ``verify`` creates its throwaway users in.
+
+        ``email_domain`` if given; else the first domain in the stack's
+        ``AllowedSignUpEmailDomain`` (the API refuses to create a user outside it);
+        else ``example.com``.
+        """
+        if email_domain:
+            return email_domain.strip().lstrip("@")
+        name = self._client._require_stack(stack_name)
+        allowed = [
+            d.strip().lstrip("@").lower()
+            for d in (self._parameter(name, "AllowedSignUpEmailDomain") or "").split(
+                ","
+            )
+            if d.strip()
+        ]
+        return allowed[0] if allowed else "example.com"
 
     # ----- declarations ------------------------------------------------------
 
@@ -697,16 +714,7 @@ class TenancyOperation:
         tenants = tenant_store.list()
         mappings = mapping_store.list()
         mode = self.isolation_mode(name)
-        allowed = [
-            d.strip().lstrip("@").lower()
-            for d in (self._parameter(name, "AllowedSignUpEmailDomain") or "").split(
-                ","
-            )
-            if d.strip()
-        ]
-        domain = (email_domain or (allowed[0] if allowed else "example.com")).lstrip(
-            "@"
-        )
+        domain = self.verify_email_domain(name, email_domain)
         buckets = self._buckets(name)
         ctx = ui_api.resolve_ui_context(
             name, self._client._region, self._boto("cloudformation")

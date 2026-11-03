@@ -61,7 +61,7 @@ turns those mistakes into refusals.
 |---|---|
 | Saves a prefix mapping | the prefix is inside tenant T and the profile is not one of T's, or the prefix is outside every tenant and the profile belongs to a tenant |
 | Saves a tenant | it overlaps another tenant, or an existing prefix mapping would cross the new boundary |
-| Sets a user's scope | the scope reaches more than one tenant, mixes a tenant with untenanted profiles, or contains a pattern such as `a*` that could match a tenant's profiles without naming its stem |
+| Sets a user's configuration-profile scope (`allowedConfigVersions`) | the scope reaches more than one tenant, mixes a tenant with untenanted profiles, or contains a pattern such as `a*` that could match a tenant's profiles without naming its stem |
 | Saves a tenant, again | any non-admin user's stored scope would cross a boundary under the new tenant set. The refusal names one such user and counts the rest |
 
 Each refusal names the tenant, prefix or profile involved, so it can be fixed from the
@@ -177,6 +177,10 @@ inside the stack. That has these consequences:
   operation that should declare one does: a new operation that reads documents
   without a check is a cross-tenant read until it is added. `idp-cli tenancy verify`
   and `make verify-tenant-isolation` exercise the boundary on a live stack.
+- **Test sets have no tenant.** An Annotator's test-set scope (`allowedTestSets`) is
+  not checked against tenant declarations, because a test set records no tenant. In a
+  shared stack, keep test sets built from one tenant's documents assigned only to that
+  tenant's Annotators.
 - **Throughput is shared.** One tenant's bulk upload uses the same workflow
   concurrency and Bedrock quotas as everyone else's.
 - **Logs and metrics are shared.** Do not log document content. CloudWatch Logs

@@ -982,3 +982,55 @@ def test_id_token_retries_only_the_propagation_error():
             "p",
             sleep=sleeps.append,
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "explicit,parameter,expected",
+    [
+        ("given.test", "corp.test", "given.test"),
+        ("@given.test", None, "given.test"),
+        (None, "corp.test, other.test", "corp.test"),
+        (None, "@Corp.Test", "corp.test"),
+        (None, "", "example.com"),
+        (None, None, "example.com"),
+    ],
+)
+def test_verify_email_domain(monkeypatch, explicit, parameter, expected):
+    op = IDPClient(stack_name=STACK, region="us-east-1").tenancy
+    monkeypatch.setattr(op, "_parameter", lambda stack, key: parameter)
+    assert op.verify_email_domain(STACK, explicit) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value,expected", [("Strict", "Strict"), ("Off", "Off"), (None, "Unknown")]
+)
+def test_isolation_mode_reads_the_stack_parameter(monkeypatch, value, expected):
+    op = IDPClient(stack_name=STACK, region="us-east-1").tenancy
+    seen = []
+    monkeypatch.setattr(op, "_parameter", lambda stack, key: seen.append(key) or value)
+    assert op.isolation_mode(STACK) == expected
+    assert seen == ["TenantIsolationMode"]
+
+
+@pytest.mark.unit
+def test_parameter_reads_one_value_from_describe_stacks(monkeypatch):
+    op = IDPClient(stack_name=STACK, region="us-east-1").tenancy
+
+    class _Cfn:
+        def describe_stacks(self, StackName):
+            return {
+                "Stacks": [
+                    {
+                        "Parameters": [
+                            {"ParameterKey": "A", "ParameterValue": "1"},
+                            {"ParameterKey": "B", "ParameterValue": "2"},
+                        ]
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(op, "_boto", lambda service: _Cfn())
+    assert op._parameter(STACK, "B") == "2"
+    assert op._parameter(STACK, "C") is None
