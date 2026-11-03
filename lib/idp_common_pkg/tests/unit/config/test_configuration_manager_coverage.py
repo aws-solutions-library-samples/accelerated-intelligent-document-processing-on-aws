@@ -2859,20 +2859,15 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
 @pytest.mark.unit
 @mock_aws
 class TestTheBackfillWriteBackPreservesRevisionProofs:
-    """⚠️ A save that cuts no revision rewrites the head without refreshing the
-    published entry's ``storedHash``, and for one kind of published revision that
-    destroys its only integrity proof.
+    """For a profile with revision history the write-back is a revision (#1782).
 
-    ``config/README.md``: a revision cut before ``storedHash`` existed is proven
-    only by the legacy ``UpdatedAt <= createdAt`` comparison, "and that proof is
-    gone the first time anything rewrites the head" — after which a pinned read of
-    it raises once its body expires.
-
-    The hazard predates the backfill, but only for legacy sparse profiles.
-    Resolving **every** profile against the default would take it to every
-    profile, once, after any field-adding upgrade. So the write-back is skipped
-    exactly where it could destroy a proof, and nowhere else: correctness never
-    depended on it, since the resolution happens on every read regardless.
+    Writing the resolved head back without one would leave a published revision
+    that documents run and a head the editor shows that differ, and for a revision
+    cut before ``storedHash`` existed it would also destroy that revision's only
+    integrity proof. Recording a new revision avoids both: the new revision is
+    published with its own hash, and the old one keeps its body and entry. A
+    process that cannot record the revision writes nothing, and the resolution
+    still applies to its read.
     """
 
     @staticmethod
@@ -2925,17 +2920,18 @@ class TestTheBackfillWriteBackPreservesRevisionProofs:
         assert merged is not None
         assert spy.called, "a hashed published revision should not block the write-back"
 
-    def test_a_published_revision_without_a_hash_is_not_written_back(self, monkeypatch):
-        """⚠️ The case the guard exists for. The resolution must still apply to
-        this read — only the stored record is left alone."""
+    def test_a_published_revision_without_a_hash_gets_a_new_revision(self, monkeypatch):
+        """The case the old write-back had to skip: rewriting the head without a
+        revision would have destroyed this revision's legacy proof. A new revision
+        leaves it intact and publishes the resolved configuration."""
         merged, spy = self._run(
             monkeypatch, {"revision": 1, "createdAt": "2026-01-01T00:00:00Z"}
         )
         assert merged is not None
         assert merged.classification.combined.llm.model == "us.amazon.nova-2-lite-v1:0"
-        # Backfilled on THIS read even though nothing was persisted.
         assert merged.summarization.model == SEEDED_MODEL
-        spy.assert_not_called()
+        assert spy.call_args.kwargs["created_by"] == "system"
+        assert "cut_revision" not in spy.call_args.kwargs
 
     def test_no_published_revision_is_written_back(self, monkeypatch):
         """Nothing to lose."""
@@ -2964,35 +2960,39 @@ class TestTheBackfillWriteBackPreservesRevisionProofs:
         assert merged is not None
         assert spy.called
 
-    def test_history_disabled_is_written_back(self, monkeypatch):
-        """With no bucket there is no revision history to protect, and this is
-        the pre-existing behaviour for a sparse profile."""
+    def test_a_process_that_cannot_record_a_revision_writes_nothing(self, monkeypatch):
+        """No bucket in this process, but the profile has history: the save that
+        would record the resolution is refused before it writes, so the head is
+        left as stored and the resolution applies to this read only."""
         table = _make_table()
         manager = _manager(monkeypatch)
         _seed_default(manager)
         self._put_full(table, "p")
-        with patch.object(
-            manager, "save_configuration", wraps=manager.save_configuration
-        ) as spy:
-            manager.get_merged_configuration("p")
-        assert spy.called
+        key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#p"}
+        before = table.get_item(Key=key)["Item"]
+        merged = manager.get_merged_configuration("p")
+        assert merged is not None and merged.summarization.model == SEEDED_MODEL
+        assert table.get_item(Key=key)["Item"] == before
 
-    def test_an_unreadable_index_fails_closed(self, monkeypatch):
-        """Skipping a convenience write is recoverable; destroying a proof is
-        not. So the unknown answer is 'do not write'."""
+    def test_a_failed_revision_leaves_the_head_and_the_read_intact(self, monkeypatch):
+        """If recording the resolution's revision fails, the save is undone and
+        the read still returns the resolved configuration."""
         table = _make_table(with_bucket=True)
         manager = _manager(monkeypatch, with_bucket=True)
         _seed_default(manager)
         self._put_full(table, "p")
+        key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#p"}
+        before = table.get_item(Key=key)["Item"]
         with patch.object(
-            manager.revisions, "get_entry", side_effect=RuntimeError("index unreadable")
+            manager.revisions, "put_body", side_effect=RuntimeError("S3 refused")
         ):
-            with patch.object(
-                manager, "save_configuration", wraps=manager.save_configuration
-            ) as spy:
-                merged = manager.get_merged_configuration("p")
+            merged = manager.get_merged_configuration("p")
         assert merged is not None, "the read must still succeed"
-        spy.assert_not_called()
+        assert merged.summarization.model == SEEDED_MODEL
+        after = table.get_item(Key=key)["Item"]
+        assert {k: v for k, v in after.items() if k != "LatestRevision"} == {
+            k: v for k, v in before.items() if k != "LatestRevision"
+        }
 
 
 @pytest.mark.unit

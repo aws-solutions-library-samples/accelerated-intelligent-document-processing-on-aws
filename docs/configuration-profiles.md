@@ -353,13 +353,29 @@ naming the revision they do run, the revision history marks that revision
 repair it, make any change in the editor and save, which records a revision matching
 what the editor shows; saving it unchanged does not.
 
-The same warning can appear on a profile nobody edited, when its published revision
-was recorded before a configuration section existed. Reading such a profile fills the
-missing section in from `default` and stores the result, while documents pinned to
-the published revision use the built-in defaults for that section, so the two really
-do differ. The repair is the same. Whether that fill-in should apply to pinned
-revisions too is tracked in
-[#1782](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1782).
+### Settings filled in from `default` are recorded as a revision
+
+Every profile is read against the `default` profile: a setting the profile does not
+have takes `default`'s value. That happens most often after an upgrade adds a
+configuration section an older profile never had. When the fill-in changes a profile
+that has revision history, the result is recorded as a new revision by `system`,
+with the notes **Resolved against default: settings this profile did not have were
+filled in from the default profile**, and it becomes the current revision. So the
+editor, the history and what new documents run stay the same configuration.
+
+Two things follow from that. Documents submitted after the new revision use
+`default`'s values for the filled-in settings; documents already pinned to the
+earlier revision keep it, and so does a Test Studio run. And the earlier revision
+remains in the history unchanged, so **Restore** brings it back if `default`'s
+values are not wanted for this profile.
+
+A stack deployment records these revisions: after it saves `default`, it reads each
+custom profile that has revision history once, and records a revision for every
+profile the fill-in changes. A profile the fill-in does not change gets no revision.
+On a stack with many profiles a deployment stops before its time limit, and the next
+deployment picks up the rest. Until then, a component that records revisions while
+reading the profile, such as discovery, records it the same way, and one that cannot
+applies the fill-in to its own read and leaves the profile as stored.
 
 ### Test Studio: comparing two revisions of one profile
 

@@ -40,6 +40,63 @@ s3_client = boto3.client("s3")
 # Remove slugify function - no longer needed
 
 
+#: Stop the profile sweep with this much of the invocation left, so the custom
+#: resource still sends its response well inside the function's timeout.
+SWEEP_RESERVED_MS = 10_000
+
+
+def resolve_user_profiles_against_default(manager: Any, context: Any) -> int:
+    """
+    Resolve every user profile with revision history against `default`, once.
+
+    A deployment can add settings to `default` that older profiles do not have.
+    Reading such a profile fills them in from `default`, and for a profile with
+    history `get_merged_configuration` records that as a revision made by
+    `system`, which new documents then run (#1782). Without this sweep, that
+    revision would appear whenever some component that can record revisions
+    happened to read the profile. Doing it here, right after `default` is saved,
+    makes it a consequence of the upgrade.
+
+    Skips `default`, stack-managed profiles (this deployment re-saves them) and
+    profiles with no revision history (their documents run the head, and a read
+    resolves it already). A profile the resolution does not change is read and
+    left alone. Best effort throughout: a failure is logged and never fails the
+    deployment, and the sweep stops with `SWEEP_RESERVED_MS` of the invocation
+    left, so profiles it did not reach are resolved by the next deployment.
+    Returns how many profiles were read.
+    """
+    try:
+        versions = manager.list_config_versions()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not list configuration profiles to resolve: {e}")
+        return 0
+    read = 0
+    for version in versions:
+        name = version.get("versionName")
+        if (
+            not name
+            or name == "default"
+            or version.get("managed")
+            or not version.get("publishedRevision")
+        ):
+            continue
+        remaining = getattr(context, "get_remaining_time_in_millis", None)
+        left_ms = remaining() if callable(remaining) else None
+        if isinstance(left_ms, (int, float)) and left_ms < SWEEP_RESERVED_MS:
+            logger.warning(
+                "Stopping the profile sweep to leave time for the response; "
+                "the remaining profiles are resolved on the next deployment"
+            )
+            break
+        try:
+            manager.get_merged_configuration(name)
+            read += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not resolve profile '{name}' against default: {e}")
+    logger.info(f"Resolved {read} user profile(s) against default")
+    return read
+
+
 def fetch_content_from_s3(s3_uri: str) -> Union[Dict[str, Any], str]:
     """
     Fetches content from S3 URI and parses as JSON or YAML if possible
@@ -1161,6 +1218,10 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                     logger.warning(
                         f"Failed to enumerate config versions for BDA auto-enable: {e}"
                     )
+
+            # After `default` is saved: record what resolving each user profile
+            # against it changes, as a revision, so documents run it (#1782).
+            resolve_user_profiles_against_default(manager, context)
 
             cfnresponse.send(
                 event,

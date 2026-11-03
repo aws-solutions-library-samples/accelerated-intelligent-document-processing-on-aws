@@ -469,6 +469,19 @@ Four decisions worth knowing before changing this code:
   code that builds a `ConfigurationManager` itself must set
   `CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`, or a save to a
   profile with history raises `RevisionNotRecordedError`.
+- **Resolving against `default` is recorded as a revision.**
+  `get_merged_configuration` resolves every profile against `default`, and when
+  that changes a profile with revision history it saves the result as a new
+  revision (`created_by="system"`, notes `RESOLVED_AGAINST_DEFAULT_NOTES`) rather
+  than rewriting the head without one. A pinned read builds `IDPConfig` from the
+  revision body without that resolution, so a head rewritten on its own would
+  differ from what documents run (#1782). A process that cannot record the
+  revision is refused before it writes and resolves for its own read only. A
+  profile with no history is written back without a revision, as before. The
+  stack-deployment custom resource (`update_configuration`'s
+  `resolve_user_profiles_against_default`) reads every custom profile with
+  history once after saving `default`, so these revisions are a consequence of
+  the upgrade rather than of whichever component reads the profile next.
 - **`head_matches_published(profile)`** says whether the head is the revision new
   documents run: True, False when the head was changed without a revision (with
   the same proof a pinned read uses, `_head_is_revision`), or None when there is

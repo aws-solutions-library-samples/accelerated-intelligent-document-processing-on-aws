@@ -35,6 +35,12 @@ Two passes, both over ``ast`` and neither importing anything:
    ``ImageConfig.Command`` names and the sibling modules that imports
    (:func:`entry_closure`), since only that handler runs in the function.
 
+A save inside a ``try`` whose ``RevisionNotRecordedError`` handler only logs is
+**refusable** (:func:`_refusable_calls`) and counts as no save at all: without the
+bucket it is refused before writing, so it cannot cause a divergence. That is the
+read-path write-back in ``get_merged_configuration`` (#1782), which every unpinned
+reader runs.
+
 What it does not see: a call through ``getattr``, a registry filled inside a
 function rather than at import time, or a writer reached through a third-party
 module. Each would make the derived set smaller than the true one, which the floor
@@ -60,6 +66,56 @@ SEED_METHODS = frozenset(
 )
 
 Symbol = Tuple[str, str]  # (dotted module, qualified name: "f" or "Class.method")
+
+
+#: The refusal a save raises when it cannot record a profile's revision.
+REFUSAL = "RevisionNotRecordedError"
+
+
+def _only_logs(body: List[ast.stmt]) -> bool:
+    """A handler body that records the refusal and carries on: logging, `pass`."""
+    for stmt in body:
+        if isinstance(stmt, ast.Pass):
+            continue
+        if (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Call)
+            and isinstance(stmt.value.func, ast.Attribute)
+            and isinstance(stmt.value.func.value, ast.Name)
+            and stmt.value.func.value.id == "logger"
+        ):
+            continue
+        return False
+    return True
+
+
+def _refusable_calls(node: ast.AST) -> Set[int]:
+    """Calls whose refusal is caught, logged and dropped: opportunistic saves.
+
+    A save inside a `try` with a `RevisionNotRecordedError` handler that only logs
+    is one the caller is content to lose. Without the bucket it is refused before
+    it writes, so it cannot make a profile diverge, and the process that made it
+    needs no bucket on its account. The write-back in `get_merged_configuration`
+    is the case this exists for (#1782): every unpinned reader runs it, and
+    counting it would make every reader a writer. A handler that re-raises,
+    returns an error or does anything else besides logging is not refusable,
+    because then the save is one the caller depends on.
+    """
+    out: Set[int] = set()
+    for try_node in ast.walk(node):
+        if not isinstance(try_node, ast.Try):
+            continue
+        for handler in try_node.handlers:
+            caught = handler.type
+            names = caught.elts if isinstance(caught, ast.Tuple) else [caught]
+            if any(
+                (isinstance(n, ast.Name) and n.id == REFUSAL)
+                or (isinstance(n, ast.Attribute) and n.attr == REFUSAL)
+                for n in names
+            ) and _only_logs(handler.body):
+                for stmt in try_node.body:
+                    out.update(id(c) for c in ast.walk(stmt) if isinstance(c, ast.Call))
+    return out
 
 
 def _is_seed_call(node: ast.Call) -> bool:
@@ -256,6 +312,7 @@ class _Library:
         # `x = C(...)`, `self.x = C(...)`, `x = given or C(...)`: what `x` holds.
         typed = dict(self._attribute_types(scope, local_classes))
         typed.update(_assigned_types(scope.node, local_classes))
+        refusable = _refusable_calls(scope.node)
         for node in ast.walk(scope.node):
             # A writer passed as a value (a tool list, a creator_func) is reached
             # by whoever calls what it is passed to.
@@ -263,7 +320,7 @@ class _Library:
                 sym = local_classes.get(node.id, (scope.module, node.id))
                 if self.canonical(sym) in self.writers:
                     return True
-            if not isinstance(node, ast.Call):
+            if not isinstance(node, ast.Call) or id(node) in refusable:
                 continue
             if _is_seed_call(node):
                 return True

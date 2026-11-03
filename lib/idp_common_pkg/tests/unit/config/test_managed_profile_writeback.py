@@ -198,7 +198,11 @@ def test_a_genuine_backfill_is_written_back_and_keeps_every_head_attribute(
     manager, name
 ):
     """A field the stored profile lacks is still backfilled and persisted, and
-    the write-back preserves `Managed` and every other head attribute."""
+    the write-back preserves `Managed` and every other head attribute.
+
+    The profile has revision history, so the write-back is a new revision made by
+    `system` (#1782): the revision counters move on by exactly one, and every
+    other head attribute is unchanged."""
     _seed_managed(manager, name)
     manager.set_bda_project_arn(
         name, "arn:aws:bedrock:us-east-1:000000000000:data-automation-project/p"
@@ -227,11 +231,19 @@ def test_a_genuine_backfill_is_written_back_and_keeps_every_head_attribute(
         "CreatedAt",
         "BdaProjectArn",
         "BdaSyncStatus",
-        "LatestRevision",
-        "PublishedRevision",
     ):
         assert attribute in before, f"fixture must set {attribute}"
         assert after.get(attribute) == before[attribute], attribute
+    for counter in ("LatestRevision", "PublishedRevision"):
+        assert after[counter] == before[counter] + 1, counter
+    from idp_common.config.configuration_manager import RESOLVED_AGAINST_DEFAULT_NOTES
+
+    entries = {r["revision"]: r for r in manager.list_revisions(name)}
+    newest = entries[int(after["PublishedRevision"])]
+    assert newest["published"] is True
+    assert newest["createdBy"] == "system"
+    assert newest["notes"] == RESOLVED_AGAINST_DEFAULT_NOTES
+    assert manager.head_matches_published(name) is True
     body = json.loads(gzip.decompress(bytes(after["_compressed_config"].value)))
     assert body["summarization"]["model"] == merged.summarization.model
     assert "managed" not in body, "managed belongs on the head, not in the body"
