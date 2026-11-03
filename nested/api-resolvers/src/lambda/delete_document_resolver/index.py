@@ -16,6 +16,8 @@ import re
 from typing import List
 
 import boto3
+
+from idp_common import document_scope
 from idp_common.api_adapter import ReportedServerError
 from idp_common.delete_documents import delete_single_document
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
@@ -27,6 +29,8 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 # Initialize AWS clients
 dynamodb = boto3.resource("dynamodb")
 s3 = boto3.client("s3")
+# Per-container cache of callers' configuration scopes (see config_scope).
+_user_scope_cache: dict = {}
 
 # Review queues: a deleted document's review items are purged with it. None when
 # HITL_TABLE_NAME is unset; the store builds no client until it is used.
@@ -121,6 +125,20 @@ def handler(event, context):
             raise ValueError("objectKeys must be a non-empty list")
 
         tracking_table = dynamodb.Table(os.environ["TRACKING_TABLE_NAME"])
+
+        # Every document in the selection must be in the caller's configuration
+        # scope, checked before anything is deleted: one out-of-scope key refuses
+        # the whole request, so a partial delete cannot be used to probe which keys
+        # are in scope. Admins skip the lookup.
+        document_scope.require_document_scope(
+            event,
+            object_keys,
+            users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+            dynamodb=dynamodb,
+            tracking_table=tracking_table,
+            cache=_user_scope_cache,
+        )
+
         input_bucket = os.environ["INPUT_BUCKET"]
         output_bucket = os.environ["OUTPUT_BUCKET"]
 
@@ -210,6 +228,10 @@ def handler(event, context):
             )
         return True
 
+    except PermissionError:
+        # A refusal, already logged at WARNING where it was decided; not a fault,
+        # so no ERROR line and no stack trace.
+        raise
     except Exception as e:
         logger.error(f"Error in delete_document resolver: {str(e)}", exc_info=True)
         raise e

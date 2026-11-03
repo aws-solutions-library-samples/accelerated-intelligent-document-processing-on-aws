@@ -183,6 +183,14 @@ def confidence_fingerprint(config_dict: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
+class RevisionNotRecordedError(RuntimeError):
+    """A save of a profile with revision history could not record its revision.
+
+    Raised by `ConfigurationManager.save_configuration` instead of saving a
+    profile whose new documents would keep running the previous revision (#1778).
+    """
+
+
 class ConfigRevisionStore:
     """
     Reads and writes Configuration Profile revisions.
@@ -190,8 +198,11 @@ class ConfigRevisionStore:
     The store is *optional infrastructure*: when no configuration bucket is
     configured (``CONFIGURATION_BUCKET`` unset, e.g. an older deployment or a
     unit test that does not exercise history), ``enabled`` is False and every
-    method degrades to a no-op or empty result. Callers must never fail a
-    configuration save because history could not be recorded.
+    method degrades to a no-op or empty result. For a profile with no history
+    that is harmless, because its documents run the head. A profile that already
+    has a published revision runs that revision, so
+    `ConfigurationManager.save_configuration` refuses to save one when its
+    revision cannot be recorded (`RevisionNotRecordedError`).
     """
 
     def __init__(
@@ -350,10 +361,22 @@ class ConfigRevisionStore:
 
     # ----- index ------------------------------------------------------------
 
-    def _read_index_item(self, profile: str) -> Dict[str, Any]:
+    def _read_index_item(self, profile: str, strict: bool = False) -> Dict[str, Any]:
+        """The index item, or `{}` when absent or (unless `strict`) unreadable.
+
+        `strict` re-raises a read failure and reads consistently. An empty item is
+        also the legitimate state before a profile's first revision, so a caller
+        that must tell "no entry" from "could not look" needs it, and the one that
+        does is deciding whether an append it just saw fail actually landed, which
+        an eventually consistent replica may not show yet.
+        """
         try:
-            response = self.table.get_item(Key=self.index_key(profile))
+            response = self.table.get_item(
+                Key=self.index_key(profile), ConsistentRead=strict
+            )
         except ClientError as e:
+            if strict:
+                raise
             logger.warning(f"Could not read revision index for {profile}: {e}")
             return {}
         return response.get("Item") or {}
@@ -516,7 +539,38 @@ class ConfigRevisionStore:
         if not self.enabled:
             return None
         revision = self.next_number(profile)
+        try:
+            return self._record(
+                profile,
+                revision,
+                config_dict,
+                created_by,
+                notes,
+                label,
+                publish,
+                stored_hash,
+            )
+        except Exception as e:
+            # The caller has no other way to learn which number this failure
+            # allocated, and an entry it left needs explaining (#1784).
+            e.allocated_revision = revision  # type: ignore[attr-defined]
+            raise
+
+    def _record(
+        self,
+        profile: str,
+        revision: int,
+        config_dict: Dict[str, Any],
+        created_by: Optional[str],
+        notes: Optional[str],
+        label: Optional[str],
+        publish: bool,
+        stored_hash: Optional[str],
+    ) -> int:
+        """Write revision `revision`'s body, entry and publication (see `cut`)."""
         _, size = self.put_body(profile, revision, config_dict)
+        # The body is written before its index entry, so an entry that cannot be
+        # appended would leave an object no listing shows and no prune removes.
         entry = {
             "revision": revision,
             "createdAt": _now(),
@@ -530,14 +584,44 @@ class ConfigRevisionStore:
         }
         if stored_hash:
             entry["storedHash"] = stored_hash
-        self.append_index(profile, entry)
+        try:
+            self.append_index(profile, entry)
+        except Exception:
+            # A timeout or reset can arrive after DynamoDB applied the append, so
+            # the failure alone does not prove the entry is absent. Deleting the
+            # body under an entry that exists would leave a listed revision that
+            # cannot be viewed or restored; only an absent entry makes the body
+            # unreachable.
+            try:
+                target = int(revision)
+                absent = not any(
+                    coerce_int(e.get("revision")) == target
+                    for e in self._read_index_item(profile, strict=True).get(
+                        "Revisions", []
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                # The index cannot be read either, so whether the entry exists
+                # is unknown; keeping the body is the recoverable choice.
+                absent = False
+            if absent:
+                self.delete_body(profile, revision)
+            raise
         if publish:
             self.set_published(profile, revision)
         logger.info(
             f"Cut revision r{revision} of configuration profile '{profile}' "
             f"({size:,} bytes uncompressed)"
         )
-        self.prune(profile, published=revision if publish else None)
+        # Housekeeping, after the revision is recorded and published: a failed
+        # prune has no bearing on whether this save's revision exists, and raising
+        # here would make the caller treat a published revision as unrecorded.
+        try:
+            self.prune(profile, published=revision if publish else None)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Recorded r{revision} of '{profile}' but could not prune old revisions: {e}"
+            )
         return revision
 
     def prune(self, profile: str, published: Optional[int] = None) -> List[int]:

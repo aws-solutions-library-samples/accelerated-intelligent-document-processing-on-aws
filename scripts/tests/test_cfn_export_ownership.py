@@ -141,6 +141,7 @@ EXPECTED_EXTENSION_SOURCES = {
 PINNED_PRODUCERS: dict[str, str] = dict.fromkeys(
     (
         "ApplyFeatureConfigPresetFunctionArn",
+        "ConfigurationBucketName",
         "ConfigurationTableArn",
         "ConfigurationTableName",
         "CustomerManagedEncryptionKeyArn",

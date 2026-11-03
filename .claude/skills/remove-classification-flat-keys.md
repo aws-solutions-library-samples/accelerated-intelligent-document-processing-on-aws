@@ -23,18 +23,20 @@ that moves a head onto the current shape by itself is the write-back in
 `ConfigurationManager.get_merged_configuration`, and it is conditional three
 ways. The configuration editor reads through `get_raw_configuration`, which
 relocates keys in memory and writes nothing back. The write is skipped when the
-resolved configuration already matches what is stored. And
-`_backfill_may_be_persisted` **refuses** it for a profile whose published
-revision was cut before revisions recorded a `storedHash`, because rewriting the
-head would destroy the `UpdatedAt <= createdAt` comparison that is that
-revision's only integrity proof — it also fails closed when the revision index
-cannot be read. A profile in that state is converted on every read and keeps the
-old shape in storage indefinitely. What lifts it is a **save** (an editor save,
-Save As Version, `idp-cli config-upload`, or a stack deployment for `default`
-and the managed presets), because a save records a hash and stores the converted
-body; a profile nobody saves again never converges. Nothing sweeps user profiles
-at upgrade time, so on a stack that has been through several releases expect to
-find heads stored at more than one configuration format, all of them resolving
+resolved configuration already matches what is stored. And a profile with
+revision history is never written on read: it is converted in memory on every
+read. What lifts it is a **save** (an editor save, Save As Version,
+`idp-cli config-upload`, or a stack deployment for `default` and the managed
+presets), because a save records a hash and stores the converted body.
+
+⚠️ The stack deployment's sweep of custom profiles
+(`record_resolution_against_default`, #1782) does **not** count as that save for
+format purposes. It records a revision only when resolving against `default`
+changes what the published revision *runs*, and a format conversion changes
+nothing that runs, because a pinned read converts the body in memory too. So a
+custom profile nobody saves again keeps its old format in storage indefinitely,
+and on a stack that has been through several releases expect to find heads and
+bodies stored at more than one configuration format, all of them resolving
 correctly on read.
 
 Removing the conversion makes each of those — head or body — either fail

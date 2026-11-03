@@ -328,6 +328,7 @@ export type ConfigProfileRevisionResponse = {
 
 export type ConfigProfileRevisionsResponse = {
   error?: Maybe<ConfigurationError>;
+  profileMatchesPublished?: Maybe<Scalars['Boolean']['output']>;
   revisions?: Maybe<Array<Maybe<ConfigProfileRevision>>>;
   success: Scalars['Boolean']['output'];
 };
@@ -937,6 +938,7 @@ export type Mutation = {
   deleteFinetuningJob?: Maybe<Scalars['Boolean']['output']>;
   deleteInboxMessages?: Maybe<InboxMutationResult>;
   deleteReviewQueue?: Maybe<Scalars['Boolean']['output']>;
+  deleteTenant?: Maybe<TenantMutationResponse>;
   deleteTestSets: Scalars['Boolean']['output'];
   deleteTests: Scalars['Boolean']['output'];
   deleteUser?: Maybe<Scalars['Boolean']['output']>;
@@ -954,6 +956,7 @@ export type Mutation = {
   publishCircuitBreakerStatus?: Maybe<CircuitBreakerStatus>;
   publishTestSetVersion?: Maybe<TestSetVersion>;
   putConfigPrefixMapping?: Maybe<ConfigPrefixMappingMutationResponse>;
+  putTenant?: Maybe<TenantMutationResponse>;
   reassignReviewItem?: Maybe<ReviewItem>;
   reextractTestSetDocument?: Maybe<DraftLabelJob>;
   /** Called by a feature stack's RegisterFeature custom resource once the stack has deployed. */
@@ -1256,6 +1259,11 @@ export type MutationDeleteReviewQueueArgs = {
 };
 
 
+export type MutationDeleteTenantArgs = {
+  tenantId: Scalars['String']['input'];
+};
+
+
 export type MutationDeleteTestSetsArgs = {
   testSetIds: Array<Scalars['String']['input']>;
 };
@@ -1347,6 +1355,14 @@ export type MutationPutConfigPrefixMappingArgs = {
   enabled?: InputMaybe<Scalars['Boolean']['input']>;
   metadataPrecedence?: InputMaybe<Scalars['String']['input']>;
   prefix: Scalars['String']['input'];
+};
+
+
+export type MutationPutTenantArgs = {
+  description?: InputMaybe<Scalars['String']['input']>;
+  prefixes: Array<Scalars['String']['input']>;
+  profilePattern: Scalars['String']['input'];
+  tenantId: Scalars['String']['input'];
 };
 
 
@@ -1919,6 +1935,7 @@ export type Query = {
   listReviewQueueItems?: Maybe<ReviewItemPage>;
   listReviewQueues?: Maybe<Array<ReviewQueueDefinition>>;
   listSampleDocuments?: Maybe<SampleDocumentListResponse>;
+  listTenants?: Maybe<TenantsResponse>;
   listTestSetQueues?: Maybe<Array<TestSetQueueSummary>>;
   listUsers?: Maybe<UserList>;
   queryKnowledgeBase?: Maybe<Scalars['String']['output']>;
@@ -2593,6 +2610,31 @@ export type SyncBdaIdpResponse = {
   message?: Maybe<Scalars['String']['output']>;
   processedClasses?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   success: Scalars['Boolean']['output'];
+};
+
+export type Tenant = {
+  createdAt?: Maybe<Scalars['String']['output']>;
+  createdBy?: Maybe<Scalars['String']['output']>;
+  description?: Maybe<Scalars['String']['output']>;
+  prefixes: Array<Scalars['String']['output']>;
+  profilePattern: Scalars['String']['output'];
+  tenantId: Scalars['String']['output'];
+  updatedAt?: Maybe<Scalars['String']['output']>;
+  updatedBy?: Maybe<Scalars['String']['output']>;
+};
+
+export type TenantMutationResponse = {
+  error?: Maybe<ConfigurationError>;
+  message?: Maybe<Scalars['String']['output']>;
+  success: Scalars['Boolean']['output'];
+  tenant?: Maybe<Tenant>;
+};
+
+export type TenantsResponse = {
+  error?: Maybe<ConfigurationError>;
+  isolationMode?: Maybe<Scalars['String']['output']>;
+  success: Scalars['Boolean']['output'];
+  tenants?: Maybe<Array<Maybe<Tenant>>>;
 };
 
 export type TestRun = {

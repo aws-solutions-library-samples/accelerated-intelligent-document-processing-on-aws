@@ -127,6 +127,10 @@ const routeGraphql = ({ query }: { query: string }) => {
   if (query.includes('deleteConfigPrefixMapping')) {
     return Promise.resolve({ data: { deleteConfigPrefixMapping: { success: true } } });
   }
+  // The Tenants section above the mappings makes its own list request.
+  if (query.includes('listTenants')) {
+    return Promise.resolve({ data: { listTenants: { success: true, isolationMode: 'Off', tenants: [] } } });
+  }
   if (query.includes('resolveConfigPrefixMapping')) {
     return Promise.resolve({ data: { resolveConfigPrefixMapping: { success: false } } });
   }

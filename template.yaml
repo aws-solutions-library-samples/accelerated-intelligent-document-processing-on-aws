@@ -103,6 +103,24 @@ Parameters:
     ConstraintDescription: >-
       Must be empty or a list of comma separated email domains (example1.com, example2.com)
 
+  TenantIsolationMode:
+    Type: String
+    Default: "Off"
+    AllowedValues:
+      - "Off"
+      - "Strict"
+    Description: >-
+      Off (default) keeps today's behaviour. Strict makes tenant isolation fail
+      closed: a non-Admin user with no configuration scope sees nothing rather than
+      everything; a document is processed only if the tenant owning its Input-bucket
+      key also owns the Configuration Profile it resolves to, so an upload outside
+      every tenant's prefixes is refused; Agent Chat, agent queries and Knowledge
+      Base queries are Admin-only and MCP tools are refused, because none can be
+      scoped to a tenant; and the Input and Output bucket policies delegate to S3
+      Access Points in this account, so restrict s3:CreateAccessPoint and
+      s3:PutAccessPointPolicy to the access point deployer first. Declare tenants
+      before switching to Strict.
+
   # External Identity Provider (Federation)
 
   ExternalIdPType:
@@ -1277,6 +1295,7 @@ Rules:
           integration and does not auto-provision an S3 VPC endpoint).
 
 Conditions:
+  IsTenantIsolationStrict: !Equals [!Ref TenantIsolationMode, "Strict"]
   # API transport: API Gateway REST API + polling + Lambda response streaming is
   # now the only path (the former GraphQL API has been fully removed). No transport
   # conditions are needed — the REST API resources deploy unconditionally.
@@ -1498,6 +1517,7 @@ Metadata:
         Parameters:
           - AdminEmail
           - AllowedSignUpEmailDomain
+          - TenantIsolationMode
       - Label:
           default: "Configuration"
         Parameters:
@@ -2488,6 +2508,7 @@ Resources:
         - !Ref IDPCommonAgentsLayer
       Environment:
         Variables:
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
@@ -3146,6 +3167,7 @@ Resources:
         # User management (for config-version scoping)
         UsersTableName: !Ref UsersTable
         UsersTableArn: !GetAtt UsersTable.Arn
+        TenantIsolationMode: !Ref TenantIsolationMode
 
         # S3 VPC endpoint URL — passed to presigner resolver Lambdas only when
         # explicitly opted in (S3PresignedUrlViaVpcEndpoint=true or BYO override).
@@ -3306,6 +3328,7 @@ Resources:
         # Report is shown only to users allowed the original's config version).
         UsersTableName: !Ref UsersTable
         UsersTableArn: !GetAtt UsersTable.Arn
+        TenantIsolationMode: !Ref TenantIsolationMode
         # Test Set bucket name re-exported so feature stacks that generate test
         # sets (idp-data-generator) can write documents Test Studio discovers.
         TestSetBucketName: !Ref TestSetBucket
@@ -3858,6 +3881,35 @@ Resources:
             Condition:
               Bool:
                 "aws:SecureTransport": false
+          # Strict tenant isolation: let per-tenant S3 Access Points in this
+          # account govern access (`idp-cli tenancy generate-policies` writes them).
+          # Not a public grant: every request it admits arrives through an access
+          # point owned by this account, whose own policy names the principals and
+          # confines them to one tenant's prefixes, and S3 does not treat a policy
+          # conditioned on s3:DataAccessPointAccount as public. The actions are the
+          # ones those access point policies grant, so delegating widens nothing
+          # for a principal that does not use one.
+          # PREREQUISITE this template cannot enforce: the condition admits ANY
+          # access point this account owns, so only the people who deploy the
+          # generated tenant access points may hold s3:CreateAccessPoint and
+          # s3:PutAccessPointPolicy. See docs/multi-tenancy.md for an SCP.
+          - !If
+            - IsTenantIsolationStrict
+            - Sid: DelegateToTenantAccessPoints
+              Effect: Allow
+              Principal:
+                AWS: "*"
+              # Write only: a tenant's uploader delivers documents into the Input
+              # bucket, and nothing outside the solution needs to read or list it.
+              Action:
+                - "s3:PutObject"
+              # Objects only: s3:PutObject never evaluates against the bucket ARN.
+              Resource:
+                - !Sub "${InputBucket.Arn}/*"
+              Condition:
+                StringEquals:
+                  "s3:DataAccessPointAccount": !Ref AWS::AccountId
+            - !Ref AWS::NoValue
 
   StagingBucket:
     Type: AWS::S3::Bucket
@@ -4702,6 +4754,37 @@ Resources:
             Condition:
               Bool:
                 "aws:SecureTransport": false
+          # Strict tenant isolation: let per-tenant S3 Access Points in this
+          # account govern access (`idp-cli tenancy generate-policies` writes them).
+          # Not a public grant: every request it admits arrives through an access
+          # point owned by this account, whose own policy names the principals and
+          # confines them to one tenant's prefixes, and S3 does not treat a policy
+          # conditioned on s3:DataAccessPointAccount as public. The actions are the
+          # ones those access point policies grant, so delegating widens nothing
+          # for a principal that does not use one.
+          # PREREQUISITE this template cannot enforce: the condition admits ANY
+          # access point this account owns, so only the people who deploy the
+          # generated tenant access points may hold s3:CreateAccessPoint and
+          # s3:PutAccessPointPolicy. See docs/multi-tenancy.md for an SCP.
+          - !If
+            - IsTenantIsolationStrict
+            - Sid: DelegateToTenantAccessPoints
+              Effect: Allow
+              Principal:
+                AWS: "*"
+              # Read and list only: a tenant's consumer collects results from the
+              # Output bucket, and nothing outside the solution writes there. Keep
+              # each list to the actions the generated access point policies grant.
+              Action:
+                - "s3:GetObject"
+                - "s3:ListBucket"
+              Resource:
+                - !GetAtt OutputBucket.Arn
+                - !Sub "${OutputBucket.Arn}/*"
+              Condition:
+                StringEquals:
+                  "s3:DataAccessPointAccount": !Ref AWS::AccountId
+            - !Ref AWS::NoValue
 
   ReportingBucket:
     Type: AWS::S3::Bucket
@@ -7725,7 +7808,9 @@ Resources:
         ]
       Handler: index.handler
       Runtime: python3.12
-      Timeout: 30
+      # Saves every preset and then checks each custom profile with revision
+      # history against `default` (#1782), stopping 10 s before this limit.
+      Timeout: 300
       VpcConfig:
         !If
           - DeployInVPC
@@ -8098,6 +8183,9 @@ Resources:
           DATA_RETENTION_IN_DAYS: !Ref DataRetentionInDays
           OUTPUT_BUCKET: !Ref OutputBucket
           CONFIG_TABLE: !Ref ConfigurationTable
+          # Strict: refuse a document whose key and resolved profile belong to
+          # different tenants (``idp_common.config.tenants.ingest_rejection_reason``).
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           # Namespace for this Lambda's telemetry: ``StaleOutputPurgeFailed``
           # (issue #719) and the five prefix-mapping metrics
           # (``PrefixMappingApplied``, ``Conflict``, ``Rejected``,
@@ -10008,6 +10096,27 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
 
+  # Strict tenant isolation fails CLOSED where prefix mappings fail open: a document
+  # whose tenant boundary cannot be checked is not processed, and its event goes to
+  # QueueSenderDLQ after Lambda's retries. Alarm on the first occurrence, because
+  # every document arriving while it lasts is held.
+  TenantIsolationLookupFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsTenantIsolationStrict
+    Properties:
+      AlarmDescription: !Sub "Alert when ${AWS::StackName}, running with TenantIsolationMode=Strict, could not read its tenant declarations at ingest. Strict isolation FAILS CLOSED: the document is not processed, Lambda retries the event twice, and it then lands in the QueueSender dead-letter queue. The object stays in the Input bucket, so recovery is a re-upload (or a redrive) once the cause is fixed. Usual cause is a KMS or table-policy change denying dynamodb:GetItem on the ConfigurationTable. See docs/multi-tenancy.md."
+      MetricName: TenantIsolationLookupFailed
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # Published only on failure, so "no data" means every lookup succeeded.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
   PrefixMappingUnresolvableAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -11694,6 +11803,7 @@ Resources:
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
           USERS_TABLE_NAME: !Ref UsersTable
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           APPSYNC_API_URL: ""
           # Non-streaming (GovCloud poll) path: persist the final chat message to
           # the ChatMessages table so the UI can poll getChatMessages for it when
@@ -11845,6 +11955,7 @@ Resources:
           - !Ref AWS::NoValue
       Environment:
         Variables:
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
@@ -11893,6 +12004,26 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref AgentChatProcessorLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - Statement:
             Effect: Allow
             Action: bedrock-agentcore:InvokeAgentRuntime
@@ -12173,6 +12304,7 @@ Resources:
           CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           TRACKING_TABLE_NAME: !Ref TrackingTable
           USERS_TABLE_NAME: !Ref UsersTable
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           GUARDRAIL_ID_AND_VERSION:
             !If [HasGuardrailConfig, !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}", ""]
           # --- Agent-chat processor env (mirrors AgentChatProcessorFunction) ---
@@ -12209,6 +12341,26 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref ChatStreamProcessorLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3ReadPolicy:
             BucketName: !Ref OutputBucket
         - S3WritePolicy:
@@ -12963,6 +13115,7 @@ Resources:
         Variables:
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           TRACKING_TABLE_NAME: !Ref TrackingTable
           LOOKUP_FUNCTION_NAME: !Ref LookupFunction
           STRANDS_LOG_LEVEL: !Ref LogLevel
@@ -12999,6 +13152,26 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref AgentProcessorLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - DynamoDBCrudPolicy:
             TableName: !Ref AgentTable
         - DynamoDBReadPolicy:
@@ -15172,6 +15345,7 @@ Resources:
           DISCOVERY_BUCKET: !Ref DiscoveryBucket
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTable
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           APPSYNC_API_URL: ""
           BLUEPRINT_OPTIMIZATION_FUNCTION_NAME: !Ref BlueprintOptimizationFunction
       LoggingConfig:
@@ -15185,6 +15359,26 @@ Resources:
             FunctionResponseTypes:
               - ReportBatchItemFailures
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3ReadPolicy:
             BucketName: !Ref DiscoveryBucket
         - DynamoDBCrudPolicy:
@@ -15318,6 +15512,7 @@ Resources:
         InputBucketName: !Ref InputBucket
         TestSetBucketName: !Ref TestSetBucket
         ConfigurationTableName: !Ref ConfigurationTable
+        ConfigurationBucketName: !Ref ConfigurationBucket
         ConfigurationTableArn: !GetAtt ConfigurationTable.Arn
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
@@ -15445,11 +15640,32 @@ Resources:
           METRIC_NAMESPACE: !Ref AWS::StackName
           APPSYNC_API_URL: ""
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           STACK_NAME: !Ref AWS::StackName
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTable
       LoggingConfig:
         LogGroup: !Ref BlueprintOptimizationFunctionLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3CrudPolicy:
             BucketName: !Ref DiscoveryBucket
         - DynamoDBCrudPolicy:
@@ -15924,9 +16140,16 @@ Resources:
               - !Sub "${CustomDomainUrl}/api"
               - !GetAtt APIRESOLVERSTACK.Outputs.HttpApiEndpoint
           # Chat streaming Function URL (IAM-authed, response streaming). The
-          # signed stream client (src/api/stream-client.ts) reads this.
+          # signed stream client (src/api/stream-client.ts) reads this. Empty
+          # under strict tenant isolation, which sends the UI to its REST polling
+          # fallback (as on GovCloud): that path carries the caller's verified
+          # Cognito claims, so it can be scoped, where the Function URL cannot
+          # (GAP-07) and refuses every turn in Strict.
           - Name: VITE_STREAM_URL
-            Value: !GetAtt ChatStreamProcessorUrl.FunctionUrl
+            Value: !If
+              - IsTenantIsolationStrict
+              - ""
+              - !GetAtt ChatStreamProcessorUrl.FunctionUrl
           - Name: VITE_AWS_REGION
             Value: !Ref AWS::Region
           - Name: VITE_ENABLE_QUICK_START_WIDGET
@@ -16147,6 +16370,9 @@ Resources:
           - !Ref ExternalIdPAutoLogin
           # -> VITE_ENABLE_QUICK_START_WIDGET
           - !Ref EnableQuickStartWidget
+          # -> VITE_STREAM_URL (empty under strict tenant isolation, which moves
+          #    chat onto the REST polling path)
+          - !Ref TenantIsolationMode
           # -> VITE_UI_BASE_PATH + VITE_CLOUDFRONT_DOMAIN (Vite `base`, so every
           #    asset URL in the bundle) and the CloudFront-invalidation branch of
           #    the buildspec
@@ -16186,6 +16412,10 @@ Resources:
       Description: Lambda function for user management (create, delete, list users)
       MemorySize: 256
       Timeout: 30
+      # For idp_common.config.tenants: a scope an admin sets is checked against
+      # the tenant declarations with the same code the configuration resolver uses.
+      Layers:
+        - !Ref IDPCommonBaseLayer
       Environment:
         Variables:
           USER_POOL_ID: !Ref UserPool
@@ -16195,12 +16425,24 @@ Resources:
           ANNOTATOR_GROUP: !Ref AnnotatorGroup
           VIEWER_GROUP: !Ref ViewerGroup
           USERS_TABLE_NAME: !Ref UsersTable
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           ALLOWED_SIGNUP_EMAIL_DOMAINS: !Ref AllowedSignUpEmailDomain
       LoggingConfig:
         LogGroup: !Ref UserManagementFunctionLogGroup
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref UsersTable
+        # Read-only, and only the one item: the tenant index the scope check reads.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource: !GetAtt ConfigurationTable.Arn
+              Condition:
+                ForAllValues:StringEquals:
+                  dynamodb:LeadingKeys:
+                    - "TenantIndex#__index"
         - Statement:
             - Effect: Allow
               Action:
@@ -16324,6 +16566,7 @@ Resources:
           # Annotator scope: review operations verify the document's test set is
           # in the caller's allowedTestSets, which is stored on the user record.
           USERS_TABLE_NAME: !Ref UsersTable
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           # A Test Studio save is accepted only from the document's assignee
           # (TSDOC# item), and completing the document ends the assignment.
           HITL_TABLE_NAME: !Ref HITLTable
@@ -17183,7 +17426,10 @@ Outputs:
         - !Sub "VITE_USER_POOL_CLIENT_ID=${UserPoolClient}"
         - !Sub "VITE_IDENTITY_POOL_ID=${IdentityPool}"
         - !Sub "VITE_API_BASE_URL=${APIRESOLVERSTACK.Outputs.HttpApiEndpoint}"
-        - !Sub "VITE_STREAM_URL=${ChatStreamProcessorUrl.FunctionUrl}"
+        - !If
+          - IsTenantIsolationStrict
+          - "VITE_STREAM_URL="
+          - !Sub "VITE_STREAM_URL=${ChatStreamProcessorUrl.FunctionUrl}"
         - !Sub "VITE_AWS_REGION=${AWS::Region}"
         - !Sub "VITE_ENABLE_QUICK_START_WIDGET=${EnableQuickStartWidget}"
         - !Sub "VITE_SETTINGS_PARAMETER=${SettingsParameter}"

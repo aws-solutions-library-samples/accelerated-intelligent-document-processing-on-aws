@@ -14,6 +14,7 @@ from .manifest import ManifestOperation
 from .publish import PublishOperation
 from .search import SearchOperation
 from .stack import StackOperation
+from .tenancy import TenancyOperation
 from .testing import TestingOperation
 
 __all__ = [
@@ -28,5 +29,6 @@ __all__ = [
     "PublishOperation",
     "SearchOperation",
     "StackOperation",
+    "TenancyOperation",
     "TestingOperation",
 ]

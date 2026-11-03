@@ -250,6 +250,8 @@ compared yet.
 | `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. Takes an optional `region`; see [Region for the underlying clients](#region-for-the-underlying-clients). Also `bda_routing(manager, version, raise_errors, config_revision)`: whether a document under a profile goes down the BDA branch — `use_bda` is set **and** a BDA project is linked to the profile, an unpinned document taking the active profile. `use_bda` is read from the revision the document is pinned to, or from the profile head when it has none; an unreadable pinned revision falls back to the head, as the queue processor's routing does, unless `raise_errors` is set, when it raises. The queue processor's routing rule, stated once for the `processChanges` resolver, which refuses a section or page change to a BDA-mode document. |
 | `migration.py` | Migration of legacy configuration formats to the current JSON-Schema-based format. |
 | `migrations/` | The `config_format_version` hop chain, applied by `migrate_config()` on every read. See [Config format migrations](#config-format-migrations). |
+| `prefix_mappings.py` | Config prefix mappings — which profile a document processes under, decided by its Input-bucket prefix. See [Config prefix mappings](#config-prefix-mappings--prefix_mappingspy). |
+| `tenants.py` | Tenant declarations — the prefix subtrees and profile pattern of each tenant, and the boundary checks over mappings, scopes and ingest. See [Tenant declarations](#tenant-declarations--tenantspy). |
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
 | `retired_models.py` | `RETIRED_MODELS` / `is_retired()` — the single registry of Bedrock models past their end-of-life date. See [Retired models](#retired-models). |
 | `constants.py` | Configuration constants, including the reserved profile names and the active-profile pointer key. |
@@ -445,11 +447,56 @@ Four decisions worth knowing before changing this code:
   "Config#")`.** That filter lists profiles and feeds the scope-filtered dropdowns; a
   revision leaking into it would look like a profile with no configuration.
   `list_config_versions()` additionally skips reserved names.
-- **History is best-effort.** If the revision cannot be recorded, the save still
-  succeeds (logged at WARNING). Losing a history entry is recoverable; refusing a
-  save is an outage. `ConfigRevisionStore.enabled` is False when no
-  `CONFIGURATION_BUCKET` is configured, so older deployments and unit tests keep
-  working unchanged.
+- **Recording the revision is part of the save for a profile that has history.**
+  New documents are pinned to `PublishedRevision`, so a save that records no
+  revision would change what the configuration editor shows and not what
+  processing runs. For a profile that already has a published revision,
+  `save_configuration` therefore raises `RevisionNotRecordedError` (from
+  `idp_common.config.revisions`) instead: before writing anything when the process
+  has no `CONFIGURATION_BUCKET`, and after putting the previous head back when the
+  revision could not be written or published. The restore keeps the head's current
+  counters, so a revision number a failed attempt allocated is not handed out
+  twice. History stays append-only. A revision whose entry the failed save
+  wrote keeps it, with notes beginning `Save failed; not published` that say
+  whether the profile was restored to its published revision or could not be.
+  The store attaches the allocated number to the exception (`allocated_revision`)
+  so this also works for a failure inside the cut. A body whose index entry could
+  not be written is deleted only when the index confirms the entry is absent: a
+  timeout can arrive after the append landed, and an unreadable index leaves the
+  body in place. For a profile with no history yet, documents run the head, and history
+  stays best-effort there: a save succeeds without a revision and logs a WARNING.
+  `ConfigRevisionStore.enabled` is False when no `CONFIGURATION_BUCKET` is
+  configured, so older deployments and unit tests keep working.
+- **Every deployed Lambda that saves a profile has the bucket.** That means
+  `CONFIGURATION_BUCKET` plus `s3:GetObject`/`PutObject`/`DeleteObject` on
+  `config_revisions/*` and `s3:ListBucket` limited to that prefix. The set is
+  derived from source and enforced by
+  `scripts/tests/test_config_profile_writer_wiring.py`, so a new writer is held to
+  it without being listed. That gate reads deployed Lambdas only: a local process
+  (the CLI, the SDK, a notebook) is outside it. The SDK and CLI resolve both the
+  table and the bucket from the stack (`ConfigOperation._configure_config_env`);
+  code that builds a `ConfigurationManager` itself must set
+  `CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`, or a save to a
+  profile with history raises `RevisionNotRecordedError`.
+- **Resolving against `default` is recorded as a revision, by the deployment.**
+  `get_merged_configuration` resolves every profile against `default`. A pinned
+  read builds `IDPConfig` from the revision body without that resolution, so for a
+  profile with revision history the two differ whenever `default` holds a value
+  the model's own default does not (#1782). For such a profile a read applies the
+  resolution in memory and writes nothing, because whether its process may write
+  revisions depends on IAM grants the code cannot see.
+  `record_resolution_against_default(profile)` saves the resolution as a revision
+  (`created_by="system"`, notes `RESOLVED_AGAINST_DEFAULT_NOTES`) and publishes
+  it, and its one caller is the stack-deployment custom resource
+  (`update_configuration`'s `resolve_user_profiles_against_default`), which runs
+  it for every custom profile with history after saving `default`. A profile with
+  no history is still written back on read, without a revision.
+- **`head_matches_published(profile)`** says whether the head is the revision new
+  documents run: True, False when the head was changed without a revision (with
+  the same proof a pinned read uses, `_head_is_revision`), or None when there is
+  nothing to compare. `listConfigProfileRevisions` returns it as
+  `profileMatchesPublished`, and the web UI warns on False in the editor, the
+  revision history and the revision picker.
 
 `_record_revisions()` skips the cut entirely when the saved configuration equals
 what was already stored. Every deployment re-saves `default` and each managed
@@ -783,6 +830,38 @@ from the document's own pin (`SOURCE_DOCUMENT_PIN`), and never carries one onto 
 mapping-supplied profile. That is the same hazard `resolve_config_assignment` guards
 internally when it clears the metadata's revision on a profile change, and passing one
 through at the call site would reintroduce it there.
+
+## Tenant declarations — `tenants.py`
+
+A tenant declaration names a set of Input-bucket prefix subtrees and one profile name
+pattern, and ties prefix mappings and configuration scope together into a tenant
+boundary. The user-facing description, including strict mode, is in
+[Multi-Tenant Isolation](../../../../docs/multi-tenancy.md).
+
+| Name | Role |
+|---|---|
+| `TenantStore` | One aggregate item, `TenantIndex#__index`, in the ConfigurationTable, rewritten under the same `IndexSeq` optimistic-concurrency guard as `PrefixMappingStore`. The key does not match `begins_with(Configuration, "Config#")`, so it never lists as a profile. Read failures propagate |
+| `tenant_rejection_reason` | A declaration is well formed and disjoint from the others: folder prefixes (trailing `/`) that neither equal, contain nor sit inside another tenant's, and a pattern of the form `<stem><separator>*` whose stem neither begins nor is begun by another tenant's |
+| `tenant_for_key` / `tenant_for_profile` | Which tenant owns an object key (canonicalized with `prefix_mappings.canonical_key` first) or a profile name. Disjointness makes each a function: at most one answer |
+| `mapping_rejection_reason` / `mappings_rejection_reason` | A prefix mapping inside tenant T must name one of T's profiles, and one outside every tenant must not name a tenant's profile. The plural form checks every existing mapping against a proposed tenant set, which is how saving a tenant over a crossing mapping is refused |
+| `scope_rejection_reason` | An `allowedConfigVersions` value stays inside one tenant. A glob counts as inside tenant T only when its literal head carries T's whole stem; a head that is a prefix of some stem (`a*`, `acme*`, `*`) is refused because it can reach into that tenant |
+| `stored_scopes` / `stored_scopes_rejection_reason` | Every non-Admin user scope stored in the UsersTable (a paginated `Scan` projecting four attributes, user rows only), and whether a proposed tenant set would leave one of them crossing a boundary. A scope is checked only when written, so saving a tenant — through the API, `idp-cli tenancy put` or `apply` — re-checks the stored ones; the refusal names one user and counts the rest |
+| `ingest_rejection_reason` | Strict mode only: the key's tenant and the resolved profile's tenant must be equal, both a tenant or both none. Both-none is accepted only for an internal producer. The one accepted mismatch is a Test Studio run whose stored test-run record names the same profile |
+
+Everything except `TenantStore` is pure — no boto3 and no environment — so each rule
+is tested as a table in `tests/unit/config/test_tenants.py`.
+
+**Strict mode lives in `config_scope`, not here.** `is_strict_isolation()` reads
+`TENANT_ISOLATION_MODE` (the `TenantIsolationMode` stack parameter) per call, and
+`resolve_allowed_config_versions` turns an unscoped caller into
+`[STRICT_UNSCOPED_DENY]` when it is `Strict` — a sentinel no profile name can equal,
+so every consumer of the lookup denies without an edit of its own. It is defined in
+`config_scope` because that file is vendored verbatim into resolvers that carry no
+`idp_common`; `tenants` re-exports it. The sentinel is applied after the
+per-container cache, so a cached answer is re-judged against the current mode.
+`scripts/tests/test_tenant_isolation_wiring.py` fails if any function that resolves
+scope is deployed without the variable, because an unwired function would silently
+run as `Off`.
 
 ## Rollback-safe DynamoDB serialization
 

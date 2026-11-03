@@ -209,6 +209,11 @@ def stack(monkeypatch):
     monkeypatch.setenv("AWS_REGION", _REGION)
     monkeypatch.setenv("TRACKING_TABLE", _TABLE)
     monkeypatch.setenv("TRACKING_TABLE_NAME", _TABLE)
+    # abortWorkflow confines a REST caller to documents in their configuration
+    # scope, and the lookup fails closed. The Author here has no UsersTable row,
+    # so they are unscoped and the table only has to exist.
+    monkeypatch.setenv("USERS_TABLE_NAME", "abort-e2e-users")
+    monkeypatch.delenv("TENANT_ISOLATION_MODE", raising=False)
     monkeypatch.setenv("ABORT_WORKFLOW_FUNCTION_NAME", _ABORT_WORKFLOW_ARN)
     monkeypatch.delenv("TEST_RESULT_CACHE_UPDATE_QUEUE_URL", raising=False)
     monkeypatch.delenv("HITL_TABLE_NAME", raising=False)
@@ -224,6 +229,26 @@ def stack(monkeypatch):
             AttributeDefinitions=[
                 {"AttributeName": "PK", "AttributeType": "S"},
                 {"AttributeName": "SK", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        ddb.create_table(
+            TableName="abort-e2e-users",
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+                {"AttributeName": "email", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "EmailIndex",
+                    "KeySchema": [{"AttributeName": "email", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
             ],
             BillingMode="PAY_PER_REQUEST",
         )

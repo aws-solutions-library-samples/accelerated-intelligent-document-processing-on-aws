@@ -205,6 +205,14 @@ RUNTIME_TEMPLATE_DEPLOYERS = [
         ("MainStackName", "FeatureBucket"),
         id="feature_cli.deploy_cmd→published-extension",
     ),
+    pytest.param(
+        "scripts/security/live_checks/verify_tenant_isolation.py",
+        # Target: the access point template `client.tenancy.generate_policies`
+        # builds for the run. It declares no Parameters, so the stack is created
+        # with none.
+        (),
+        id="verify_tenant_isolation→generated-access-points",
+    ),
 ]
 
 

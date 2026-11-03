@@ -1,0 +1,20 @@
+query ListTenants {
+  listTenants {
+    success
+    isolationMode
+    tenants {
+      tenantId
+      prefixes
+      profilePattern
+      description
+      createdAt
+      createdBy
+      updatedAt
+      updatedBy
+    }
+    error {
+      type
+      message
+    }
+  }
+}

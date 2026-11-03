@@ -1264,3 +1264,54 @@ class TestProcessorModelIdSuffixes:
         assert "serviceTier" not in kwargs
         assert "performanceConfig" not in kwargs
         assert "additionalModelRequestFields" not in kwargs
+
+class TestProcessorStrictTenantIsolation:
+    """``TenantIsolationMode=Strict`` on a chat turn.
+
+    This processor restates the scope lookup rather than calling
+    ``config_scope.resolve_allowed_config_versions``, so it does not inherit the
+    strict rule from that function and has to apply it itself.
+    """
+
+    @staticmethod
+    def _strict(**kwargs):
+        import index
+
+        with patch.dict(os.environ, {"TENANT_ISOLATION_MODE": "Strict"}):
+            return _run_scope_turn(index, **kwargs)
+
+    @pytest.mark.unit
+    def test_an_unscoped_caller_is_denied(self):
+        result, _p, bedrock, _u = self._strict(
+            event_extra={"identity": _VERIFIED_IDENTITY}, users_items=[]
+        )
+        assert result == {"ok": False, "reason": "scope_denied"}
+        bedrock.converse_stream.assert_not_called()
+
+    @pytest.mark.unit
+    def test_a_scoped_caller_is_unaffected(self):
+        result, _p, bedrock, _u = self._strict(
+            event_extra={"identity": _VERIFIED_IDENTITY},
+            users_items=[{"allowedConfigVersions": ["secret-v1"]}],
+        )
+        assert result == {"ok": True, "turnId": "t-1"}
+        assert bedrock.converse_stream.call_count == 1
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("groups", [["Admin"], "[Admin, Viewer]"])
+    def test_an_admin_stays_unrestricted_without_a_lookup(self, groups):
+        identity = {"claims": {"email": "admin@example.com", "cognito:groups": groups}}
+        result, _p, bedrock, users_table = self._strict(
+            event_extra={"identity": identity}, users_items=[]
+        )
+        assert result == {"ok": True, "turnId": "t-1"}
+        users_table.query.assert_not_called()
+
+    @pytest.mark.unit
+    def test_an_unverified_transport_is_denied_instead_of_standing_down(self):
+        """GAP-07: the Function URL path verifies no caller. Off mode serves it
+        unrestricted with a WARNING; strict mode refuses it."""
+        result, _p, bedrock, users_table = self._strict(event_extra={"identity": None})
+        assert result == {"ok": False, "reason": "scope_unavailable"}
+        bedrock.converse_stream.assert_not_called()
+        users_table.query.assert_not_called()

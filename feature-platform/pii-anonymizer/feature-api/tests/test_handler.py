@@ -725,3 +725,79 @@ def test_a_sub_only_caller_with_no_pointer_is_denied(mod):
     )
 
     assert resp["statusCode"] == 403
+
+
+# ---- The host's tenant isolation mode ----------------------------------------
+#
+# Read at run time from the SSM parameter the host publishes, not from an imported
+# stack export: an imported export can never change value, so the host could never
+# switch its mode once this feature was installed.
+
+_MODE_PARAM = "/IDP/tenant-isolation-mode"
+
+
+def _set_mode(mod, monkeypatch, value):
+    monkeypatch.setattr(mod, "TENANT_ISOLATION_MODE_PARAMETER", _MODE_PARAM)
+    mod._mode_cache.clear()
+    monkeypatch.setattr(mod, "_ssm", None)
+    if value is not None:
+        boto3.client("ssm", region_name="us-west-2").put_parameter(
+            Name=_MODE_PARAM, Value=value, Type="String", Overwrite=True
+        )
+
+
+@pytest.mark.parametrize("mode,status", [("Off", 200), ("Strict", 404)])
+def test_strict_mode_denies_an_unscoped_caller_the_mapping(
+    mod, monkeypatch, mode, status
+):
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc11.pdf", "acme-x")
+    _put_user("open@x", None, user_id="u11")  # a row, but no scope
+    _set_mode(mod, monkeypatch, mode)
+    resp = _get(mod, "/report/doc11.pdf/mapping", email="open@x", groups="[Viewer]")
+    assert resp["statusCode"] == status
+
+
+def test_strict_mode_leaves_an_admin_unrestricted(mod, monkeypatch):
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc12.pdf", "acme-x")
+    _set_mode(mod, monkeypatch, "Strict")
+    resp = _get(mod, "/report/doc12.pdf/mapping", email="admin@x", groups="[Admin]")
+    assert resp["statusCode"] == 200
+
+
+def test_an_unreadable_mode_is_read_as_strict(mod, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class _Denied:
+        def get_parameter(self, **_kwargs):
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException"}}, "GetParameter"
+            )
+
+    _set_mode(mod, monkeypatch, None)
+    monkeypatch.setattr(mod, "_ssm", _Denied())
+    assert mod._isolation_mode() == "Strict"
+    # Not cached, so the next request retries.
+    assert "mode" not in mod._mode_cache
+
+
+def test_a_host_without_the_parameter_is_off(mod, monkeypatch):
+    """A host from before tenant isolation publishes no parameter and has no
+    strict mode to honour."""
+    _set_mode(mod, monkeypatch, None)
+    assert mod._isolation_mode() == "Off"
+
+
+def test_the_mode_follows_the_parameter_after_the_ttl(mod, monkeypatch):
+    _set_mode(mod, monkeypatch, "Off")
+    assert mod._isolation_mode() == "Off"
+    boto3.client("ssm", region_name="us-west-2").put_parameter(
+        Name=_MODE_PARAM, Value="Strict", Type="String", Overwrite=True
+    )
+    assert mod._isolation_mode() == "Off"  # cached
+    mode, stamp = mod._mode_cache["mode"]
+    mod._mode_cache["mode"] = (mode, stamp - mod._MODE_TTL_SECONDS - 1)
+    assert mod._isolation_mode() == "Strict"

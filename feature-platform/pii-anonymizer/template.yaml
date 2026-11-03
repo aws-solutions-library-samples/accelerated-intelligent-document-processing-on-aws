@@ -283,8 +283,16 @@ Resources:
           HOOK_FUNCTION_ARN: !GetAtt PiiAnonymizerHookFunction.Arn
           # RBAC-gated PII mapping view: read the caller's allowedConfigVersions.
           USERS_TABLE_NAME: { 'Fn::ImportValue': !Sub '${MainStackName}-UsersTableName' }
+          # The host's TenantIsolationMode, read at run time from the SSM parameter
+          # the host publishes (not an export: an imported export could never
+          # change value, so the mode could never be switched).
+          TENANT_ISOLATION_MODE_PARAMETER: !Sub '/${MainStackName}/tenant-isolation-mode'
       Policies:
         - Statement:
+            # The one parameter holding the host's TenantIsolationMode.
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${MainStackName}/tenant-isolation-mode'
             - Effect: Allow
               Action:
                 - dynamodb:GetItem

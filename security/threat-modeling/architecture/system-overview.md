@@ -331,10 +331,14 @@ test-set documents are likewise reachable only through a resolver that applies t
 caller's scope to the key. ⚠️ What the distribution does **not** supply is
 per-document authorization: on the document buckets the resolver matches the owning
 document's `ConfigVersion` against the caller's `allowedConfigVersions`, which refuses
-a *scoped* caller a document outside their profiles and refuses an *unscoped* one
-nothing, scoping being opt-in per user, and document ownership is not modelled at all.
+a *scoped* caller a document outside their profiles. Under the default
+`TenantIsolationMode: Off` it refuses an *unscoped* caller nothing, scoping being
+opt-in per user; under `Strict` an unscoped non-admin resolves to a scope that matches
+no profile and is refused every document. Per-user document ownership is not modelled
+at all; per-*tenant* isolation is, through tenant declarations (see
+[Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md)).
 
-Beyond the group check, **26** operations verify config-version scope, **9** filter
+Beyond the group check, **45** operations verify config-version scope, **10** filter
 their result rows by it, and **17** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
@@ -487,7 +491,13 @@ to overwrite a document's sections while it is in review.
 - **Runtime**: Python 3.12+ (Lambda), React/Vite (UI)
 - **UI hosting**: `WebUIHosting=CloudFront` (default) or `APIGateway` (S3 proxy on the REST API; VPC-capable, GovCloud-compatible). **ALB hosting removed in v0.6.0.**
 - **Regions**: All commercial AWS regions with required service availability; **GovCloud supported** via `idp-cli publish/deploy --govcloud` (full Web UI) or `--headless`
-- **Multi-tenancy**: Single-tenant per deployment (one stack = one environment)
+- **Multi-tenancy**: one stack per tenant, or several tenants in one stack through
+  tenant declarations (Input-bucket prefixes tied to a profile name pattern). With
+  `TenantIsolationMode: Off` (the default) declarations are enforced when mappings,
+  tenants and user scopes are written; `Strict` also denies unscoped non-admins,
+  refuses documents whose key and profile belong to different tenants at ingest, and
+  makes the cross-document agent and Knowledge Base surfaces Admin-only. Admins are
+  cross-tenant in both modes
 - **Infrastructure as Code**: `template.yaml` + nested stacks (`api-resolvers`, `bedrockkb`, `multi-doc-discovery`, feature-platform)
 
 ### 7.1 Deployment-time privilege

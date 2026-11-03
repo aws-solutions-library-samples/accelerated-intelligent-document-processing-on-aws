@@ -8006,7 +8006,10 @@ def bootstrap(
         from idp_sdk import IDPClient
 
         client = IDPClient(stack_name=stack_name, region=region)
-        config_table = client.discovery._get_config_table(stack_name)
+        # Table AND bucket: the bootstrap saves a configuration profile, and a
+        # save without CONFIGURATION_BUCKET cannot record the profile's revision
+        # (refused outright for a profile that already has history, #1778).
+        config_table = client.config._configure_config_env(stack_name)
         _os.environ["CONFIGURATION_TABLE_NAME"] = config_table
 
         from idp_common.config.configuration_manager import ConfigurationManager
@@ -8048,6 +8051,13 @@ def bootstrap(
         logger.error(f"Error in bootstrap: {e}", exc_info=True)
         console.print(f"[red]✗ Error: {e}[/red]")
         sys.exit(1)
+
+
+# `idp-cli tenancy ...` lives in its own module; registered here, after `cli`
+# exists, so importing it cannot run ahead of the group it attaches to.
+from .tenancy import tenancy as _tenancy_group  # noqa: E402
+
+cli.add_command(_tenancy_group)
 
 
 def main():

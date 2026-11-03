@@ -123,3 +123,23 @@ schema flag: on a pool created with `ExternalIdPEmailMutable=true` it is a real
 PASS/FAIL check; on a pool created with the default `false` it is recorded as a
 `NOTE`, because such a pool lets each federated user sign in exactly once (#835).
 See the skill for what that means and why it is not your change.
+
+## Tenant isolation against a deployed stack
+
+`verify_tenant_isolation.py` is different from the harnesses above: it needs a stack
+deployed with `TenantIsolationMode=Strict` (see
+[Multi-Tenant Isolation](../../../docs/multi-tenancy.md)).
+
+```bash
+make verify-tenant-isolation STACK_NAME=<stack> REGION=<region>   # YES=1 skips the prompt
+```
+
+It creates two throwaway profiles and tenants over `tenancy-verify/a/` and
+`tenancy-verify/b/`, checks that a crossing prefix mapping and an overlapping tenant
+are refused, runs `idp-cli tenancy verify` (throwaway users of each tenant read only
+their own tenant's document, strict-mode ingest refuses an outside-every-tenant
+upload, and an upload naming another tenant's profile stays in its own tenant), deploys the template `idp-cli tenancy generate-policies`
+writes for two throwaway uploader roles and checks that each can write only under its
+own prefix through its own access point, then runs `idp-cli tenancy audit`. Every row
+is `PASS`, `FAIL` or `ERROR`; it exits non-zero unless every row passes, and removes
+what it created in a `finally`.

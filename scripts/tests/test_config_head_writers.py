@@ -106,7 +106,9 @@ _KNOWN_UNPRESERVED_HEAD_WRITERS: Dict[Tuple[str, str], str] = {
 # a site fails here instead of passing vacuously. An equality rather than a floor:
 # a floor catches the walk collapsing but leaves headroom for one site to slip out
 # of it unnoticed.
-_EXPECTED_HEAD_WRITE_SITES = 5
+# 6: ConfigurationManager._restore_head (#1778) puts back the head a failed
+# revision replaced, re-reading _PRESERVED_HEAD_FIELDS as _write_record does.
+_EXPECTED_HEAD_WRITE_SITES = 6
 _MIN_METADATA_LISTS = 3
 
 

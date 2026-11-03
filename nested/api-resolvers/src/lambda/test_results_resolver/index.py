@@ -11,6 +11,8 @@ import time
 from concurrent.futures import (
     ALL_COMPLETED,
     ThreadPoolExecutor,
+)
+from concurrent.futures import (
     wait as futures_wait,
 )
 from datetime import datetime, timedelta, timezone
@@ -20,8 +22,10 @@ import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
+from idp_common import document_scope
 from idp_common import testrun_status as trs
 from idp_common.config.migrations import migrate_config
+from idp_common.config_scope import scope_allows
 from idp_common.dynamodb import DynamoDBClient, DynamoDBError
 
 sqs = boto3.client("sqs")
@@ -224,6 +228,49 @@ def _sql_like_prefix(value, name):
 
 dynamodb = boto3.resource("dynamodb")
 
+# Per-container cache of callers' configuration scopes (see config_scope).
+_user_scope_cache: dict = {}
+
+
+def _caller_scope(event):
+    """The API caller's configuration scope, ``None`` for unrestricted.
+
+    Admins skip the lookup; a scope that cannot be evaluated is refused. Only
+    called for an API invoke: a direct invocation carries no identity and is gated
+    by IAM, the carve-out the group check above already makes.
+    """
+    return document_scope.resolve_caller_scope(
+        document_scope.caller_claims(event),
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=dynamodb,
+        cache=_user_scope_cache,
+    )
+
+
+def _assert_runs_in_scope(scope, test_run_ids):
+    """Refuse unless every run's configuration profile is in ``scope``.
+
+    A run is scoped by the profile it ran under, the same axis a document is: its
+    results are that profile's extraction output on the test set's documents. A
+    run with no record is refused with the same message as an out-of-scope one,
+    so the refusal does not say whether the id exists. No read for an
+    unrestricted caller.
+    """
+    if scope is None:
+        return
+    table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]
+    for test_run_id in test_run_ids:
+        item = table.get_item(
+            Key={"PK": f"testrun#{test_run_id}", "SK": "metadata"},
+            ProjectionExpression="PK, ConfigVersion",
+        ).get("Item")
+        if not item:
+            logger.warning("Denied a test-run read: no such run for a scoped caller")
+            raise PermissionError(document_scope.REFUSAL)
+        document_scope.assert_profile_in_scope(
+            scope, item.get("ConfigVersion"), what="test-run"
+        )
+
 
 def _caller_groups(event):
     """Extract the caller's Cognito groups from the (normalized) identity."""
@@ -264,6 +311,10 @@ def handler(event, context):
             f"Unauthorized: {field_name} requires Admin or Author group"
         )
 
+    # Configuration scope: a run belongs to the profile it ran under. Resolved
+    # once per request, and only for an API invoke.
+    scope = _caller_scope(event) if is_api_invoke else None
+
     if field_name == "getTestRuns":
         args = event.get("arguments", {})
         start_date_time = args.get("startDateTime")
@@ -287,18 +338,30 @@ def handler(event, context):
             f"Processing getTestRuns request: {start_iso} → {end_iso} "
             f"(maxItems={max_items})"
         )
-        return get_test_runs(start_iso, end_iso, max_items=max_items)
+        runs = get_test_runs(start_iso, end_iso, max_items=max_items)
+        if scope is None:
+            return runs
+        # Filtered rather than refused: the listing is the Test Studio landing
+        # view, and a scoped Author is entitled to the runs of their own profiles.
+        return [
+            run
+            for run in runs
+            if scope_allows(scope, (run or {}).get("configVersion"))
+        ]
     elif field_name == "getTestRun":
         test_run_id = event["arguments"]["testRunId"]
         logger.info(f"Processing getTestRun request for test run: {test_run_id}")
+        _assert_runs_in_scope(scope, [test_run_id])
         return get_test_results(test_run_id)
     elif field_name == "getTestRunStatus":
         test_run_id = event["arguments"]["testRunId"]
         logger.info(f"Processing getTestRunStatus request for test run: {test_run_id}")
+        _assert_runs_in_scope(scope, [test_run_id])
         return get_test_run_status(test_run_id)
     elif field_name == "compareTestRuns":
         test_run_ids = event["arguments"]["testRunIds"]
         logger.info(f"Processing compareTestRuns request for test runs: {test_run_ids}")
+        _assert_runs_in_scope(scope, test_run_ids or [])
         return compare_test_runs(test_run_ids)
 
     raise ValueError(f"Unknown field: {field_name}")
