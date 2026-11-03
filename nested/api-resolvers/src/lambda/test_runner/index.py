@@ -15,6 +15,13 @@ from botocore.exceptions import ClientError
 
 from idp_common.api_adapter import ResourceNotFound  # type: ignore
 from idp_common.config.migrations import migrate_config  # type: ignore
+from idp_common.config_scope import (  # type: ignore
+    ScopeLookupError,
+    caller_email_from_claims,
+    caller_sub_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
 from idp_common.forced_sections import (  # type: ignore
     ForcedSectionsError,
     decode_forced_sections,
@@ -85,6 +92,50 @@ def _caller_in_groups(event, allowed):
     return bool(set(allowed).intersection(groups))
 
 
+_user_scope_cache: dict = {}
+
+
+def _require_profile_in_scope(event, profile):
+    """Refuse a run started by a non-Admin under a profile outside their scope.
+
+    A run's documents are stamped with its profile, so they become visible to
+    every user scoped to that profile. Without this check a scoped Author could
+    start a run under a profile they cannot see, putting documents into another
+    scope's view — and, under strict tenant isolation, into another tenant's, since
+    ingest accepts a Test Studio document under the profile its run record names.
+
+    Admins are unrestricted, as everywhere else. A direct (IAM) invocation carries
+    no identity and is gated by IAM on the function ARN, so it is not scoped
+    either. Everything else fails CLOSED: a scope that cannot be evaluated refuses
+    the run.
+    """
+    identity = event.get("identity")
+    if identity is None or _caller_in_groups(event, ("Admin",)):
+        return
+    claims = identity.get("claims", {}) or {}
+    try:
+        allowed = resolve_allowed_config_versions(
+            caller_email_from_claims(claims),
+            caller_sub=caller_sub_from_claims(claims),
+            users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+            dynamodb=dynamodb,
+            cache=_user_scope_cache,
+        )
+    except ScopeLookupError as e:
+        logger.warning(f"Denied startTestRun: scope could not be evaluated ({e})")
+        raise PermissionError(
+            "Access denied: your configuration scope could not be verified"
+        ) from e
+    if not scope_allows(allowed, profile):
+        logger.warning(
+            "Denied startTestRun: profile %r is outside the caller's scope", profile
+        )
+        raise PermissionError(
+            f"Access denied: configuration profile '{profile}' is not in your "
+            f"allowed scope"
+        )
+
+
 def handler(event, context):
     logger.info(
         f"Test runner invoked with event: {json.dumps(sanitize_event_for_logging(event))}"
@@ -105,7 +156,7 @@ def handler(event, context):
         # Route by GraphQL field. startTestRun is the default/legacy path.
         field_name = event.get("info", {}).get("fieldName", "startTestRun")
         if field_name == "sendTestRunToReview":
-            return send_test_run_to_review(event["arguments"])
+            return send_test_run_to_review(event["arguments"], event)
 
         input_data = event["arguments"]["input"]
         test_set_id = input_data["testSetId"]
@@ -210,6 +261,10 @@ def handler(event, context):
         effective_config_version = config_version or _active_config_version(
             config_table
         )
+        # Scope is checked on the EFFECTIVE profile, not the named one: a caller
+        # who names none gets the active profile, and the run's documents are
+        # stamped with it all the same.
+        _require_profile_in_scope(event, effective_config_version)
         # A profile the caller named must exist. Without this the run was created
         # anyway — an empty captured config, the profile stamped onto every
         # document — and each document then failed in OCR, minutes later, with
@@ -364,12 +419,16 @@ def handler(event, context):
         # level down from the 500-for-a-not-found this convention exists to fix.
         logger.warning(f"Not found in test runner: {str(e)}")
         raise
+    except PermissionError:
+        # Already logged at WARNING where it was raised; re-raised as itself so the
+        # dispatcher answers 403 rather than 500.
+        raise
     except Exception as e:
         logger.error(f"Error in test runner: {str(e)}")
         raise
 
 
-def send_test_run_to_review(args):
+def send_test_run_to_review(args, event=None):
     """Mark a completed test run's documents for HITL review, on demand.
 
     A test run's inputs are copied into the pipeline under a ``{test_run_id}/``
@@ -395,6 +454,9 @@ def send_test_run_to_review(args):
     )
     if not run:
         raise ResourceNotFound(f"Test run '{test_run_id}' not found")
+    # The run's documents carry its profile, so queueing them for review is an
+    # action on documents in that profile's scope: the same check as starting it.
+    _require_profile_in_scope(event or {}, run.get("ConfigVersion"))
 
     files = run.get("Files") or []
     queued = 0

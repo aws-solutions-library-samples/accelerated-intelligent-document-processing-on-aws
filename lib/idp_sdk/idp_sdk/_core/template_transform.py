@@ -1784,8 +1784,14 @@ class GovCloudTemplateTransformer(_PolicyStatementRemovalReporter):
                         continue
                 count += self._blank_function_url_refs(v, url_names)
         elif isinstance(node, list):
-            for x in node:
-                count += self._blank_function_url_refs(x, url_names)
+            # A reference can also be a list ELEMENT — an `Fn::If` branch such as
+            # `!If [Cond, "", !GetAtt Url.FunctionUrl]` — which the dict branch
+            # above never sees, because it only replaces dict values. Wrapping the
+            # element in a one-key dict lets that branch decide, then unwraps it.
+            for i, x in enumerate(node):
+                holder = {"_": x}
+                count += self._blank_function_url_refs(holder, url_names)
+                node[i] = holder["_"]
         return count
 
     # ---- LWA-dependent function removal (see LWA_LAYER_MARKERS) ----

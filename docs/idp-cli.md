@@ -44,6 +44,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
   - [list-batches](#list-batches)
   - [stop-workflows](#stop-workflows)
   - [load-test](#load-test)
+  - [tenancy](#tenancy)
   - [discover](#discover)
   - [discover-multidoc](#discover-multidoc)
   - [remove-deleted-stack-resources](#remove-deleted-stack-resources)
@@ -3026,6 +3027,73 @@ idp-cli test-compare \
 - Minimum 2 test runs required for comparison
 
 ---
+
+### `tenancy`
+
+Manage tenant declarations and check tenant isolation on a deployed stack. A tenant
+is a set of Input-bucket prefixes plus a Configuration Profile pattern; see
+[Multi-Tenant Isolation](multi-tenancy.md) for what declaring one enforces and what
+`TenantIsolationMode=Strict` adds. Every subcommand takes `--stack-name` and an
+optional `--region`.
+
+| Subcommand | Purpose |
+|---|---|
+| `list [--json]` | Print the declared tenants |
+| `put --tenant-id ID --prefix P [--prefix P2 …] --profile-pattern PAT [--description D]` | Create or replace one tenant. Refused when it overlaps another tenant or an existing prefix mapping would cross it — the same checks the web UI applies |
+| `delete --tenant-id ID [--yes]` | Remove one declaration. Mappings, profiles and documents are untouched |
+| `apply --file tenants.yaml [--prune] [--yes] [--json]` | Make the declarations match a file. Prints the plan and writes nothing unless `--yes` is given; `--prune` also deletes tenants the file does not declare. The whole plan is validated before anything is written |
+| `generate-policies --principals principals.yaml [--output FILE]` | Write a CloudFormation template creating one Input-bucket and one Output-bucket S3 Access Point per tenant, confined to that tenant's prefixes |
+| `audit [--principals principals.yaml] [--sample N] [--json]` | Read-only report; exits 1 when there are findings |
+| `verify --document FILE [--tenant A --tenant B] [--timeout S] [--json]` | Live cross-tenant check; exits 0 pass, 1 fail, 2 error, 3 skipped |
+
+**`tenants.yaml`**:
+
+```yaml
+tenants:
+  - tenantId: acme
+    prefixes: [clients/acme/]
+    profilePattern: acme-*
+    description: ACME Corp
+  - tenantId: globex
+    prefixes: [clients/globex/, feeds/globex/]
+    profilePattern: globex-*
+```
+
+**`principals.yaml`** names, per tenant, the roles that write its documents and read
+its results:
+
+```yaml
+acme:
+  uploaders: [arn:aws:iam::123456789012:role/acme-uploader]
+  consumers: [arn:aws:iam::123456789012:role/acme-results-reader]
+  kmsKeyArn: arn:aws:kms:us-east-1:123456789012:key/EXAMPLE   # optional
+```
+
+Output-bucket keys begin with the document's input key, so a tenant's output access
+point is confined to the same prefixes as its input one. The generated template
+creates only the access points. The stack's bucket policies delegate to access points
+in its own account when `TenantIsolationMode=Strict`. The uploader and consumer roles
+still need an identity policy allowing their access point, and use of the stack's KMS
+key; the command prints what is needed.
+
+**`audit`** reports the isolation mode, prefix mappings that cross a tenant boundary,
+tenant prefixes no mapping of the tenant's own covers, non-admin users with no scope
+or one spanning tenants, a sample of tracked documents whose key and profile belong
+to different tenants, and — with `--principals` — deployed access point policies that
+differ from what `generate-policies` would produce.
+
+**`verify`** creates a throwaway Admin and two throwaway Viewer users scoped to two
+tenants (through the API's own `createUser`, so the scope check runs), uploads the
+given document under each tenant's prefix, and checks that each user can list, read
+and download its own tenant's document and is refused the other's. On a Strict
+stack it also uploads a document outside every tenant, which must be refused at
+ingest, and one under the first tenant's prefix whose metadata names the second
+tenant's profile, which must be refused or processed under the first tenant's own
+profile, never the second's. It temporarily enables
+admin password authentication on the app client and restores the original setting,
+and it removes every user and object it created; a cleanup failure is reported as an
+error. Each tenant needs an enabled prefix mapping to one of its own profiles before
+it runs.
 
 ### `discover`
 

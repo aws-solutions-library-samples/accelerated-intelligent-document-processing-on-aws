@@ -965,3 +965,72 @@ class TestASectionResultUnderReviewIsRefused:
         assert index.handler(_event("uploadDocument", page))["presignedUrl"]
         # A document upload to the Input bucket.
         assert index.handler(_event("uploadDocument", {"fileName": "x.pdf"}))["presignedUrl"]
+
+@pytest.mark.unit
+class TestStrictTenantIsolation:
+    """``TenantIsolationMode=Strict`` at upload time.
+
+    The same tenant-boundary rule ingest applies (``ingest_rejection_reason``), so a
+    refusal is a 400 before a URL is minted rather than a FAILED row afterwards; and
+    the strict scope rule, under which an unscoped non-Admin is denied while an
+    Admin stays unrestricted.
+    """
+
+    Scope = TestTheDestinationsConfigurationScopeIsEnforced
+
+    @pytest.fixture
+    def strict(self, resolver, monkeypatch):
+        monkeypatch.setenv("TENANT_ISOLATION_MODE", "Strict")
+        index, _ = resolver
+        from idp_common.config.tenants import TenantStore
+
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(CONFIG_TABLE)
+        TenantStore(table).put("acme", ["acme/"], "acme-*")
+        TenantStore(table).put("globex", ["globex/"], "globex-*")
+        self.Scope._mapping(index, "acme/", "acme-prod")
+        index._user_scope_cache.clear()
+        return index
+
+    def _author(self, arguments):
+        return _event("uploadDocument", arguments, groups=("Author",))
+
+    def test_an_in_tenant_upload_is_allowed(self, strict):
+        self.Scope._scope(strict, "acme-*")
+        result = strict.handler(self._author({"fileName": "x.pdf", "prefix": "acme"}))
+        assert result["objectKey"] == "acme/x.pdf"
+
+    def test_an_unscoped_author_is_denied(self, strict):
+        with pytest.raises(PermissionError):
+            strict.handler(self._author({"fileName": "x.pdf", "prefix": "acme"}))
+
+    def test_an_unscoped_admin_is_not(self, strict):
+        result = strict.handler(
+            _event("uploadDocument", {"fileName": "x.pdf", "prefix": "acme"})
+        )
+        assert result["objectKey"] == "acme/x.pdf"
+
+    def test_an_upload_outside_every_tenant_is_refused_before_a_url(self, strict):
+        self.Scope._activate("shared")
+        with pytest.raises(ValueError, match="outside every tenant"):
+            strict.handler(
+                _event("uploadDocument", {"fileName": "x.pdf", "prefix": "loose"})
+            )
+
+    def test_naming_a_tenant_profile_from_outside_the_tenant_is_refused(self, strict):
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(CONFIG_TABLE)
+        table.put_item(Item={"Configuration": "Config#acme-prod"})
+        with pytest.raises(ValueError, match="belongs to tenant 'acme'"):
+            strict.handler(
+                _event(
+                    "uploadDocument",
+                    {"fileName": "x.pdf", "prefix": "globex", "version": "acme-prod"},
+                )
+            )
+
+    def test_off_mode_does_not_consult_tenants(self, strict, monkeypatch):
+        monkeypatch.setenv("TENANT_ISOLATION_MODE", "Off")
+        self.Scope._activate("acme-prod")
+        result = strict.handler(
+            _event("uploadDocument", {"fileName": "x.pdf", "prefix": "loose"})
+        )
+        assert result["objectKey"] == "loose/x.pdf"

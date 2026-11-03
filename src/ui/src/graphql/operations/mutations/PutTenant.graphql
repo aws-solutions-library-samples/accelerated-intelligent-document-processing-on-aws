@@ -1,0 +1,20 @@
+mutation PutTenant($tenantId: String!, $prefixes: [String!]!, $profilePattern: String!, $description: String) {
+  putTenant(tenantId: $tenantId, prefixes: $prefixes, profilePattern: $profilePattern, description: $description) {
+    success
+    message
+    tenant {
+      tenantId
+      prefixes
+      profilePattern
+      description
+      createdAt
+      createdBy
+      updatedAt
+      updatedBy
+    }
+    error {
+      type
+      message
+    }
+  }
+}

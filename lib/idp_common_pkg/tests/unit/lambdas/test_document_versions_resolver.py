@@ -9,7 +9,11 @@ import os
 import sys
 from unittest.mock import MagicMock
 
+import boto3
 import pytest
+from moto import mock_aws
+
+from tests.unit import scope_tables as st
 
 LAMBDA_DIR = os.path.abspath(
     os.path.join(
@@ -241,7 +245,12 @@ class TestDelete:
         monkeypatch.setattr(mod, "delete_run_artifacts", lambda *a, **k: 3)
         event = _event("deleteDocumentVersion", objectKey="k", runId="r1")
         event["identity"]["claims"]["cognito:groups"] = ["Author"]
-        with pytest.raises(PermissionError):
+        # Unscoped, so it is the Admin check below that refuses -- not the
+        # configuration-scope check the handler applies first.
+        monkeypatch.setattr(
+            mod.document_scope, "resolve_caller_scope", lambda *a, **k: None
+        )
+        with pytest.raises(PermissionError, match="requires Admin group"):
             mod.handler(event, None)
 
     def test_delete_admin_ok(self, mod, monkeypatch):
@@ -360,3 +369,80 @@ class TestCompare:
             None,
         )
         assert json.loads(out)["identical"] is True
+
+
+@pytest.mark.unit
+class TestConfigurationScope:
+    """Every field acts on one document's runs, so the caller's scope must cover it."""
+
+    @pytest.fixture()
+    def scoped(self, mod, monkeypatch):
+        monkeypatch.setenv("USERS_TABLE_NAME", st.USERS)
+        monkeypatch.setenv("TRACKING_TABLE", st.TRACKING)
+        monkeypatch.delenv("TENANT_ISOLATION_MODE", raising=False)
+        with mock_aws():
+            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            st.make_tables(ddb)
+            mod._dynamodb = ddb
+            mod._user_scope_cache.clear()
+            mod.document_service = MagicMock()
+            mod.document_service.list_document_runs.return_value = []
+            yield mod
+
+    @staticmethod
+    def _ev(field, key, email, *groups, **args):
+        return {
+            "info": {"fieldName": field},
+            "arguments": {"objectKey": key, **args},
+            "identity": {"claims": st.claims(email, *groups)},
+        }
+
+    @pytest.mark.parametrize(
+        "field,args",
+        [
+            ("listDocumentVersions", {}),
+            ("getDocumentVersion", {"runId": "r1"}),
+            ("compareDocumentVersions", {"runIdA": "r1", "runIdB": "r2"}),
+        ],
+    )
+    def test_a_scoped_caller_is_refused_another_profiles_document(
+        self, scoped, field, args
+    ):
+        with pytest.raises(PermissionError, match="^Unauthorized"):
+            scoped.handler(
+                self._ev(field, st.OUT_OF_SCOPE_KEY, st.SCOPED_EMAIL, "Viewer", **args),
+                None,
+            )
+        scoped.document_service.get_document_run.assert_not_called()
+
+    def test_a_scoped_caller_reaches_their_own_document(self, scoped):
+        out = scoped.handler(
+            self._ev(
+                "listDocumentVersions", st.IN_SCOPE_KEY, st.SCOPED_EMAIL, "Viewer"
+            ),
+            None,
+        )
+        assert out == []
+        scoped.document_service.list_document_runs.assert_called_once_with(
+            st.IN_SCOPE_KEY
+        )
+
+    def test_an_admin_and_an_unscoped_user_are_unaffected(self, scoped):
+        for email, group in (("admin@example.com", "Admin"), (st.OPEN_EMAIL, "Viewer")):
+            assert (
+                scoped.handler(
+                    self._ev("listDocumentVersions", st.OUT_OF_SCOPE_KEY, email, group),
+                    None,
+                )
+                == []
+            )
+
+    def test_strict_mode_refuses_an_unscoped_non_admin(self, scoped, monkeypatch):
+        monkeypatch.setenv("TENANT_ISOLATION_MODE", "Strict")
+        with pytest.raises(PermissionError):
+            scoped.handler(
+                self._ev(
+                    "listDocumentVersions", st.IN_SCOPE_KEY, st.OPEN_EMAIL, "Viewer"
+                ),
+                None,
+            )

@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 pytestmark = pytest.mark.unit
 
 USERS_TABLE = "test-users-table"
+CONFIG_TABLE = "test-config-table"
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +31,7 @@ def env():
         os.environ,
         {
             "USERS_TABLE_NAME": USERS_TABLE,
+            "CONFIGURATION_TABLE_NAME": CONFIG_TABLE,
             "USER_POOL_ID": "us-east-1_test",
             "AWS_DEFAULT_REGION": "us-east-1",
             "AWS_ACCESS_KEY_ID": "testing",
@@ -60,6 +62,15 @@ def users_table():
                     "KeySchema": [{"AttributeName": "email", "KeyType": "HASH"}],
                     "Projection": {"ProjectionType": "ALL"},
                 }
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        # The tenant index lives here; with no item, no tenants are declared.
+        ddb.create_table(
+            TableName=CONFIG_TABLE,
+            KeySchema=[{"AttributeName": "Configuration", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "Configuration", "AttributeType": "S"}
             ],
             BillingMode="PAY_PER_REQUEST",
         )
@@ -220,9 +231,7 @@ class TestUpdateUserScopeAxes:
         )
 
         with patch.object(index, "sync_user_to_cognito"):
-            result = index.update_user(
-                {"userId": "u-1", "allowedTestSets": ["set-b"]}
-            )
+            result = index.update_user({"userId": "u-1", "allowedTestSets": ["set-b"]})
 
         assert result["allowedTestSets"] == ["set-b"]
         assert result["allowedConfigVersions"] == ["v3"]
@@ -234,9 +243,7 @@ class TestUpdateUserScopeAxes:
         )
 
         with patch.object(index, "sync_user_to_cognito"):
-            result = index.update_user(
-                {"userId": "u-1", "allowedTestSets": None}
-            )
+            result = index.update_user({"userId": "u-1", "allowedTestSets": None})
 
         assert "allowedTestSets" not in result
         assert result["allowedConfigVersions"] == ["v3"]
@@ -308,9 +315,7 @@ class TestMissingCognitoSync:
             ),
             pytest.raises(RuntimeError),
         ):
-            index.create_user(
-                {"email": "doomed@example.com", "persona": "Annotator"}
-            )
+            index.create_user({"email": "doomed@example.com", "persona": "Annotator"})
 
         remaining = users_table.scan().get("Items", [])
         assert remaining == []
@@ -342,9 +347,7 @@ class TestOwnProfileLookupKey:
         )
 
         assert profile["userId"] == "u-1"
-        assert profile["allowedTestSets"] == [
-            "w2-synth-freelance-misclassified"
-        ]
+        assert profile["allowedTestSets"] == ["w2-synth-freelance-misclassified"]
 
     @pytest.mark.parametrize(
         "claims,username",
@@ -427,7 +430,9 @@ class TestTheSubPointerWriter:
         assert row["cognitoSub"] == _SUB
         assert self._pointer(users_table)["Item"]["userId"] == row["userId"]
 
-    def test_an_unrestricted_user_records_the_sub_but_gets_no_pointer(self, users_table):
+    def test_an_unrestricted_user_records_the_sub_but_gets_no_pointer(
+        self, users_table
+    ):
         """The invariant: a pointer exists only for a row carrying a restriction.
 
         A pointer is read *before* the email join, so it decides the answer. One at
@@ -603,7 +608,14 @@ class TestUpdateUserMaintainsThePointer:
         with patch.object(index, "dynamodb") as ddb:
             table = MagicMock(wraps=users_table)
             table.get_item.side_effect = _delete_after_the_read
-            ddb.Table.return_value = table
+            # By name: the scope write also reads the tenant index from the
+            # configuration table, which must not be served by the users table.
+            config_table = boto3.resource("dynamodb", region_name="us-east-1").Table(
+                CONFIG_TABLE
+            )
+            ddb.Table.side_effect = lambda name: (
+                table if name == USERS_TABLE else config_table
+            )
             with pytest.raises(ValueError, match="not found"):
                 index.update_user(
                     {"userId": "u-1", "allowedConfigVersions": ["tenant-a"]}
@@ -1035,3 +1047,113 @@ class TestGetMyProfileUsesBothKeys:
 
         assert profile["userId"] != "u-1"
         assert "allowedConfigVersions" not in profile
+
+
+# ---------------------------------------------------------------------------
+# A scope must stay inside one tenant
+# ---------------------------------------------------------------------------
+
+TENANTS = [
+    {"tenantId": "acme", "prefixes": ["clients/acme/"], "profilePattern": "acme-*"},
+    {
+        "tenantId": "globex",
+        "prefixes": ["clients/globex/"],
+        "profilePattern": "globex-*",
+    },
+]
+
+
+def _declare_tenants():
+    from idp_common.config.tenants import TenantStore
+
+    store = TenantStore(
+        boto3.resource("dynamodb", region_name="us-east-1").Table(CONFIG_TABLE)
+    )
+    for tenant in TENANTS:
+        store.put(tenant["tenantId"], tenant["prefixes"], tenant["profilePattern"])
+
+
+class TestScopeConfinedToOneTenant:
+    """``createUser``/``updateUser`` refuse a scope reaching beyond one tenant.
+
+    These are the only two writers of ``allowedConfigVersions``, and nothing
+    re-checks a scope after it is stored, so a refusal here is the whole control.
+    """
+
+    @pytest.mark.parametrize(
+        "scope",
+        [
+            ["acme-*", "globex-*"],  # two tenants
+            ["acme-invoices", "lending"],  # a tenant plus an untenanted profile
+            ["a*"],  # outside every tenant but able to match acme's profiles
+        ],
+    )
+    def test_update_refuses_a_scope_crossing_tenants(self, users_table, scope):
+        index = _load_index()
+        _declare_tenants()
+        users_table.put_item(Item=dict(ANNOTATOR_ITEM))
+        with patch.object(index, "sync_user_to_cognito"):
+            with pytest.raises(ValueError, match="tenant"):
+                index.update_user({"userId": "u-1", "allowedConfigVersions": scope})
+        stored = users_table.get_item(Key={"PK": "USER#u-1", "SK": "USER#u-1"})["Item"]
+        assert "allowedConfigVersions" not in stored
+
+    @pytest.mark.parametrize(
+        "scope", [["acme-*"], ["acme-invoices", "acme-eu-*"], ["lending", "rvl-*"]]
+    )
+    def test_update_accepts_a_scope_inside_one_tenant_or_none(self, users_table, scope):
+        index = _load_index()
+        _declare_tenants()
+        users_table.put_item(Item=dict(ANNOTATOR_ITEM))
+        with patch.object(index, "sync_user_to_cognito"):
+            result = index.update_user(
+                {"userId": "u-1", "allowedConfigVersions": scope}
+            )
+        assert result["allowedConfigVersions"] == scope
+
+    def test_create_refuses_before_any_write(self, users_table):
+        index = _load_index()
+        _declare_tenants()
+        with patch.object(index, "sync_user_to_cognito") as sync:
+            with pytest.raises(ValueError, match="spans tenants"):
+                index.create_user(
+                    {
+                        "email": "x@example.com",
+                        "persona": "Viewer",
+                        "allowedConfigVersions": ["acme-*", "globex-*"],
+                    }
+                )
+        sync.assert_not_called()
+        assert users_table.scan()["Items"] == []
+
+    def test_clearing_a_scope_is_not_checked(self, users_table):
+        index = _load_index()
+        _declare_tenants()
+        users_table.put_item(
+            Item=dict(ANNOTATOR_ITEM, allowedConfigVersions=["acme-*"])
+        )
+        with patch.object(index, "sync_user_to_cognito"):
+            result = index.update_user({"userId": "u-1", "allowedConfigVersions": None})
+        assert "allowedConfigVersions" not in result
+
+    def test_an_unreadable_tenant_index_refuses_the_write(self, users_table):
+        index = _load_index()
+        users_table.put_item(Item=dict(ANNOTATOR_ITEM))
+        broken = MagicMock()
+        broken.return_value.list.side_effect = RuntimeError("throttled")
+        with patch.object(index, "TenantStore", broken):
+            with pytest.raises(ValueError, match="could not be read"):
+                index.update_user(
+                    {"userId": "u-1", "allowedConfigVersions": ["acme-*"]}
+                )
+        stored = users_table.get_item(Key={"PK": "USER#u-1", "SK": "USER#u-1"})["Item"]
+        assert "allowedConfigVersions" not in stored
+
+    def test_an_unwired_configuration_table_refuses_the_write(
+        self, users_table, monkeypatch
+    ):
+        index = _load_index()
+        monkeypatch.setattr(index, "CONFIGURATION_TABLE_NAME", "")
+        users_table.put_item(Item=dict(ANNOTATOR_ITEM))
+        with pytest.raises(ValueError, match="not configured"):
+            index.update_user({"userId": "u-1", "allowedConfigVersions": ["acme-*"]})

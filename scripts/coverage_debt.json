@@ -140,6 +140,7 @@
         "idp_common/config/schema_constants.py": 100.0,
         "idp_common/config/schema_utils.py": 100.0,
         "idp_common/config/system_defaults/__init__.py": 100.0,
+        "idp_common/config/tenants.py": 96.88,
         "idp_common/config_scope.py": 100.0,
         "idp_common/ddb_numbers.py": 100.0,
         "idp_common/delete_documents.py": 96.42,
@@ -461,7 +462,6 @@
         "update_configuration/cfnresponse.py": 0.0,
         "update_configuration/index.py": 39.61,
         "user_management/index.py": 83.07,
-        "user_management/log_sanitizer.py": 28.0,
         "version_check_resolver/index.py": 96.05,
         "version_check_resolver/log_sanitizer.py": 46.0,
         "workflow_tracker/index.py": 59.12
@@ -539,6 +539,9 @@
         "idp_sdk/_core/stack_info.py": 100.0,
         "idp_sdk/_core/stop_workflows.py": 100.0,
         "idp_sdk/_core/template_transform.py": 99.9,
+        "idp_sdk/_core/tenancy_policies.py": 84.48,
+        "idp_sdk/_core/tenancy_verify.py": 78.49,
+        "idp_sdk/_core/ui_api.py": 60.0,
         "idp_sdk/client.py": 100.0,
         "idp_sdk/exceptions.py": 100.0,
         "idp_sdk/models/__init__.py": 100.0,
@@ -554,6 +557,7 @@
         "idp_sdk/models/publish.py": 100.0,
         "idp_sdk/models/search.py": 100.0,
         "idp_sdk/models/stack.py": 100.0,
+        "idp_sdk/models/tenancy.py": 100.0,
         "idp_sdk/models/testing.py": 100.0,
         "idp_sdk/operations/__init__.py": 100.0,
         "idp_sdk/operations/assessment.py": 100.0,
@@ -567,6 +571,7 @@
         "idp_sdk/operations/publish.py": 100.0,
         "idp_sdk/operations/search.py": 100.0,
         "idp_sdk/operations/stack.py": 100.0,
+        "idp_sdk/operations/tenancy.py": 77.97,
         "idp_sdk/operations/testing.py": 100.0
       }
     },
@@ -605,7 +610,8 @@
         "idp_cli/cli.py": 98.76,
         "idp_cli/display.py": 100.0,
         "idp_cli/parameters.py": 100.0,
-        "idp_cli/search_tracking_table.py": 100.0
+        "idp_cli/search_tracking_table.py": 100.0,
+        "idp_cli/tenancy.py": 72.07
       }
     },
     "idp_feature_sdk": {

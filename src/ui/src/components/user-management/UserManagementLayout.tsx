@@ -26,6 +26,7 @@ import useUserRole from '../../hooks/use-user-role';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import useTenants from '../../hooks/use-tenants';
 import {
   listUsers,
   createUser as createUserMutation,
@@ -51,6 +52,10 @@ const UserManagementLayout = (): React.JSX.Element => {
   const { awsConfig } = useAppContext();
   const { settings } = useSettingsContext();
   const { isAdmin, loading: roleLoading } = useUserRole();
+  // Only the isolation mode is needed here: under Strict an empty scope denies
+  // everything rather than allowing everything, and the field text must say so.
+  const { isolationMode, loadTenants } = useTenants();
+  const strictIsolation = isolationMode === 'Strict';
   const { versions, fetchVersions } = useConfigurationVersions();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
@@ -233,6 +238,7 @@ const UserManagementLayout = (): React.JSX.Element => {
   };
 
   const handleEditScope = (user: User) => {
+    setError('');
     setEditingUser(user);
     // Pre-populate with current scope
     const currentScope = user.allowedConfigVersions?.filter((v): v is string => v !== null) || [];
@@ -335,12 +341,16 @@ const UserManagementLayout = (): React.JSX.Element => {
   };
 
   const handleCreateModalOpen = () => {
+    // Cleared on open so that an earlier page-level error is not shown inside the
+    // modal as though it were about this form.
+    setError('');
     setShowCreateModal(true);
     fetchVersions();
     loadTestSets();
   };
 
   const handleEditScopeModalClose = () => {
+    setError('');
     setShowEditScopeModal(false);
     setEditingUser(null);
     setEditScopeVersions([]);
@@ -354,8 +364,9 @@ const UserManagementLayout = (): React.JSX.Element => {
   useEffect(() => {
     if (awsConfig && isAdmin && !roleLoading) {
       loadUsers();
+      loadTenants();
     }
-  }, [awsConfig, isAdmin, roleLoading, loadUsers]);
+  }, [awsConfig, isAdmin, roleLoading, loadUsers, loadTenants]);
 
   // Show loading if AWS config or role is not ready
   if (!awsConfig || roleLoading) {
@@ -560,6 +571,11 @@ const UserManagementLayout = (): React.JSX.Element => {
         >
           <Form>
             <SpaceBetween size="l">
+              {/* Repeated inside the modal, because a failed create leaves the modal
+                  open over the page-level alert. A server refusal -- for example a
+                  scope that spans two tenants -- names what to change, so it has
+                  to be visible where the admin is looking. */}
+              {error && <Alert type="error">{error}</Alert>}
               <FormField
                 label="Email Address"
                 errorText={emailError}
@@ -585,13 +601,17 @@ const UserManagementLayout = (): React.JSX.Element => {
                     Configuration Profile Scope <em>- optional</em>
                   </span>
                 }
-                description="Restrict this user to specific configuration profiles. Leave empty for unrestricted access to all versions."
+                description={
+                  strictIsolation
+                    ? 'Restrict this user to specific configuration profiles. Strict tenant isolation is on, so a non-admin user with no scope sees no documents.'
+                    : 'Restrict this user to specific configuration profiles. Leave empty for unrestricted access to all versions.'
+                }
               >
                 <Multiselect
                   selectedOptions={selectedConfigVersions}
                   onChange={({ detail }) => setSelectedConfigVersions(detail.selectedOptions as { label: string; value: string }[])}
                   options={configVersionOptions}
-                  placeholder="All profiles (unrestricted)"
+                  placeholder={strictIsolation ? 'No profiles (no access)' : 'All profiles (unrestricted)'}
                   filteringType="auto"
                   tokenLimit={3}
                 />
@@ -639,15 +659,21 @@ const UserManagementLayout = (): React.JSX.Element => {
         >
           <Form>
             <SpaceBetween size="l">
+              {/* See the create modal: the refusal must be visible over the page. */}
+              {error && <Alert type="error">{error}</Alert>}
               <FormField
                 label="Configuration Profile Scope"
-                description="Select which configuration profiles this user can access. Clear all to give unrestricted access."
+                description={
+                  strictIsolation
+                    ? 'Select which configuration profiles this user can access. Strict tenant isolation is on, so clearing the scope leaves a non-admin user with no access to documents.'
+                    : 'Select which configuration profiles this user can access. Clear all to give unrestricted access.'
+                }
               >
                 <Multiselect
                   selectedOptions={editScopeVersions}
                   onChange={({ detail }) => setEditScopeVersions(detail.selectedOptions as { label: string; value: string }[])}
                   options={configVersionOptions}
-                  placeholder="All profiles (unrestricted)"
+                  placeholder={strictIsolation ? 'No profiles (no access)' : 'All profiles (unrestricted)'}
                   filteringType="auto"
                   tokenLimit={3}
                 />

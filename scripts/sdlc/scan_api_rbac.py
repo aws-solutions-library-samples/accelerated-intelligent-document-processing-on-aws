@@ -293,9 +293,8 @@ SCOPE_PATTERNS = (
     # `scope_allows`, so the DynamoDB attribute name appears nowhere in the branch.
     #
     # The bare local name `allowed_versions` is deliberately NOT here: it is the
-    # weakest of the candidates, and dropping it costs nothing (all 19 flagged
-    # operations — 4 `scope_filtered` + 15 `scope_checked` — still pass on the three
-    # above).
+    # weakest of the candidates, and dropping it costs nothing (every flagged
+    # operation passes on the others).
     #
     # It does not make the check strict, though, and nothing here should be read as
     # claiming otherwise: these are substring matches over unparsed source, so a
@@ -305,6 +304,16 @@ SCOPE_PATTERNS = (
     # code path *refers* to the scope; the per-site unit suites establish that it
     # enforces it.
     "scope_allows",
+    # The shared single-document form of the rule, `idp_common.document_scope`.
+    # Its entry points resolve the caller's scope and apply `scope_allows` inside the
+    # library, so an operation calling one of them names neither the attribute nor the
+    # matcher in its own branch — the same reason `scope_allows` is listed above.
+    # Listed by entry point rather than by the module name, so a file that imports
+    # the module without calling it does not pass on the import line.
+    "require_document_scope",
+    "assert_document_in_scope",
+    "assert_profile_in_scope",
+    "refuse_if_scoped",
 )
 
 # --- Function URL route checks (S6-S9) ---------------------------------------

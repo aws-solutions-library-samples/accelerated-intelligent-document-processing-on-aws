@@ -55,6 +55,16 @@ def validate_user_identity(identity):
     return user_id
 
 
+
+def _strict_tenant_isolation():
+    """Whether the stack runs with ``TenantIsolationMode=Strict``.
+
+    The same test as ``idp_common.config_scope.is_strict_isolation``, restated
+    because this function ships without the ``idp_common`` layer.
+    """
+    return os.environ.get("TENANT_ISOLATION_MODE", "Off") == "Strict"
+
+
 def handler(event, context):
     """
     Handle agent query requests from AppSync.
@@ -114,6 +124,19 @@ def handler(event, context):
             )
             raise PermissionError(
                 "Unauthorized: submitAgentQuery requires Admin, Author, or Viewer group"
+            )
+        # Strict tenant isolation: the analytics agents query the reporting
+        # database, which holds every tenant's results. Admin only.
+        if _strict_tenant_isolation() and "Admin" not in groups:
+            logger.warning(
+                "Rejecting submitAgentQuery from %s: strict tenant isolation "
+                "restricts agent queries to Admin",
+                user_id,
+            )
+            raise PermissionError(
+                "Unauthorized: this deployment runs in strict tenant isolation, "
+                "where agent queries (which read across every tenant's documents) "
+                "are limited to the Admin group"
             )
 
         # Generate a unique job ID

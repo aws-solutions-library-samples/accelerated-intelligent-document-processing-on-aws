@@ -401,6 +401,24 @@ at the producer rather than in this deployment. Each refused document appears in
 UI as **Failed** with the reason on it, so no investigation starts from the metric
 alone.
 
+### Tenant Isolation
+
+With `TenantIsolationMode=Strict` (see [Multi-Tenant Isolation](multi-tenancy.md)), the
+queue sender checks every incoming document against the tenant declarations and
+publishes two metrics in the stack's namespace:
+
+| Metric | Published when | Alarmed |
+|---|---|---|
+| `TenantBoundaryRejected` | A document was refused because its key and its resolved profile belong to different tenants, or it landed outside every tenant | No: this is the control working. A sustained count usually means an uploader is writing to the wrong prefix |
+| `TenantIsolationLookupFailed` | The tenant declarations could not be read | Yes, `TenantIsolationLookupFailedAlarm`, on the first occurrence (strict stacks only) |
+
+Unlike prefix mappings, the tenant check **fails closed**. When the declarations
+cannot be read, the document is not processed; Lambda retries the event twice and
+then sends it to the QueueSender dead-letter queue. The object remains in the Input
+bucket, so once the cause is fixed (typically a KMS or policy change denying
+`dynamodb:GetItem` on the ConfigurationTable) re-upload the object or redrive the
+queue. A refused document appears in the document list as **Failed** with the reason.
+
 ### Confidence Assessment Degraded
 
 Confidence assessment is an *enrichment* pass: extraction has already run,

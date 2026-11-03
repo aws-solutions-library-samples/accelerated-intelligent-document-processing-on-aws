@@ -158,6 +158,9 @@
     "deleteReviewQueue": [
       "Admin"
     ],
+    "deleteTenant": [
+      "Admin"
+    ],
     "deleteTestSets": [
       "Admin",
       "Author"
@@ -469,6 +472,9 @@
       "Author",
       "Viewer"
     ],
+    "listTenants": [
+      "Admin"
+    ],
     "listTestSetQueues": [
       "Admin",
       "Annotator",
@@ -515,6 +521,9 @@
       "Author"
     ],
     "putConfigPrefixMapping": [
+      "Admin"
+    ],
+    "putTenant": [
       "Admin"
     ],
     "queryKnowledgeBase": [

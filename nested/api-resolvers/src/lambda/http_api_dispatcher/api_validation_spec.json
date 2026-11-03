@@ -673,6 +673,17 @@
         }
       ]
     },
+    "deleteTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "deleteTestSets": {
       "args": [
         {
@@ -1607,6 +1618,9 @@
     "listSampleDocuments": {
       "args": []
     },
+    "listTenants": {
+      "args": []
+    },
     "listTestSetQueues": {
       "args": []
     },
@@ -1775,6 +1789,38 @@
           "name": "enabled",
           "non_null": false,
           "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "description",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "putTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "prefixes",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profilePattern",
+          "non_null": true,
+          "type": "String"
         },
         {
           "elem_non_null": false,

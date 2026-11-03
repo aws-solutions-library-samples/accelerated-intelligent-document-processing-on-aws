@@ -38,6 +38,15 @@ DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
 
 
+def _strict_tenant_isolation():
+    """Whether the stack runs with ``TenantIsolationMode=Strict``.
+
+    The same test as ``idp_common.config_scope.is_strict_isolation``, restated
+    because this function ships without the ``idp_common`` layer.
+    """
+    return os.environ.get("TENANT_ISOLATION_MODE", "Off") == "Strict"
+
+
 def _caller_in_groups(event, allowed):
     """Defense-in-depth RBAC check against the caller's Cognito groups.
 
@@ -107,6 +116,22 @@ def handler(event, context):
     ):
         raise PermissionError(
             "Unauthorized: Agent Chat requires Admin, Author or Viewer group"
+        )
+    # Strict tenant isolation: the agents answer across every document in the
+    # deployment (analytics over the reporting database, error analysis over every
+    # execution), so nothing scopes them to one tenant. Admin only.
+    if (
+        event.get("identity") is not None
+        and _strict_tenant_isolation()
+        and not _caller_in_groups(event, ("Admin",))
+    ):
+        logger.warning(
+            "Rejecting agent chat: strict tenant isolation restricts Agent Chat to Admin"
+        )
+        raise PermissionError(
+            "Unauthorized: this deployment runs in strict tenant isolation, where "
+            "Agent Chat (which reads across every tenant's documents) is limited to "
+            "the Admin group"
         )
 
     try:

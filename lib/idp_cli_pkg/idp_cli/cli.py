@@ -8050,6 +8050,13 @@ def bootstrap(
         sys.exit(1)
 
 
+# `idp-cli tenancy ...` lives in its own module; registered here, after `cli`
+# exists, so importing it cannot run ahead of the group it attaches to.
+from .tenancy import tenancy as _tenancy_group  # noqa: E402
+
+cli.add_command(_tenancy_group)
+
+
 def main():
     """Main entry point for the CLI"""
     # Pre-flight check: report the underlying ImportError rather than only

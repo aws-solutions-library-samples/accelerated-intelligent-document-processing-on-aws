@@ -95,20 +95,8 @@
     "lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py": {
       "I001": 1
     },
-    "nested/api-resolvers/src/lambda/abort_workflow_resolver/index.py": {
-      "I001": 1
-    },
-    "nested/api-resolvers/src/lambda/copy_to_baseline_resolver/index.py": {
-      "I001": 1
-    },
-    "nested/api-resolvers/src/lambda/delete_document_resolver/index.py": {
-      "I001": 1
-    },
     "nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py": {
       "F841": 1,
-      "I001": 1
-    },
-    "nested/api-resolvers/src/lambda/document_versions_resolver/index.py": {
       "I001": 1
     },
     "nested/api-resolvers/src/lambda/process_changes_resolver/index.py": {
@@ -119,9 +107,6 @@
     },
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py": {
       "F841": 1,
-      "I001": 1
-    },
-    "nested/api-resolvers/src/lambda/test_results_resolver/index.py": {
       "I001": 1
     },
     "nested/api-resolvers/src/lambda/test_set_resolver/index.py": {
@@ -498,7 +483,6 @@
     "src/lambda/test_file_copier/test_index.py",
     "src/lambda/test_set_zip_extractor/index.py",
     "src/lambda/update_settings/index.py",
-    "src/lambda/user_management/test_index.py",
     "src/lambda/user_management/test_scan_pagination.py",
     "src/lambda/user_sync/index.py",
     "src/lambda/w2_dataset_deployer/index.py",
@@ -507,8 +491,8 @@
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
   ],
   "highWaterMark": {
-    "lintDebtFiles": 77,
-    "lintFindings": 181,
-    "formatDebtFiles": 166
+    "lintDebtFiles": 72,
+    "lintFindings": 176,
+    "formatDebtFiles": 165
   }
 }

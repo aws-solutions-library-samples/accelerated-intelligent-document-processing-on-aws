@@ -7,6 +7,8 @@ import os
 from datetime import datetime, timezone
 
 import boto3
+
+from idp_common import document_scope
 from idp_common.docs_service import create_document_service
 from idp_common.dynamodb.client import CONDITIONAL_CHECK_FAILED, DynamoDBError
 
@@ -21,6 +23,9 @@ logger.setLevel(os.environ.get('LOG_LEVEL', 'INFO'))
 
 # Initialize AWS clients
 sfn_client = boto3.client('stepfunctions')
+_dynamodb = boto3.resource('dynamodb')
+# Per-container cache of callers' configuration scopes (see config_scope).
+_user_scope_cache = {}
 
 # Initialize document service (uses AppSync by default)
 document_service = create_document_service()
@@ -124,6 +129,20 @@ def handler(event, context):
                 "errors": ["objectKeys is required"]
             }
         
+        # A caller may abort only documents in their configuration scope, checked
+        # for the whole selection before anything is stopped. A direct invoke
+        # (abortTestRuns forwarding a test run's documents) carries no identity and
+        # has already been admitted above on IAM; it has no scope to apply.
+        if not is_direct_invoke(event):
+            document_scope.require_document_scope(
+                event,
+                object_keys,
+                users_table_name=os.environ.get('USERS_TABLE_NAME', ''),
+                dynamodb=_dynamodb,
+                tracking_table=lambda: _dynamodb.Table(os.environ['TRACKING_TABLE']),
+                cache=_user_scope_cache,
+            )
+
         logger.info(f"Aborting workflows for {len(object_keys)} documents")
         
         # Process each document

@@ -23,8 +23,13 @@ row it should match, and "no row" deliberately means *unrestricted* — so every
 write path here records the ``sub`` and its pointer, and ``listUsers``' Cognito
 sync back-fills rows that predate them. The canonical statement of the rule and of
 both key spaces is ``idp_common.config_scope``; the constants below restate it
-because this function ships with no ``idp_common`` layer (it vendors
-``log_sanitizer`` for the same reason).
+because this function shipped with no ``idp_common`` layer when they were
+written, and ``scripts/tests/test_scope_lookup_fail_closed.py`` holds them to the
+canonical values. It now carries the base layer, so that a scope an admin sets is
+checked against the tenant declarations by
+``idp_common.config.tenants.scope_rejection_reason`` -- the same code the
+configuration resolver uses, rather than a restatement of it -- and it imports
+``log_sanitizer`` from the layer rather than vendoring a copy.
 """
 
 import logging
@@ -36,7 +41,9 @@ from datetime import datetime
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
-from log_sanitizer import sanitize_event_for_logging
+
+from idp_common.config.tenants import TenantStore, scope_rejection_reason
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -45,6 +52,7 @@ dynamodb = boto3.resource("dynamodb")
 cognito = boto3.client("cognito-idp")
 
 USERS_TABLE_NAME = os.environ.get("USERS_TABLE_NAME", "")
+CONFIGURATION_TABLE_NAME = os.environ.get("CONFIGURATION_TABLE_NAME", "")
 USER_POOL_ID = os.environ.get("USER_POOL_ID", "")
 ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "Admin")
 AUTHOR_GROUP = os.environ.get("AUTHOR_GROUP", "Author")
@@ -268,6 +276,39 @@ def handler(event, context):
     raise ValueError(f"Unknown operation: {field}")
 
 
+def _refuse_scope_crossing_tenants(scope):
+    """Raise ``ValueError`` when ``scope`` reaches beyond one tenant.
+
+    Only a non-empty scope is checked: clearing a scope is the explicit "remove
+    the restriction" an admin can always make, and under strict isolation an
+    unscoped non-admin sees nothing anyway.
+
+    Fails CLOSED. If the tenant declarations cannot be read -- the table is not
+    wired, or the read fails -- the write is refused rather than saved unchecked,
+    because a scope saved unchecked is exactly the cross-tenant grant this check
+    exists to stop, and nothing re-checks a scope after it is stored.
+    """
+    if not scope:
+        return
+    if not CONFIGURATION_TABLE_NAME:
+        raise ValueError(
+            "Cannot set a configuration scope: CONFIGURATION_TABLE_NAME is not "
+            "configured, so the tenant boundaries cannot be checked."
+        )
+    try:
+        tenants = TenantStore(dynamodb.Table(CONFIGURATION_TABLE_NAME)).list()
+    except Exception as e:  # noqa: BLE001 - any failure refuses the write
+        logger.error(f"Could not read tenant declarations; refusing scope write: {e}")
+        raise ValueError(
+            "Cannot set a configuration scope right now: the tenant declarations "
+            "could not be read. Try again."
+        ) from e
+    reason = scope_rejection_reason(scope, tenants)
+    if reason:
+        logger.warning(f"Rejecting configuration scope {scope!r}: {reason}")
+        raise ValueError(reason)
+
+
 def create_user(args):
     """Create user in DynamoDB and sync to Cognito."""
     email = args["email"]
@@ -326,6 +367,9 @@ def create_user(args):
         "createdAt": datetime.utcnow().isoformat() + "Z",
         "updatedAt": datetime.utcnow().isoformat() + "Z",
     }
+
+    # A scope must stay inside one tenant. Checked before anything is written.
+    _refuse_scope_crossing_tenants(allowed_config_versions)
 
     # Store allowedConfigVersions if provided
     if allowed_config_versions is not None:
@@ -398,6 +442,7 @@ def update_user(args):
 
     if config_versions_given:
         if allowed_config_versions:
+            _refuse_scope_crossing_tenants(allowed_config_versions)
             set_parts.append("allowedConfigVersions = :acv")
             expr_values[":acv"] = allowed_config_versions
         else:

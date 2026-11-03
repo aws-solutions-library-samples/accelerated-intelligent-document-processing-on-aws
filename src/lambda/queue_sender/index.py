@@ -27,6 +27,7 @@ active-profile fallback, the X-Ray annotation and the TTL calculation — none o
 which should exist twice.
 """
 
+import dataclasses
 import json
 import logging
 import os
@@ -37,14 +38,21 @@ from aws_xray_sdk.core import patch_all, xray_recorder
 
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.prefix_mappings import (
+    SOURCE_REJECTED,
     PrefixMappingStore,
     resolve_config_assignment,
+)
+from idp_common.config.tenants import (
+    TenantStore,
+    ingest_rejection_reason,
+    is_strict_isolation,
 )
 from idp_common.docs_service import create_document_service
 from idp_common.document_versions import delete_current_output_objects
 from idp_common.job_completion import finalize_job_file, parse_job_document_id
 from idp_common.job_service import create_job_service
 from idp_common.models import Document, Status
+from idp_common.testrun_status import RUN_STATUS_TERMINAL
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 # Patch AWS SDK calls for X-Ray tracing
@@ -519,6 +527,103 @@ def resolve_configuration(document, object_key):
     return assignment
 
 
+class TenantIsolationUnavailable(RuntimeError):
+    """Strict tenant isolation could not be evaluated for one document.
+
+    Raised OUT of the handler, never caught: this function is invoked
+    asynchronously by EventBridge, so Lambda retries the event twice and then sends
+    it to ``QueueSenderDLQ``, which is alarmed. The object stays in the Input
+    bucket and nothing has been written for it yet, so the recovery is a re-upload
+    once the cause is fixed. That is the fail-closed reading: the prefix-mapping
+    read fails open because a routing table being unreadable must not halt ingest,
+    but under strict isolation an unevaluable boundary is exactly the condition
+    the mode exists to refuse.
+    """
+
+
+def _test_run_profile(run_id):
+    """The profile a Test Studio run still in progress is defined by, or ``None``.
+
+    ``testrun#<id>`` / ``metadata`` in the TrackingTable is written by the test
+    runner when a run starts, under the caller's configuration scope, and nothing an
+    uploader controls can create one, which is what makes it evidence for
+    ``ingest_rejection_reason``'s Test Studio exemption rather than one more claim.
+
+    Only a run that has not reached a terminal status counts. The copier writes a
+    run's documents while the run is in flight; a finished run has nothing more to
+    write, so honouring its record afterwards would let anyone who learns a
+    historical run id replay it to place a document under that run's profile. A
+    record with no status at all is refused too: every writer sets one, so its
+    absence is not evidence of anything.
+    """
+    table_name = os.environ.get("TRACKING_TABLE")
+    if not table_name or not run_id:
+        return None
+    item = (
+        _config_table(table_name)
+        .get_item(
+            Key={"PK": f"testrun#{run_id}", "SK": "metadata"},
+            ProjectionExpression="ConfigVersion, #status",
+            ExpressionAttributeNames={"#status": "Status"},
+            ConsistentRead=True,
+        )
+        .get("Item")
+    ) or {}
+    status = item.get("Status")
+    if not status or status in RUN_STATUS_TERMINAL:
+        return None
+    return item.get("ConfigVersion") or None
+
+
+def enforce_tenant_boundary(document, object_key, assignment):
+    """Strict mode: refuse a document whose key and profile belong to different tenants.
+
+    Returns ``assignment`` unchanged when the mode is ``Off`` — with no read of any
+    kind, so an ``Off`` stack is on exactly the path it was on before — or when the
+    boundary holds. Returns a rejected copy carrying the reason when it does not.
+    Raises :class:`TenantIsolationUnavailable` when the check cannot be made.
+    """
+    if not is_strict_isolation():
+        return assignment
+    if assignment is None:
+        # Configuration resolution failed or CONFIG_TABLE is unset. Off mode
+        # continues unpinned; strict mode cannot know which profile the document
+        # would run under, so it cannot say the boundary holds.
+        raise TenantIsolationUnavailable(
+            f"No configuration could be resolved for {object_key}, so its tenant "
+            f"boundary cannot be checked"
+        )
+    if assignment.rejected:
+        return assignment
+    config_table_name = os.environ.get("CONFIG_TABLE")
+    try:
+        tenants = TenantStore(_config_table(config_table_name)).list()
+    except Exception as e:
+        _emit("TenantIsolationLookupFailed")
+        raise TenantIsolationUnavailable(
+            f"Could not read the tenant declarations for {object_key}: {e}"
+        ) from e
+    reason = ingest_rejection_reason(
+        object_key,
+        assignment.profile,
+        tenants,
+        submission_source=document.submission_source,
+        test_run_profile=_test_run_profile,
+    )
+    if not reason:
+        return assignment
+    _emit("TenantBoundaryRejected")
+    logger.warning("Refusing %s: %s", object_key, reason)
+    return dataclasses.replace(
+        assignment,
+        profile=None,
+        revision=None,
+        source=SOURCE_REJECTED,
+        rejected=True,
+        reason=reason,
+    )
+
+
 def _send_to_queue(document, object_key, event_type="DocumentQueued"):
     """Hand a document to the processing queue."""
     doc_json = document.to_json()
@@ -674,6 +779,11 @@ def handle_object_created(event):
         )
         assignment = None
 
+    # Outside the fail-open block above, deliberately: under strict isolation an
+    # unevaluable boundary raises out of the handler (see TenantIsolationUnavailable).
+    resolved = assignment
+    assignment = enforce_tenant_boundary(document, object_key, assignment)
+
     if assignment is not None and assignment.rejected:
         # Record the refusal so it is visible in the UI, and stop. Deliberately NOT
         # a silent drop: an operator cannot act on a document that never appeared,
@@ -688,7 +798,11 @@ def handle_object_created(event):
             "statusCode": 200,
             "detail": detail,
             "document_id": document.id,
-            "refused": "config_prefix_mapping_conflict",
+            "refused": (
+                "tenant_boundary"
+                if assignment is not resolved
+                else "config_prefix_mapping_conflict"
+            ),
         }
 
     _purge_stale_outputs(output_bucket, object_key)
@@ -840,7 +954,7 @@ def handle_scan_result(event):
     # below is what must not happen, and it cannot: a rejected assignment leaves
     # `config_version` unpinned, not the status QUEUED.
     try:
-        resolve_configuration(document, object_key)
+        assignment = resolve_configuration(document, object_key)
     except Exception as e:  # noqa: BLE001
         # Fail open, matching the upload path: a configuration-resolution fault
         # must not strand a document that already has a verdict.
@@ -850,6 +964,19 @@ def handle_scan_result(event):
             e,
             exc_info=True,
         )
+        assignment = None
+    # Strict isolation re-checks the tenant boundary here, because the
+    # configuration was just re-resolved: a tenant or mapping change while the scan
+    # was in flight could otherwise admit a document the upload path would have
+    # refused. Unlike a mapping rejection (see above) this one is acted on, since
+    # admitting it would place the document in another tenant's view. Raises, so
+    # the verdict is re-delivered, when the boundary cannot be evaluated.
+    boundary = enforce_tenant_boundary(document, object_key, assignment)
+    tenant_refusal = (
+        boundary.reason
+        if boundary is not None and boundary is not assignment and boundary.rejected
+        else None
+    )
 
     existing = document_service.get_document(object_key)
     if existing is None:
@@ -888,6 +1015,11 @@ def handle_scan_result(event):
     new_status, reason = decide_admission(
         scan_status, result_status, policy["allow_unscannable"]
     )
+    if tenant_refusal and new_status == Status.QUEUED:
+        new_status = Status.FAILED
+        reason = "tenant boundary"
+        document.config_assignment_error = tenant_refusal
+        document.config_source = SOURCE_REJECTED
     document.status = new_status
     logger.info(
         "Malware verdict for %s: scanStatus=%s result=%s threat=%s reasons=%s "
@@ -914,6 +1046,11 @@ def handle_scan_result(event):
     }
     if threat_name:
         extra_attributes["MalwareScanThreat"] = threat_name
+    if new_status == Status.FAILED and tenant_refusal:
+        # Written with the verdict, in the same conditional update, so the
+        # document shows why it was refused the way an upload-time refusal does.
+        extra_attributes["ConfigAssignmentError"] = tenant_refusal
+        extra_attributes["ConfigSource"] = SOURCE_REJECTED
     if reasons:
         extra_attributes["MalwareScanReasons"] = reasons
 

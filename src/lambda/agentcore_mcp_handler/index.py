@@ -99,7 +99,28 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         tool_name = tool_name[1:]
     
     logger.info(f"Tool name from context: {tool_name_full} -> {tool_name}")
-    
+
+    # Strict tenant isolation: every tool here (search, batch status, results,
+    # reprocess) acts across the whole deployment, and the gateway hands this
+    # function no user identity -- only a machine client's -- so there is no
+    # tenant to scope a call to and no way to tell an Admin from anyone else.
+    if os.environ.get("TENANT_ISOLATION_MODE", "Off") == "Strict":
+        logger.warning(
+            f"Rejecting MCP tool {tool_name!r}: strict tenant isolation refuses "
+            f"MCP calls, which carry no user identity to scope"
+        )
+        return {
+            'statusCode': 403,
+            'body': json.dumps({
+                'error': (
+                    "This deployment runs in strict tenant isolation. MCP tools act "
+                    "across every tenant's documents and the gateway supplies no "
+                    "user identity to scope them, so they are disabled."
+                ),
+                'tool_name': tool_name,
+            })
+        }
+
     try:
         logger.info(f"Looking up tool: {tool_name}")
         tool = get_tool(tool_name)

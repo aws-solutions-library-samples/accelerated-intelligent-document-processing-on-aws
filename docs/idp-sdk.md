@@ -2140,6 +2140,32 @@ result = client.discovery.run_batch(
 
 ---
 
+## Tenancy Operations
+
+Tenant declarations and isolation checks — the operations behind `idp-cli tenancy`.
+See [Multi-Tenant Isolation](multi-tenancy.md) for the model.
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `tenancy.isolation_mode()` | `str` | The stack's `TenantIsolationMode` (`Off`, `Strict`, or `Unknown` when the stack predates the parameter) |
+| `tenancy.list()` | `TenantListResult` | Declared tenants and the isolation mode |
+| `tenancy.put(tenant_id, prefixes, profile_pattern, *, description=None)` | `TenantInfo` | Create or replace one tenant; raises `IDPValidationError` on the same refusals as the API |
+| `tenancy.delete(tenant_id)` | `bool` | Remove one tenant; whether it existed |
+| `tenancy.apply(declarations, *, prune=False, dry_run=True)` | `TenantApplyResult` | Plan, and with `dry_run=False` write, the changes that make the stack match `declarations` |
+| `tenancy.generate_policies(principals)` | `TenantPolicyResult` | A CloudFormation template of per-tenant S3 access points, plus warnings |
+| `tenancy.audit(*, principals=None, document_sample=500)` | `TenantAuditResult` | Read-only findings that weaken isolation |
+| `tenancy.verify(document, document_name="tenancy-verify.pdf", *, tenant_ids=None, timeout_seconds=240)` | `TenantVerifyResult` | Live cross-tenant check with throwaway users; every row is `PASS`, `FAIL`, `SKIP` or `ERROR` |
+
+```python
+from idp_sdk import IDPClient
+
+client = IDPClient(stack_name="my-idp-stack")
+client.tenancy.put("acme", ["clients/acme/"], "acme-*", description="ACME Corp")
+report = client.tenancy.audit()
+for finding in report.findings:
+    print(finding.kind, finding.subject, finding.detail)
+```
+
 ## Manifest Operations
 
 Operations for manifest generation and validation.
