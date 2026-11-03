@@ -412,3 +412,54 @@ def test_discovery_keeps_the_refusal_type(monkeypatch):
         discovery.discovery_classes_with_document(
             "bucket", "doc.png", file_bytes=b"not an image"
         )
+
+
+@pytest.mark.unit
+def test_the_sparse_backfill_write_back_is_reported_because_it_really_diverges(
+    monkeypatch,
+):
+    """Measured, not assumed: the flag after `get_merged_configuration`'s write-back.
+
+    A profile and its r1 written before a top-level section existed. Reading it
+    resolves the missing section against `default` and, because that changed
+    something, writes the resolved head back with `cut_revision=False`. The
+    published revision is not resolved that way: a pinned read builds `IDPConfig`
+    from the body, so the section takes the model's defaults. When `default`
+    differs from those, documents pinned to r1 and the head genuinely disagree,
+    and the flag says so. If pinned reads are ever resolved against `default` too,
+    or the write-back stops for revisioned profiles, this flips to True and the
+    docstring should say which.
+    """
+    from idp_common.config.configuration_manager import _stored_content_hash
+
+    _env(monkeypatch, with_bucket=True)
+    with mock_aws():
+        _create_resources()
+        manager = ConfigurationManager()
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            IDPConfig(summarization={"enabled": False}),
+            version="default",
+        )
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, IDPConfig(notes="mine"), version=PROFILE
+        )
+        key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#{PROFILE}"}
+        head = manager._decompress_item(manager.table.get_item(Key=key)["Item"])
+        head.pop("summarization")
+        manager.table.put_item(Item=manager._compress_item(head))
+        body = manager.revisions.get_body(PROFILE, 1)
+        assert body is not None
+        body.pop("summarization")
+        manager.revisions.put_body(PROFILE, 1, body)
+        manager.revisions.update_entry(
+            PROFILE, 1, storedHash=_stored_content_hash(head)
+        )
+        assert manager.head_matches_published(PROFILE) is True
+
+        resolved = manager.get_merged_configuration(PROFILE)
+        assert resolved is not None and resolved.summarization.enabled is False
+
+        pinned = get_config(as_model=True, version=PROFILE, revision=1)
+        assert pinned.summarization.enabled is True
+        assert manager.head_matches_published(PROFILE) is False

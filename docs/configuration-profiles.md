@@ -338,6 +338,12 @@ profile is left as it was, rather than changing what the editor shows while new
 documents keep running the earlier revision. A profile with no history yet saves
 without one, because its documents run its current configuration.
 
+`idp-cli` and the SDK find the stack's configuration bucket themselves. Your own
+script or notebook that saves profiles through `idp_common` must set
+`CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`; otherwise saving a
+profile that already has revisions fails with *this process cannot record a
+revision (CONFIGURATION_BUCKET is not set)*.
+
 On versions before this was fixed
 ([#1778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1778)),
 those saves updated the profile without recording a revision. A profile left in that

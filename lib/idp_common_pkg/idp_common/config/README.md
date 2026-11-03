@@ -463,7 +463,12 @@ Four decisions worth knowing before changing this code:
   `config_revisions/*` and `s3:ListBucket` limited to that prefix. The set is
   derived from source and enforced by
   `scripts/tests/test_config_profile_writer_wiring.py`, so a new writer is held to
-  it without being listed.
+  it without being listed. That gate reads deployed Lambdas only: a local process
+  (the CLI, the SDK, a notebook) is outside it. The SDK and CLI resolve both the
+  table and the bucket from the stack (`ConfigOperation._configure_config_env`);
+  code that builds a `ConfigurationManager` itself must set
+  `CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`, or a save to a
+  profile with history raises `RevisionNotRecordedError`.
 - **`head_matches_published(profile)`** says whether the head is the revision new
   documents run: True, False when the head was changed without a revision (with
   the same proof a pinned read uses, `_head_is_revision`), or None when there is

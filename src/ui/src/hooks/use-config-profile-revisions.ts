@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../api/client-shim';
 import {
@@ -48,13 +48,22 @@ const useConfigProfileRevisions = () => {
    */
   const [profileMatchesPublished, setProfileMatchesPublished] = useState<boolean | null>(null);
 
+  // Only the newest request may set state: switching profiles quickly can
+  // resolve an older request last, and its verdict would then be shown under the
+  // newer profile's name.
+  const latestRequest = useRef(0);
+
   const loadRevisions = useCallback(async (profileName: string) => {
     if (!profileName) return;
+    latestRequest.current += 1;
+    const request = latestRequest.current;
+    const isStale = () => request !== latestRequest.current;
     setLoading(true);
     setError(null);
     setProfileMatchesPublished(null);
     try {
       const result = await client.graphql({ query: listConfigProfileRevisions, variables: { profileName } });
+      if (isStale()) return;
       const response = result.data.listConfigProfileRevisions;
       if (!response?.success) {
         setError(errorMessage(response?.error, 'Failed to load revision history'));
@@ -65,12 +74,13 @@ const useConfigProfileRevisions = () => {
       setRevisions((response.revisions ?? []).filter(Boolean) as ConfigProfileRevision[]);
       setProfileMatchesPublished(response.profileMatchesPublished ?? null);
     } catch (err) {
+      if (isStale()) return;
       logger.error('Error loading configuration profile revisions', err);
       setError('Failed to load revision history');
       setRevisions([]);
       setProfileMatchesPublished(null);
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
   }, []);
 
