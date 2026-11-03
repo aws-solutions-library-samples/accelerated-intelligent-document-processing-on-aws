@@ -328,6 +328,7 @@ export type ConfigProfileRevisionResponse = {
 
 export type ConfigProfileRevisionsResponse = {
   error?: Maybe<ConfigurationError>;
+  profileMatchesPublished?: Maybe<Scalars['Boolean']['output']>;
   revisions?: Maybe<Array<Maybe<ConfigProfileRevision>>>;
   success: Scalars['Boolean']['output'];
 };
@@ -4141,7 +4142,7 @@ export type ListConfigProfileRevisionsQueryVariables = Exact<{
 }>;
 
 
-export type ListConfigProfileRevisionsQuery = { listConfigProfileRevisions?: { success: boolean, revisions?: Array<{ revision: number, createdAt?: string | null, createdBy?: string | null, label?: string | null, notes?: string | null, sizeBytes?: number | null, classFingerprint?: string | null, pinned?: boolean | null, published?: boolean | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
+export type ListConfigProfileRevisionsQuery = { listConfigProfileRevisions?: { success: boolean, profileMatchesPublished?: boolean | null, revisions?: Array<{ revision: number, createdAt?: string | null, createdBy?: string | null, label?: string | null, notes?: string | null, sizeBytes?: number | null, classFingerprint?: string | null, pinned?: boolean | null, published?: boolean | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type ListConfigurationLibraryQueryVariables = Exact<{
   pattern: Scalars['String']['input'];

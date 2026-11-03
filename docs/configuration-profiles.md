@@ -185,7 +185,7 @@ From the panel you can:
 | **Saved** / **By** | When it was cut and which user saved it (`stack-deployment` for a CloudFormation deploy) |
 | **Notes** | What the save was — e.g. *Reset to default*, *Restored from r3*, *Updated by stack deployment* |
 | **Label** | Optional user marker; also protects the revision from pruning |
-| **Current** badge | The revision the profile's configuration currently reflects |
+| **Current** badge | The revision new documents processed with the profile run. Normally the profile's configuration is exactly this revision; **Differs from profile** beside it means the profile was changed without recording one ([see below](#every-save-of-a-profile-records-the-revision-documents-run)) |
 | **Pinned** badge | Referenced by a test run, so pruning never removes it. Its body still expires `DataRetentionInDays` after it was cut ([Retention](#retention)) |
 
 ### A save that changes nothing records nothing
@@ -323,6 +323,43 @@ unchanged, or changing only its description, cuts nothing.
   changes its configuration. Until then, an Admin can copy it into an editable
   profile with **Create profile** and process its documents under the copy, which
   starts with a revision of its own.
+
+### Every save of a profile records the revision documents run
+
+Discovery (single- and multi-document, in both **Add** and **Replace** save mode),
+BDA blueprint optimization and sync, the Quick Start agent and the Test Set
+Generator's bootstrap all save a profile, and each save records and publishes a
+revision exactly as an editor save does. Replace mode records two: one for clearing
+the existing classes and one for the discovered class.
+
+For a profile that already has revision history, recording the revision is part of
+the save. If it cannot be recorded, the save fails with an error saying so and the
+profile is left as it was, rather than changing what the editor shows while new
+documents keep running the earlier revision. A profile with no history yet saves
+without one, because its documents run its current configuration.
+
+`idp-cli` and the SDK find the stack's configuration bucket themselves. Your own
+script or notebook that saves profiles through `idp_common` must set
+`CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`; otherwise saving a
+profile that already has revisions fails with *this process cannot record a
+revision (CONFIGURATION_BUCKET is not set)*.
+
+On versions before this was fixed
+([#1778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1778)),
+those saves updated the profile without recording a revision. A profile left in that
+state is flagged: the editor shows **New documents do not run this configuration**,
+naming the revision they do run, the revision history marks that revision
+**Differs from profile**, and the revision picker says so beside **Current**. To
+repair it, make any change in the editor and save, which records a revision matching
+what the editor shows; saving it unchanged does not.
+
+The same warning can appear on a profile nobody edited, when its published revision
+was recorded before a configuration section existed. Reading such a profile fills the
+missing section in from `default` and stores the result, while documents pinned to
+the published revision use the built-in defaults for that section, so the two really
+do differ. The repair is the same. Whether that fill-in should apply to pinned
+revisions too is tracked in
+[#1782](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1782).
 
 ### Test Studio: comparing two revisions of one profile
 

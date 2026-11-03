@@ -37,6 +37,8 @@ import useAppContext from '../../contexts/app';
 import ConfigBuilder from './ConfigBuilder';
 import ConfigurationVersionsTable from './ConfigurationVersionsTable';
 import ConfigRevisionHistoryPanel from './ConfigRevisionHistoryPanel';
+import UnrecordedChangesAlert from '../common/UnrecordedChangesAlert';
+import useConfigProfileRevisions from '../../hooks/use-config-profile-revisions';
 import ConfigurationComparison from './ConfigurationComparison';
 import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
 import NoConfigProfilesInScopeAlert from '../common/NoConfigProfilesInScopeAlert';
@@ -234,7 +236,15 @@ const ConfigurationLayout = (): React.JSX.Element => {
 
   // Version description state
   const currentVersionName = selectedVersion || activeVersionName;
+  // Whether the open profile's configuration is the revision new documents run.
+  // Re-checked whenever the profile list reports the open profile changed (a
+  // save moves updatedAt and the revision counters), so the warning clears once
+  // a save records a matching revision.
+  const { profileMatchesPublished, loadRevisions: loadOpenProfileRevisions } = useConfigProfileRevisions();
   const currentVersion = versions.find((v) => v.versionName === currentVersionName);
+  useEffect(() => {
+    if (currentVersionName && currentVersion?.publishedRevision) loadOpenProfileRevisions(currentVersionName);
+  }, [currentVersionName, currentVersion?.updatedAt, currentVersion?.publishedRevision, loadOpenProfileRevisions]);
   const [versionDescription, setVersionDescription] = useState(currentVersion?.description || '');
 
   // Update description when version changes
@@ -2599,6 +2609,14 @@ const ConfigurationLayout = (): React.JSX.Element => {
               <strong>Save as Profile</strong> to create an editable copy.
             </Alert>
           )}
+
+          {currentVersionName && currentVersion?.publishedRevision ? (
+            <UnrecordedChangesAlert
+              profileName={currentVersionName}
+              publishedRevision={Number(currentVersion.publishedRevision)}
+              profileMatchesPublished={profileMatchesPublished}
+            />
+          ) : null}
 
           {importSuccess && (
             <Alert type="success" dismissible onDismiss={() => setImportSuccess(false)} header="Configuration imported successfully">

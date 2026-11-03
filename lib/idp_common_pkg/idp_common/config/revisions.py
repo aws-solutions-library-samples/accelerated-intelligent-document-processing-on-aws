@@ -183,6 +183,14 @@ def confidence_fingerprint(config_dict: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
+class RevisionNotRecordedError(RuntimeError):
+    """A save of a profile with revision history could not record its revision.
+
+    Raised by `ConfigurationManager.save_configuration` instead of saving a
+    profile whose new documents would keep running the previous revision (#1778).
+    """
+
+
 class ConfigRevisionStore:
     """
     Reads and writes Configuration Profile revisions.
@@ -190,8 +198,11 @@ class ConfigRevisionStore:
     The store is *optional infrastructure*: when no configuration bucket is
     configured (``CONFIGURATION_BUCKET`` unset, e.g. an older deployment or a
     unit test that does not exercise history), ``enabled`` is False and every
-    method degrades to a no-op or empty result. Callers must never fail a
-    configuration save because history could not be recorded.
+    method degrades to a no-op or empty result. For a profile with no history
+    that is harmless, because its documents run the head. A profile that already
+    has a published revision runs that revision, so
+    `ConfigurationManager.save_configuration` refuses to save one when its
+    revision cannot be recorded (`RevisionNotRecordedError`).
     """
 
     def __init__(
@@ -537,7 +548,15 @@ class ConfigRevisionStore:
             f"Cut revision r{revision} of configuration profile '{profile}' "
             f"({size:,} bytes uncompressed)"
         )
-        self.prune(profile, published=revision if publish else None)
+        # Housekeeping, after the revision is recorded and published: a failed
+        # prune has no bearing on whether this save's revision exists, and raising
+        # here would make the caller treat a published revision as unrecorded.
+        try:
+            self.prune(profile, published=revision if publish else None)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Recorded r{revision} of '{profile}' but could not prune old revisions: {e}"
+            )
         return revision
 
     def prune(self, profile: str, published: Optional[int] = None) -> List[int]:

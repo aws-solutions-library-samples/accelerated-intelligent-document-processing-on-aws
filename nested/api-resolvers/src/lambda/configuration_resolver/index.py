@@ -35,6 +35,7 @@ from idp_common.config.prefix_mappings import (
     prefix_rejection_reason,
     resolve_config_assignment,
 )
+from idp_common.config.revisions import RevisionNotRecordedError
 from idp_common.config.tenants import (
     TenantConflict,
     TenantStore,
@@ -607,6 +608,17 @@ def handler(event, context):
         return {
             "success": False,
             "error": {"type": "ValidationError", "message": str(e)},
+        }
+    except RevisionNotRecordedError as e:
+        # A deliberate refusal (#1778): the profile has revision history and this
+        # save's revision could not be recorded, so it was refused or undone
+        # rather than leave the profile different from what its documents run.
+        # The message says which, and that is what the admin acts on; the generic
+        # handler below would frame it as a product bug.
+        logger.error(f"Configuration save refused, revision not recorded: {e}")
+        return {
+            "success": False,
+            "error": {"type": "RevisionNotRecorded", "message": str(e)},
         }
     except InertGatingHookError as e:
         # A deliberate refusal, not a fault: the configuration registers an
@@ -1382,7 +1394,20 @@ def handle_list_profile_revisions(manager, profile):
     """Revision history for one Configuration Profile, newest first."""
     try:
         revisions = manager.list_revisions(profile)
-        return {"success": True, "revisions": revisions}
+        # Whether the configuration the editor shows is the revision new documents
+        # run. Advisory: a failure to work it out must not hide the history.
+        try:
+            matches = manager.head_matches_published(profile)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Could not compare '{profile}' with its published revision: {e}"
+            )
+            matches = None
+        return {
+            "success": True,
+            "revisions": revisions,
+            "profileMatchesPublished": matches,
+        }
     except Exception as e:
         logger.error(f"Error listing revisions for '{profile}': {e}")
         return {
@@ -1450,6 +1475,12 @@ def handle_restore_profile_revision(
         }
     except PermissionError:
         raise
+    except RevisionNotRecordedError as e:
+        # Same refusal, same type as the save path (#1778).
+        return {
+            "success": False,
+            "error": {"type": "RevisionNotRecorded", "message": str(e)},
+        }
     except ValueError as e:
         return {
             "success": False,

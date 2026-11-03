@@ -8006,7 +8006,10 @@ def bootstrap(
         from idp_sdk import IDPClient
 
         client = IDPClient(stack_name=stack_name, region=region)
-        config_table = client.discovery._get_config_table(stack_name)
+        # Table AND bucket: the bootstrap saves a configuration profile, and a
+        # save without CONFIGURATION_BUCKET cannot record the profile's revision
+        # (refused outright for a profile that already has history, #1778).
+        config_table = client.config._configure_config_env(stack_name)
         _os.environ["CONFIGURATION_TABLE_NAME"] = config_table
 
         from idp_common.config.configuration_manager import ConfigurationManager
