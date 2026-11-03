@@ -115,7 +115,7 @@ flowchart TD
 | **Likelihood** | Medium |
 | **Severity** | High |
 | **Affected Components** | Amazon Athena, S3 Reporting Bucket, Analytics Agent |
-| **Mitigations** | RBAC-based agent access control (Admin/Author roles required), Athena query scoping, user-aware query generation, deployment as single-tenant per stack |
+| **Mitigations** | RBAC-based agent access control (Admin/Author roles required), Athena query scoping, user-aware query generation, deployment as single-tenant per stack — or, in a stack shared by several tenants, the agent is Admin-only under `TenantIsolationMode: Strict` |
 
 ## 4. Security Controls Summary
 
@@ -127,4 +127,4 @@ flowchart TD
 | **Audit logging** | All agent invocations logged to CloudWatch | AGT.T01, AGT.T03 |
 | **Query validation** | SQL sanitization before Athena execution | AGT.T01 |
 | **Session management** | Conversation history limits, session isolation | AGT.T04 |
-| **Single-tenant** | One deployment per environment | AGT.T05 |
+| **Single-tenant, or Admin-only when shared** | One deployment per environment; in a stack shared by tenants, `TenantIsolationMode: Strict` makes the agent Admin-only | AGT.T05 |
