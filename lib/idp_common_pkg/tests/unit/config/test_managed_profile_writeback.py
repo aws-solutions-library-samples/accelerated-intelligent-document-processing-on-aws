@@ -38,7 +38,10 @@ import yaml
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
-from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.configuration_manager import (
+    ConfigurationManager,
+    _stored_content_hash,
+)
 from idp_common.config.constants import CONFIG_TYPE_CONFIG, DEFAULT_VERSION
 from idp_common.config.merge_utils import merge_config_with_defaults
 from idp_common.config.models import IDPConfig
@@ -198,7 +201,13 @@ def test_a_genuine_backfill_is_written_back_and_keeps_every_head_attribute(
     manager, name
 ):
     """A field the stored profile lacks is still backfilled and persisted, and
-    the write-back preserves `Managed` and every other head attribute."""
+    the write-back preserves `Managed` and every other head attribute.
+
+    The profile has revision history, so a read writes nothing and the
+    resolution is recorded by `record_resolution_against_default`, as the stack
+    deployment does, as a new revision made by `system` (#1782): the revision
+    counters move on by exactly one, and every other head attribute is
+    unchanged."""
     _seed_managed(manager, name)
     manager.set_bda_project_arn(
         name, "arn:aws:bedrock:us-east-1:000000000000:data-automation-project/p"
@@ -211,6 +220,15 @@ def test_a_genuine_backfill_is_written_back_and_keeps_every_head_attribute(
     assert item["summarization"].get("model"), "the fixture must remove a real key"
     del item["summarization"]["model"]
     manager.table.put_item(Item=manager._compress_item(item))
+    # The published revision was recorded by the same older release, so it lacks
+    # the key too, and the head is provably that revision.
+    published = manager.resolve_published_revision(name)
+    body = manager.revisions.get_body(name, published)
+    del body["summarization"]["model"]
+    manager.revisions.put_body(name, published, body)
+    manager.revisions.update_entry(
+        name, published, storedHash=_stored_content_hash(item)
+    )
     before = _head(manager, name)
     writes = _WriteRecorder(manager.table.meta.client)
 
@@ -218,6 +236,8 @@ def test_a_genuine_backfill_is_written_back_and_keeps_every_head_attribute(
 
     assert merged is not None
     assert merged.summarization.model, "the absent key must be backfilled"
+    assert writes.calls == [], "a read of a profile with history writes nothing"
+    manager.record_resolution_against_default(name)
     assert "PutItem" in writes.calls, "a genuine backfill must still be persisted"
     after = _head(manager, name)
     assert after["Managed"] is True
@@ -227,20 +247,29 @@ def test_a_genuine_backfill_is_written_back_and_keeps_every_head_attribute(
         "CreatedAt",
         "BdaProjectArn",
         "BdaSyncStatus",
-        "LatestRevision",
-        "PublishedRevision",
     ):
         assert attribute in before, f"fixture must set {attribute}"
         assert after.get(attribute) == before[attribute], attribute
+    for counter in ("LatestRevision", "PublishedRevision"):
+        assert after[counter] == before[counter] + 1, counter
+    from idp_common.config.configuration_manager import RESOLVED_AGAINST_DEFAULT_NOTES
+
+    entries = {r["revision"]: r for r in manager.list_revisions(name)}
+    newest = entries[int(after["PublishedRevision"])]
+    assert newest["published"] is True
+    assert newest["createdBy"] == "system"
+    assert newest["notes"] == RESOLVED_AGAINST_DEFAULT_NOTES
+    assert manager.head_matches_published(name) is True
     body = json.loads(gzip.decompress(bytes(after["_compressed_config"].value)))
     assert body["summarization"]["model"] == merged.summarization.model
     assert "managed" not in body, "managed belongs on the head, not in the body"
     assert _listed_managed(manager, name) is True
 
-    # And the next read is a direct one.
-    writes.calls.clear()
-    manager.get_merged_configuration(name)
-    assert writes.calls == []
+    # And recording it again records no second revision.
+    published = manager.resolve_published_revision(name)
+    manager.record_resolution_against_default(name)
+    assert manager.resolve_published_revision(name) == published
+    assert _head(manager, name)["LatestRevision"] == after["LatestRevision"]
 
 
 @pytest.mark.unit

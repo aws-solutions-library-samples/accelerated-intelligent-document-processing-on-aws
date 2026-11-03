@@ -165,6 +165,14 @@ def _parse_timestamp(value: Any) -> Optional[datetime.datetime]:
     return parsed
 
 
+#: Notes on the revision recorded when a profile is resolved against `default`
+#: and that changes it (#1782).
+RESOLVED_AGAINST_DEFAULT_NOTES = (
+    "Resolved against default: settings this profile did not have were filled in "
+    "from the default profile"
+)
+
+
 class ConfigurationManager:
     """
     Manages IDP configurations stored in DynamoDB.
@@ -388,8 +396,10 @@ class ConfigurationManager:
         EVERY profile is resolved against the `default` profile: start from
         `default`, then let every key the profile HAS override it. A key it holds
         wins even when empty (absent is not cleared); a key it LACKS is
-        backfilled. The resolved configuration is saved back so the next read is a
-        direct one — see `_backfill_may_be_persisted` for when that is skipped.
+        backfilled. For a profile with no revision history, a resolution that
+        changes it is saved back so the next read is a direct one. For a profile
+        with history nothing is written here; the stack deployment records the
+        resolution as a revision (`record_resolution_against_default`, #1782).
 
         ⚠️ Resolving applies to a "full" profile too, and that is the point rather
         than an accident: "full" means it carried every section AT THE TIME IT WAS
@@ -612,32 +622,21 @@ class ConfigurationManager:
         ) == full_config_fallback.model_dump(mode="python"):
             return merged_config
 
-        # ⚠️ A `cut_revision=False` save rewrites the head WITHOUT refreshing the
-        # published revision's `storedHash`, and for one kind of published
-        # revision that destroys its only integrity proof. See
-        # `config/README.md`: a revision cut before `storedHash` existed is proven
-        # only by the legacy `UpdatedAt <= createdAt` comparison, "and that proof
-        # is gone the first time anything rewrites the head" — after which a
-        # pinned read of it raises once its body expires.
-        #
-        # That hazard existed before this change, but only for legacy sparse
-        # profiles. Resolving every profile against the default would take it to
-        # every profile, once, after any field-adding upgrade — so the write-back
-        # is skipped exactly when it could destroy a proof. Correctness does not
-        # depend on it: the resolution happens on every read regardless, and all
-        # that is lost in the skipped case is the stored record catching up, which
-        # is a convenience for the form.
-        if not self._backfill_may_be_persisted(version):
+        # A profile with revision history runs its published revision, so the
+        # resolution reaches its documents only as a revision, and a read does
+        # not record one: whether a process may write revisions is a property of
+        # its IAM grants, which nothing here can see, and a read from a process
+        # that holds `CONFIGURATION_BUCKET` with read-only access to it would
+        # rewrite the head, consume a revision number and put the head back on
+        # every read. The resolution applies to this read; the stack deployment
+        # records it (`record_resolution_against_default`, #1782).
+        if self.resolve_published_revision(version) is not None:
             return merged_config
 
-        # Save the resolved config back, so the next read is a direct one and so
-        # the UI shows the fields that were backfilled instead of empty boxes —
+        # No revision history: documents run the head, so writing the resolved
+        # configuration back needs no revision. It makes the next read a direct
+        # one and shows the backfilled fields in the form instead of empty boxes,
         # which is what made the split-then-classify failure undiagnosable.
-        #
-        # Not a revision: this is a storage-format rewrite, not a user's edit, and
-        # recording it would make every legacy profile's history start with a
-        # revision nobody made. The same reasoning covers a backfill, which is the
-        # shipped default arriving where there was previously nothing at all.
         try:
             self.save_configuration(
                 CONFIG_TYPE_CONFIG,
@@ -651,58 +650,6 @@ class ConfigurationManager:
             logger.warning(f"Failed to auto-migrate version {version}: {e}")
 
         return merged_config
-
-    def _backfill_may_be_persisted(self, version: str) -> bool:
-        """Whether the resolved configuration may be written back to the head.
-
-        ⚠️ **The one case it must not be is a published revision whose only proof
-        is the legacy one.** A save that cuts no revision does not refresh the
-        published entry's ``storedHash``, so for a revision cut before that field
-        existed, rewriting the head destroys the ``UpdatedAt <= createdAt``
-        comparison that is its sole proof — and a pinned read of it then raises
-        once its body expires (``config/README.md``).
-
-        A published entry that already carries ``storedHash`` is unaffected: its
-        proof is the hash, which does not depend on the head's timestamp. No
-        published revision at all means there is nothing to lose. History being
-        disabled means the same.
-
-        Fails CLOSED on an unreadable index: skipping a convenience write is
-        always recoverable, destroying a proof is not.
-        """
-        try:
-            if not self.revisions.enabled:
-                return True
-            head = self.table.get_item(
-                Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{version}"},
-                ProjectionExpression="PublishedRevision",
-            ).get("Item", {})
-            published = head.get("PublishedRevision")
-            if published is None:
-                return True
-            entry = self.revisions.get_entry(version, int(published))
-            if entry is None:
-                # Not retained, so there is no index entry to invalidate.
-                return True
-            if entry.get("storedHash"):
-                return True
-            logger.info(
-                "Not writing the resolved configuration of %s back: its published "
-                "revision r%s predates storedHash, and rewriting the head would "
-                "destroy the only proof it has. The resolution still applies to "
-                "this read.",
-                version,
-                published,
-            )
-            return False
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Could not establish whether %s's head may be rewritten (%s); "
-                "not writing it back",
-                version,
-                exc,
-            )
-            return False
 
     def save_configuration(
         self,
@@ -950,6 +897,69 @@ class ConfigurationManager:
                     )
                     + f". Cause: {e}"
                 ) from e
+
+    def record_resolution_against_default(self, profile: str) -> Optional[int]:
+        """
+        Record what resolving `profile` against `default` changes, as a revision.
+
+        Every profile is read against `default`, and a setting it lacks takes
+        `default`'s value. A pinned read builds `IDPConfig` from the revision body
+        without that resolution, so for a profile with revision history the two
+        differ whenever `default` holds a value the model's own default does not
+        (#1782). This saves the resolved configuration as a revision made by
+        `system`, with `RESOLVED_AGAINST_DEFAULT_NOTES`, and publishes it, so the
+        profile, its history and what new documents run agree.
+
+        It records only when both of these hold, and otherwise writes nothing:
+
+        - **The head is provably the published revision** (`head_matches_published`).
+          The resolution starts from the head, so a head that differs for any
+          other reason would be published under notes that describe only the
+          fill-in. Such a profile is left for a person to save.
+        - **The resolution changes what the published revision runs**, comparing
+          against that revision's body as a pinned read builds it. An already
+          converged profile is then a read, not a rewrite: no new `UpdatedAt`,
+          and a published revision that has only the legacy `UpdatedAt <=
+          createdAt` proof keeps it.
+
+        Only for a process that can write revisions: its one caller is the
+        stack-deployment custom resource, after saving `default`. Raises
+        `RevisionNotRecordedError` like any save that cannot record its revision.
+        Returns the new revision's number, or None when nothing was recorded.
+        """
+        published = self.resolve_published_revision(profile)
+        if published is None:
+            return None
+        if self.head_matches_published(profile) is not True:
+            logger.warning(
+                f"Not recording the resolution of '{profile}' against default: its "
+                f"stored configuration cannot be shown to be r{published}, the "
+                f"revision its documents run"
+            )
+            return None
+        resolved = self.get_merged_configuration(profile)
+        body = self._read_revision_body(profile, published)
+        if resolved is None or body is None:
+            return None
+        runs = IDPConfig(
+            **{
+                k: v
+                for k, v in body.items()
+                if k not in (_FULL_CONFIG_MARKER, "config_type")
+            }
+        )
+        if self._config_to_dict(runs) == self._config_to_dict(resolved):
+            return None
+        self.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            resolved,
+            version=profile,
+            skip_sync=True,
+            created_by="system",
+            revision_notes=RESOLVED_AGAINST_DEFAULT_NOTES,
+        )
+        now = self.resolve_published_revision(profile)
+        return now if now is not None and now != published else None
 
     #: Notes written onto a revision whose save failed after it was recorded.
     FAILED_SAVE_NOTES = "Save failed; not published"

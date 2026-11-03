@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""The failure branches of the revision invariant (#1778, #1784).
+"""The failure branches of the revision invariant (#1778, #1782, #1784).
 
 Each of these is a path a profile save or read takes when part of recording a
 revision cannot be done: a counter that cannot be read, a head that cannot be put
@@ -142,3 +142,13 @@ def test_the_strict_read_is_a_consistent_read(manager, monkeypatch):
     manager.revisions._read_index_item("p", strict=True)
     manager.revisions._read_index_item("p")
     assert calls == [True, False]
+
+
+@pytest.mark.unit
+def test_recording_a_profile_that_cannot_be_resolved_records_nothing(
+    manager, monkeypatch
+):
+    manager.save_configuration(CONFIG_TYPE_CONFIG, IDPConfig(notes="x"), version="p")
+    monkeypatch.setattr(manager, "get_merged_configuration", lambda _v: None)
+    assert manager.record_resolution_against_default("p") is None
+    assert manager.resolve_published_revision("p") == 1

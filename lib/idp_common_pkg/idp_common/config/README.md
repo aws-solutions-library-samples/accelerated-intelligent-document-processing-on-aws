@@ -476,6 +476,19 @@ Four decisions worth knowing before changing this code:
   code that builds a `ConfigurationManager` itself must set
   `CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`, or a save to a
   profile with history raises `RevisionNotRecordedError`.
+- **Resolving against `default` is recorded as a revision, by the deployment.**
+  `get_merged_configuration` resolves every profile against `default`. A pinned
+  read builds `IDPConfig` from the revision body without that resolution, so for a
+  profile with revision history the two differ whenever `default` holds a value
+  the model's own default does not (#1782). For such a profile a read applies the
+  resolution in memory and writes nothing, because whether its process may write
+  revisions depends on IAM grants the code cannot see.
+  `record_resolution_against_default(profile)` saves the resolution as a revision
+  (`created_by="system"`, notes `RESOLVED_AGAINST_DEFAULT_NOTES`) and publishes
+  it, and its one caller is the stack-deployment custom resource
+  (`update_configuration`'s `resolve_user_profiles_against_default`), which runs
+  it for every custom profile with history after saving `default`. A profile with
+  no history is still written back on read, without a revision.
 - **`head_matches_published(profile)`** says whether the head is the revision new
   documents run: True, False when the head was changed without a revision (with
   the same proof a pinned read uses, `_head_is_revision`), or None when there is

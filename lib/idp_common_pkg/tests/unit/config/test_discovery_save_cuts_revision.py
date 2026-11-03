@@ -509,20 +509,17 @@ def test_discovery_keeps_the_refusal_type(monkeypatch):
 
 
 @pytest.mark.unit
-def test_the_sparse_backfill_write_back_is_reported_because_it_really_diverges(
+def test_resolving_against_default_is_recorded_as_the_revision_documents_run(
     monkeypatch,
 ):
-    """Measured, not assumed: the flag after `get_merged_configuration`'s write-back.
+    """#1782: the write-back is a revision, so documents run what the editor shows.
 
     A profile and its r1 written before a top-level section existed. Reading it
-    resolves the missing section against `default` and, because that changed
-    something, writes the resolved head back with `cut_revision=False`. The
-    published revision is not resolved that way: a pinned read builds `IDPConfig`
-    from the body, so the section takes the model's defaults. When `default`
-    differs from those, documents pinned to r1 and the head genuinely disagree,
-    and the flag says so. If pinned reads are ever resolved against `default` too,
-    or the write-back stops for revisioned profiles, this flips to True and the
-    docstring should say which.
+    resolves the missing section against `default`, which here differs from the
+    model's own defaults, and writes nothing. Recording the resolution (what the
+    stack deployment does) cuts r2, made by `system`, and publishes it, so a
+    document submitted now runs `default`'s value, the head matches the published
+    revision, and r1 is still readable as it was.
     """
     from idp_common.config.configuration_manager import _stored_content_hash
 
@@ -553,7 +550,25 @@ def test_the_sparse_backfill_write_back_is_reported_because_it_really_diverges(
 
         resolved = manager.get_merged_configuration(PROFILE)
         assert resolved is not None and resolved.summarization.enabled is False
+        assert manager.resolve_published_revision(PROFILE) == 1, (
+            "a read records nothing"
+        )
+        assert manager.head_matches_published(PROFILE) is True
 
-        pinned = get_config(as_model=True, version=PROFILE, revision=1)
-        assert pinned.summarization.enabled is True
-        assert manager.head_matches_published(PROFILE) is False
+        from idp_common.config.configuration_manager import (
+            RESOLVED_AGAINST_DEFAULT_NOTES,
+        )
+
+        assert manager.record_resolution_against_default(PROFILE) == 2
+        newest = manager.list_revisions(PROFILE)[0]
+        assert newest["revision"] == 2 and newest["createdBy"] == "system"
+        assert newest["notes"] == RESOLVED_AGAINST_DEFAULT_NOTES
+        assert manager.head_matches_published(PROFILE) is True
+        runs = get_config(as_model=True, version=PROFILE, revision=2)
+        assert runs.summarization.enabled is False
+        before = get_config(as_model=True, version=PROFILE, revision=1)
+        assert before.summarization.enabled is True
+
+        # Recording it again changes nothing, so it cuts nothing.
+        assert manager.record_resolution_against_default(PROFILE) is None
+        assert manager.resolve_published_revision(PROFILE) == 2

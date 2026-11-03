@@ -7725,7 +7725,9 @@ Resources:
         ]
       Handler: index.handler
       Runtime: python3.12
-      Timeout: 30
+      # Saves every preset and then checks each custom profile with revision
+      # history against `default` (#1782), stopping 10 s before this limit.
+      Timeout: 300
       VpcConfig:
         !If
           - DeployInVPC

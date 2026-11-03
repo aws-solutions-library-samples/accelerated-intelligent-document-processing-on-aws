@@ -355,13 +355,39 @@ naming the revision they do run, the revision history marks that revision
 repair it, make any change in the editor and save, which records a revision matching
 what the editor shows; saving it unchanged does not.
 
-The same warning can appear on a profile nobody edited, when its published revision
-was recorded before a configuration section existed. Reading such a profile fills the
-missing section in from `default` and stores the result, while documents pinned to
-the published revision use the built-in defaults for that section, so the two really
-do differ. The repair is the same. Whether that fill-in should apply to pinned
-revisions too is tracked in
-[#1782](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1782).
+### Settings filled in from `default` are recorded as a revision
+
+Every profile is read against the `default` profile: a setting the profile does not
+have takes `default`'s value. That happens most often after an upgrade adds a
+configuration section an older profile never had. When the fill-in changes a profile
+that has revision history, the result is recorded as a new revision by `system`,
+with the notes **Resolved against default: settings this profile did not have were
+filled in from the default profile**, and it becomes the current revision. So the
+editor, the history and what new documents run stay the same configuration.
+
+Some things follow from that:
+
+- Documents submitted after the new revision use `default`'s values for the
+  filled-in settings. Documents already pinned to the earlier revision keep it, and
+  so does a Test Studio run.
+- Once recorded, those values belong to the profile. A later change to the same
+  settings in `default` no longer reaches it, the way it reaches a setting the
+  profile still lacks. To take a later `default` value, set it on the profile
+  yourself.
+- The earlier revision remains in the history unchanged, so **Restore** brings it
+  back if `default`'s values are not wanted for this profile.
+- A stack update that rolls back reverts `default` but keeps the revisions this
+  recorded, because a revision is never removed by a rollback. They are the ones
+  made by `system` with the notes above, in each profile's revision history.
+
+A stack deployment records these revisions, and nothing else does: after it saves
+`default`, it checks each custom profile that has revision history once, and records
+a revision for every profile the fill-in changes. A profile the fill-in does not
+change gets no revision, and neither does one whose stored configuration differs from
+its current revision for some other reason; save that profile yourself. A profile
+already checked costs only a read on later deployments. If a deployment runs short of
+time it stops early, and the next deployment checks the profiles it did not reach;
+until then their documents keep running their current revision.
 
 ### Test Studio: comparing two revisions of one profile
 
@@ -959,11 +985,13 @@ merged. They decide only whether a profile that *cannot* be resolved — because
 the two configurations contradict a cross-field rule — can be returned on its own
 rather than failing the read.
 
-- **Write-back**: the resolved configuration is saved back, so the next read is a
-  direct one and the configuration editor shows the real values rather than empty
-  boxes. It is skipped when nothing changed, and ⚠️ **skipped when the profile's
-  published revision predates the `storedHash` field**, because rewriting the head
-  would destroy the only integrity proof such a revision has.
+- **Write-back**: for a profile with no revision history, the resolved
+  configuration is saved back, so the next read is a direct one and the
+  configuration editor shows the real values rather than empty boxes. It is
+  skipped when nothing changed. ⚠️ A profile **with** revision history is never
+  written on read; a stack deployment records the resolution as a revision
+  instead, as described in
+  [Settings filled in from `default` are recorded as a revision](#settings-filled-in-from-default-are-recorded-as-a-revision).
 - **Whether a profile is stack-managed is not resolved from `default`.** It is the
   profile's own record attribute, so reading a profile never changes it, and a
   write-back keeps it as stored.
