@@ -104,12 +104,15 @@ TENANT_INDEX_KEY = f"{TENANT_INDEX_PREFIX}#__index"
 TENANTS_ATTRIBUTE = "Tenants"
 SEQ_ATTRIBUTE = "IndexSeq"
 
-# Bounds. The aggregate item is read on the ingest path in strict mode, so it must
-# stay far inside DynamoDB's 400 KB item limit: 100 tenants x (10 prefixes x 512
-# bytes + ~1.2 KB of other fields) is ~630 KB at the theoretical worst case, so the
-# per-tenant prefix count is held at 5, which puts the worst case near 380 KB.
-# `test_the_bounds_hold_the_item_limit` measures the serialized item.
-MAX_TENANTS = 100
+# Bounds. The aggregate item is read on the ingest path in strict mode, and a write
+# DynamoDB refuses for size surfaces as an opaque ValidationException rather than
+# this module's own message, so the worst case is held well below the 400 KB item
+# limit. One tenant at every field's bound (5 prefixes of 512 bytes, a 500-byte
+# description, two 256-byte actor strings) serializes to about 3.9 KB, so 75 tenants
+# is about 290 KB -- a quarter of the item left for the key, the counter and
+# DynamoDB's own accounting of attribute names. `test_the_bounds_hold_the_item_limit`
+# measures the serialized item against that 300 KB budget, not against the limit.
+MAX_TENANTS = 75
 MAX_PREFIXES_PER_TENANT = 5
 _MAX_ACTOR_LEN = 256
 
@@ -504,7 +507,8 @@ def ingest_rejection_reason(
     """Strict-mode ingest check: why this document must be refused, or ``None``.
 
     The rule is that **the tenant owning the key and the tenant owning the resolved
-    profile must be the same** — both a tenant, the same one, or both none.
+    profile must be the same tenant**, and an *external* upload that lands outside
+    every tenant is refused.
 
     That one comparison is what makes upload metadata safe to honour. A principal
     holding ``s3:PutObject`` chooses the key, and can set ``config-version`` and

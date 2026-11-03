@@ -199,6 +199,14 @@ describe('TenantsSection', () => {
     });
   });
 
+  it('says that deleting the last tenant leaves no boundary at ingest', async () => {
+    render(<TenantsSection />);
+    await screen.findByText('acme');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete tenant acme' }));
+    expect(await screen.findByText(/This is the last tenant, so once it is deleted no tenant boundary is checked/)).toBeInTheDocument();
+    expect(screen.queryByText(/are refused until they belong to a tenant again/)).not.toBeInTheDocument();
+  });
+
   it('sends one delete however many times it is confirmed', async () => {
     let resolveDelete: (value: unknown) => void = () => {};
     mockGraphql.mockImplementation((args: { query: string }) => {

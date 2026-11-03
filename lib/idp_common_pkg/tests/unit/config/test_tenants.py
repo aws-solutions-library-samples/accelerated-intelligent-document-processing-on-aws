@@ -444,7 +444,9 @@ def test_the_bounds_hold_the_item_limit():
         "updatedBy": "u" * 256,
     }
     size = len(json.dumps([entry] * t.MAX_TENANTS).encode("utf-8"))
-    assert size < 400 * 1024, size
+    # The design budget, not DynamoDB's limit: the approximation omits the key,
+    # the counter and DynamoDB's own attribute-name accounting.
+    assert size < 300 * 1024, size
 
 
 @pytest.mark.unit

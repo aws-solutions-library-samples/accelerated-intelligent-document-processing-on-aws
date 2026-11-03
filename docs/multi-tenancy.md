@@ -133,7 +133,7 @@ denies both actions to everyone except the deploying role:
   "Resource": "*",
   "Condition": {
     "ArnNotLike": {
-      "aws:PrincipalArn": "arn:aws:iam::<account-id>:role/<access-point-deployer>"
+      "aws:PrincipalArn": "arn:*:iam::<account-id>:role/<access-point-deployer>"
     }
   }
 }

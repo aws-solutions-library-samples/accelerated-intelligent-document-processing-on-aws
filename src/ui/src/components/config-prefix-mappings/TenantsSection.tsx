@@ -371,8 +371,9 @@ const TenantsSection = (): React.JSX.Element => {
             Tenant <strong>{deleting?.tenantId}</strong> will no longer constrain the mappings and user scopes for its folders and profiles.
           </Box>
           <Box color="text-body-secondary">
-            Documents, prefix mappings and profiles are not changed. In strict isolation mode, new uploads under this tenant&apos;s folders
-            are refused until they belong to a tenant again.
+            {tenants.length > 1
+              ? "Documents, prefix mappings and profiles are not changed. In strict isolation mode, new uploads under this tenant's folders are refused until they belong to a tenant again."
+              : 'Documents, prefix mappings and profiles are not changed. This is the last tenant, so once it is deleted no tenant boundary is checked at ingest at all.'}
           </Box>
         </SpaceBetween>
       </Modal>
