@@ -354,7 +354,6 @@
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/test_results_resolver/index.py",
     "nested/api-resolvers/src/lambda/test_runner/test_captured_config_size.py",
-    "nested/api-resolvers/src/lambda/upload_resolver/test_index.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/client_utils.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_utils.py",
@@ -492,6 +491,6 @@
   "highWaterMark": {
     "lintDebtFiles": 72,
     "lintFindings": 176,
-    "formatDebtFiles": 164
+    "formatDebtFiles": 163
   }
 }

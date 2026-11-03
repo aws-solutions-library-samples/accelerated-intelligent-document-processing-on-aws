@@ -580,7 +580,11 @@ operations:
     groups: [Admin]
     kind: mutation
     enforced_in: *cfg
-    args: { tenantId: "nope", prefixes: ["__nope__/"], profilePattern: "nope-*" }
+    # `profilePattern: "nope"` has no separator-and-`*` tail, so an allowed caller
+    # is refused by validation after the group check and nothing is written; every
+    # other value here is valid, and a valid set would declare a real tenant on
+    # the stack under test.
+    args: { tenantId: "nope", prefixes: ["__nope__/"], profilePattern: "nope" }
   deleteTenant:
     groups: [Admin]
     kind: mutation

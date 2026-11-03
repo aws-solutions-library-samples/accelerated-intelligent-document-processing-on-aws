@@ -144,7 +144,11 @@ def test_upload_sample_document_copies_with_version_metadata(resolver):
     result = index.handler(
         _event(
             "uploadSampleDocument",
-            {"sampleId": "bank-statement-multipage", "prefix": "demo", "version": "bank-statement-sample"},
+            {
+                "sampleId": "bank-statement-multipage",
+                "prefix": "demo",
+                "version": "bank-statement-sample",
+            },
         )
     )
     assert result["success"] is True
@@ -367,9 +371,7 @@ class TestTheAllowListFailsClosed:
                     _event("uploadDocument", {"fileName": "x.pdf", "bucket": "b"})
                 )
 
-    def test_an_unset_input_bucket_refuses_even_a_wired_other_bucket(
-        self, monkeypatch
-    ):
+    def test_an_unset_input_bucket_refuses_even_a_wired_other_bucket(self, monkeypatch):
         """The case a guard written as `and bucket_name not in ALLOWED_BUCKETS`
         cannot catch, because the allow-list check above has already refused
         anything outside it -- so that conjunct is unreachable and the guard is
@@ -805,9 +807,7 @@ class TestTheDestinationsConfigurationScopeIsEnforced:
         """
         index, _ = resolver
         table = boto3.resource("dynamodb", region_name="us-east-1").Table(CONFIG_TABLE)
-        table.put_item(
-            Item={"Configuration": "Config#reg", "PublishedRevision": 7}
-        )
+        table.put_item(Item={"Configuration": "Config#reg", "PublishedRevision": 7})
         from idp_common.config.prefix_mappings import PrefixMappingStore
 
         PrefixMappingStore(table).put(
@@ -863,7 +863,11 @@ class TestTheDestinationsConfigurationScopeIsEnforced:
 
 TRACKING = "tracking-table"
 OUTPUT = "output-bucket"
-SECTION = {"fileName": "result.json", "prefix": "in/a b.pdf/sections/1", "bucket": OUTPUT}
+SECTION = {
+    "fileName": "result.json",
+    "prefix": "in/a b.pdf/sections/1",
+    "bucket": OUTPUT,
+}
 
 
 @pytest.fixture
@@ -949,7 +953,9 @@ class TestASectionResultUnderReviewIsRefused:
         index, _ = guarded
 
         def fail(**_kw):
-            raise ClientError({"Error": {"Code": "ProvisionedThroughputExceeded"}}, "GetItem")
+            raise ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceeded"}}, "GetItem"
+            )
 
         monkeypatch.setattr(index._tracking_table, "get_item", fail)
 
@@ -961,10 +967,17 @@ class TestASectionResultUnderReviewIsRefused:
         _tracking_row(table, "in_review")
 
         # A page of the same in-review document, in the Output bucket.
-        page = {"fileName": "result.json", "prefix": "in/a b.pdf/pages/1", "bucket": OUTPUT}
+        page = {
+            "fileName": "result.json",
+            "prefix": "in/a b.pdf/pages/1",
+            "bucket": OUTPUT,
+        }
         assert index.handler(_event("uploadDocument", page))["presignedUrl"]
         # A document upload to the Input bucket.
-        assert index.handler(_event("uploadDocument", {"fileName": "x.pdf"}))["presignedUrl"]
+        assert index.handler(_event("uploadDocument", {"fileName": "x.pdf"}))[
+            "presignedUrl"
+        ]
+
 
 @pytest.mark.unit
 class TestStrictTenantIsolation:
@@ -1008,6 +1021,18 @@ class TestStrictTenantIsolation:
             _event("uploadDocument", {"fileName": "x.pdf", "prefix": "acme"})
         )
         assert result["objectKey"] == "acme/x.pdf"
+
+    @pytest.mark.parametrize("mode", ["Off", "Strict"])
+    def test_a_scoped_admin_stays_scoped_in_both_modes(self, strict, monkeypatch, mode):
+        """This resolver holds an Admin who carries a scope row to it. Strict must
+        not loosen that: only the deny sentinel an UNSCOPED caller resolves to is
+        waived for an Admin, so Strict is never weaker than Off."""
+        monkeypatch.setenv("TENANT_ISOLATION_MODE", mode)
+        self.Scope._scope(strict, "globex-*")
+        with pytest.raises(PermissionError):
+            strict.handler(
+                _event("uploadDocument", {"fileName": "x.pdf", "prefix": "acme"})
+            )
 
     def test_an_upload_outside_every_tenant_is_refused_before_a_url(self, strict):
         self.Scope._activate("shared")

@@ -24,6 +24,7 @@ from idp_common.config.tenants import (
     is_strict_isolation,
 )
 from idp_common.config_scope import (
+    STRICT_UNSCOPED_DENY,
     ScopeLookupError,
     caller_email_from_claims,
     caller_sub_from_claims,
@@ -264,20 +265,23 @@ def _allowed_config_versions(event):
     to HTTP 403.
     """
     claims = (event.get("identity") or {}).get("claims", {}) or {}
-    if is_strict_isolation() and _caller_in_groups(event, ("Admin",)):
-        # Strict isolation denies an UNSCOPED caller, and this resolver -- unlike
-        # the others -- looks an Admin up too. Without this an Admin with no scope
-        # row could not upload at all in Strict. Off mode is left exactly as it was
-        # (an Admin who does carry a scope row is still held to it there).
-        return None
     try:
-        return resolve_allowed_config_versions(
+        scope = resolve_allowed_config_versions(
             caller_email_from_claims(claims),
             users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
             dynamodb=_dynamodb,
             caller_sub=caller_sub_from_claims(claims),
             cache=_user_scope_cache,
         )
+        # This resolver looks Admins up as well, and has always held an Admin who
+        # carries a scope row to it. Strict isolation must not weaken that, so the
+        # only thing an Admin is spared here is the deny-everything sentinel an
+        # UNSCOPED caller resolves to under Strict, which would otherwise leave an
+        # Admin with no scope row unable to upload at all. A scoped Admin stays
+        # scoped in both modes, so Strict is never looser than Off.
+        if scope == [STRICT_UNSCOPED_DENY] and _caller_in_groups(event, ("Admin",)):
+            return None
+        return scope
     except ScopeLookupError:
         logger.warning(
             "Denying an upload: the caller's configuration scope could not be evaluated"

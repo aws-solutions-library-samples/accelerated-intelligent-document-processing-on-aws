@@ -110,7 +110,10 @@ reports a refusal before the upload is made.
 ⚠️ **Admins are unrestricted in both modes.** An Admin writes the prefix mappings and
 tenant declarations, so they could route any tenant's documents into their own view.
 Scoping their reads would therefore look like a boundary without being one. Treat the
-Admin group as a cross-tenant role, keep its membership small, and audit it.
+Admin group as a cross-tenant role, keep its membership small, and audit it. The one
+place an Admin's own scope applies is uploading through the web UI: an Admin who has a
+scope row is held to it there, in both modes, and an Admin with none can upload
+anywhere, in both modes.
 
 ### Turning strict mode on
 
