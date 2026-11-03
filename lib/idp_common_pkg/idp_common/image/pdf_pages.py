@@ -3,10 +3,15 @@
 
 """Load PDF pages so that filled-in form values appear in the rendered image."""
 
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pypdfium2
 
 
-def load_page_for_render(pdf_document: Any, page_index: int) -> Any:
+def load_page_for_render(
+    pdf_document: "pypdfium2.PdfDocument", page_index: int
+) -> "pypdfium2.PdfPage":
     """Return page ``page_index`` of ``pdf_document`` ready for ``render()``.
 
     ``pdf_document`` must be a ``pypdfium2.PdfDocument`` on which
@@ -18,7 +23,8 @@ def load_page_for_render(pdf_document: Any, page_index: int) -> Any:
     handle stale: the annotations are gone from it but the merged content is not
     yet parsed, so rendering that handle loses every value held in an annotation
     such as FreeText (issue #1780). The page is therefore closed and loaded
-    again after flattening. The caller owns the returned page.
+    again after flattening; the helper closes the stale handle itself. The
+    caller owns the returned page.
     """
     page = pdf_document[page_index]
     if page.formenv is None:

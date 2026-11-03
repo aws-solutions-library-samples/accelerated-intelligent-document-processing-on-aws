@@ -218,8 +218,8 @@ something different to render:
 - **Markup annotations** such as FreeText, written by "fill & sign" tools, carry a
   complete appearance stream and render without the form engine.
 
-Both page-image renderers (the OCR service and the BDA results processor) call
-`init_forms()` and then `load_page_for_render`, which flattens any page with a
+The two renderers that produce the pipeline's page images, the OCR service and the
+BDA results processor, call `init_forms()` and then `load_page_for_render`, which flattens any page with a
 form environment and **reloads it**. The reload is the important step. Flattening
 moves the annotations into the page content, but the already-loaded page handle is
 not refreshed, so rendering that handle shows neither the annotations nor the
@@ -237,6 +237,10 @@ for i in range(len(pdf)):
     page = load_page_for_render(pdf, i)
     image = page.render(scale=150 / 72).to_pil()
 ```
+
+The discovery embedding service and the fine-tuning data utilities also render PDF
+pages, and call neither, so AcroForm values held only in `/V` are absent from the
+images they produce.
 
 `tests/unit/ocr/test_pdf_form_rendering.py` renders one synthetic PDF per shape
 through both production paths and checks the pixels, rather than asserting that

@@ -34,6 +34,11 @@ PAGE_HEIGHT = 200
 # blue value in every shape that has one.
 VALUE_RECT = (40, 100, 260, 130)
 
+# A value drawn into VALUE_RECT covers several hundred blue pixels at the scales
+# the tests render at; zero is what a lost value gives. The floor sits well clear
+# of both, and both renderers' tests use this one figure.
+MIN_VALUE_PIXELS = 100
+
 _BLUE = "0 0 1 rg"
 _HELV = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
 

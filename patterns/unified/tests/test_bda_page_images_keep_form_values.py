@@ -25,6 +25,8 @@ from PIL import Image
 PATTERN_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PATTERN_ROOT.parents[1]
 HANDLER_PATH = PATTERN_ROOT / "src" / "bda_processresults_function" / "index.py"
+# Shared deliberately with the library's OCR rendering tests, so both renderers
+# are held to the same shapes; moving that file breaks collection here.
 FIXTURES_PATH = (
     REPO_ROOT
     / "lib"
@@ -34,8 +36,6 @@ FIXTURES_PATH = (
     / "ocr"
     / "pdf_form_fixtures.py"
 )
-
-MIN_VALUE_PIXELS = 100
 
 
 def _load(name: str, path: Path):
@@ -48,6 +48,9 @@ def _load(name: str, path: Path):
 
 
 fixtures = _load("pdf_form_fixtures_for_bda", FIXTURES_PATH)
+MIN_VALUE_PIXELS = fixtures.MIN_VALUE_PIXELS
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.fixture

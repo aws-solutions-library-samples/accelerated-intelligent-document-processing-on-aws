@@ -31,9 +31,9 @@ from idp_common.ocr.service import OcrService
 
 from . import pdf_form_fixtures as fixtures
 
-# A value drawn into VALUE_RECT covers several hundred blue pixels at the scales
-# used here; zero is what a lost value gives. The floor sits well clear of both.
-MIN_VALUE_PIXELS = 100
+pytestmark = pytest.mark.unit
+
+MIN_VALUE_PIXELS = fixtures.MIN_VALUE_PIXELS
 
 SHAPES_WITH_VALUE = [name for name, (_, has) in fixtures.SHAPES.items() if has]
 
@@ -121,7 +121,7 @@ class TestOcrServiceRendersFormValues:
             "boto3.client",
             side_effect=lambda name, **kw: MagicMock(name=f"{name}_client"),
         ):
-            service = OcrService(backend="none", dpi=144)
+            service = OcrService(backend="none")
         body = MagicMock()
         body.read.return_value = pdf_bytes
         service.s3_client.get_object.return_value = {"Body": body}
