@@ -131,7 +131,7 @@ deployed with `TenantIsolationMode=Strict` (see
 [Multi-Tenant Isolation](../../../docs/multi-tenancy.md)).
 
 ```bash
-make verify-tenant-isolation STACK_NAME=<stack> REGION=<region>
+make verify-tenant-isolation STACK_NAME=<stack> REGION=<region>   # YES=1 skips the prompt
 ```
 
 It creates two throwaway profiles and tenants over `tenancy-verify/a/` and

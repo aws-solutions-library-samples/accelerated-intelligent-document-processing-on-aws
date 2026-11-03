@@ -330,7 +330,24 @@ def main() -> int:
     parser.add_argument("--stack-name", required=True)
     parser.add_argument("--region", required=True)
     parser.add_argument("--document", default="samples/lending_package.pdf")
+    parser.add_argument(
+        "--yes", action="store_true", help="Do not ask before creating resources"
+    )
     args = parser.parse_args()
+
+    if not args.yes:
+        account = boto3.client("sts", region_name=args.region).get_caller_identity()[
+            "Account"
+        ]
+        print(
+            f"This creates throwaway Configuration Profiles, tenants, Cognito users, "
+            f"two IAM roles and one CloudFormation stack in account {account} "
+            f"({args.region}) against stack {args.stack_name!r}, and removes them "
+            f"afterwards."
+        )
+        if input("Continue? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("Not run.")
+            return 2
 
     from idp_sdk import IDPClient
 

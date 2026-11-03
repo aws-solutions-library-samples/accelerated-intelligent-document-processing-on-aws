@@ -3887,6 +3887,10 @@ Resources:
           # conditioned on s3:DataAccessPointAccount as public. The actions are the
           # ones those access point policies grant, so delegating widens nothing
           # for a principal that does not use one.
+          # PREREQUISITE this template cannot enforce: the condition admits ANY
+          # access point this account owns, so only the people who deploy the
+          # generated tenant access points may hold s3:CreateAccessPoint and
+          # s3:PutAccessPointPolicy. See docs/multi-tenancy.md for an SCP.
           - !If
             - IsTenantIsolationStrict
             - Sid: DelegateToTenantAccessPoints
@@ -4756,6 +4760,10 @@ Resources:
           # conditioned on s3:DataAccessPointAccount as public. The actions are the
           # ones those access point policies grant, so delegating widens nothing
           # for a principal that does not use one.
+          # PREREQUISITE this template cannot enforce: the condition admits ANY
+          # access point this account owns, so only the people who deploy the
+          # generated tenant access points may hold s3:CreateAccessPoint and
+          # s3:PutAccessPointPolicy. See docs/multi-tenancy.md for an SCP.
           - !If
             - IsTenantIsolationStrict
             - Sid: DelegateToTenantAccessPoints

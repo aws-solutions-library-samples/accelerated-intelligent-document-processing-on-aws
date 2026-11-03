@@ -123,7 +123,24 @@ strict mode the bucket policies delegate to *any* access point the account owns,
 the generated access points' denies are the whole confinement, and a principal able to
 create its own access point is outside it (see [Confine each tenant's writers and
 readers to its prefixes](#confine-each-tenants-writers-and-readers-to-its-prefixes)).
-Enforce this with IAM or an SCP before switching.
+Enforce this before switching, for example with a service control policy that
+denies both actions to everyone except the deploying role:
+
+```json
+{
+  "Effect": "Deny",
+  "Action": ["s3:CreateAccessPoint", "s3:PutAccessPointPolicy"],
+  "Resource": "*",
+  "Condition": {
+    "ArnNotLike": {
+      "aws:PrincipalArn": "arn:aws:iam::<account-id>:role/<access-point-deployer>"
+    }
+  }
+}
+```
+
+A permissions boundary on the account's other roles that excludes the same two actions
+achieves the same where SCPs are not available.
 
 1. Declare every tenant (Configuration → Prefix Mappings → **Tenants**, or `idp-cli
    tenancy apply`).

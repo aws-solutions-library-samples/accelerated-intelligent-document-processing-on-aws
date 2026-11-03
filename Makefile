@@ -1189,13 +1189,13 @@ endif
 # Live tenant-isolation check against a stack deployed with TenantIsolationMode=Strict.
 # Creates throwaway profiles, tenants, users, IAM roles and an access point stack,
 # and removes them. Not in CI (it creates IAM roles). See docs/multi-tenancy.md.
-verify-tenant-isolation: ## Live tenant-isolation checks vs a Strict stack (STACK_NAME, REGION)
+verify-tenant-isolation: ## Live tenant-isolation checks vs a Strict stack (STACK_NAME, REGION, YES=1 to skip the prompt)
 ifndef STACK_NAME
 	$(error STACK_NAME is not set. See docs/multi-tenancy.md)
 endif
 	$(RUN_FIRST_PARTY) scripts/security/live_checks/verify_tenant_isolation.py \
 	    --stack-name $(STACK_NAME) \
-	    --region $(if $(REGION),$(REGION),us-west-2)
+	    --region $(if $(REGION),$(REGION),us-west-2) $(if $(YES),--yes)
 
 # Usage: make ux-test STACK_NAME=<stack-name> [REGION=<region>] [GROUP=Admin]
 # Browser-driven UX test. Not a self-contained target on purpose: the browsing and
