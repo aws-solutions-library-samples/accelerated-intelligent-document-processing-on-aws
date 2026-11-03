@@ -437,8 +437,12 @@ def stored_scopes(users_table: Any) -> List[Dict[str, Any]]:
         page = users_table.scan(**kwargs)
         for item in page.get("Items") or []:
             # A user's own row is keyed `USER#<id>`; `SUB#` pointer items carry no
-            # scope of their own. An Admin's stored scope is never applied, so it
-            # cannot cross anything and must not block a tenant save.
+            # scope of their own. Admins are skipped because an Admin is a
+            # cross-tenant role by design: a stored Admin scope only ever NARROWS
+            # an Admin, so it is not a tenant boundary to check. It is not inert,
+            # though -- `upload_resolver` applies it to an Admin's web uploads --
+            # which is why the refusal below and `idp-cli tenancy audit` say they
+            # cover non-Admin scopes rather than every scope.
             if not str(item.get("PK") or "").startswith("USER#"):
                 continue
             if item.get("persona") == "Admin":
@@ -484,7 +488,8 @@ def stored_scopes_rejection_reason(
         f"Existing user scopes conflict with this tenant set: {email}'s scope is "
         f"refused ({reason})"
         + (f", and {others} other user(s) are affected." if others else ".")
-        + " Narrow those scopes first; `idp-cli tenancy audit` lists every one."
+        + " Narrow those scopes first; `idp-cli tenancy audit` lists every non-Admin"
+        " scope that needs it."
     )
 
 

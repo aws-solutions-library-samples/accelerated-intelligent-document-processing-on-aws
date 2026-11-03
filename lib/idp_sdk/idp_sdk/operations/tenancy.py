@@ -502,6 +502,7 @@ class TenancyOperation:
         kwargs: Dict[str, Any] = {
             "ProjectionExpression": "PK, email, persona, allowedConfigVersions",
         }
+        admin_rows = 0
         while True:
             page = table.scan(**kwargs)
             for row in page.get("Items", []):
@@ -511,6 +512,9 @@ class TenancyOperation:
                     continue
                 email = str(row.get("email") or "")
                 if row.get("persona") == "Admin" or email.lower() in admins:
+                    # Cross-tenant by design, so not a finding; counted below so
+                    # the report says how many such accounts exist.
+                    admin_rows += 1
                     continue
                 scope = row.get("allowedConfigVersions")
                 if not scope:
@@ -535,6 +539,12 @@ class TenancyOperation:
             if "LastEvaluatedKey" not in page:
                 break
             kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+        if admin_rows:
+            result.notes.append(
+                f"{admin_rows} Admin user(s) are cross-tenant by design and are not "
+                f"checked here; a stored Admin scope is applied only to that Admin's "
+                f"web uploads."
+            )
 
     def _audit_documents(
         self, stack_name, tenants, result, tenant_for_key, tenant_for_profile, sample

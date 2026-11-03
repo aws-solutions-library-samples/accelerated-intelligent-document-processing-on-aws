@@ -570,6 +570,8 @@ def test_audit_reports_each_class_of_finding(tenancy, monkeypatch):
         ("unscoped-user", "open@example.com"),
     ]
     assert not result.clean
+    # The Admin (by Cognito group) is not a finding, but the report says it exists.
+    assert any(n.startswith("1 Admin user(s) are cross-tenant") for n in result.notes)
 
 
 @pytest.mark.unit
