@@ -4,10 +4,10 @@
 """A deployment resolves user profiles against the `default` it just saved (#1782).
 
 Settings a deployment adds to `default` reach a user profile with revision history
-only through a revision, because documents run the profile's published revision.
-`get_merged_configuration` records that revision, and this sweep is what makes it
-happen at the upgrade rather than whenever something able to record revisions
-next reads the profile. Engine: moto's DynamoDB and S3.
+only through a revision, because documents run the profile's published revision,
+and a read never records one. `record_resolution_against_default` records it, and
+this sweep is the one caller, so the revision follows from the upgrade. Engine:
+moto's DynamoDB and S3.
 """
 
 from __future__ import annotations
@@ -51,8 +51,6 @@ def manager(monkeypatch):
     for key, value in {
         "AWS_DEFAULT_REGION": "us-east-1",
         "AWS_REGION": "us-east-1",
-        "AWS_ACCESS_KEY_ID": "testing",
-        "AWS_SECRET_ACCESS_KEY": "testing",
         "CONFIGURATION_TABLE_NAME": TABLE,
         "CONFIGURATION_BUCKET": BUCKET,
     }.items():
@@ -133,7 +131,7 @@ def test_default_managed_and_history_free_profiles_are_skipped(manager, monkeypa
     )
     read = []
     monkeypatch.setattr(
-        manager, "get_merged_configuration", lambda name: read.append(name)
+        manager, "record_resolution_against_default", lambda name: read.append(name)
     )
     monkeypatch.setattr(
         manager,
@@ -153,7 +151,7 @@ def test_default_managed_and_history_free_profiles_are_skipped(manager, monkeypa
 def test_the_sweep_stops_in_time_for_the_response(manager, monkeypatch):
     read = []
     monkeypatch.setattr(
-        manager, "get_merged_configuration", lambda name: read.append(name)
+        manager, "record_resolution_against_default", lambda name: read.append(name)
     )
     monkeypatch.setattr(
         manager,
@@ -170,7 +168,7 @@ def test_a_failing_profile_never_fails_the_deployment(manager, monkeypatch):
     def boom(name):
         raise RuntimeError(f"{name} unreadable")
 
-    monkeypatch.setattr(manager, "get_merged_configuration", boom)
+    monkeypatch.setattr(manager, "record_resolution_against_default", boom)
     monkeypatch.setattr(
         manager,
         "list_config_versions",

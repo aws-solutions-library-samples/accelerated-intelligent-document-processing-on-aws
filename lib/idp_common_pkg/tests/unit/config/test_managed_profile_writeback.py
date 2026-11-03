@@ -200,9 +200,11 @@ def test_a_genuine_backfill_is_written_back_and_keeps_every_head_attribute(
     """A field the stored profile lacks is still backfilled and persisted, and
     the write-back preserves `Managed` and every other head attribute.
 
-    The profile has revision history, so the write-back is a new revision made by
-    `system` (#1782): the revision counters move on by exactly one, and every
-    other head attribute is unchanged."""
+    The profile has revision history, so a read writes nothing and the
+    resolution is recorded by `record_resolution_against_default`, as the stack
+    deployment does, as a new revision made by `system` (#1782): the revision
+    counters move on by exactly one, and every other head attribute is
+    unchanged."""
     _seed_managed(manager, name)
     manager.set_bda_project_arn(
         name, "arn:aws:bedrock:us-east-1:000000000000:data-automation-project/p"
@@ -222,6 +224,8 @@ def test_a_genuine_backfill_is_written_back_and_keeps_every_head_attribute(
 
     assert merged is not None
     assert merged.summarization.model, "the absent key must be backfilled"
+    assert writes.calls == [], "a read of a profile with history writes nothing"
+    manager.record_resolution_against_default(name)
     assert "PutItem" in writes.calls, "a genuine backfill must still be persisted"
     after = _head(manager, name)
     assert after["Managed"] is True
@@ -249,10 +253,11 @@ def test_a_genuine_backfill_is_written_back_and_keeps_every_head_attribute(
     assert "managed" not in body, "managed belongs on the head, not in the body"
     assert _listed_managed(manager, name) is True
 
-    # And the next read is a direct one.
-    writes.calls.clear()
-    manager.get_merged_configuration(name)
-    assert writes.calls == []
+    # And recording it again records no second revision.
+    published = manager.resolve_published_revision(name)
+    manager.record_resolution_against_default(name)
+    assert manager.resolve_published_revision(name) == published
+    assert _head(manager, name)["LatestRevision"] == after["LatestRevision"]
 
 
 @pytest.mark.unit

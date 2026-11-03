@@ -434,9 +434,10 @@ def test_resolving_against_default_is_recorded_as_the_revision_documents_run(
 
     A profile and its r1 written before a top-level section existed. Reading it
     resolves the missing section against `default`, which here differs from the
-    model's own defaults. The resolved configuration is recorded as r2, made by
-    `system`, and published, so a document submitted now runs `default`'s value,
-    the head matches the published revision, and r1 is still readable as it was.
+    model's own defaults, and writes nothing. Recording the resolution (what the
+    stack deployment does) cuts r2, made by `system`, and publishes it, so a
+    document submitted now runs `default`'s value, the head matches the published
+    revision, and r1 is still readable as it was.
     """
     from idp_common.config.configuration_manager import _stored_content_hash
 
@@ -467,12 +468,16 @@ def test_resolving_against_default_is_recorded_as_the_revision_documents_run(
 
         resolved = manager.get_merged_configuration(PROFILE)
         assert resolved is not None and resolved.summarization.enabled is False
+        assert manager.resolve_published_revision(PROFILE) == 1, (
+            "a read records nothing"
+        )
+        assert manager.head_matches_published(PROFILE) is True
 
         from idp_common.config.configuration_manager import (
             RESOLVED_AGAINST_DEFAULT_NOTES,
         )
 
-        assert manager.resolve_published_revision(PROFILE) == 2
+        assert manager.record_resolution_against_default(PROFILE) == 2
         newest = manager.list_revisions(PROFILE)[0]
         assert newest["revision"] == 2 and newest["createdBy"] == "system"
         assert newest["notes"] == RESOLVED_AGAINST_DEFAULT_NOTES
@@ -482,6 +487,5 @@ def test_resolving_against_default_is_recorded_as_the_revision_documents_run(
         before = get_config(as_model=True, version=PROFILE, revision=1)
         assert before.summarization.enabled is True
 
-        # The next read is a direct one: no further revision.
-        manager.get_merged_configuration(PROFILE)
-        assert manager.resolve_published_revision(PROFILE) == 2
+        # Recording it again changes nothing, so it cuts nothing.
+        assert manager.record_resolution_against_default(PROFILE) == 2

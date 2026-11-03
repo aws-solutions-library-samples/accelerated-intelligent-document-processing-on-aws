@@ -2910,28 +2910,27 @@ class TestTheBackfillWriteBackPreservesRevisionProofs:
             merged = manager.get_merged_configuration("p")
         return merged, spy
 
-    def test_a_published_revision_with_a_hash_is_written_back(self, monkeypatch):
-        """Its proof is the hash, which does not depend on the head's timestamp,
-        so the convenience write is safe."""
-        merged, spy = self._run(
-            monkeypatch,
+    @pytest.mark.parametrize(
+        "entry",
+        [
             {"revision": 1, "createdAt": "2026-01-01T00:00:00Z", "storedHash": "abc"},
-        )
-        assert merged is not None
-        assert spy.called, "a hashed published revision should not block the write-back"
+            {"revision": 1, "createdAt": "2026-01-01T00:00:00Z"},
+            {"revision": 7, "storedHash": "x"},
+        ],
+        ids=["hashed", "legacy-proof", "retired"],
+    )
+    def test_a_read_of_a_profile_with_history_writes_nothing(self, monkeypatch, entry):
+        """The resolution applies to the read; recording it is the deployment's job.
 
-    def test_a_published_revision_without_a_hash_gets_a_new_revision(self, monkeypatch):
-        """The case the old write-back had to skip: rewriting the head without a
-        revision would have destroyed this revision's legacy proof. A new revision
-        leaves it intact and publishes the resolved configuration."""
-        merged, spy = self._run(
-            monkeypatch, {"revision": 1, "createdAt": "2026-01-01T00:00:00Z"}
-        )
+        A read cannot see whether its process may write revisions, and a process
+        holding the bucket with read-only access would otherwise rewrite the head,
+        consume a revision number and put the head back on every read (#1782).
+        """
+        merged, spy = self._run(monkeypatch, entry)
         assert merged is not None
         assert merged.classification.combined.llm.model == "us.amazon.nova-2-lite-v1:0"
         assert merged.summarization.model == SEEDED_MODEL
-        assert spy.call_args.kwargs["created_by"] == "system"
-        assert "cut_revision" not in spy.call_args.kwargs
+        spy.assert_not_called()
 
     def test_no_published_revision_is_written_back(self, monkeypatch):
         """Nothing to lose."""
@@ -2954,29 +2953,41 @@ class TestTheBackfillWriteBackPreservesRevisionProofs:
             manager.get_merged_configuration("p")
         assert spy.called
 
-    def test_a_retired_published_revision_is_written_back(self, monkeypatch):
-        """No index entry means no entry to invalidate."""
-        merged, spy = self._run(monkeypatch, {"revision": 7, "storedHash": "x"})
-        assert merged is not None
-        assert spy.called
+    def test_recording_the_resolution_cuts_a_system_revision(self, monkeypatch):
+        """Including over a published revision whose only proof is the legacy one:
+        a new revision leaves that revision's body and entry as they were."""
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        self._put_full(table, "p")
+        self._index(table, "p", {"revision": 1, "createdAt": "2026-01-01T00:00:00Z"})
+        with patch.object(
+            manager, "save_configuration", wraps=manager.save_configuration
+        ) as spy:
+            published = manager.record_resolution_against_default("p")
+        assert spy.call_args.kwargs["created_by"] == "system"
+        assert "cut_revision" not in spy.call_args.kwargs
+        assert published == 2
+        assert manager.head_matches_published("p") is True
 
-    def test_a_process_that_cannot_record_a_revision_writes_nothing(self, monkeypatch):
-        """No bucket in this process, but the profile has history: the save that
-        would record the resolution is refused before it writes, so the head is
-        left as stored and the resolution applies to this read only."""
+    def test_a_process_that_cannot_record_a_revision_is_refused(self, monkeypatch):
+        """No bucket in this process, but the profile has history: the save is
+        refused before it writes, and the head is left as stored."""
+        from idp_common.config.revisions import RevisionNotRecordedError
+
         table = _make_table()
         manager = _manager(monkeypatch)
         _seed_default(manager)
         self._put_full(table, "p")
         key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#p"}
         before = table.get_item(Key=key)["Item"]
-        merged = manager.get_merged_configuration("p")
-        assert merged is not None and merged.summarization.model == SEEDED_MODEL
+        with pytest.raises(RevisionNotRecordedError):
+            manager.record_resolution_against_default("p")
         assert table.get_item(Key=key)["Item"] == before
 
-    def test_a_failed_revision_leaves_the_head_and_the_read_intact(self, monkeypatch):
-        """If recording the resolution's revision fails, the save is undone and
-        the read still returns the resolved configuration."""
+    def test_a_failed_revision_leaves_the_head_as_it_was(self, monkeypatch):
+        from idp_common.config.revisions import RevisionNotRecordedError
+
         table = _make_table(with_bucket=True)
         manager = _manager(monkeypatch, with_bucket=True)
         _seed_default(manager)
@@ -2986,13 +2997,20 @@ class TestTheBackfillWriteBackPreservesRevisionProofs:
         with patch.object(
             manager.revisions, "put_body", side_effect=RuntimeError("S3 refused")
         ):
-            merged = manager.get_merged_configuration("p")
-        assert merged is not None, "the read must still succeed"
-        assert merged.summarization.model == SEEDED_MODEL
+            with pytest.raises(RevisionNotRecordedError):
+                manager.record_resolution_against_default("p")
         after = table.get_item(Key=key)["Item"]
         assert {k: v for k, v in after.items() if k != "LatestRevision"} == {
             k: v for k, v in before.items() if k != "LatestRevision"
         }
+
+    def test_a_profile_without_history_records_nothing(self, monkeypatch):
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        table.put_item(Item={"Configuration": f"{CONFIG_TYPE_CONFIG}#p", "classes": []})
+        assert manager.record_resolution_against_default("p") is None
+        assert manager.record_resolution_against_default("absent") is None
 
 
 @pytest.mark.unit

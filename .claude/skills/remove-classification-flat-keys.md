@@ -23,12 +23,11 @@ that moves a head onto the current shape by itself is the write-back in
 `ConfigurationManager.get_merged_configuration`, and it is conditional three
 ways. The configuration editor reads through `get_raw_configuration`, which
 relocates keys in memory and writes nothing back. The write is skipped when the
-resolved configuration already matches what is stored. And for a profile with
-revision history the write is a new revision made by `system`, which a process
-without `CONFIGURATION_BUCKET` or write access to it is refused
-(`RevisionNotRecordedError`), so such a process converts the profile on every
-read and leaves storage alone until a process that can record the revision reads
-it. What lifts it is a **save** (an editor save,
+resolved configuration already matches what is stored. And a profile with
+revision history is never written on read: it is converted in memory on every
+read, and storage catches up only when `record_resolution_against_default` records
+the resolution as a revision, which the stack deployment does for every custom
+profile with history (or when someone saves the profile). What lifts it is a **save** (an editor save,
 Save As Version, `idp-cli config-upload`, or a stack deployment for `default`
 and the managed presets), because a save records a hash and stores the converted
 body; a profile nobody saves again never converges. Nothing sweeps user profiles

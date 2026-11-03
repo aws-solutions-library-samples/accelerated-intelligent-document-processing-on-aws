@@ -50,12 +50,11 @@ def resolve_user_profiles_against_default(manager: Any, context: Any) -> int:
     Resolve every user profile with revision history against `default`, once.
 
     A deployment can add settings to `default` that older profiles do not have.
-    Reading such a profile fills them in from `default`, and for a profile with
-    history `get_merged_configuration` records that as a revision made by
-    `system`, which new documents then run (#1782). Without this sweep, that
-    revision would appear whenever some component that can record revisions
-    happened to read the profile. Doing it here, right after `default` is saved,
-    makes it a consequence of the upgrade.
+    Reading such a profile fills them in from `default`, but documents run the
+    profile's published revision, which a read never changes. This records the
+    resolution as a revision made by `system` (`record_resolution_against_default`),
+    which new documents then run (#1782). It is the only place that does: this
+    function's role can write revisions, which a reader's in general cannot.
 
     Skips `default`, stack-managed profiles (this deployment re-saves them) and
     profiles with no revision history (their documents run the head, and a read
@@ -89,7 +88,7 @@ def resolve_user_profiles_against_default(manager: Any, context: Any) -> int:
             )
             break
         try:
-            manager.get_merged_configuration(name)
+            manager.record_resolution_against_default(name)
             read += 1
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Could not resolve profile '{name}' against default: {e}")

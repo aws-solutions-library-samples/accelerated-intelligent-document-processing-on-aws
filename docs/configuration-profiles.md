@@ -369,13 +369,12 @@ earlier revision keep it, and so does a Test Studio run. And the earlier revisio
 remains in the history unchanged, so **Restore** brings it back if `default`'s
 values are not wanted for this profile.
 
-A stack deployment records these revisions: after it saves `default`, it reads each
-custom profile that has revision history once, and records a revision for every
-profile the fill-in changes. A profile the fill-in does not change gets no revision.
-On a stack with many profiles a deployment stops before its time limit, and the next
-deployment picks up the rest. Until then, a component that records revisions while
-reading the profile, such as discovery, records it the same way, and one that cannot
-applies the fill-in to its own read and leaves the profile as stored.
+A stack deployment records these revisions, and nothing else does: after it saves
+`default`, it checks each custom profile that has revision history once, and records
+a revision for every profile the fill-in changes. A profile the fill-in does not
+change gets no revision. On a stack with many profiles a deployment stops before its
+time limit, and the next deployment picks up the rest; until then, documents for a
+profile it did not reach keep running that profile's current revision.
 
 ### Test Studio: comparing two revisions of one profile
 

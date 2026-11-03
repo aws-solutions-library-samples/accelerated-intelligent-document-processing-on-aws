@@ -396,10 +396,10 @@ class ConfigurationManager:
         EVERY profile is resolved against the `default` profile: start from
         `default`, then let every key the profile HAS override it. A key it holds
         wins even when empty (absent is not cleared); a key it LACKS is
-        backfilled. When that changes the profile, the resolved configuration is
-        saved back so the next read is a direct one: as a new revision made by
-        `system` for a profile with revision history, so that what its documents
-        run follows (#1782), and without one for a profile that has none.
+        backfilled. For a profile with no revision history, a resolution that
+        changes it is saved back so the next read is a direct one. For a profile
+        with history nothing is written here; the stack deployment records the
+        resolution as a revision (`record_resolution_against_default`, #1782).
 
         ⚠️ Resolving applies to a "full" profile too, and that is the point rather
         than an accident: "full" means it carried every section AT THE TIME IT WAS
@@ -622,44 +622,15 @@ class ConfigurationManager:
         ) == full_config_fallback.model_dump(mode="python"):
             return merged_config
 
-        # A profile with revision history runs its published revision, and a
-        # pinned read builds `IDPConfig` from that revision's body without this
-        # resolution: a section the body lacks takes the model's defaults, not
-        # `default`'s. So writing the resolved head back without a revision would
-        # leave the editor and the documents on different configurations for a
-        # profile nobody edited (#1782). It is recorded as a revision instead,
-        # made by `system` with notes saying what it is, so the head, the history
-        # and what new documents run agree, and the change is visible and
-        # restorable. Documents submitted after it use `default`'s values for the
-        # filled-in settings; documents already pinned keep the revision they had.
-        #
-        # A process that cannot record a revision (no CONFIGURATION_BUCKET, or no
-        # write access) is refused by `save_configuration` before it writes, so
-        # the resolution applies to this read only and a process that can record
-        # it does so on its next read.
+        # A profile with revision history runs its published revision, so the
+        # resolution reaches its documents only as a revision, and a read does
+        # not record one: whether a process may write revisions is a property of
+        # its IAM grants, which nothing here can see, and a read from a process
+        # that holds `CONFIGURATION_BUCKET` with read-only access to it would
+        # rewrite the head, consume a revision number and put the head back on
+        # every read. The resolution applies to this read; the stack deployment
+        # records it (`record_resolution_against_default`, #1782).
         if self.resolve_published_revision(version) is not None:
-            try:
-                self.save_configuration(
-                    CONFIG_TYPE_CONFIG,
-                    merged_config,
-                    version=version,
-                    skip_sync=True,
-                    created_by="system",
-                    revision_notes=RESOLVED_AGAINST_DEFAULT_NOTES,
-                )
-                logger.info(
-                    f"Recorded the resolution of {version} against default as a "
-                    f"revision"
-                )
-            except RevisionNotRecordedError as e:
-                logger.info(
-                    f"Resolved {version} against default for this read only; this "
-                    f"process cannot record the revision: {e}"
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    f"Failed to record the resolution of {version} against default: {e}"
-                )
             return merged_config
 
         # No revision history: documents run the head, so writing the resolved
@@ -917,6 +888,41 @@ class ConfigurationManager:
                     )
                     + f". Cause: {e}"
                 ) from e
+
+    def record_resolution_against_default(self, profile: str) -> Optional[int]:
+        """
+        Record what resolving `profile` against `default` changes, as a revision.
+
+        Every profile is read against `default`, and a setting it lacks takes
+        `default`'s value. A pinned read builds `IDPConfig` from the revision body
+        without that resolution, so for a profile with revision history the two
+        differ whenever `default` holds a value the model's own default does not
+        (#1782). This saves the resolved configuration as a revision made by
+        `system`, with `RESOLVED_AGAINST_DEFAULT_NOTES`, and publishes it, so the
+        profile, its history and what new documents run agree. A resolution that
+        changes nothing records nothing (`save_configuration` skips an unchanged
+        save).
+
+        Only for a process that can write revisions: the stack-deployment custom
+        resource calls it for every custom profile with history after saving
+        `default`. Raises `RevisionNotRecordedError` like any save that cannot
+        record its revision. Returns the published revision afterwards, or None
+        when the profile has no history or cannot be resolved.
+        """
+        if self.resolve_published_revision(profile) is None:
+            return None
+        resolved = self.get_merged_configuration(profile)
+        if resolved is None:
+            return None
+        self.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            resolved,
+            version=profile,
+            skip_sync=True,
+            created_by="system",
+            revision_notes=RESOLVED_AGAINST_DEFAULT_NOTES,
+        )
+        return self.resolve_published_revision(profile)
 
     def _published_counter(self, profile: str) -> Optional[int]:
         """The head's `PublishedRevision`, or None if it cannot be read."""
