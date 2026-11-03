@@ -273,6 +273,11 @@ type User @aws_cognito_user_pools {
   # Test sets a scoped Annotator may read and annotate. A different axis from
   # allowedConfigVersions, not a replacement; a user may carry both.
   allowedTestSets: [String]
+  # Where allowedConfigVersions came from when an identity provider (idp) or an
+  # entitlement push (api) granted it, and the tenant granted. Absent when an Admin
+  # set the scope by hand.
+  scopeSource: String
+  scopeTenant: String
 }
 
 type UserList @aws_cognito_user_pools {
@@ -420,6 +425,9 @@ type Tenant @aws_cognito_user_pools @aws_iam {
   prefixes: [String!]!
   # A literal stem ending in '-', '_' or '.', then '*' -- for example 'acme-*'.
   profilePattern: String!
+  # Claim or entitlement values that grant this tenant (TenantGrantSource IdpClaim
+  # or Api), e.g. an Entra app-role value such as tenant.acme.
+  grantedBy: [String!]
   description: String
   createdAt: String
   createdBy: String
@@ -432,6 +440,7 @@ type TenantsResponse @aws_cognito_user_pools @aws_iam {
   tenants: [Tenant]
   # The stack's TenantIsolationMode: "Strict" or "Off".
   isolationMode: String
+  grantSource: String
   error: ConfigurationError
 }
 
@@ -2088,6 +2097,10 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
   deleteUser(userId: ID!): Boolean
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # Grant a user one tenant (tenantId) or none (null). Only when the stack's
+  # TenantGrantSource is Api, for an entitlement system pushing grants.
+  setUserTenant(email: String!, tenantId: String): User
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   updatePricing(pricingConfig: AWSJSON!): UpdatePricingResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
   restoreDefaultPricing: UpdatePricingResponse
@@ -2147,6 +2160,7 @@ type Mutation {
     prefixes: [String!]!
     profilePattern: String!
     description: String
+    grantedBy: [String!]
   ): TenantMutationResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
   deleteTenant(tenantId: String!): TenantMutationResponse

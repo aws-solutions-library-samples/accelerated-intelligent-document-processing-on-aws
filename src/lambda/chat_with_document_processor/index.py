@@ -55,6 +55,7 @@ from idp_common.config_scope import (
     is_strict_isolation,
     normalize_scope,
     scope_allows,
+    unscoped_is_denied,
 )
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
@@ -466,10 +467,11 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
         return None
     if not isinstance(identity, dict):
         raise ScopeLookupError(f"unusable identity of type {type(identity).__name__}")
-    if is_strict_isolation():
-        # Under strict isolation an unscoped caller is denied, as everywhere else
-        # (`idp_common.config_scope`), and an Admin stays unrestricted — the other
-        # consumers skip the lookup for an Admin, so this one must not deny one.
+    if unscoped_is_denied():
+        # Under strict isolation, or when tenants are granted externally, an
+        # unscoped caller is denied, as everywhere else (`idp_common.config_scope`),
+        # and an Admin stays unrestricted — the other consumers skip the lookup for
+        # an Admin, so this one must not deny one.
         if "Admin" in _caller_groups(identity):
             return None
         scope = _get_user_allowed_config_versions(

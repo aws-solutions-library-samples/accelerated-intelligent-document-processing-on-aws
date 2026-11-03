@@ -529,6 +529,34 @@ Admins can manage user scope via the **User Management** page:
 
 Admin users' scope cannot be edited (they are always unrestricted).
 
+The above applies when the stack's `TenantGrantSource` is `Manual`, the default. Under
+`IdpClaim` the identity provider's claim writes each user's scope at every fresh
+sign-in, and under `Api` an entitlement system writes it through `setUserTenant`. In
+both modes the scope is exactly one tenant's profile pattern or `!no-tenant-granted`
+(shown as *No tenant granted*, matching no profile), User Management shows it
+read-only with the tenant and its source, `createUser` and `updateUser` refuse a
+configuration-scope change, and a non-Admin with no scope sees nothing even when
+`TenantIsolationMode` is `Off`. See [Who grants a
+tenant](multi-tenancy.md#who-grants-a-tenant).
+
+### API: `setUserTenant` (Admin-only, `TenantGrantSource=Api`)
+
+```graphql
+mutation SetUserTenant($email: String!, $tenantId: String) {
+  setUserTenant(email: $email, tenantId: $tenantId) {
+    userId
+    email
+    allowedConfigVersions
+    scopeSource
+    scopeTenant
+  }
+}
+```
+
+A null `tenantId` grants no tenant. The user must already exist, the tenant must be
+declared, and an Admin is refused. Refused on a stack whose `TenantGrantSource` is not
+`Api`.
+
 ### API: `getMyProfile`
 
 All authenticated users can call `getMyProfile` to retrieve their own profile including `allowedConfigVersions`. This is used by the UI to apply client-side scope filtering immediately on page load.
@@ -579,7 +607,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 130 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 131 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 27 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -1083,6 +1111,9 @@ Admins can create users with any of the five roles via the User Management page.
 | `status` | User status (active) |
 | `allowedConfigVersions` | Optional list of Configuration Profile names (or glob patterns) for scoping |
 | `allowedTestSets` | Optional list of test set ids an Annotator may read and annotate. A separate scope axis from `allowedConfigVersions`, not a replacement — a user may carry both. |
+| `scopeSource` | Set when the scope was granted rather than edited: `idp` (the identity provider's claim) or `api` (`setUserTenant`) |
+| `scopeTenant` | The tenant the grant gave, absent when it gave none |
+| `source` | `cognito` on a row the sign-in trigger created for an existing Cognito user, so the user-sync stream does not create a second account |
 | `createdAt` | Creation timestamp |
 
 ## Architecture

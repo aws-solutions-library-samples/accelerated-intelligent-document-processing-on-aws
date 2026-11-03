@@ -121,6 +121,33 @@ Parameters:
       s3:PutAccessPointPolicy to the access point deployer first. Declare tenants
       before switching to Strict.
 
+  TenantGrantSource:
+    Type: String
+    Default: "Manual"
+    AllowedValues:
+      - "Manual"
+      - "IdpClaim"
+      - "Api"
+    Description: >-
+      Where a user's tenant comes from. Manual (default): an Admin sets each user's
+      configuration scope in User Management. IdpClaim: the external identity
+      provider's group or role claim (ExternalIdPGroupAttributeName) grants it at
+      each fresh sign-in, matched against each tenant's grantedBy values. Api: an
+      entitlement system grants it through setUserTenant or idp-cli tenancy
+      set-user-tenant. Under IdpClaim and Api, Admins cannot edit scopes and a
+      non-Admin user with no tenant sees nothing.
+
+  RefreshTokenValidityHours:
+    Type: Number
+    Default: 720
+    MinValue: 1
+    MaxValue: 87600
+    Description: >-
+      How long a web UI session can renew itself without a fresh sign-in, in hours
+      (default 720, 30 days). A tenant or role removed in the identity provider
+      takes effect at the next fresh sign-in, so a shorter value shortens how long a
+      removed grant can outlive its removal.
+
   # External Identity Provider (Federation)
 
   ExternalIdPType:
@@ -1196,6 +1223,15 @@ Parameters:
   # =========================================================================
 
 Rules:
+  # IdpClaim grants tenants from the IdP's group/role claim, which Cognito stores in
+  # custom:idp_groups only when ExternalIdPGroupAttributeName names the claim. Without
+  # it no user could ever be granted a tenant.
+  TenantGrantFromIdpClaimNeedsGroupAttribute:
+    RuleCondition: !Equals [ !Ref TenantGrantSource, "IdpClaim" ]
+    Assertions:
+      - Assert: !Not [ !Equals [ !Ref ExternalIdPGroupAttributeName, "" ] ]
+        AssertDescription: "TenantGrantSource=IdpClaim requires ExternalIdPGroupAttributeName (the claim that carries the group or role values)."
+
   MLflowTrackingURIRequired:
     RuleCondition: !Equals [ !Ref EnableMLflow, "true" ]
     Assertions:
@@ -1296,6 +1332,11 @@ Rules:
 
 Conditions:
   IsTenantIsolationStrict: !Equals [!Ref TenantIsolationMode, "Strict"]
+  IsTenantGrantFromIdpClaim: !Equals [!Ref TenantGrantSource, "IdpClaim"]
+  # Left at the default, the web UI client keeps its RefreshTokenValidity of 30
+  # (days) and no TokenValidityUnits, so an upgraded stack's client is not modified:
+  # UpdateUserPoolClient is a full replace, and nothing restores a property it drops.
+  HasCustomRefreshTokenValidity: !Not [!Equals [!Ref RefreshTokenValidityHours, 720]]
   # API transport: API Gateway REST API + polling + Lambda response streaming is
   # now the only path (the former GraphQL API has been fully removed). No transport
   # conditions are needed — the REST API resources deploy unconditionally.
@@ -1518,6 +1559,8 @@ Metadata:
           - AdminEmail
           - AllowedSignUpEmailDomain
           - TenantIsolationMode
+          - TenantGrantSource
+          - RefreshTokenValidityHours
       - Label:
           default: "Configuration"
         Parameters:
@@ -2509,6 +2552,7 @@ Resources:
       Environment:
         Variables:
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
@@ -3168,6 +3212,7 @@ Resources:
         UsersTableName: !Ref UsersTable
         UsersTableArn: !GetAtt UsersTable.Arn
         TenantIsolationMode: !Ref TenantIsolationMode
+        TenantGrantSource: !Ref TenantGrantSource
 
         # S3 VPC endpoint URL — passed to presigner resolver Lambdas only when
         # explicitly opted in (S3PresignedUrlViaVpcEndpoint=true or BYO override).
@@ -3329,6 +3374,7 @@ Resources:
         UsersTableName: !Ref UsersTable
         UsersTableArn: !GetAtt UsersTable.Arn
         TenantIsolationMode: !Ref TenantIsolationMode
+        TenantGrantSource: !Ref TenantGrantSource
         # Test Set bucket name re-exported so feature stacks that generate test
         # sets (idp-data-generator) can write documents Test Studio discovers.
         TestSetBucketName: !Ref TestSetBucket
@@ -8186,6 +8232,7 @@ Resources:
           # Strict: refuse a document whose key and resolved profile belong to
           # different tenants (``idp_common.config.tenants.ingest_rejection_reason``).
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # Namespace for this Lambda's telemetry: ``StaleOutputPurgeFailed``
           # (issue #719) and the five prefix-mapping metrics
           # (``PrefixMappingApplied``, ``Conflict``, ``Rejected``,
@@ -11804,6 +11851,7 @@ Resources:
           TRACKING_TABLE_NAME: !Ref TrackingTable
           USERS_TABLE_NAME: !Ref UsersTable
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           APPSYNC_API_URL: ""
           # Non-streaming (GovCloud poll) path: persist the final chat message to
           # the ChatMessages table so the UI can poll getChatMessages for it when
@@ -11956,6 +12004,7 @@ Resources:
       Environment:
         Variables:
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
@@ -12305,6 +12354,7 @@ Resources:
           TRACKING_TABLE_NAME: !Ref TrackingTable
           USERS_TABLE_NAME: !Ref UsersTable
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           GUARDRAIL_ID_AND_VERSION:
             !If [HasGuardrailConfig, !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}", ""]
           # --- Agent-chat processor env (mirrors AgentChatProcessorFunction) ---
@@ -13636,7 +13686,17 @@ Resources:
           - ShouldMapExternalIdPGroups
           - custom:idp_groups
           - !Ref AWS::NoValue
-      RefreshTokenValidity: 30
+      RefreshTokenValidity: !If
+        - HasCustomRefreshTokenValidity
+        - !Ref RefreshTokenValidityHours
+        - 30
+      # Only the refresh token's unit is set. Naming an access or ID token unit
+      # with no matching validity would leave those lifetimes to Cognito's reading
+      # of an unset value in a unit this stack chose.
+      TokenValidityUnits: !If
+        - HasCustomRefreshTokenValidity
+        - RefreshToken: hours
+        - !Ref AWS::NoValue
       SupportedIdentityProviders: !If
         - HasExternalIdP
         - - COGNITO
@@ -13959,7 +14019,10 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 30
-      MemorySize: 128
+      # Cognito gives a pre-token trigger 5 seconds whatever Timeout says. Granting a
+      # tenant from the claim imports idp_common.config on a cold start, so that mode
+      # gets the CPU share a larger memory setting carries.
+      MemorySize: !If [IsTenantGrantFromIdpClaim, 512, 128]
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
@@ -13972,249 +14035,52 @@ Resources:
           # requires the signing-in user to be linked to it before it reads
           # custom:idp_groups.
           EXTERNAL_IDP_NAME: !Ref ExternalIdPName
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          USERS_TABLE_NAME: !Ref UsersTable
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
       LoggingConfig:
         LogGroup: !Ref ExternalIdPGroupMappingFunctionLogGroup
-      Policies: []
-      # MAINTENANCE NOTE: this inline handler is what deploys. A standalone copy
-      # with the same logic lives at src/lambda/external_idp_group_mapping/index.py
-      # and carries the unit tests (test_index.py). Change both together.
-      InlineCode: |
-        """Pre-token-generation Lambda trigger to map external IdP groups to Cognito groups.
-
-        The group claim arrives as the `custom:idp_groups` user-pool attribute, written
-        by Cognito's identity-provider AttributeMapping at each federated sign-in. That
-        attribute is `Mutable: true` and — when it is IdP-mapped — must also be listed in
-        the app client's `WriteAttributes` (Cognito writes mapped attributes *as the app
-        client*, and fails the sign-in if it lacks write access). A user's own access
-        token can therefore write it via `UpdateUserAttributes`.
-
-        Two checks keep a self-set value from granting groups:
-
-        1. Provenance. The user must be federated through the configured provider
-           (`EXTERNAL_IDP_NAME`). Provenance comes from the Cognito-managed `identities`
-           attribute read back via `AdminGetUser`, which no client can write. A native
-           user who sets `custom:idp_groups` on themselves has no `identities` entry and
-           is ignored.
-        2. Freshness. Only a fresh sign-in is honoured, never a token refresh. At a fresh
-           federated sign-in Cognito has just rewritten the mapped attribute from the
-           assertion, so the value read here is the IdP's. On a refresh the stored
-           attribute may be whatever the user last wrote, so the mapping is skipped and
-           the token carries the group membership already synced to Cognito.
-
-        Both checks fail closed: anything unverified returns the event untouched, which
-        leaves existing group membership alone and adds no token override.
-        """
-        import json
-        import os
-        import logging
-        import boto3
-
-        logger = logging.getLogger()
-        logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
-
-        cognito = boto3.client("cognito-idp")
-
-        # Mapping: external IdP group name -> Cognito group name
-        GROUP_MAPPING = {}
-        for env_key, cognito_group in [
-            ("ADMIN_GROUP_NAME", "Admin"),
-            ("AUTHOR_GROUP_NAME", "Author"),
-            ("REVIEWER_GROUP_NAME", "Reviewer"),
-            ("ANNOTATOR_GROUP_NAME", "Annotator"),
-            ("VIEWER_GROUP_NAME", "Viewer"),
-        ]:
-            idp_group = os.environ.get(env_key, "").strip()
-            if idp_group:
-                GROUP_MAPPING[idp_group] = cognito_group
-
-        COGNITO_GROUPS = set(GROUP_MAPPING.values())
-
-        # Name of the Cognito identity provider whose assertions may grant groups.
-        # Empty means no provider is trusted, so no sign-in can be granted groups.
-        EXTERNAL_IDP_NAME = os.environ.get("EXTERNAL_IDP_NAME", "").strip()
-
-        # Trigger sources that represent a fresh sign-in, where Cognito has just
-        # applied the provider's AttributeMapping. TokenGeneration_RefreshTokens is
-        # deliberately absent: a refresh re-reads whatever is stored on the user,
-        # which the user may have written themselves. Anything not listed is
-        # treated as untrusted.
-        FRESH_SIGN_IN_TRIGGERS = frozenset({
-            "TokenGeneration_HostedAuth",
-            "TokenGeneration_Authentication",
-            "TokenGeneration_NewPasswordChallenge",
-            "TokenGeneration_AuthenticateDevice",
-        })
-
-
-        def is_federated_via_configured_idp(user_pool_id, username):
-            """Return True only if `username` is linked to the configured IdP.
-
-            Reads the Cognito-managed `identities` attribute through AdminGetUser
-            rather than trusting the trigger event, so the answer comes from a field
-            no client can write. Any failure returns False.
-            """
-            if not EXTERNAL_IDP_NAME:
-                logger.warning("EXTERNAL_IDP_NAME is not set; refusing to map groups for any sign-in")
-                return False
-
-            try:
-                response = cognito.admin_get_user(UserPoolId=user_pool_id, Username=username)
-            except Exception as e:
-                logger.error(f"Failed to read user {username} for provenance check: {e}")
-                return False
-
-            raw_identities = ""
-            for attr in response.get("UserAttributes", []):
-                if attr.get("Name") == "identities":
-                    raw_identities = attr.get("Value", "")
-                    break
-
-            if not raw_identities:
-                logger.warning(f"User {username} has no federated identities; ignoring custom:idp_groups")
-                return False
-
-            try:
-                identities = json.loads(raw_identities)
-            except Exception as e:
-                logger.error(f"Could not parse identities for user {username}: {e}")
-                return False
-
-            if not isinstance(identities, list):
-                logger.error(f"Unexpected identities shape for user {username}")
-                return False
-
-            for identity in identities:
-                if isinstance(identity, dict) and identity.get("providerName") == EXTERNAL_IDP_NAME:
-                    return True
-
-            logger.warning(
-                f"User {username} is not federated through '{EXTERNAL_IDP_NAME}'; ignoring custom:idp_groups"
-            )
-            return False
-
-
-        def handler(event, context):
-            """Handle pre-token-generation trigger from Cognito."""
-            trigger_source = event.get("triggerSource")
-            logger.info(f"Pre-token trigger source: {trigger_source}")
-
-            # Extract user pool ID from the event (avoids circular CloudFormation dependency)
-            user_pool_id = event.get("userPoolId", "")
-            username = event.get("userName", "")
-            user_attributes = event.get("request", {}).get("userAttributes", {})
-            idp_groups_raw = user_attributes.get("custom:idp_groups", "")
-
-            if not idp_groups_raw:
-                logger.info(f"No IdP groups claim for user {username}")
-                return event
-
-            # A refresh re-reads the stored attribute, which the user's own access
-            # token may have written. Only a fresh sign-in has just had it rewritten
-            # from the provider's assertion.
-            if trigger_source not in FRESH_SIGN_IN_TRIGGERS:
-                logger.info(
-                    f"Trigger source {trigger_source} is not a fresh sign-in; "
-                    f"leaving groups for user {username} unchanged"
-                )
-                return event
-
-            if not is_federated_via_configured_idp(user_pool_id, username):
-                return event
-
-            # Parse IdP groups - handle comma-separated, JSON array, or single value
-            idp_groups = []
-            idp_groups_raw = idp_groups_raw.strip()
-            if not idp_groups_raw:
-                logger.info(f"No IdP groups claim for user {username}")
-                return event
-            if idp_groups_raw.startswith("["):
-                try:
-                    idp_groups = json.loads(idp_groups_raw)
-                except Exception:
-                    idp_groups = [g.strip().strip('"') for g in idp_groups_raw.strip("[]").split(",")]
-            else:
-                idp_groups = [g.strip() for g in idp_groups_raw.split(",")]
-
-            logger.info(f"User {username} IdP groups: {idp_groups}")
-
-            # Determine target Cognito groups from mapping
-            target_groups = set()
-            unmapped_groups = []
-            for idp_group in idp_groups:
-                if idp_group in GROUP_MAPPING:
-                    target_groups.add(GROUP_MAPPING[idp_group])
-                else:
-                    unmapped_groups.append(idp_group)
-
-            # Name every discarded claim value. Without this a claim carrying one
-            # mapped name plus an unmapped one produced no diagnostic at all: the
-            # warning below is skipped because target_groups is non-empty, so the
-            # role the operator expected went missing with nothing to point at.
-            # Group names only — never the token or the whole claim set.
-            if unmapped_groups:
-                logger.warning(
-                    f"Ignoring IdP group(s) with no Cognito mapping for user "
-                    f"{username}: {unmapped_groups}. Set the matching "
-                    f"ExternalIdP*GroupName stack parameter to map them."
-                )
-
-            if not target_groups:
-                logger.warning(f"No matching Cognito groups for user {username} with IdP groups {idp_groups}")
-                return event
-
-            # Get current Cognito groups for user
-            try:
-                response = cognito.admin_list_groups_for_user(
-                    UserPoolId=user_pool_id, Username=username
-                )
-                current_groups = {g["GroupName"] for g in response.get("Groups", [])}
-            except Exception as e:
-                logger.error(f"Failed to list groups for user {username}: {e}")
-                return event
-
-            # Add user to target groups they are not already in
-            for group in target_groups - current_groups:
-                try:
-                    cognito.admin_add_user_to_group(
-                        UserPoolId=user_pool_id, Username=username, GroupName=group
-                    )
-                    logger.info(f"Added user {username} to group {group}")
-                except Exception as e:
-                    logger.error(f"Failed to add user {username} to group {group}: {e}")
-
-            # Remove user from managed groups they should no longer be in
-            for group in (current_groups & COGNITO_GROUPS) - target_groups:
-                try:
-                    cognito.admin_remove_user_from_group(
-                        UserPoolId=user_pool_id, Username=username, GroupName=group
-                    )
-                    logger.info(f"Removed user {username} from group {group}")
-                except Exception as e:
-                    logger.error(f"Failed to remove user {username} from group {group}: {e}")
-
-            logger.info(f"User {username} group sync complete. Groups: {target_groups}")
-
-            # Inject groups into the token so they are available immediately on
-            # first sign-in, rather than only from the second token onwards.
-            #
-            # BOTH response keys are emitted because the key Cognito reads depends
-            # on the pool's PreTokenGenerationConfig.LambdaVersion, and the two
-            # names are not interchangeable:
-            #   V1_0      -> claimsOverrideDetails
-            #   V2_0/V3_0 -> claimsAndScopeOverrideDetails
-            # This template registers the trigger with `PreTokenGeneration:`,
-            # which is V1_0, so emitting only the V2 name meant the override was
-            # silently ignored and a first sign-in produced a token with no group
-            # claim. Cognito ignores an unrecognised key, so writing both is safe
-            # and survives a later move to V2_0/V3_0.
-            group_override = {
-                "groupOverrideDetails": {"groupsToOverride": list(target_groups)}
-            }
-            event.setdefault("response", {})
-            event["response"]["claimsOverrideDetails"] = group_override
-            event["response"]["claimsAndScopeOverrideDetails"] = group_override
-
-            return event
+      # The code is src/lambda/external_idp_group_mapping, which carries the unit
+      # tests. The idp_common layer is imported only under TenantGrantSource=IdpClaim.
+      CodeUri: ./src/lambda/external_idp_group_mapping
+      Layers:
+        - !Ref IDPCommonBaseLayer
+      # Cognito access is the separate ExternalIdPGroupMappingCognitoPolicy below,
+      # to avoid a circular dependency on the user pool. These grants exist only
+      # when the claim grants tenants: the user's UsersTable row and SUB# pointer,
+      # the email index the row is found by, and the one tenant-index item.
+      Policies:
+        - !If
+          - IsTenantGrantFromIdpClaim
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt UsersTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource: !Sub "${UsersTable.Arn}/index/EmailIndex"
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource: !GetAtt ConfigurationTable.Arn
+                Condition:
+                  ForAllValues:StringEquals:
+                    dynamodb:LeadingKeys:
+                      - "TenantIndex#__index"
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+          - !Ref AWS::NoValue
 
   ExternalIdPGroupMappingFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -16427,6 +16293,7 @@ Resources:
           USERS_TABLE_NAME: !Ref UsersTable
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           ALLOWED_SIGNUP_EMAIL_DOMAINS: !Ref AllowedSignUpEmailDomain
       LoggingConfig:
         LogGroup: !Ref UserManagementFunctionLogGroup
@@ -16567,6 +16434,7 @@ Resources:
           # in the caller's allowedTestSets, which is stored on the user record.
           USERS_TABLE_NAME: !Ref UsersTable
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # A Test Studio save is accepted only from the document's assignee
           # (TSDOC# item), and completing the document ends the assignment.
           HITL_TABLE_NAME: !Ref HITLTable

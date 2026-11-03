@@ -801,3 +801,70 @@ def test_the_mode_follows_the_parameter_after_the_ttl(mod, monkeypatch):
     mode, stamp = mod._mode_cache["mode"]
     mod._mode_cache["mode"] = (mode, stamp - mod._MODE_TTL_SECONDS - 1)
     assert mod._isolation_mode() == "Strict"
+
+
+# ---- The host's tenant grant source ------------------------------------------
+#
+# Under TenantGrantSource IdpClaim or Api an unscoped caller is denied whatever the
+# isolation mode, because a user nobody has granted a tenant yet must not read
+# every tenant's mapping. Read from the parameter the host publishes, like the mode.
+
+_GRANT_PARAM = "/IDP/tenant-grant-source"
+
+
+def _set_grant_source(mod, monkeypatch, value):
+    monkeypatch.setattr(mod, "TENANT_GRANT_SOURCE_PARAMETER", _GRANT_PARAM)
+    mod._mode_cache.clear()
+    monkeypatch.setattr(mod, "_ssm", None)
+    if value is not None:
+        boto3.client("ssm", region_name="us-west-2").put_parameter(
+            Name=_GRANT_PARAM, Value=value, Type="String", Overwrite=True
+        )
+
+
+@pytest.mark.parametrize(
+    "source,status", [("Manual", 200), ("IdpClaim", 404), ("Api", 404), (None, 200)]
+)
+def test_an_external_grant_source_denies_an_unscoped_caller_the_mapping(
+    mod, monkeypatch, source, status
+):
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc21.pdf", "acme-x")
+    _put_user("open@x", None, user_id="u21")
+    _set_mode(mod, monkeypatch, "Off")
+    _set_grant_source(mod, monkeypatch, source)
+    resp = _get(mod, "/report/doc21.pdf/mapping", email="open@x", groups="[Viewer]")
+    assert resp["statusCode"] == status
+
+
+def test_an_external_grant_source_leaves_an_admin_unrestricted(mod, monkeypatch):
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc22.pdf", "acme-x")
+    _set_mode(mod, monkeypatch, "Off")
+    _set_grant_source(mod, monkeypatch, "IdpClaim")
+    resp = _get(mod, "/report/doc22.pdf/mapping", email="admin@x", groups="[Admin]")
+    assert resp["statusCode"] == 200
+
+
+def test_an_unreadable_grant_source_is_read_as_external(mod, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class _Denied:
+        def get_parameter(self, **_kwargs):
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException"}}, "GetParameter"
+            )
+
+    _set_grant_source(mod, monkeypatch, None)
+    monkeypatch.setattr(mod, "_ssm", _Denied())
+    assert mod._grants_are_external() is True
+    assert "grant" not in mod._mode_cache
+
+
+def test_a_host_without_the_grant_parameter_is_manual(mod, monkeypatch):
+    _set_grant_source(mod, monkeypatch, None)
+    assert mod._grants_are_external() is False
+    monkeypatch.setattr(mod, "TENANT_GRANT_SOURCE_PARAMETER", "")
+    assert mod._grants_are_external() is False

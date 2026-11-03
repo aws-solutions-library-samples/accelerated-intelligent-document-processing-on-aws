@@ -421,6 +421,8 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "ExternalIdPViewerGroupName",
             "ExternalIdPAutoLogin",
             "ExternalIdPEmailMutable",
+            # The web UI client's refresh-token lifetime; no client in headless
+            "RefreshTokenValidityHours",
             # Public-template version-check (UI-only feature — resolver
             # removed above in self.appsync_resources). Drop the params so
             # the headless template doesn't expose unused UI configuration.
@@ -481,6 +483,8 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "ShouldMapExternalIdPGroups",
             "ExternalIdPEmailIsMutable",  # reads ExternalIdPEmailMutable (#835)
             "CreateExternalAppClient",
+            # Reads RefreshTokenValidityHours, a web UI client setting (removed below)
+            "HasCustomRefreshTokenValidity",
             # Used only by the removed VersionCheckResolverFunction (AppSync UI feature)
             "HasPublicArtifactsBucket",
             # Tests the AdminEmail parameter against the CI sentinel to suppress
@@ -505,6 +509,8 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
 
         self.rules_to_remove: Set[str] = {
             "ValidateExistingPrivateWorkforceArn",
+            # Asserts ExternalIdPGroupAttributeName, removed with the IdP parameters
+            "TenantGrantFromIdpClaimNeedsGroupAttribute",
         }
 
         # ---- Parameter groups to remove ----

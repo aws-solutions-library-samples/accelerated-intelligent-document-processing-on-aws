@@ -22,6 +22,10 @@ A function either signal names must have ``TENANT_ISOLATION_MODE`` wired from th
 stack parameter (``!Ref TenantIsolationMode``, or the host stack's export for a
 Feature Platform stack). Each template that references the parameter must
 declare it, and the parent must pass it to every nested stack that declares it.
+
+The same consumers must also be told ``TenantGrantSource`` (``TENANT_GRANT_SOURCE``),
+because under IdpClaim or Api an unscoped caller is denied as under Strict; the
+tests for that axis are at the end of this file.
 """
 
 from __future__ import annotations
@@ -272,5 +276,125 @@ def test_a_feature_reading_the_parameter_may_read_exactly_it():
         ), (
             f"{template.relative_to(REPO_ROOT)}: {name} reads the mode parameter "
             f"but is not granted ssm:GetParameter on it"
+        )
+    assert checked >= 1, "expected the PII anonymizer's feature API"
+
+
+# ---------------------------------------------------------------------------
+# TenantGrantSource
+# ---------------------------------------------------------------------------
+#
+# The same failure on the second axis. Under ``TenantGrantSource`` IdpClaim or Api
+# an unscoped non-Admin is denied (``config_scope.unscoped_is_denied``), so a
+# consumer missing ``TENANT_GRANT_SOURCE`` reads Manual and serves a user nobody has
+# granted a tenant yet every tenant's documents. The consumer set is the one derived
+# above: everything that applies the isolation rule applies this one too.
+
+GRANT_ENV = "TENANT_GRANT_SOURCE"
+GRANT_PARAM = "TenantGrantSource"
+GRANT_PARAMETER_ENV = "TENANT_GRANT_SOURCE_PARAMETER"
+GRANT_HOST_PARAMETER_NAME = "/${MainStackName}/tenant-grant-source"
+
+
+def _grant_is_wired(env: dict) -> bool:
+    if env.get(GRANT_ENV) == {"Fn::Ref": GRANT_PARAM}:
+        return True
+    named = env.get(GRANT_PARAMETER_ENV)
+    sub = named.get("Fn::Sub") if isinstance(named, dict) else None
+    return isinstance(sub, str) and sub == GRANT_HOST_PARAMETER_NAME
+
+
+@pytest.mark.parametrize(
+    "template,name,body,reason",
+    CONSUMERS,
+    ids=[f"{t.relative_to(REPO_ROOT)}:{n}" for t, n, _b, _r in CONSUMERS],
+)
+def test_every_consumer_is_told_the_grant_source(template, name, body, reason):
+    assert _grant_is_wired(_env(body)), (
+        f"{template.relative_to(REPO_ROOT)}: {name} ({reason}) must set "
+        f"{GRANT_ENV}: !Ref {GRANT_PARAM} (or, in a Feature Platform stack, "
+        f"{GRANT_PARAMETER_ENV}: !Sub '{GRANT_HOST_PARAMETER_NAME}'). Without it an "
+        f"unscoped user is served unrestricted on a stack whose tenants are granted "
+        f"by the identity provider or an entitlement system."
+    )
+
+
+@pytest.mark.parametrize(
+    "template", _templates(), ids=lambda p: str(p.relative_to(REPO_ROOT))
+)
+def test_a_template_that_refs_the_grant_source_declares_it(template):
+    if f"!Ref {GRANT_PARAM}" not in template.read_text():
+        return
+    param = (_load(template).get("Parameters") or {}).get(GRANT_PARAM)
+    assert param, (
+        f"{template.relative_to(REPO_ROOT)} uses !Ref {GRANT_PARAM} but does not "
+        f"declare it"
+    )
+    assert param.get("Default") == "Manual"
+    assert sorted(param.get("AllowedValues") or []) == ["Api", "IdpClaim", "Manual"]
+
+
+def test_the_parent_passes_the_grant_source_to_every_nested_stack_that_declares_it():
+    parent = REPO_ROOT / "template.yaml"
+    checked = 0
+    for name, body in (_load(parent).get("Resources") or {}).items():
+        if (
+            not isinstance(body, dict)
+            or body.get("Type") != "AWS::CloudFormation::Stack"
+        ):
+            continue
+        url = (body.get("Properties") or {}).get("TemplateURL")
+        if not isinstance(url, str) or "/.aws-sam/" not in url:
+            continue
+        child = (parent.parent / url.split("/.aws-sam/")[0] / "template.yaml").resolve()
+        if not child.is_file() or GRANT_PARAM not in (
+            _load(child).get("Parameters") or {}
+        ):
+            continue
+        checked += 1
+        passed = ((body.get("Properties") or {}).get("Parameters") or {}).get(
+            GRANT_PARAM
+        )
+        assert passed == {"Fn::Ref": GRANT_PARAM}, (
+            f"template.yaml: nested stack {name} declares {GRANT_PARAM} but is not "
+            f"passed it, so every function in it reads Manual"
+        )
+    assert checked >= 2, "expected the api-resolvers and Feature Platform stacks"
+
+
+def test_the_host_publishes_the_grant_source_as_a_parameter_not_an_export():
+    host = _load(REPO_ROOT / "feature-platform/main-stack-extensions/template.yaml")
+    params = [
+        body
+        for body in (host.get("Resources") or {}).values()
+        if isinstance(body, dict)
+        and body.get("Type") == "AWS::SSM::Parameter"
+        and (body.get("Properties") or {}).get("Name")
+        == {"Fn::Sub": GRANT_HOST_PARAMETER_NAME}
+    ]
+    assert len(params) == 1, "the host must publish exactly one grant-source parameter"
+    assert params[0]["Properties"]["Value"] == {"Fn::Ref": GRANT_PARAM}
+    assert "Condition" not in params[0]
+    for name, output in (host.get("Outputs") or {}).items():
+        assert (output or {}).get("Value") != {"Fn::Ref": GRANT_PARAM}, (
+            f"output {name} exports the grant source; an imported export never changes"
+        )
+
+
+def test_a_feature_reading_the_grant_parameter_may_read_exactly_it():
+    """Without ``ssm:GetParameter`` the feature reads the source as external on every
+    request (fails closed), which denies every unscoped non-Admin even under Manual."""
+    checked = 0
+    for template, name, body, _reason in CONSUMERS:
+        if GRANT_PARAMETER_ENV not in _env(body):
+            continue
+        checked += 1
+        text = yaml.safe_dump((body.get("Properties") or {}).get("Policies"))
+        assert (
+            "ssm:GetParameter" in text
+            and ":parameter/${MainStackName}/tenant-grant-source" in text
+        ), (
+            f"{template.relative_to(REPO_ROOT)}: {name} reads the grant-source "
+            f"parameter but is not granted ssm:GetParameter on it"
         )
     assert checked >= 1, "expected the PII anonymizer's feature API"

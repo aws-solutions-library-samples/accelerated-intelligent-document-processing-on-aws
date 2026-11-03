@@ -20,11 +20,30 @@ class TenantInfo(BaseModel):
     profile_pattern: str = Field(
         description="Configuration Profile pattern the tenant owns, e.g. 'acme-*'"
     )
+    granted_by: List[str] = Field(
+        default_factory=list,
+        description="Claim or entitlement values that grant this tenant "
+        "(TenantGrantSource IdpClaim or Api), e.g. 'tenant.acme'",
+    )
     description: Optional[str] = None
     created_at: Optional[str] = None
     created_by: Optional[str] = None
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
+
+
+class TenantUserGrant(BaseModel):
+    """The scope :meth:`TenancyOperation.set_user_tenant` wrote for one user."""
+
+    email: str
+    user_id: Optional[str] = None
+    tenant_id: Optional[str] = Field(
+        default=None, description="The tenant granted, or None for no tenant"
+    )
+    allowed_config_versions: List[str] = Field(
+        default_factory=list,
+        description="The scope now stored: the tenant's pattern, or the no-tenant marker",
+    )
 
 
 class TenantListResult(BaseModel):
@@ -38,6 +57,13 @@ class TenantListResult(BaseModel):
             "'Unknown' when the stack declares no such parameter (a stack deployed "
             "before tenant isolation existed, which behaves as 'Off')."
         )
+    )
+    grant_source: str = Field(
+        default="Manual",
+        description=(
+            "The stack's TenantGrantSource: 'Manual', 'IdpClaim' or 'Api'. 'Manual' "
+            "for a stack that predates the parameter."
+        ),
     )
 
 

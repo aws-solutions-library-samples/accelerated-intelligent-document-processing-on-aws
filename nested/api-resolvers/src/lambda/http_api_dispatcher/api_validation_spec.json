@@ -1828,6 +1828,13 @@
           "name": "description",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "grantedBy",
+          "non_null": false,
+          "type": "String"
         }
       ]
     },
@@ -2416,6 +2423,24 @@
           "is_list": false,
           "name": "versionName",
           "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "setUserTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "email",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
+          "non_null": false,
           "type": "String"
         }
       ]

@@ -343,3 +343,33 @@ def test_the_dry_run_reports_a_strict_tenant_refusal(
         # Generic: it must not name the tenant that owns the key.
         assert "acme" not in assignment["reason"]
         assert "strict tenant isolation" in assignment["reason"]
+
+
+# ---------------------------------------------------------------------------
+# Grants
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source,expected",
+    [("IdpClaim", "IdpClaim"), ("Api", "Api"), ("Manual", "Manual"), (None, "Manual")],
+)
+def test_list_reports_the_grant_source(manager, monkeypatch, source, expected):
+    if source is None:
+        monkeypatch.delenv("TENANT_GRANT_SOURCE", raising=False)
+    else:
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", source)
+    result = index.handler(_event("listTenants"), None)
+    assert result["grantSource"] == expected
+
+
+@pytest.mark.unit
+def test_put_stores_granted_by_and_refuses_a_shared_value(manager):
+    assert _put_tenant({**ACME, "grantedBy": ["tenant.acme"]})["success"] is True
+    listed = index.handler(_event("listTenants"), None)
+    assert listed["tenants"][0]["grantedBy"] == ["tenant.acme"]
+    result = _put_tenant({**GLOBEX, "grantedBy": ["tenant.acme"]})
+    assert result["success"] is False
+    assert result["error"]["type"] == "ValidationError"
+    assert "already grants tenant 'acme'" in result["error"]["message"]

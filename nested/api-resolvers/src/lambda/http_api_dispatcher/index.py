@@ -355,6 +355,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "deleteUser": "createUser",
     "listUsers": "createUser",
     "getMyProfile": "createUser",
+    "setUserTenant": "createUser",
     # createFinetuningJob (FinetuningJobsResolverFunctionArn)
     "deleteFinetuningJob": "createFinetuningJob",
     "getFinetuningJob": "createFinetuningJob",

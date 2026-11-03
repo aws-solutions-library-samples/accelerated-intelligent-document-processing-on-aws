@@ -19,12 +19,24 @@ export interface Tenant {
   prefixes: string[];
   /** A literal stem ending in '-', '_' or '.', then '*' — e.g. `acme-*`. */
   profilePattern: string;
+  /** Claim or entitlement values that grant this tenant (TenantGrantSource IdpClaim or Api). */
+  grantedBy?: string[] | null;
   description?: string | null;
   createdAt?: string | null;
   createdBy?: string | null;
   updatedAt?: string | null;
   updatedBy?: string | null;
 }
+
+/**
+ * The scope written for a user an identity provider or entitlement push grants no
+ * tenant. No profile name can equal it, so it means "no access". Mirrors
+ * `NO_TENANT_GRANTED` in `idp_common/user_scope.py`; never display it as a profile.
+ */
+export const NO_TENANT_GRANTED = '!no-tenant-granted';
+
+/** The stack's `TenantGrantSource` parameter: who grants a user's tenant. */
+export type GrantSource = 'Manual' | 'IdpClaim' | 'Api';
 
 /** The stack's `TenantIsolationMode` parameter, as the server reports it. */
 export type IsolationMode = 'Strict' | 'Off';
@@ -33,6 +45,7 @@ export interface PutTenantInput {
   tenantId: string;
   prefixes: string[];
   profilePattern: string;
+  grantedBy?: string[];
   description?: string;
 }
 
@@ -48,6 +61,8 @@ const errorMessage = (error: { type?: string | null; message?: string | null } |
 const useTenants = () => {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [isolationMode, setIsolationMode] = useState<IsolationMode | null>(null);
+  // `null` until read, and on a failed read: callers must not assume Manual then.
+  const [grantSource, setGrantSource] = useState<GrantSource | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,6 +79,8 @@ const useTenants = () => {
       }
       setTenants((response.tenants ?? []).filter(Boolean) as Tenant[]);
       setIsolationMode(response.isolationMode === 'Strict' ? 'Strict' : 'Off');
+      const source = response.grantSource;
+      setGrantSource(source === 'IdpClaim' || source === 'Api' ? source : 'Manual');
     } catch (err) {
       logger.error('Error loading tenants', err);
       setError('Failed to load tenants');
@@ -83,6 +100,7 @@ const useTenants = () => {
           prefixes: input.prefixes,
           profilePattern: input.profilePattern,
           description: input.description || undefined,
+          grantedBy: input.grantedBy ?? [],
         },
       });
       const response = result.data.putTenant;
@@ -115,7 +133,7 @@ const useTenants = () => {
     }
   }, []);
 
-  return { tenants, isolationMode, loading, error, setError, loadTenants, saveTenant, removeTenant };
+  return { tenants, isolationMode, grantSource, loading, error, setError, loadTenants, saveTenant, removeTenant };
 };
 
 export default useTenants;

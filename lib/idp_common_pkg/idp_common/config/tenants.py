@@ -76,7 +76,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from botocore.exceptions import ClientError
 
@@ -107,13 +107,16 @@ SEQ_ATTRIBUTE = "IndexSeq"
 # Bounds. The aggregate item is read on the ingest path in strict mode, and a write
 # DynamoDB refuses for size surfaces as an opaque ValidationException rather than
 # this module's own message, so the worst case is held well below the 400 KB item
-# limit. One tenant at every field's bound (5 prefixes of 512 bytes, a 500-byte
-# description, two 256-byte actor strings) serializes to about 3.9 KB, so 75 tenants
-# is about 290 KB -- a quarter of the item left for the key, the counter and
-# DynamoDB's own accounting of attribute names. `test_the_bounds_hold_the_item_limit`
-# measures the serialized item against that 300 KB budget, not against the limit.
-MAX_TENANTS = 75
+# limit. One tenant at every field's bound (5 prefixes of 512 bytes, 3 grant values
+# of 128 bytes, a 500-byte description, two 256-byte actor strings) serializes to
+# about 4.3 KB, so 65 tenants is about 280 KB -- over a quarter of the item left for
+# the key, the counter and DynamoDB's own accounting of attribute names.
+# `test_the_bounds_hold_the_item_limit` measures the serialized item against that
+# 300 KB budget, not against the limit.
+MAX_TENANTS = 65
 MAX_PREFIXES_PER_TENANT = 5
+MAX_GRANTS_PER_TENANT = 3
+_MAX_GRANT_LEN = 128
 _MAX_ACTOR_LEN = 256
 
 TENANT_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62})$")
@@ -151,10 +154,14 @@ def normalize_tenant(entry: Mapping[str, Any]) -> Dict[str, Any]:
     prefixes = entry.get("prefixes") or []
     if isinstance(prefixes, str):
         prefixes = [prefixes]
+    granted_by = entry.get("grantedBy") or []
+    if isinstance(granted_by, str):
+        granted_by = [granted_by]
     return {
         "tenantId": str(entry.get("tenantId") or ""),
         "prefixes": [str(p) for p in prefixes if p],
         "profilePattern": str(entry.get("profilePattern") or ""),
+        "grantedBy": [str(g) for g in granted_by if g],
         "description": (str(entry.get("description") or "") or None),
         "createdAt": entry.get("createdAt"),
         "createdBy": _actor("createdBy"),
@@ -297,6 +304,9 @@ def tenant_rejection_reason(
     reason = description_rejection_reason(t["description"])
     if reason:
         return reason
+    reason = _grants_rejection_reason(t["grantedBy"])
+    if reason:
+        return reason
 
     for other in others:
         o = normalize_tenant(other)
@@ -310,6 +320,13 @@ def tenant_rejection_reason(
                         f"{theirs!r}. Tenant prefixes must be disjoint so that every "
                         f"document belongs to at most one tenant."
                     )
+        shared = sorted(set(t["grantedBy"]) & set(o["grantedBy"]))
+        if shared:
+            return (
+                f"Grant value {shared[0]!r} already grants tenant {o['tenantId']!r}. "
+                f"A value may grant at most one tenant, so that a user's claim "
+                f"resolves to one answer."
+            )
         other_stem = pattern_stem(o["profilePattern"]) or ""
         if other_stem and (stem.startswith(other_stem) or other_stem.startswith(stem)):
             return (
@@ -319,6 +336,68 @@ def tenant_rejection_reason(
                 f"other."
             )
     return None
+
+
+def _grants_rejection_reason(values: Sequence[str]) -> Optional[str]:
+    """Why a declaration's ``grantedBy`` values cannot be stored, or ``None``.
+
+    The values are opaque: an Entra app-role value such as ``tenant.acme``, an Okta
+    group name, an entitlement name an external system pushes. Nothing here knows
+    which identity provider produced them, which is what keeps the feature from
+    depending on one.
+    """
+    if len(values) > MAX_GRANTS_PER_TENANT:
+        return f"A tenant may be granted by at most {MAX_GRANTS_PER_TENANT} values."
+    if len(set(values)) != len(values):
+        return "A grant value is listed twice."
+    for value in values:
+        if value != value.strip():
+            return (
+                f"Grant value {value!r} begins or ends with whitespace, so it would "
+                f"never equal the value an identity provider sends."
+            )
+        if len(value.encode("utf-8")) > _MAX_GRANT_LEN:
+            return f"A grant value may be at most {_MAX_GRANT_LEN} bytes."
+    return None
+
+
+#: The outcome of resolving a user's grant values against the tenant declarations.
+GRANT_NONE = "none"
+GRANT_TENANT = "tenant"
+GRANT_REFUSED = "refused"
+
+
+def resolve_grants(
+    values: Iterable[str], tenants: Sequence[Mapping[str, Any]]
+) -> Dict[str, Any]:
+    """Which tenant a user's grant values give them.
+
+    Returns ``{"outcome", "tenant", "reason"}``. ``outcome`` is ``GRANT_TENANT`` for
+    exactly one tenant, ``GRANT_NONE`` when no value grants any tenant, and
+    ``GRANT_REFUSED`` when the values grant two or more distinct tenants: a user is
+    confined to one tenant, so several is refused rather than resolved to the union
+    or to whichever came first. Values that grant nothing are ignored, because the
+    same claim also carries the user's functional roles.
+    """
+    wanted = {str(v) for v in values if v}
+    matched = [
+        normalize_tenant(t)
+        for t in tenants
+        if wanted & set(normalize_tenant(t)["grantedBy"])
+    ]
+    if not matched:
+        return {"outcome": GRANT_NONE, "tenant": None, "reason": None}
+    if len(matched) > 1:
+        ids = ", ".join(sorted(t["tenantId"] for t in matched))
+        return {
+            "outcome": GRANT_REFUSED,
+            "tenant": None,
+            "reason": (
+                f"The user is granted tenants {ids}. A user is confined to one "
+                f"tenant, so no tenant is granted until all but one are removed."
+            ),
+        }
+    return {"outcome": GRANT_TENANT, "tenant": matched[0], "reason": None}
 
 
 def mapping_rejection_reason(
@@ -668,6 +747,7 @@ class TenantStore:
         profile_pattern: str,
         *,
         description: Optional[str] = None,
+        granted_by: Optional[Sequence[str]] = None,
         actor: Optional[str] = None,
         validate_against: Optional[
             Callable[[List[Dict[str, Any]]], Optional[str]]
@@ -690,6 +770,7 @@ class TenantStore:
                     "prefixes": list(prefixes),
                     "profilePattern": profile_pattern,
                     "description": description,
+                    "grantedBy": list(granted_by or []),
                     "createdAt": (previous or {}).get("createdAt") or _now(),
                     "createdBy": (previous or {}).get("createdBy") or actor or "system",
                     "updatedAt": _now(),

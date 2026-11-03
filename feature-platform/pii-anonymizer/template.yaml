@@ -287,12 +287,17 @@ Resources:
           # the host publishes (not an export: an imported export could never
           # change value, so the mode could never be switched).
           TENANT_ISOLATION_MODE_PARAMETER: !Sub '/${MainStackName}/tenant-isolation-mode'
+          # The host's TenantGrantSource, published the same way.
+          TENANT_GRANT_SOURCE_PARAMETER: !Sub '/${MainStackName}/tenant-grant-source'
       Policies:
         - Statement:
-            # The one parameter holding the host's TenantIsolationMode.
+            # The two parameters holding the host's TenantIsolationMode and
+            # TenantGrantSource.
             - Effect: Allow
               Action: ssm:GetParameter
-              Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${MainStackName}/tenant-isolation-mode'
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${MainStackName}/tenant-isolation-mode'
+                - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${MainStackName}/tenant-grant-source'
             - Effect: Allow
               Action:
                 - dynamodb:GetItem

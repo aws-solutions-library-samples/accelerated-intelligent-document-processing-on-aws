@@ -143,3 +143,24 @@ writes for two throwaway uploader roles and checks that each can write only unde
 own prefix through its own access point, then runs `idp-cli tenancy audit`. Every row
 is `PASS`, `FAIL` or `ERROR`; it exits non-zero unless every row passes, and removes
 what it created in a `finally`.
+
+## Tenant grants from the identity provider's claim
+
+`verify_tenant_grants_federation.py` covers `TenantGrantSource=IdpClaim`. It needs a
+stack federated to the throwaway OIDC provider (stand both up as for
+`make verify-idp-federation`), deployed with `TenantGrantSource=IdpClaim`,
+`ExternalIdPGroupAttributeName=roles` and `ExternalIdPViewerGroupName=DMS.Viewer`.
+
+```bash
+make verify-tenant-grants-federation STACK_NAME=<stack> REGION=<region> \
+  IDP_FUNCTION=<provider function> POOL_ID=<pool> CLIENT_ID=<client> DOMAIN=<hosted UI>
+```
+
+It drives the provider to issue tokens shaped like Microsoft Entra ID's for an app
+registration with app roles — a `roles` array such as `["DMS.Viewer", "tenant.tga"]`
+plus `oid`, `tid` and `preferred_username` — and checks, through real hosted-UI
+sign-ins and the federated user's own API calls, that the tenant role scopes the user
+to that tenant, that a changed role moves them at the next fresh sign-in but not on a
+token refresh, and that two tenant roles or none leave them with no access. A token
+without an `email` claim is reported as a note. What it cannot prove is Entra's own
+side: group-to-role assignment and the claims an actual app registration emits.

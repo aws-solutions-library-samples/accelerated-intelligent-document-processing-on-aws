@@ -1265,6 +1265,48 @@ class TestProcessorModelIdSuffixes:
         assert "performanceConfig" not in kwargs
         assert "additionalModelRequestFields" not in kwargs
 
+class TestProcessorExternalTenantGrants:
+    """``TenantGrantSource`` IdpClaim or Api on a chat turn, with isolation Off.
+
+    An unscoped caller is one nobody has granted a tenant yet, so it is denied
+    as under strict isolation. The unverified-transport path (GAP-07) is not
+    changed by the grant source; only ``TenantIsolationMode=Strict`` closes it.
+    """
+
+    @staticmethod
+    def _run(source, **kwargs):
+        import index
+
+        env = {"TENANT_ISOLATION_MODE": "Off", "TENANT_GRANT_SOURCE": source}
+        with patch.dict(os.environ, env):
+            return _run_scope_turn(index, **kwargs)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("source", ["IdpClaim", "Api"])
+    def test_an_unscoped_caller_is_denied(self, source):
+        result, _p, bedrock, _u = self._run(
+            source, event_extra={"identity": _VERIFIED_IDENTITY}, users_items=[]
+        )
+        assert result == {"ok": False, "reason": "scope_denied"}
+        bedrock.converse_stream.assert_not_called()
+
+    @pytest.mark.unit
+    def test_manual_leaves_an_unscoped_caller_unrestricted(self):
+        result, _p, bedrock, _u = self._run(
+            "Manual", event_extra={"identity": _VERIFIED_IDENTITY}, users_items=[]
+        )
+        assert result == {"ok": True, "turnId": "t-1"}
+
+    @pytest.mark.unit
+    def test_a_granted_caller_is_unaffected(self):
+        result, _p, bedrock, _u = self._run(
+            "IdpClaim",
+            event_extra={"identity": _VERIFIED_IDENTITY},
+            users_items=[{"allowedConfigVersions": ["secret-v1"]}],
+        )
+        assert result == {"ok": True, "turnId": "t-1"}
+
+
 class TestProcessorStrictTenantIsolation:
     """``TenantIsolationMode=Strict`` on a chat turn.
 
