@@ -3072,9 +3072,12 @@ acme:
 Output-bucket keys begin with the document's input key, so a tenant's output access
 point is confined to the same prefixes as its input one. The generated template
 creates only the access points. The stack's bucket policies delegate to access points
-in its own account when `TenantIsolationMode=Strict`. The uploader and consumer roles
-still need an identity policy allowing their access point, and use of the stack's KMS
-key; the command prints what is needed.
+in its own account when `TenantIsolationMode=Strict`. Each access point policy confines
+with explicit denies — no other principal may use it, and nothing outside the tenant's
+prefixes may be read or written through it — so the confinement holds whatever the
+roles' own policies allow. A role in the stack's account needs no S3 permission of its
+own; a role in another account needs an identity policy allowing its own access point.
+Every role needs use of the stack's KMS key. The command prints what is needed.
 
 **`audit`** reports the isolation mode, prefix mappings that cross a tenant boundary,
 tenant prefixes no mapping of the tenant's own covers, non-admin users with no scope

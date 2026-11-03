@@ -291,17 +291,44 @@ def test_generate_policies_template(tenancy):
     by_name = {r["Properties"]["Name"]: r["Properties"] for r in resources.values()}
     acme_in = by_name[tp.access_point_name(STACK, "acme", "in")]
     assert acme_in["Bucket"] == "input-bucket"
-    stmt = acme_in["Policy"]["Statement"]
+    stmt = [s for s in acme_in["Policy"]["Statement"] if s["Effect"] == "Allow"]
     assert [s["Action"] for s in stmt] == ["s3:PutObject"]
     assert stmt[0]["Principal"] == {"AWS": UPLOADER}
+    # The confinement is the Denies, because a same-account role's own identity
+    # policy can grant what an Allow here does not.
+    denies = {
+        s["Sid"]: s for s in acme_in["Policy"]["Statement"] if s["Effect"] == "Deny"
+    }
+    assert set(denies) == {
+        "DenyPrincipalsOfOtherTenants",
+        "DenyObjectsOutsideTenantPrefixes",
+    }
+    assert denies["DenyPrincipalsOfOtherTenants"]["Condition"] == {
+        "ArnNotEquals": {"aws:PrincipalArn": [UPLOADER]}
+    }
+    assert denies["DenyObjectsOutsideTenantPrefixes"]["Action"] == "s3:PutObject"
+    assert (
+        denies["DenyObjectsOutsideTenantPrefixes"]["NotResource"] == stmt[0]["Resource"]
+    )
     (resource,) = stmt[0]["Resource"]
     assert resource["Fn::Sub"].startswith("arn:${AWS::Partition}:s3:")
     assert resource["Fn::Sub"].endswith("/object/clients/acme/*")
 
     acme_out = by_name[tp.access_point_name(STACK, "acme", "out")]
     assert acme_out["Bucket"] == "output-bucket"
-    actions = {s["Action"]: s for s in acme_out["Policy"]["Statement"]}
+    actions = {
+        s["Action"]: s
+        for s in acme_out["Policy"]["Statement"]
+        if s["Effect"] == "Allow"
+    }
     assert set(actions) == {"s3:GetObject", "s3:ListBucket"}
+    out_denies = {
+        s["Sid"]: s for s in acme_out["Policy"]["Statement"] if s["Effect"] == "Deny"
+    }
+    assert out_denies["DenyListingOutsideTenantPrefixes"]["Condition"] == {
+        "StringNotLike": {"s3:prefix": ["clients/acme/*"]}
+    }
+    assert out_denies["DenyObjectsOutsideTenantPrefixes"]["Action"] == "s3:GetObject"
     assert actions["s3:ListBucket"]["Condition"] == {
         "StringLike": {"s3:prefix": ["clients/acme/*"]}
     }

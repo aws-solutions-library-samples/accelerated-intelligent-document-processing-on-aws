@@ -22,7 +22,11 @@ What it does, in order, and removes in a ``finally``:
 5. Creates two throwaway IAM roles, one uploader per tenant, generates the
    per-tenant access point template with ``client.tenancy.generate_policies``,
    deploys it, and asserts that tenant A's uploader can write under A's prefix
-   through A's access point and is refused under B's prefix.
+   through A's access point and is refused under B's prefix and at B's access
+   point. Each role is deliberately OVER-granted — its own identity policy allows
+   ``s3:PutObject`` through both access points — because for a same-account role
+   S3 honours that grant as readily as the access point's, and the generated
+   policies must confine it anyway.
 6. Runs ``client.tenancy.audit`` and reports its findings.
 
 Every row is PASS, FAIL or ERROR, and the run exits non-zero unless every row is

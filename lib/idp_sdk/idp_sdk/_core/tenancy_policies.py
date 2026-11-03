@@ -21,10 +21,12 @@ Should a writer ever key outputs another way, this module's output policy would
 stop matching it, which is the safe direction.
 
 Access points only take effect when the bucket policy delegates to them, which the
-stack's bucket policies do under ``TenantIsolationMode=Strict``. And they only
-*confine* a principal that holds no other route to the bucket: a principal also
-granted ``s3:PutObject`` on the bucket itself by its own identity policy still
-writes anywhere. The generated template says so in its description.
+stack's bucket policies do under ``TenantIsolationMode=Strict``. Each policy confines
+through explicit Denies, not through its Allows, because for a principal in the
+bucket's account S3 accepts an Allow from the identity policy as readily as from the
+access point's (see ``access_point_policy``). What they cannot confine is a principal
+granted access on the **bucket** itself, which never passes through an access point;
+the generated template says so in its description.
 
 Pure functions only, so the template is deterministic and the same builder answers
 the audit's drift question with concrete ARNs.
@@ -205,6 +207,52 @@ def access_point_policy(
                 "Resource": arn(""),
                 "Condition": {
                     "StringLike": {"s3:prefix": [_prefix_pattern(p) for p in prefixes]}
+                },
+            }
+        )
+    # ⚠️ The Allows above are not what confines anyone. For a principal in the
+    # bucket's own account S3 honours an Allow from EITHER its identity policy or
+    # this policy, so an uploader whose role also allows s3:PutObject on
+    # `<this access point>/object/*` writes under every tenant's prefix through it
+    # — measured on a deployed stack. Explicit Denies win over any Allow, so these
+    # three are the confinement, and they hold whatever the roles' own policies say:
+    #   * nobody but this tenant's principals may use this access point at all;
+    #   * nobody may touch an object outside this tenant's prefixes through it;
+    #   * (reads) nobody may list outside them.
+    object_action = "s3:PutObject" if direction == DIRECTION_IN else "s3:GetObject"
+    statements.append(
+        {
+            "Sid": "DenyPrincipalsOfOtherTenants",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:*",
+            "Resource": [arn(""), arn("/object/*")],
+            "Condition": {"ArnNotEquals": {"aws:PrincipalArn": list(principals)}},
+        }
+    )
+    statements.append(
+        {
+            "Sid": "DenyObjectsOutsideTenantPrefixes",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": object_action,
+            "NotResource": [arn(f"/object/{_prefix_pattern(p)}") for p in prefixes],
+        }
+    )
+    if direction != DIRECTION_IN:
+        statements.append(
+            {
+                "Sid": "DenyListingOutsideTenantPrefixes",
+                "Effect": "Deny",
+                "Principal": "*",
+                "Action": "s3:ListBucket",
+                "Resource": arn(""),
+                # A negated operator matches when s3:prefix is absent, so an
+                # unprefixed listing of the whole bucket is refused too.
+                "Condition": {
+                    "StringNotLike": {
+                        "s3:prefix": [_prefix_pattern(p) for p in prefixes]
+                    }
                 },
             }
         )

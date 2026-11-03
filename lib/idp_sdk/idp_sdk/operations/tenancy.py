@@ -381,12 +381,14 @@ class TenancyOperation:
             name, buckets["InputBucket"], buckets["OutputBucket"], entries, clean
         )
         warnings.append(
-            "Each uploader and consumer also needs, in its own account: an identity "
-            "policy allowing s3:PutObject or s3:GetObject/s3:ListBucket on its access "
-            "point ARN, and kms:GenerateDataKey (uploaders) or kms:Decrypt (consumers) "
-            "on the stack's CustomerManagedEncryptionKey, whose key policy must admit "
-            "it. A principal that also holds a direct grant on the bucket is not "
-            "confined by these access points."
+            "A role in this stack's account needs no S3 permission of its own: the "
+            "access point policy is the grant. A role in another account needs an "
+            "identity policy allowing s3:PutObject or s3:GetObject/s3:ListBucket on "
+            "its own access point ARN. Every role needs kms:GenerateDataKey "
+            "(uploaders) or kms:Decrypt (consumers) on the stack's "
+            "CustomerManagedEncryptionKey, whose key policy must admit it. A "
+            "principal granted access on the bucket itself, rather than through an "
+            "access point, is not confined by these access points."
         )
         mode = self.isolation_mode(name)
         if mode != "Strict":

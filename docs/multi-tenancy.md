@@ -170,9 +170,11 @@ template that creates, for each tenant:
 
 In strict mode the stack's Input and Output bucket policies delegate access control
 to access points owned by the stack's own account, so the generated access points
-take effect once deployed. Review the generated template before deploying it. Do
-not also grant those roles bucket-wide S3 permissions, because a bucket-level grant
-bypasses the access point.
+take effect once deployed. Review the generated template before deploying it. Each
+access point policy confines with explicit denies, so the confinement holds whatever
+the roles' own policies allow through an access point. What it cannot stop is access
+granted on the **bucket** itself, which never passes through an access point, so grant
+those roles nothing on the buckets directly.
 
 With writers confined this way, the prefix a document arrives under is a fact about
 its tenant rather than a choice the writer made, which is what the ingest rule above
