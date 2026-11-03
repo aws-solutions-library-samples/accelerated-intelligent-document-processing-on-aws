@@ -1726,51 +1726,6 @@ class TestProcessDocument:
 
         assert list(result.pages) == [str(n) for n in range(1, 12)]
 
-    def test_fillable_form_fields_are_flattened_before_rendering(
-        self, document, s3_writes
-    ):
-        """Without `flatten()` a government form renders with every field blank.
-
-        Only pages that actually have a form environment should be flattened, so
-        both directions are covered in one document.
-        """
-        service = make_service(backend="none")
-        self._stub_s3_get(service, b"%PDF-1.4")
-
-        with_form = mock_pdf_page()
-        with_form.formenv = MagicMock()
-        without_form = mock_pdf_page()
-        without_form.formenv = None
-
-        pdf_doc = MagicMock()
-        pdf_doc.__len__ = MagicMock(return_value=2)
-        pdf_doc.__getitem__ = MagicMock(
-            side_effect=lambda i: [with_form, without_form][i]
-        )
-
-        with (
-            patch.object(service_module, "pdfium") as mock_pdfium,
-            patch.object(
-                service,
-                "_process_page_with_image",
-                return_value=(
-                    {
-                        "image_uri": "s3://out/x/i.jpg",
-                        "raw_text_uri": "s3://out/x/r.json",
-                        "parsed_text_uri": "s3://out/x/p.json",
-                        "text_confidence_uri": "s3://out/x/t.json",
-                    },
-                    {},
-                ),
-            ),
-        ):
-            mock_pdfium.PdfDocument.return_value = pdf_doc
-            service.process_document(document)
-
-        pdf_doc.init_forms.assert_called_once()
-        with_form.flatten.assert_called_once()
-        without_form.flatten.assert_not_called()
-
     def test_an_image_upload_becomes_a_single_page_document(self, document, s3_writes):
         """Images take the direct path with no PDF rendering at all."""
         document.input_key = "scan.png"

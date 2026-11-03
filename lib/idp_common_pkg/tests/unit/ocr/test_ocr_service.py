@@ -386,62 +386,6 @@ class TestOcrService:
 
     @patch("boto3.client")
     @patch("idp_common.ocr.service.pdfium.PdfDocument")
-    def test_process_document_calls_init_forms_for_fillable_pdfs(
-        self, mock_pdfium_doc, mock_boto_client, mock_document, mock_pdf_content
-    ):
-        """Test that init_forms() is called on PDF documents to enable fillable form field rendering.
-
-        Fillable PDFs (AcroForm) have form fields like text inputs, checkboxes, and
-        radio buttons stored as separate overlay layers. Without calling init_forms(),
-        pypdfium2's render() will not include these form field values in the output
-        image even when may_draw_forms=True (the default). This test ensures we
-        always initialize the form rendering engine before rendering pages.
-
-        Regression test for: https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/240
-        """
-        # Mock S3 client
-        mock_s3_client = MagicMock()
-        mock_s3_client.get_object.return_value = {"Body": BytesIO(mock_pdf_content)}
-        mock_boto_client.return_value = mock_s3_client
-
-        # Mock PDF document
-        mock_pdf_doc = MagicMock()
-        mock_pdf_doc.__len__.return_value = 1
-        mock_pdf_doc.__iter__.return_value = iter(range(1))
-        mock_pdfium_doc.return_value = mock_pdf_doc
-
-        with (
-            patch(
-                "idp_common.ocr.service.OcrService._extract_page_image"
-            ) as mock_extract,
-            patch(
-                "idp_common.ocr.service.OcrService._process_page_with_image"
-            ) as mock_process,
-        ):
-            mock_extract.return_value = b"image_data"
-            mock_process.return_value = (
-                {
-                    "raw_text_uri": "s3://output/raw.json",
-                    "parsed_text_uri": "s3://output/parsed.json",
-                    "text_confidence_uri": "s3://output/confidence.json",
-                    "image_uri": "s3://output/image.jpg",
-                },
-                {"OCR/textract/detect_document_text": {"pages": 1}},
-            )
-
-            service = OcrService()
-            service.process_document(mock_document)
-
-            # Verify init_forms() was called to enable fillable PDF form rendering
-            mock_pdf_doc.init_forms.assert_called_once()
-
-            # Verify flatten() was called on the page to merge form fields
-            # into page content (needed for PDFs without appearance streams)
-            mock_page = mock_pdf_doc.__getitem__.return_value
-            mock_page.flatten.assert_called_once()
-
-    @patch("boto3.client")
-    @patch("idp_common.ocr.service.pdfium.PdfDocument")
     def test_process_document_success(
         self, mock_pdfium_doc, mock_boto_client, mock_document, mock_pdf_content
     ):

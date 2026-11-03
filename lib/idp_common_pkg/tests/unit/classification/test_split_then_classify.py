@@ -41,6 +41,7 @@ from unittest.mock import patch
 import pytest
 
 from idp_common.classification.service import ClassificationService
+from idp_common.config.schema_constants import UNCLASSIFIED_CLASS
 from idp_common.models import Document, Page
 
 SEG_PAGE_PROMPT = (
@@ -822,7 +823,9 @@ class TestSplitThenClassifyPacket:
 
     def test_a_segment_whose_labeling_fails_is_reported_not_invented(self):
         """Its boundaries are still good, and an invented class would propagate
-        into extraction as though it had been decided."""
+        into extraction as though it had been decided. It carries the
+        ``unclassified`` sentinel, not an empty class: extraction reports an empty
+        class as one missing from the configuration (#1705)."""
         service = _service(granularity="packet")
 
         def flaky(content, config):
@@ -851,7 +854,16 @@ class TestSplitThenClassifyPacket:
 
         assert any("Section classification failed" in e for e in result.errors)
         assert result.sections[0].classification == "invoice"
-        assert result.sections[1].classification is None
+        assert result.sections[1].classification == UNCLASSIFIED_CLASS
+        assert result.pages["2"].classification == UNCLASSIFIED_CLASS
+        # The Sections panel flags the section that failed, and only that one.
+        issues = result.sections[1].processing_issues or []
+        assert [(i.code, i.severity) for i in issues] == [
+            ("classification_failed", "error")
+        ]
+        assert issues[0].details == {"page_ids": ["2"]}
+        assert "throttled" in issues[0].root_cause
+        assert not result.sections[0].processing_issues
 
 
 # --------------------------------------------------------------------------
@@ -1002,12 +1014,37 @@ class TestSectionClassificationValidation:
         assert call_count == 2
         assert result.sections[0].classification == "unclassified"
         assert result.sections[0].confidence is None
+        # The fallback is not the model's answer, so the section says so, at the
+        # severity the page-level path uses for the same outcome (#1705).
+        issues = result.sections[0].processing_issues or []
+        assert [(i.code, i.severity) for i in issues] == [
+            ("classification_invalid_class_fallback", "warning")
+        ]
+        assert "mystery" in issues[0].root_cause
+        assert issues[0].details == {"page_ids": ["1", "2"]}
+
+    def test_an_accepted_class_records_no_issue(self):
+        service = _service(
+            granularity="packet", enforceValidClasses=True, maxValidationRetries=2
+        )
+        result, _ = self._run(service, ["mystery", "invoice"])
+        assert not result.sections[0].processing_issues
 
     def test_validation_can_be_turned_off(self):
         service = _service(granularity="packet", enforceValidClasses=False)
         result, call_count = self._run(service, ["mystery"])
         assert call_count == 1
         assert result.sections[0].classification == "mystery"
+        assert not result.sections[0].processing_issues
+
+    def test_no_class_with_validation_off_is_unclassified_and_flagged(self):
+        service = _service(granularity="packet", enforceValidClasses=False)
+        result, _ = self._run(service, [""])
+        assert result.sections[0].classification == UNCLASSIFIED_CLASS
+        issues = result.sections[0].processing_issues or []
+        assert [(i.code, i.severity) for i in issues] == [
+            ("classification_failed", "error")
+        ]
 
 
 # --------------------------------------------------------------------------
