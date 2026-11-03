@@ -1450,6 +1450,12 @@ def handle_restore_profile_revision(
         }
     except PermissionError:
         raise
+    except RevisionNotRecordedError as e:
+        # Same refusal, same type as the save path (#1778).
+        return {
+            "success": False,
+            "error": {"type": "RevisionNotRecorded", "message": str(e)},
+        }
     except ValueError as e:
         return {
             "success": False,

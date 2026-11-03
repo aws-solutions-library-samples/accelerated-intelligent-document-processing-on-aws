@@ -422,3 +422,19 @@ class TestRevisionNotRecordedRefusal:
         assert result["success"] is False
         assert result["error"]["type"] == "RevisionNotRecorded"
         assert result["error"]["message"] == message
+
+    def test_a_refused_restore_keeps_the_same_type(self, manager):
+        message = "Could not record a revision for configuration profile 'lending'"
+        manager.restore_revision.side_effect = index.RevisionNotRecordedError(message)
+
+        result = index.handler(
+            _event(
+                "restoreConfigProfileRevision",
+                {"profileName": "lending", "revision": 1},
+            ),
+            None,
+        )
+
+        assert result["success"] is False
+        assert result["error"]["type"] == "RevisionNotRecorded"
+        assert result["error"]["message"] == message

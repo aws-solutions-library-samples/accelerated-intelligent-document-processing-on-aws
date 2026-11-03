@@ -198,6 +198,18 @@ class TestASaveThatCannotRecordARevisionIsRefused:
         assert _head_class_ids() == ["W2", "Payslip"]
         assert _published() == 1
 
+    def test_an_unchanged_save_is_not_refused(self):
+        """It cuts no revision and rewrites an identical head: nothing diverges.
+
+        Stack deployments re-save every managed profile this way.
+        """
+        manager = ConfigurationManager()
+        raw = manager.get_raw_configuration(CONFIG_TYPE_CONFIG, PROFILE)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, raw, version=PROFILE)
+
+        assert _head_class_ids() == ["W2", "Payslip"]
+        assert _published() == 1
+
     def test_the_replace_mode_clear_is_refused_and_changes_nothing(self):
         with pytest.raises(RevisionNotRecordedError):
             _replace_mode_clear()

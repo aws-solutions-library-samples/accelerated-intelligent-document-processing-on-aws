@@ -860,11 +860,22 @@ class ConfigurationManager:
             if config_type == CONFIG_TYPE_CONFIG
             else 0
         )
+        # A save that changes nothing cuts no revision anyway (`_record_revisions`),
+        # and rewriting an identical head creates no divergence, so it is not held
+        # to this. Stack deployments re-save every managed profile unchanged.
+        # `existing_record` exists only for a profile save, so the type is
+        # checked first.
+        changes_configuration = config_type == CONFIG_TYPE_CONFIG and (
+            existing_record is None
+            or self._config_to_dict(existing_record.config)
+            != self._config_to_dict(config)
+        )
         revision_required = bool(
             config_type == CONFIG_TYPE_CONFIG
             and version
             and cut_revision
             and published_before >= 1
+            and changes_configuration
         )
         if revision_required and not self.revisions.enabled:
             raise RevisionNotRecordedError(
