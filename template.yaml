@@ -3893,10 +3893,12 @@ Resources:
               Effect: Allow
               Principal:
                 AWS: "*"
+              # Write only: a tenant's uploader delivers documents into the Input
+              # bucket, and nothing outside the solution needs to read or list it.
               Action:
                 - "s3:PutObject"
               Resource:
-                - !Sub "${InputBucket.Arn}"
+                - !GetAtt InputBucket.Arn
                 - !Sub "${InputBucket.Arn}/*"
               Condition:
                 StringEquals:
@@ -4760,11 +4762,14 @@ Resources:
               Effect: Allow
               Principal:
                 AWS: "*"
+              # Read and list only: a tenant's consumer collects results from the
+              # Output bucket, and nothing outside the solution writes there. Keep
+              # each list to the actions the generated access point policies grant.
               Action:
                 - "s3:GetObject"
                 - "s3:ListBucket"
               Resource:
-                - !Sub "${OutputBucket.Arn}"
+                - !GetAtt OutputBucket.Arn
                 - !Sub "${OutputBucket.Arn}/*"
               Condition:
                 StringEquals:

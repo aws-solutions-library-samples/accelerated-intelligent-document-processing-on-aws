@@ -51,6 +51,18 @@ else:
             return "<redactor unavailable: idp_common not importable>"
 
 
+# Whether the stack runs with TenantIsolationMode=Strict. The shared helper is the
+# one definition of that answer; the fallback exists only for the no-layer case
+# above and fails CLOSED, because refusing every tool is the safe reading of a mode
+# this function cannot evaluate.
+try:
+    from idp_common.config_scope import is_strict_isolation
+except ImportError:  # pragma: no cover - only reachable with no agents layer
+
+    def is_strict_isolation(environ=None) -> bool:  # type: ignore[misc]
+        return True
+
+
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
@@ -104,7 +116,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # reprocess) acts across the whole deployment, and the gateway hands this
     # function no user identity -- only a machine client's -- so there is no
     # tenant to scope a call to and no way to tell an Admin from anyone else.
-    if os.environ.get("TENANT_ISOLATION_MODE", "Off") == "Strict":
+    if is_strict_isolation():
         logger.warning(
             f"Rejecting MCP tool {tool_name!r}: strict tenant isolation refuses "
             f"MCP calls, which carry no user identity to scope"
