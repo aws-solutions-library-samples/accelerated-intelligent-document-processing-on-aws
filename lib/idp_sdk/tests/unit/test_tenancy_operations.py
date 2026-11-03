@@ -273,7 +273,7 @@ def test_apply_refuses_a_duplicate_tenant(tenancy):
 def _principals():
     return {
         "acme": {"uploaders": [UPLOADER], "consumers": [CONSUMER]},
-        "globex": {"uploaders": ["arn:aws:iam::123456789012:root"]},
+        "globex": {"uploaders": ["arn:aws:iam::123456789012:role/globex-uploader"]},
     }
 
 
@@ -367,6 +367,12 @@ def test_a_tenant_key_adds_a_deny_for_any_other_key(tenancy):
         ({"nobody": {"uploaders": [UPLOADER]}}, "not declared"),
         ({"acme": {"uploaders": ["arn:aws:iam::1:role/x"]}}, "not an IAM"),
         ({"acme": {"uploaders": ["*"]}}, "not an IAM"),
+        # An account root cannot be confined: the Deny compares aws:PrincipalArn,
+        # which is never `:root` for a real request, so it would deny every caller.
+        (
+            {"acme": {"uploaders": ["arn:aws:iam::123456789012:root"]}},
+            "account-root ARN cannot be confined",
+        ),
         ({"acme": {"writers": [UPLOADER]}}, "unknown key"),
         ({"acme": {"kmsKeyArn": "alias/x"}}, "not a KMS key"),
         (["acme"], "must be a mapping"),

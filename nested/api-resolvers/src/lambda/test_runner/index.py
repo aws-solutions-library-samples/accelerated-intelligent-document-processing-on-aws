@@ -456,6 +456,10 @@ def send_test_run_to_review(args, event=None):
         raise ResourceNotFound(f"Test run '{test_run_id}' not found")
     # The run's documents carry its profile, so queueing them for review is an
     # action on documents in that profile's scope: the same check as starting it.
+    # ⚠️ ``event=None`` is the direct-invocation shape -- no identity, gated by IAM
+    # on the function ARN -- and is unscoped exactly as ``startTestRun`` is for that
+    # shape. The handler always passes the event; a caller acting for a USER must
+    # too, or the check has nobody to scope.
     _require_profile_in_scope(event or {}, run.get("ConfigVersion"))
 
     files = run.get("Files") or []

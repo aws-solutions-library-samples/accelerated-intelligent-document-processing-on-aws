@@ -48,8 +48,13 @@ _AP_MAX = 50
 _AP_FIXED = len("idp") + 6 + len("-") + len("-out")
 _AP_TENANT_MAX = _AP_MAX - _AP_FIXED
 
+# Roles and users only. An account-root ARN is refused rather than accepted: the
+# confining Deny compares aws:PrincipalArn, which for a real request is always the
+# concrete role or user and never `:root`, so a root entry would be allowed by the
+# Allow and then denied every actual caller -- a deployment that succeeds and
+# grants nothing, with nothing to say why.
 _PRINCIPAL_RE = re.compile(
-    r"^arn:aws[a-z-]*:iam::\d{12}:(?:root|role/[\w+=,.@/-]+|user/[\w+=,.@/-]+)$"
+    r"^arn:aws[a-z-]*:iam::\d{12}:(?:role/[\w+=,.@/-]+|user/[\w+=,.@/-]+)$"
 )
 _KMS_RE = re.compile(r"^arn:aws[a-z-]*:kms:[a-z0-9-]+:\d{12}:key/[A-Za-z0-9-]+$")
 
@@ -122,7 +127,8 @@ def load_principals(
                 if not _PRINCIPAL_RE.match(str(arn)):
                     raise PrincipalsError(
                         f"Tenant {tenant_id!r}: {role} entry {arn!r} is not an IAM "
-                        f"role, user or account-root ARN."
+                        f"role or user ARN. Name the role or user itself; an "
+                        f"account-root ARN cannot be confined to one tenant."
                     )
             clean[role] = sorted({str(v) for v in values})
         kms = entry.get("kmsKeyArn")

@@ -3059,8 +3059,9 @@ tenants:
     profilePattern: globex-*
 ```
 
-**`principals.yaml`** names, per tenant, the roles that write its documents and read
-its results:
+**`principals.yaml`** names, per tenant, the IAM roles or users that write its
+documents and read its results. An account-root ARN is refused, because an access
+point cannot confine a whole account to one tenant:
 
 ```yaml
 acme:

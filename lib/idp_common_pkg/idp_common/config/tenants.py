@@ -423,7 +423,8 @@ def stored_scopes(users_table: Any) -> List[Dict[str, Any]]:
     Each entry is ``{"email": ..., "allowedConfigVersions": [...]}``. Paginated to
     the end, because a check that judges only the first page of users would report
     a tenant set as consistent while the user that breaks it sits on page two.
-    Projects the two attributes and nothing else. ``users_table`` is a
+    Projects only the key, the email, the persona (to skip Admins) and the scope.
+    ``users_table`` is a
     ``boto3.resource("dynamodb").Table``; read failures propagate, and the caller
     refuses the write it was checking.
     """
