@@ -125,3 +125,20 @@ def test_a_strict_index_read_tells_unreadable_from_empty(manager, monkeypatch):
     assert store._read_index_item("p") == {}
     with pytest.raises(ClientError):
         store._read_index_item("p", strict=True)
+
+
+@pytest.mark.unit
+def test_the_strict_read_is_a_consistent_read(manager, monkeypatch):
+    """moto serves every read consistently, so the flag itself is what is checked:
+    an eventually consistent replica can miss an append that just landed."""
+    calls = []
+    real = manager.revisions.table.get_item
+
+    def spy(**kwargs):
+        calls.append(kwargs.get("ConsistentRead"))
+        return real(**kwargs)
+
+    monkeypatch.setattr(manager.revisions.table, "get_item", spy)
+    manager.revisions._read_index_item("p", strict=True)
+    manager.revisions._read_index_item("p")
+    assert calls == [True, False]

@@ -364,12 +364,16 @@ class ConfigRevisionStore:
     def _read_index_item(self, profile: str, strict: bool = False) -> Dict[str, Any]:
         """The index item, or `{}` when absent or (unless `strict`) unreadable.
 
-        `strict` re-raises a read failure. An empty item is also the legitimate
-        state before a profile's first revision, so a caller that must tell
-        "no entry" from "could not look" needs it.
+        `strict` re-raises a read failure and reads consistently. An empty item is
+        also the legitimate state before a profile's first revision, so a caller
+        that must tell "no entry" from "could not look" needs it, and the one that
+        does is deciding whether an append it just saw fail actually landed, which
+        an eventually consistent replica may not show yet.
         """
         try:
-            response = self.table.get_item(Key=self.index_key(profile))
+            response = self.table.get_item(
+                Key=self.index_key(profile), ConsistentRead=strict
+            )
         except ClientError as e:
             if strict:
                 raise
