@@ -2154,7 +2154,7 @@ See [Multi-Tenant Isolation](multi-tenancy.md) for the model.
 | `tenancy.apply(declarations, *, prune=False, dry_run=True)` | `TenantApplyResult` | Plan, and with `dry_run=False` write, the changes that make the stack match `declarations` |
 | `tenancy.generate_policies(principals)` | `TenantPolicyResult` | A CloudFormation template of per-tenant S3 access points, plus warnings |
 | `tenancy.audit(*, principals=None, document_sample=500)` | `TenantAuditResult` | Read-only findings that weaken isolation |
-| `tenancy.verify(document, document_name="tenancy-verify.pdf", *, tenant_ids=None, timeout_seconds=240)` | `TenantVerifyResult` | Live cross-tenant check with throwaway users; every row is `PASS`, `FAIL`, `SKIP` or `ERROR` |
+| `tenancy.verify(document, document_name="tenancy-verify.pdf", *, tenant_ids=None, timeout_seconds=240, email_domain=None)` | `TenantVerifyResult` | Live cross-tenant check with throwaway users; every row is `PASS`, `FAIL`, `SKIP` or `ERROR` |
 
 ```python
 from idp_sdk import IDPClient

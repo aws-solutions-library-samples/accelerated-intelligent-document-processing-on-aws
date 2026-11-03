@@ -187,6 +187,13 @@ inside the stack. That has these consequences:
   `s3:PutObject` on the whole bucket from writing under another tenant's prefix.
   That is an IAM control in your account, covered next.
 
+### If MCP tools return 403 on a stack that is not Strict
+
+The MCP handler reads the mode through `idp_common`. If that library cannot be imported
+(a layer missing from the function), it refuses every tool rather than guess, and the
+response says the isolation mode could not be determined. Attach the function's
+`idp_common` layer; the refusal is not a sign that strict mode is on.
+
 ## Hardening in your own environment
 
 These controls live in your AWS account rather than in the solution. Most of them

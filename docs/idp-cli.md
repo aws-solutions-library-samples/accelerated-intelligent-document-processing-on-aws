@@ -3044,7 +3044,7 @@ optional `--region`.
 | `apply --file tenants.yaml [--prune] [--yes] [--json]` | Make the declarations match a file. Prints the plan and writes nothing unless `--yes` is given; `--prune` also deletes tenants the file does not declare. The whole plan is validated before anything is written |
 | `generate-policies --principals principals.yaml [--output FILE]` | Write a CloudFormation template creating one Input-bucket and one Output-bucket S3 Access Point per tenant, confined to that tenant's prefixes |
 | `audit [--principals principals.yaml] [--sample N] [--json]` | Read-only report; exits 1 when there are findings |
-| `verify --document FILE [--tenant A --tenant B] [--timeout S] [--json]` | Live cross-tenant check; exits 0 pass, 1 fail, 2 error, 3 skipped |
+| `verify --document FILE [--tenant A --tenant B] [--timeout S] [--email-domain D] [--json]` | Live cross-tenant check; exits 0 pass, 1 fail, 2 error, 3 skipped |
 
 **`tenants.yaml`**:
 
@@ -3099,7 +3099,9 @@ profile, never the second's. It temporarily enables
 admin password authentication on the app client and restores the original setting,
 and it removes every user and object it created; a cleanup failure is reported as an
 error. Each tenant needs an enabled prefix mapping to one of its own profiles before
-it runs.
+it runs. The throwaway users' addresses use the stack's first `AllowedSignUpEmailDomain`
+when that parameter is set, because the API refuses to create a user outside it, and
+`example.com` otherwise; `--email-domain` overrides both.
 
 ### `discover`
 

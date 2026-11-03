@@ -111,6 +111,7 @@ def run_verify(
     s3: Any,
     tenant_ids: Optional[Sequence[str]] = None,
     timeout_seconds: int = 240,
+    email_domain: str = "example.com",
     poll_seconds: float = 5.0,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
@@ -173,7 +174,9 @@ def run_verify(
     if len(profiles) < 2:
         return result
 
-    admin_email = f"tenancy-verify-admin-{run}@example.com"
+    # The domain must be one the stack accepts: user management refuses a
+    # createUser outside AllowedSignUpEmailDomain when that parameter is set.
+    admin_email = f"tenancy-verify-admin-{run}@{email_domain}"
     users: Dict[str, Dict[str, str]] = {}
     uploaded: List[str] = []
     admin_token: Optional[str] = None
@@ -197,7 +200,7 @@ def run_verify(
 
         for t in (a, b):
             tid = t["tenantId"]
-            email = f"tenancy-verify-{tid}-{run}@example.com"
+            email = f"tenancy-verify-{tid}-{run}@{email_domain}"
             status, body = api(
                 "createUser",
                 {

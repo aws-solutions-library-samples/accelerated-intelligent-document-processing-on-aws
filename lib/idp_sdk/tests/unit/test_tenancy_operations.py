@@ -663,6 +663,7 @@ class FakeStack:
         self.deleted_cognito: List[str] = []
         self.deleted_docs: List[str] = []
         self.calls: List[str] = []
+        self.created_admins: List[str] = []
 
     # S3
     def put_object(self, Bucket, Key, Body, Metadata=None):
@@ -732,6 +733,7 @@ class FakeStack:
         raise AssertionError(field)
 
     def make_admin(self, email, password):
+        self.created_admins.append(email)
         return "admin-token"
 
     def make_password(self, email, password):
@@ -767,6 +769,17 @@ def _verify(stack, mode="Strict", mappings=MAPPINGS, **kwargs):
         run_id="r1",
         **kwargs,
     )
+
+
+@pytest.mark.unit
+def test_verify_creates_its_users_in_the_requested_domain():
+    """A stack with AllowedSignUpEmailDomain refuses createUser outside it, so the
+    throwaway users must be addressable in a domain the stack accepts."""
+    stack = FakeStack()
+    result = _verify(stack, email_domain="corp.test")
+    assert result.outcome == TenantVerifyOutcome.PASS
+    created = [*stack.users, *stack.created_admins]
+    assert created and all(e.endswith("@corp.test") for e in created)
 
 
 @pytest.mark.unit

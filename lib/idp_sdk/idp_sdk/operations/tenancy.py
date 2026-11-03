@@ -141,6 +141,15 @@ class TenancyOperation:
             )
         return stored_scopes(self._table(users))
 
+    def _parameter(self, stack_name: str, key: str) -> Optional[str]:
+        stacks = self._boto("cloudformation").describe_stacks(StackName=stack_name)[
+            "Stacks"
+        ]
+        for p in stacks[0].get("Parameters") or []:
+            if p.get("ParameterKey") == key:
+                return p.get("ParameterValue")
+        return None
+
     def isolation_mode(self, stack_name: Optional[str] = None) -> str:
         """The stack's ``TenantIsolationMode`` parameter, or ``Unknown``."""
         name = self._client._require_stack(stack_name)
@@ -669,8 +678,14 @@ class TenancyOperation:
         stack_name: Optional[str] = None,
         tenant_ids: Optional[Sequence[str]] = None,
         timeout_seconds: int = 240,
+        email_domain: Optional[str] = None,
     ) -> TenantVerifyResult:
         """Live cross-tenant check. Creates and removes throwaway users and documents.
+
+        ``email_domain`` is the domain of the throwaway users' addresses. When
+        omitted it is the first domain in the stack's ``AllowedSignUpEmailDomain``
+        parameter, because the API refuses to create a user outside it, or
+        ``example.com`` when that parameter is empty.
 
         See ``idp_sdk._core.tenancy_verify`` for exactly what is asserted.
         """
@@ -682,6 +697,16 @@ class TenancyOperation:
         tenants = tenant_store.list()
         mappings = mapping_store.list()
         mode = self.isolation_mode(name)
+        allowed = [
+            d.strip().lstrip("@").lower()
+            for d in (self._parameter(name, "AllowedSignUpEmailDomain") or "").split(
+                ","
+            )
+            if d.strip()
+        ]
+        domain = (email_domain or (allowed[0] if allowed else "example.com")).lstrip(
+            "@"
+        )
         buckets = self._buckets(name)
         ctx = ui_api.resolve_ui_context(
             name, self._client._region, self._boto("cloudformation")
@@ -720,4 +745,5 @@ class TenancyOperation:
                 s3=s3,
                 tenant_ids=tenant_ids,
                 timeout_seconds=timeout_seconds,
+                email_domain=domain,
             )

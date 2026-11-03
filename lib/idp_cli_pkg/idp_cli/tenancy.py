@@ -332,6 +332,11 @@ def audit(
     "--timeout", default=240, show_default=True, help="Seconds to wait for ingest"
 )
 @click.option(
+    "--email-domain",
+    help="Domain for the throwaway users' addresses. Defaults to the stack's first "
+    "AllowedSignUpEmailDomain, or example.com when none is set.",
+)
+@click.option(
     "--json", "as_json", is_flag=True, help="Print the results as JSON to stdout"
 )
 def verify(
@@ -340,6 +345,7 @@ def verify(
     document_path: str,
     tenant_ids: tuple,
     timeout: int,
+    email_domain: Optional[str],
     as_json: bool,
 ):
     """Live cross-tenant check against a deployed stack.
@@ -358,6 +364,7 @@ def verify(
             Path(document_path).name,
             tenant_ids=list(tenant_ids) or None,
             timeout_seconds=timeout,
+            email_domain=email_domain,
         )
     except IDPError as e:
         _fail(str(e), code=2)
