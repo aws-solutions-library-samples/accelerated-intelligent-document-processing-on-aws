@@ -55,7 +55,21 @@ const UserManagementLayout = (): React.JSX.Element => {
   // Only the isolation mode is needed here: under Strict an empty scope denies
   // everything rather than allowing everything, and the field text must say so.
   const { isolationMode, loadTenants } = useTenants();
-  const strictIsolation = isolationMode === 'Strict';
+  // `null` when the mode could not be read (listTenants failed). The empty-scope
+  // guidance is then stated for both modes rather than defaulting to Off's, which
+  // would tell an Admin on a Strict stack the opposite of what an empty scope does.
+  const emptyScopeMeaning =
+    isolationMode === 'Strict'
+      ? 'Strict tenant isolation is on, so a non-admin user with no scope sees no documents.'
+      : isolationMode === 'Off'
+        ? 'Leave empty for unrestricted access to all versions.'
+        : 'The tenant isolation mode could not be read: an empty scope gives a non-admin user no documents under strict isolation, and every document otherwise.';
+  const scopePlaceholder =
+    isolationMode === 'Strict'
+      ? 'No profiles (no access)'
+      : isolationMode === 'Off'
+        ? 'All profiles (unrestricted)'
+        : 'No profiles selected';
   const { versions, fetchVersions } = useConfigurationVersions();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
@@ -601,17 +615,13 @@ const UserManagementLayout = (): React.JSX.Element => {
                     Configuration Profile Scope <em>- optional</em>
                   </span>
                 }
-                description={
-                  strictIsolation
-                    ? 'Restrict this user to specific configuration profiles. Strict tenant isolation is on, so a non-admin user with no scope sees no documents.'
-                    : 'Restrict this user to specific configuration profiles. Leave empty for unrestricted access to all versions.'
-                }
+                description={`Restrict this user to specific configuration profiles. ${emptyScopeMeaning}`}
               >
                 <Multiselect
                   selectedOptions={selectedConfigVersions}
                   onChange={({ detail }) => setSelectedConfigVersions(detail.selectedOptions as { label: string; value: string }[])}
                   options={configVersionOptions}
-                  placeholder={strictIsolation ? 'No profiles (no access)' : 'All profiles (unrestricted)'}
+                  placeholder={scopePlaceholder}
                   filteringType="auto"
                   tokenLimit={3}
                 />
@@ -663,17 +673,13 @@ const UserManagementLayout = (): React.JSX.Element => {
               {error && <Alert type="error">{error}</Alert>}
               <FormField
                 label="Configuration Profile Scope"
-                description={
-                  strictIsolation
-                    ? 'Select which configuration profiles this user can access. Strict tenant isolation is on, so clearing the scope leaves a non-admin user with no access to documents.'
-                    : 'Select which configuration profiles this user can access. Clear all to give unrestricted access.'
-                }
+                description={`Select which configuration profiles this user can access. ${emptyScopeMeaning}`}
               >
                 <Multiselect
                   selectedOptions={editScopeVersions}
                   onChange={({ detail }) => setEditScopeVersions(detail.selectedOptions as { label: string; value: string }[])}
                   options={configVersionOptions}
-                  placeholder={strictIsolation ? 'No profiles (no access)' : 'All profiles (unrestricted)'}
+                  placeholder={scopePlaceholder}
                   filteringType="auto"
                   tokenLimit={3}
                 />

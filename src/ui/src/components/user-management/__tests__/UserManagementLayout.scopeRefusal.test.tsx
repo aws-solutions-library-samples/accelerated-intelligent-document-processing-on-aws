@@ -71,4 +71,24 @@ describe('UserManagementLayout scope refusal', () => {
     expect(shown.some((el) => dialog.contains(el))).toBe(true);
     expect(within(dialog).getByRole('button', { name: 'Save Scope' })).toBeInTheDocument();
   });
+
+  it('does not describe an empty scope as unrestricted when the mode is unknown', async () => {
+    // listTenants answers with no data in this harness, so the mode is unknown.
+    render(<UserManagementLayout />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit scope' }));
+    expect((await screen.findAllByText(/The tenant isolation mode could not be read/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/unrestricted access to all versions/)).not.toBeInTheDocument();
+  });
+
+  it('says an empty scope gives no access under strict isolation', async () => {
+    const base = mockGraphql.getMockImplementation() as (args: { query: string }) => Promise<unknown>;
+    mockGraphql.mockImplementation((args: { query: string }) =>
+      args.query.includes('listTenants')
+        ? Promise.resolve({ data: { listTenants: { success: true, isolationMode: 'Strict', tenants: [] } } })
+        : base(args),
+    );
+    render(<UserManagementLayout />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit scope' }));
+    expect((await screen.findAllByText(/a non-admin user with no scope sees no documents/)).length).toBeGreaterThan(0);
+  });
 });

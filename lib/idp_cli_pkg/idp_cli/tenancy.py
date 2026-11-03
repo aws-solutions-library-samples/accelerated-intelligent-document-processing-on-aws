@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
 
 import click
 from rich.console import Console
@@ -33,7 +33,7 @@ def _client(stack_name: str, region: Optional[str]):
     return IDPClient(stack_name=stack_name, region=region)
 
 
-def _fail(message: str, code: int = 1):
+def _fail(message: str, code: int = 1) -> NoReturn:
     err_console.print(f"[red]{escape(message)}[/red]")
     sys.exit(code)
 
