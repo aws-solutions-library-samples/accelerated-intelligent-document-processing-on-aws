@@ -100,6 +100,10 @@ explicitly:
   the tenant's profiles (for example `acme-redacted`). If it is not, the copy is
   refused at ingest and stays in the Input bucket, where an admin can reprocess it.
 
+The ingest check costs one strongly consistent DynamoDB read of the tenant index per
+document (two when malware scanning holds the document and releases it later). It is
+deliberately not cached, so a tenant change applies to the very next upload.
+
 When strict mode cannot read the tenant declarations at ingest, the document is not
 processed. The event is retried, and a persistent failure lands in the dead-letter
 queue rather than processing the document without the check; see
@@ -116,6 +120,10 @@ scope row is held to it there, in both modes, and an Admin with none can upload
 anywhere, in both modes.
 
 ### Turning strict mode on
+
+`idp-cli tenancy` reports the mode as `Unknown` for a stack deployed from a release
+that predates the parameter. Such a stack behaves as `Off`, and updating it to this
+release adds the parameter with its default, `Off`.
 
 **Prerequisite:** only the people who deploy the generated access point template may
 hold `s3:CreateAccessPoint` and `s3:PutAccessPointPolicy` in the stack's account. In
