@@ -156,6 +156,7 @@
         "idp_common/discovery/rules_discovery.py": 72.33,
         "idp_common/docs_service.py": 80.0,
         "idp_common/document_failure.py": 100.0,
+        "idp_common/document_scope.py": 97.53,
         "idp_common/document_versions.py": 95.83,
         "idp_common/dynamodb/__init__.py": 100.0,
         "idp_common/dynamodb/client.py": 34.52,
