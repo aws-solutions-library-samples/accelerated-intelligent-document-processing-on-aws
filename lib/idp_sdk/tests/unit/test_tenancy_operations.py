@@ -909,6 +909,30 @@ def test_admin_auth_flow_preserves_the_client_and_restores_it():
 
 
 @pytest.mark.unit
+def test_admin_auth_flow_restores_the_client_when_the_run_fails():
+    """An incomplete run is the case that matters: a failure inside the block must
+    not leave a live app client with admin password auth switched on."""
+    client = _Client()
+    ctx = ui_api.UiContext("s", "us-east-1", "pool", "client", "https://x/api", "users")
+    with pytest.raises(RuntimeError, match="mid-run"):
+        with ui_api.AdminAuthFlow(ctx, client):
+            raise RuntimeError("mid-run")
+    assert client.state["ExplicitAuthFlows"] == ["ALLOW_REFRESH_TOKEN_AUTH"]
+    assert client.state["CallbackURLs"] == ["https://example.com/cb"]
+
+
+@pytest.mark.unit
+def test_admin_auth_flow_leaves_an_already_enabled_client_untouched():
+    client = _Client()
+    client.state["ExplicitAuthFlows"] = [ui_api.ADMIN_AUTH_FLOW]
+    ctx = ui_api.UiContext("s", "us-east-1", "pool", "client", "https://x/api", "users")
+    with ui_api.AdminAuthFlow(ctx, client):
+        pass
+    assert client.updates == []
+    assert client.state["ExplicitAuthFlows"] == [ui_api.ADMIN_AUTH_FLOW]
+
+
+@pytest.mark.unit
 def test_id_token_retries_only_the_propagation_error():
     ctx = ui_api.UiContext("s", "us-east-1", "pool", "client", "https://x/api", "users")
 
