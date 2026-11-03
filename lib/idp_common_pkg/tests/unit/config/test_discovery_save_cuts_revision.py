@@ -291,6 +291,39 @@ class TestASaveWhoseRevisionFailsIsUndone:
         store = ConfigurationManager().revisions
         assert [r["revision"] for r in store.list(PROFILE)] == [2, 1]
         assert store.get_body(PROFILE, 2) is not None
+        # The failure came from inside the cut, which never returned the number;
+        # the entry still explains itself.
+        assert store.list(PROFILE)[0]["notes"].startswith(
+            ConfigurationManager.FAILED_SAVE_NOTES
+        )
+
+    def test_an_unreadable_index_keeps_the_body(self, monkeypatch):
+        """The append failed and the index cannot be read to check: keep the body,
+        because an entry may exist and deleting under it breaks that revision."""
+        from botocore.exceptions import ClientError
+
+        real_append = ConfigRevisionStore.append_index
+        real_read = ConfigRevisionStore._read_index_item
+
+        def append_then_fail(self, profile, entry):
+            real_append(self, profile, entry)
+            raise RuntimeError("read timeout after the write")
+
+        def read(self, profile, strict=False):
+            if strict:
+                raise ClientError(
+                    {"Error": {"Code": "ProvisionedThroughputExceededException"}},
+                    "GetItem",
+                )
+            return real_read(self, profile)
+
+        monkeypatch.setattr(ConfigRevisionStore, "append_index", append_then_fail)
+        monkeypatch.setattr(ConfigRevisionStore, "_read_index_item", read)
+        with pytest.raises(RevisionNotRecordedError):
+            _discovery_merge("Form-I-9")
+
+        monkeypatch.setattr(ConfigRevisionStore, "_read_index_item", real_read)
+        assert ConfigurationManager().revisions.get_body(PROFILE, 2) is not None
 
     def test_a_body_whose_index_entry_fails_is_not_left_behind(self, monkeypatch):
         def refuse(*_args, **_kwargs):

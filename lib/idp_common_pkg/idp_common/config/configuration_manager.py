@@ -931,6 +931,10 @@ class ConfigurationManager:
                     )
                     return
                 restored = self._restore_head(version, raw_previous_head)
+                # A failure inside the cut never returned its number; the store
+                # attaches it to the exception.
+                if cut is None:
+                    cut = getattr(e, "allocated_revision", None)
                 if cut is not None:
                     self._mark_failed_revision(
                         version, cut, published_before, restored

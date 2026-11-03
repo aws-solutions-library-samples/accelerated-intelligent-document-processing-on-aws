@@ -454,11 +454,14 @@ Four decisions worth knowing before changing this code:
   has no `CONFIGURATION_BUCKET`, and after putting the previous head back when the
   revision could not be written or published. The restore keeps the head's current
   counters, so a revision number a failed attempt allocated is not handed out
-  twice. History stays append-only: a revision that was recorded but not
-  published by the failed save keeps its entry, with notes beginning
-  `Save failed; not published` and naming the revision the profile was restored
-  to, and a body whose index entry could not be written is deleted, since no
-  listing would show it. For a profile with no history yet, documents run the head, and history
+  twice. History stays append-only. A revision whose entry the failed save
+  wrote keeps it, with notes beginning `Save failed; not published` that say
+  whether the profile was restored to its published revision or could not be.
+  The store attaches the allocated number to the exception (`allocated_revision`)
+  so this also works for a failure inside the cut. A body whose index entry could
+  not be written is deleted only when the index confirms the entry is absent: a
+  timeout can arrive after the append landed, and an unreadable index leaves the
+  body in place. For a profile with no history yet, documents run the head, and history
   stays best-effort there: a save succeeds without a revision and logs a WARNING.
   `ConfigRevisionStore.enabled` is False when no `CONFIGURATION_BUCKET` is
   configured, so older deployments and unit tests keep working.
