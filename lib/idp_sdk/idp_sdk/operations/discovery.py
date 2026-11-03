@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from idp_sdk._core.naming import resolve_config_profile
-from idp_sdk.exceptions import IDPConfigurationError, IDPResourceNotFoundError
+from idp_sdk.exceptions import IDPConfigurationError
 from idp_sdk.models.discovery import (
     AutoDetectResult,
     AutoDetectSection,
@@ -294,8 +294,7 @@ class DiscoveryOperation:
     ) -> AutoDetectResult:
         """Auto-detect sections using stack config."""
         try:
-            config_table = self._get_config_table(stack_name)
-            os.environ["CONFIGURATION_TABLE_NAME"] = config_table
+            self._configure_config_env(stack_name)
 
             from idp_common.discovery.classes_discovery import ClassesDiscovery
 
@@ -451,9 +450,8 @@ class DiscoveryOperation:
     ) -> DiscoveryResult:
         """Stack-connected mode: uses stack config, saves schema to DynamoDB."""
         try:
-            # Get config table from stack resources
-            config_table = self._get_config_table(stack_name)
-            os.environ["CONFIGURATION_TABLE_NAME"] = config_table
+            # Table and bucket: this mode saves the schema into a profile.
+            self._configure_config_env(stack_name)
 
             from idp_common.discovery.classes_discovery import ClassesDiscovery
 
@@ -808,9 +806,8 @@ class DiscoveryOperation:
             config["analysis_model_id"] = analysis_model_id
 
         if save_to_config and resolved_stack:
-            # Set CONFIGURATION_TABLE_NAME for ClassesDiscovery
-            config_table = self._get_config_table(resolved_stack)
-            os.environ["CONFIGURATION_TABLE_NAME"] = config_table
+            # ClassesDiscovery saves into the profile, so it needs the bucket too.
+            self._configure_config_env(resolved_stack)
             save_version = config_version
 
         try:
@@ -957,19 +954,17 @@ class DiscoveryOperation:
             results=results,
         )
 
-    def _get_config_table(self, stack_name: str) -> str:
-        """Get ConfigurationTable from stack resources."""
-        import boto3
+    def _configure_config_env(self, stack_name: str) -> str:
+        """
+        Point `idp_common` at the stack's configuration table and bucket.
 
-        cfn = boto3.client("cloudformation", region_name=self._client._region)
-        paginator = cfn.get_paginator("list_stack_resources")
-
-        for page in paginator.paginate(StackName=stack_name):
-            for resource in page.get("StackResourceSummaries", []):
-                if resource.get("LogicalResourceId") == "ConfigurationTable":
-                    return resource.get("PhysicalResourceId", "")
-
-        raise IDPResourceNotFoundError("ConfigurationTable not found in stack.")
+        Discovery saves the discovered schema into a configuration profile, and a
+        save with no `CONFIGURATION_BUCKET` cannot record that profile's revision:
+        for a profile that already has history it is refused, and for a new one it
+        is saved with no history (#1778). Delegates to the config operations, which
+        own the lookup of both and the region bridge.
+        """
+        return self._client.config._configure_config_env(stack_name)
 
 
 # --- Helpers for local mode ---

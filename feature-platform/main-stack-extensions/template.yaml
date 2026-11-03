@@ -1131,6 +1131,18 @@ Outputs:
     Export:
       Name: !Sub '${MainStackName}-ConfigurationTableName'
 
+  ConfigurationBucketName:
+    Condition: HasConfigurationBucket
+    Description: >-
+      Re-export of the main stack's ConfigurationBucket name. Feature stacks
+      that save configuration profiles (e.g. idp-data-generator) import this
+      so each save can record the profile's revision under config_revisions/;
+      without it the save changes the profile head while new documents keep
+      running the previously published revision.
+    Value: !Ref ConfigurationBucketName
+    Export:
+      Name: !Sub '${MainStackName}-ConfigurationBucketName'
+
   ConfigurationTableArn:
     Condition: HasConfigurationTable
     Description: >-

@@ -445,11 +445,36 @@ Four decisions worth knowing before changing this code:
   "Config#")`.** That filter lists profiles and feeds the scope-filtered dropdowns; a
   revision leaking into it would look like a profile with no configuration.
   `list_config_versions()` additionally skips reserved names.
-- **History is best-effort.** If the revision cannot be recorded, the save still
-  succeeds (logged at WARNING). Losing a history entry is recoverable; refusing a
-  save is an outage. `ConfigRevisionStore.enabled` is False when no
-  `CONFIGURATION_BUCKET` is configured, so older deployments and unit tests keep
-  working unchanged.
+- **Recording the revision is part of the save for a profile that has history.**
+  New documents are pinned to `PublishedRevision`, so a save that records no
+  revision would change what the configuration editor shows and not what
+  processing runs. For a profile that already has a published revision,
+  `save_configuration` therefore raises `RevisionNotRecordedError` (from
+  `idp_common.config.revisions`) instead: before writing anything when the process
+  has no `CONFIGURATION_BUCKET`, and after putting the previous head back when the
+  revision could not be written or published. The restore keeps the head's current
+  counters, so a revision number a failed attempt allocated is not handed out
+  twice. For a profile with no history yet, documents run the head, and history
+  stays best-effort there: a save succeeds without a revision and logs a WARNING.
+  `ConfigRevisionStore.enabled` is False when no `CONFIGURATION_BUCKET` is
+  configured, so older deployments and unit tests keep working.
+- **Every deployed Lambda that saves a profile has the bucket.** That means
+  `CONFIGURATION_BUCKET` plus `s3:GetObject`/`PutObject`/`DeleteObject` on
+  `config_revisions/*` and `s3:ListBucket` limited to that prefix. The set is
+  derived from source and enforced by
+  `scripts/tests/test_config_profile_writer_wiring.py`, so a new writer is held to
+  it without being listed. That gate reads deployed Lambdas only: a local process
+  (the CLI, the SDK, a notebook) is outside it. The SDK and CLI resolve both the
+  table and the bucket from the stack (`ConfigOperation._configure_config_env`);
+  code that builds a `ConfigurationManager` itself must set
+  `CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`, or a save to a
+  profile with history raises `RevisionNotRecordedError`.
+- **`head_matches_published(profile)`** says whether the head is the revision new
+  documents run: True, False when the head was changed without a revision (with
+  the same proof a pinned read uses, `_head_is_revision`), or None when there is
+  nothing to compare. `listConfigProfileRevisions` returns it as
+  `profileMatchesPublished`, and the web UI warns on False in the editor, the
+  revision history and the revision picker.
 
 `_record_revisions()` skips the cut entirely when the saved configuration equals
 what was already stored. Every deployment re-saves `default` and each managed

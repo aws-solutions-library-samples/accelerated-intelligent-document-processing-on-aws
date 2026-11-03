@@ -328,6 +328,7 @@ export type ConfigProfileRevisionResponse = {
 
 export type ConfigProfileRevisionsResponse = {
   error?: Maybe<ConfigurationError>;
+  profileMatchesPublished?: Maybe<Scalars['Boolean']['output']>;
   revisions?: Maybe<Array<Maybe<ConfigProfileRevision>>>;
   success: Scalars['Boolean']['output'];
 };

@@ -75,8 +75,11 @@ Stable interface owned by the accelerator (must not break):
 - Host exports via `Fn::ImportValue ${MainStackName}-X`: `ConfigurationTableName`,
   `WorkingBucketName`, `TestSetBucketName`, `RegisterFeatureFunctionArn`,
   `CustomerManagedEncryptionKeyArn`, `WebUIBucketName`, `UserPoolId`,
-  `UserPoolClientId`. (`TestSetBucketName` is re-exported by the host's
-  FeaturePlatformStack — added for this extension.)
+  `UserPoolClientId`, `ConfigurationBucketName`. (`TestSetBucketName` and
+  `ConfigurationBucketName` are re-exported by the host's FeaturePlatformStack —
+  added for this extension. `ConfigurationBucketName` lets the bootstrap
+  processor record the revision of each profile it saves; a host that predates
+  that export cannot install this extension from version 0.1.5 on.)
 - Config storage: `idp_common.config.ConfigurationManager` (gzip-compressed
   Binary format) — the extension installs `idp_common` so it shares the host's
   exact read/write format rather than vendoring or round-tripping.

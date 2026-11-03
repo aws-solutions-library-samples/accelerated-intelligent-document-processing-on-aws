@@ -156,8 +156,14 @@ class TestDiscoveryOperations:
         assert call_args[0][4] == "v2"  # config_version arg
 
     @patch("boto3.client")
-    def test_get_config_table(self, mock_boto3):
-        """Test _get_config_table finds ConfigurationTable from stack."""
+    def test_configure_config_env_finds_the_table_and_the_bucket(
+        self, mock_boto3, monkeypatch
+    ):
+        """Discovery resolves both: it saves into a profile (#1778)."""
+        import os
+
+        monkeypatch.delenv("CONFIGURATION_TABLE_NAME", raising=False)
+        monkeypatch.delenv("CONFIGURATION_BUCKET", raising=False)
         mock_cfn = mock_boto3.return_value
         mock_paginator = mock_cfn.get_paginator.return_value
         mock_paginator.paginate.return_value = [
@@ -167,17 +173,22 @@ class TestDiscoveryOperations:
                         "LogicalResourceId": "ConfigurationTable",
                         "PhysicalResourceId": "test-config-table",
                     },
+                    {
+                        "LogicalResourceId": "ConfigurationBucket",
+                        "PhysicalResourceId": "test-config-bucket",
+                    },
                 ]
             }
         ]
 
         client = IDPClient(stack_name="test-stack")
-        table = client.discovery._get_config_table("test-stack")
+        table = client.discovery._configure_config_env("test-stack")
         assert table == "test-config-table"
+        assert os.environ["CONFIGURATION_BUCKET"] == "test-config-bucket"
 
     @patch("boto3.client")
-    def test_get_config_table_not_found(self, mock_boto3):
-        """Test _get_config_table raises when not found."""
+    def test_configure_config_env_without_a_table_raises(self, mock_boto3, monkeypatch):
+        monkeypatch.delenv("CONFIGURATION_TABLE_NAME", raising=False)
         mock_cfn = mock_boto3.return_value
         mock_paginator = mock_cfn.get_paginator.return_value
         mock_paginator.paginate.return_value = [{"StackResourceSummaries": []}]
@@ -186,7 +197,13 @@ class TestDiscoveryOperations:
         with pytest.raises(
             IDPResourceNotFoundError, match="ConfigurationTable not found"
         ):
-            client.discovery._get_config_table("test-stack")
+            client.discovery._configure_config_env("test-stack")
+
+    def test_discovery_has_no_table_only_resolver(self):
+        """A table-only lookup is how every save here lost its bucket (#1778)."""
+        from idp_sdk.operations.discovery import DiscoveryOperation
+
+        assert not hasattr(DiscoveryOperation, "_get_config_table")
 
     def test_no_s3_upload_in_run(self, tmp_path):
         """Test that run() reads file bytes locally, not via S3."""
@@ -980,3 +997,54 @@ class TestMultiDocDiscoveryOperation:
             result = client.discovery.run_multi_doc(document_dir="./samples")
             assert result.status == "FAILED"
             assert result.error is not None
+
+
+@pytest.mark.unit
+class TestStackModeConfiguresTheRevisionBucket:
+    """Stack-mode discovery saves into a profile, so it needs the bucket (#1778).
+
+    With only `CONFIGURATION_TABLE_NAME` set, the save cannot record the profile's
+    revision: it is refused for a profile with history, and saved with none for a
+    new one. Every stack-mode path goes through `_configure_config_env`.
+    """
+
+    STACK = {"ConfigurationTable": "T-cfg", "ConfigurationBucket": "b-cfg"}
+
+    @pytest.fixture
+    def client(self, monkeypatch):
+        monkeypatch.delenv("CONFIGURATION_TABLE_NAME", raising=False)
+        monkeypatch.delenv("CONFIGURATION_BUCKET", raising=False)
+        client = IDPClient(stack_name="test-stack", region="us-east-1")
+        monkeypatch.setattr(
+            client.config,
+            "_lookup_stack_resources",
+            lambda _stack, wanted: {k: v for k, v in self.STACK.items() if k in wanted},
+        )
+        return client
+
+    def test_the_helper_sets_both_the_table_and_the_bucket(self, client):
+        import os
+
+        assert client.discovery._configure_config_env("test-stack") == "T-cfg"
+        assert os.environ["CONFIGURATION_TABLE_NAME"] == "T-cfg"
+        assert os.environ["CONFIGURATION_BUCKET"] == "b-cfg"
+
+    def test_stack_mode_discovery_sets_the_bucket_before_saving(self, client, tmp_path):
+        import os
+
+        seen = {}
+
+        class FakeDiscovery:
+            def __init__(self, *args, **kwargs):
+                seen["bucket"] = os.environ.get("CONFIGURATION_BUCKET")
+                raise RuntimeError("stop after construction")
+
+        doc = tmp_path / "doc.pdf"
+        doc.write_bytes(b"%PDF-1.4")
+        with patch(
+            "idp_common.discovery.classes_discovery.ClassesDiscovery", FakeDiscovery
+        ):
+            client.discovery._run_with_stack(
+                "test-stack", doc, doc.read_bytes(), None, None
+            )
+        assert seen["bucket"] == "b-cfg"

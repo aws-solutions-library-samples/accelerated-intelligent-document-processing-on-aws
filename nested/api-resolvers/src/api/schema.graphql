@@ -338,6 +338,10 @@ type ConfigProfileRevision @aws_cognito_user_pools @aws_iam {
 type ConfigProfileRevisionsResponse @aws_cognito_user_pools @aws_iam {
   success: Boolean!
   revisions: [ConfigProfileRevision]
+  # False when the profile's configuration was changed without recording a
+  # revision, so new documents run the published revision rather than what the
+  # editor shows; null when there is nothing to compare (no revision history).
+  profileMatchesPublished: Boolean
   error: ConfigurationError
 }
 

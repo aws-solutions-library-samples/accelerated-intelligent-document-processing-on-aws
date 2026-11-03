@@ -11894,6 +11894,26 @@ Resources:
         LogGroup: !Ref AgentChatProcessorLogGroup
       Policies:
         - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
+        - Statement:
             Effect: Allow
             Action: bedrock-agentcore:InvokeAgentRuntime
             Resource: "*"
@@ -12209,6 +12229,26 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref ChatStreamProcessorLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3ReadPolicy:
             BucketName: !Ref OutputBucket
         - S3WritePolicy:
@@ -12963,6 +13003,7 @@ Resources:
         Variables:
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           TRACKING_TABLE_NAME: !Ref TrackingTable
           LOOKUP_FUNCTION_NAME: !Ref LookupFunction
           STRANDS_LOG_LEVEL: !Ref LogLevel
@@ -12999,6 +13040,26 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref AgentProcessorLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - DynamoDBCrudPolicy:
             TableName: !Ref AgentTable
         - DynamoDBReadPolicy:
@@ -15172,6 +15233,7 @@ Resources:
           DISCOVERY_BUCKET: !Ref DiscoveryBucket
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTable
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           APPSYNC_API_URL: ""
           BLUEPRINT_OPTIMIZATION_FUNCTION_NAME: !Ref BlueprintOptimizationFunction
       LoggingConfig:
@@ -15185,6 +15247,26 @@ Resources:
             FunctionResponseTypes:
               - ReportBatchItemFailures
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3ReadPolicy:
             BucketName: !Ref DiscoveryBucket
         - DynamoDBCrudPolicy:
@@ -15318,6 +15400,7 @@ Resources:
         InputBucketName: !Ref InputBucket
         TestSetBucketName: !Ref TestSetBucket
         ConfigurationTableName: !Ref ConfigurationTable
+        ConfigurationBucketName: !Ref ConfigurationBucket
         ConfigurationTableArn: !GetAtt ConfigurationTable.Arn
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
@@ -15445,11 +15528,32 @@ Resources:
           METRIC_NAMESPACE: !Ref AWS::StackName
           APPSYNC_API_URL: ""
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           STACK_NAME: !Ref AWS::StackName
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTable
       LoggingConfig:
         LogGroup: !Ref BlueprintOptimizationFunctionLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3CrudPolicy:
             BucketName: !Ref DiscoveryBucket
         - DynamoDBCrudPolicy:
