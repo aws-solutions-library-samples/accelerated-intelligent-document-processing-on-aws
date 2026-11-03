@@ -896,6 +896,7 @@ class ConfigurationManager:
         stored_hash = self._write_record(record)
 
         if config_type == CONFIG_TYPE_CONFIG and version and cut_revision:
+            cut: Optional[int] = None
             try:
                 cut = self._record_revisions(
                     profile=version,
@@ -930,6 +931,14 @@ class ConfigurationManager:
                     )
                     return
                 restored = self._restore_head(version, raw_previous_head)
+                # A failure inside the cut never returned its number; the store
+                # attaches it to the exception.
+                if cut is None:
+                    cut = getattr(e, "allocated_revision", None)
+                if cut is not None:
+                    self._mark_failed_revision(
+                        version, cut, published_before, restored
+                    )
                 raise RevisionNotRecordedError(
                     f"Could not record a revision for configuration profile "
                     f"'{version}', so the save was "
@@ -941,6 +950,38 @@ class ConfigurationManager:
                     )
                     + f". Cause: {e}"
                 ) from e
+
+    #: Notes written onto a revision whose save failed after it was recorded.
+    FAILED_SAVE_NOTES = "Save failed; not published"
+
+    def _mark_failed_revision(
+        self, profile: str, revision: int, published: int, restored: bool
+    ) -> None:
+        """
+        Say on a revision entry that its save failed and it was never published.
+
+        History is append-only, so the entry is kept rather than deleted (#1784):
+        without a note it is an unexplained extra revision beside a failed save,
+        one the editor does not show and no document runs. Best effort, because
+        the restore is what decides correctness.
+        """
+        try:
+            self.revisions.update_entry(
+                profile,
+                revision,
+                notes=(
+                    f"{self.FAILED_SAVE_NOTES}. The profile was restored to "
+                    f"r{published}, which new documents still run."
+                    if restored
+                    else f"{self.FAILED_SAVE_NOTES}. The profile could not be "
+                    f"restored and no longer matches r{published}, which new "
+                    f"documents still run."
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Could not mark r{revision} of '{profile}' as a failed save: {e}"
+            )
 
     def _published_counter(self, profile: str) -> Optional[int]:
         """The head's `PublishedRevision`, or None if it cannot be read."""
