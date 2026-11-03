@@ -335,8 +335,10 @@ the existing classes and one for the discovered class.
 For a profile that already has revision history, recording the revision is part of
 the save. If it cannot be recorded, the save fails with an error saying so and the
 profile is left as it was, rather than changing what the editor shows while new
-documents keep running the earlier revision. A profile with no history yet saves
-without one, because its documents run its current configuration.
+documents keep running the earlier revision. If the failure came after the revision
+was added to the history, that revision stays there, unpublished, with notes that
+begin **Save failed; not published** and say either that the profile was restored to
+the revision new documents still run or that it could not be restored.
 
 `idp-cli` and the SDK find the stack's configuration bucket themselves. Your own
 script or notebook that saves profiles through `idp_common` must set
@@ -363,11 +365,20 @@ with the notes **Resolved against default: settings this profile did not have we
 filled in from the default profile**, and it becomes the current revision. So the
 editor, the history and what new documents run stay the same configuration.
 
-Two things follow from that. Documents submitted after the new revision use
-`default`'s values for the filled-in settings; documents already pinned to the
-earlier revision keep it, and so does a Test Studio run. And the earlier revision
-remains in the history unchanged, so **Restore** brings it back if `default`'s
-values are not wanted for this profile.
+Some things follow from that:
+
+- Documents submitted after the new revision use `default`'s values for the
+  filled-in settings. Documents already pinned to the earlier revision keep it, and
+  so does a Test Studio run.
+- Once recorded, those values belong to the profile. A later change to the same
+  settings in `default` no longer reaches it, the way it reaches a setting the
+  profile still lacks. To take a later `default` value, set it on the profile
+  yourself.
+- The earlier revision remains in the history unchanged, so **Restore** brings it
+  back if `default`'s values are not wanted for this profile.
+- A stack update that rolls back reverts `default` but keeps the revisions this
+  recorded, because a revision is never removed by a rollback. They are the ones
+  made by `system` with the notes above, in each profile's revision history.
 
 A stack deployment records these revisions, and nothing else does: after it saves
 `default`, it checks each custom profile that has revision history once, and records
@@ -974,11 +985,13 @@ merged. They decide only whether a profile that *cannot* be resolved — because
 the two configurations contradict a cross-field rule — can be returned on its own
 rather than failing the read.
 
-- **Write-back**: the resolved configuration is saved back, so the next read is a
-  direct one and the configuration editor shows the real values rather than empty
-  boxes. It is skipped when nothing changed, and ⚠️ **skipped when the profile's
-  published revision predates the `storedHash` field**, because rewriting the head
-  would destroy the only integrity proof such a revision has.
+- **Write-back**: for a profile with no revision history, the resolved
+  configuration is saved back, so the next read is a direct one and the
+  configuration editor shows the real values rather than empty boxes. It is
+  skipped when nothing changed. ⚠️ A profile **with** revision history is never
+  written on read; a stack deployment records the resolution as a revision
+  instead, as described in
+  [Settings filled in from `default` are recorded as a revision](#settings-filled-in-from-default-are-recorded-as-a-revision).
 - **Whether a profile is stack-managed is not resolved from `default`.** It is the
   profile's own record attribute, so reading a profile never changes it, and a
   write-back keeps it as stored.

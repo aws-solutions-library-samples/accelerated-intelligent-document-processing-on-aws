@@ -361,10 +361,22 @@ class ConfigRevisionStore:
 
     # ----- index ------------------------------------------------------------
 
-    def _read_index_item(self, profile: str) -> Dict[str, Any]:
+    def _read_index_item(self, profile: str, strict: bool = False) -> Dict[str, Any]:
+        """The index item, or `{}` when absent or (unless `strict`) unreadable.
+
+        `strict` re-raises a read failure and reads consistently. An empty item is
+        also the legitimate state before a profile's first revision, so a caller
+        that must tell "no entry" from "could not look" needs it, and the one that
+        does is deciding whether an append it just saw fail actually landed, which
+        an eventually consistent replica may not show yet.
+        """
         try:
-            response = self.table.get_item(Key=self.index_key(profile))
+            response = self.table.get_item(
+                Key=self.index_key(profile), ConsistentRead=strict
+            )
         except ClientError as e:
+            if strict:
+                raise
             logger.warning(f"Could not read revision index for {profile}: {e}")
             return {}
         return response.get("Item") or {}
@@ -527,7 +539,38 @@ class ConfigRevisionStore:
         if not self.enabled:
             return None
         revision = self.next_number(profile)
+        try:
+            return self._record(
+                profile,
+                revision,
+                config_dict,
+                created_by,
+                notes,
+                label,
+                publish,
+                stored_hash,
+            )
+        except Exception as e:
+            # The caller has no other way to learn which number this failure
+            # allocated, and an entry it left needs explaining (#1784).
+            e.allocated_revision = revision  # type: ignore[attr-defined]
+            raise
+
+    def _record(
+        self,
+        profile: str,
+        revision: int,
+        config_dict: Dict[str, Any],
+        created_by: Optional[str],
+        notes: Optional[str],
+        label: Optional[str],
+        publish: bool,
+        stored_hash: Optional[str],
+    ) -> int:
+        """Write revision `revision`'s body, entry and publication (see `cut`)."""
         _, size = self.put_body(profile, revision, config_dict)
+        # The body is written before its index entry, so an entry that cannot be
+        # appended would leave an object no listing shows and no prune removes.
         entry = {
             "revision": revision,
             "createdAt": _now(),
@@ -541,7 +584,29 @@ class ConfigRevisionStore:
         }
         if stored_hash:
             entry["storedHash"] = stored_hash
-        self.append_index(profile, entry)
+        try:
+            self.append_index(profile, entry)
+        except Exception:
+            # A timeout or reset can arrive after DynamoDB applied the append, so
+            # the failure alone does not prove the entry is absent. Deleting the
+            # body under an entry that exists would leave a listed revision that
+            # cannot be viewed or restored; only an absent entry makes the body
+            # unreachable.
+            try:
+                target = int(revision)
+                absent = not any(
+                    coerce_int(e.get("revision")) == target
+                    for e in self._read_index_item(profile, strict=True).get(
+                        "Revisions", []
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                # The index cannot be read either, so whether the entry exists
+                # is unknown; keeping the body is the recoverable choice.
+                absent = False
+            if absent:
+                self.delete_body(profile, revision)
+            raise
         if publish:
             self.set_published(profile, revision)
         logger.info(

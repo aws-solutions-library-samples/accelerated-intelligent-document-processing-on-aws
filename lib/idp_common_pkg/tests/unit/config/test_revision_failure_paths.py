@@ -1,13 +1,13 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""The failure branches of the revision invariant (#1778, #1782).
+"""The failure branches of the revision invariant (#1778, #1782, #1784).
 
 Each of these is a path a profile save or read takes when part of recording a
 revision cannot be done: a counter that cannot be read, a head that cannot be put
-back, a published revision with no index entry, a write-back that fails for a
-reason other than the refusal. Each must leave the read or the save in a defined
-state rather than raise somewhere unexpected.
+back, a published revision with no index entry, a note that cannot be written.
+Each must leave the save or the read in a defined state rather than raise
+somewhere unexpected.
 """
 
 from __future__ import annotations
@@ -86,13 +86,16 @@ def test_a_published_revision_with_no_entry_cannot_be_compared(manager):
 
 
 @pytest.mark.unit
-def test_recording_a_profile_that_cannot_be_resolved_records_nothing(
-    manager, monkeypatch
+def test_a_note_that_cannot_be_written_is_logged_not_raised(
+    manager, monkeypatch, caplog
 ):
-    manager.save_configuration(CONFIG_TYPE_CONFIG, IDPConfig(notes="x"), version="p")
-    monkeypatch.setattr(manager, "get_merged_configuration", lambda _v: None)
-    assert manager.record_resolution_against_default("p") is None
-    assert manager.resolve_published_revision("p") == 1
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("index throttled")
+
+    monkeypatch.setattr(manager.revisions, "update_entry", refuse)
+    with caplog.at_level(logging.WARNING):
+        manager._mark_failed_revision("p", 2, 1, restored=True)
+    assert "Could not mark r2 of 'p' as a failed save" in caplog.text
 
 
 @pytest.mark.unit
@@ -104,3 +107,48 @@ def test_a_new_profile_with_no_default_still_passes_the_write_guard(manager):
         write_guard=lambda current, new, version: seen.append(version),
     )
     assert seen == ["p"]
+
+
+@pytest.mark.unit
+def test_a_strict_index_read_tells_unreadable_from_empty(manager, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    store = manager.revisions
+    assert store._read_index_item("p", strict=True) == {}, "absent reads as empty"
+
+    def throttled(**_kwargs):
+        raise ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "GetItem"
+        )
+
+    monkeypatch.setattr(store.table, "get_item", throttled)
+    assert store._read_index_item("p") == {}
+    with pytest.raises(ClientError):
+        store._read_index_item("p", strict=True)
+
+
+@pytest.mark.unit
+def test_the_strict_read_is_a_consistent_read(manager, monkeypatch):
+    """moto serves every read consistently, so the flag itself is what is checked:
+    an eventually consistent replica can miss an append that just landed."""
+    calls = []
+    real = manager.revisions.table.get_item
+
+    def spy(**kwargs):
+        calls.append(kwargs.get("ConsistentRead"))
+        return real(**kwargs)
+
+    monkeypatch.setattr(manager.revisions.table, "get_item", spy)
+    manager.revisions._read_index_item("p", strict=True)
+    manager.revisions._read_index_item("p")
+    assert calls == [True, False]
+
+
+@pytest.mark.unit
+def test_recording_a_profile_that_cannot_be_resolved_records_nothing(
+    manager, monkeypatch
+):
+    manager.save_configuration(CONFIG_TYPE_CONFIG, IDPConfig(notes="x"), version="p")
+    monkeypatch.setattr(manager, "get_merged_configuration", lambda _v: None)
+    assert manager.record_resolution_against_default("p") is None
+    assert manager.resolve_published_revision("p") == 1
