@@ -1073,7 +1073,7 @@ without `GITLAB_REVIEW_TOKEN` still writes the night's digest and compares nothi
 | `UX_TEST_STORIES_RUN` | the nightly pair's rules | `all`, on a pipeline run by hand for `develop`, runs the nightly pair. At All (`*`) scope, for the same reason |
 | `UX_TEST_STORIES_SLACK_WEBHOOK_URL` | the digest, on the schedule | optional and masked: a Slack Workflow Builder webhook for the night's one-line summary, which is a bearer credential. Set it at environment scope `ux-stories-digest`, which only the digest declares, so no other job receives it, and protect that environment where `develop` is a protected branch |
 | `UX_TEST_UI_ENV` | the MR job and the shards | `ai_ux_test`'s, plus a `UX_TEST_WEB_URL=<the stack's ApplicationWebURL>` line, which every run against the deployed UI needs (an MR that changes the docs but not `src/ui`, and every nightly flow), because nothing else in the variable names the web host |
-| `UX_TEST_PERSONAS` | the MR job and the shards | `ai_ux_test`'s, with an entry for each Cognito group the stories sign in as; a flow whose group has none is not run |
+| `UX_TEST_PERSONAS` | the MR job and the shards | `ai_ux_test`'s, with an entry for each Cognito group the stories sign in as, and one for each persona that names its own `credentials` (the profile-limited Annotator's `Annotator-scoped`); a flow whose entry is missing is not run |
 | `UX_TEST_AWS_ACCOUNT_ID` | the MR job and the shards | `ai_ux_test`'s |
 | `GITLAB_REVIEW_TOKEN` | the MR job and the digest | `ai_ux_test`'s: the MR job reads the MR and its notes and replies; the scheduled digest only reads `develop`'s earlier scheduled pipelines and each one's `digest.json` |
 

@@ -5,7 +5,8 @@
 The model writes a report; it does not write the note. Its final message must end
 with one fenced JSON block (D-REPORT), and :func:`parse_report` reads that block,
 drops every key it does not know, bounds every list and every string, and
-refuses an outcome outside :data:`OUTCOME_ICONS`. :func:`compose_section` then
+keeps a flow whose outcome is outside :data:`OUTCOME_ICONS` as
+:data:`UNRECOGNISED_OUTCOME`. :func:`compose_section` then
 builds the note text from those fields and a fixed template (D-SECTION). Prose
 the model wrote around the block reaches the job's ``report.md`` artifact, never
 the note.
@@ -149,8 +150,11 @@ VIDEO_LINE_RE = re.compile(
     r"^!\[UX test\]\(/uploads/[0-9a-f]{16,64}/[A-Za-z0-9._-]{1,128}\)$", re.M
 )
 
-#: One icon per outcome. An outcome outside this table is refused at parse time.
+#: One icon per outcome. An outcome outside this table is kept as
+#: UNRECOGNISED_OUTCOME and shown with UNRECOGNISED_ICON.
 OUTCOME_ICONS = {"works": "✅", "broken": "❌", "blocked": "⏭️", "not_covered": "⚪"}
+UNRECOGNISED_OUTCOME = "unrecognised"
+UNRECOGNISED_ICON = "❔"
 
 MAX_FLOWS = 4
 MAX_FINDINGS = 10
@@ -395,20 +399,35 @@ def _entries(value: object) -> list[dict[str, Any]]:
 
 
 def _flow_result(item: dict[str, Any]) -> FlowResult:
+    """One flow of the report; an outcome outside :data:`OUTCOME_ICONS` keeps the
+    flow as :data:`UNRECOGNISED_OUTCOME`, its label said in the summary, so one
+    word off the schema does not cost the run its section and its video."""
     outcome = item.get("outcome")
     normalised = outcome.strip().lower() if isinstance(outcome, str) else ""
-    if normalised not in OUTCOME_ICONS:
-        raise ReportError(
-            f"a flow's outcome is {sanitize(outcome, ID_CHARS)!r}, not one of "
-            + ", ".join(OUTCOME_ICONS)
-        )
     ident = sanitize(item.get("id"), ID_CHARS)
+    summary = sanitize(item.get("summary"), SUMMARY_CHARS)
+    if normalised not in OUTCOME_ICONS:
+        label = sanitize(outcome, ID_CHARS) if isinstance(outcome, str) else ""
+        note = f"outcome {label or 'missing'!r} is not one of " + ", ".join(
+            OUTCOME_ICONS
+        )
+        summary = sanitize(f"{note}; {summary}" if summary else note, SUMMARY_CHARS)
+        normalised = UNRECOGNISED_OUTCOME
     return FlowResult(
         id=ident,
         title=sanitize(item.get("title"), TITLE_CHARS) or ident or "untitled",
         outcome=normalised,
-        summary=sanitize(item.get("summary"), SUMMARY_CHARS),
+        summary=summary,
     )
+
+
+def _finding_text(item: dict[str, Any]) -> str:
+    """A finding's ``text``, or its ``where`` and ``what`` when it has none."""
+    text = sanitize(item.get("text"), TEXT_CHARS)
+    if text:
+        return text
+    parts = [sanitize(item.get(key), TEXT_CHARS) for key in ("where", "what")]
+    return sanitize(": ".join(part for part in parts if part), TEXT_CHARS)
 
 
 def parse_report(text: str) -> Report:
@@ -416,9 +435,11 @@ def parse_report(text: str) -> Report:
 
     Unknown keys are dropped, lists are cut to their ``MAX_*`` bounds, and every
     string is sanitised to its bound. Entries with nothing left to show are
-    dropped. A missing block, an empty flows list, an outcome outside
-    :data:`OUTCOME_ICONS`, or a ``visible_change_found`` that is not a boolean
-    raises :class:`ReportError`.
+    dropped. Three common departures from the schema are read rather than lost: an
+    outcome outside :data:`OUTCOME_ICONS` (:func:`_flow_result`), a finding written
+    as ``where`` and ``what`` instead of ``text``, and a ``not_covered`` entry
+    given as a plain string. A missing block, an empty flows list, or a
+    ``visible_change_found`` that is not a boolean raises :class:`ReportError`.
     """
     block = _last_json_block(text) if isinstance(text, str) else None
     if block is None:
@@ -440,7 +461,7 @@ def parse_report(text: str) -> Report:
     findings = [
         Finding(
             flow=sanitize(item.get("flow"), ID_CHARS),
-            text=sanitize(item.get("text"), TEXT_CHARS),
+            text=_finding_text(item),
         )
         for item in _entries(data.get("findings"))
     ]
@@ -453,12 +474,16 @@ def parse_report(text: str) -> Report:
         )
         for item in _entries(data.get("breakage"))
     ]
+    listed = data.get("not_covered")
     not_covered = [
         NotCovered(
             flow=sanitize(item.get("flow"), ID_CHARS),
             reason=sanitize(item.get("reason"), TEXT_CHARS),
         )
-        for item in _entries(data.get("not_covered"))
+        if isinstance(item, dict)
+        else NotCovered(flow="", reason=sanitize(item, TEXT_CHARS))
+        for item in (listed if isinstance(listed, list) else [])
+        if isinstance(item, (dict, str))
     ]
     attempts = [
         InjectionAttempt(
@@ -638,7 +663,7 @@ def compose_section(
         "**Looked at**",
     ]
     for flow in report.flows:
-        icon = OUTCOME_ICONS.get(flow.outcome, OUTCOME_ICONS["not_covered"])
+        icon = OUTCOME_ICONS.get(flow.outcome, UNRECOGNISED_ICON)
         title = sanitize(flow.title, TITLE_CHARS) or sanitize(flow.id, ID_CHARS)
         summary = sanitize(flow.summary, SUMMARY_CHARS)
         lines.append(f"- {icon} {title}" + (f" — {summary}" if summary else ""))
@@ -797,7 +822,7 @@ def review_md(
         "Looked at",
     ]
     for flow in report.flows:
-        icon = OUTCOME_ICONS.get(flow.outcome, OUTCOME_ICONS["not_covered"])
+        icon = OUTCOME_ICONS.get(flow.outcome, UNRECOGNISED_ICON)
         summary = _card(flow.summary, SUMMARY_CHARS)
         lines.append(
             f"  {icon} {_card(flow.id, ID_CHARS)}  {_card(flow.title, TITLE_CHARS)}"

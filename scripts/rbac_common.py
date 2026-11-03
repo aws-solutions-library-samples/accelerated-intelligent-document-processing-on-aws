@@ -241,8 +241,10 @@ def restore_auth_flows(ctx):
 # ----------------------------------------------------------------------------
 def create_cognito_user(ctx, email, group, password):
     """Create a confirmed Cognito user with a permanent password and add it to
-    a group. admin-create-user is tolerant of a pre-existing user (the caller
-    typically uses a random per-run email).
+    a group. admin-create-user is tolerant of a pre-existing user: a caller with a
+    random per-run email rarely meets one, and ``ux_test_session.py``'s long-lived
+    setup meets one on purpose, after the stack's createUser made the user, to give
+    it a known permanent password. The password and group steps are idempotent.
 
     ``group=None`` (or ``""``) creates the user and adds it to **no** group. That
     is a real principal this user pool produces rather than a test convenience:

@@ -382,10 +382,6 @@ def test_parse_report_bounds_and_sanitises_every_string() -> None:
         ("No report at all.", "did not end with a JSON report"),
         ('```json\n{"flows": []}\n', "did not end with a JSON report"),
         (_report_text(flows=[]), "names no flows"),
-        (
-            _report_text(flows=[{"id": "change", "title": "t", "outcome": "great"}]),
-            "outcome",
-        ),
         (_report_text(visible_change_found="yes"), "visible_change_found"),
         ("```json\n[1, 2]\n```", "not an object"),
         ("```json\n{not json\n```", "does not parse"),
@@ -1133,3 +1129,39 @@ def test_a_finding_cannot_spell_the_recorders_chapter_marker_into_review_md() ->
     assert render.findings_from_review(text) == shown
     block = f"{render.CHAPTERS_BEGIN}\n0:00  Open\n{render.CHAPTERS_END}"
     assert render.findings_from_review(render.replace_chapters(text, block)) == shown
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("outcome", "shown"), [("issues", "'issues'"), (None, "'missing'")]
+)
+def test_an_unknown_outcome_keeps_its_flow_and_says_so(
+    outcome: object, shown: str
+) -> None:
+    """One word off the schema keeps the flow, its summary and the run's section,
+    rather than costing the whole report."""
+    flow = {"id": "change", "title": "t", "outcome": outcome, "summary": "works"}
+    report = section.parse_report(_report_text(flows=[flow]))
+    (result,) = report.flows
+    assert result.outcome == section.UNRECOGNISED_OUTCOME
+    assert result.summary.startswith(f"outcome {shown} is not one of works, broken")
+    assert result.summary.endswith("; works")
+
+
+@pytest.mark.unit
+def test_a_finding_written_as_where_and_what_keeps_both() -> None:
+    findings = [
+        {"flow": "change", "severity": "high", "where": "Edit page", "what": "No retry"}
+    ]
+    report = section.parse_report(_report_text(findings=findings))
+    assert [f.text for f in report.findings] == ["Edit page: No retry"]
+
+
+@pytest.mark.unit
+def test_a_not_covered_entry_given_as_a_string_is_kept_without_a_flow() -> None:
+    report = section.parse_report(
+        _report_text(not_covered=["Saving a value; opened and cancelled", 7])
+    )
+    assert [(n.flow, n.reason) for n in report.not_covered] == [
+        ("", "Saving a value; opened and cancelled")
+    ]

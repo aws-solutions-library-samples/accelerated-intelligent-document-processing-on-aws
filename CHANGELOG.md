@@ -7,6 +7,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Added
 
+- **First-time-user stories run as an Annotator, and cover review queues, the Inbox and the edit page.** New stories, in the `p1` tier until they run stable, cover setting review up, assigning and taking work, why a document is in review, finishing or handing back a review, the assignment message, checking test labels, who is reviewing, correcting a value and the Inbox, and the find-work and take-work stories also run as an Annotator limited to one profile. `scripts/ux_test_session.py setup --long-lived` now creates an Annotator, and a persona limited to profiles (`--key`, `--profiles`), through the stack's own user management. **Action:** add the `Annotator` and `Annotator-scoped` entries to `UX_TEST_PERSONAS` to run them in CI. See [first-time-user stories](.claude/skills/ux-test-stories.md#the-review-stack-once-by-its-operator).
+
 - **Re-extract one section of a multi-section Test Studio document under a corrected class.** On a packet, **Re-extract** in the Test Studio editor now re-extracts only the open section: the document is re-run with its section grouping kept, and only that section's class and fields are replaced, so every other section's labels, reviewed or not, stay exactly as they were. `reextractTestSetDocument` takes an optional `sectionId` alongside `documentClass` for this. A whole-document class on a multi-section document is still refused, and the editor and the API error now say why and point to the per-section form. The re-run extracts every section, so it costs about as much as re-extracting the whole document. See [Test Studio](docs/test-studio.md). ([#1699](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1699))
 
 ### Changed
@@ -20,6 +22,8 @@ SPDX-License-Identifier: MIT-0
 - **The deployment-variant probes run on their own weekly scheduled pipeline, once that schedule is turned on.** ZAP DAST, the WAF hosting variant, API Gateway GLOBAL and PRIVATE hosting and the Jobs API variant each deploy a throwaway stack beside the primary suite on a weekly schedule that sets `IDP_RUN_PROBES=true`, and that run is labelled as the weekly variant-probe run in its summary, failure email and Slack post. The nightly stays primary-only, so a probe failure is never read as a nightly regression. See [CI_TEST_COVERAGE.md](scripts/sdlc/docs/CI_TEST_COVERAGE.md#pipeline-stages--triggers).
 
 ### Fixed
+
+- **The MR UX test keeps its section and video when the model's report steps off its schema.** A flow labelled with an outcome outside the schema used to cost the whole section and its video; it is now kept as unrecognised, with the label in its summary. A finding written as `where` and `what`, and a `not_covered` entry given as a string, used to be dropped silently and are now kept.
 
 - **Page images keep filled-in values that a PDF stores as annotations** ([#1780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1780)). Since 0.5.3, a PDF with an AcroForm dictionary whose values were FreeText annotations (as "fill & sign" tools write them) produced page images with those values missing, in both pipeline and BDA mode, because the page was flattened and then rendered from a stale handle. Pages are now reloaded after flattening; AcroForm field values (#240) still render. See the [image module README](lib/idp_common_pkg/idp_common/image/README.md#rendering-filled-in-pdf-forms-240-1780).
 

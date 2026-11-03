@@ -1813,7 +1813,7 @@ def test_start_record_returns_the_keys_in_order(tmp_path: Path) -> None:
         ("story_hash", "0F3A9C2E71B4"),
         ("series", "5d0c1e9a2b7"),
         ("corpus_hash", "9e8d7c6b5a41f"),
-        ("group", "Annotator"),
+        ("group", "Operator"),
         ("expectation", "maybe"),
         ("kind", "write"),
         ("attempt", 3),
