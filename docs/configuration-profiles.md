@@ -372,9 +372,11 @@ values are not wanted for this profile.
 A stack deployment records these revisions, and nothing else does: after it saves
 `default`, it checks each custom profile that has revision history once, and records
 a revision for every profile the fill-in changes. A profile the fill-in does not
-change gets no revision. On a stack with many profiles a deployment stops before its
-time limit, and the next deployment picks up the rest; until then, documents for a
-profile it did not reach keep running that profile's current revision.
+change gets no revision, and neither does one whose stored configuration differs from
+its current revision for some other reason; save that profile yourself. A profile
+already checked costs only a read on later deployments. If a deployment runs short of
+time it stops early, and the next deployment checks the profiles it did not reach;
+until then their documents keep running their current revision.
 
 ### Test Studio: comparing two revisions of one profile
 

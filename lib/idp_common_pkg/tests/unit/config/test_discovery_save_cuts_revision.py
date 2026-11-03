@@ -488,4 +488,5 @@ def test_resolving_against_default_is_recorded_as_the_revision_documents_run(
         assert before.summarization.enabled is True
 
         # Recording it again changes nothing, so it cuts nothing.
-        assert manager.record_resolution_against_default(PROFILE) == 2
+        assert manager.record_resolution_against_default(PROFILE) is None
+        assert manager.resolve_published_revision(PROFILE) == 2

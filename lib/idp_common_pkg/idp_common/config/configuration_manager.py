@@ -899,20 +899,47 @@ class ConfigurationManager:
         differ whenever `default` holds a value the model's own default does not
         (#1782). This saves the resolved configuration as a revision made by
         `system`, with `RESOLVED_AGAINST_DEFAULT_NOTES`, and publishes it, so the
-        profile, its history and what new documents run agree. A resolution that
-        changes nothing records nothing (`save_configuration` skips an unchanged
-        save).
+        profile, its history and what new documents run agree.
 
-        Only for a process that can write revisions: the stack-deployment custom
-        resource calls it for every custom profile with history after saving
-        `default`. Raises `RevisionNotRecordedError` like any save that cannot
-        record its revision. Returns the published revision afterwards, or None
-        when the profile has no history or cannot be resolved.
+        It records only when both of these hold, and otherwise writes nothing:
+
+        - **The head is provably the published revision** (`head_matches_published`).
+          The resolution starts from the head, so a head that differs for any
+          other reason would be published under notes that describe only the
+          fill-in. Such a profile is left for a person to save.
+        - **The resolution changes what the published revision runs**, comparing
+          against that revision's body as a pinned read builds it. An already
+          converged profile is then a read, not a rewrite: no new `UpdatedAt`,
+          and a published revision that has only the legacy `UpdatedAt <=
+          createdAt` proof keeps it.
+
+        Only for a process that can write revisions: its one caller is the
+        stack-deployment custom resource, after saving `default`. Raises
+        `RevisionNotRecordedError` like any save that cannot record its revision.
+        Returns the new revision's number, or None when nothing was recorded.
         """
-        if self.resolve_published_revision(profile) is None:
+        published = self.resolve_published_revision(profile)
+        if published is None:
+            return None
+        if self.head_matches_published(profile) is not True:
+            logger.warning(
+                f"Not recording the resolution of '{profile}' against default: its "
+                f"stored configuration cannot be shown to be r{published}, the "
+                f"revision its documents run"
+            )
             return None
         resolved = self.get_merged_configuration(profile)
-        if resolved is None:
+        body = self._read_revision_body(profile, published)
+        if resolved is None or body is None:
+            return None
+        runs = IDPConfig(
+            **{
+                k: v
+                for k, v in body.items()
+                if k not in (_FULL_CONFIG_MARKER, "config_type")
+            }
+        )
+        if self._config_to_dict(runs) == self._config_to_dict(resolved):
             return None
         self.save_configuration(
             CONFIG_TYPE_CONFIG,
@@ -922,7 +949,8 @@ class ConfigurationManager:
             created_by="system",
             revision_notes=RESOLVED_AGAINST_DEFAULT_NOTES,
         )
-        return self.resolve_published_revision(profile)
+        now = self.resolve_published_revision(profile)
+        return now if now is not None and now != published else None
 
     def _published_counter(self, profile: str) -> Optional[int]:
         """The head's `PublishedRevision`, or None if it cannot be read."""

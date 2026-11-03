@@ -58,41 +58,48 @@ def resolve_user_profiles_against_default(manager: Any, context: Any) -> int:
 
     Skips `default`, stack-managed profiles (this deployment re-saves them) and
     profiles with no revision history (their documents run the head, and a read
-    resolves it already). A profile the resolution does not change is read and
-    left alone. Best effort throughout: a failure is logged and never fails the
-    deployment, and the sweep stops with `SWEEP_RESERVED_MS` of the invocation
-    left, so profiles it did not reach are resolved by the next deployment.
-    Returns how many profiles were read.
+    resolves it already). A profile the resolution does not change is only read,
+    so a profile that has converged costs a read on later deployments. Best
+    effort throughout: a failure is logged and never fails the deployment, and
+    the sweep stops with `SWEEP_RESERVED_MS` of the invocation left; the profiles
+    it did not reach are checked again by the next deployment. Returns how many
+    profiles were checked.
     """
     try:
         versions = manager.list_config_versions()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Could not list configuration profiles to resolve: {e}")
         return 0
-    read = 0
-    for version in versions:
-        name = version.get("versionName")
-        if (
-            not name
-            or name == "default"
-            or version.get("managed")
-            or not version.get("publishedRevision")
-        ):
-            continue
+    eligible = [
+        v
+        for v in versions
+        if v.get("versionName")
+        and v.get("versionName") != "default"
+        and not v.get("managed")
+        and v.get("publishedRevision")
+    ]
+    read = recorded = 0
+    for index_in_list, version in enumerate(eligible):
+        name = version["versionName"]
         remaining = getattr(context, "get_remaining_time_in_millis", None)
         left_ms = remaining() if callable(remaining) else None
         if isinstance(left_ms, (int, float)) and left_ms < SWEEP_RESERVED_MS:
             logger.warning(
-                "Stopping the profile sweep to leave time for the response; "
-                "the remaining profiles are resolved on the next deployment"
+                f"Stopping the profile sweep to leave time for the response; "
+                f"{len(eligible) - index_in_list} profile(s) are checked on the "
+                f"next deployment"
             )
             break
         try:
-            manager.record_resolution_against_default(name)
+            if manager.record_resolution_against_default(name) is not None:
+                recorded += 1
             read += 1
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Could not resolve profile '{name}' against default: {e}")
-    logger.info(f"Resolved {read} user profile(s) against default")
+    logger.info(
+        f"Checked {read} user profile(s) against default; recorded {recorded} "
+        f"revision(s)"
+    )
     return read
 
 

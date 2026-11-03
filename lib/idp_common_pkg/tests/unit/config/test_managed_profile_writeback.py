@@ -38,7 +38,10 @@ import yaml
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
-from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.configuration_manager import (
+    ConfigurationManager,
+    _stored_content_hash,
+)
 from idp_common.config.constants import CONFIG_TYPE_CONFIG, DEFAULT_VERSION
 from idp_common.config.merge_utils import merge_config_with_defaults
 from idp_common.config.models import IDPConfig
@@ -217,6 +220,15 @@ def test_a_genuine_backfill_is_written_back_and_keeps_every_head_attribute(
     assert item["summarization"].get("model"), "the fixture must remove a real key"
     del item["summarization"]["model"]
     manager.table.put_item(Item=manager._compress_item(item))
+    # The published revision was recorded by the same older release, so it lacks
+    # the key too, and the head is provably that revision.
+    published = manager.resolve_published_revision(name)
+    body = manager.revisions.get_body(name, published)
+    del body["summarization"]["model"]
+    manager.revisions.put_body(name, published, body)
+    manager.revisions.update_entry(
+        name, published, storedHash=_stored_content_hash(item)
+    )
     before = _head(manager, name)
     writes = _WriteRecorder(manager.table.meta.client)
 

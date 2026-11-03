@@ -2953,34 +2953,107 @@ class TestTheBackfillWriteBackPreservesRevisionProofs:
             manager.get_merged_configuration("p")
         assert spy.called
 
+    @staticmethod
+    def _revisioned_without_summarization(manager, version: str = "p") -> None:
+        """A profile and its r1 recorded before `summarization` existed, with the
+        head provably that revision."""
+        from idp_common.config.configuration_manager import _stored_content_hash
+
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, IDPConfig(notes="mine"), version=version
+        )
+        key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#{version}"}
+        head = manager._decompress_item(manager.table.get_item(Key=key)["Item"])
+        head.pop("summarization")
+        manager.table.put_item(Item=manager._compress_item(head))
+        body = manager.revisions.get_body(version, 1)
+        body.pop("summarization")
+        manager.revisions.put_body(version, 1, body)
+        manager.revisions.update_entry(
+            version, 1, storedHash=_stored_content_hash(head)
+        )
+
     def test_recording_the_resolution_cuts_a_system_revision(self, monkeypatch):
-        """Including over a published revision whose only proof is the legacy one:
-        a new revision leaves that revision's body and entry as they were."""
-        table = _make_table(with_bucket=True)
+        _make_table(with_bucket=True)
         manager = _manager(monkeypatch, with_bucket=True)
         _seed_default(manager)
-        self._put_full(table, "p")
-        self._index(table, "p", {"revision": 1, "createdAt": "2026-01-01T00:00:00Z"})
+        self._revisioned_without_summarization(manager)
         with patch.object(
             manager, "save_configuration", wraps=manager.save_configuration
         ) as spy:
-            published = manager.record_resolution_against_default("p")
+            recorded = manager.record_resolution_against_default("p")
         assert spy.call_args.kwargs["created_by"] == "system"
         assert "cut_revision" not in spy.call_args.kwargs
-        assert published == 2
+        assert recorded == 2
         assert manager.head_matches_published("p") is True
+        assert (
+            manager.get_merged_configuration("p", revision=2).summarization.model
+            == SEEDED_MODEL
+        )
+
+    def test_a_converged_legacy_proof_profile_is_left_untouched(self, monkeypatch):
+        """The case `_backfill_may_be_persisted` guarded: a published revision whose
+        only proof is `UpdatedAt <= createdAt`. When the resolution changes nothing
+        that revision runs, recording writes nothing, so the proof survives."""
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            manager.get_merged_configuration("default"),
+            version="p",
+        )
+        manager.revisions.update_entry("p", 1, storedHash=None)
+        key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#p"}
+        before = table.get_item(Key=key)["Item"]
+        assert manager.head_matches_published("p") is True
+        with patch.object(manager, "save_configuration") as spy:
+            assert manager.record_resolution_against_default("p") is None
+        spy.assert_not_called()
+        assert table.get_item(Key=key)["Item"] == before
+        assert manager.head_matches_published("p") is True
+
+    def test_a_head_that_differs_from_its_revision_is_left_for_a_person(
+        self, monkeypatch, caplog
+    ):
+        """Recording would publish that other difference under notes that describe
+        only the fill-in."""
+        import logging
+
+        _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        self._revisioned_without_summarization(manager)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            IDPConfig(notes="changed without a revision"),
+            version="p",
+            cut_revision=False,
+        )
+        with caplog.at_level(logging.WARNING):
+            assert manager.record_resolution_against_default("p") is None
+        assert manager.resolve_published_revision("p") == 1
+        assert "cannot be shown to be r1" in caplog.text
 
     def test_a_process_that_cannot_record_a_revision_is_refused(self, monkeypatch):
         """No bucket in this process, but the profile has history: the save is
         refused before it writes, and the head is left as stored."""
         from idp_common.config.revisions import RevisionNotRecordedError
 
-        table = _make_table()
-        manager = _manager(monkeypatch)
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
         _seed_default(manager)
-        self._put_full(table, "p")
+        self._revisioned_without_summarization(manager)
         key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#p"}
         before = table.get_item(Key=key)["Item"]
+        # The same process with its bucket withdrawn for the save itself.
+        monkeypatch.setattr(
+            type(manager.revisions), "enabled", property(lambda s: False)
+        )
+        monkeypatch.setattr(
+            manager, "_read_revision_body", lambda p, r: {"notes": "mine"}
+        )
+        monkeypatch.setattr(manager, "head_matches_published", lambda p: True)
         with pytest.raises(RevisionNotRecordedError):
             manager.record_resolution_against_default("p")
         assert table.get_item(Key=key)["Item"] == before
@@ -2991,7 +3064,7 @@ class TestTheBackfillWriteBackPreservesRevisionProofs:
         table = _make_table(with_bucket=True)
         manager = _manager(monkeypatch, with_bucket=True)
         _seed_default(manager)
-        self._put_full(table, "p")
+        self._revisioned_without_summarization(manager)
         key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#p"}
         before = table.get_item(Key=key)["Item"]
         with patch.object(
