@@ -243,6 +243,10 @@ def _tenant_boundary_reason(object_key, profile):
     to process when the tenant set cannot be read, so minting a URL here would only
     defer the same refusal. ``submission_source`` is ``None`` because a web
     upload can never carry one (the presigned POST does not list the field).
+
+    Uncached on purpose, unlike the scope lookup beside it: the tenant index is one
+    small consistent read, and caching it would let an upload be approved against a
+    tenant set an Admin has just changed.
     """
     if not is_strict_isolation():
         return None
