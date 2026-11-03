@@ -510,9 +510,10 @@ def _apply_isolation_mode(scope: Optional[List[str]]) -> Optional[List[str]]:
     ⚠️ This function cannot tell an Admin from anyone else, so keeping Admins
     unrestricted in strict mode is each **consumer's** job: it must skip the lookup
     for an Admin, as the document-list resolvers do. A consumer that looks Admins up
-    as well (``upload_resolver`` did) hands an unscoped Admin the deny sentinel in
-    strict mode, and one with its own lookup (the document chat processor) does not
-    reach this rule at all and has to apply it by hand.
+    as well hands an unscoped Admin the deny sentinel in strict mode, which is why
+    ``upload_resolver`` skips the lookup for an Admin in strict mode; and one with
+    its own lookup (the document chat processor) does not reach this rule at all and
+    applies it by hand.
     """
     if scope is None and is_strict_isolation():
         return [STRICT_UNSCOPED_DENY]

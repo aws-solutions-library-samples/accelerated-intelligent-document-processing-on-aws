@@ -99,9 +99,10 @@ resources are declared in `template.yaml`, and all alerting for the whole soluti
 through them — the nested stacks declare none. 31 of the thirty-two alarms publish to the
 `AlertsTopic` SNS topic; the remaining one, `BedrockServiceOutageAlarm`, publishes to
 `CircuitBreakerTopic`.
-Eight are conditional, so a default deployment has twenty-three:
-`BedrockServiceOutageAlarm` exists only when you enable the circuit breaker, and the seven
-malware-scanning alarms only when `MalwareScanning` is not `DISABLED`. The other
+Nine are conditional, so a default deployment has twenty-three:
+`BedrockServiceOutageAlarm` exists only when you enable the circuit breaker, the seven
+malware-scanning alarms only when `MalwareScanning` is not `DISABLED`, and
+`TenantIsolationLookupFailedAlarm` only when `TenantIsolationMode` is `Strict`. The other
 twenty-three are unconditional. They fall into nine groups:
 
 | Alarm | What it detects |
