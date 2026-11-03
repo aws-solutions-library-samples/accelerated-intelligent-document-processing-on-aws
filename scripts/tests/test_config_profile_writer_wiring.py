@@ -17,15 +17,17 @@ quietly wrong.
 
 The set of writers is **derived** (`config_profile_writers`), so a new Lambda that
 saves a profile is held to this without being listed. Every Lambda that is given the
-configuration table is in the universe, and one whose source cannot be located fails
+configuration table (under either name in ``CONFIG_TABLE_ENV``) is in the universe,
+and one whose source cannot be located fails
 rather than being skipped, because an unread Lambda is one the derivation cannot
 clear. :data:`KNOWN_WRITERS` is a floor under the derivation, not the list it
 checks: it names Lambdas measured to save profiles, so a derivation that silently
 stops seeing one of them fails here instead of shrinking the gate.
 
-The grant checks read inline ``Statement`` lists and SAM S3 policy templates. A
-grant made through a managed policy, a separate ``AWS::IAM::Policy`` or an
-``Fn::If`` around a statement is not seen and reads as missing, which is the safe
+The grant checks read inline ``Statement`` lists, SAM S3 policy templates and the
+inline policies of a role the function names with ``Role: !GetAtt R.Arn``. A grant
+made through a managed policy or a separate ``AWS::IAM::Policy`` is not seen and
+reads as missing, which is the safe
 direction for a gate that only ever asks for a grant to be present.
 """
 
@@ -51,6 +53,11 @@ KNOWN_WRITERS = frozenset(
         ("template.yaml", "DiscoveryProcessorFunction"),
         ("template.yaml", "BlueprintOptimizationFunction"),
         ("template.yaml", "UpdateConfigurationFunction"),
+        # Given the table as CONFIGURATION_TABLE, its grants on a shared role.
+        (
+            "feature-platform/main-stack-extensions/template.yaml",
+            "ApplyFeatureConfigPresetFunction",
+        ),
         # These three reach the Quick Start agent, whose create_config_version
         # tool saves a profile, only through the agent registry.
         ("template.yaml", "AgentChatProcessorFunction"),
@@ -118,6 +125,16 @@ def _templates() -> List[str]:
     return out
 
 
+#: The environment variables a deployed Lambda is given the configuration table
+#: under. `ConfigurationManager` reads `CONFIGURATION_TABLE_NAME`; the
+#: feature-platform handlers are given `CONFIGURATION_TABLE` and bridge it at
+#: runtime, and keying on one spelling left them outside the universe.
+CONFIG_TABLE_ENV = ("CONFIGURATION_TABLE_NAME", "CONFIGURATION_TABLE")
+
+#: Each template's Resources, for following a function's `Role:` to its policies.
+TEMPLATE_RESOURCES: Dict[str, Dict[str, Any]] = {}
+
+
 def _functions() -> List[Tuple[str, str, Dict[str, Any], Dict[str, Any]]]:
     """(template, logical id, resource, environment) for every config-table Lambda."""
     found = []
@@ -125,6 +142,7 @@ def _functions() -> List[Tuple[str, str, Dict[str, Any], Dict[str, Any]]]:
         doc = yaml.load((REPO_ROOT / template).read_text(), Loader=_CfnLoader)
         if not isinstance(doc, dict):
             continue
+        TEMPLATE_RESOURCES[template] = doc.get("Resources") or {}
         globals_env = (
             ((doc.get("Globals") or {}).get("Function") or {}).get("Environment") or {}
         ).get("Variables") or {}
@@ -137,7 +155,7 @@ def _functions() -> List[Tuple[str, str, Dict[str, Any], Dict[str, Any]]]:
             props = resource.get("Properties") or {}
             env = dict(globals_env)
             env.update(((props.get("Environment") or {}).get("Variables")) or {})
-            if "CONFIGURATION_TABLE_NAME" in env:
+            if any(var in env for var in CONFIG_TABLE_ENV):
                 found.append((template, name, resource, env))
     return found
 
@@ -240,9 +258,35 @@ def _bucket_expr(env_value: Any) -> Any:
     return env_value
 
 
-def _grants(resource: Dict[str, Any], bucket: Any) -> Dict[str, List[str]]:
+def _role_statements(template: str, resource: Dict[str, Any]) -> List[Any]:
+    """Inline statements of the role a function names with `Role: !GetAtt R.Arn`.
+
+    A policy wrapped in `Fn::If` contributes both branches that are policies,
+    which is the condition-true one in practice (the other is `AWS::NoValue`).
+    """
+    role = (resource.get("Properties") or {}).get("Role")
+    target = role.get("Fn::GetAtt") if isinstance(role, dict) else None
+    if not (isinstance(target, list) and target and target[-1] == "Arn"):
+        return []
+    role_resource = TEMPLATE_RESOURCES.get(template, {}).get(target[0]) or {}
+    if role_resource.get("Type") != "AWS::IAM::Role":
+        return []
+    statements: List[Any] = []
+    for policy in (role_resource.get("Properties") or {}).get("Policies") or []:
+        branches = policy.get("Fn::If", [None])[1:] if isinstance(policy, dict) else []
+        for candidate in branches if branches else [policy]:
+            if isinstance(candidate, dict):
+                document = candidate.get("PolicyDocument") or {}
+                statements.extend(document.get("Statement") or [])
+    return statements
+
+
+def _grants(
+    template: str, resource: Dict[str, Any], bucket: Any
+) -> Dict[str, List[str]]:
     """Action -> the resource suffixes on `bucket` that action is granted on."""
     out: Dict[str, List[str]] = {}
+    statements: List[Any] = list(_role_statements(template, resource))
     for policy in (resource.get("Properties") or {}).get("Policies") or []:
         if not isinstance(policy, dict):
             continue
@@ -251,24 +295,25 @@ def _grants(resource: Dict[str, Any], bucket: Any) -> Dict[str, List[str]]:
                 if _bucket_expr(value.get("BucketName")) == bucket:
                     for action in SAM_S3_TEMPLATES[key]:
                         out.setdefault(action, []).extend(["", "/*"])
-        for statement in policy.get("Statement") or []:
-            if not isinstance(statement, dict) or statement.get("Effect") != "Allow":
+        statements.extend(policy.get("Statement") or [])
+    for statement in statements:
+        if not isinstance(statement, dict) or statement.get("Effect") != "Allow":
+            continue
+        actions = statement.get("Action")
+        actions = actions if isinstance(actions, list) else [actions]
+        resources = statement.get("Resource")
+        resources = resources if isinstance(resources, list) else [resources]
+        for arn in resources:
+            token = _bucket_token(arn)
+            if not token or token[1] != bucket:
                 continue
-            actions = statement.get("Action")
-            actions = actions if isinstance(actions, list) else [actions]
-            resources = statement.get("Resource")
-            resources = resources if isinstance(resources, list) else [resources]
-            for arn in resources:
-                token = _bucket_token(arn)
-                if not token or token[1] != bucket:
-                    continue
-                for wanted in (*OBJECT_ACTIONS, "s3:ListBucket"):
-                    if any(
-                        isinstance(a, str)
-                        and fnmatch.fnmatchcase(wanted.lower(), a.lower())
-                        for a in actions
-                    ):
-                        out.setdefault(wanted, []).append(token[0])
+            for wanted in (*OBJECT_ACTIONS, "s3:ListBucket"):
+                if any(
+                    isinstance(a, str)
+                    and fnmatch.fnmatchcase(wanted.lower(), a.lower())
+                    for a in actions
+                ):
+                    out.setdefault(wanted, []).append(token[0])
     return out
 
 
@@ -286,7 +331,7 @@ def test_a_profile_writer_is_told_the_configuration_bucket(key):
 def test_a_profile_writer_can_read_write_and_prune_revision_bodies(key):
     resource, env = DERIVED[key]
     bucket = _bucket_expr(env.get("CONFIGURATION_BUCKET"))
-    grants = _grants(resource, bucket)
+    grants = _grants(key[0], resource, bucket)
     for action in OBJECT_ACTIONS:
         assert set(grants.get(action, [])) & {f"/{PREFIX}/*", "/*"}, (
             f"{key[0]}::{key[1]} has no {action} on {PREFIX}/* of {bucket}"

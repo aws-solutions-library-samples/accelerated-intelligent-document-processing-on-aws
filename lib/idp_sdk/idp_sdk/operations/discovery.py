@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from idp_sdk._core.naming import resolve_config_profile
-from idp_sdk.exceptions import IDPConfigurationError, IDPResourceNotFoundError
+from idp_sdk.exceptions import IDPConfigurationError
 from idp_sdk.models.discovery import (
     AutoDetectResult,
     AutoDetectSection,
@@ -965,20 +965,6 @@ class DiscoveryOperation:
         own the lookup of both and the region bridge.
         """
         return self._client.config._configure_config_env(stack_name)
-
-    def _get_config_table(self, stack_name: str) -> str:
-        """Get ConfigurationTable from stack resources."""
-        import boto3
-
-        cfn = boto3.client("cloudformation", region_name=self._client._region)
-        paginator = cfn.get_paginator("list_stack_resources")
-
-        for page in paginator.paginate(StackName=stack_name):
-            for resource in page.get("StackResourceSummaries", []):
-                if resource.get("LogicalResourceId") == "ConfigurationTable":
-                    return resource.get("PhysicalResourceId", "")
-
-        raise IDPResourceNotFoundError("ConfigurationTable not found in stack.")
 
 
 # --- Helpers for local mode ---

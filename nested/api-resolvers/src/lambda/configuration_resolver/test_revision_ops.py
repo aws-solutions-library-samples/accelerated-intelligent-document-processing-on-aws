@@ -386,3 +386,39 @@ class TestInertGatingHookRefusal:
         assert result["success"] is False
         assert result["error"]["type"] == "JSONDecodeError"
         manager.handle_update_custom_configuration.assert_not_called()
+
+
+@pytest.mark.unit
+class TestRevisionNotRecordedRefusal:
+    """A save refused because its revision could not be recorded (#1778).
+
+    Like the inert-hook refusal, it is deliberate and its message is the remedy
+    (and says whether the save was undone), so it must not come back framed as
+    `UnexpectedError`.
+    """
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Refusing to save configuration profile 'lending': it has revision "
+            "history, and this process cannot record a revision",
+            "Could not record a revision for configuration profile 'lending', so "
+            "the save was undone. Cause: S3 refused the body",
+        ],
+    )
+    def test_the_refusal_keeps_its_own_type_and_message(self, manager, message):
+        manager.handle_update_custom_configuration.side_effect = (
+            index.RevisionNotRecordedError(message)
+        )
+
+        result = index.handler(
+            _event(
+                "updateConfiguration",
+                {"versionName": "lending", "customConfig": "{}"},
+            ),
+            None,
+        )
+
+        assert result["success"] is False
+        assert result["error"]["type"] == "RevisionNotRecorded"
+        assert result["error"]["message"] == message

@@ -353,6 +353,14 @@ naming the revision they do run, the revision history marks that revision
 repair it, make any change in the editor and save, which records a revision matching
 what the editor shows; saving it unchanged does not.
 
+The same warning can appear on a profile nobody edited, when its published revision
+was recorded before a configuration section existed. Reading such a profile fills the
+missing section in from `default` and stores the result, while documents pinned to
+the published revision use the built-in defaults for that section, so the two really
+do differ. The repair is the same. Whether that fill-in should apply to pinned
+revisions too is tracked in
+[#1782](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1782).
+
 ### Test Studio: comparing two revisions of one profile
 
 Run the same test set twice, pinning a different revision each time. Each run

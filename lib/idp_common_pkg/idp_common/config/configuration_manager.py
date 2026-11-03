@@ -975,6 +975,12 @@ class ConfigurationManager:
         and restoring the older `LatestRevision` would hand that number out again
         and overwrite its body. For the BDA fields it keeps a link made while the
         save was in flight. Returns whether the head was restored.
+
+        The residual is that this is an unconditional put. A concurrent save that
+        wrote the head after this one and did not move `PublishedRevision` (it
+        failed as well, or has not reached its publish) is overwritten with the
+        older configuration. The caller declines to restore once the counter has
+        moved, which covers a concurrent save that succeeded.
         """
         if raw_previous_head is None:
             return False
@@ -1061,6 +1067,8 @@ class ConfigurationManager:
                     else None,
                 )
             except Exception as e:  # noqa: BLE001
+                # Only the pre-history snapshot is lost: control falls through to
+                # the cut below, which still records this save's own revision.
                 logger.warning(
                     f"Could not backfill pre-history revision for '{profile}': {e}"
                 )
