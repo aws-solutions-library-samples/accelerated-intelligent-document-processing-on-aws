@@ -932,7 +932,9 @@ class ConfigurationManager:
                     return
                 restored = self._restore_head(version, raw_previous_head)
                 if cut is not None:
-                    self._mark_failed_revision(version, cut, published_before)
+                    self._mark_failed_revision(
+                        version, cut, published_before, restored
+                    )
                 raise RevisionNotRecordedError(
                     f"Could not record a revision for configuration profile "
                     f"'{version}', so the save was "
@@ -949,7 +951,7 @@ class ConfigurationManager:
     FAILED_SAVE_NOTES = "Save failed; not published"
 
     def _mark_failed_revision(
-        self, profile: str, revision: int, published: int
+        self, profile: str, revision: int, published: int, restored: bool
     ) -> None:
         """
         Say on a revision entry that its save failed and it was never published.
@@ -966,6 +968,10 @@ class ConfigurationManager:
                 notes=(
                     f"{self.FAILED_SAVE_NOTES}. The profile was restored to "
                     f"r{published}, which new documents still run."
+                    if restored
+                    else f"{self.FAILED_SAVE_NOTES}. The profile could not be "
+                    f"restored and no longer matches r{published}, which new "
+                    f"documents still run."
                 ),
             )
         except Exception as e:  # noqa: BLE001

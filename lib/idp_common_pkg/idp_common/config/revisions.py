@@ -546,7 +546,17 @@ class ConfigRevisionStore:
         try:
             self.append_index(profile, entry)
         except Exception:
-            self.delete_body(profile, revision)
+            # A timeout or reset can arrive after DynamoDB applied the append, so
+            # the failure alone does not prove the entry is absent. Deleting the
+            # body under an entry that exists would leave a listed revision that
+            # cannot be viewed or restored; only an absent entry makes the body
+            # unreachable.
+            try:
+                absent = self.get_entry(profile, revision) is None
+            except Exception:  # noqa: BLE001
+                absent = False
+            if absent:
+                self.delete_body(profile, revision)
             raise
         if publish:
             self.set_published(profile, revision)

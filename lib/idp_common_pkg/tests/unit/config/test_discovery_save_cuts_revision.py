@@ -265,6 +265,33 @@ class TestASaveWhoseRevisionFailsIsUndone:
         assert entries[2]["notes"].startswith(ConfigurationManager.FAILED_SAVE_NOTES)
         assert "r1" in entries[2]["notes"]
 
+    def test_the_note_says_so_when_the_restore_itself_failed(self, monkeypatch):
+        monkeypatch.setattr(ConfigRevisionStore, "set_published", lambda *_a: None)
+        monkeypatch.setattr(ConfigurationManager, "_restore_head", lambda *_a: False)
+        with pytest.raises(RevisionNotRecordedError, match="NOT undone"):
+            _discovery_merge("Form-I-9")
+
+        entry = ConfigurationManager().list_revisions(PROFILE)[0]
+        assert entry["revision"] == 2
+        assert "could not be restored" in entry["notes"]
+        assert "was restored" not in entry["notes"]
+
+    def test_an_append_that_landed_keeps_its_body(self, monkeypatch):
+        """A failure reported after DynamoDB applied the append."""
+        real_append = ConfigRevisionStore.append_index
+
+        def append_then_fail(self, profile, entry):
+            real_append(self, profile, entry)
+            raise RuntimeError("read timeout after the write")
+
+        monkeypatch.setattr(ConfigRevisionStore, "append_index", append_then_fail)
+        with pytest.raises(RevisionNotRecordedError):
+            _discovery_merge("Form-I-9")
+
+        store = ConfigurationManager().revisions
+        assert [r["revision"] for r in store.list(PROFILE)] == [2, 1]
+        assert store.get_body(PROFILE, 2) is not None
+
     def test_a_body_whose_index_entry_fails_is_not_left_behind(self, monkeypatch):
         def refuse(*_args, **_kwargs):
             raise RuntimeError("index append throttled")
