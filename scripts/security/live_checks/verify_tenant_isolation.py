@@ -282,6 +282,9 @@ def _access_points(
     def put(ap: str, key: str) -> str:
         try:
             s3a.put_object(Bucket=ap, Key=key, Body=b"tenancy-verify")
+            # A probe that lands is a real upload and gets processed, so it is
+            # removed with the document API, which also clears its outputs and row.
+            cleanup.append(lambda k=key: client.document.delete(k, stack_name=stack))
             return "allowed"
         except ClientError as e:
             return e.response.get("Error", {}).get("Code", "error")
