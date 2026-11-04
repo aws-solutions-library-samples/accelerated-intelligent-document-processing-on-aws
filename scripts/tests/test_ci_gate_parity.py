@@ -1914,8 +1914,8 @@ def test_every_ci_job_running_this_suite_installs_the_ui_deps() -> None:
         "these CI jobs run scripts/tests without installing the UI's npm "
         "dependencies, so test_ui_test_discovery.py's three calibrations cannot run "
         "there:\n  " + "\n  ".join(missing) + "\n\n"
-        "On GitLab add `cd src/ui && npm ci --prefer-offline --no-audit && cd ../..` "
-        "to the job's before_script, with the src/ui/node_modules cache block the "
+        "On GitLab add `(cd src/ui && npm ci --prefer-offline --no-audit)` to the "
+        "job's before_script, with the src/ui/node_modules cache block the "
         f'other jobs declare. On GitHub pass `{UI_DEPS_INPUT}: "true"` to the '
         "python-env composite action. That module now FAILS rather than skips when "
         "it finds them missing under CI, so such a job is red rather than quietly "

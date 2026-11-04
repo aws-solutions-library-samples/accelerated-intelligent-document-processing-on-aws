@@ -261,7 +261,9 @@ static_checks:
     # Install UI deps ONCE here (restored from cache when unchanged). The
     # lint-cicd UI targets run with SKIP_NPM_CI=1 so they reuse this instead of
     # each doing its own `npm ci` (which previously happened 3× per run).
-    - cd src/ui && npm ci --prefer-offline --no-audit && cd ../..
+    # In a subshell, so a failed install fails this line rather than leaving the
+    # next one to run inside src/ui (scripts/tests/test_ci_cd_chains.py).
+    - (cd src/ui && npm ci --prefer-offline --no-audit)
 
   script:
     # SKIP_NPM_CI=1: UI deps already installed once in before_script, so the UI
@@ -341,7 +343,7 @@ unit_tests:
     # assertions used to skip wherever the UI dependencies were absent, which was
     # every job but `ui_tests` (#1390); the module now fails instead, so this job
     # needs them to pass as well as to check anything.
-    - cd src/ui && npm ci --prefer-offline --no-audit && cd ../..
+    - (cd src/ui && npm ci --prefer-offline --no-audit)
 
   script:
     # SKIP_INSTALL=1: idp_common[test] already installed via uv above (avoids a
@@ -452,7 +454,7 @@ package_tests:
     # fails rather than skips when it finds them missing under CI, so this line is
     # load-bearing for the job staying green as well as for the check meaning
     # anything.
-    - cd src/ui && npm ci --prefer-offline --no-audit && cd ../..
+    - (cd src/ui && npm ci --prefer-offline --no-audit)
 
   script:
     - make test-packages-cicd
@@ -488,7 +490,7 @@ ui_tests:
     # job still passed, but anything that failed after that point would have had no
     # diagnostic in the log at all, which is the worst shape a CI failure can have.
     # It silences console output from tests only; failure output is unaffected.
-    - cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent && cd ../..
+    - (cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent)
 
 deployment_validation:
   stage: deployment_validation
@@ -1440,7 +1442,7 @@ ux_test_build:
         exit 0
       fi
       printf '%s' "$UX_TEST_UI_ENV" | base64 -d > src/ui/.env.production.local
-      cd src/ui && without_job_secrets npm ci --prefer-offline --no-audit && without_job_secrets npm run build:only
+      (cd src/ui && without_job_secrets npm ci --prefer-offline --no-audit && without_job_secrets npm run build:only)
   artifacts:
     paths:
       - src/ui/build/
