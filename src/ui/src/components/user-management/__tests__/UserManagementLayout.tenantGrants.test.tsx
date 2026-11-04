@@ -121,6 +121,15 @@ describe('UserManagementLayout under an external grant source', () => {
     expect(screen.queryByText(/could not be read, so scope is not editable here/)).not.toBeInTheDocument();
   });
 
+  it('shows the real scope, not a stale tenant, once the stack is back on Manual', async () => {
+    grantSource = 'Manual';
+    render(<UserManagementLayout />);
+    await screen.findByText('granted@example.com');
+    await waitFor(() => expect(callsFor('listTenants').length).toBeGreaterThan(0));
+    expect(await screen.findByText('acme-*')).toBeInTheDocument();
+    expect(screen.queryByText('Tenant: acme')).not.toBeInTheDocument();
+  });
+
   it('keeps the configuration axis under Manual', async () => {
     grantSource = 'Manual';
     render(<UserManagementLayout />);

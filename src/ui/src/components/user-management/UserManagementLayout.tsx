@@ -429,7 +429,9 @@ const UserManagementLayout = (): React.JSX.Element => {
     if (userVersions && userVersions.length === 1 && userVersions[0] === NO_TENANT_GRANTED) {
       return <Badge color="red">No tenant granted</Badge>;
     }
-    if (user?.scopeTenant) {
+    // Only while a grant source owns the scope: a row granted before the stack returned
+    // to Manual can still carry the tenant, and showing it would hide the real scope.
+    if (user?.scopeTenant && externalGrants) {
       return (
         <SpaceBetween direction="horizontal" size="xxs">
           <Badge color="blue">Tenant: {user.scopeTenant}</Badge>

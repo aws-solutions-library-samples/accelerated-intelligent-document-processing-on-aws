@@ -1230,6 +1230,29 @@ class TestExternalGrantSourcesOwnTheScope:
             )
         assert result["allowedConfigVersions"] == ["v3"]
 
+    def test_a_manual_edit_drops_a_tenant_a_grant_source_recorded(
+        self, users_table, monkeypatch
+    ):
+        """After the stack returns to Manual, the tenant an earlier grant recorded
+        no longer describes a scope an Admin edits by hand."""
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", "Manual")
+        index = _load_index()
+        users_table.put_item(
+            Item=dict(
+                ANNOTATOR_ITEM,
+                allowedConfigVersions=["acme-*"],
+                scopeTenant="acme",
+                scopeSource="idp",
+            )
+        )
+        with patch.object(index, "sync_user_to_cognito"):
+            result = index.update_user(
+                {"userId": "u-1", "allowedConfigVersions": ["v3"]}
+            )
+        assert result["allowedConfigVersions"] == ["v3"]
+        stored = users_table.get_item(Key={"PK": "USER#u-1", "SK": "USER#u-1"})["Item"]
+        assert "scopeTenant" not in stored and "scopeSource" not in stored
+
 
 class TestSetUserTenant:
     """``setUserTenant``: an entitlement system pushing one user's tenant."""

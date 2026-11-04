@@ -449,6 +449,9 @@ def update_user(args):
 
     if config_versions_given:
         _refuse_manual_scope_edit()
+        # An Admin edit is a manual scope, so any tenant a grant source recorded on
+        # this row (before the stack returned to Manual) no longer describes it.
+        remove_parts.extend(["scopeTenant", "scopeSource"])
         if allowed_config_versions:
             _refuse_scope_crossing_tenants(allowed_config_versions)
             set_parts.append("allowedConfigVersions = :acv")
