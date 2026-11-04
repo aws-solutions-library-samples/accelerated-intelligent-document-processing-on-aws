@@ -174,6 +174,37 @@ def test_the_no_tenant_marker_cannot_be_a_profile_name():
 
 @pytest.mark.unit
 @mock_aws
+def test_a_grant_by_email_alone_refuses_an_ambiguous_address():
+    """An API push knows only the email. With two rows for it, the one not chosen
+    may hold the pointer resolution reads first, so the push is refused rather
+    than reported as applied. A claim grant carries the sub, so it is unaffected."""
+    ddb, table = _users_table()
+    _row(table, "u1", email="ann@example.com", persona="Viewer")
+    _row(
+        table,
+        "u2",
+        email="ann@example.com",
+        persona="Viewer",
+        cognitoSub="sub-1",
+        allowedConfigVersions=["globex_*"],
+    )
+    with pytest.raises(ValueError, match="More than one user record"):
+        _grant(table, ["IdP-Viewers", "tenant.acme"], email="ann@example.com")
+    assert (
+        table.get_item(Key=user_row_key("u1"))["Item"].get("allowedConfigVersions")
+        is None
+    )
+    result = _grant(
+        table,
+        ["IdP-Viewers", "tenant.acme"],
+        email="ann@example.com",
+        cognito_sub="sub-1",
+    )
+    assert result["action"] == "updated"
+
+
+@pytest.mark.unit
+@mock_aws
 def test_a_grant_whose_pointer_cannot_be_written_raises(monkeypatch):
     """The pointer decides resolution ahead of the email join, so a grant whose
     pointer write failed must not report success: the sign-in or push fails."""

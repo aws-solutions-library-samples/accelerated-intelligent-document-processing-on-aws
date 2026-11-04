@@ -166,7 +166,7 @@ def record_cognito_sub(
 
 
 def find_user_row(
-    table: Any, *, email: str, cognito_sub: str = ""
+    table: Any, *, email: str, cognito_sub: str = "", unique: bool = False
 ) -> Optional[Dict[str, Any]]:
     """A user's row: through the ``SUB#`` pointer first, then ``EmailIndex``.
 
@@ -193,6 +193,13 @@ def find_user_row(
         )
         # Pointer items carry no email (see record_cognito_sub), so every item here
         # is a user row.
+        if unique and len(items) > 1:
+            raise ValueError(
+                f"More than one user record has the email {email}, so which one "
+                "decides this user's access cannot be told from the address alone. "
+                "Remove the duplicate in User Management, or have the user sign in "
+                "once so their account can be identified, then try again."
+            )
         if items:
             return items[0]
     return None
@@ -236,7 +243,13 @@ def apply_tenant_grant(
     Returns ``{"action": "admin-unchanged" | "updated" | "created" | "missing",
     "userId", "allowedConfigVersions", "tenant"}``.
     """
-    row = find_user_row(users_table, email=email, cognito_sub=cognito_sub)
+    # Without a sub (an API push knows only the email) the row is found by address
+    # alone. If two rows share it, the other may hold the SUB# pointer that
+    # resolution reads first, so a grant written to this one could report success
+    # and change nothing. Refuse instead of guessing.
+    row = find_user_row(
+        users_table, email=email, cognito_sub=cognito_sub, unique=not cognito_sub
+    )
     scope = scope_for_resolution(resolution)
     tenant = resolution.get("tenant") or {}
     tenant_id = tenant.get("tenantId") or None

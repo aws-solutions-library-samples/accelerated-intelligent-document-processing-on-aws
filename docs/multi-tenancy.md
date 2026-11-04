@@ -279,7 +279,9 @@ provisioning script, owns tenant membership. It calls one of:
 - `client.tenancy.set_user_tenant(email, tenant_id)` in the SDK.
 
 The user must already exist: the call refuses an unknown address rather than create an
-account. A `tenantId` that is not declared is refused, and so is an Admin. Granting a
+account. It also refuses an address that more than one user record holds, because
+it could not tell which record decides that user's access; remove the duplicate in
+User Management first. A `tenantId` that is not declared is refused, and so is an Admin. Granting a
 tenant replaces the previous one. The tenant's **Granted by** values are not used by
 this route; the tenant ID is what the entitlement system sends. All three refuse when
 the stack's `TenantGrantSource` is not `Api`.
