@@ -3039,7 +3039,8 @@ optional `--region`.
 | Subcommand | Purpose |
 |---|---|
 | `list [--json]` | Print the declared tenants |
-| `put --tenant-id ID --prefix P [--prefix P2 …] --profile-pattern PAT [--description D]` | Create or replace one tenant. Refused when it overlaps another tenant or an existing prefix mapping would cross it — the same checks the web UI applies |
+| `put --tenant-id ID --prefix P [--prefix P2 …] --profile-pattern PAT [--granted-by V …] [--description D]` | Create or replace one tenant. Refused when it overlaps another tenant or an existing prefix mapping would cross it — the same checks the web UI applies. `--granted-by` (repeatable, at most three) names the claim or entitlement values that grant the tenant; a value may grant only one tenant |
+| `set-user-tenant --email ADDR [--tenant ID] [--json]` | Grant one existing user one tenant, or none when `--tenant` is omitted. Only when the stack's `TenantGrantSource` is `Api`; an Admin is refused. See [Who grants a tenant](multi-tenancy.md#who-grants-a-tenant) |
 | `delete --tenant-id ID [--yes]` | Remove one declaration. Mappings, profiles and documents are untouched |
 | `apply --file tenants.yaml [--prune] [--yes] [--json]` | Make the declarations match a file. Prints the plan and writes nothing unless `--yes` is given; `--prune` also deletes tenants the file does not declare. The whole plan is validated before anything is written |
 | `generate-policies --principals principals.yaml [--output FILE]` | Write a CloudFormation template creating one Input-bucket and one Output-bucket S3 Access Point per tenant, confined to that tenant's prefixes |
@@ -3053,6 +3054,7 @@ tenants:
   - tenantId: acme
     prefixes: [clients/acme/]
     profilePattern: acme-*
+    grantedBy: [tenant.acme]   # optional; read when TenantGrantSource is IdpClaim
     description: ACME Corp
   - tenantId: globex
     prefixes: [clients/globex/, feeds/globex/]

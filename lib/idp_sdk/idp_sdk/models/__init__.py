@@ -101,6 +101,7 @@ from .tenancy import (
     TenantPlanAction,
     TenantPlanItem,
     TenantPolicyResult,
+    TenantUserGrant,
     TenantVerifyCheck,
     TenantVerifyOutcome,
     TenantVerifyResult,
@@ -223,5 +224,6 @@ __all__ = [
     "TenantPolicyResult",
     "TenantVerifyCheck",
     "TenantVerifyOutcome",
+    "TenantUserGrant",
     "TenantVerifyResult",
 ]

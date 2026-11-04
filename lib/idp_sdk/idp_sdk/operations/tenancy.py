@@ -28,6 +28,7 @@ from idp_sdk.models.tenancy import (
     TenantPlanAction,
     TenantPlanItem,
     TenantPolicyResult,
+    TenantUserGrant,
     TenantVerifyResult,
 )
 
@@ -46,6 +47,7 @@ def _to_info(entry: Mapping[str, Any]) -> TenantInfo:
         tenant_id=entry["tenantId"],
         prefixes=list(entry.get("prefixes") or []),
         profile_pattern=entry.get("profilePattern") or "",
+        granted_by=list(entry.get("grantedBy") or []),
         description=entry.get("description"),
         created_at=entry.get("createdAt"),
         created_by=entry.get("createdBy"),
@@ -58,6 +60,7 @@ def _comparable(entry: Mapping[str, Any]) -> tuple:
     return (
         tuple(sorted(entry.get("prefixes") or [])),
         entry.get("profilePattern") or "",
+        tuple(sorted(entry.get("grantedBy") or [])),
         entry.get("description") or None,
     )
 
@@ -150,6 +153,72 @@ class TenancyOperation:
                 return p.get("ParameterValue")
         return None
 
+    def grant_source(self, stack_name: Optional[str] = None) -> str:
+        """The stack's ``TenantGrantSource``: ``Manual``, ``IdpClaim`` or ``Api``.
+
+        ``Manual`` for a stack that predates the parameter, which behaves that way.
+        """
+        name = self._client._require_stack(stack_name)
+        return self._parameter(name, "TenantGrantSource") or "Manual"
+
+    def set_user_tenant(
+        self,
+        email: str,
+        tenant_id: Optional[str],
+        *,
+        stack_name: Optional[str] = None,
+    ) -> TenantUserGrant:
+        """Grant one user one tenant, or no tenant (``tenant_id=None``).
+
+        For an entitlement system (SailPoint, a provisioning script) pushing grants
+        with IAM credentials. Allowed only when the stack's ``TenantGrantSource``
+        is ``Api``. Writes through the same code as the API's ``setUserTenant``:
+        the user's scope becomes exactly the tenant's profile pattern, or the
+        scope no profile matches. The user must already exist; an Admin is refused
+        because the role is cross-tenant by design.
+        """
+        from idp_common.config.tenants import GRANT_NONE, GRANT_TENANT
+        from idp_common.user_scope import SCOPE_SOURCE_API, apply_tenant_grant
+
+        name = self._client._require_stack(stack_name)
+        source = self.grant_source(name)
+        if source != "Api":
+            raise IDPValidationError(
+                f"set_user_tenant is available only when TenantGrantSource is Api; "
+                f"stack {name!r} uses {source}."
+            )
+        tenants, _ = self._stores(name)
+        declared = tenants.list()
+        if tenant_id:
+            tenant = next((t for t in declared if t["tenantId"] == tenant_id), None)
+            if tenant is None:
+                raise IDPValidationError(f"Tenant {tenant_id!r} is not declared.")
+            resolution = {"outcome": GRANT_TENANT, "tenant": tenant, "reason": None}
+        else:
+            resolution = {"outcome": GRANT_NONE, "tenant": None, "reason": None}
+        found = self._resources(name, {"UsersTable"})
+        if not found.get("UsersTable"):
+            raise IDPResourceNotFoundError(f"UsersTable not found in stack '{name}'")
+        outcome = apply_tenant_grant(
+            self._table(found["UsersTable"]),
+            email=email,
+            resolution=resolution,
+            source=SCOPE_SOURCE_API,
+            create_missing=False,
+        )
+        if outcome["action"] == "missing":
+            raise IDPResourceNotFoundError(f"No user with email {email!r}.")
+        if outcome["action"] == "admin-unchanged":
+            raise IDPValidationError(
+                "Admin users are cross-tenant by design and are not granted a tenant."
+            )
+        return TenantUserGrant(
+            email=email,
+            user_id=outcome["userId"],
+            tenant_id=outcome["tenant"],
+            allowed_config_versions=list(outcome["allowedConfigVersions"] or []),
+        )
+
     def isolation_mode(self, stack_name: Optional[str] = None) -> str:
         """The stack's ``TenantIsolationMode`` parameter, or ``Unknown``."""
         name = self._client._require_stack(stack_name)
@@ -186,6 +255,7 @@ class TenancyOperation:
             tenants=[_to_info(e) for e in entries],
             count=len(entries),
             isolation_mode=self.isolation_mode(name),
+            grant_source=self.grant_source(name),
         )
 
     def put(
@@ -195,10 +265,15 @@ class TenancyOperation:
         profile_pattern: str,
         *,
         description: Optional[str] = None,
+        granted_by: Optional[Sequence[str]] = None,
         stack_name: Optional[str] = None,
         actor: Optional[str] = None,
     ) -> TenantInfo:
         """Create or replace one declaration.
+
+        ``granted_by`` lists the claim or entitlement values that grant this tenant
+        when the stack's ``TenantGrantSource`` is ``IdpClaim`` or ``Api`` -- for
+        example an Entra app-role value such as ``tenant.acme``.
 
         Refused (``IDPValidationError``) when the declaration is malformed, overlaps
         another tenant, would put an existing prefix mapping across a tenant
@@ -221,6 +296,7 @@ class TenancyOperation:
                 list(prefixes),
                 profile_pattern,
                 description=description,
+                granted_by=list(granted_by or []),
                 actor=actor or "idp-cli",
                 validate_against=lambda t: (
                     mappings_rejection_reason(existing_mappings, t)
@@ -275,6 +351,7 @@ class TenancyOperation:
                     "prefixes": raw.get("prefixes"),
                     "profilePattern": raw.get("profilePattern")
                     or raw.get("profile_pattern"),
+                    "grantedBy": raw.get("grantedBy") or raw.get("granted_by"),
                     "description": raw.get("description"),
                 }
             )
@@ -353,6 +430,7 @@ class TenancyOperation:
                         after.prefixes,
                         after.profile_pattern,
                         description=after.description,
+                        granted_by=after.granted_by,
                         stack_name=name,
                         actor=actor,
                     )
@@ -506,6 +584,10 @@ class TenancyOperation:
         return result
 
     def _audit_users(self, stack_name, tenants, result, scope_rejection_reason) -> None:
+        from idp_common.user_scope import NO_TENANT_GRANTED
+
+        external = self.grant_source(stack_name) in ("IdpClaim", "Api")
+        patterns = {t["profilePattern"] for t in tenants}
         found = self._resources(stack_name, {"UsersTable", "UserPool"})
         if not found.get("UsersTable"):
             result.notes.append("No UsersTable on this stack; users were not examined.")
@@ -549,8 +631,39 @@ class TenancyOperation:
                             kind="unscoped-user",
                             subject=email,
                             detail=(
-                                f"{row.get('persona')} with no configuration scope: sees "
-                                f"every tenant's documents unless the stack is Strict."
+                                f"{row.get('persona')} with no configuration scope: "
+                                + (
+                                    "sees no documents until a tenant is granted."
+                                    if external
+                                    else "sees every tenant's documents unless the "
+                                    "stack is Strict."
+                                )
+                            ),
+                        )
+                    )
+                    continue
+                if list(scope) == [NO_TENANT_GRANTED]:
+                    result.findings.append(
+                        TenantAuditFinding(
+                            kind="no-tenant-granted",
+                            subject=email,
+                            detail=(
+                                f"{row.get('persona')} granted no tenant (none, or "
+                                f"more than one, at the last grant): sees no documents."
+                            ),
+                        )
+                    )
+                    continue
+                if external and not (len(scope) == 1 and scope[0] in patterns):
+                    result.findings.append(
+                        TenantAuditFinding(
+                            kind="non-tenant-scope",
+                            subject=email,
+                            detail=(
+                                f"Scope {list(scope)!r} is not one tenant's pattern, "
+                                f"although tenants are granted externally; it was set "
+                                f"before the grant source changed, and is replaced at "
+                                f"the user's next grant."
                             ),
                         )
                     )

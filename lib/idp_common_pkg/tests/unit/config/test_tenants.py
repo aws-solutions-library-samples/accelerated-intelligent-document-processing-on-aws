@@ -425,6 +425,25 @@ def test_store_round_trip_and_refusals():
 
 @pytest.mark.unit
 @mock_aws
+def test_an_over_cap_deployment_can_shrink_but_not_grow(monkeypatch):
+    """A stack declared before the cap fell may hold more tenants than it allows.
+    Edits and deletes must still work there, or the only way back under the cap is
+    refused; adding one more is what the cap refuses."""
+    store = t.TenantStore(_config_table())
+    for i in range(3):
+        store.put(f"t{i}", [f"clients/t{i}/"], f"t{i}-*")
+    monkeypatch.setattr(t, "MAX_TENANTS", 2)
+    with pytest.raises(ValueError, match="at most 2 tenants"):
+        store.put("t3", ["clients/t3/"], "t3-*")
+    store.put("t0", ["clients/t0/", "extra/t0/"], "t0-*")
+    assert store.delete("t2") is True
+    assert [x["tenantId"] for x in store.list()] == ["t0", "t1"]
+    with pytest.raises(ValueError, match="at most 2 tenants"):
+        store.put("t2", ["clients/t2/"], "t2-*")
+
+
+@pytest.mark.unit
+@mock_aws
 def test_the_index_is_not_a_profile_key():
     assert not t.TENANT_INDEX_KEY.startswith("Config#")
 
@@ -438,6 +457,10 @@ def test_the_bounds_hold_the_item_limit():
         "prefixes": [("p" * 510) + f"{i}/" for i in range(t.MAX_PREFIXES_PER_TENANT)],
         "profilePattern": "s" * 47 + "-*",
         "description": "d" * 500,
+        "grantedBy": [
+            ("g" * (t._MAX_GRANT_LEN - 2)) + f"{i:02d}"
+            for i in range(t.MAX_GRANTS_PER_TENANT)
+        ],
         "createdAt": "2026-01-01T00:00:00.000000Z",
         "createdBy": "c" * 256,
         "updatedAt": "2026-01-01T00:00:00.000000Z",
@@ -522,3 +545,94 @@ def test_stored_scopes_rejection_names_one_user_and_counts_the_rest():
     assert reason and "wide@x" in reason and "1 other user(s)" in reason
     assert t.stored_scopes_rejection_reason(scopes[:1], TENANTS) is None
     assert t.stored_scopes_rejection_reason(scopes, []) is None
+
+
+# ---------------------------------------------------------------------------
+# Grants: which claim or entitlement values grant a tenant
+# ---------------------------------------------------------------------------
+
+ACME_GRANTED = {**ACME, "grantedBy": ["tenant.acme", "Acme Users"]}
+GLOBEX_GRANTED = {**GLOBEX, "grantedBy": ["tenant.globex"]}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "granted_by,fragment",
+    [
+        ([f"g{i}" for i in range(t.MAX_GRANTS_PER_TENANT + 1)], "at most"),
+        (["tenant.acme", "tenant.acme"], "listed twice"),
+        ([" tenant.acme"], "whitespace"),
+        (["tenant.acme "], "whitespace"),
+        (["g" * (t._MAX_GRANT_LEN + 1)], "bytes"),
+    ],
+)
+def test_malformed_grants_are_refused(granted_by, fragment):
+    reason = t.tenant_rejection_reason({**ACME, "grantedBy": granted_by}, [])
+    assert reason and fragment in reason
+
+
+@pytest.mark.unit
+def test_well_formed_grants_are_accepted():
+    grants = [f"g{i}" for i in range(t.MAX_GRANTS_PER_TENANT)]
+    assert t.tenant_rejection_reason({**ACME, "grantedBy": grants}, []) is None
+    assert t.tenant_rejection_reason(ACME, []) is None
+
+
+@pytest.mark.unit
+def test_a_grant_value_may_grant_only_one_tenant():
+    entry = {**GLOBEX, "grantedBy": ["tenant.globex", "Acme Users"]}
+    reason = t.tenant_rejection_reason(entry, [ACME_GRANTED])
+    assert reason and "already grants tenant 'acme'" in reason
+    # Re-saving a tenant with its own values is not a collision with itself.
+    assert t.tenant_rejection_reason(ACME_GRANTED, [ACME_GRANTED]) is None
+
+
+@pytest.mark.unit
+def test_normalize_defaults_granted_by_to_empty():
+    assert t.normalize_tenant(ACME)["grantedBy"] == []
+    assert t.normalize_tenant(ACME_GRANTED)["grantedBy"] == [
+        "tenant.acme",
+        "Acme Users",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "values,outcome,tenant",
+    [
+        ([], t.GRANT_NONE, None),
+        (["IdP-Viewers"], t.GRANT_NONE, None),
+        (["IdP-Viewers", "tenant.acme"], t.GRANT_TENANT, "acme"),
+        # Two values granting the same tenant are one tenant.
+        (["tenant.acme", "Acme Users"], t.GRANT_TENANT, "acme"),
+        (["tenant.acme", "tenant.globex"], t.GRANT_REFUSED, None),
+        # Grant values are compared exactly: a case variant grants nothing.
+        (["TENANT.ACME"], t.GRANT_NONE, None),
+    ],
+)
+def test_resolve_grants(values, outcome, tenant):
+    resolution = t.resolve_grants(values, [ACME_GRANTED, GLOBEX_GRANTED])
+    assert resolution["outcome"] == outcome
+    assert (resolution["tenant"] or {}).get("tenantId") == tenant
+    if outcome == t.GRANT_REFUSED:
+        assert "acme, globex" in resolution["reason"]
+        assert "one tenant" in resolution["reason"]
+
+
+@pytest.mark.unit
+def test_resolve_grants_ignores_tenants_with_no_grants():
+    assert t.resolve_grants(["tenant.acme"], TENANTS)["outcome"] == t.GRANT_NONE
+
+
+@pytest.mark.unit
+@mock_aws
+def test_store_round_trips_and_refuses_grants():
+    store = t.TenantStore(_config_table())
+    store.put("acme", ["clients/acme/"], "acme-*", granted_by=["tenant.acme"])
+    assert store.get("acme")["grantedBy"] == ["tenant.acme"]
+    with pytest.raises(ValueError, match="already grants tenant"):
+        store.put("globex", ["clients/globex/"], "globex_*", granted_by=["tenant.acme"])
+    assert store.get("globex") is None
+    # Omitting grantedBy on an edit clears it: put is a full replace.
+    store.put("acme", ["clients/acme/"], "acme-*")
+    assert store.get("acme")["grantedBy"] == []

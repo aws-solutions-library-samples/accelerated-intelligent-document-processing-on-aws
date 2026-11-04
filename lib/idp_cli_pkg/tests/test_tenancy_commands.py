@@ -193,3 +193,86 @@ def test_verify_exit_code_per_outcome(
     assert result.exit_code == expected_code
     assert json.loads(result.stdout)["outcome"] == expected
     assert client.tenancy.verify.call_args.args == (b"%PDF", "d.pdf")
+
+
+@pytest.mark.unit
+def test_put_passes_every_granted_by_value(runner, client):
+    client.tenancy.put.return_value = TenantInfo(
+        tenant_id="acme",
+        prefixes=["a/"],
+        profile_pattern="acme-*",
+        granted_by=["tenant.acme", "Acme Users"],
+    )
+    result = _invoke(
+        runner,
+        "put",
+        "--tenant-id",
+        "acme",
+        "--prefix",
+        "a/",
+        "--profile-pattern",
+        "acme-*",
+        "--granted-by",
+        "tenant.acme",
+        "--granted-by",
+        "Acme Users",
+    )
+    assert result.exit_code == 0
+    assert client.tenancy.put.call_args.kwargs["granted_by"] == [
+        "tenant.acme",
+        "Acme Users",
+    ]
+
+
+@pytest.mark.unit
+def test_set_user_tenant_json_is_the_only_stdout(runner, client):
+    from idp_sdk import TenantUserGrant
+
+    client.tenancy.set_user_tenant.return_value = TenantUserGrant(
+        email="ann@example.com",
+        user_id="u1",
+        tenant_id="acme",
+        allowed_config_versions=["acme-*"],
+    )
+    result = _invoke(
+        runner,
+        "set-user-tenant",
+        "--email",
+        "ann@example.com",
+        "--tenant",
+        "acme",
+        "--json",
+    )
+    assert result.exit_code == 0
+    assert client.tenancy.set_user_tenant.call_args.args == ("ann@example.com", "acme")
+    assert json.loads(result.stdout)["allowed_config_versions"] == ["acme-*"]
+
+
+@pytest.mark.unit
+def test_set_user_tenant_without_a_tenant_grants_none(runner, client):
+    from idp_sdk import TenantUserGrant
+
+    client.tenancy.set_user_tenant.return_value = TenantUserGrant(
+        email="ann@example.com",
+        user_id="u1",
+        tenant_id=None,
+        allowed_config_versions=["!no-tenant-granted"],
+    )
+    result = _invoke(runner, "set-user-tenant", "--email", "ann@example.com")
+    assert result.exit_code == 0
+    assert client.tenancy.set_user_tenant.call_args.args == ("ann@example.com", None)
+    assert "no tenant" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.unit
+def test_set_user_tenant_refusal_exits_1(runner, client):
+    client.tenancy.set_user_tenant.side_effect = IDPValidationError(
+        "set_user_tenant is available only when TenantGrantSource is Api"
+    )
+    result = _invoke(
+        runner, "set-user-tenant", "--email", "ann@example.com", "--tenant", "acme"
+    )
+    assert result.exit_code == 1
+    assert "TenantGrantSource is Api" in result.stderr
+    assert result.stdout == ""

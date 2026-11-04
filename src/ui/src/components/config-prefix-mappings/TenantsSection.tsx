@@ -42,10 +42,24 @@ interface FormState {
   tenantId: string;
   prefixes: string[];
   profilePattern: string;
+  // Comma-separated in the form; stored as a list.
+  grantedBy: string;
   description: string;
 }
 
-const EMPTY_FORM: FormState = { tenantId: '', prefixes: [''], profilePattern: '', description: '' };
+const EMPTY_FORM: FormState = { tenantId: '', prefixes: [''], profilePattern: '', grantedBy: '', description: '' };
+
+const splitGrants = (value: string): string[] =>
+  value
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+
+const GRANT_SOURCE_TEXT: Record<string, string> = {
+  IdpClaim:
+    "Users are granted a tenant at each sign-in from the identity provider's group or role claim, matched against each tenant's Granted by values.",
+  Api: "Users are granted a tenant by an entitlement system through setUserTenant or 'idp-cli tenancy set-user-tenant', using each tenant's ID.",
+};
 
 const tenantIdError = (value: string): string | null =>
   !value || TENANT_ID_RE.test(value) ? null : 'Lowercase letters, digits and hyphens only, starting with a letter or digit (at most 63).';
@@ -63,7 +77,7 @@ const patternError = (value: string): string | null =>
     : "Use a literal stem ending in '-', '_' or '.', then '*' — for example acme-*. 'acme*' would also match 'acmecorp-invoices'.";
 
 const TenantsSection = (): React.JSX.Element => {
-  const { tenants, isolationMode, loading, error, setError, loadTenants, saveTenant, removeTenant } = useTenants();
+  const { tenants, isolationMode, grantSource, loading, error, setError, loadTenants, saveTenant, removeTenant } = useTenants();
 
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -103,6 +117,7 @@ const TenantsSection = (): React.JSX.Element => {
         tenantId: tenant.tenantId,
         prefixes: tenant.prefixes.length ? [...tenant.prefixes] : [''],
         profilePattern: tenant.profilePattern,
+        grantedBy: (tenant.grantedBy ?? []).join(', '),
         description: tenant.description ?? '',
       });
       setEditingId(tenant.tenantId);
@@ -117,6 +132,7 @@ const TenantsSection = (): React.JSX.Element => {
       tenantId: form.tenantId,
       prefixes: cleanedPrefixes,
       profilePattern: form.profilePattern,
+      grantedBy: splitGrants(form.grantedBy),
       description: form.description,
     });
     setSaving(false);
@@ -158,6 +174,20 @@ const TenantsSection = (): React.JSX.Element => {
       id: 'profilePattern',
       header: 'Profile pattern',
       cell: (t: Tenant) => <code>{t.profilePattern}</code>,
+    },
+    {
+      id: 'grantedBy',
+      header: 'Granted by',
+      cell: (t: Tenant) =>
+        t.grantedBy && t.grantedBy.length ? (
+          <SpaceBetween size="xxs">
+            {t.grantedBy.map((g) => (
+              <code key={g}>{g}</code>
+            ))}
+          </SpaceBetween>
+        ) : (
+          <Box color="text-body-secondary">—</Box>
+        ),
     },
     {
       id: 'description',
@@ -221,6 +251,15 @@ const TenantsSection = (): React.JSX.Element => {
             </Alert>
           )}
 
+          {grantSource && grantSource !== 'Manual' && (
+            <Alert
+              type="info"
+              header={`Tenants are granted by ${grantSource === 'IdpClaim' ? 'the identity provider' : 'an entitlement system'}`}
+            >
+              {GRANT_SOURCE_TEXT[grantSource] ?? ''} A user granted more than one tenant is granted none. Admins cannot edit scopes in User
+              Management. This is set by the stack&apos;s TenantGrantSource parameter.
+            </Alert>
+          )}
           {isolationMode === 'Strict' && (
             <Alert type="info" header="Strict tenant isolation is on">
               Non-admin users with no configuration scope see no documents, and a document is processed only when its folder and its
@@ -333,6 +372,17 @@ const TenantsSection = (): React.JSX.Element => {
                 value={form.profilePattern}
                 onChange={({ detail }) => setForm((f) => ({ ...f, profilePattern: detail.value }))}
                 placeholder="acme-*"
+              />
+            </FormField>
+
+            <FormField
+              label="Granted by"
+              description="Optional, comma-separated. Values of the identity provider's group or role claim (for example an Entra app-role value such as tenant.acme) or entitlement names that grant this tenant when the stack's TenantGrantSource is IdpClaim or Api. A value may grant only one tenant."
+            >
+              <Input
+                value={form.grantedBy}
+                onChange={({ detail }) => setForm((f) => ({ ...f, grantedBy: detail.value }))}
+                placeholder="tenant.acme"
               />
             </FormField>
 

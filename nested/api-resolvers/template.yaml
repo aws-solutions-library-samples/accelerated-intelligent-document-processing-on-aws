@@ -72,6 +72,12 @@ Parameters:
     Default: "Off"
     AllowedValues: ["Off", "Strict"]
     Description: Parent's TenantIsolationMode. Strict denies unscoped non-Admin callers.
+
+  TenantGrantSource:
+    Type: String
+    Default: "Manual"
+    AllowedValues: ["Manual", "IdpClaim", "Api"]
+    Description: Parent's TenantGrantSource. IdpClaim and Api deny unscoped non-Admin callers.
   
   # S3 Buckets
   InputBucketName:
@@ -475,6 +481,7 @@ Resources:
         Variables:
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           SETTINGS_PARAMETER: !Ref SettingsParameterName
           # create_document_service() (imported at module load) reads
@@ -585,6 +592,7 @@ Resources:
       Environment:
         Variables:
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           CHAT_MESSAGES_TABLE: !Ref ChatMessagesTableName
           AGENT_CHAT_PROCESSOR_FUNCTION: !Ref AgentChatProcessorFunctionArn
@@ -650,6 +658,7 @@ Resources:
       Environment:
         Variables:
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           AGENT_TABLE: !Ref AgentTableName
           AGENT_PROCESSOR_FUNCTION: !Ref AgentProcessorFunctionArn
@@ -804,6 +813,7 @@ Resources:
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref ConfigurationResolverFunctionLogGroup
       Policies:
@@ -991,6 +1001,7 @@ Resources:
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
           USER_POOL_ID: !Ref UserPoolId
           QUEUE_URL: !Ref DocumentQueueUrl
@@ -1146,6 +1157,7 @@ Resources:
         Variables:
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           OUTPUT_BUCKET: !Ref OutputBucketName
           EVALUATION_BASELINE_BUCKET: !If
@@ -1359,6 +1371,7 @@ Resources:
         Variables:
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE_NAME: !Ref TrackingTableName
           INPUT_BUCKET: !Ref InputBucketName
@@ -1803,6 +1816,7 @@ Resources:
           # without RBAC.
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # RBAC: per-DOCUMENT scope on the Input and Output buckets. INPUT_BUCKET
           # and OUTPUT_BUCKET above are likewise not only allow-list entries — they
           # name the two buckets whose objects belong to a document, and
@@ -2004,6 +2018,7 @@ Resources:
           # single-user / pre-RBAC deployments (fail-open).
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref GetStepFunctionExecutionResolverFunctionLogGroup
       Policies:
@@ -2210,6 +2225,7 @@ Resources:
           # `testset_scope` resolves from the UsersTable EmailIndex.
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # Review queues: a document in review is regrouped only by the holder of
           # its review item, read from HITLTable.
           HITL_TABLE_NAME: !Ref HITLTableName
@@ -2342,6 +2358,7 @@ Resources:
       Environment:
         Variables:
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           KB_ACCOUNT_ID: !Ref AWS::AccountId
           KB_REGION: !Ref AWS::Region
@@ -2475,6 +2492,7 @@ Resources:
           # a scope that cannot be evaluated is not a caller without restrictions.
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # The config prefix mappings, so a reprocess with no explicit profile
           # re-resolves them — which is how an operator re-runs a backlog under a
           # new profile. This resolver had no ConfigurationTable grant at all
@@ -2631,6 +2649,7 @@ Resources:
         Variables:
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           OUTPUT_BUCKET: !Ref OutputBucketName
           TRACKING_TABLE: !Ref TrackingTableName
@@ -2733,6 +2752,7 @@ Resources:
           # version outside their scope.
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref SyncBdaIdpResolverFunctionLogGroup
       Policies:
@@ -2841,6 +2861,7 @@ Resources:
         Variables:
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE: !Ref TrackingTableName
           BASELINE_BUCKET: !Ref EvaluationBaselineBucketName
@@ -3028,6 +3049,7 @@ Resources:
           # startTestRun a way to place documents into another scope's view.
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref TestRunnerFunctionLogGroup
       Policies:
@@ -3133,6 +3155,7 @@ Resources:
           # "unrestricted" and a scoped Annotator would be denied everything.
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # Inbox notices for Test Studio assignments (assigned, unassigned).
           NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
           # Assignees must be in the Cognito Annotator group.
@@ -3316,6 +3339,7 @@ Resources:
           # scope that cannot be evaluated is not a caller without restrictions.
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # The in-review check on section-result uploads: a document in a review
           # queue is edited only through its queue item, so an upload of one of its
           # section results to the Output bucket is refused (QUEUE_MANAGED).
@@ -3455,6 +3479,7 @@ Resources:
           TRACKING_TABLE_NAME: !Ref TrackingTableName
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref ListDocumentsByDateRangeResolverFunctionLogGroup
       Policies:
@@ -3511,6 +3536,7 @@ Resources:
           TRACKING_TABLE_NAME: !Ref TrackingTableName
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       Policies:
         - Statement:
             - Effect: Allow
@@ -3714,6 +3740,7 @@ Resources:
           # the caller's configuration scope, which needs the scope lookup.
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # field -> resolver function ARN. Fields absent here are served by
           # ddb_direct.py (discovery/agent jobs, getDocument, date queries).
           # field -> resolver function ARN map is large (~60 ARNs > 4KB env

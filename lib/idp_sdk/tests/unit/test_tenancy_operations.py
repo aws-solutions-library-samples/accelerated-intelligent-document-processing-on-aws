@@ -4,7 +4,7 @@
 ``client.tenancy``: declarations, the access-point template, the audit and the live
 check's orchestration.
 
-The stack lookups are replaced (`_resources`, `isolation_mode`) and the tables are
+The stack lookups are replaced (`_resources`, `isolation_mode`, `grant_source`) and the tables are
 moto, so what runs is the real store, the real boundary rules from
 ``idp_common.config.tenants`` and the real template builder.
 """
@@ -60,6 +60,14 @@ def _make_tables():
         AttributeDefinitions=[
             {"AttributeName": "PK", "AttributeType": "S"},
             {"AttributeName": "SK", "AttributeType": "S"},
+            {"AttributeName": "email", "AttributeType": "S"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "EmailIndex",
+                "KeySchema": [{"AttributeName": "email", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }
         ],
         BillingMode="PAY_PER_REQUEST",
     )
@@ -97,6 +105,7 @@ def tenancy(aws_credentials, monkeypatch):
             lambda stack, ids: {k: v for k, v in resources.items() if k in ids},
         )
         monkeypatch.setattr(op, "isolation_mode", lambda stack_name=None: "Strict")
+        monkeypatch.setattr(op, "grant_source", lambda stack_name=None: "Manual")
         op._test_tables = {"config": config, "users": users, "tracking": tracking}
         yield op
 
@@ -1034,3 +1043,147 @@ def test_parameter_reads_one_value_from_describe_stacks(monkeypatch):
     monkeypatch.setattr(op, "_boto", lambda service: _Cfn())
     assert op._parameter(STACK, "B") == "2"
     assert op._parameter(STACK, "C") is None
+
+
+# ---------------------------------------------------------------------------
+# Tenant grants (TenantGrantSource)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value,expected", [("IdpClaim", "IdpClaim"), ("Api", "Api"), (None, "Manual")]
+)
+def test_grant_source_reads_the_stack_parameter(monkeypatch, value, expected):
+    op = IDPClient(stack_name=STACK, region="us-east-1").tenancy
+    seen = []
+    monkeypatch.setattr(op, "_parameter", lambda stack, key: seen.append(key) or value)
+    assert op.grant_source(STACK) == expected
+    assert seen == ["TenantGrantSource"]
+
+
+@pytest.mark.unit
+def test_put_and_list_carry_granted_by_and_the_grant_source(tenancy, monkeypatch):
+    monkeypatch.setattr(tenancy, "grant_source", lambda stack_name=None: "IdpClaim")
+    tenancy.put("acme", ["clients/acme/"], "acme-*", granted_by=["tenant.acme"])
+    listed = tenancy.list()
+    assert listed.grant_source == "IdpClaim"
+    assert listed.tenants[0].granted_by == ["tenant.acme"]
+    with pytest.raises(IDPValidationError, match="already grants tenant"):
+        tenancy.put(
+            "globex", ["clients/globex/"], "globex-*", granted_by=["tenant.acme"]
+        )
+
+
+@pytest.mark.unit
+def test_apply_carries_granted_by(tenancy):
+    tenancy.apply([{**ACME, "grantedBy": ["tenant.acme"]}], dry_run=False)
+    assert tenancy.list().tenants[0].granted_by == ["tenant.acme"]
+
+
+def _user(op, user_id, email, **attrs):
+    op._test_tables["users"].put_item(
+        Item={
+            "PK": f"USER#{user_id}",
+            "SK": f"USER#{user_id}",
+            "userId": user_id,
+            "email": email,
+            **attrs,
+        }
+    )
+
+
+@pytest.mark.unit
+def test_set_user_tenant_grants_exactly_one_tenant(tenancy, monkeypatch):
+    monkeypatch.setattr(tenancy, "grant_source", lambda stack_name=None: "Api")
+    tenancy.apply([ACME, GLOBEX], dry_run=False)
+    _user(tenancy, "1", "ann@example.com", persona="Viewer", cognitoSub="sub-1")
+    grant = tenancy.set_user_tenant("ann@example.com", "acme")
+    assert grant.tenant_id == "acme"
+    assert grant.allowed_config_versions == ["acme-*"]
+    users = tenancy._test_tables["users"]
+    row = users.get_item(Key={"PK": "USER#1", "SK": "USER#1"})["Item"]
+    assert row["scopeSource"] == "api"
+    assert users.get_item(Key={"PK": "SUB#sub-1", "SK": "SUB#sub-1"})["Item"]
+    revoked = tenancy.set_user_tenant("ann@example.com", None)
+    assert revoked.tenant_id is None
+    assert revoked.allowed_config_versions == ["!no-tenant-granted"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", ["Manual", "IdpClaim"])
+def test_set_user_tenant_is_refused_unless_the_source_is_api(
+    tenancy, monkeypatch, source
+):
+    monkeypatch.setattr(tenancy, "grant_source", lambda stack_name=None: source)
+    tenancy.apply([ACME], dry_run=False)
+    _user(tenancy, "1", "ann@example.com", persona="Viewer")
+    with pytest.raises(IDPValidationError, match="only when TenantGrantSource is Api"):
+        tenancy.set_user_tenant("ann@example.com", "acme")
+    row = tenancy._test_tables["users"].get_item(Key={"PK": "USER#1", "SK": "USER#1"})
+    assert "allowedConfigVersions" not in row["Item"]
+
+
+@pytest.mark.unit
+def test_set_user_tenant_refusals(tenancy, monkeypatch):
+    from idp_sdk import IDPResourceNotFoundError
+
+    monkeypatch.setattr(tenancy, "grant_source", lambda stack_name=None: "Api")
+    tenancy.apply([ACME], dry_run=False)
+    _user(tenancy, "a", "boss@example.com", persona="Admin")
+    with pytest.raises(IDPValidationError, match="not declared"):
+        tenancy.set_user_tenant("boss@example.com", "nope")
+    with pytest.raises(IDPResourceNotFoundError, match="No user"):
+        tenancy.set_user_tenant("ghost@example.com", "acme")
+    with pytest.raises(IDPValidationError, match="cross-tenant"):
+        tenancy.set_user_tenant("boss@example.com", "acme")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", ["IdpClaim", "Api"])
+def test_audit_reports_grant_findings_under_an_external_source(
+    tenancy, monkeypatch, source
+):
+    monkeypatch.setattr(tenancy, "grant_source", lambda stack_name=None: source)
+    tenancy.apply([ACME, GLOBEX], dry_run=False)
+    _user(
+        tenancy,
+        "1",
+        "denied@example.com",
+        persona="Viewer",
+        allowedConfigVersions=["!no-tenant-granted"],
+    )
+    _user(
+        tenancy,
+        "2",
+        "hand@example.com",
+        persona="Viewer",
+        allowedConfigVersions=["acme-invoices"],
+    )
+    _user(
+        tenancy,
+        "3",
+        "ok@example.com",
+        persona="Viewer",
+        allowedConfigVersions=["globex-*"],
+    )
+    _user(tenancy, "4", "open@example.com", persona="Viewer")
+    kinds = {(f.kind, f.subject) for f in tenancy.audit().findings}
+    assert ("no-tenant-granted", "denied@example.com") in kinds
+    assert ("non-tenant-scope", "hand@example.com") in kinds
+    assert ("unscoped-user", "open@example.com") in kinds
+    assert not [k for k in kinds if k[1] == "ok@example.com"]
+
+
+@pytest.mark.unit
+def test_audit_does_not_report_a_hand_set_scope_under_manual(tenancy):
+    tenancy.apply([ACME], dry_run=False)
+    _user(
+        tenancy,
+        "2",
+        "hand@example.com",
+        persona="Viewer",
+        allowedConfigVersions=["acme-invoices"],
+    )
+    kinds = {f.kind for f in tenancy.audit().findings}
+    assert "non-tenant-scope" not in kinds

@@ -632,6 +632,9 @@
       "Admin",
       "Author"
     ],
+    "setUserTenant": [
+      "Admin"
+    ],
     "skipAllSectionsReview": [
       "Admin",
       "Reviewer"

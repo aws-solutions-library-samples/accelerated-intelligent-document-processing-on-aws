@@ -446,8 +446,9 @@ def test_required_arg_count_is_stable(spec):
     takeOverReviewItem the 140th, saveSectionReviewEdits the 141st,
     saveTestSetDocumentSectionDraft the 142nd, and the two tenant-declaration
     ops that take a required argument -- putTenant (tenantId, prefixes,
-    profilePattern) and deleteTenant (tenantId) -- 143-144; listTenants takes none)."""
+    profilePattern) and deleteTenant (tenantId) -- 143-144; listTenants takes none,
+    and setUserTenant (email) the 145th)."""
     required = [
         f for f, v in spec["fields"].items() if any(a["non_null"] for a in v["args"])
     ]
-    assert len(required) == 144
+    assert len(required) == 145

@@ -81,6 +81,10 @@ def _ddb() -> Any:
 # environment variable set at deploy time, because the host's value could then never
 # change once this stack imported it.
 TENANT_ISOLATION_MODE_PARAMETER = os.environ.get("TENANT_ISOLATION_MODE_PARAMETER", "")
+# The host's TenantGrantSource, published the same way. Under IdpClaim or Api an
+# unscoped non-Admin is denied as under Strict, because no tenant was granted.
+TENANT_GRANT_SOURCE_PARAMETER = os.environ.get("TENANT_GRANT_SOURCE_PARAMETER", "")
+EXTERNAL_GRANT_SOURCES = ("IdpClaim", "Api")
 ISOLATION_STRICT = "Strict"
 STRICT_UNSCOPED_DENY = "\x00no-tenant-scope"
 _MODE_TTL_SECONDS = 60.0
@@ -129,6 +133,42 @@ def _isolation_mode() -> str:
             return ISOLATION_STRICT  # not cached: retried on the next request
     _mode_cache["mode"] = (mode, now)
     return mode
+
+
+def _grants_are_external() -> bool:
+    """Whether the host's TenantGrantSource is IdpClaim or Api, cached like the mode.
+
+    Fails CLOSED in the same way as :func:`_isolation_mode`: a parameter that exists
+    but cannot be read counts as external (unscoped callers denied), and one that
+    does not exist is ``Manual`` -- a host from before tenant grants existed.
+    """
+    global _ssm
+    if not TENANT_GRANT_SOURCE_PARAMETER:
+        return False
+    now = time.time()
+    cached = _mode_cache.get("grant")
+    if cached and now - cached[1] < _MODE_TTL_SECONDS:
+        return cached[0]
+    try:
+        if _ssm is None:
+            _ssm = boto3.client("ssm")
+        value = _ssm.get_parameter(Name=TENANT_GRANT_SOURCE_PARAMETER)["Parameter"][
+            "Value"
+        ]
+        external = value in EXTERNAL_GRANT_SOURCES
+    except Exception as exc:  # noqa: BLE001
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        if code == "ParameterNotFound":
+            external = False
+        else:
+            logger.warning(
+                "Could not read the host's tenant grant source (%s); treating "
+                "unscoped callers as denied",
+                code or type(exc).__name__,
+            )
+            return True  # not cached: retried on the next request
+    _mode_cache["grant"] = (external, now)
+    return external
 
 
 class ScopeLookupError(Exception):
@@ -271,8 +311,11 @@ def _caller_allowed_versions(email: str, caller_sub: str = "") -> Optional[list]
         # pointer writer — and there is no second key to try, so it denies.
         raise ScopeLookupError("no caller email, and no row records this caller's sub")
     scope = _normalize_scope(row.get("allowedConfigVersions")) if row else None
-    if scope is None and _isolation_mode() == ISOLATION_STRICT:
-        # Strict isolation closes the "unscoped means unrestricted" branch, as
+    if scope is None and (
+        _isolation_mode() == ISOLATION_STRICT or _grants_are_external()
+    ):
+        # Strict isolation, or a tenant granted externally (TenantGrantSource of
+        # IdpClaim or Api), closes the "unscoped means unrestricted" branch, as
         # ``idp_common.config_scope`` does on the host: a sentinel no profile name
         # can equal. Admins never depend on this — ``_visible_to`` admits them first.
         return [STRICT_UNSCOPED_DENY]

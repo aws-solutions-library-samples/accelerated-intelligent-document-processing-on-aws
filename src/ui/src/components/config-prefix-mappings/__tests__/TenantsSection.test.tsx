@@ -137,9 +137,49 @@ describe('TenantsSection', () => {
       tenantId: 'globex',
       prefixes: ['clients/globex/'],
       profilePattern: 'globex-*',
+      grantedBy: [],
       description: undefined,
     });
     await waitFor(() => expect(callsFor('listTenants')).toHaveLength(2));
+  });
+
+  it('sends the Granted by values as a list, trimmed, blanks dropped', async () => {
+    render(<TenantsSection />);
+    const idInput = await openCreateForm();
+    fireEvent.change(idInput, { target: { value: 'globex' } });
+    fireEvent.change(screen.getByLabelText('Prefix 1'), { target: { value: 'clients/globex/' } });
+    fireEvent.change(screen.getByPlaceholderText('acme-*'), { target: { value: 'globex-*' } });
+    fireEvent.change(screen.getByPlaceholderText('tenant.acme'), { target: { value: ' tenant.globex , ,Globex Users ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save tenant' }));
+    await waitFor(() => expect(callsFor('putTenant')).toHaveLength(1));
+    expect(callsFor('putTenant')[0][0].variables.grantedBy).toEqual(['tenant.globex', 'Globex Users']);
+  });
+
+  it("shows each tenant's Granted by values and who grants tenants", async () => {
+    mockGraphql.mockImplementation(({ query }: { query: string }) =>
+      query.includes('listTenants')
+        ? Promise.resolve({
+            data: {
+              listTenants: {
+                success: true,
+                isolationMode: 'Off',
+                grantSource: 'IdpClaim',
+                tenants: [{ ...TENANTS[0], grantedBy: ['tenant.acme'] }],
+              },
+            },
+          })
+        : routeGraphql({ query }),
+    );
+    render(<TenantsSection />);
+    expect(await screen.findByText('tenant.acme')).toBeInTheDocument();
+    expect(screen.getByText('Tenants are granted by the identity provider')).toBeInTheDocument();
+    expect(screen.getByText(/granted more than one tenant is granted none/)).toBeInTheDocument();
+  });
+
+  it('shows no grant-source notice under Manual', async () => {
+    render(<TenantsSection />);
+    await screen.findByText('acme');
+    expect(screen.queryByText(/Tenants are granted by/)).not.toBeInTheDocument();
   });
 
   it('shows a server refusal verbatim inside the open modal', async () => {

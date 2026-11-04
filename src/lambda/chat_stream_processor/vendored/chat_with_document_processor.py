@@ -52,9 +52,9 @@ from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config import get_config
 from idp_common.config_scope import (
     STRICT_UNSCOPED_DENY,
-    is_strict_isolation,
     normalize_scope,
     scope_allows,
+    unscoped_is_denied,
 )
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
@@ -444,17 +444,18 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
     if "identity" not in event:
         raise ScopeLookupError("no identity on the chat event")
     identity = event["identity"]
-    if identity is None and is_strict_isolation():
-        # Strict tenant isolation closes the one fail-open path above: with no
-        # verified principal there is no way to tell a caller of one tenant from a
-        # caller of another, so the turn is denied rather than served unrestricted.
+    if identity is None and unscoped_is_denied():
+        # Under strict isolation, or when tenants are granted externally, this closes
+        # the one fail-open path above: with no verified principal there is no way
+        # to tell a caller of one tenant from a caller of another, so the turn is
+        # denied rather than served unrestricted.
         logger.warning(
-            "Denied chat turn (session=%s): strict tenant isolation requires a "
+            "Denied chat turn (session=%s): tenant isolation requires a "
             "verified caller identity, and the invoking transport supplied none "
             "(GAP-07).",
             event.get("sessionId") or "unknown",
         )
-        raise ScopeLookupError("strict tenant isolation: no verified caller identity")
+        raise ScopeLookupError("tenant isolation: no verified caller identity")
     if identity is None:
         logger.warning(
             "Config-version scope NOT enforced for this chat turn (session=%s): "
@@ -466,10 +467,11 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
         return None
     if not isinstance(identity, dict):
         raise ScopeLookupError(f"unusable identity of type {type(identity).__name__}")
-    if is_strict_isolation():
-        # Under strict isolation an unscoped caller is denied, as everywhere else
-        # (`idp_common.config_scope`), and an Admin stays unrestricted — the other
-        # consumers skip the lookup for an Admin, so this one must not deny one.
+    if unscoped_is_denied():
+        # Under strict isolation, or when tenants are granted externally, an
+        # unscoped caller is denied, as everywhere else (`idp_common.config_scope`),
+        # and an Admin stays unrestricted — the other consumers skip the lookup for
+        # an Admin, so this one must not deny one.
         if "Admin" in _caller_groups(identity):
             return None
         scope = _get_user_allowed_config_versions(

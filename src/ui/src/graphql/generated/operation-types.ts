@@ -999,6 +999,7 @@ export type Mutation = {
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
   sendTestRunToReview?: Maybe<SendTestRunToReviewResult>;
   setActiveVersion?: Maybe<UpdateConfigurationResponse>;
+  setUserTenant?: Maybe<User>;
   skipAllSectionsReview?: Maybe<Document>;
   skipTestSetDocument?: Maybe<TestSetDocumentSkipResult>;
   startMultiDocDiscovery?: Maybe<MultiDocDiscoveryJob>;
@@ -1360,6 +1361,7 @@ export type MutationPutConfigPrefixMappingArgs = {
 
 export type MutationPutTenantArgs = {
   description?: InputMaybe<Scalars['String']['input']>;
+  grantedBy?: InputMaybe<Array<Scalars['String']['input']>>;
   prefixes: Array<Scalars['String']['input']>;
   profilePattern: Scalars['String']['input'];
   tenantId: Scalars['String']['input'];
@@ -1519,6 +1521,12 @@ export type MutationSendTestRunToReviewArgs = {
 
 export type MutationSetActiveVersionArgs = {
   versionName: Scalars['String']['input'];
+};
+
+
+export type MutationSetUserTenantArgs = {
+  email: Scalars['String']['input'];
+  tenantId?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -2616,6 +2624,7 @@ export type Tenant = {
   createdAt?: Maybe<Scalars['String']['output']>;
   createdBy?: Maybe<Scalars['String']['output']>;
   description?: Maybe<Scalars['String']['output']>;
+  grantedBy?: Maybe<Array<Scalars['String']['output']>>;
   prefixes: Array<Scalars['String']['output']>;
   profilePattern: Scalars['String']['output'];
   tenantId: Scalars['String']['output'];
@@ -2632,6 +2641,7 @@ export type TenantMutationResponse = {
 
 export type TenantsResponse = {
   error?: Maybe<ConfigurationError>;
+  grantSource?: Maybe<Scalars['String']['output']>;
   isolationMode?: Maybe<Scalars['String']['output']>;
   success: Scalars['Boolean']['output'];
   tenants?: Maybe<Array<Maybe<Tenant>>>;
@@ -3039,6 +3049,8 @@ export type User = {
   createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
   email: Scalars['String']['output'];
   persona: Scalars['String']['output'];
+  scopeSource?: Maybe<Scalars['String']['output']>;
+  scopeTenant?: Maybe<Scalars['String']['output']>;
   status?: Maybe<Scalars['String']['output']>;
   userId: Scalars['ID']['output'];
 };
@@ -3441,10 +3453,11 @@ export type PutTenantMutationVariables = Exact<{
   prefixes: Array<Scalars['String']['input']> | Scalars['String']['input'];
   profilePattern: Scalars['String']['input'];
   description?: InputMaybe<Scalars['String']['input']>;
+  grantedBy?: InputMaybe<Array<Scalars['String']['input']> | Scalars['String']['input']>;
 }>;
 
 
-export type PutTenantMutation = { putTenant?: { success: boolean, message?: string | null, tenant?: { tenantId: string, prefixes: Array<string>, profilePattern: string, description?: string | null, createdAt?: string | null, createdBy?: string | null, updatedAt?: string | null, updatedBy?: string | null } | null, error?: { type?: string | null, message?: string | null } | null } | null };
+export type PutTenantMutation = { putTenant?: { success: boolean, message?: string | null, tenant?: { tenantId: string, prefixes: Array<string>, profilePattern: string, grantedBy?: Array<string> | null, description?: string | null, createdAt?: string | null, createdBy?: string | null, updatedAt?: string | null, updatedBy?: string | null } | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type ReassignReviewItemMutationVariables = Exact<{
   objectKey: Scalars['String']['input'];
@@ -4256,7 +4269,7 @@ export type ListSampleDocumentsQuery = { listSampleDocuments?: { success: boolea
 export type ListTenantsQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type ListTenantsQuery = { listTenants?: { success: boolean, isolationMode?: string | null, tenants?: Array<{ tenantId: string, prefixes: Array<string>, profilePattern: string, description?: string | null, createdAt?: string | null, createdBy?: string | null, updatedAt?: string | null, updatedBy?: string | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
+export type ListTenantsQuery = { listTenants?: { success: boolean, isolationMode?: string | null, grantSource?: string | null, tenants?: Array<{ tenantId: string, prefixes: Array<string>, profilePattern: string, grantedBy?: Array<string> | null, description?: string | null, createdAt?: string | null, createdBy?: string | null, updatedAt?: string | null, updatedBy?: string | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type ListTestSetQueuesQueryVariables = Exact<{ [key: string]: never; }>;
 
@@ -4266,7 +4279,7 @@ export type ListTestSetQueuesQuery = { listTestSetQueues?: Array<{ id: string, n
 export type ListUsersQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type ListUsersQuery = { listUsers?: { users?: Array<{ userId: string, email: string, persona: string, status?: string | null, createdAt?: string | null, allowedConfigVersions?: Array<string | null> | null, allowedTestSets?: Array<string | null> | null } | null> | null } | null };
+export type ListUsersQuery = { listUsers?: { users?: Array<{ userId: string, email: string, persona: string, status?: string | null, createdAt?: string | null, allowedConfigVersions?: Array<string | null> | null, allowedTestSets?: Array<string | null> | null, scopeSource?: string | null, scopeTenant?: string | null } | null> | null } | null };
 
 export type QueryKnowledgeBaseQueryVariables = Exact<{
   input: Scalars['String']['input'];

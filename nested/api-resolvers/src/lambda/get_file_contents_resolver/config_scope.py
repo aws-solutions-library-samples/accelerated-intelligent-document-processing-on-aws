@@ -153,6 +153,37 @@ def is_strict_isolation(environ: Optional[Mapping[str, str]] = None) -> bool:
     return env.get(TENANT_ISOLATION_ENV, ISOLATION_OFF) == ISOLATION_STRICT
 
 
+# Where users' configuration scope comes from (the ``TenantGrantSource`` stack
+# parameter): ``Manual`` (an Admin, in User Management), ``IdpClaim`` (the identity
+# provider's claim at each fresh sign-in) or ``Api`` (an entitlement system). Under
+# the last two an unscoped non-admin is denied exactly as under strict isolation,
+# because the source of truth has not granted them a tenant -- and "no row yet" is
+# the ordinary state of a user between their first sign-in and the first push.
+TENANT_GRANT_SOURCE_ENV = "TENANT_GRANT_SOURCE"
+GRANT_SOURCE_MANUAL = "Manual"
+GRANT_SOURCE_IDP_CLAIM = "IdpClaim"
+GRANT_SOURCE_API = "Api"
+EXTERNAL_GRANT_SOURCES = (GRANT_SOURCE_IDP_CLAIM, GRANT_SOURCE_API)
+
+
+def grants_are_external(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether an identity provider or entitlement system grants users' tenants."""
+    import os
+
+    env = os.environ if environ is None else environ
+    return (
+        env.get(TENANT_GRANT_SOURCE_ENV, GRANT_SOURCE_MANUAL) in EXTERNAL_GRANT_SOURCES
+    )
+
+
+def unscoped_is_denied(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether an unscoped non-admin caller is denied rather than unrestricted.
+
+    True under strict isolation, and whenever tenants are granted externally.
+    """
+    return is_strict_isolation(environ) or grants_are_external(environ)
+
+
 class ScopeLookupError(Exception):
     """The caller's config-version scope could not be evaluated — deny.
 
@@ -502,7 +533,8 @@ def resolve_allowed_config_versions(
 
 
 def _apply_isolation_mode(scope: Optional[List[str]]) -> Optional[List[str]]:
-    """``scope``, or the deny-all sentinel for an unscoped caller in strict mode.
+    """``scope``, or the deny-all sentinel for an unscoped caller in strict mode,
+    or when tenants are granted externally (:func:`unscoped_is_denied`).
 
     Applied after the cache, so a cached answer is re-judged against the mode the
     function is running in rather than the mode it was cached under.
@@ -516,6 +548,6 @@ def _apply_isolation_mode(scope: Optional[List[str]]) -> Optional[List[str]]:
     for an Admin. A consumer with its own lookup (the document chat processor) does
     not reach this rule at all and applies it by hand.
     """
-    if scope is None and is_strict_isolation():
+    if scope is None and unscoped_is_denied():
         return [STRICT_UNSCOPED_DENY]
     return scope

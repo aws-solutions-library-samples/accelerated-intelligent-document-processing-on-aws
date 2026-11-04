@@ -1197,6 +1197,22 @@ endif
 	    --stack-name $(STACK_NAME) \
 	    --region $(if $(REGION),$(REGION),us-west-2) $(if $(YES),--yes)
 
+# Live check of tenant grants from the IdP claim (TenantGrantSource=IdpClaim), against
+# a stack federated to the throwaway OIDC provider driven to issue Entra-shaped
+# tokens (a `roles` app-role claim). See .claude/skills/live-auth-checks.md.
+verify-tenant-grants-federation: ## Tenant grants from the IdP claim vs a federated stack (STACK_NAME, REGION, IDP_FUNCTION, IDP_NAME, POOL_ID, CLIENT_ID, DOMAIN)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. See .claude/skills/live-auth-checks.md)
+endif
+	$(RUN_FIRST_PARTY) scripts/security/live_checks/verify_tenant_grants_federation.py \
+	    --stack-name $(STACK_NAME) \
+	    --region $(if $(REGION),$(REGION),us-west-2) \
+	    --idp-function $(IDP_FUNCTION) \
+	    --idp-name $(if $(IDP_NAME),$(IDP_NAME),VerifyIdP) \
+	    --pool-id $(POOL_ID) \
+	    --client-id $(CLIENT_ID) \
+	    --domain $(DOMAIN)
+
 # Usage: make ux-test STACK_NAME=<stack-name> [REGION=<region>] [GROUP=Admin]
 # Browser-driven UX test. Not a self-contained target on purpose: the browsing and
 # the usability judgement are done by the agent following

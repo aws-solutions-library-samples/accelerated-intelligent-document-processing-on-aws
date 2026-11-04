@@ -100,12 +100,14 @@ def list_tenants(stack_name: str, region: Optional[str], as_json: bool):
     table.add_column("Tenant", style="cyan")
     table.add_column("Prefixes")
     table.add_column("Profiles")
+    table.add_column("Granted by")
     table.add_column("Description", style="green")
     for t in result.tenants:
         table.add_row(
             escape(t.tenant_id),
             escape("\n".join(t.prefixes)),
             escape(t.profile_pattern),
+            escape("\n".join(t.granted_by)),
             escape(t.description or ""),
         )
     err_console.print(table)
@@ -123,6 +125,13 @@ def list_tenants(stack_name: str, region: Optional[str], as_json: bool):
     help="Input-bucket prefix the tenant owns, ending in '/'. Repeatable.",
 )
 @click.option("--profile-pattern", required=True, help="Profile pattern, e.g. 'acme-*'")
+@click.option(
+    "--granted-by",
+    "granted_by",
+    multiple=True,
+    help="Claim or entitlement value that grants this tenant when TenantGrantSource "
+    "is IdpClaim or Api, e.g. an Entra app-role value 'tenant.acme'. Repeatable.",
+)
 @click.option("--description", help="Optional description")
 def put_tenant(
     stack_name: str,
@@ -130,6 +139,7 @@ def put_tenant(
     tenant_id: str,
     prefixes: tuple,
     profile_pattern: str,
+    granted_by: tuple,
     description: Optional[str],
 ):
     """Create or replace one tenant declaration."""
@@ -137,7 +147,11 @@ def put_tenant(
 
     try:
         info = _client(stack_name, region).tenancy.put(
-            tenant_id, list(prefixes), profile_pattern, description=description
+            tenant_id,
+            list(prefixes),
+            profile_pattern,
+            description=description,
+            granted_by=list(granted_by),
         )
     except IDPError as e:
         _fail(str(e))
@@ -171,6 +185,48 @@ def delete_tenant(stack_name: str, region: Optional[str], tenant_id: str, yes: b
     err_console.print(f"[green]Deleted tenant {escape(tenant_id)}[/green]")
 
 
+@tenancy.command(name="set-user-tenant")
+@stack_option
+@region_option
+@click.option("--email", required=True, help="The user's email address")
+@click.option(
+    "--tenant",
+    "tenant_id",
+    help="Tenant to grant. Omit to grant no tenant, which leaves the user with "
+    "access to no documents.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Print the result as JSON")
+def set_user_tenant(
+    stack_name: str,
+    region: Optional[str],
+    email: str,
+    tenant_id: Optional[str],
+    as_json: bool,
+):
+    """Grant one user one tenant, or none (TenantGrantSource=Api only).
+
+    For an entitlement system such as SailPoint pushing grants with IAM
+    credentials. A user is confined to one tenant; granting another replaces it.
+    """
+    from idp_sdk import IDPError
+
+    try:
+        grant = _client(stack_name, region).tenancy.set_user_tenant(email, tenant_id)
+    except IDPError as e:
+        _fail(str(e))
+    if as_json:
+        _emit_json(grant.model_dump_json(indent=2))
+        return
+    if grant.tenant_id:
+        err_console.print(
+            f"[green]Granted {escape(email)} tenant {escape(grant.tenant_id)}[/green]"
+        )
+    else:
+        err_console.print(
+            f"[yellow]{escape(email)} now has no tenant and sees no documents[/yellow]"
+        )
+
+
 @tenancy.command(name="apply")
 @stack_option
 @region_option
@@ -179,7 +235,7 @@ def delete_tenant(stack_name: str, region: Optional[str], tenant_id: str, yes: b
     "path",
     required=True,
     type=click.Path(exists=True, dir_okay=False),
-    help="YAML: tenants: [{tenantId, prefixes, profilePattern, description}]",
+    help="YAML: tenants: [{tenantId, prefixes, profilePattern, grantedBy, description}]",
 )
 @click.option("--prune", is_flag=True, help="Delete tenants the file does not declare")
 @click.option("--yes", is_flag=True, help="Write the changes (default is a dry run)")

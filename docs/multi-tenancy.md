@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT-0
 One deployment can process documents for several tenants (business units, customers,
 or the clients of a service team) and keep each tenant's documents visible only to
 that tenant's users. This page explains how isolation works, how to turn on the
-strict mode that makes it fail closed, which controls belong in your own AWS
+strict mode that makes it fail closed, who grants a user their tenant, which controls belong in your own AWS
 environment rather than in the solution, and when separate stacks are the better
 answer.
 
@@ -164,6 +164,147 @@ achieves the same where SCPs are not available.
    tenant is refused, and that an upload naming another tenant's profile does not
    end up in that tenant's view.
 
+## Who grants a tenant
+
+A user's tenant is their configuration-profile scope (`allowedConfigVersions`). The
+stack parameter **`TenantGrantSource`** decides who writes it:
+
+| `TenantGrantSource` | Who sets a user's scope | When it changes |
+|---|---|---|
+| `Manual` (default) | An Admin, in User Management | When the Admin saves it |
+| `IdpClaim` | The external identity provider's group or role claim | At the user's next fresh sign-in |
+| `Api` | An entitlement system, through the `setUserTenant` API operation, `idp-cli tenancy set-user-tenant` or the SDK's `client.tenancy.set_user_tenant` | At the next request after the push (within about a minute, the scope cache's lifetime) |
+
+Under `IdpClaim` and `Api` four things change, whatever `TenantIsolationMode` says:
+
+- **A user's scope is exactly one tenant's profile pattern, or nothing.** The grant
+  writes the tenant's `profilePattern` as the whole scope, replacing whatever was there.
+  A user granted no tenant gets the scope **`!no-tenant-granted`**, which matches no
+  profile, and User Management shows it as *No tenant granted*.
+- **A non-Admin user with no scope sees nothing,** exactly as under strict mode. A user
+  who has never been granted a tenant, for example one who signed in before any
+  entitlement push, is denied rather than served every tenant's documents.
+- **The surfaces that read across tenants are closed to non-Admins,** as in strict
+  mode: Agent Chat, agent queries and Knowledge Base queries are Admin only, MCP tools
+  are refused, and document chat must use the REST path because the chat Function URL
+  carries no verified identity to scope by. Once users are confined to a tenant, any
+  of these would otherwise be a way around the confinement.
+- **Admins cannot edit configuration-profile scopes** in User Management or through
+  `createUser`/`updateUser`. The field is shown read-only with the tenant and where it
+  came from, and the API refuses an edit, naming the grant source. Test-set scope
+  (`allowedTestSets`) is a separate axis and stays editable.
+
+Two controls still need **`TenantIsolationMode=Strict`** as well: the ingest-time refusal
+of a document whose key and resolved profile belong to different tenants, and the
+bucket-policy delegation to per-tenant S3 Access Points. An external grant source
+decides who may read what; it does not change what ingest accepts. Set both for full
+isolation.
+
+Admins are not granted a tenant by either route; they remain cross-tenant (see
+[Strict mode](#strict-mode)). Under `IdpClaim`, a user granted a tenant and later given
+the Admin role loses that tenant scope at their next fresh sign-in. Under `Api` the
+user keeps the last tenant pushed, and "no tenant" writes the deny marker rather than
+removing the scope, so to make such a user a cross-tenant Admin, delete them in User
+Management and create them again as an Admin.
+
+### A user is confined to one tenant
+
+Each tenant declaration has an optional list of **Granted by** values (`grantedBy`):
+the opaque strings that grant that tenant, such as an Entra app-role value or an Okta
+group name. A value may grant only one tenant, and a tenant takes at most three. When
+the values a user holds grant **two or more** tenants, the user is granted **none**:
+their scope becomes `!no-tenant-granted` and the sign-in logs a warning naming the
+tenants. There is no active-tenant selector, so a person who works for two tenants
+needs two accounts. Values that grant no tenant are ignored, because the same claim
+also carries the user's functional roles.
+
+### Granting from the identity provider's claim
+
+Set `TenantGrantSource=IdpClaim` on a stack with [federation](external-idp.md)
+configured. It requires `ExternalIdPGroupAttributeName`, the claim the role mapping
+already reads; a deployment without it is refused. At each fresh federated sign-in the
+pre-token trigger reads the tenant declarations, matches the claim's values against
+every tenant's **Granted by** values and writes the result to the user's record before
+the token is issued. A user with no record yet gets one, with the role the claim maps
+to.
+
+The trigger applies the same two checks it uses for roles: it reads the claim only for
+a user federated through the configured provider, and only on a fresh sign-in, never
+on a token refresh. A user who signs in with a Cognito password rather than through
+the provider is not granted a tenant, and so sees nothing.
+
+⚠️ **The sign-in fails if the grant cannot be written.** If the tenant declarations or
+the user's record cannot be read or written, the trigger raises and Cognito refuses the
+token. Signing in with yesterday's tenant would be the worse failure. An absent or empty
+claim is not an error: it grants no tenant, and the user's previous tenant is removed.
+That is the opposite of how roles behave, where a claim mapping to nothing leaves
+groups unchanged, and it is deliberate: losing a tenant reduces access, losing a role
+mapping could remove the last way to sign in.
+
+**Worked example: Microsoft Entra ID app roles.** App roles put roles and tenants in
+one claim, which is what `ExternalIdPGroupAttributeName` reads.
+
+1. In the app registration, under **App roles**, create one role per function and one
+   per tenant, for example `IDP.Viewer`, `IDP.Author`, `tenant.acme` and
+   `tenant.globex`. Assign users or groups to them under **Enterprise applications →
+   Users and groups**.
+2. Deploy with the role claim as the group attribute (`roles` for OIDC, or
+   `http://schemas.microsoft.com/ws/2008/06/identity/claims/role` for SAML), the role
+   mapping parameters (`ExternalIdPViewerGroupName=IDP.Viewer`, and so on) and
+   `TenantGrantSource=IdpClaim`.
+3. Declare the tenants with their values: `acme` granted by `tenant.acme`, `globex`
+   granted by `tenant.globex` (Configuration → Prefix Mappings → **Tenants**, or the
+   `grantedBy` key in `idp-cli tenancy apply`).
+
+A user assigned `IDP.Viewer` and `tenant.acme` signs in as a Viewer scoped to
+`acme-*`. Assigning them `tenant.globex` as well grants them no tenant until one of the
+two is removed.
+
+⚠️ **Entra must send an `email` claim.** The user pool requires email, so Cognito
+itself refuses a federated sign-in whose token carries none, with the error
+`attributes required: [email]`; the trigger also refuses to record a tenant without
+one. Entra omits the claim for an account with no mailbox
+unless the app registration adds the `email` optional claim (**Token configuration →
+Add optional claim → ID → email**); add it before switching.
+
+**Okta.** Create groups such as `idp-viewers`, `tenant-acme` and `tenant-globex`, send
+them in the groups claim (a filter such as *Starts with* `idp-` or `tenant-` keeps the
+claim small), and declare `tenant-acme` and `tenant-globex` as the tenants' **Granted
+by** values. The rest is as above.
+
+### Granting through the API
+
+Set `TenantGrantSource=Api` when an entitlement system such as SailPoint, or your own
+provisioning script, owns tenant membership. It calls one of:
+
+- the Admin-only API operation `setUserTenant(email, tenantId)`;
+- `idp-cli tenancy set-user-tenant --email <address> --tenant <tenantId>`, with
+  IAM credentials (omit `--tenant` to grant none);
+- `client.tenancy.set_user_tenant(email, tenant_id)` in the SDK.
+
+The user must already exist: the call refuses an unknown address rather than create an
+account. It also refuses an address that more than one user record holds, because
+it could not tell which record decides that user's access; remove the duplicate in
+User Management first. A `tenantId` that is not declared is refused, and so is an Admin. Granting a
+tenant replaces the previous one. The tenant's **Granted by** values are not used by
+this route; the tenant ID is what the entitlement system sends. All three refuse when
+the stack's `TenantGrantSource` is not `Api`.
+
+### How quickly a removal takes effect
+
+- **`Api`:** at the user's next request after the push, within the minute a resolver
+  may cache a user's scope.
+- **`IdpClaim`:** at the user's next fresh sign-in. A web session renews itself with its
+  refresh token without signing in again, for up to **`RefreshTokenValidityHours`**
+  (default 720 hours, 30 days); until then the user keeps the tenant the claim last
+  granted. Lower that parameter to shorten the window, or disable the user in Cognito
+  to remove access at once. Changing it from the default sets the web UI client's
+  refresh-token lifetime in hours; left at 720 the client is not modified.
+
+`idp-cli tenancy audit` reports users granted no tenant and, under `IdpClaim` or `Api`,
+any user whose scope is not exactly one tenant's pattern (for example a scope set by
+hand before the grant source changed).
+
 ## What this does not isolate
 
 Isolation here is enforced by the application. Every processing Lambda, table and
@@ -192,6 +333,9 @@ inside the stack. That has these consequences:
   That is an IAM control in your account, covered next.
 
 ### If MCP tools return 403 on a stack that is not Strict
+
+Check `TenantGrantSource` first: under `IdpClaim` or `Api` MCP tools are refused by
+design, as described in [Who grants a tenant](#who-grants-a-tenant).
 
 The MCP handler reads the mode through `idp_common`. If that library cannot be imported
 (a layer missing from the function), it refuses every tool rather than guess, and the
@@ -273,8 +417,9 @@ stack boundary do the separating. The cost is one deployment to operate per tena
 |---|---|
 | `idp-cli tenancy list` | Lists tenant declarations |
 | `idp-cli tenancy put` / `delete` | Creates, edits or removes one declaration, with the same checks the web UI applies |
+| `idp-cli tenancy set-user-tenant` | Grants one user one tenant, or none, when `TenantGrantSource=Api` |
 | `idp-cli tenancy apply --file tenants.yaml` | Declarative: shows the difference, then writes it with `--yes` (`--prune` removes undeclared tenants) |
-| `idp-cli tenancy audit` | Read-only. Reports boundary-crossing mappings, unscoped or multi-tenant users, mismatched documents and the stack's mode. Exits 1 when it finds anything |
+| `idp-cli tenancy audit` | Read-only. Reports boundary-crossing mappings, unscoped or multi-tenant users, users granted no tenant, mismatched documents and the stack's mode. Exits 1 when it finds anything |
 | `idp-cli tenancy generate-policies` | Writes the per-tenant access point template described above |
 | `idp-cli tenancy verify` | Live cross-tenant test against a deployed stack, cleaning up after itself |
 
