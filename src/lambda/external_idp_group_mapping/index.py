@@ -126,7 +126,7 @@ def apply_claim_grant(user_attributes, username, idp_groups, target_groups, tena
     if resolution["outcome"] == GRANT_REFUSED:
         logger.warning(f"Granting no tenant to user {username}: {resolution['reason']}")
     persona = next((p for p in _PERSONA_ORDER if p in target_groups), "Viewer")
-    return apply_tenant_grant(
+    result = apply_tenant_grant(
         users_table,
         email=str(user_attributes.get("email") or ""),
         cognito_sub=str(user_attributes.get("sub") or ""),
@@ -139,6 +139,18 @@ def apply_claim_grant(user_attributes, username, idp_groups, target_groups, tena
         # revokes a tenant.
         create_missing=bool(target_groups),
     )
+    if result and result.get("action") == "admin-unchanged":
+        # The claim no longer maps to Admin, but the stored row still says Admin,
+        # and the writer never scopes an Admin row. Nothing resyncs a stored persona,
+        # so the user stays unscoped and, under IdpClaim, is denied everywhere. Name
+        # the mismatch and the remedy rather than leave a silent denial.
+        logger.warning(
+            f"User {username} is stored as Admin but their claim maps to "
+            f"{sorted(target_groups) or 'no role'}, so no tenant was granted and "
+            f"they are denied. Delete the user in User Management; their next "
+            f"sign-in recreates the record from the claim."
+        )
+    return result
 
 
 # Trigger sources that represent a fresh sign-in, where Cognito has just applied
