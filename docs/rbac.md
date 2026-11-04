@@ -286,7 +286,7 @@ MODEL LIMITS
 ✅† = Scoped by allowedConfigVersions if set (see Configuration-Profile Scoping below)
 ✅‡ = Annotator: only the work given to them (the test sets in their allowedTestSets, the queues that list them, the items they hold); see the row notes below
 
-The Annotator cells say what the API admits. An Annotator-only user's console is Home (Inbox, Tasks, Queues), Deployment Info and a document's edit page, so it offers less, as the row notes say.
+The Annotator cells say what the REST API admits of the feature as a whole; the row notes name where a transport or a reduced payload differs, and where an Annotator-only user's console, which is Home (Inbox, Tasks, Queues), Deployment Info and a document's edit page, offers less.
 List documents, View document details: an Annotator-only console has no Document List or document page; it opens a document on its edit page (#/documents/<document>/edit), which Tasks and Inbox messages link to
 Regroup pages: an Annotator only on a document of a test set in their allowedTestSets, or on a production document while holding its review-queue item within their allowedConfigVersions; the edit page offers it to an item's holder, the document page only to Admins and Reviewers
 Claim/Release review, Complete section review: an Annotator only on a document of a test set in their allowedTestSets, and Complete section review only on one assigned to them; production documents are refused, and the console takes a Test Studio document with Claim Test Studio documents
@@ -306,7 +306,7 @@ Non-admin users can optionally be assigned **allowedConfigVersions** — a list 
 ### How It Works
 
 - **Admin users**: Always unrestricted — `allowedConfigVersions` is ignored even if set
-- **All other roles** (Author, Reviewer, Viewer): If `allowedConfigVersions` is set and non-empty, the user can only:
+- **All other roles** (Author, Reviewer, Viewer, Annotator): If `allowedConfigVersions` is set and non-empty, the user can only:
   - See documents processed with those profiles (server-side filtering)
   - See and select those profiles in all profile dropdowns
   - View/edit configuration — and read, compare, restore, and label revisions — for those profiles only
