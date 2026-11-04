@@ -4,7 +4,7 @@
 # five first-party distributions with an unfloored build requirement, so a build
 # here could resolve an arbitrarily old setuptools while the same file pinned a
 # floor for the test path.
-requires = ["setuptools>=78.1.1", "wheel"]
+requires = ["setuptools>=84.1.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -273,7 +273,7 @@ test = [
   # provisions only for the build backend, so the suite silently depended on an
   # ambient install. Floor is the security floor (CVE-2025-47273 path traversal
   # is fixed in 78.1.1); the APIs used are much older than that.
-  "setuptools>=78.1.1",
+  "setuptools>=84.1.0",
   # scripts/tests/test_xray_annotations.py calls the real
   # aws_xray_sdk Segment offline to assert which annotation keys and values the
   # SDK keeps rather than silently drops. Already declared in the `docs_service`
