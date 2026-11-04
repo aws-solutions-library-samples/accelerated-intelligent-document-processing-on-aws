@@ -3243,6 +3243,44 @@ def test_the_digest_posts_to_its_own_webhook_else_the_nightly_channels(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("changes", "named"),
+    [
+        (
+            {
+                "UX_TEST_STORIES_SLACK_WEBHOOK_URL": "http://hooks.slack.test/x",
+                "SLACK_WEBHOOK_URL": SHARED_WEBHOOK,
+            },
+            "UX_TEST_STORIES_SLACK_WEBHOOK_URL",
+        ),
+        ({"SLACK_WEBHOOK_URL": "not a url"}, "SLACK_WEBHOOK_URL"),
+    ],
+    ids=["unusable-own", "unusable-shared"],
+)
+def test_an_unusable_webhook_posts_nothing_and_is_named(
+    harness: StoryHarness,
+    capsys: pytest.CaptureFixture[str],
+    changes: dict[str, str],
+    named: str,
+) -> None:
+    """The first webhook set is the one used, so a bad value of the digest's own
+    is not passed over for the nightly channel's; the line names which is bad."""
+    _shard_runs(harness)
+    harness.environ.update(_scheduled(**changes))
+    runtime = harness.runtime()
+    runtime.slack = lambda webhook, payload: pytest.fail("Slack was posted to")
+    out = harness.tmp / "digest"
+    capsys.readouterr()
+    argv = ["--digest", str(harness.tmp / "shards"), "--out", str(out)]
+    assert runner.main(argv, runtime) == 0
+    lines = _lines(capsys)
+    assert [line for line in lines if line.startswith("slack:")] == [
+        f"slack: not posted, because {named} is not an https URL"
+    ]
+    assert "sharedsecretvalue" not in "\n".join(lines)
+
+
+@pytest.mark.unit
 def test_a_slack_post_that_fails_never_fails_the_digest(
     harness: StoryHarness, capsys: pytest.CaptureFixture[str]
 ) -> None:

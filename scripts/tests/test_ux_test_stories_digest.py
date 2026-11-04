@@ -1220,6 +1220,14 @@ def test_the_digest_markdown_shows_no_model_prose_and_says_when_nothing_compared
     )
 
 
+SLACK_STATUSES = {
+    "regressions": "🧭 UX STORIES · ❌ REGRESSIONS",
+    "degraded": "🧭 UX STORIES · ⚠️ DEGRADED",
+    "no_run": "🧭 UX STORIES · ⏭️ NOT RUN",
+    "clean": "🧭 UX STORIES · ✅ CLEAN",
+}
+
+
 @pytest.mark.unit
 def test_the_slack_payload_has_four_plain_text_keys() -> None:
     digest, _, _ = _digest_fixture()
@@ -1313,7 +1321,7 @@ def test_the_slack_status_says_regressions_clean_degraded_or_no_run(
     digest, _, _ = _digest_fixture()
     assert (
         story_digest.slack_payload({**digest, **overrides}, job_url="")["status"]
-        == story_digest.SLACK_STATUS_PREFIX + story_digest.SLACK_STATUS_LABELS[status]
+        == SLACK_STATUSES[status]
     )
 
 

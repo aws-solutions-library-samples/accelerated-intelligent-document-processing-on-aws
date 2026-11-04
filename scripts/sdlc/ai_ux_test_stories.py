@@ -976,26 +976,31 @@ def post_digest_summary(
 
     ``story_digest.slack_payload`` builds it from closed values only, and
     ``CI_JOB_URL`` is its link. It goes to :data:`SLACK_WEBHOOK_ENV`, else to
-    :data:`SHARED_SLACK_WEBHOOK_ENV`. With neither, nothing is posted or printed;
-    outside a scheduled pipeline one line says it was not posted; and whatever
-    happens, the digest's own outcome does not change.
+    :data:`SHARED_SLACK_WEBHOOK_ENV`: the first one set is the one used, so an
+    unusable value of the first is reported by its name and posts nothing. With
+    neither, nothing is posted or printed; outside a scheduled pipeline one line
+    says it was not posted; and whatever happens, the digest's own outcome does
+    not change.
     """
-    webhook = next(
+    name, webhook = next(
         (
-            value
-            for value in (
-                runtime.environ.get(name, "").strip()
+            (name, value)
+            for name, value in (
+                (name, runtime.environ.get(name, "").strip())
                 for name in (SLACK_WEBHOOK_ENV, SHARED_SLACK_WEBHOOK_ENV)
             )
             if value
         ),
-        "",
+        ("", ""),
     )
     if not webhook or runtime.slack is None:
         return
     scrub.redactor.add(webhook)
     if not _scheduled(runtime.environ):
         _say(scrub, "slack: not posted, because this is not a scheduled pipeline")
+        return
+    if not _usable_webhook(webhook):
+        _say(scrub, f"slack: not posted, because {name} is not an https URL")
         return
     try:
         payload = story_digest.slack_payload(
