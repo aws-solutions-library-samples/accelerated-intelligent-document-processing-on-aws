@@ -8,6 +8,8 @@ query ListUsers {
       createdAt
       allowedConfigVersions
       allowedTestSets
+      scopeSource
+      scopeTenant
     }
   }
 }

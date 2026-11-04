@@ -120,6 +120,23 @@ Two further points of timing, once the IdP is authoritative:
   never that stored value. The Cognito console, or `admin-list-groups-for-user`, is
   the authoritative view of current membership.
 
+## Granting Tenants from the Claim
+
+With `TenantGrantSource=IdpClaim` the same claim also decides each user's tenant on
+a multi-tenant stack: at every fresh federated sign-in the trigger matches the claim's
+values against each tenant's **Granted by** values and writes the user's
+configuration scope to that one tenant. A user whose values grant two or more tenants
+is granted none. The parameter requires `ExternalIdPGroupAttributeName`.
+
+Two behaviours differ from the role mapping above. An absent or empty claim **does**
+change something: it grants no tenant and removes the previous one, because losing a
+tenant only reduces access. And a failure to read the tenant declarations or write the
+grant fails the sign-in instead of leaving the old tenant in place. Revocation follows
+the same timing as roles, at the next fresh sign-in, so `RefreshTokenValidityHours`
+bounds how long a removed tenant can persist in an open session. See [Who grants a
+tenant](multi-tenancy.md#who-grants-a-tenant) for the Entra app-roles and Okta
+examples.
+
 ## Storing the OIDC Client Secret
 
 For OIDC federation, the client secret must be stored in AWS Secrets Manager **before** deploying the stack. This ensures the secret never passes through CloudFormation parameters (which are visible via the `describe-stacks` API).

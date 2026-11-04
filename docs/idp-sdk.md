@@ -2148,8 +2148,10 @@ See [Multi-Tenant Isolation](multi-tenancy.md) for the model.
 | Method | Returns | Purpose |
 |---|---|---|
 | `tenancy.isolation_mode()` | `str` | The stack's `TenantIsolationMode` (`Off`, `Strict`, or `Unknown` when the stack predates the parameter) |
-| `tenancy.list()` | `TenantListResult` | Declared tenants and the isolation mode |
-| `tenancy.put(tenant_id, prefixes, profile_pattern, *, description=None)` | `TenantInfo` | Create or replace one tenant; raises `IDPValidationError` on the same refusals as the API |
+| `tenancy.grant_source()` | `str` | The stack's `TenantGrantSource` (`Manual`, `IdpClaim` or `Api`; `Manual` when the stack predates the parameter) |
+| `tenancy.list()` | `TenantListResult` | Declared tenants, the isolation mode and the grant source |
+| `tenancy.put(tenant_id, prefixes, profile_pattern, *, description=None, granted_by=None)` | `TenantInfo` | Create or replace one tenant; raises `IDPValidationError` on the same refusals as the API. `granted_by` lists the claim or entitlement values that grant it |
+| `tenancy.set_user_tenant(email, tenant_id)` | `TenantUserGrant` | Grant one existing user one tenant, or none with `tenant_id=None`. Only under `TenantGrantSource=Api`; raises `IDPValidationError` (wrong source, undeclared tenant, an Admin) or `IDPResourceNotFoundError` (no such user) |
 | `tenancy.delete(tenant_id)` | `bool` | Remove one tenant; whether it existed |
 | `tenancy.apply(declarations, *, prune=False, dry_run=True)` | `TenantApplyResult` | Plan, and with `dry_run=False` write, the changes that make the stack match `declarations` |
 | `tenancy.generate_policies(principals)` | `TenantPolicyResult` | A CloudFormation template of per-tenant S3 access points, plus warnings |

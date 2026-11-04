@@ -26,7 +26,7 @@ import useUserRole from '../../hooks/use-user-role';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
-import useTenants from '../../hooks/use-tenants';
+import useTenants, { NO_TENANT_GRANTED } from '../../hooks/use-tenants';
 import {
   listUsers,
   createUser as createUserMutation,
@@ -46,15 +46,33 @@ interface User {
   createdAt?: string;
   allowedConfigVersions?: (string | null)[] | null;
   allowedTestSets?: (string | null)[] | null;
+  // Set when an identity provider (idp) or entitlement push (api) granted the scope.
+  scopeSource?: string | null;
+  scopeTenant?: string | null;
 }
 
 const UserManagementLayout = (): React.JSX.Element => {
   const { awsConfig } = useAppContext();
   const { settings } = useSettingsContext();
   const { isAdmin, loading: roleLoading } = useUserRole();
-  // Only the isolation mode is needed here: under Strict an empty scope denies
-  // everything rather than allowing everything, and the field text must say so.
-  const { isolationMode, loadTenants } = useTenants();
+  // The isolation mode decides what an empty scope means (under Strict it denies
+  // everything), and the grant source decides whether the scope is editable here at
+  // all; `loaded` separates "not read yet" from "could not be read".
+  const { isolationMode, grantSource, loaded: tenancyLoaded, loadTenants } = useTenants();
+  // Under TenantGrantSource IdpClaim or Api the identity provider or an entitlement
+  // system owns users' configuration scope; the server refuses an Admin edit, so the
+  // field is shown read-only rather than offered and then refused.
+  // Read-only unless the source is known to be Manual: an unknown source (the read
+  // failed, or the field is absent) must not offer an edit the server may refuse.
+  const externalGrants = grantSource !== 'Manual';
+  const grantedByText =
+    grantSource === 'IdpClaim'
+      ? "Granted by the identity provider's claim at each sign-in, not editable here."
+      : grantSource === 'Api'
+        ? 'Granted by an entitlement system through setUserTenant, not editable here.'
+        : tenancyLoaded
+          ? 'Who grants tenants on this stack could not be read, so scope is not editable here. Reload to try again.'
+          : 'Checking who grants tenants on this stack…';
   // `null` when the mode could not be read (listTenants failed). The empty-scope
   // guidance is then stated for both modes rather than defaulting to Off's, which
   // would tell an Admin on a Strict stack the opposite of what an empty scope does.
@@ -227,7 +245,8 @@ const UserManagementLayout = (): React.JSX.Element => {
 
     try {
       const client = generateClient();
-      const allowedConfigVersions = selectedConfigVersions.length > 0 ? selectedConfigVersions.map((opt) => opt.value) : undefined;
+      const allowedConfigVersions =
+        !externalGrants && selectedConfigVersions.length > 0 ? selectedConfigVersions.map((opt) => opt.value) : undefined;
       const allowedTestSets = selectedTestSets.length > 0 ? selectedTestSets.map((opt) => opt.value) : undefined;
       logger.debug('Creating user:', { email, persona, allowedConfigVersions, allowedTestSets });
       await client.graphql({
@@ -258,7 +277,8 @@ const UserManagementLayout = (): React.JSX.Element => {
     const currentScope = user.allowedConfigVersions?.filter((v): v is string => v !== null) || [];
     setEditScopeVersions(
       currentScope.map((v) => ({
-        label: v,
+        // The no-tenant marker is never shown as though it were a profile name.
+        label: v === NO_TENANT_GRANTED ? 'No tenant granted' : v,
         value: v,
       })),
     );
@@ -287,7 +307,11 @@ const UserManagementLayout = (): React.JSX.Element => {
       // Only send the test-set axis for Annotators: the resolver treats an
       // argument's *presence* as "change this axis", so sending null for a
       // non-annotator would clear a scope that was never shown.
-      const variables: Record<string, unknown> = { userId: editingUser.userId, allowedConfigVersions };
+      // The config-profile axis is sent only when an Admin owns it: its presence
+      // means "change this axis", which the server refuses under external grants.
+      const variables: Record<string, unknown> = externalGrants
+        ? { userId: editingUser.userId }
+        : { userId: editingUser.userId, allowedConfigVersions };
       if (editingUser.persona === 'Annotator') {
         variables.allowedTestSets = editScopeTestSets.length > 0 ? editScopeTestSets.map((opt) => opt.value) : null;
       }
@@ -401,7 +425,22 @@ const UserManagementLayout = (): React.JSX.Element => {
     );
   }
 
-  const formatConfigVersions = (userVersions: (string | null)[] | null | undefined): React.ReactNode => {
+  const formatConfigVersions = (userVersions: (string | null)[] | null | undefined, user?: User): React.ReactNode => {
+    if (userVersions && userVersions.length === 1 && userVersions[0] === NO_TENANT_GRANTED) {
+      return <Badge color="red">No tenant granted</Badge>;
+    }
+    // Only while a grant source owns the scope: a row granted before the stack returned
+    // to Manual can still carry the tenant, and showing it would hide the real scope.
+    if (user?.scopeTenant && externalGrants) {
+      return (
+        <SpaceBetween direction="horizontal" size="xxs">
+          <Badge color="blue">Tenant: {user.scopeTenant}</Badge>
+          <Box color="text-body-secondary" fontSize="body-s">
+            via {user.scopeSource === 'idp' ? 'identity provider' : 'entitlement push'}
+          </Box>
+        </SpaceBetween>
+      );
+    }
     if (!userVersions || userVersions.length === 0) {
       return (
         <Box color="text-body-secondary">
@@ -446,7 +485,7 @@ const UserManagementLayout = (): React.JSX.Element => {
     {
       id: 'allowedConfigVersions',
       header: 'Config Profile Scope',
-      cell: (item: User) => formatConfigVersions(item.allowedConfigVersions),
+      cell: (item: User) => formatConfigVersions(item.allowedConfigVersions, item),
     },
     {
       id: 'allowedTestSets',
@@ -615,9 +654,10 @@ const UserManagementLayout = (): React.JSX.Element => {
                     Configuration Profile Scope <em>- optional</em>
                   </span>
                 }
-                description={`Restrict this user to specific configuration profiles. ${emptyScopeMeaning}`}
+                description={externalGrants ? grantedByText : `Restrict this user to specific configuration profiles. ${emptyScopeMeaning}`}
               >
                 <Multiselect
+                  disabled={externalGrants}
                   selectedOptions={selectedConfigVersions}
                   onChange={({ detail }) => setSelectedConfigVersions(detail.selectedOptions as { label: string; value: string }[])}
                   options={configVersionOptions}
@@ -673,9 +713,12 @@ const UserManagementLayout = (): React.JSX.Element => {
               {error && <Alert type="error">{error}</Alert>}
               <FormField
                 label="Configuration Profile Scope"
-                description={`Select which configuration profiles this user can access. ${emptyScopeMeaning}`}
+                description={
+                  externalGrants ? grantedByText : `Select which configuration profiles this user can access. ${emptyScopeMeaning}`
+                }
               >
                 <Multiselect
+                  disabled={externalGrants}
                   selectedOptions={editScopeVersions}
                   onChange={({ detail }) => setEditScopeVersions(detail.selectedOptions as { label: string; value: string }[])}
                   options={configVersionOptions}

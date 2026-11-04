@@ -846,6 +846,7 @@ boundary. The user-facing description, including strict mode, is in
 | `mapping_rejection_reason` / `mappings_rejection_reason` | A prefix mapping inside tenant T must name one of T's profiles, and one outside every tenant must not name a tenant's profile. The plural form checks every existing mapping against a proposed tenant set, which is how saving a tenant over a crossing mapping is refused |
 | `scope_rejection_reason` | An `allowedConfigVersions` value stays inside one tenant. A glob counts as inside tenant T only when its literal head carries T's whole stem; a head that is a prefix of some stem (`a*`, `acme*`, `*`) is refused because it can reach into that tenant |
 | `stored_scopes` / `stored_scopes_rejection_reason` | Every non-Admin user scope stored in the UsersTable (a paginated `Scan` projecting four attributes, user rows only), and whether a proposed tenant set would leave one of them crossing a boundary. A scope is checked only when written, so saving a tenant — through the API, `idp-cli tenancy put` or `apply` — re-checks the stored ones; the refusal names one user and counts the rest |
+| `resolve_grants` | Which tenant a user's claim or entitlement values give them, against each tenant's `grantedBy` values: `GRANT_TENANT` for exactly one, `GRANT_NONE` for none, `GRANT_REFUSED` (with a reason naming the tenants) for two or more — a user is confined to one tenant. Values that grant nothing are ignored. `grantedBy` itself is validated in `tenant_rejection_reason`: at most `MAX_GRANTS_PER_TENANT` values, no surrounding whitespace, no duplicates, and no value granting two tenants |
 | `ingest_rejection_reason` | Strict mode only: the key's tenant and the resolved profile's tenant must be equal, both a tenant or both none. Both-none is accepted only for an internal producer. The one accepted mismatch is a Test Studio run whose stored test-run record names the same profile |
 
 Everything except `TenantStore` is pure — no boto3 and no environment — so each rule
@@ -862,6 +863,20 @@ per-container cache, so a cached answer is re-judged against the current mode.
 `scripts/tests/test_tenant_isolation_wiring.py` fails if any function that resolves
 scope is deployed without the variable, because an unwired function would silently
 run as `Off`.
+
+**Grant sources live in `config_scope` and `user_scope`.** `TENANT_GRANT_SOURCE` (the
+`TenantGrantSource` parameter) is read per call; under `IdpClaim` or `Api`,
+`unscoped_is_denied()` is true and the lookup denies an unscoped caller exactly as
+strict mode does, and the wiring gate requires the variable on the same consumers.
+The writer side is [`idp_common/user_scope.py`](../user_scope.py):
+`apply_tenant_grant` writes a `resolve_grants` answer onto a user's row — exactly the
+tenant's `profilePattern`, or `NO_TENANT_GRANTED` (`!no-tenant-granted`, matching no
+profile), never an empty scope — records `scopeSource` and `scopeTenant`, keeps the
+`SUB#` pointer, leaves Admins alone, and creates a missing row marked
+`source: "cognito"` so the user-sync stream does not create a second account. The
+pre-token trigger, `user_management`'s `setUserTenant` and the SDK's
+`set_user_tenant` all write through it. The row and pointer invariants it shares with
+`user_management` (`record_cognito_sub`, `is_scoped`) are defined there too.
 
 ## Rollback-safe DynamoDB serialization
 

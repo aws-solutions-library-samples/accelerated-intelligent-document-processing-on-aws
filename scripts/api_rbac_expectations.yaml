@@ -1601,6 +1601,15 @@ operations:
     enforced_in: src/lambda/user_management/index.py
     # schema: deleteUser(userId: ID!) — keyed by userId, not email
     args: { userId: "__nope__" }
+  setUserTenant:
+    groups: [Admin]
+    kind: mutation
+    enforced_in: src/lambda/user_management/index.py
+    # Writes another user's configuration scope, so Admin-only, and only on a stack
+    # whose TenantGrantSource is Api. The probe address has no user, so an allowed
+    # caller is refused (by the mode check, or as user-not-found) and nothing is
+    # written.
+    args: { email: "__no@no.invalid" }
   listUsers:
     groups: [Admin]
     kind: read

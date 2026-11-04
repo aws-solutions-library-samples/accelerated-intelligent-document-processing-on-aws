@@ -282,11 +282,15 @@ The solution creates various IAM roles to run different components of the system
 
 * **API Dispatcher, Document Versions, Delete Document, Abort Workflow, Copy-to-Baseline and Test Results resolver roles**, scope additions: `dynamodb:Query` and `dynamodb:GetItem` on the UsersTable and its indexes, to resolve the caller's configuration scope before acting on one document or test run.
 
-* **User Management Role** (API resolver Lambda for `createUser`, `updateUser`, `deleteUser` and `listUsers`):
+* **User Management Role** (API resolver Lambda for `createUser`, `updateUser`, `deleteUser`, `listUsers` and `setUserTenant`):
   * `dynamodb` CRUD on the UsersTable
   * `dynamodb:GetItem` on the ConfigurationTable, restricted by a `dynamodb:LeadingKeys` condition to the single key `TenantIndex#__index` (reads the [tenant declarations](./multi-tenancy.md) so that a user's configuration scope cannot be set across tenants)
   * `cognito-idp:AdminCreateUser`, `AdminDeleteUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup`, `AdminListGroupsForUser`, `ListUsers`, `ListUsersInGroup` on the stack's user pool
   * `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the stack's customer-managed key
+
+* **External IdP Group Mapping Role** (the Cognito pre-token trigger, deployed only when federation with group mapping is configured):
+  * `cognito-idp:AdminGetUser`, `AdminListGroupsForUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup` on the stack's user pool (a separate policy, to avoid a circular dependency on the pool)
+  * Only when `TenantGrantSource=IdpClaim`, to write the tenant the claim grants: `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `DeleteItem` on the UsersTable and `dynamodb:Query` on its `EmailIndex`; `dynamodb:GetItem` on the ConfigurationTable restricted by `dynamodb:LeadingKeys` to `TenantIndex#__index`; and `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the stack's customer-managed key. Under any other grant source the trigger holds no data-plane grant
 
 * **Cognito Authentication Role** (the Identity Pool's authenticated role, assumed by the browser):
   * `lambda:InvokeFunction` on the chat streaming function — the browser SigV4-signs its Function URL directly (a Function URL invocation needs `InvokeFunction`, *not* `InvokeFunctionUrl`). The REST API itself is reached with the Cognito **ID token**, not IAM, so no `execute-api:Invoke` grant is required.

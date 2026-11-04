@@ -9,7 +9,7 @@ import re
 import urllib.parse
 
 import boto3
-from idp_common.config_scope import is_strict_isolation
+from idp_common.config_scope import unscoped_is_denied
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from idp_common.utils.settings_helper import get_setting
 
@@ -168,16 +168,17 @@ def markdown_response(kb_response):
     return markdown
 
 
-def _refuse_non_admin_in_strict_isolation(event):
-    """Strict tenant isolation: the Knowledge Base indexes every tenant's documents.
+def _refuse_non_admin_when_unscoped_is_denied(event):
+    """Tenant isolation: the Knowledge Base indexes every tenant's documents.
 
     A retrieval over it returns snippets from whichever documents match, with no
     configuration-profile filter, so it cannot be scoped to one tenant. Under
-    ``TenantIsolationMode=Strict`` it is therefore limited to the Admin group. An
+    ``TenantIsolationMode=Strict``, or an external ``TenantGrantSource``
+    (``IdpClaim`` or ``Api``), it is therefore limited to the Admin group. An
     invocation with no ``identity`` (a direct, IAM-gated invoke) is not a tenant
     user and is left alone, matching the other resolvers' backend-path rule.
     """
-    if not is_strict_isolation():
+    if not unscoped_is_denied():
         return
     identity = event.get("identity")
     if identity is None:
@@ -187,11 +188,11 @@ def _refuse_non_admin_in_strict_isolation(event):
         groups = [groups]
     if "Admin" not in groups:
         logger.warning(
-            "Rejecting queryKnowledgeBase: strict tenant isolation restricts the "
+            "Rejecting queryKnowledgeBase: tenant isolation restricts the "
             "Knowledge Base to Admin"
         )
         raise PermissionError(
-            "Unauthorized: this deployment runs in strict tenant isolation, where "
+            "Unauthorized: this deployment runs with tenant isolation, where "
             "the Document Knowledge Base (which indexes every tenant's documents) "
             "is limited to the Admin group"
         )
@@ -204,7 +205,7 @@ def handler(event, context):
         "Received event: %s",
         json.dumps(sanitize_event_for_logging(event, extra_truncate_keys=["input"])),
     )
-    _refuse_non_admin_in_strict_isolation(event)
+    _refuse_non_admin_when_unscoped_is_denied(event)
     query = event["arguments"]["input"]
     sessionId = event["arguments"].get("sessionId") or None
     kb_response = get_kb_response(query, sessionId)

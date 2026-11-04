@@ -19,7 +19,7 @@ from datetime import datetime
 import boto3
 import botocore.exceptions
 from idp_common.agents.analytics import get_analytics_config
-from idp_common.config_scope import is_strict_isolation
+from idp_common.config_scope import unscoped_is_denied
 from idp_common.agents.common.config import configure_logging
 from idp_common.agents.factory import agent_factory
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
@@ -107,14 +107,15 @@ def _enforce_agent_chat_groups(event):
         raise PermissionError(
             "Unauthorized: Agent Chat requires Admin, Author or Viewer group"
         )
-    # Strict tenant isolation: agents read across every tenant's documents, so
-    # nothing scopes them to one. Same rule the resolver applies.
-    if is_strict_isolation() and not _caller_in_groups(event, ("Admin",)):
+    # Tenant isolation, from Strict or an external grant source: agents read across
+    # every tenant's documents, so nothing scopes them to one. Same rule the
+    # resolver applies.
+    if unscoped_is_denied() and not _caller_in_groups(event, ("Admin",)):
         logger.warning(
-            "Rejecting agent chat: strict tenant isolation restricts Agent Chat to Admin"
+            "Rejecting agent chat: tenant isolation restricts Agent Chat to Admin"
         )
         raise PermissionError(
-            "Unauthorized: this deployment runs in strict tenant isolation, where "
+            "Unauthorized: this deployment runs with tenant isolation, where "
             "Agent Chat (which reads across every tenant's documents) is limited to "
             "the Admin group"
         )

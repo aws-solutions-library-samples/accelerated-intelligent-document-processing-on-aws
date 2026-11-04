@@ -2,10 +2,12 @@ query ListTenants {
   listTenants {
     success
     isolationMode
+    grantSource
     tenants {
       tenantId
       prefixes
       profilePattern
+      grantedBy
       description
       createdAt
       createdBy

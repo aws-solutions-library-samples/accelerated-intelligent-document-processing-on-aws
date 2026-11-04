@@ -50,9 +50,20 @@ def _identity(*groups):
     return {"claims": {"cognito:groups": list(groups), "email": "u@example.com"}}
 
 
-@pytest.fixture(params=["Off", "Strict"])
+@pytest.fixture(params=["Off", "Strict", "IdpClaim", "Api"])
 def mode(request, monkeypatch):
-    monkeypatch.setenv("TENANT_ISOLATION_MODE", request.param)
+    """``Off`` serves everyone; the other three each deny an unscoped caller.
+
+    ``IdpClaim`` and ``Api`` run with isolation Off but tenants granted from outside
+    the stack, which confines users just as Strict does, so the cross-tenant surfaces
+    must be Admin-only there too.
+    """
+    if request.param in ("IdpClaim", "Api"):
+        monkeypatch.setenv("TENANT_ISOLATION_MODE", "Off")
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", request.param)
+    else:
+        monkeypatch.setenv("TENANT_ISOLATION_MODE", request.param)
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", "Manual")
     return request.param
 
 
@@ -81,8 +92,8 @@ def test_agent_chat_is_admin_only_in_strict(agent_chat_resolver, mode, group):
         "identity": _identity(group),
         "arguments": {"prompt": "hi", "sessionId": "s1"},
     }
-    if mode == "Strict":
-        with pytest.raises(PermissionError, match="strict tenant isolation"):
+    if mode != "Off":
+        with pytest.raises(PermissionError, match="tenant isolation"):
             module.handler(event, None)
         table.put_item.assert_not_called()
     else:
@@ -130,8 +141,8 @@ def test_the_processor_applies_the_same_rule(agent_chat_processor, mode):
     gate = agent_chat_processor._enforce_agent_chat_groups
     gate({"identity": _identity("Admin")})
     gate({"identity": None})
-    if mode == "Strict":
-        with pytest.raises(PermissionError, match="strict tenant isolation"):
+    if mode != "Off":
+        with pytest.raises(PermissionError, match="tenant isolation"):
             gate({"identity": _identity("Author")})
     else:
         gate({"identity": _identity("Author")})
@@ -173,8 +184,8 @@ def test_agent_queries_are_admin_only_in_strict(agent_request_handler, mode):
         "identity": {**_identity("Viewer"), "username": "u1"},
         "arguments": {"query": "how many?", "agentIds": ["analytics"]},
     }
-    if mode == "Strict":
-        with pytest.raises(PermissionError, match="strict tenant isolation"):
+    if mode != "Off":
+        with pytest.raises(PermissionError, match="tenant isolation"):
             module.handler(event, None)
         table.put_item.assert_not_called()
         lam.invoke.assert_not_called()
@@ -212,8 +223,8 @@ def test_the_knowledge_base_is_admin_only_in_strict(kb_resolver, mode, groups):
         ) as kb,
         patch.object(kb_resolver, "markdown_response", return_value=""),
     ):
-        if mode == "Strict":
-            with pytest.raises(PermissionError, match="strict tenant isolation"):
+        if mode != "Off":
+            with pytest.raises(PermissionError, match="tenant isolation"):
                 kb_resolver.handler(event, None)
             kb.assert_not_called()
         else:
@@ -256,9 +267,9 @@ def test_mcp_tools_are_refused_in_strict(mcp_handler, mode):
     )
     with patch.object(mcp_handler, "get_tool", return_value=tool):
         result = mcp_handler.lambda_handler({"query": "x"}, context)
-    if mode == "Strict":
+    if mode != "Off":
         assert result["statusCode"] == 403
-        assert "strict tenant isolation" in json.loads(result["body"])["error"]
+        assert "tenant isolation" in json.loads(result["body"])["error"]
         tool.execute.assert_not_called()
     else:
         assert result["statusCode"] == 200

@@ -117,6 +117,14 @@ Parameters:
       parameter `/<MainStackName>/tenant-isolation-mode` so a feature that resolves
       a caller's configuration scope applies the same strict-mode rule the host does.
 
+  TenantGrantSource:
+    Type: String
+    Default: "Manual"
+    AllowedValues: ["Manual", "IdpClaim", "Api"]
+    Description: The main stack's TenantGrantSource, published as the SSM parameter
+      `/<MainStackName>/tenant-grant-source`. Under IdpClaim and Api a feature that
+      resolves a caller's scope denies an unscoped non-Admin, as the host does.
+
   UsersTableArn:
     Type: String
     Default: ''
@@ -881,6 +889,15 @@ Resources:
       Type: String
       Description: The main stack's TenantIsolationMode (Off or Strict), read at run time by feature stacks.
       Value: !Ref TenantIsolationMode
+
+  # The host's TenantGrantSource, published for the same reason and in the same way.
+  TenantGrantSourceParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${MainStackName}/tenant-grant-source'
+      Type: String
+      Description: The main stack's TenantGrantSource (Manual, IdpClaim or Api), read at run time by feature stacks.
+      Value: !Ref TenantGrantSource
 
   InstalledFeaturesTableNameParam:
     Type: AWS::SSM::Parameter

@@ -2129,10 +2129,12 @@ export const listTenants = /* GraphQL */ `
     listTenants {
       success
       isolationMode
+      grantSource
       tenants {
         tenantId
         prefixes
         profilePattern
+        grantedBy
         description
         createdAt
         createdBy
@@ -2183,6 +2185,8 @@ export const listUsers = /* GraphQL */ `
         createdAt
         allowedConfigVersions
         allowedTestSets
+        scopeSource
+        scopeTenant
       }
     }
   }
@@ -2509,14 +2513,15 @@ export const putConfigPrefixMapping = /* GraphQL */ `
 ` as GeneratedMutation<PutConfigPrefixMappingMutationVariables, PutConfigPrefixMappingMutation>;
 
 export const putTenant = /* GraphQL */ `
-  mutation PutTenant($tenantId: String!, $prefixes: [String!]!, $profilePattern: String!, $description: String) {
-    putTenant(tenantId: $tenantId, prefixes: $prefixes, profilePattern: $profilePattern, description: $description) {
+  mutation PutTenant($tenantId: String!, $prefixes: [String!]!, $profilePattern: String!, $description: String, $grantedBy: [String!]) {
+    putTenant(tenantId: $tenantId, prefixes: $prefixes, profilePattern: $profilePattern, description: $description, grantedBy: $grantedBy) {
       success
       message
       tenant {
         tenantId
         prefixes
         profilePattern
+        grantedBy
         description
         createdAt
         createdBy

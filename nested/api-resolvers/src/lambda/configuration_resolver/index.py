@@ -54,6 +54,7 @@ from idp_common.config_scope import (
     scope_allows,
 )
 from idp_common.metering_units import declared_free_units
+from idp_common.user_scope import tenant_grant_source
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -1783,12 +1784,13 @@ def _tenant_store(manager):
 
 
 def handle_list_tenants(manager):
-    """Every tenant declaration, plus this stack's isolation mode."""
+    """Every tenant declaration, plus this stack's isolation mode and grant source."""
     try:
         return {
             "success": True,
             "tenants": _tenant_store(manager).list(),
             "isolationMode": "Strict" if is_strict_isolation() else "Off",
+            "grantSource": tenant_grant_source(),
         }
     except Exception as e:
         logger.error(f"Error listing tenants: {e}")
@@ -1815,6 +1817,9 @@ def handle_put_tenant(manager, args, actor):
     if isinstance(prefixes, str):
         prefixes = [prefixes]
     pattern = args.get("profilePattern") or ""
+    granted_by = args.get("grantedBy") or []
+    if isinstance(granted_by, str):
+        granted_by = [granted_by]
     mapping_store = _prefix_mapping_store(manager)
     try:
         users_table_name = os.environ.get("USERS_TABLE_NAME", "")
@@ -1829,6 +1834,7 @@ def handle_put_tenant(manager, args, actor):
             list(prefixes),
             pattern,
             description=args.get("description"),
+            granted_by=list(granted_by),
             actor=actor,
             validate_against=lambda tenants: (
                 mappings_rejection_reason(mapping_store.list(), tenants)

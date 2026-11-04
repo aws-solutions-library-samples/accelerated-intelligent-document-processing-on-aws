@@ -999,6 +999,7 @@ export type Mutation = {
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
   sendTestRunToReview?: Maybe<SendTestRunToReviewResult>;
   setActiveVersion?: Maybe<UpdateConfigurationResponse>;
+  setUserTenant?: Maybe<User>;
   skipAllSectionsReview?: Maybe<Document>;
   skipTestSetDocument?: Maybe<TestSetDocumentSkipResult>;
   startMultiDocDiscovery?: Maybe<MultiDocDiscoveryJob>;
@@ -1360,6 +1361,7 @@ export type MutationPutConfigPrefixMappingArgs = {
 
 export type MutationPutTenantArgs = {
   description?: InputMaybe<Scalars['String']['input']>;
+  grantedBy?: InputMaybe<Array<Scalars['String']['input']>>;
   prefixes: Array<Scalars['String']['input']>;
   profilePattern: Scalars['String']['input'];
   tenantId: Scalars['String']['input'];
@@ -1519,6 +1521,12 @@ export type MutationSendTestRunToReviewArgs = {
 
 export type MutationSetActiveVersionArgs = {
   versionName: Scalars['String']['input'];
+};
+
+
+export type MutationSetUserTenantArgs = {
+  email: Scalars['String']['input'];
+  tenantId?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -2616,6 +2624,7 @@ export type Tenant = {
   createdAt?: Maybe<Scalars['String']['output']>;
   createdBy?: Maybe<Scalars['String']['output']>;
   description?: Maybe<Scalars['String']['output']>;
+  grantedBy?: Maybe<Array<Scalars['String']['output']>>;
   prefixes: Array<Scalars['String']['output']>;
   profilePattern: Scalars['String']['output'];
   tenantId: Scalars['String']['output'];
@@ -2632,6 +2641,7 @@ export type TenantMutationResponse = {
 
 export type TenantsResponse = {
   error?: Maybe<ConfigurationError>;
+  grantSource?: Maybe<Scalars['String']['output']>;
   isolationMode?: Maybe<Scalars['String']['output']>;
   success: Scalars['Boolean']['output'];
   tenants?: Maybe<Array<Maybe<Tenant>>>;
@@ -3039,6 +3049,8 @@ export type User = {
   createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
   email: Scalars['String']['output'];
   persona: Scalars['String']['output'];
+  scopeSource?: Maybe<Scalars['String']['output']>;
+  scopeTenant?: Maybe<Scalars['String']['output']>;
   status?: Maybe<Scalars['String']['output']>;
   userId: Scalars['ID']['output'];
 };

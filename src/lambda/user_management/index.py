@@ -42,7 +42,23 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from idp_common.config.tenants import TenantStore, scope_rejection_reason
+from idp_common.config.tenants import (
+    GRANT_NONE,
+    GRANT_TENANT,
+    TenantStore,
+    scope_rejection_reason,
+)
+from idp_common.config_scope import sub_pointer_key as _sub_pointer_key
+from idp_common.config_scope import user_row_key as _user_row_key
+from idp_common.user_scope import (
+    GRANT_SOURCE_API,
+    GRANT_SOURCE_MANUAL,
+    SCOPE_SOURCE_API,
+    apply_tenant_grant,
+    tenant_grant_source,
+)
+from idp_common.user_scope import is_scoped as _is_scoped
+from idp_common.user_scope import record_cognito_sub as _record_cognito_sub
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -123,111 +139,6 @@ def _get_caller_identity(event):
     }
 
 
-def _sub_pointer_key(caller_sub):
-    """The UsersTable key of the pointer item for one Cognito ``sub``.
-
-    One function so every writer and reader here builds the same key. A pointer
-    that disagrees with its readers by one character is a silent "no row", and
-    "no row" means unrestricted.
-    """
-    key = f"{USERS_TABLE_SUB_POINTER_PREFIX}{caller_sub}"
-    return {"PK": key, "SK": key}
-
-
-def _user_row_key(user_id):
-    """The UsersTable key of the row holding one user's scope."""
-    key = f"{USERS_TABLE_USER_KEY_PREFIX}{user_id}"
-    return {"PK": key, "SK": key}
-
-
-def _is_scoped(row):
-    """Whether a user row carries a config-version restriction."""
-    raw = (row or {}).get("allowedConfigVersions")
-    if not raw:
-        return False
-    if isinstance(raw, str):
-        return bool(raw.strip())
-    return any(str(entry).strip() for entry in raw)
-
-
-def _record_cognito_sub(
-    table, user_id, caller_sub, *, scoped, delete_stale_pointer=True
-):
-    """Record a user's Cognito ``sub`` on their row, and maintain its pointer.
-
-    ⚠️ **A pointer exists only for a row that carries a restriction**, which is what
-    ``scoped`` decides. That is the invariant every reader depends on, and it is not
-    an optimisation:
-
-    * A row with no ``allowedConfigVersions`` resolves to "unrestricted" through
-      either key, so a pointer for it changes no authorization answer.
-    * A pointer is read **before** the email join, so it decides the answer. Pointing
-      one at an unrestricted row therefore *pins* "unrestricted" ahead of any row the
-      email join would have found — and this function's own caller can create such a
-      row: the Cognito sync writes a fresh unscoped row whenever a Cognito address
-      matches none it knows, which is what happens to a user whose address diverged
-      from their (scoped) row. Before this rule, that duplicate got the pointer, and
-      correcting the address no longer restored the scope. With it, resolving through
-      a pointer can only ever *tighten*.
-
-    ⚠️ The pointer item carries **no** ``email`` attribute, and must not gain one.
-    A DynamoDB GSI indexes only items that have its hash key, so an item without
-    ``email`` is absent from ``EmailIndex`` altogether — which is what keeps
-    pointers out of an email query's result page. Give a pointer an ``email`` and a
-    ``Limit=1`` email query could return the pointer instead of the row; the
-    pointer holds no ``allowedConfigVersions``, so the scope would silently lift.
-
-    The ``sub`` itself is recorded on the row unconditionally. It is not a lookup key
-    on its own — it is how the next sync recognises this row as this Cognito
-    account's whatever the address now says — so recording it is always safe.
-
-    Failures are logged, not raised. The pointer is an *additional* route to a row
-    that ``EmailIndex`` still finds, so a user whose pointer could not be written
-    keeps working exactly as they did before pointers existed. Raising would fail
-    the create or the list that triggered it, which is the worse trade.
-    """
-    if not caller_sub or not user_id:
-        return False
-    now = datetime.utcnow().isoformat() + "Z"
-    try:
-        # `attribute_exists(PK)` because `update_item` UPSERTS. The user_id can come
-        # from a scan that is seconds old, so a concurrent deleteUser is enough to
-        # make this mint a partial row — no `email`, no `userId` — which then raises
-        # KeyError in both the sync's scan loop and `list_users`, and those are the
-        # only route into User Management *and* the only thing that runs this
-        # back-fill. One such item would brick the page for every Admin.
-        table.update_item(
-            Key=_user_row_key(user_id),
-            UpdateExpression="SET #sub = :sub, updatedAt = :now",
-            ExpressionAttributeNames={"#sub": USERS_TABLE_SUB_ATTRIBUTE},
-            ExpressionAttributeValues={":sub": caller_sub, ":now": now},
-            ConditionExpression="attribute_exists(PK)",
-        )
-        if scoped:
-            pointer = _sub_pointer_key(caller_sub)
-            pointer["userId"] = user_id
-            pointer[USERS_TABLE_SUB_ATTRIBUTE] = caller_sub
-            pointer["updatedAt"] = now
-            table.put_item(Item=pointer)
-        elif delete_stale_pointer:
-            # Unrestricted now, so no pointer may survive: a scope removed through
-            # updateUser must not leave one behind pointing at the row it used to
-            # restrict. Callers that know none can exist yet pass
-            # ``delete_stale_pointer=False`` rather than paying for the call.
-            table.delete_item(Key=_sub_pointer_key(caller_sub))
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "Could not record the Cognito %s for user %s; their scope stays "
-            "resolvable by %s alone: %s",
-            SCOPE_SUB_CLAIM,
-            user_id,
-            SCOPE_KEY_CLAIM,
-            e,
-        )
-        return False
-    return True
-
-
 def _sub_from_cognito_attributes(attributes):
     """The ``sub`` from a Cognito ``UserAttributes``/``Attributes`` list."""
     for attr in attributes or []:
@@ -253,7 +164,13 @@ def handler(event, context):
     # included because it exposes every user's email + role; it must be Admin-only
     # (closes GAP-04, where any authenticated user — incl. Viewer/Reviewer — could
     # enumerate all users). getMyProfile stays open (a caller reads only itself).
-    if field in ("createUser", "updateUser", "deleteUser", "listUsers"):
+    if field in (
+        "createUser",
+        "updateUser",
+        "deleteUser",
+        "listUsers",
+        "setUserTenant",
+    ):
         caller = _get_caller_identity(event)
         if not caller["is_admin"]:
             logger.warning(
@@ -272,8 +189,95 @@ def handler(event, context):
         return list_users(event)
     elif field == "getMyProfile":
         return get_my_profile(event)
+    elif field == "setUserTenant":
+        return set_user_tenant(arguments)
 
     raise ValueError(f"Unknown operation: {field}")
+
+
+def _refuse_manual_scope_edit():
+    """Raise ``ValueError`` when another source owns users' configuration scope.
+
+    Under ``TenantGrantSource=IdpClaim`` the identity provider's claim writes the
+    scope at each sign-in, and under ``Api`` an entitlement system does. An Admin
+    edit would be overwritten at the next grant, or would silently stand in for one
+    the source of truth never made, so it is refused and the message names where the
+    scope comes from. Test-set scope is a separate axis and is not affected.
+    """
+    source = tenant_grant_source()
+    if source != GRANT_SOURCE_MANUAL:
+        raise ValueError(
+            f"Configuration scope is granted by {source} on this stack "
+            f"(TenantGrantSource={source}), so it cannot be edited here. Change the "
+            f"user's tenant at its source."
+        )
+
+
+def _read_tenants():
+    """The tenant declarations, or ``ValueError`` when they cannot be read."""
+    if not CONFIGURATION_TABLE_NAME:
+        raise ValueError(
+            "CONFIGURATION_TABLE_NAME is not configured, so the tenant declarations "
+            "cannot be read."
+        )
+    try:
+        return TenantStore(dynamodb.Table(CONFIGURATION_TABLE_NAME)).list()
+    except Exception as e:  # noqa: BLE001 - any failure refuses the request
+        logger.error(f"Could not read tenant declarations: {e}")
+        raise ValueError("The tenant declarations could not be read. Try again.") from e
+
+
+def set_user_tenant(args):
+    """Grant one user one tenant, or no tenant. Admin-only; ``TenantGrantSource=Api``.
+
+    For an entitlement system (SailPoint, a provisioning script) pushing a user's
+    tenant. ``tenantId`` null or absent grants no tenant, which writes the scope no
+    profile matches rather than an empty one, because an empty scope means
+    *unrestricted* outside strict isolation. The user must already exist.
+    """
+    source = tenant_grant_source()
+    if source != GRANT_SOURCE_API:
+        raise ValueError(
+            f"setUserTenant is available only when TenantGrantSource is "
+            f"{GRANT_SOURCE_API}; this stack's is {source}."
+        )
+    email = str(args.get("email") or "").strip()
+    if not email:
+        raise ValueError("email is required")
+    tenant_id = args.get("tenantId") or None
+    if tenant_id:
+        # Read only to validate a grant. A revocation checks nothing against the
+        # declarations, so it succeeds even when they cannot be read: losing a
+        # tenant only ever reduces access.
+        tenants = _read_tenants()
+        tenant = next((t for t in tenants if t["tenantId"] == tenant_id), None)
+        if tenant is None:
+            raise ValueError(f"Tenant '{tenant_id}' is not declared")
+        resolution = {"outcome": GRANT_TENANT, "tenant": tenant, "reason": None}
+    else:
+        resolution = {"outcome": GRANT_NONE, "tenant": None, "reason": None}
+
+    table = dynamodb.Table(USERS_TABLE_NAME)
+    result = apply_tenant_grant(
+        table,
+        email=email,
+        resolution=resolution,
+        source=SCOPE_SOURCE_API,
+        create_missing=False,
+    )
+    if result["action"] == "missing":
+        raise ValueError(f"User with email {email} not found")
+    if result["action"] == "admin-unchanged":
+        raise ValueError(
+            "Admin users are cross-tenant by design and are not granted a tenant."
+        )
+    # Read the row back by its primary key with a strongly consistent read. The
+    # email index is eventually consistent, so querying it straight after the write
+    # can return the previous scope and make a successful push look like a failure.
+    row = table.get_item(Key=_user_row_key(result["userId"]), ConsistentRead=True).get(
+        "Item"
+    )
+    return user_response_from_item(row)
 
 
 def _refuse_scope_crossing_tenants(scope):
@@ -368,7 +372,10 @@ def create_user(args):
         "updatedAt": datetime.utcnow().isoformat() + "Z",
     }
 
-    # A scope must stay inside one tenant. Checked before anything is written.
+    # A scope must stay inside one tenant, and may be set here only when an Admin
+    # is its source. Checked before anything is written.
+    if allowed_config_versions:
+        _refuse_manual_scope_edit()
     _refuse_scope_crossing_tenants(allowed_config_versions)
 
     # Store allowedConfigVersions if provided
@@ -441,6 +448,10 @@ def update_user(args):
     expr_values = {":now": datetime.utcnow().isoformat() + "Z"}
 
     if config_versions_given:
+        _refuse_manual_scope_edit()
+        # An Admin edit is a manual scope, so any tenant a grant source recorded on
+        # this row (before the stack returned to Manual) no longer describes it.
+        remove_parts.extend(["scopeTenant", "scopeSource"])
         if allowed_config_versions:
             _refuse_scope_crossing_tenants(allowed_config_versions)
             set_parts.append("allowedConfigVersions = :acv")
@@ -633,7 +644,12 @@ def get_my_profile(event):
     return user_response_from_item(row)
 
 
-_SCOPE_ATTRIBUTES = ("allowedConfigVersions", "allowedTestSets")
+_SCOPE_ATTRIBUTES = (
+    "allowedConfigVersions",
+    "allowedTestSets",
+    "scopeSource",
+    "scopeTenant",
+)
 
 
 def user_response_from_item(item):
