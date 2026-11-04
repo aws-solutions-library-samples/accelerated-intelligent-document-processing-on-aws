@@ -98,6 +98,18 @@ describe('UserManagementLayout under an external grant source', () => {
     expect(callsFor('updateUser')[0][0].variables).not.toHaveProperty('allowedConfigVersions');
   });
 
+  it('keeps the scope read-only when the grant source is not reported', async () => {
+    grantSource = undefined as unknown as string;
+    render(<UserManagementLayout />);
+    await screen.findByText('granted@example.com');
+    await waitFor(() => expect(callsFor('listTenants').length).toBeGreaterThan(0));
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit scope' }))[1]);
+    expect((await screen.findAllByText(/could not be read, so scope is not editable here/)).length).toBeGreaterThan(0);
+    fireEvent.click(await screen.findByRole('button', { name: 'Save Scope' }));
+    await waitFor(() => expect(callsFor('updateUser')).toHaveLength(1));
+    expect(callsFor('updateUser')[0][0].variables).not.toHaveProperty('allowedConfigVersions');
+  });
+
   it('keeps the configuration axis under Manual', async () => {
     grantSource = 'Manual';
     render(<UserManagementLayout />);

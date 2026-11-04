@@ -268,6 +268,16 @@ def apply_tenant_grant(
                 "allowedConfigVersions": None,
                 "tenant": None,
             }
+        if not str(email or "").strip():
+            # The row is found by its email through EmailIndex, and DynamoDB refuses
+            # an empty string as an index key, so a row cannot be created without
+            # one. A provider that sends no email claim (Entra, unless the email
+            # optional claim is configured) must be fixed at the provider.
+            raise ValueError(
+                "The identity provider sent no email claim, so this user's tenant "
+                "cannot be recorded. Configure the provider to send email (in Entra "
+                "ID, the 'email' optional claim)."
+            )
         user_id = str(uuid.uuid4())
         item = {
             **user_row_key(user_id),

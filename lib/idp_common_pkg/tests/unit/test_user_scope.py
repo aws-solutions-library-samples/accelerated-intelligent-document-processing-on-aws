@@ -287,6 +287,17 @@ def test_a_missing_row_is_created_marked_as_already_in_cognito():
 
 @pytest.mark.unit
 @mock_aws
+def test_a_row_is_not_created_without_an_email():
+    """Rows are found through EmailIndex and DynamoDB refuses an empty index key, so
+    a provider sending no email claim must be fixed rather than half-recorded."""
+    _, table = _users_table()
+    with pytest.raises(ValueError, match="no email claim"):
+        _grant(table, ["tenant.acme"], email="", cognito_sub="sub-x")
+    assert table.scan()["Items"] == []
+
+
+@pytest.mark.unit
+@mock_aws
 def test_a_missing_row_is_reported_when_creation_is_off():
     _, table = _users_table()
     result = _grant(

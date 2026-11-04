@@ -245,6 +245,12 @@ A user assigned `IDP.Viewer` and `tenant.acme` signs in as a Viewer scoped to
 `acme-*`. Assigning them `tenant.globex` as well grants them no tenant until one of the
 two is removed.
 
+⚠️ **Entra must send an `email` claim.** A user's record is found by email, so a
+sign-in whose token carries no email is refused under `TenantGrantSource=IdpClaim`
+rather than recorded without one. Entra omits the claim for an account with no mailbox
+unless the app registration adds the `email` optional claim (**Token configuration →
+Add optional claim → ID → email**); add it before switching.
+
 **Okta.** Create groups such as `idp-viewers`, `tenant-acme` and `tenant-globex`, send
 them in the groups claim (a filter such as *Starts with* `idp-` or `tenant-` keeps the
 claim small), and declare `tenant-acme` and `tenant-globex` as the tenants' **Granted

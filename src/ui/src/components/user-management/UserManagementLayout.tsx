@@ -61,11 +61,15 @@ const UserManagementLayout = (): React.JSX.Element => {
   // Under TenantGrantSource IdpClaim or Api the identity provider or an entitlement
   // system owns users' configuration scope; the server refuses an Admin edit, so the
   // field is shown read-only rather than offered and then refused.
-  const externalGrants = grantSource === 'IdpClaim' || grantSource === 'Api';
+  // Read-only unless the source is known to be Manual: an unknown source (the read
+  // failed, or the field is absent) must not offer an edit the server may refuse.
+  const externalGrants = grantSource !== 'Manual';
   const grantedByText =
     grantSource === 'IdpClaim'
       ? "Granted by the identity provider's claim at each sign-in, not editable here."
-      : 'Granted by an entitlement system through setUserTenant, not editable here.';
+      : grantSource === 'Api'
+        ? 'Granted by an entitlement system through setUserTenant, not editable here.'
+        : 'Who grants tenants on this stack could not be read, so scope is not editable here. Reload to try again.';
   // `null` when the mode could not be read (listTenants failed). The empty-scope
   // guidance is then stated for both modes rather than defaulting to Off's, which
   // would tell an Admin on a Strict stack the opposite of what an empty scope does.

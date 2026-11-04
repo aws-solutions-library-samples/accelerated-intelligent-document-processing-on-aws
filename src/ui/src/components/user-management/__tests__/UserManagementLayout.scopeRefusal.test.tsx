@@ -72,11 +72,12 @@ describe('UserManagementLayout scope refusal', () => {
     expect(within(dialog).getByRole('button', { name: 'Save Scope' })).toBeInTheDocument();
   });
 
-  it('does not describe an empty scope as unrestricted when the mode is unknown', async () => {
-    // listTenants answers with no data in this harness, so the mode is unknown.
+  it('does not describe an empty scope as unrestricted when the tenant settings cannot be read', async () => {
+    // listTenants answers with no data in this harness, so neither the isolation
+    // mode nor the grant source is known, and the scope is shown read-only.
     render(<UserManagementLayout />);
     fireEvent.click(await screen.findByRole('button', { name: 'Edit scope' }));
-    expect((await screen.findAllByText(/The tenant isolation mode could not be read/)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/could not be read, so scope is not editable here/)).length).toBeGreaterThan(0);
     expect(screen.queryByText(/unrestricted access to all versions/)).not.toBeInTheDocument();
   });
 
@@ -84,7 +85,7 @@ describe('UserManagementLayout scope refusal', () => {
     const base = mockGraphql.getMockImplementation() as (args: { query: string }) => Promise<unknown>;
     mockGraphql.mockImplementation((args: { query: string }) =>
       args.query.includes('listTenants')
-        ? Promise.resolve({ data: { listTenants: { success: true, isolationMode: 'Strict', tenants: [] } } })
+        ? Promise.resolve({ data: { listTenants: { success: true, isolationMode: 'Strict', grantSource: 'Manual', tenants: [] } } })
         : base(args),
     );
     render(<UserManagementLayout />);

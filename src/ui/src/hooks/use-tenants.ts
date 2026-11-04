@@ -80,7 +80,9 @@ const useTenants = () => {
       setTenants((response.tenants ?? []).filter(Boolean) as Tenant[]);
       setIsolationMode(response.isolationMode === 'Strict' ? 'Strict' : 'Off');
       const source = response.grantSource;
-      setGrantSource(source === 'IdpClaim' || source === 'Api' ? source : 'Manual');
+      // Anything other than the three known values is unknown, not Manual: reading
+      // an absent field as Manual would offer scope edits the server then refuses.
+      setGrantSource(source === 'Manual' || source === 'IdpClaim' || source === 'Api' ? source : null);
     } catch (err) {
       logger.error('Error loading tenants', err);
       setError('Failed to load tenants');
