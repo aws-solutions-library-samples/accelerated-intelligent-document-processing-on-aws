@@ -363,17 +363,17 @@ class TestIdpCommonPathResolution:
 class TestConstruction:
     """Resource discovery, which happens entirely in ``__init__``."""
 
-    def test_the_tracking_table_and_appsync_url_are_added_to_the_resources(
-        self, processor
-    ):
+    def test_the_tracking_table_and_appsync_url_are_in_the_resources(self, processor):
         """Neither is a stack *output*, so both are discovered the hard way.
 
-        ``TrackingTable`` comes from ``DescribeStackResource`` by logical id, and
-        the GraphQL URL is scraped out of the ``WebUITestEnvFile`` output — a
+        The tracking table is resolved by ``StackInfo`` from the ``TrackingTable``
+        logical id and recorded as ``DocumentsTable``, the entry
+        ``tracking_table_name`` reads, so the processor makes no lookup of its
+        own. The GraphQL URL is scraped out of the ``WebUITestEnvFile`` output — a
         multi-line ``.env`` blob. A failure here leaves the processor unable to
         read any document, which it reports as "Document not found".
         """
-        assert processor.resources["TrackingTable"] == TRACKING_TABLE
+        assert processor.resources["DocumentsTable"] == TRACKING_TABLE
         assert processor.resources["AppSyncApiUrl"] == APPSYNC_URL
         assert processor.resources["InputBucket"] == INPUT_BUCKET
         assert processor.resources["OutputBucket"] == OUTPUT_BUCKET
@@ -383,7 +383,7 @@ class TestConstruction:
         """Discovery failures are warnings, not errors, by design.
 
         A rerun processor that refused to exist would make the CLI unusable
-        against a partially deployed stack; instead the key is simply absent and
+        against a partially deployed stack; instead the table name is empty and
         the failure surfaces later, per document. Pinned because the swallowing is
         also what makes the path defect above so quiet.
         """
@@ -393,7 +393,7 @@ class TestConstruction:
 
         processor = RerunProcessor("idp-rerun-no-table", region=aws["region"])
 
-        assert "TrackingTable" not in processor.resources
+        assert processor.resources["DocumentsTable"] == ""
         assert processor.resources["AppSyncApiUrl"] == APPSYNC_URL
 
     def test_an_env_file_output_without_the_graphql_line_leaves_the_url_unset(
@@ -463,7 +463,7 @@ class TestConstruction:
         processor = RerunProcessor(STACK_NAME)
 
         assert processor.region == aws["region"]
-        assert processor.resources["TrackingTable"] == TRACKING_TABLE
+        assert processor.resources["DocumentsTable"] == TRACKING_TABLE
 
 
 @pytest.mark.unit
@@ -540,7 +540,7 @@ class TestGetDocument:
         assert "AWS_REGION" not in os.environ
 
     def test_a_missing_tracking_table_resource_is_indistinguishable_from_no_document(
-        self, processor, aws, stored_document, idp_common_importable
+        self, processor, aws, stored_document, idp_common_importable, caplog
     ):
         """DEFECT (contributing): every failure to read becomes "not found".
 
@@ -550,11 +550,15 @@ class TestGetDocument:
         and ``rerun_documents`` reports all three as ``Document not found``. This
         is the mechanism that hides the path defect above, and it is why that
         defect presents as a plausible-looking per-document result rather than as
-        an error.
+        an error. The reason reaches only the log, where it names the missing
+        resource and the stack.
         """
-        del processor.resources["TrackingTable"]
+        processor.resources["DocumentsTable"] = ""
 
-        assert processor._get_document(stored_document) is None
+        with caplog.at_level("ERROR"):
+            assert processor._get_document(stored_document) is None
+
+        assert f"TrackingTable not found in stack '{STACK_NAME}'" in caplog.text
 
 
 @pytest.mark.unit
@@ -839,7 +843,7 @@ class TestUpdateDocumentStatus:
         document = processor._prepare_for_extraction_rerun(
             processor._get_document(stored_document)
         )
-        del processor.resources["TrackingTable"]
+        processor.resources["DocumentsTable"] = ""
 
         processor._update_document_status(document)  # must not raise
 

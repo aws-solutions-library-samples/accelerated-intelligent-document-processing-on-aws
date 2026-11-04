@@ -8,9 +8,11 @@ Discovers and retrieves CloudFormation stack resources needed for CLI operations
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, Mapping, Optional
 
 import boto3
+
+from idp_sdk.exceptions import IDPResourceNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -254,3 +256,36 @@ def get_stack_resources(
     """
     stack_info = StackInfo(stack_name, region)
     return stack_info.get_resources()
+
+
+def tracking_table_name(resources: Mapping[str, str], stack_name: str) -> str:
+    """
+    Name of a stack's document tracking table, read from its resource map
+
+    The tracking table is a stack resource rather than a stack output.
+    ``StackInfo.get_resources`` resolves it by its ``TrackingTable`` logical id
+    and records it as ``DocumentsTable``, so a caller that already holds that
+    map gets the name without another AWS call. ``get_resources`` maps a table
+    it cannot find to ``""`` instead of raising, so that operations which never
+    touch the table still work; this is where that absence becomes an error for
+    the operations that do.
+
+    Args:
+        resources: The mapping returned by ``StackInfo.get_resources``
+        stack_name: Name of the stack the mapping describes
+
+    Returns:
+        The tracking table's physical name
+
+    Raises:
+        IDPResourceNotFoundError: If the mapping holds no tracking table name,
+            because the stack has no ``TrackingTable`` resource or its
+            resources could not be listed
+    """
+    name = resources.get("DocumentsTable")
+    if not name:
+        raise IDPResourceNotFoundError(
+            f"TrackingTable not found in stack '{stack_name}': the stack has no "
+            "TrackingTable resource, or its resources could not be listed"
+        )
+    return name
