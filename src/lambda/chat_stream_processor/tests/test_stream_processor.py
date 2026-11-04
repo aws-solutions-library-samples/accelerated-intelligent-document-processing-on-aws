@@ -675,7 +675,7 @@ def test_strict_isolation_refuses_an_unattributed_turn_before_the_stream(route):
     its 403 is either swallowed or downgraded to an error frame on a 200.
     """
     fn = _route_functions(_app_ast())[route]
-    calls = _calls_named(fn, "_refuse_unverified_in_strict_isolation_or_403")
+    calls = _calls_named(fn, "_refuse_unverified_when_unscoped_is_denied_or_403")
     assert len(calls) == 1, f"{route} must apply the strict-isolation refusal once"
     idx = next(
         i
@@ -692,7 +692,7 @@ def test_strict_isolation_refuses_an_unattributed_turn_before_the_stream(route):
 def test_the_strict_refusal_is_conditional_on_the_mode_and_a_403():
     src = open(os.path.join(_HERE, "app.py")).read()
     body = src[
-        src.index("def _refuse_unverified_in_strict_isolation_or_403(") : src.index(
+        src.index("def _refuse_unverified_when_unscoped_is_denied_or_403(") : src.index(
             "def _resolve_caller_sub("
         )
     ]

@@ -168,12 +168,13 @@ def markdown_response(kb_response):
     return markdown
 
 
-def _refuse_non_admin_in_strict_isolation(event):
-    """Strict tenant isolation: the Knowledge Base indexes every tenant's documents.
+def _refuse_non_admin_when_unscoped_is_denied(event):
+    """Tenant isolation: the Knowledge Base indexes every tenant's documents.
 
     A retrieval over it returns snippets from whichever documents match, with no
     configuration-profile filter, so it cannot be scoped to one tenant. Under
-    ``TenantIsolationMode=Strict`` it is therefore limited to the Admin group. An
+    ``TenantIsolationMode=Strict``, or an external ``TenantGrantSource``
+    (``IdpClaim`` or ``Api``), it is therefore limited to the Admin group. An
     invocation with no ``identity`` (a direct, IAM-gated invoke) is not a tenant
     user and is left alone, matching the other resolvers' backend-path rule.
     """
@@ -204,7 +205,7 @@ def handler(event, context):
         "Received event: %s",
         json.dumps(sanitize_event_for_logging(event, extra_truncate_keys=["input"])),
     )
-    _refuse_non_admin_in_strict_isolation(event)
+    _refuse_non_admin_when_unscoped_is_denied(event)
     query = event["arguments"]["input"]
     sessionId = event["arguments"].get("sessionId") or None
     kb_response = get_kb_response(query, sessionId)

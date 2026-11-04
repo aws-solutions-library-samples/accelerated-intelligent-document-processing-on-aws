@@ -14051,10 +14051,14 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref ExternalIdPGroupMappingFunctionLogGroup
       # The code is src/lambda/external_idp_group_mapping, which carries the unit
-      # tests. The idp_common layer is imported only under TenantGrantSource=IdpClaim.
+      # tests. The idp_common layer is imported only under TenantGrantSource=IdpClaim,
+      # so it is attached only then: every other mode runs the function as it was
+      # before tenant grants existed, layer-free at 128 MB.
       CodeUri: ./src/lambda/external_idp_group_mapping
-      Layers:
-        - !Ref IDPCommonBaseLayer
+      Layers: !If
+        - IsTenantGrantFromIdpClaim
+        - - !Ref IDPCommonBaseLayer
+        - !Ref AWS::NoValue
       # Cognito access is the separate ExternalIdPGroupMappingCognitoPolicy below,
       # to avoid a circular dependency on the user pool. These grants exist only
       # when the claim grants tenants: the user's UsersTable row and SUB# pointer,

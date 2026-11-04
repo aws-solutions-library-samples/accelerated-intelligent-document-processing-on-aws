@@ -882,7 +882,7 @@ class TestCognitoGroupCoverage:
 
 
 @pytest.mark.unit
-class TestGroupSyncOnBothCopies:
+class TestGroupSync:
     """The add/remove side effects, through the module loader the coverage tests use.
 
     Kept parametrised over `COPY_LOADERS` so that a second copy of the handler,

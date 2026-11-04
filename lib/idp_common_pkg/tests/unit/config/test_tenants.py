@@ -425,6 +425,25 @@ def test_store_round_trip_and_refusals():
 
 @pytest.mark.unit
 @mock_aws
+def test_an_over_cap_deployment_can_shrink_but_not_grow(monkeypatch):
+    """A stack declared before the cap fell may hold more tenants than it allows.
+    Edits and deletes must still work there, or the only way back under the cap is
+    refused; adding one more is what the cap refuses."""
+    store = t.TenantStore(_config_table())
+    for i in range(3):
+        store.put(f"t{i}", [f"clients/t{i}/"], f"t{i}-*")
+    monkeypatch.setattr(t, "MAX_TENANTS", 2)
+    with pytest.raises(ValueError, match="at most 2 tenants"):
+        store.put("t3", ["clients/t3/"], "t3-*")
+    store.put("t0", ["clients/t0/", "extra/t0/"], "t0-*")
+    assert store.delete("t2") is True
+    assert [x["tenantId"] for x in store.list()] == ["t0", "t1"]
+    with pytest.raises(ValueError, match="at most 2 tenants"):
+        store.put("t2", ["clients/t2/"], "t2-*")
+
+
+@pytest.mark.unit
+@mock_aws
 def test_the_index_is_not_a_profile_key():
     assert not t.TENANT_INDEX_KEY.startswith("Config#")
 

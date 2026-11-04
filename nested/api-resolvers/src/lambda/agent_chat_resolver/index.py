@@ -38,7 +38,7 @@ DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
 
 
-def _strict_tenant_isolation():
+def _unscoped_is_denied():
     """Whether tenant isolation is enforced: ``TenantIsolationMode=Strict``, or
     tenants granted by the identity provider or an entitlement system.
 
@@ -125,7 +125,7 @@ def handler(event, context):
     # execution), so nothing scopes them to one tenant. Admin only.
     if (
         event.get("identity") is not None
-        and _strict_tenant_isolation()
+        and _unscoped_is_denied()
         and not _caller_in_groups(event, ("Admin",))
     ):
         logger.warning(

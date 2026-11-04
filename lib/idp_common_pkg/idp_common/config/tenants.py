@@ -704,7 +704,10 @@ class TenantStore:
             updated = mutate(entries)
             if updated is None:
                 return
-            if len(updated) > MAX_TENANTS:
+            # Only a mutation that grows the set is refused, so a deployment that
+            # already holds more than the cap (it was 75 before Granted by values
+            # enlarged each entry) can still edit and delete its way back under it.
+            if len(updated) > MAX_TENANTS and len(updated) > len(entries):
                 raise ValueError(
                     f"This deployment allows at most {MAX_TENANTS} tenants."
                 )

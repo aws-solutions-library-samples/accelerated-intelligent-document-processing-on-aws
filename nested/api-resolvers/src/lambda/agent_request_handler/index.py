@@ -56,7 +56,7 @@ def validate_user_identity(identity):
 
 
 
-def _strict_tenant_isolation():
+def _unscoped_is_denied():
     """Whether tenant isolation is enforced: ``TenantIsolationMode=Strict``, or
     tenants granted by the identity provider or an entitlement system.
 
@@ -130,7 +130,7 @@ def handler(event, context):
             )
         # Strict tenant isolation: the analytics agents query the reporting
         # database, which holds every tenant's results. Admin only.
-        if _strict_tenant_isolation() and "Admin" not in groups:
+        if _unscoped_is_denied() and "Admin" not in groups:
             logger.warning(
                 "Rejecting submitAgentQuery from %s: tenant isolation "
                 "restricts agent queries to Admin",
