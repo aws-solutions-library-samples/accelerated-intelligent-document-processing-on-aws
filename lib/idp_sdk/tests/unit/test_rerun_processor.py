@@ -379,22 +379,29 @@ class TestConstruction:
         assert processor.resources["OutputBucket"] == OUTPUT_BUCKET
         assert processor.resources["DocumentQueueUrl"].endswith(QUEUE_NAME)
 
-    def test_a_stack_without_a_tracking_table_still_constructs(self, aws):
+    def test_a_stack_without_a_tracking_table_still_constructs(self, aws, caplog):
         """Discovery failures are warnings, not errors, by design.
 
         A rerun processor that refused to exist would make the CLI unusable
-        against a partially deployed stack; instead the table name is empty and
-        the failure surfaces later, per document. Pinned because the swallowing is
-        also what makes the path defect above so quiet.
+        against a partially deployed stack; instead the table name is empty, a
+        warning logged during construction names the missing table and the stack,
+        and the failure surfaces later, per document. The warning comes from
+        ``StackInfo``, which resolves the table for every processor. Pinned
+        because the swallowing is also what makes the path defect above so quiet.
         """
         aws["cfn"].create_stack(
             StackName="idp-rerun-no-table", TemplateBody=_template(with_table=False)
         )
 
-        processor = RerunProcessor("idp-rerun-no-table", region=aws["region"])
+        with caplog.at_level("WARNING"):
+            processor = RerunProcessor("idp-rerun-no-table", region=aws["region"])
 
         assert processor.resources["DocumentsTable"] == ""
         assert processor.resources["AppSyncApiUrl"] == APPSYNC_URL
+        assert (
+            "TrackingTable not found in the resources of stack 'idp-rerun-no-table'"
+            in caplog.text
+        )
 
     def test_an_env_file_output_without_the_graphql_line_leaves_the_url_unset(
         self, aws

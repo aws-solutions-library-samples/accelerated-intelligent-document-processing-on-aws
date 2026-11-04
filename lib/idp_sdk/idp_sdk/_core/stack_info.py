@@ -124,7 +124,13 @@ class StackInfo:
             raise
 
     def _get_table_name(self, logical_id: str) -> str:
-        """Get DynamoDB table name from stack resources"""
+        """
+        Get DynamoDB table name from stack resources
+
+        Returns ``""`` rather than raising when the table is absent or the
+        resources cannot be listed, and logs a warning naming the logical id
+        either way, so that operations which never touch the table still work.
+        """
         try:
             paginator = self.cfn.get_paginator("list_stack_resources")
 
@@ -133,6 +139,10 @@ class StackInfo:
                     if resource.get("LogicalResourceId") == logical_id:
                         return resource.get("PhysicalResourceId", "")
 
+            logger.warning(
+                f"{logical_id} not found in the resources of stack "
+                f"'{self.stack_name}'; operations that need it will fail"
+            )
             return ""
         except Exception as e:
             logger.warning(f"Could not get table name for {logical_id}: {e}")

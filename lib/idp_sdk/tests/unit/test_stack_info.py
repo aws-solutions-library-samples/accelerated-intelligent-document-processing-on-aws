@@ -246,21 +246,42 @@ def test_a_missing_document_queue_makes_the_whole_resolution_fail(aws):
 
 
 @pytest.mark.unit
-def test_a_missing_tracking_table_degrades_to_an_empty_string(aws):
+def test_a_missing_tracking_table_degrades_to_an_empty_string(aws, caplog):
     """``_get_table_name`` swallows everything and returns ``""``.
 
     The consequence is concrete: ``WorkflowStopper`` reports "DocumentsTable not
     found in stack resources" and skips aborting queued documents, while the rest
     of the command runs. That is a recoverable outcome, unlike the queue case, so
-    the difference is deliberate — but it means a renamed table logical id is a
-    silent partial failure.
+    the difference is deliberate. What keeps a renamed table logical id from being
+    a silent partial failure is the warning, which names the logical id and the
+    stack at resolution time, before any operation reaches for the table.
     """
     create_stack(template(ALL_OUTPUTS, with_table=False))
 
-    resources = StackInfo(STACK_NAME, REGION).get_resources()
+    with caplog.at_level("WARNING", logger="idp_sdk._core.stack_info"):
+        resources = StackInfo(STACK_NAME, REGION).get_resources()
 
     assert resources["DocumentsTable"] == ""
     assert resources["DocumentQueueUrl"].endswith(QUEUE_NAME)
+    assert f"TrackingTable not found in the resources of stack '{STACK_NAME}'" in (
+        caplog.text
+    )
+
+
+@pytest.mark.unit
+def test_a_stack_with_its_tracking_table_logs_no_warning(aws, caplog):
+    """The warning fires only when the table is absent.
+
+    Every deployment variant, headless included, declares ``TrackingTable``, so
+    on a healthy stack the warning must not appear: one that did would be printed
+    by every CLI command and soon read as noise.
+    """
+    create_stack(template(ALL_OUTPUTS))
+
+    with caplog.at_level("WARNING", logger="idp_sdk._core.stack_info"):
+        StackInfo(STACK_NAME, REGION).get_resources()
+
+    assert "TrackingTable" not in caplog.text
 
 
 @pytest.mark.unit
