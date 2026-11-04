@@ -249,17 +249,17 @@ def handler(event, context):
     idp_groups = parse_idp_groups(idp_groups_raw)
     logger.info(f"User {username} IdP groups: {idp_groups}")
 
-    tenants = load_tenants() if grant_from_claim else []
-    grant_values = {g for t in tenants for g in t.get("grantedBy") or []}
-
     # Determine target Cognito groups from mapping
-    target_groups = set()
-    unmapped_groups = []
-    for idp_group in idp_groups:
-        if idp_group in GROUP_MAPPING:
-            target_groups.add(GROUP_MAPPING[idp_group])
-        elif idp_group not in grant_values:
-            unmapped_groups.append(idp_group)
+    target_groups = {GROUP_MAPPING[g] for g in idp_groups if g in GROUP_MAPPING}
+
+    # An Admin is never granted a tenant, so the declarations are not read for one:
+    # a read failure would otherwise fail the sign-in of the role that can fix it.
+    read_tenants = grant_from_claim and "Admin" not in target_groups
+    tenants = load_tenants() if read_tenants else []
+    grant_values = {g for t in tenants for g in t.get("grantedBy") or []}
+    unmapped_groups = [
+        g for g in idp_groups if g not in GROUP_MAPPING and g not in grant_values
+    ]
 
     if grant_from_claim:
         apply_claim_grant(user_attributes, username, idp_groups, target_groups, tenants)

@@ -194,6 +194,12 @@ Under `IdpClaim` and `Api` four things change, whatever `TenantIsolationMode` sa
   came from, and the API refuses an edit, naming the grant source. Test-set scope
   (`allowedTestSets`) is a separate axis and stays editable.
 
+Two controls still need **`TenantIsolationMode=Strict`** as well: the ingest-time refusal
+of a document whose key and resolved profile belong to different tenants, and the
+bucket-policy delegation to per-tenant S3 Access Points. An external grant source
+decides who may read what; it does not change what ingest accepts. Set both for full
+isolation.
+
 Admins are not granted a tenant by either route; they remain cross-tenant (see
 [Strict mode](#strict-mode)).
 

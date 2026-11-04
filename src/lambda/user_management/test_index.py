@@ -1294,6 +1294,24 @@ class TestSetUserTenant:
         assert result["allowedConfigVersions"] == ["acme-*"]
         assert reads[-1] == ("get", True), reads
 
+    def test_a_revocation_succeeds_with_the_declarations_unreadable(
+        self, users_table, monkeypatch
+    ):
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", "Api")
+        index = _load_index()
+        users_table.put_item(
+            Item=dict(ANNOTATOR_ITEM, allowedConfigVersions=["acme-*"])
+        )
+
+        def unreadable():
+            raise ValueError("The tenant declarations could not be read. Try again.")
+
+        monkeypatch.setattr(index, "_read_tenants", unreadable)
+        result = self._call(index, {"email": ANNOTATOR_ITEM["email"], "tenantId": None})
+        assert result["allowedConfigVersions"] == ["!no-tenant-granted"]
+        with pytest.raises(ValueError, match="could not be read"):
+            self._call(index, {"email": ANNOTATOR_ITEM["email"], "tenantId": "acme"})
+
     def test_no_tenant_writes_the_deny_marker(self, users_table, monkeypatch):
         monkeypatch.setenv("TENANT_GRANT_SOURCE", "Api")
         index = _load_index()

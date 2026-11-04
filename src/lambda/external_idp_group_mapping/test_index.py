@@ -17,6 +17,7 @@ Covers:
   (TestTheDeployedCodeIsThisFile)
 - Tenant grants from the claim under TenantGrantSource=IdpClaim (TestClaimTenantGrant)
 """
+
 import json
 import logging
 import os
@@ -164,7 +165,6 @@ def _admin_get_user_response(provider_name=IDP_NAME):
     return {"Username": "testuser", "UserAttributes": attributes}
 
 
-
 def _override_groups(result):
     """The groups the handler asked Cognito to put in the token, or None.
 
@@ -174,9 +174,8 @@ def _override_groups(result):
     tests assert on both (see TestTokenOverrideShape).
     """
     response = result.get("response") or {}
-    details = (
-        response.get("claimsOverrideDetails")
-        or response.get("claimsAndScopeOverrideDetails")
+    details = response.get("claimsOverrideDetails") or response.get(
+        "claimsAndScopeOverrideDetails"
     )
     if not details:
         return None
@@ -187,6 +186,7 @@ def _override_groups(result):
 # Group parsing tests
 # ============================================================
 
+
 class TestParseIdpGroups:
     """Tests for parse_idp_groups handling various claim formats."""
 
@@ -195,11 +195,15 @@ class TestParseIdpGroups:
         with patch.dict(os.environ, ENV_VARS, clear=False):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             self.parse = mod.parse_idp_groups
 
     def test_json_array(self):
-        assert self.parse('["IdP-Admins", "IdP-Authors"]') == ["IdP-Admins", "IdP-Authors"]
+        assert self.parse('["IdP-Admins", "IdP-Authors"]') == [
+            "IdP-Admins",
+            "IdP-Authors",
+        ]
 
     def test_json_array_single(self):
         assert self.parse('["IdP-Admins"]') == ["IdP-Admins"]
@@ -231,13 +235,16 @@ class TestParseIdpGroups:
 
     def test_comma_separated_with_spaces(self):
         assert self.parse("  IdP-Admins ,  IdP-Authors , IdP-Viewers  ") == [
-            "IdP-Admins", "IdP-Authors", "IdP-Viewers"
+            "IdP-Admins",
+            "IdP-Authors",
+            "IdP-Viewers",
         ]
 
 
 # ============================================================
 # Handler tests
 # ============================================================
+
 
 @pytest.mark.unit
 class TestHandler:
@@ -254,6 +261,7 @@ class TestHandler:
         with patch.dict(os.environ, ENV_VARS, clear=False):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             self.mod = mod
             self.handler = mod.handler
@@ -286,7 +294,9 @@ class TestHandler:
             UserPoolId="us-east-1_abc123", Username="testuser", GroupName="Admin"
         )
         # Verify token override
-        override = result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]
+        override = result["response"]["claimsAndScopeOverrideDetails"][
+            "groupOverrideDetails"
+        ]
         assert "Admin" in override["groupsToOverride"]
 
     def test_multiple_groups_added(self):
@@ -344,13 +354,17 @@ class TestHandler:
         result = self.handler(event, None)
 
         override_groups = set(
-            result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]["groupsToOverride"]
+            result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"][
+                "groupsToOverride"
+            ]
         )
         assert override_groups == {"Admin", "Viewer"}
 
     def test_list_groups_api_failure_returns_event(self):
         """If admin_list_groups_for_user fails, handler returns event gracefully."""
-        self.mock_cognito.admin_list_groups_for_user.side_effect = Exception("AccessDenied")
+        self.mock_cognito.admin_list_groups_for_user.side_effect = Exception(
+            "AccessDenied"
+        )
         event = _make_event(idp_groups="IdP-Admins")
 
         result = self.handler(event, None)
@@ -373,7 +387,9 @@ class TestHandler:
         assert self.mock_cognito.admin_add_user_to_group.call_count == 2
         # Token override should still contain both target groups
         override_groups = set(
-            result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]["groupsToOverride"]
+            result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"][
+                "groupsToOverride"
+            ]
         )
         assert override_groups == {"Admin", "Author"}
 
@@ -382,7 +398,9 @@ class TestHandler:
         self.mock_cognito.admin_list_groups_for_user.return_value = {
             "Groups": [{"GroupName": "Admin"}, {"GroupName": "Author"}]
         }
-        self.mock_cognito.admin_remove_user_from_group.side_effect = Exception("Throttled")
+        self.mock_cognito.admin_remove_user_from_group.side_effect = Exception(
+            "Throttled"
+        )
         event = _make_event(idp_groups="IdP-Authors")
 
         result = self.handler(event, None)
@@ -417,6 +435,7 @@ class TestHandler:
 # Provenance and freshness tests
 # ============================================================
 
+
 @pytest.mark.unit
 class TestProvenanceAndFreshness:
     """The attribute only grants groups when the IdP put it there.
@@ -432,6 +451,7 @@ class TestProvenanceAndFreshness:
         with patch.dict(os.environ, ENV_VARS, clear=False):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             self.mod = mod
             self.handler = mod.handler
@@ -483,7 +503,9 @@ class TestProvenanceAndFreshness:
         self.mock_cognito.admin_add_user_to_group.assert_called_once_with(
             UserPoolId="us-east-1_abc123", Username="testuser", GroupName="Admin"
         )
-        override = result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]
+        override = result["response"]["claimsAndScopeOverrideDetails"][
+            "groupOverrideDetails"
+        ]
         assert override["groupsToOverride"] == ["Admin"]
 
     def test_token_refresh_grants_nothing(self):
@@ -505,7 +527,9 @@ class TestProvenanceAndFreshness:
     def test_unknown_trigger_source_grants_nothing(self):
         """Anything not on the fresh-sign-in list is treated as untrusted."""
         self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
-        event = _make_event(idp_groups="IdP-Admins", trigger_source="TokenGeneration_Future")
+        event = _make_event(
+            idp_groups="IdP-Admins", trigger_source="TokenGeneration_Future"
+        )
 
         result = self.handler(event, None)
 
@@ -570,6 +594,7 @@ class TestProvenanceAndFreshness:
         with patch.dict(os.environ, env, clear=False):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             mock_cognito = MagicMock()
             mock_cognito.admin_get_user.return_value = _admin_get_user_response()
@@ -607,6 +632,7 @@ class TestProvenanceAndFreshness:
 # The deployed code is this directory
 # ============================================================
 
+
 @pytest.mark.unit
 class TestTheDeployedCodeIsThisFile:
     """template.yaml deploys src/lambda/external_idp_group_mapping, not an inline copy.
@@ -630,6 +656,7 @@ class TestTheDeployedCodeIsThisFile:
 # Token override response shape
 # ============================================================
 
+
 @pytest.mark.unit
 class TestTokenOverrideShape:
     """Cognito reads a different response key per trigger event version.
@@ -646,6 +673,7 @@ class TestTokenOverrideShape:
         with patch.dict(os.environ, ENV_VARS, clear=False):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             self.handler = mod.handler
             self.mock_cognito = MagicMock()
@@ -679,9 +707,11 @@ class TestTokenOverrideShape:
         assert "claimsOverrideDetails" not in response
         assert "claimsAndScopeOverrideDetails" not in response
 
+
 # ============================================================
 # Module-level GROUP_MAPPING tests
 # ============================================================
+
 
 class TestGroupMapping:
     """Tests for GROUP_MAPPING initialization from environment variables.
@@ -712,6 +742,7 @@ class TestGroupMapping:
         with patch.dict(os.environ, partial_env, clear=True):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             assert mod.GROUP_MAPPING == {"MyAdmins": "Admin"}
             assert mod.COGNITO_GROUPS == {"Admin"}
@@ -722,6 +753,7 @@ class TestGroupMapping:
         with patch.dict(os.environ, cleared, clear=True):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             assert mod.GROUP_MAPPING == {}
             assert mod.COGNITO_GROUPS == set()
@@ -737,6 +769,7 @@ class TestGroupMapping:
         with patch.dict(os.environ, env, clear=True):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             assert "  " not in mod.GROUP_MAPPING
             assert mod.GROUP_MAPPING == {"Authors": "Author"}
@@ -826,8 +859,14 @@ class TestCognitoGroupCoverage:
         """
         transform = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
-            "..", "..", "..",
-            "lib", "idp_sdk", "idp_sdk", "_core", "template_transform.py",
+            "..",
+            "..",
+            "..",
+            "lib",
+            "idp_sdk",
+            "idp_sdk",
+            "_core",
+            "template_transform.py",
         )
         if not os.path.exists(transform):
             pytest.skip("template_transform.py not reachable from this location")
@@ -1024,7 +1063,9 @@ class TestUnmappedGroupLogging:
     def test_every_unmapped_group_is_named(self, caplog):
         with caplog.at_level(logging.WARNING):
             self.handler(
-                _make_event(idp_groups='["IdP-Authors", "Contractors", "Finance-EMEA"]'),
+                _make_event(
+                    idp_groups='["IdP-Authors", "Contractors", "Finance-EMEA"]'
+                ),
                 None,
             )
 
@@ -1042,9 +1083,9 @@ class TestUnmappedGroupLogging:
         with caplog.at_level(logging.WARNING):
             self.handler(_make_event(idp_groups="IdP-Admins, IdP-Annotators"), None)
 
-        assert not any(
-            "no Cognito mapping" in m for m in self._warnings(caplog)
-        ), self._warnings(caplog)
+        assert not any("no Cognito mapping" in m for m in self._warnings(caplog)), (
+            self._warnings(caplog)
+        )
 
 
 # ============================================================
@@ -1200,9 +1241,7 @@ class TestClaimTenantGrant:
     def test_a_new_user_gets_a_row_with_the_mapped_persona(self):
         self.users.delete_item(Key=USER_ROW_KEY)
         self.mod.handler(self._event('["IdP-Authors", "tenant.globex"]'), None)
-        (row,) = [
-            i for i in self.users.scan()["Items"] if i["PK"].startswith("USER#")
-        ]
+        (row,) = [i for i in self.users.scan()["Items"] if i["PK"].startswith("USER#")]
         assert row["persona"] == "Author"
         assert row["source"] == "cognito"
         assert row["allowedConfigVersions"] == ["globex_*"]
@@ -1217,6 +1256,17 @@ class TestClaimTenantGrant:
     def test_a_claim_with_no_role_still_rewrites_an_existing_row(self):
         self.mod.handler(self._event('["tenant.acme"]'), None)
         assert self._scope() == ["acme-*"]
+
+    def test_an_admin_signs_in_with_the_tenant_index_unreadable(self, monkeypatch):
+        """An Admin is never granted a tenant, so the declarations are not read and
+        their failure cannot lock out the role that would fix it."""
+
+        def broken():
+            raise RuntimeError("throttled")
+
+        monkeypatch.setattr(self.mod, "load_tenants", broken)
+        self.mod.handler(self._event('["IdP-Admins", "tenant.acme"]'), None)
+        assert self._scope() == ["globex_*"]
 
     def test_an_unreadable_tenant_index_fails_the_sign_in(self, monkeypatch):
         def broken():

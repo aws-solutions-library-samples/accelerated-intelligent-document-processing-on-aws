@@ -245,8 +245,11 @@ def set_user_tenant(args):
     if not email:
         raise ValueError("email is required")
     tenant_id = args.get("tenantId") or None
-    tenants = _read_tenants()
     if tenant_id:
+        # Read only to validate a grant. A revocation checks nothing against the
+        # declarations, so it succeeds even when they cannot be read: losing a
+        # tenant only ever reduces access.
+        tenants = _read_tenants()
         tenant = next((t for t in tenants if t["tenantId"] == tenant_id), None)
         if tenant is None:
             raise ValueError(f"Tenant '{tenant_id}' is not declared")
