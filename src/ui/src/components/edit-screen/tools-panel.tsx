@@ -7,6 +7,7 @@ import React from 'react';
 import { HelpPanel, Icon } from '@cloudscape-design/components';
 
 import { DOCS_BASE_URL } from '../../constants/github';
+import { PROCESS_CHANGES_LABEL } from '../common/labels';
 
 const EditScreenToolsPanel = (): React.JSX.Element => (
   <HelpPanel
@@ -56,11 +57,12 @@ const EditScreenToolsPanel = (): React.JSX.Element => (
           <b>Cancel</b> leaves without finishing, asking first when there are unsaved edits.
         </li>
         <li>
-          <b>Save</b> saves the open section without finishing.
+          <b>Save</b> saves the open section without finishing. On a Test Studio document it keeps a draft, which opens no version.
         </li>
         <li>
-          <b>Process Changes</b> saves, then processes the changes: evaluation and summarization re-run, and OCR, classification and
-          extraction are not repeated. It finishes a queue item.
+          <b>{PROCESS_CHANGES_LABEL}</b> saves, then processes the changes: evaluation and summarization re-run, and OCR, classification and
+          extraction are not repeated. It finishes a queue item. On a Test Studio document it also writes the labels as reviewed ground
+          truth; when no draft version of the set is open, it asks first and opens the next version, leaving the current one as it is.
         </li>
       </ul>
       <h3>Reports</h3>
@@ -90,7 +92,11 @@ const EditScreenToolsPanel = (): React.JSX.Element => (
         </li>
         <li>Choose a section from the Section list. The page image stays in view while you scroll the fields.</li>
         <li>Click a field to highlight it on the page. Show Fields narrows the list to confidence alerts or evaluation mismatches.</li>
-        <li>A queue item&apos;s Review Reason, above the editor, lists why it is in review, worst first.</li>
+        <li>
+          A queue item&apos;s Review Reason lists why it is in review, worst first. Choose a reason, or <b>Next alert</b>, to move to its
+          field.
+        </li>
+        <li>When you cannot edit, a notice at the top says why, with Claim or Take over where you may take the document.</li>
       </ul>
     </div>
   </HelpPanel>

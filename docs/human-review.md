@@ -83,7 +83,7 @@ _How a document moves through review: processing decides whether it is queued, a
 | Persona | What they do in review |
 |---|---|
 | **Admin** | Manages the queues in **Review Studio › Review Management**: their settings, their **Eligible Annotators**, and their items (**Assign to…**, **Unassign**, **Move…**, **Remove from queue…**). Can open any item, work an unassigned one, and **Take over** one assigned to someone else. |
-| **Reviewer** | Works **every** Production queue, with no Admin assignment: claims items, corrects them, and finishes or skips them. Also works every Test Studio queue whose test set's profile is in their scope. A Reviewer is never assigned work; they claim their own. |
+| **Reviewer** | Works **every** Production queue, with no Admin assignment: claims items, corrects them, and finishes or skips them. Works Production queues only: Test Studio queues are for Annotators, Admins and Authors. A Reviewer is never assigned work; they claim their own. |
 | **Annotator** | Works the queues that list them in **Eligible Annotators**: claims their items, or is assigned them by an Admin, and finishes or skips them. Also works the test sets in their `allowedTestSets`. |
 | **Author**, **Viewer** | Don't work review queues. A document in review opens read-only for them, saying it is edited in its queue. |
 
@@ -188,13 +188,14 @@ queue.
    stays view-only.
 3. **Review and correct.** Open the item from Tasks. It opens in the
    [edit page](#document-editor). **Review Reason** lists why it is in review, worst
-   first, and the editor opens on the fields with confidence alerts. Correct the
+   first, and the editor opens on the fields with confidence alerts. Choose a reason
+   to move to its field, or **Next alert** to step through them. Correct the
    values. Your edits are saved as a draft as you type, or at once with **Save**;
    saving doesn't finish the review, so you can come back to it. **Edit Page
    Grouping**, on the Document Editor panel, corrects how the document is split into
    sections.
-4. **Finish.** Choose **Process Changes**. It saves your latest edits, asks you to
-   confirm, and applies your corrections in the finalize run. The item leaves your
+4. **Finish.** Choose **Process Changes**. It saves your latest edits and applies
+   your corrections in the finalize run. The item leaves your
    Tasks, the queue counts it as completed, and the document ends `COMPLETED`.
 5. **Or give it back.** If you can't finish it, choose **Skip** and pick a reason from
    the queue's skip list, with an optional note. The item goes back to its queue,
@@ -255,6 +256,12 @@ When an item is finished with **Process Changes**:
 - The document ends `COMPLETED`, and **Review Completed By** records who finished it
 - The review status object becomes `complete`, and the item's history (claims,
   assignments, skips with their reasons, completion) is kept
+- The finalize run reports only its own usage: the
+  [reporting database](reporting-database.md#metering-table), the
+  [`DocumentEstimatedCost`](cost-calculator.md#documentestimatedcost--a-cloudwatch-metric-you-can-alarm-on)
+  metric and the run's [version](document-versions.md) count the stages that ran
+  after review, not the processing before it. The document's **Estimated Cost** stays
+  the total of every run
 
 While a document is in review it is corrected only from its queue item: its other
 change actions on the document page (**Edit Page Grouping**, **Re-extract Sections**,
@@ -333,15 +340,20 @@ object key under it. The actions are in one bar at the top:
 | Button | **Skip** | Gives the item back to its queue, with a reason |
 | Button | **Cancel** | Leaves the item without finishing it; asks before discarding unsaved edits, and keeps the saved draft |
 | Button | **Save** | Saves the draft now (it is also saved as you type) |
-| Button | **Process Changes** | Saves your latest edits, confirms, and applies the corrections |
+| Button | **Process Changes** | Saves your latest edits and applies the corrections |
 
 For a Reviewer or Annotator viewing an item nobody holds, the bar offers **Claim**
-instead of the editing buttons. A button that doesn't apply is left out; a menu item
+instead of the editing buttons, and the fields are read-only. One notice at the top
+says why you can't edit, such as *View only. Claim this item to work on it; it is then
+assigned to you and shows in Home › Tasks.*, with **Claim** in the notice, or, for an
+Admin on an item assigned to someone else, *Assigned to {name}. Take over to edit it
+and process its changes.* with **Take over**. **Edit** and **View** keep their labels. A button that doesn't apply is left out; a menu item
 that doesn't apply yet stays in its menu, disabled, with the reason on hover. The info
 icon opens a panel describing the screen. **Review Reason**, above the editor, lists
 the item's alerts, worst first: the five lowest-confidence are shown, **+N more
 alerts** lists the rest, and hovering a reason shows the field, the score and the
-threshold.
+threshold. Each reason is a link that moves to its field, and **Next alert**, in the
+Review Reason header, steps through them in turn.
 
 The **Document Editor** panel holds the editor: the page images beside the fields,
 with a **Section** dropdown at its top left listing each section with its class, and
@@ -418,7 +430,8 @@ When evaluation data is available, turn on **Show Evaluation**:
 - **Least privilege**: give review-only users the Reviewer or Annotator role, and
   restrict them to the Configuration Profiles they review
 - **Reviewer or Annotator**: choose Reviewer for people who should take any Production
-  work; choose Annotator when an Admin decides who works which queue
+  work; choose Annotator when an Admin decides who works which queue, and for people
+  who label test sets
 - **Regular audits**: periodically review the user list and remove inactive users
 
 ## Troubleshooting
@@ -469,3 +482,9 @@ reached only by an Admin, or a Reviewer who also holds Author or Viewer; a Revie
 Annotator whose only work is review has no navigation to it. Keep the Default queue
 enabled whenever review-only users do the reviewing. Turning it off stops new documents
 from being queued; items already in review stay there and can be finished.
+
+**Process Changes** and **Skip All Reviews** on the document page resubmit the
+document. That run, like every run, reports only its own usage: the stages it skips,
+such as OCR, are not reported again, and the document's **Estimated Cost** adds the new run's usage to the earlier
+total. Documents reprocessed before this behaviour was introduced keep the figures they
+were saved with.

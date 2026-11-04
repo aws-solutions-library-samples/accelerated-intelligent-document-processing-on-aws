@@ -4,9 +4,9 @@
 /**
  * The workspace's per-set state must not survive a change of set.
  *
- * Reproduced on a live stack: Start annotating on set A, then navigate in-app to set
- * B's queue. B rendered with A's `v1 → v2` badge, a `?v=2` queue link, no Start
- * annotating prompt and an unlocked editor — while B had no draft and no snapshot in
+ * Reproduced on a live stack: open a version on set A, then navigate in-app to set
+ * B's queue. B rendered with A's `v1 → v2` badge, a `?v=2` queue link and no draft
+ * prompt — while B had no draft and no snapshot in
  * S3. That is precisely the silent commitment the transition exists to prevent, on the
  * ordinary path of an annotator working two assigned sets in one session. For a few
  * seconds B's heading also sat above A's documents.
@@ -27,7 +27,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { draftBadgeHover, draftOpenedMessage, groundTruthAlertSuffix } from '../annotation-edit-flags';
+import { draftBadgeHover, groundTruthAlertSuffix, versionBadgeText } from '../annotation-edit-flags';
 
 const HERE = join(__dirname, '..');
 const ROUTES = readFileSync(join(HERE, '..', '..', 'routes', 'ReviewQueuesRoutes.tsx'), 'utf-8');
@@ -70,39 +70,25 @@ describe('one workspace instance per test set', () => {
   });
 });
 
-describe('what the reviewer sees when a transition opens', () => {
-  it('confirms the commitment with what the server reports was preserved', () => {
-    // The alert used to vanish and a small badge appear, and the server's
-    // snapshotObjectCount went unread. Now the moment it happens is said out loud.
-    expect(draftOpenedMessage({ baseVersion: 1, draftVersion: 2, snapshotObjectCount: 1234 })).toBe(
-      `Version 1 preserved (${(1234).toLocaleString()} objects). Your corrections go into version 2.`,
-    );
-    // Shown through the app's shared notifications, from the screen's Start annotating.
-    expect(SCREEN).toMatch(/if \(opened\) setSuccessMessage\(draftOpenedMessage\(opened\)\);/);
-  });
-
-  it('says so differently when the transition was already open', () => {
-    expect(draftOpenedMessage({ baseVersion: 1, draftVersion: 2, alreadyOpen: true })).toMatch(/^Version 2 was already open/);
-  });
-
-  it('explains the badge on hover', () => {
-    expect(draftBadgeHover({ baseVersion: 1, draftVersion: 2 })).toMatch(/^Corrections made here go into version 2\./);
+describe('what the reviewer sees while a transition is open', () => {
+  it('explains the badge on hover: where corrections go, and what is preserved', () => {
+    expect(draftBadgeHover({ baseVersion: 1, draftVersion: 2 })).toBe('Corrections go into version v2; v1 is preserved.');
+    expect(versionBadgeText({ baseVersion: 1, draftVersion: 2 })).toBe('v1 → v2');
   });
 });
 
 describe('the authored-ground-truth alert agrees with the rest of the screen', () => {
-  it('does not promise editing before a transition is open', () => {
-    // The editor is read-only until then, and this alert stacked directly under the
-    // one saying so.
-    expect(groundTruthAlertSuffix(true, { baseVersion: 1, draftVersion: 2 })).toMatch(/^ Save keeps your changes; Process Changes writes/);
-    expect(groundTruthAlertSuffix(true, null)).toBe(' Use Start annotating, above, to correct it.');
-    expect(SCREEN).toMatch(/groundTruthAlertSuffix\(editFlags\.canSaveDirectToBaseline, draft\)/);
+  it('tells a saver what Save and Process Changes do, whether or not a version is open', () => {
+    // Draft-first: the editor is editable before a version is open, so the alert says the
+    // same thing in both states.
+    expect(groundTruthAlertSuffix(true)).toMatch(/^ Save keeps your changes; Process Changes writes/);
+    expect(SCREEN).toMatch(/groundTruthAlertSuffix\(editFlags\.canSaveDirectToBaseline\)/);
   });
 
   it('no longer claims the direct save records no review', () => {
     // The direct save writes reviewed-human and counts toward progress since the
     // provenance fix; the old copy contradicted it.
-    const copy = groundTruthAlertSuffix(true, { baseVersion: 1, draftVersion: 2 });
+    const copy = groundTruthAlertSuffix(true);
     expect(copy).not.toMatch(/rather than recording a review/);
     expect(copy).toMatch(/counts the document as reviewed/);
   });

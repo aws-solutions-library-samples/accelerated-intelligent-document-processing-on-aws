@@ -10,6 +10,7 @@ import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { SelectProps, TableProps } from '@cloudscape-design/components';
 import {
   Alert,
+  Badge,
   Box,
   Button,
   ButtonDropdown,
@@ -29,7 +30,7 @@ import { getInboxPreferences as getInboxPreferencesQuery, listInboxMessages as l
 import type { InboxMessage, InboxMessageType, ListInboxMessagesQuery } from '../../graphql/generated/operation-types';
 import useInbox from '../../hooks/use-inbox';
 import { describeApiError } from '../../hooks/utils/graphql-error';
-import { paginationLabels } from '../common/labels';
+import { UNREAD_LABEL, paginationLabels } from '../common/labels';
 import useLocalStorage from '../common/local-storage';
 import { TableEmptyState, TableHeader, TableNoMatchState, getFilterCounterText } from '../common/table';
 import TruncatedText from '../common/TruncatedText';
@@ -284,7 +285,8 @@ const InboxMessagesTable = (): React.JSX.Element => {
   const noSelectionReason = 'Select one or more messages';
   // Received | Title | Type | Severity | Action, sized to fit without horizontal
   // scrolling: the title takes the remaining width and truncates. Plain text in every
-  // cell (no status icons); an unread message's title is bold.
+  // cell (no status icons); an unread message's title has an Unread badge before it
+  // and is bold, a read title is normal weight.
   const columnDefinitions: TableProps.ColumnDefinition<InboxMessage>[] = [
     {
       id: 'createdAt',
@@ -298,9 +300,14 @@ const InboxMessagesTable = (): React.JSX.Element => {
       header: 'Title',
       minWidth: 260,
       cell: (m) => (
-        <Button variant="inline-link" onClick={() => setOpenMessage(m)}>
-          <TruncatedText bold={!m.read}>{m.title}</TruncatedText>
-        </Button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
+          {!m.read && <Badge color="blue">{UNREAD_LABEL}</Badge>}
+          <div style={{ minWidth: 0 }}>
+            <Button variant="inline-link" onClick={() => setOpenMessage(m)}>
+              <TruncatedText bold={!m.read}>{m.title}</TruncatedText>
+            </Button>
+          </div>
+        </div>
       ),
       sortingField: 'title',
     },

@@ -94,13 +94,14 @@ An Annotator-only user, and a Reviewer with no Admin, Author or Viewer role, see
 notifications bell, lands on Home › Tasks, and opens a document through its edit page
 (`#/documents/<document>/edit`), from Tasks, Queues or an Inbox message. Every user has **Home › Inbox** and the bell; **Tasks** and
 **Queues** are there for Annotators and Reviewers. A Reviewer works every Production
-queue, and every Test Studio queue whose test set's configuration profile is in their
-profile scope, with no Admin assignment needed. **Reviewers find their work in Home ›
+queue, with no Admin assignment needed, and no Test Studio queue: Test Studio queues
+are worked by Annotators, Admins and Authors. **Reviewers find their work in Home ›
 Queues and Home › Tasks, not in the Document List**, which is no longer in their
 navigation.
 
 Every item is held to your configuration scope (`allowedConfigVersions`): an item whose
-profile is outside it is not listed in any queue or in Tasks, is skipped by **Claim
+profile is outside it is not listed in any queue or in Tasks, is not counted in a
+queue's item counts, oldest-item age or your claim count, is skipped by **Claim
 next**, and can't be opened, claimed, saved, skipped, finished or rejected — even one
 you already hold, if your scope has been narrowed since.
 
@@ -115,6 +116,10 @@ you already hold, if your scope has been narrowed since.
   assigned it: Production review items and Test Studio documents, each with its
   document, source, queue and age. Its badge counts both. You get an Inbox message
   when an Admin assigns you work.
+- In a queue's items and in Tasks, a document is named by the shortest end of its key
+  that tells it apart from the other rows, so two `invoice.pdf` files in different
+  folders show as `folder-a/invoice.pdf` and `folder-b/invoice.pdf`. A long name is
+  shortened in the middle, and the full key is shown on hover.
 - Select an item to open it in the **edit page**. Production items, Test
   Studio items and direct edits of a document all use the same edit page, whether
   you open them from Tasks, an Inbox message or Review Management. A Production item
@@ -156,9 +161,11 @@ you already hold, if your scope has been narrowed since.
   - **Production item**: **Review Reason**, above the editor, lists why it is in review,
     worst first. The five lowest-confidence alerts are shown; **+N more alerts**
     lists the rest and **Show fewer** collapses them again. Hover a reason chip to
-    see the field, the score and the threshold. Your edits are saved as a draft as
+    see the field, the score and the threshold; choose it to move to that field.
+    **Next alert**, in the Review Reason header, steps through the reasons' fields
+    in turn. Your edits are saved as a draft as
     you type, or straight away with **Save**. **Process Changes** saves
-    your latest edits and applies your corrections. The editor opens with **Show
+    your latest edits and applies your corrections, with no confirmation. The editor opens with **Show
     Fields** set to **Confidence alerts only** when the item has review reasons. **Edit
     Page Grouping**, on the **Document Editor** panel, corrects
     how the document is split into sections as part of the review: the board shows every section of
@@ -171,12 +178,18 @@ you already hold, if your scope has been narrowed since.
     saves the open section, applies every section and reprocesses the document's
     review copy. Authored ground truth has no review copy, so for it **Process Changes** only
     marks the labels reviewed. You can also choose it without
-    changing anything, which confirms the labels as correct; it needs no **Start
-    editing** first. **Save** keeps the open section's changes as a draft, which
-    is not reviewed: any later session, and the next assignee after a **Skip**,
-    opens the document with it. **Process Changes** applies the drafts and marks the
+    changing anything, which confirms the labels as correct. Editing is
+    draft-first: the fields are editable with no step to start, and **Save** keeps
+    the open section's changes as a draft, which is not reviewed and opens no
+    version: any later session, and the next assignee after a **Skip**, opens the
+    document with it. **Process Changes** applies the drafts and marks the
     sections reviewed, and leaves once the server counts the document reviewed.
-    Switching sections with unsaved changes asks first.
+    When no draft version of the set is open, it first asks **Open a new version
+    and save ground truth**, because it opens the next version of the set (the
+    current one stays as it is); while one is open, the header shows a
+    `v{base} → v{draft}` badge and it runs at once. A document with confidence
+    alerts opens on them, and its notice offers **Next alert** to step through the
+    open section's alert fields. Switching sections with unsaved changes asks first.
     **Edit Page Grouping** opens the page-grouping board in a dialog, where each section's
     pages and class are changed; there is no separate class dropdown. After a class
     change, the section offers **Re-extract**, so its fields match the new class; on a document with several sections it re-extracts

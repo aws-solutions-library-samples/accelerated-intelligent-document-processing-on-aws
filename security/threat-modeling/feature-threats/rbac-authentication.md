@@ -19,7 +19,7 @@ User Pools (`template.yaml`, `AWS::Cognito::UserPoolGroup` x5):
 |------|-----------|--------------|
 | **Admin** | 0 | Full system access: configuration, processing, review, agent access, user management |
 | **Author** | 1 | Create/edit configurations, upload documents, run processing, use agents |
-| **Reviewer** | 2 | Legacy HITL review of documents no review queue manages, view results |
+| **Reviewer** | 2 | Production HITL review: the items of every Production review queue, and legacy review of documents no review queue manages, within `allowedConfigVersions`; view results. No Test Studio work: the HITL operations refuse a Reviewer-only caller a document that carries a `TestSetId` |
 | **Annotator** | 3 | Ground-truth annotation within the test sets named in the user's `allowedTestSets`, and — since v0.6.13 — production **review-queue** items in the queues that list them as eligible. `allowedTestSets` bounds Test Set bucket keys only; on the document buckets an Annotator is bounded by `allowedConfigVersions`, like every other role (UI.T06) |
 | **Viewer** | 4 | Read-only access to processing results and dashboards |
 
@@ -74,10 +74,10 @@ Authorization is enforced at multiple layers:
 > `scripts/api_rbac_expectations.yaml` entry for entry. `ddb_direct` is the one place
 > the dispatcher itself enforces groups, via its own `_REQUIRED_GROUPS` table.
 > Across all 164: 39 require `Admin`; 42 `Admin`+`Author`; 15
-> `Admin`+`Author`+`Viewer`; 11 `Admin`+`Author`+`Annotator`; 11
-> `Admin`+`Annotator`; 1 `Annotator`; 4
+> `Admin`+`Author`+`Viewer`; 11 `Admin`+`Author`+`Annotator`; 1
+> `Admin`+`Annotator`; 1 `Annotator`; 14
 > `Admin`+`Reviewer`+`Annotator`; 3 `Admin`+`Reviewer`; 1
-> `Admin`+`Author`+`Annotator`+`Viewer` (every group except `Reviewer`);
+> `Admin`+`Author`+`Reviewer`+`Annotator`+`Viewer` (every group, listed explicitly);
 > 2 are IAM-only (rejected for every Cognito caller); **27 require any assigned
 > group** (`ANY_GROUP` — every document read, the chat transcript read, the
 > processing-breaker badge, three mutations and the eight Inbox operations,
@@ -339,7 +339,7 @@ flowchart TD
 |-----------|-------|
 | **Threat ID** | AUTH.T16 |
 | **Category** | STRIDE: Elevation of Privilege |
-| **Description** | AUTH.T03 covers a resolver whose group check is *wrong*. This covers the structural reason that is easy to do: beyond the field-level group floor, nothing requires a check to exist. The dispatcher now **denies by default** — `http_api_dispatcher/authz.py` refuses any field with no entry in the generated `api_rbac_manifest.json`, so an operation whose groups were never declared is closed — but that floor decides only *which groups may call an operation*. Every narrower decision is still hand-written inside the resolver that does the work: the configuration-profile scope (`allowedConfigVersions`), the test-set scope (`allowedTestSets`), session and job ownership, and, since v0.6.13, review-queue eligibility and assignee-only writes (HITL.T02). A resolver that omits one of those is reachable by every caller the floor admits, and it fails *open*. The 0.6.12 fix to `updateDocumentSections` is the shape exactly: four operations share the group policy `[Admin, Reviewer, Annotator]`, three applied the Annotator's per-object test-set check, and the fourth was given the same group list without the per-object half, so a scoped Annotator was confined by nothing but the floor. Eight operations are declared `ANY`, where the floor checks authentication only and the resolver is the whole check. Separately, whether a resolver's denial becomes an HTTP 403 still depends partly on **message text**: the dispatcher maps `PermissionError`/`AuthorizationError` by class name *or* a message beginning `Unauthorized`/`Forbidden` (`index.py`), so a reworded denial raised as a bare `Exception` becomes a 500. |
+| **Description** | AUTH.T03 covers a resolver whose group check is *wrong*. This covers the structural reason that is easy to do: beyond the field-level group floor, nothing requires a check to exist. The dispatcher now **denies by default** — `http_api_dispatcher/authz.py` refuses any field with no entry in the generated `api_rbac_manifest.json`, so an operation whose groups were never declared is closed — but that floor decides only *which groups may call an operation*. Every narrower decision is still hand-written inside the resolver that does the work: the configuration-profile scope (`allowedConfigVersions`), the test-set scope (`allowedTestSets`), session and job ownership, and, since v0.6.13, review-queue eligibility and assignee-only writes (HITL.T02). A resolver that omits one of those is reachable by every caller the floor admits, and it fails *open*. The 0.6.12 fix to `updateDocumentSections` is the shape exactly: four operations shared the group policy `[Admin, Reviewer, Annotator]`, three applied the Annotator's per-object test-set check, and the fourth was given the same group list without the per-object half, so a scoped Annotator was confined by nothing but the floor. Eight operations are declared `ANY`, where the floor checks authentication only and the resolver is the whole check. Separately, whether a resolver's denial becomes an HTTP 403 still depends partly on **message text**: the dispatcher maps `PermissionError`/`AuthorizationError` by class name *or* a message beginning `Unauthorized`/`Forbidden` (`index.py`), so a reworded denial raised as a bare `Exception` becomes a 500. |
 | **Attack Vector** | A caller holding a group the floor admits invokes `POST /op/{field}` naming an object outside their scope — another profile's document, another test set, another user's session, a queue they are not eligible for — on an operation whose resolver was shipped without that object's check. No UI path is involved. |
 | **Impact** | A missing per-object check exposes, to every caller the operation's group list admits, the objects the scope or ownership rule was meant to confine; for an `ANY` operation, to every authenticated caller including one in no group. |
 | **Likelihood** | Medium (the failure mode is omission during development, not an attack step; it recurred in 0.6.12) |

@@ -710,7 +710,8 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
 - **Navigation.** A user whose only role is Annotator, and a Reviewer with no Admin,
   Author or Viewer role, sees exactly **Home** (**Inbox**, **Tasks**, **Queues**) and
   **Deployment Info**: no **Documents** and no **Extensions**. A Reviewer finds their
-  work in Home › Queues and Home › Tasks, and works every Production queue. A Reviewer
+  work in Home › Queues and Home › Tasks, and works every Production queue and no Test
+  Studio queue; Test Studio queues are for Admins, Authors and Annotators. A Reviewer
   who also holds another role keeps that role's navigation, with Tasks and Queues
   added under **Home**. Other users have **Home** with the **Inbox** only, then the
   usual sections their roles allow: **Documents**, **Assistants**, **Test Studio**,
@@ -782,9 +783,22 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   menu item that doesn't apply yet, such as Summary before a document is finished, is
   disabled with the reason on hover. The info icon opens a panel describing the screen. Process Changes re-runs
   evaluation and summarization on the corrected document, and OCR, classification and
-  extraction are not repeated. It finishes a queue item, and on a direct edit saves
-  the edits and confirms first. For a Test Studio document with authored ground truth,
-  which has no review copy, it only marks the labels reviewed. A direct edit also shows the evaluation
+  extraction are not repeated. It finishes a queue item. What it asks first depends on
+  where you are: on a Production queue item it runs at once; on a direct edit it saves the
+  edits and asks you to confirm the reprocessing (**Confirm Reprocessing**); on a Test
+  Studio item with no draft version of the set open it asks **Open a new version and save
+  ground truth**, because it opens the next version and writes the labels as reviewed
+  ground truth. Test Studio editing is draft-first: **Save** keeps a draft and opens no
+  version, and while a draft version is open the header shows a `v{base} → v{draft}`
+  badge. For a Test Studio document with authored ground truth,
+  which has no review copy, it only marks the labels reviewed. **Edit** and **View** keep
+  their labels when you can't edit: the fields are shown read-only and one notice at the
+  top says why, such as *View only. This item is assigned to {name}.*, with **Claim** in
+  the notice for an item nobody holds (*View only. Claim this item to work on it; it is
+  then assigned to you and shows in Home › Tasks.*), or, for an Admin, **Take over** on
+  an item assigned to someone else (*Assigned to {name}. Take over to edit it and process
+  its changes.*). Each reason under **Review Reason** is a link that moves to its field,
+  and **Next alert** in its header steps through them. A direct edit also shows the evaluation
   baseline when the document has one: the class comparison, **Show Evaluation** to
   compare every field, and baseline editing. An Admin edits an unassigned Production
   item directly (the first saved edit, or Process Changes, assigns it to them) and
@@ -804,14 +818,15 @@ entry points:
 
 - **Bell (top navigation).** The bell shows a badge while you have unread messages and
   opens a menu with your five most recent messages, read and unread, with unread ones
-  flagged. Choosing a message opens the page it links to (or the Inbox page when it has
+  marked **Unread**. Choosing a message opens the page it links to (or the Inbox page when it has
   no link) and marks it read. The menu also offers **Mark all as read** and
   **View all in Inbox**.
 - **Inbox (left navigation).** **Inbox** is the first entry of **Home**, with a badge
   showing the unread count, for every user.
 - **Inbox page.** The Inbox page lists your messages with when they were received,
-  their title (bold while unread; long titles are shortened, with the full title on
-  hover), type and severity. Find messages by text, or filter by read
+  their title (an unread message has a blue **Unread** badge before a bold title; a read
+  title is in normal weight; long titles are shortened, with the full title on hover),
+  type and severity. Find messages by text, or filter by read
   state (**All** or **Unread**), type and severity, and sort by any column (severity
   sorts from success to error). Select messages to **Mark as read**, **Mark as unread**
   or **Delete** them. **More actions** offers **Mark all as read** and **Clear read**

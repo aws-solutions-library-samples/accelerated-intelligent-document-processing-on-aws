@@ -11,7 +11,7 @@
  */
 
 import React from 'react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -35,7 +35,7 @@ const detail = (stored: number, total: number) =>
 
 const renderPanel = (stored: number, total: number) => render(<ReviewTaskContext detail={detail(stored, total)} />);
 
-const shownReasons = () => screen.queryAllByText(/^Low confidence: Field \d+/);
+const shownReasons = () => screen.queryAllByRole('button', { name: /^Low confidence: Field \d+/ });
 
 describe('ReviewTaskContext reasons', () => {
   it('is headed Review Reason and shows no checklist', () => {
@@ -68,5 +68,25 @@ describe('ReviewTaskContext reasons', () => {
     expect(shownReasons()).toHaveLength(3);
     expect(screen.queryByRole('button', { name: /more alert/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Show fewer' })).toBeNull();
+  });
+
+  it('moves to a reason’s field when its chip is chosen', async () => {
+    const onReasonClick = vi.fn();
+    render(<ReviewTaskContext detail={detail(3, 3)} onReasonClick={onReasonClick} />);
+    await userEvent.click(screen.getByRole('button', { name: /^Low confidence: Field 1/ }));
+    expect(onReasonClick).toHaveBeenCalledWith(expect.objectContaining({ sectionId: '1', field: 'field_1' }));
+  });
+
+  it('steps through every stored reason in order with Next alert, then starts again', async () => {
+    const onReasonClick = vi.fn();
+    render(<ReviewTaskContext detail={detail(3, 3)} onReasonClick={onReasonClick} />);
+    const next = screen.getByRole('button', { name: 'Next alert' });
+    for (let i = 0; i < 4; i += 1) await userEvent.click(next);
+    expect(onReasonClick.mock.calls.map(([r]) => (r as { field: string }).field)).toEqual(['field_0', 'field_1', 'field_2', 'field_0']);
+  });
+
+  it('offers no Next alert without a handler', () => {
+    renderPanel(3, 3);
+    expect(screen.queryByRole('button', { name: 'Next alert' })).toBeNull();
   });
 });

@@ -115,8 +115,10 @@ interface UserRoleReturn {
   canDeleteConfig: boolean;
   /** True if user can perform HITL reviews (Admin or Reviewer) */
   canReview: boolean;
-  /** True if user can annotate test-set ground truth (Admin, Author, Annotator or Reviewer) */
+  /** True if user can annotate test-set ground truth (Admin, Author or Annotator) */
   canAnnotate: boolean;
+  /** Admin or Annotator: can claim and work Test Studio (test-set) queues. A Reviewer cannot. */
+  canWorkTestSetQueues: boolean;
   /** Admin, Annotator or Reviewer: can open a production review-queue item. */
   canWorkReviewQueues: boolean;
   /**
@@ -306,8 +308,11 @@ const useUserRole = (): UserRoleReturn => {
   const canManageUsers = isAdmin;
   const canDeleteConfig = isAdmin;
   const canReview = isAdmin || isReviewer;
-  // Reviewers annotate the test sets their profile scope admits, as Annotators their assigned sets.
-  const canAnnotate = isAdmin || isAuthor || isAnnotator || isReviewer;
+  // Test Studio ground truth: Admins and Authors, and Annotators on their assigned sets.
+  // Reviewers work Production queues only, so they are not in this set.
+  const canAnnotate = isAdmin || isAuthor || isAnnotator;
+  // Who claims and works test-set queues (the server's claim/list groups plus Admin).
+  const canWorkTestSetQueues = isAdmin || isAnnotator;
   // Who can open a production review-queue item (the routes' RequireRole set).
   const isQueueWorker = isAnnotator || isReviewer;
   const canWorkReviewQueues = isAdmin || isQueueWorker;
@@ -341,6 +346,7 @@ const useUserRole = (): UserRoleReturn => {
     canDeleteConfig,
     canReview,
     canAnnotate,
+    canWorkTestSetQueues,
     canWorkReviewQueues,
     isQueueWorker,
     allowedConfigVersions,

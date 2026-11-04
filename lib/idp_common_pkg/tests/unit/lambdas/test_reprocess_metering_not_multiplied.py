@@ -21,6 +21,12 @@ so every skipped section carried a full copy of the stored metering into
 ProcessResults, and an N-section document came out at (N+1) times its real cost
 with no model call repeated.
 
+Since #1666 the run start moves the stored metering into
+``Document.metering_baseline`` and resets ``metering``, so the stages accumulate
+only the run's own usage. The baseline variant at the end drives the OCR and
+classification skips as well, and asserts the run comes out with its own Lambda
+rows in ``metering`` and the stored usage untouched in ``metering_baseline``.
+
 This drives the three REAL handlers in the order the state machine runs them —
 extraction (skip) then assessment (skip) per section, then ProcessResults over the
 collected results — and asserts the exact merged metering. Only the outbound edges
@@ -37,7 +43,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from idp_common.config.models import IDPConfig
-from idp_common.models import Document, Section, Status
+from idp_common.models import Document, Page, Section, Status
 from tests.unit.lambdas._goldens import load_handler
 
 extraction_index = load_handler(
@@ -48,6 +54,10 @@ assessment_index = load_handler(
 )
 processresults_index = load_handler(
     "reprocess_metering_processresults_index", "processresults_function/index.py"
+)
+ocr_index = load_handler("reprocess_metering_ocr_index", "ocr_function/index.py")
+classification_index = load_handler(
+    "reprocess_metering_classification_index", "classification_function/index.py"
 )
 
 OBJECT_KEY = "folder/statement.pdf"
@@ -123,14 +133,20 @@ def wired(monkeypatch):
     # Empty working bucket: serialize_document returns the document inline.
     monkeypatch.setenv("WORKING_BUCKET", "")
     config = IDPConfig()
-    for module in (extraction_index, assessment_index, processresults_index):
+    for module in (
+        ocr_index,
+        classification_index,
+        extraction_index,
+        assessment_index,
+        processresults_index,
+    ):
         monkeypatch.setattr(module, "get_config", lambda **kw: config)
         doc_service = MagicMock()
         doc_service.get_document.return_value = None
         monkeypatch.setattr(
             module, "create_document_service", lambda *a, _s=doc_service, **kw: _s
         )
-    for module in (extraction_index, assessment_index):
+    for module in (ocr_index, classification_index, extraction_index, assessment_index):
         monkeypatch.setattr(module, "calculate_lambda_metering", _lambda_metering)
     # The assessment skip check: extraction results already carry explainability.
     monkeypatch.setattr(
@@ -228,3 +244,54 @@ def test_extraction_skip_returns_only_its_own_metering(wired):
     assert section_document.metering == _lambda_metering("Extraction", None, None)
     # The skip branch still hands assessment the section it was asked about.
     assert "2" in [s.section_id for s in section_document.sections]
+
+
+def _baseline_document(num_sections: int) -> Document:
+    """The document as ``start_workflow`` hands it to a reprocess run: the stored
+    usage moved into the baseline, own usage empty, every page OCR'd and
+    classified."""
+    document = _stored_document(num_sections)
+    document.metering_baseline = document.metering
+    document.metering = {}
+    document.pages = {
+        str(i): Page(
+            page_id=str(i),
+            image_uri=f"s3://out/{OBJECT_KEY}/pages/{i}/image.jpg",
+            raw_text_uri=f"s3://out/{OBJECT_KEY}/pages/{i}/rawText.json",
+            classification="bank-statement",
+        )
+        for i in range(1, num_sections + 1)
+    }
+    return document
+
+
+def _run_reprocess_from_ocr(document: Document) -> Document:
+    ocr_result = ocr_index.handler(
+        {"execution_arn": EXEC, "document": document.to_dict()}, _Context()
+    )
+    classification_result = classification_index.handler(
+        {"execution_arn": EXEC, "OCRResult": ocr_result}, _Context()
+    )
+    return _run_reprocess(
+        Document.load_document(classification_result["document"], "", None)
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("num_sections", [1, 3])
+def test_reprocess_from_a_baseline_accumulates_only_its_own_usage(wired, num_sections):
+    final = _run_reprocess_from_ocr(_baseline_document(num_sections))
+
+    # Only this run's Lambda rows: no stored Bedrock or Textract usage.
+    assert final.metering == {
+        "OCR/lambda/requests": {"requests": 1},
+        "OCR/lambda/duration": {"gb_seconds": 0.5},
+        "Classification/lambda/requests": {"requests": 1},
+        "Classification/lambda/duration": {"gb_seconds": 0.5},
+        "Extraction/lambda/requests": {"requests": num_sections},
+        "Extraction/lambda/duration": {"gb_seconds": 0.5 * num_sections},
+        "Assessment/lambda/requests": {"requests": num_sections},
+        "Assessment/lambda/duration": {"gb_seconds": 0.5 * num_sections},
+    }
+    # The stored usage rides through every stage unchanged.
+    assert final.metering_baseline == STORED_METERING

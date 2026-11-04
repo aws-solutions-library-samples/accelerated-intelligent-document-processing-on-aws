@@ -23,6 +23,7 @@ vi.mock('../../common/SafeMarkdown', () => ({
 
 import InboxPage from '../InboxPage';
 import { EMPTY_DESCRIPTION, EMPTY_TITLE } from '../InboxMessagesTable';
+import { UNREAD_LABEL } from '../../common/labels';
 
 const msg = (id: string, minutesAgo: number, over: Partial<InboxMessage> = {}): InboxMessage => ({
   id,
@@ -294,6 +295,23 @@ describe('InboxPage', () => {
     expect(modal.getElement().textContent).toContain('Message 3');
     await act(async () => modal.findFooter()!.findButton('[class*="variant-primary"]')!.click());
     expect(inbox.deleteMessages).toHaveBeenCalledWith([M3]);
+  });
+
+  it('marks an unread row with an Unread badge and renders a read title in normal weight', async () => {
+    renderPage();
+    await loaded();
+    const TITLE_COLUMN = 3;
+    const titleCell = (row: number) => table().findBodyCell(row, TITLE_COLUMN)!;
+
+    // Row 1 is M1 (unread), row 2 is M2 (read).
+    const unread = titleCell(1);
+    expect(unread.findBadge()?.getElement().textContent).toBe(UNREAD_LABEL);
+    expect(unread.find('span[title="Message 1"]')!.getElement().style.fontWeight).toBe('bold');
+
+    const read = titleCell(2);
+    expect(read.findBadge()).toBeNull();
+    expect(read.getElement().textContent).not.toContain(UNREAD_LABEL);
+    expect(read.find('span[title="Message 2"]')!.getElement().style.fontWeight).toBe('normal');
   });
 
   it('sorts severity by rank, not alphabetically', async () => {

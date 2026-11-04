@@ -713,6 +713,14 @@ keeps its own value:
   `idp_common.hooks` helper and the dispatcher's inline path always emit these;
   the back-fill covers a hand-rolled compressed reference that omits them.
 
+**Keep `metering` and `metering_baseline`.** A document's `metering` holds only
+the current run's usage, and `metering_baseline` holds the usage of its earlier runs
+(set when the run starts on a reprocessed document). The tracking row stores their
+sum and reporting reads `metering` alone, so a hook that rebuilds the document rather
+than mutating the one it loaded must carry both over; dropping `metering_baseline`
+loses the earlier runs' usage from the document's total, and dropping `metering`
+loses this run's from both. Add a hook's own usage to `metering`.
+
 **Write idempotent mutations.** The workflow retries a hook dispatch on
 transient Lambda faults, which re-invokes the hook — so a mutation that
 *appends* (`classification += "-SUFFIX"`) can apply twice, while one that *sets*
