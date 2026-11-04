@@ -3157,11 +3157,15 @@ def test_the_scheduled_digest_compares_with_the_nights_it_read_and_posts_once(
         ({"UX_TEST_STORIES_SLACK_WEBHOOK_URL": None}, []),
         ({"UX_TEST_STORIES_SLACK_WEBHOOK_URL": "   "}, []),
         (
+            {"UX_TEST_STORIES_SLACK_WEBHOOK_URL": None, "SLACK_WEBHOOK_URL": "   "},
+            [],
+        ),
+        (
             {"CI_PIPELINE_SOURCE": "web"},
             ["slack: not posted, because this is not a scheduled pipeline"],
         ),
     ],
-    ids=["no-webhook", "blank-webhook", "manual-pipeline"],
+    ids=["no-webhook", "blank-webhook", "blank-shared-webhook", "manual-pipeline"],
 )
 def test_the_digest_posts_to_slack_only_from_a_schedule_with_a_webhook(
     harness: StoryHarness,
@@ -3183,6 +3187,97 @@ def test_the_digest_posts_to_slack_only_from_a_schedule_with_a_webhook(
     assert [line for line in lines if line.startswith("slack:")] == said
     assert lines[-1].startswith("DIGEST: ")
     assert "hooksecretvalue" not in "\n".join(lines)
+
+
+SHARED_WEBHOOK = "https://hooks.slack.test/triggers/T0/2/sharedsecretvalue"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"SLACK_WEBHOOK_URL": SHARED_WEBHOOK}, SHARED_WEBHOOK),
+        (
+            {
+                "UX_TEST_STORIES_SLACK_WEBHOOK_URL": WEBHOOK,
+                "SLACK_WEBHOOK_URL": SHARED_WEBHOOK,
+            },
+            WEBHOOK,
+        ),
+        (
+            {
+                "UX_TEST_STORIES_SLACK_WEBHOOK_URL": "  ",
+                "SLACK_WEBHOOK_URL": SHARED_WEBHOOK,
+            },
+            SHARED_WEBHOOK,
+        ),
+    ],
+    ids=["shared-only", "own-first", "blank-own"],
+)
+def test_the_digest_posts_to_its_own_webhook_else_the_nightly_channels(
+    harness: StoryHarness,
+    capsys: pytest.CaptureFixture[str],
+    changes: dict[str, str],
+    expected: str,
+) -> None:
+    """The nightly channel's webhook is the one the integration build posts to;
+    the digest's own, when set, comes first, and neither is ever printed."""
+    _shard_runs(harness)
+    harness.environ.update(_scheduled(**changes))
+    runtime = harness.runtime()
+    posted: list[str] = []
+
+    def slack(webhook: str, payload: dict[str, str]) -> str:
+        posted.append(webhook)
+        return "posted (200)"
+
+    runtime.slack = slack
+    out = harness.tmp / "digest"
+    capsys.readouterr()
+    argv = ["--digest", str(harness.tmp / "shards"), "--out", str(out)]
+    assert runner.main(argv, runtime) == 0
+    assert posted == [expected]
+    printed = "\n".join(_lines(capsys))
+    assert "slack: posted (200)" in printed
+    assert "hooksecretvalue" not in printed and "sharedsecretvalue" not in printed
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("changes", "named"),
+    [
+        (
+            {
+                "UX_TEST_STORIES_SLACK_WEBHOOK_URL": "http://hooks.slack.test/x",
+                "SLACK_WEBHOOK_URL": SHARED_WEBHOOK,
+            },
+            "UX_TEST_STORIES_SLACK_WEBHOOK_URL",
+        ),
+        ({"SLACK_WEBHOOK_URL": "not a url"}, "SLACK_WEBHOOK_URL"),
+    ],
+    ids=["unusable-own", "unusable-shared"],
+)
+def test_an_unusable_webhook_posts_nothing_and_is_named(
+    harness: StoryHarness,
+    capsys: pytest.CaptureFixture[str],
+    changes: dict[str, str],
+    named: str,
+) -> None:
+    """The first webhook set is the one used, so a bad value of the digest's own
+    is not passed over for the nightly channel's; the line names which is bad."""
+    _shard_runs(harness)
+    harness.environ.update(_scheduled(**changes))
+    runtime = harness.runtime()
+    runtime.slack = lambda webhook, payload: pytest.fail("Slack was posted to")
+    out = harness.tmp / "digest"
+    capsys.readouterr()
+    argv = ["--digest", str(harness.tmp / "shards"), "--out", str(out)]
+    assert runner.main(argv, runtime) == 0
+    lines = _lines(capsys)
+    assert [line for line in lines if line.startswith("slack:")] == [
+        f"slack: not posted, because {named} is not an https URL"
+    ]
+    assert "sharedsecretvalue" not in "\n".join(lines)
 
 
 @pytest.mark.unit
@@ -3261,9 +3356,7 @@ class _Opener:
 def test_post_slack_posts_only_to_a_usable_https_url(webhook: str) -> None:
     opener = _Opener(_Answer(200))
     outcome = runner.post_slack(webhook, {"status": "clean"}, opener=opener)
-    assert outcome == (
-        "not posted, because UX_TEST_STORIES_SLACK_WEBHOOK_URL is not an https URL"
-    )
+    assert outcome == "not posted, because the webhook is not an https URL"
     assert opener.requests == []
 
 

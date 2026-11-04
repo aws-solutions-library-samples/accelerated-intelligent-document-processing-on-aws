@@ -1021,8 +1021,11 @@ and absent from `test_ci_gate_parity.py`'s `SHARED_GATES`. The entry point is
   a flow only when it can finish. `ai_ux_test_stories_digest` merges the shards
   and writes `digest.md` and `digest.json`. In the scheduled pipeline it also compares
   the night with earlier scheduled nights, read with `GITLAB_REVIEW_TOKEN` by GET
-  requests alone, and with `UX_TEST_STORIES_SLACK_WEBHOOK_URL` set posts a one-line
-  summary to Slack; a manual run compares nothing and says so. It runs no model and
+  requests alone, and posts a one-line summary to Slack: to
+  `UX_TEST_STORIES_SLACK_WEBHOOK_URL` when it is set, and otherwise to
+  `SLACK_WEBHOOK_URL`, the channel the integration build posts to, through the same
+  four workflow variables, with a status that begins `🧭 UX STORIES ·`. A manual run
+  compares nothing and says so. It runs no model and
   no browser. A night is compared only when the review stack's row in
   `deployment_summary.txt` says it was updated or already up to date and every socket
   audit was clean. A bad result is a regression once a second attempt confirms it;
@@ -1059,7 +1062,8 @@ the nightly shards share through the `&ux_confined_setup` anchor:
   strings are bounded and untrusted, and every reply is composed from structured
   fields.
 
-**CI variables.** The story jobs read `ai_ux_test`'s four and three of their own. The
+**CI variables.** The story jobs read `ai_ux_test`'s four, three of their own, and the
+nightly channel's `SLACK_WEBHOOK_URL`. The
 MR job and the shards declare `ai_ux_test`'s environment, `ux-review`, with
 `action: prepare`, which is what hands them the copies of `UX_TEST_UI_ENV`,
 `UX_TEST_PERSONAS` and `UX_TEST_AWS_ACCOUNT_ID` stored at that scope³; the digest
@@ -1071,7 +1075,8 @@ without `GITLAB_REVIEW_TOKEN` still writes the night's digest and compares nothi
 |---|---|---|
 | `UX_TEST_STORIES` | the three jobs' rules | unset or empty runs all three; `mr` only the MR job; `nightly` only the nightly pair; any other value, `off` among them, none. Keep it at environment scope All (`*`): GitLab can leave an environment-scoped variable undefined while it evaluates `rules`, so a scoped `off` can read as unset and stop nothing |
 | `UX_TEST_STORIES_RUN` | the nightly pair's rules | `all`, on a pipeline run by hand for `develop`, runs the nightly pair. At All (`*`) scope, for the same reason |
-| `UX_TEST_STORIES_SLACK_WEBHOOK_URL` | the digest, on the schedule | optional and masked: a Slack Workflow Builder webhook for the night's one-line summary, which is a bearer credential. Set it at environment scope `ux-stories-digest`, which only the digest declares, so no other job receives it, and protect that environment where `develop` is a protected branch |
+| `UX_TEST_STORIES_SLACK_WEBHOOK_URL` | the digest, on the schedule | optional and masked: a Slack Workflow Builder webhook of its own for the night's one-line summary, which is a bearer credential. Unset, the digest posts to `SLACK_WEBHOOK_URL`, the nightly channel. Set it only to move the summary to another channel, at environment scope `ux-stories-digest`, which only the digest declares, so no other job receives it, and protect that environment where `develop` is a protected branch |
+| `SLACK_WEBHOOK_URL` | the digest, on the schedule | the nightly channel's masked Slack Workflow Builder webhook at All (`*`) scope, which `integration_tests` and `nightly_notification` post to; the digest's destination when `UX_TEST_STORIES_SLACK_WEBHOOK_URL` is unset. The channel's message template lives in Workflow Builder, not in this repository, so read the first story post there |
 | `UX_TEST_UI_ENV` | the MR job and the shards | `ai_ux_test`'s, plus a `UX_TEST_WEB_URL=<the stack's ApplicationWebURL>` line, which every run against the deployed UI needs (an MR that changes the docs but not `src/ui`, and every nightly flow), because nothing else in the variable names the web host |
 | `UX_TEST_PERSONAS` | the MR job and the shards | `ai_ux_test`'s, with an entry for each Cognito group the stories sign in as, and one for each persona that names its own `credentials` (the profile-limited Annotator's `Annotator-scoped`); a flow whose entry is missing is not run |
 | `UX_TEST_AWS_ACCOUNT_ID` | the MR job and the shards | `ai_ux_test`'s |
