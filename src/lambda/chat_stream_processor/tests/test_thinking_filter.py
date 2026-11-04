@@ -90,6 +90,7 @@ def _stub_modules() -> dict[str, types.ModuleType]:
         BedrockErrorMessageHandler=_ErrorHandler,
     )
     mod("idp_common.agents.factory", agent_factory=types.SimpleNamespace())
+    mod("idp_common.config_scope", unscoped_is_denied=lambda: False)
     mod("idp_common.utils")
     mod("idp_common.utils.log_sanitizer", sanitize_event_for_logging=lambda e, *a: e)
     return made

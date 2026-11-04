@@ -1269,8 +1269,9 @@ class TestProcessorExternalTenantGrants:
     """``TenantGrantSource`` IdpClaim or Api on a chat turn, with isolation Off.
 
     An unscoped caller is one nobody has granted a tenant yet, so it is denied
-    as under strict isolation. The unverified-transport path (GAP-07) is not
-    changed by the grant source; only ``TenantIsolationMode=Strict`` closes it.
+    as under strict isolation. The unverified-transport path (GAP-07) is closed
+    as well: with tenants granted from outside, a turn with no verified caller
+    cannot be confined to one tenant, so it is refused rather than served.
     """
 
     @staticmethod
@@ -1289,6 +1290,16 @@ class TestProcessorExternalTenantGrants:
         )
         assert result == {"ok": False, "reason": "scope_denied"}
         bedrock.converse_stream.assert_not_called()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("source", ["IdpClaim", "Api"])
+    def test_an_unverified_transport_is_denied(self, source):
+        result, _p, bedrock, users_table = self._run(
+            source, event_extra={"identity": None}
+        )
+        assert result == {"ok": False, "reason": "scope_unavailable"}
+        bedrock.converse_stream.assert_not_called()
+        users_table.query.assert_not_called()
 
     @pytest.mark.unit
     def test_manual_leaves_an_unscoped_caller_unrestricted(self):

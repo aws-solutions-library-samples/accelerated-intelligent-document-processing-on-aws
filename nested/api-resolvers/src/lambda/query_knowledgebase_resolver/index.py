@@ -9,7 +9,7 @@ import re
 import urllib.parse
 
 import boto3
-from idp_common.config_scope import is_strict_isolation
+from idp_common.config_scope import unscoped_is_denied
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from idp_common.utils.settings_helper import get_setting
 
@@ -177,7 +177,7 @@ def _refuse_non_admin_in_strict_isolation(event):
     invocation with no ``identity`` (a direct, IAM-gated invoke) is not a tenant
     user and is left alone, matching the other resolvers' backend-path rule.
     """
-    if not is_strict_isolation():
+    if not unscoped_is_denied():
         return
     identity = event.get("identity")
     if identity is None:
@@ -187,11 +187,11 @@ def _refuse_non_admin_in_strict_isolation(event):
         groups = [groups]
     if "Admin" not in groups:
         logger.warning(
-            "Rejecting queryKnowledgeBase: strict tenant isolation restricts the "
+            "Rejecting queryKnowledgeBase: tenant isolation restricts the "
             "Knowledge Base to Admin"
         )
         raise PermissionError(
-            "Unauthorized: this deployment runs in strict tenant isolation, where "
+            "Unauthorized: this deployment runs with tenant isolation, where "
             "the Document Knowledge Base (which indexes every tenant's documents) "
             "is limited to the Admin group"
         )

@@ -39,12 +39,15 @@ _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
 
 
 def _strict_tenant_isolation():
-    """Whether the stack runs with ``TenantIsolationMode=Strict``.
+    """Whether tenant isolation is enforced: ``TenantIsolationMode=Strict``, or
+    tenants granted by the identity provider or an entitlement system.
 
-    The same test as ``idp_common.config_scope.is_strict_isolation``, restated
+    The same test as ``idp_common.config_scope.unscoped_is_denied``, restated
     because this function ships without the ``idp_common`` layer.
     """
-    return os.environ.get("TENANT_ISOLATION_MODE", "Off") == "Strict"
+    return os.environ.get("TENANT_ISOLATION_MODE", "Off") == "Strict" or os.environ.get(
+        "TENANT_GRANT_SOURCE", "Manual"
+    ) in ("IdpClaim", "Api")
 
 
 def _caller_in_groups(event, allowed):
@@ -126,10 +129,10 @@ def handler(event, context):
         and not _caller_in_groups(event, ("Admin",))
     ):
         logger.warning(
-            "Rejecting agent chat: strict tenant isolation restricts Agent Chat to Admin"
+            "Rejecting agent chat: tenant isolation restricts Agent Chat to Admin"
         )
         raise PermissionError(
-            "Unauthorized: this deployment runs in strict tenant isolation, where "
+            "Unauthorized: this deployment runs with tenant isolation, where "
             "Agent Chat (which reads across every tenant's documents) is limited to "
             "the Admin group"
         )

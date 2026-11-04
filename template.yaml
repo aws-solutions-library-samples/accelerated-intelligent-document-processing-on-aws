@@ -1333,6 +1333,12 @@ Rules:
 Conditions:
   IsTenantIsolationStrict: !Equals [!Ref TenantIsolationMode, "Strict"]
   IsTenantGrantFromIdpClaim: !Equals [!Ref TenantGrantSource, "IdpClaim"]
+  # Mirrors idp_common.config_scope.unscoped_is_denied: tenants granted from outside
+  # the stack confine users just as Strict does, so the surfaces that cannot be
+  # scoped (the chat stream Function URL among them) are closed under either.
+  DeniesUnscopedCaller: !Or
+    - !Condition IsTenantIsolationStrict
+    - !Not [!Equals [!Ref TenantGrantSource, "Manual"]]
   # Left at the default, the web UI client keeps its RefreshTokenValidity of 30
   # (days) and no TokenValidityUnits, so an upgraded stack's client is not modified:
   # UpdateUserPoolClient is a full replace, and nothing restores a property it drops.
@@ -16010,13 +16016,13 @@ Resources:
               - !GetAtt APIRESOLVERSTACK.Outputs.HttpApiEndpoint
           # Chat streaming Function URL (IAM-authed, response streaming). The
           # signed stream client (src/api/stream-client.ts) reads this. Empty
-          # under strict tenant isolation, which sends the UI to its REST polling
-          # fallback (as on GovCloud): that path carries the caller's verified
-          # Cognito claims, so it can be scoped, where the Function URL cannot
-          # (GAP-07) and refuses every turn in Strict.
+          # under strict tenant isolation or an external TenantGrantSource, which
+          # sends the UI to its REST polling fallback (as on GovCloud): that path
+          # carries the caller's verified Cognito claims, so it can be scoped,
+          # where the Function URL cannot (GAP-07) and refuses every turn there.
           - Name: VITE_STREAM_URL
             Value: !If
-              - IsTenantIsolationStrict
+              - DeniesUnscopedCaller
               - ""
               - !GetAtt ChatStreamProcessorUrl.FunctionUrl
           - Name: VITE_AWS_REGION
@@ -16239,9 +16245,10 @@ Resources:
           - !Ref ExternalIdPAutoLogin
           # -> VITE_ENABLE_QUICK_START_WIDGET
           - !Ref EnableQuickStartWidget
-          # -> VITE_STREAM_URL (empty under strict tenant isolation, which moves
-          #    chat onto the REST polling path)
+          # -> VITE_STREAM_URL (empty under strict tenant isolation or an external
+          #    TenantGrantSource, which moves chat onto the REST polling path)
           - !Ref TenantIsolationMode
+          - !Ref TenantGrantSource
           # -> VITE_UI_BASE_PATH + VITE_CLOUDFRONT_DOMAIN (Vite `base`, so every
           #    asset URL in the bundle) and the CloudFront-invalidation branch of
           #    the buildspec
@@ -17298,7 +17305,7 @@ Outputs:
         - !Sub "VITE_IDENTITY_POOL_ID=${IdentityPool}"
         - !Sub "VITE_API_BASE_URL=${APIRESOLVERSTACK.Outputs.HttpApiEndpoint}"
         - !If
-          - IsTenantIsolationStrict
+          - DeniesUnscopedCaller
           - "VITE_STREAM_URL="
           - !Sub "VITE_STREAM_URL=${ChatStreamProcessorUrl.FunctionUrl}"
         - !Sub "VITE_AWS_REGION=${AWS::Region}"

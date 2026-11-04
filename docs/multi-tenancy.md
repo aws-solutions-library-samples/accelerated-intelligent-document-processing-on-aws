@@ -175,7 +175,7 @@ stack parameter **`TenantGrantSource`** decides who writes it:
 | `IdpClaim` | The external identity provider's group or role claim | At the user's next fresh sign-in |
 | `Api` | An entitlement system, through the `setUserTenant` API operation, `idp-cli tenancy set-user-tenant` or the SDK's `client.tenancy.set_user_tenant` | At the next request after the push (within about a minute, the scope cache's lifetime) |
 
-Under `IdpClaim` and `Api` three things change, whatever `TenantIsolationMode` says:
+Under `IdpClaim` and `Api` four things change, whatever `TenantIsolationMode` says:
 
 - **A user's scope is exactly one tenant's profile pattern, or nothing.** The grant
   writes the tenant's `profilePattern` as the whole scope, replacing whatever was there.
@@ -184,6 +184,11 @@ Under `IdpClaim` and `Api` three things change, whatever `TenantIsolationMode` s
 - **A non-Admin user with no scope sees nothing,** exactly as under strict mode. A user
   who has never been granted a tenant, for example one who signed in before any
   entitlement push, is denied rather than served every tenant's documents.
+- **The surfaces that read across tenants are closed to non-Admins,** as in strict
+  mode: Agent Chat, agent queries and Knowledge Base queries are Admin only, MCP tools
+  are refused, and document chat must use the REST path because the chat Function URL
+  carries no verified identity to scope by. Once users are confined to a tenant, any
+  of these would otherwise be a way around the confinement.
 - **Admins cannot edit configuration-profile scopes** in User Management or through
   `createUser`/`updateUser`. The field is shown read-only with the tenant and where it
   came from, and the API refuses an edit, naming the grant source. Test-set scope
@@ -316,6 +321,9 @@ inside the stack. That has these consequences:
   That is an IAM control in your account, covered next.
 
 ### If MCP tools return 403 on a stack that is not Strict
+
+Check `TenantGrantSource` first: under `IdpClaim` or `Api` MCP tools are refused by
+design, as described in [Who grants a tenant](#who-grants-a-tenant).
 
 The MCP handler reads the mode through `idp_common`. If that library cannot be imported
 (a layer missing from the function), it refuses every tool rather than guess, and the

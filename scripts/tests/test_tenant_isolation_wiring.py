@@ -398,3 +398,35 @@ def test_a_feature_reading_the_grant_parameter_may_read_exactly_it():
             f"parameter but is not granted ssm:GetParameter on it"
         )
     assert checked >= 1, "expected the PII anonymizer's feature API"
+
+
+def _stream_url_conditions(node) -> list[str]:
+    """The condition names of every ``Fn::If`` that chooses the UI's stream URL."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        branch = node.get("Fn::If")
+        if isinstance(branch, list) and len(branch) == 3:
+            off, on = branch[1], branch[2]
+            if (off in ("", "VITE_STREAM_URL=")) and "ChatStreamProcessorUrl" in str(
+                on
+            ):
+                found.append(branch[0])
+        for value in node.values():
+            found += _stream_url_conditions(value)
+    elif isinstance(node, list):
+        for value in node:
+            found += _stream_url_conditions(value)
+    return found
+
+
+def test_the_ui_leaves_the_stream_url_whenever_an_unscoped_caller_is_denied():
+    """The chat Function URL refuses every turn wherever ``unscoped_is_denied()``
+    holds, which is Strict *or* an external grant source. A UI still pointed at it
+    there gets a 403 on every chat turn, so the stream URL must be blanked under
+    the same condition, not under Strict alone."""
+    body = _load(REPO_ROOT / "template.yaml")
+    conditions = _stream_url_conditions(body)
+    assert len(conditions) >= 2, conditions
+    assert set(conditions) == {"DeniesUnscopedCaller"}, conditions
+    rule = str(body["Conditions"]["DeniesUnscopedCaller"])
+    assert "IsTenantIsolationStrict" in rule and "TenantGrantSource" in rule, rule

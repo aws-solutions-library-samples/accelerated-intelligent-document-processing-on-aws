@@ -57,12 +57,15 @@ def validate_user_identity(identity):
 
 
 def _strict_tenant_isolation():
-    """Whether the stack runs with ``TenantIsolationMode=Strict``.
+    """Whether tenant isolation is enforced: ``TenantIsolationMode=Strict``, or
+    tenants granted by the identity provider or an entitlement system.
 
-    The same test as ``idp_common.config_scope.is_strict_isolation``, restated
+    The same test as ``idp_common.config_scope.unscoped_is_denied``, restated
     because this function ships without the ``idp_common`` layer.
     """
-    return os.environ.get("TENANT_ISOLATION_MODE", "Off") == "Strict"
+    return os.environ.get("TENANT_ISOLATION_MODE", "Off") == "Strict" or os.environ.get(
+        "TENANT_GRANT_SOURCE", "Manual"
+    ) in ("IdpClaim", "Api")
 
 
 def handler(event, context):
@@ -129,12 +132,12 @@ def handler(event, context):
         # database, which holds every tenant's results. Admin only.
         if _strict_tenant_isolation() and "Admin" not in groups:
             logger.warning(
-                "Rejecting submitAgentQuery from %s: strict tenant isolation "
+                "Rejecting submitAgentQuery from %s: tenant isolation "
                 "restricts agent queries to Admin",
                 user_id,
             )
             raise PermissionError(
-                "Unauthorized: this deployment runs in strict tenant isolation, "
+                "Unauthorized: this deployment runs with tenant isolation, "
                 "where agent queries (which read across every tenant's documents) "
                 "are limited to the Admin group"
             )

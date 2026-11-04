@@ -57,11 +57,11 @@ else:
 # this function cannot evaluate.
 _MODE_UNKNOWN = False
 try:
-    from idp_common.config_scope import is_strict_isolation
+    from idp_common.config_scope import unscoped_is_denied
 except ImportError:  # pragma: no cover - only reachable with no agents layer
     _MODE_UNKNOWN = True
 
-    def is_strict_isolation(environ=None) -> bool:  # type: ignore[misc]
+    def unscoped_is_denied(environ=None) -> bool:  # type: ignore[misc]
         return True
 
 
@@ -118,7 +118,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # reprocess) acts across the whole deployment, and the gateway hands this
     # function no user identity -- only a machine client's -- so there is no
     # tenant to scope a call to and no way to tell an Admin from anyone else.
-    if is_strict_isolation():
+    if unscoped_is_denied():
         if _MODE_UNKNOWN:
             # Kept distinguishable from a configured Strict refusal: the mode could
             # not be read at all, so the refusal is the fail-closed default.
@@ -134,11 +134,11 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             )
         else:
             logger.warning(
-                f"Rejecting MCP tool {tool_name!r}: strict tenant isolation refuses "
+                f"Rejecting MCP tool {tool_name!r}: tenant isolation refuses "
                 f"MCP calls, which carry no user identity to scope"
             )
             message = (
-                "This deployment runs in strict tenant isolation. MCP tools act "
+                "This deployment runs with tenant isolation. MCP tools act "
                 "across every tenant's documents and the gateway supplies no "
                 "user identity to scope them, so they are disabled."
             )

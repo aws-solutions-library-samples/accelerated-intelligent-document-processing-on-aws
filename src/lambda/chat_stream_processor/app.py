@@ -99,7 +99,7 @@ from sse import (
     sse,
 )
 
-from idp_common.config_scope import is_strict_isolation
+from idp_common.config_scope import unscoped_is_denied
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -226,15 +226,15 @@ def _refuse_unverified_in_strict_isolation_or_403(identity: dict | None) -> None
     (``sendChatDocumentMessage`` / ``sendAgentChatMessage``) carries verified
     claims and is unaffected by this check.
     """
-    if identity is None and is_strict_isolation():
+    if identity is None and unscoped_is_denied():
         logger.warning(
-            "Rejecting streamed chat: strict tenant isolation requires a verified "
+            "Rejecting streamed chat: tenant isolation requires a verified "
             "caller identity, which this transport does not supply (GAP-07)"
         )
         raise HTTPException(
             status_code=403,
             detail=(
-                "Unauthorized: this deployment runs in strict tenant isolation, "
+                "Unauthorized: this deployment runs with tenant isolation, "
                 "which requires a verified caller identity that the streaming chat "
                 "endpoint cannot supply"
             ),

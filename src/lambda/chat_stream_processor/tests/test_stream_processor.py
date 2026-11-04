@@ -696,5 +696,5 @@ def test_the_strict_refusal_is_conditional_on_the_mode_and_a_403():
             "def _resolve_caller_sub("
         )
     ]
-    assert "identity is None and is_strict_isolation()" in body
+    assert "identity is None and unscoped_is_denied()" in body
     assert "status_code=403" in body
