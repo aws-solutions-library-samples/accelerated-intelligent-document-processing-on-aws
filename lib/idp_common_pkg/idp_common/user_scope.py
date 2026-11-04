@@ -324,8 +324,15 @@ def apply_tenant_grant(
     # attached to the account if its address later diverges from this row's. An API
     # push knows only the email, so the sub the row already records is used.
     sub = cognito_sub or str((row or {}).get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
-    if sub:
-        record_cognito_sub(users_table, user_id, sub, scoped=True)
+    # Unlike the back-fill in user_management, a failure here is raised. The pointer
+    # is read before the email join, so one left on another row for the same address
+    # (a duplicate row, or one a concurrent first sign-in created) would decide the
+    # user's scope while this grant reported success.
+    if sub and not record_cognito_sub(users_table, user_id, sub, scoped=True):
+        raise RuntimeError(
+            f"The tenant grant for user {user_id} was written, but its Cognito sub "
+            "pointer could not be; the grant is not reported as applied."
+        )
 
     logger.info(
         "Tenant grant (%s) for user %s: %s -> %s",

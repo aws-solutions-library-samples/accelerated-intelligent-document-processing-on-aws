@@ -174,6 +174,23 @@ def test_the_no_tenant_marker_cannot_be_a_profile_name():
 
 @pytest.mark.unit
 @mock_aws
+def test_a_grant_whose_pointer_cannot_be_written_raises(monkeypatch):
+    """The pointer decides resolution ahead of the email join, so a grant whose
+    pointer write failed must not report success: the sign-in or push fails."""
+    ddb, table = _users_table()
+    _row(table, "u1", email="ann@example.com", persona="Viewer", cognitoSub="sub-1")
+    monkeypatch.setattr(us, "record_cognito_sub", lambda *a, **k: False)
+    with pytest.raises(RuntimeError, match="pointer could not be"):
+        _grant(
+            table,
+            ["IdP-Viewers", "tenant.acme"],
+            email="ann@example.com",
+            cognito_sub="sub-1",
+        )
+
+
+@pytest.mark.unit
+@mock_aws
 def test_a_grant_scopes_an_existing_row_to_exactly_one_tenant():
     ddb, table = _users_table()
     _row(
