@@ -93,7 +93,7 @@ def variant_probes_requested(environ: dict | None = None) -> bool:
     """Whether this run is the weekly variant-probe run.
 
     The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and
-    PRIVATE hosting, Jobs API) each stand up their own throwaway stack beside the
+    PRIVATE hosting, Jobs API, tenant isolation) each stand up their own throwaway stack beside the
     primary one. Two conditions, both required:
 
     * ``IDP_RUN_PROBES=true`` as a pipeline variable, which the weekly schedule

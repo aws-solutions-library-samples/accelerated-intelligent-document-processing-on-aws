@@ -591,7 +591,7 @@ integration_tests:
   # It also removes the concurrent-deploy load that exhausted account quotas.
   #
   # What it costs: a change that breaks the deploy, or any of the twelve suite steps
-  # or five variant probes the deploy runs, can now MERGE and stay undetected until
+  # or variant probes the deploy runs, can now MERGE and stay undetected until
   # the next nightly run (the next weekly run, for a variant probe) — by which time
   # other merges may sit on top of it, so the failure does not name the commit
   # that caused it. There is no required
