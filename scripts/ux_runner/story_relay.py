@@ -3,8 +3,8 @@
 """The relay between a story flow's model and the pinned chrome-devtools-mcp.
 
 In relay mode the ``ux-story`` server (``scripts/ux_story_mcp.py``) is the only MCP
-server Claude Code sees. It starts chrome-devtools-mcp itself, exactly as
-``agent.mcp_servers`` starts it for the MR UX test, speaks MCP to it as a client
+server Claude Code sees. It starts chrome-devtools-mcp itself (:func:`devtools_argv`),
+exactly as the MR UX test's ``review_relay`` starts it, speaks MCP to it as a client
 that reports no ``roots`` capability, and serves only the twelve
 ``tool_profiles.STORY_BROWSER_TOOLS`` the pinned release lists, with the arguments
 that write files, take a full-page capture or pick a lossless format removed from
@@ -17,13 +17,15 @@ number of elements, a best-effort commit guard, and signed-out detection. Every
 call it handles becomes one journal line through :class:`Ledger`, which also puts
 the action and image counts on the server's own lines.
 
-The commit guard judges a click by the control's name, and a key that presses or
-submits (Enter, or Space on a control) by the element that has focus, whether
-``press_key`` presses it or ``type_text`` types it: the pinned server types a line
-break as Enter and a space as Space. On a page whose editor may save its own edits,
-which the edit screen's does and marks with Cancel and discard changes while it is
-editable (:data:`AUTOSAVE_CONTROLS`), it also refuses every call that changes a
-value there:
+The commit guard is :class:`CommitGuard`, which :class:`Relay` extends with the
+other guard rails and ``review_relay.ReviewRelay`` puts in front of the MR UX test's
+browser with none of them, so the two refuse the same controls. It judges a click
+by the control's name, and a key that presses or submits (Enter, or Space on a
+control) by the element that has focus, whether ``press_key`` presses it or
+``type_text`` types it: the pinned server types a line break as Enter and a space
+as Space. On a page whose editor may save its own edits, which the edit screen's
+does and marks with Cancel and discard changes while it is editable
+(:data:`AUTOSAVE_CONTROLS`), it also refuses every call that changes a value there:
 the editing tools, a key other than Tab or Escape, and a click on a checkbox, option
 or another control a click sets. It judges all of these against the page as it is
 when the call arrives: after any browser call but a screenshot whose answer held no
@@ -849,7 +851,7 @@ def names_a_sign_out(route: str) -> bool:
 def devtools_argv(
     devtools: Path, *, home: Path, fs_root: Path, search_path: str
 ) -> list[str]:
-    """chrome-devtools-mcp's command line, as ``agent.mcp_servers`` starts it."""
+    """chrome-devtools-mcp's command line, as both relays start it."""
     return [
         "/usr/bin/env",
         "-i",
@@ -1396,14 +1398,15 @@ def start_child(
     fs_root: Path,
     search_path: str,
     starter: Callable[..., processes.ManagedProcess] = processes.start,
+    client_name: str = CLIENT_NAME,
 ) -> tuple[Child, dict[str, Any]]:
     """Start chrome-devtools-mcp, initialize it as a client with no roots, list its tools.
 
     The child starts under ``env -i`` with nothing inherited, in ``fs_root``, as
     the leader of its own process group, and its errors go to this process's own
-    standard error, where Claude Code keeps an MCP server's log. RelayError when it
-    does not start, or does not answer ``initialize`` and ``tools/list`` within
-    :data:`START_SECONDS`.
+    standard error, where Claude Code keeps an MCP server's log. ``client_name`` is
+    the name this client gives itself. RelayError when it does not start, or does
+    not answer ``initialize`` and ``tools/list`` within :data:`START_SECONDS`.
     """
     argv = devtools_argv(devtools, home=home, fs_root=fs_root, search_path=search_path)
     try:
@@ -1427,7 +1430,7 @@ def start_child(
             {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION},
+                "clientInfo": {"name": client_name, "version": CLIENT_VERSION},
             },
             timeout=START_SECONDS,
         )
@@ -1446,59 +1449,39 @@ def start_child(
     return child, dict(result)
 
 
-class Relay:
-    """The browser half of the ``ux-story`` server: twelve tools behind guard rails.
+class CommitGuard:
+    """The commit guard over one chrome-devtools-mcp, and the page it judges against.
 
-    ``child`` is None when chrome-devtools-mcp never started, in which case the
-    relay serves nothing and the flow's journal already holds a ``child_died`` line.
-    Calls arrive one at a time from the server's main thread; :meth:`begin` and
-    :meth:`cancel` are the only methods another thread calls.
+    It holds the model's latest snapshot, the page as it is now once a call has run
+    since, the browser dialog the child last reported and whether the child has gone,
+    and :meth:`judge` refuses a call by them before it is sent, as the module
+    docstring describes. The story relay (:class:`Relay`) is one, and so is the MR UX
+    test's (``review_relay.ReviewRelay``), so a control one refuses the other refuses
+    as well; each says so in its own words, :attr:`commit_point_text` and
+    :attr:`browser_gone_text`. ``child`` is None when chrome-devtools-mcp never
+    started. :meth:`begin` and :meth:`cancel` are the only methods another thread
+    calls.
     """
 
+    commit_point_text = COMMIT_POINT_TEXT
+    browser_gone_text = BROWSER_GONE_TEXT
+
     def __init__(
-        self,
-        ledger: Ledger,
-        *,
-        budget: int,
-        screens: Path,
-        child: Child | None,
-        tools: Mapping[str, Mapping[str, Any]] | None = None,
-        call_seconds: float = CALL_SECONDS,
+        self, child: Child | None, *, call_seconds: float = CALL_SECONDS
     ) -> None:
-        self.ledger = ledger
-        self.budget = budget
-        self.screens = screens
         self.child = child
         self.call_seconds = call_seconds
-        self._tools: dict[str, Mapping[str, Any]] = dict(tools or {})
         self.snapshot: Snapshot | None = None
-        self.addresses: set[str] = set()
         self.dialog: tuple[str, str] | None = None
         self.over: str | None = None if child is not None else "child_died"
-        self.reported = False
         self._fresher: Snapshot | None = None
         self._page_stale = True
-        self._died_logged = child is None
-        self._marked_out_of_steps = False
-        self._screens_saved = 0
         self._cancelled = threading.Event()
         self._stop: Callable[[], bool] = lambda: False
 
     def stop_when(self, stop: Callable[[], bool]) -> None:
         """Give up waiting on the browser as soon as ``stop`` is true, as for a signal."""
         self._stop = stop
-
-    def tools(self) -> list[dict[str, Any]]:
-        """The tool definitions the relay serves, in STORY_BROWSER_TOOLS order."""
-        return [json.loads(json.dumps(tool)) for tool in self._tools.values()]
-
-    def serves(self, name: str) -> bool:
-        """Whether ``name`` is one of the browser tools the relay serves."""
-        return name in self._tools
-
-    def seen_on_screen(self, ref: str) -> bool:
-        """Whether ``ref`` is an address a snapshot the model was shown held."""
-        return ref.strip() in self.addresses
 
     def begin(self) -> None:
         """A new request from the client is about to be handled."""
@@ -1508,64 +1491,22 @@ class Relay:
         """The client cancelled the request being handled; stop waiting on the browser."""
         self._cancelled.set()
 
-    def refuse_invalid(self, name: str) -> None:
-        """Journal a call to ``name`` whose arguments were not an object."""
-        self.ledger.call(tool=name, cls=_class_of(name), ok=False, refused="invalid")
-
-    def settle(self) -> None:
-        """Before the journal ends: record a child that died while nothing was asked of it."""
-        child = self.child
-        if child is not None and not child.alive and not child.closing:
-            self._died(CHILD_NAME)
-
     def close(self) -> None:
         """Stop chrome-devtools-mcp."""
         if self.child is not None:
             self.child.close()
 
-    def end_actions(self) -> None:
-        """The flow has reported: refuse every action from now on, and keep the looks."""
-        self.reported = True
-
-    def call(self, name: str, arguments: Mapping[str, Any]) -> Reply:
-        """Run one relayed tool through the guard rails, journalling it once."""
-        cls = _class_of(name)
-        schema = self._tools[name]["inputSchema"]
-        forward, args, problem = read_arguments(schema, arguments)
-        if problem:
-            return self._refuse(name, cls, "invalid", problem, args=args)
-        if self.over is not None:
-            return self._refuse(name, cls, "session_end", SESSION_OVER_TEXT, args=args)
-        if self.reported and cls == "action":
-            return self._refuse(
-                name, "guard", "terminal_done", REPORTED_TEXT, args=args
-            )
-        guarded = self._guard(name, forward)
-        if guarded is not None:
-            refused, label, text = guarded
-            return self._refuse(name, "guard", refused, text, args=args, label=label)
-        if cls == "action" and self.ledger.actions_used >= self.budget:
-            return self._out_of_steps(name, args)
-        if name == "take_screenshot" and self.ledger.images_sent >= IMAGE_CAP:
-            return self._refuse(name, cls, "image_cap", NO_SCREENSHOTS_TEXT, args=args)
-        if cls == "look" and self.ledger.looks >= LOOKS_PER_ACTION * self.budget:
-            return self._refuse(name, cls, "limit", NO_LOOKS_TEXT, args=args)
-        if name == "take_screenshot":
-            forward = {
-                **forward,
-                "format": SCREENSHOT_FORMAT,
-                "quality": SCREENSHOT_QUALITY,
-            }
-        if cls == "look":
-            self.ledger.looks += 1
-        outcome = self._ask(name, forward)
-        if outcome.kind not in ("result", "error"):
-            return self._failed(name, cls, args, outcome)
-        return self._answered(name, cls, args, outcome)
-
-    def _guard(
+    def judge(
         self, name: str, forward: Mapping[str, Any]
     ) -> tuple[str, str | None, str] | None:
+        """``(refusal, label, text)`` when calling ``name`` with ``forward`` is refused.
+
+        ``refusal`` is ``commit_point``, ``session_end`` or ``invalid``, ``label``
+        names the control or the dialog it rests on, and ``text`` is what the model
+        is told. None lets the call through. A click, a key and an edit may read the
+        page again first (:meth:`_current_page`), which is the guard's own call and
+        is neither shown nor journalled.
+        """
         if name == "click":
             return self._guard_click(forward.get("uid"))
         if name == "handle_dialog":
@@ -1575,7 +1516,7 @@ class Relay:
                 return "invalid", None, NO_DIALOG_TEXT
             kind, message = self.dialog
             if kind in CONFIRMING_DIALOGS:
-                return "commit_point", message or kind, COMMIT_POINT_TEXT
+                return "commit_point", message or kind, self.commit_point_text
             return None
         keys = _keys_of(name, forward)
         if name in EDITING_TOOLS or any(key not in FOCUS_KEYS for key in keys):
@@ -1601,14 +1542,16 @@ class Relay:
                 found = page.control_of(uid)
             if found is None:
                 found = page.sets_a_value(uid)
-        return None if found is None else _refusal(found)
+        return None if found is None else self._refusal(found)
 
     def _guard_edit(self) -> tuple[str, str | None, str] | None:
         page = self._current_page()
         if page is None:
             return "invalid", None, self._unread_text()
         marker = page.autosave_control
-        return None if marker is None else ("commit_point", marker, COMMIT_POINT_TEXT)
+        if marker is None:
+            return None
+        return "commit_point", marker, self.commit_point_text
 
     def _guard_keys(self, keys: Sequence[str]) -> tuple[str, str | None, str] | None:
         pressing = [key for key in keys if key in PRESSING_KEYS]
@@ -1620,17 +1563,23 @@ class Relay:
         for key in pressing:
             found = page.pressed(key)
             if found is not None:
-                return _refusal(found)
+                return self._refusal(found)
         return None
 
+    def _refusal(self, found: tuple[str, str]) -> tuple[str, str | None, str]:
+        refused, label = found
+        text = SESSION_END_TEXT if refused == "session_end" else self.commit_point_text
+        return refused, label, text
+
     def _unread_text(self) -> str:
-        return BROWSER_GONE_TEXT if self.over == "child_died" else PAGE_UNREAD_TEXT
+        return self.browser_gone_text if self.over == "child_died" else PAGE_UNREAD_TEXT
 
     def _current_page(self) -> Snapshot | None:
         """The page as it is now: the latest snapshot, read again if anything ran since.
 
-        The read is the relay's own and is neither shown nor journalled. None when
-        the page cannot be read; a child found gone is journalled as having died.
+        The read is the guard's own and is neither shown nor journalled. None when
+        the page cannot be read; a child found gone is recorded as having died
+        (:meth:`_died`).
         """
         if not self._page_stale:
             return self._fresher or self.snapshot
@@ -1652,6 +1601,126 @@ class Relay:
         self._fresher = cut_snapshot(found[1])
         self._page_stale = False
         return self._fresher
+
+    def _shown(self, name: str, snapshot: Snapshot | None) -> None:
+        """The model was shown the answer to ``name``, holding ``snapshot`` or none.
+
+        A snapshot becomes the latest. Any other answer but a screenshot's leaves the
+        page to be read again before the next call the guard judges by it.
+        """
+        if snapshot is not None:
+            self.snapshot = snapshot
+            self._fresher = None
+            self._page_stale = False
+        elif name != "take_screenshot":
+            self._page_stale = True
+
+    def _ask(self, name: str, arguments: Mapping[str, Any]) -> Outcome:
+        child = self.child
+        if child is None:
+            return Outcome("gone")
+        return child.request(
+            "tools/call",
+            {"name": name, "arguments": dict(arguments)},
+            timeout=self.call_seconds,
+            stop=lambda: self._cancelled.is_set() or self._stop(),
+        )
+
+    def _died(self, tool: str) -> None:
+        self.over = "child_died"
+
+
+class Relay(CommitGuard):
+    """The browser half of the ``ux-story`` server: twelve tools behind guard rails.
+
+    ``child`` is None when chrome-devtools-mcp never started, in which case the
+    relay serves nothing and the flow's journal already holds a ``child_died`` line.
+    Calls arrive one at a time from the server's main thread; :meth:`begin` and
+    :meth:`cancel` are the only methods another thread calls.
+    """
+
+    def __init__(
+        self,
+        ledger: Ledger,
+        *,
+        budget: int,
+        screens: Path,
+        child: Child | None,
+        tools: Mapping[str, Mapping[str, Any]] | None = None,
+        call_seconds: float = CALL_SECONDS,
+    ) -> None:
+        super().__init__(child, call_seconds=call_seconds)
+        self.ledger = ledger
+        self.budget = budget
+        self.screens = screens
+        self._tools: dict[str, Mapping[str, Any]] = dict(tools or {})
+        self.addresses: set[str] = set()
+        self.reported = False
+        self._died_logged = child is None
+        self._marked_out_of_steps = False
+        self._screens_saved = 0
+
+    def tools(self) -> list[dict[str, Any]]:
+        """The tool definitions the relay serves, in STORY_BROWSER_TOOLS order."""
+        return [json.loads(json.dumps(tool)) for tool in self._tools.values()]
+
+    def serves(self, name: str) -> bool:
+        """Whether ``name`` is one of the browser tools the relay serves."""
+        return name in self._tools
+
+    def seen_on_screen(self, ref: str) -> bool:
+        """Whether ``ref`` is an address a snapshot the model was shown held."""
+        return ref.strip() in self.addresses
+
+    def refuse_invalid(self, name: str) -> None:
+        """Journal a call to ``name`` whose arguments were not an object."""
+        self.ledger.call(tool=name, cls=_class_of(name), ok=False, refused="invalid")
+
+    def settle(self) -> None:
+        """Before the journal ends: record a child that died while nothing was asked of it."""
+        child = self.child
+        if child is not None and not child.alive and not child.closing:
+            self._died(CHILD_NAME)
+
+    def end_actions(self) -> None:
+        """The flow has reported: refuse every action from now on, and keep the looks."""
+        self.reported = True
+
+    def call(self, name: str, arguments: Mapping[str, Any]) -> Reply:
+        """Run one relayed tool through the guard rails, journalling it once."""
+        cls = _class_of(name)
+        schema = self._tools[name]["inputSchema"]
+        forward, args, problem = read_arguments(schema, arguments)
+        if problem:
+            return self._refuse(name, cls, "invalid", problem, args=args)
+        if self.over is not None:
+            return self._refuse(name, cls, "session_end", SESSION_OVER_TEXT, args=args)
+        if self.reported and cls == "action":
+            return self._refuse(
+                name, "guard", "terminal_done", REPORTED_TEXT, args=args
+            )
+        guarded = self.judge(name, forward)
+        if guarded is not None:
+            refused, label, text = guarded
+            return self._refuse(name, "guard", refused, text, args=args, label=label)
+        if cls == "action" and self.ledger.actions_used >= self.budget:
+            return self._out_of_steps(name, args)
+        if name == "take_screenshot" and self.ledger.images_sent >= IMAGE_CAP:
+            return self._refuse(name, cls, "image_cap", NO_SCREENSHOTS_TEXT, args=args)
+        if cls == "look" and self.ledger.looks >= LOOKS_PER_ACTION * self.budget:
+            return self._refuse(name, cls, "limit", NO_LOOKS_TEXT, args=args)
+        if name == "take_screenshot":
+            forward = {
+                **forward,
+                "format": SCREENSHOT_FORMAT,
+                "quality": SCREENSHOT_QUALITY,
+            }
+        if cls == "look":
+            self.ledger.looks += 1
+        outcome = self._ask(name, forward)
+        if outcome.kind not in ("result", "error"):
+            return self._failed(name, cls, args, outcome)
+        return self._answered(name, cls, args, outcome)
 
     def _out_of_steps(self, name: str, args: Mapping[str, Any]) -> Reply:
         first = not self._marked_out_of_steps
@@ -1682,17 +1751,6 @@ class Relay:
         )
         return Reply((_text(text),), True)
 
-    def _ask(self, name: str, arguments: Mapping[str, Any]) -> Outcome:
-        child = self.child
-        if child is None:
-            return Outcome("gone")
-        return child.request(
-            "tools/call",
-            {"name": name, "arguments": dict(arguments)},
-            timeout=self.call_seconds,
-            stop=lambda: self._cancelled.is_set() or self._stop(),
-        )
-
     def _failed(
         self, name: str, cls: str, args: Mapping[str, Any], outcome: Outcome
     ) -> Reply:
@@ -1718,8 +1776,7 @@ class Relay:
         texts, images, is_error = _content_of(message)
         self.dialog = open_dialog(texts)
         texts, snapshot = self._relay_snapshots(texts)
-        if snapshot is None and name != "take_screenshot":
-            self._page_stale = True
+        self._shown(name, snapshot)
         counted = cls == "action"
         if snapshot is not None and snapshot.signed_out:
             self.ledger.call(
@@ -1765,10 +1822,7 @@ class Relay:
             latest = cut_snapshot(lines)
             out.append("\n".join(part for part in (before, latest.text, after) if part))
         if latest is not None:
-            self.snapshot = latest
             self.addresses |= latest.addresses
-            self._fresher = None
-            self._page_stale = False
         return out, latest
 
     def _after_action(self) -> tuple[str | None, dict[str, str] | None]:
@@ -1818,7 +1872,7 @@ class Relay:
         return f"screens/{name}"
 
     def _died(self, tool: str) -> None:
-        self.over = "child_died"
+        super()._died(tool)
         if self._died_logged:
             return
         self._died_logged = True
@@ -1827,12 +1881,6 @@ class Relay:
 
 def _class_of(name: str) -> str:
     return "look" if name in tool_profiles.STORY_LOOK_TOOLS else "action"
-
-
-def _refusal(found: tuple[str, str]) -> tuple[str, str | None, str]:
-    refused, label = found
-    text = SESSION_END_TEXT if refused == "session_end" else COMMIT_POINT_TEXT
-    return refused, label, text
 
 
 def pressed_key(key: str) -> str:

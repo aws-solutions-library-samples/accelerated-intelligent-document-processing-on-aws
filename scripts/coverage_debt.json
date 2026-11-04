@@ -400,6 +400,7 @@
         "scripts/ux_runner/readback.py": 100.0,
         "scripts/ux_runner/recording.py": 100.0,
         "scripts/ux_runner/redact.py": 100.0,
+        "scripts/ux_runner/review_relay.py": 98.93,
         "scripts/ux_runner/run_in_docker.py": 89.92,
         "scripts/ux_runner/section.py": 99.11,
         "scripts/ux_runner/session.py": 100.0,

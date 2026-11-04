@@ -509,6 +509,8 @@ def test_the_story_server_starts_the_same_way_the_expert_session_s_servers_do() 
     story_entry = _story_server(search_path="/opt/node/bin:/usr/bin:/bin")[SERVER]
     expert = agent.mcp_servers(
         toolchain=paths.Toolchain(Path("/opt/ux-runner")),
+        relay=Path("/harness/scripts/ux_runner/review_relay.py"),
+        refusal_log=Path("/run/ux/agent/guard/guard-refusals.jsonl"),
         recorder_adapter=Path("/harness/scripts/ux_recorder_mcp.py"),
         recorder_out=Path("/run/ux/recordings"),
         python="/usr/local/bin/python3",
@@ -2661,18 +2663,19 @@ def test_the_child_starts_under_env_minus_i_exactly_as_the_expert_session_starts
     assert stat.S_IMODE((rig.out / "screens").stat().st_mode) == 0o700
     expert = agent.mcp_servers(
         toolchain=paths.Toolchain(Path("/x")),
+        relay=Path("/h/review_relay.py"),
+        refusal_log=Path("/g/guard-refusals.jsonl"),
         recorder_adapter=Path("/r"),
         recorder_out=Path("/o"),
         python="python3",
         home=Path("/home/h"),
         fs_root=Path("/fs"),
-    )[DEVTOOLS]
-    assert story_relay.devtools_argv(
-        paths.Toolchain(Path("/x")).devtools_mcp,
-        home=Path("/home/h"),
-        fs_root=Path("/fs"),
-        search_path=agent.DEFAULT_SEARCH_PATH,
-    ) == [expert["command"], *expert["args"]]
+    )[DEVTOOLS]["args"]
+    assert expert[expert.index("--devtools") + 1] == str(
+        paths.Toolchain(Path("/x")).devtools_mcp
+    )
+    assert expert[expert.index("--filesystem-root") + 1] == "/fs"
+    assert "HOME=/home/h" in expert
 
 
 @pytest.mark.unit
@@ -4357,15 +4360,12 @@ def test_the_recording_was_made_with_the_pinned_server_and_the_harness_s_own_fla
     assert SESSION["initialize"]["serverInfo"]["version"] == "1.10.1"
     work = Path("<work>")
     assert recorded["chrome_flags"] == chrome.chrome_flags(profile_dir=work / "profile")
-    expert = agent.mcp_servers(
-        toolchain=paths.Toolchain(Path("/opt/ux-runner")),
-        recorder_adapter=work / "unused",
-        recorder_out=work / "unused",
-        python="python3",
+    assert recorded["devtools_argv"] == story_relay.devtools_argv(
+        paths.Toolchain(Path("/opt/ux-runner")).devtools_mcp,
         home=work / "home",
         fs_root=work / "mcp-files",
-    )[DEVTOOLS]
-    assert recorded["devtools_argv"] == [expert["command"], *expert["args"]]
+        search_path=agent.DEFAULT_SEARCH_PATH,
+    )
 
 
 @pytest.mark.unit

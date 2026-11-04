@@ -653,7 +653,9 @@ through, because it changes nothing but that persona's own read state. A
 and does not join a tier.
 `scripts/tests/test_ux_story_relay.py` maps every mutation the web UI declares to
 the controls that send it and checks the guard refuses each, so a UI change that
-adds one fails there until its control is accounted for.
+adds one fails there until its control is accounted for. The MR UX test's review
+runs behind the same guard (`scripts/ux_runner/review_relay.py`), so that one check
+covers both.
 
 ## The review stack (once, by its operator)
 

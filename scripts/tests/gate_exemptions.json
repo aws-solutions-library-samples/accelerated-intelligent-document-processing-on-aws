@@ -3125,7 +3125,7 @@
       ],
       "ratchet": "universe-closure",
       "ratchetEvidence": "scripts/tests/test_ux_runner_agent.py",
-      "reason": "A capability grant, not a gate exemption: it is what the UX session may do, and it withholds rather than excuses. Registered so the vocabulary match on the name is accounted for rather than silently dropped. Closed over DEVTOOLS_TOOLS_AT_PIN, the tool universe the pinned chrome-devtools-mcp serves, so every tool that server offers is either granted here or denied by name in EXPERT_DISALLOWED_TOOLS, and a tool added by a version bump fails the closure until somebody decides which. Same shape as scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS.",
+      "reason": "A capability grant, not a gate exemption: it is what the UX session may do, and it withholds rather than excuses. Registered so the vocabulary match on the name is accounted for rather than silently dropped. Closed over DEVTOOLS_TOOLS_AT_PIN, the tool universe the pinned chrome-devtools-mcp serves, so every tool that server offers is either granted here or denied by name in EXPERT_DISALLOWED_TOOLS, and a tool added by a version bump fails the closure until somebody decides which. The session reaches chrome-devtools-mcp only through the review relay, which serves only the browser tools this list grants whatever the server lists, a second layer scripts/tests/test_ux_review_relay.py pins against the recorded server. Same shape as scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS.",
       "memberKind": "tool name",
       "crossReferences": [
         "scripts/ux_runner/tool_profiles.py::EXPERT_DISALLOWED_TOOLS"
