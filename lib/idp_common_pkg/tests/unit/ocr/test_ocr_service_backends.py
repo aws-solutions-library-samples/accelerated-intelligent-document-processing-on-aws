@@ -721,6 +721,30 @@ class TestProcessImageFileDirect:
 
         assert mock_run.call_args.kwargs["original_image_size"] == expected_size
 
+    def test_textract_image_page_preprocessing_binarises_only_the_ocr_input(
+        self, s3_writes, real_resize
+    ):
+        """Binarisation reaches the Textract call; the stored image keeps the original bytes.
+
+        The worker-path equivalent is
+        `TestProcessPageWithImage.test_preprocessing_binarises_the_ocr_bytes_but_not_the_stored_image`.
+        """
+        service = make_service(
+            config={"ocr": {"backend": "textract", "image": {"preprocessing": True}}}
+        )
+        service.textract_client.detect_document_text.return_value = textract_response()
+
+        with patch.object(
+            _image_module, "apply_adaptive_binarization", return_value=b"BINARISED"
+        ):
+            service._process_image_file_direct("out", "doc", PNG_BYTES)
+
+        assert s3_writes.content_for("doc/pages/1/image.png") == PNG_BYTES
+        sent = service.textract_client.detect_document_text.call_args.kwargs[
+            "Document"
+        ]["Bytes"]
+        assert sent == b"BINARISED"
+
 
 # ---------------------------------------------------------------------------
 # _process_page_with_image
@@ -1987,33 +2011,8 @@ class TestMemoryMonitoring:
 
 
 # ---------------------------------------------------------------------------
-# Remaining branches: dispatch, artifact shapes, and the memory sampler
+# Remaining branches: artifact shapes, and the memory sampler
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestDirectImagePreprocessing:
-    """Preprocessing on an image upload reaches the OCR input, not the stored image."""
-
-    def test_textract_image_page_preprocessing_binarises_only_the_ocr_input(
-        self, s3_writes, real_resize
-    ):
-        """The direct-image Textract branch has its own copy of the same split."""
-        service = make_service(
-            config={"ocr": {"backend": "textract", "image": {"preprocessing": True}}}
-        )
-        service.textract_client.detect_document_text.return_value = textract_response()
-
-        with patch.object(
-            _image_module, "apply_adaptive_binarization", return_value=b"BINARISED"
-        ):
-            service._process_image_file_direct("out", "doc", PNG_BYTES)
-
-        assert s3_writes.content_for("doc/pages/1/image.png") == PNG_BYTES
-        sent = service.textract_client.detect_document_text.call_args.kwargs[
-            "Document"
-        ]["Bytes"]
-        assert sent == b"BINARISED"
 
 
 @pytest.mark.unit
