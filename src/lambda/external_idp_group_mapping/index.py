@@ -139,16 +139,19 @@ def apply_claim_grant(user_attributes, username, idp_groups, target_groups, tena
         # revokes a tenant.
         create_missing=bool(target_groups),
     )
-    if result and result.get("action") == "admin-unchanged":
-        # The claim no longer maps to Admin, but the stored row still says Admin,
-        # and the writer never scopes an Admin row. Nothing resyncs a stored persona,
-        # so the user stays unscoped and, under IdpClaim, is denied everywhere. Name
-        # the mismatch and the remedy rather than leave a silent denial.
+    if target_groups and result and result.get("action") == "admin-unchanged":
+        # The claim maps to an ordinary role, so the handler below moves the user
+        # out of Admin in Cognito, but the stored row still says Admin and the writer
+        # never scopes an Admin row. Nothing resyncs a stored persona, so the user
+        # stays unscoped and, under IdpClaim, is denied everywhere. Name the mismatch
+        # and the remedy rather than leave a silent denial. A claim mapping to no
+        # role is left out: the handler then changes no groups, so neither the
+        # denial nor the remedy below would hold.
         logger.warning(
             f"User {username} is stored as Admin but their claim maps to "
-            f"{sorted(target_groups) or 'no role'}, so no tenant was granted and "
-            f"they are denied. Delete the user in User Management; their next "
-            f"sign-in recreates the record from the claim."
+            f"{sorted(target_groups)}, so no tenant was granted and they are "
+            f"denied. Delete the user in User Management; their next sign-in "
+            f"recreates the record from the claim."
         )
     return result
 

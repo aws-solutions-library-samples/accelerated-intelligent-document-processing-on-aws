@@ -1256,6 +1256,18 @@ class TestClaimTenantGrant:
         ]
         assert "Delete the user in User Management" in warning
 
+    def test_a_stored_admin_whose_claim_maps_to_no_role_is_not_named(self, caplog):
+        """With no mapped role the handler changes no groups, so the warning's
+        description and remedy would both be wrong; it is not emitted."""
+        self.users.update_item(
+            Key=USER_ROW_KEY,
+            UpdateExpression="SET persona = :a",
+            ExpressionAttributeValues={":a": "Admin"},
+        )
+        with caplog.at_level(logging.WARNING):
+            self.mod.handler(self._event('["tenant.acme"]'), None)
+        assert not [r for r in caplog.records if "stored as Admin" in r.getMessage()]
+
     def test_a_promotion_to_admin_removes_the_scope_the_claim_granted(self):
         self.mod.handler(self._event('["IdP-Viewers", "tenant.acme"]'), None)
         assert self._scope() == ["acme-*"]
