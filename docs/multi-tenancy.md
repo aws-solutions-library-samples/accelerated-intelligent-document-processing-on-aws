@@ -245,9 +245,10 @@ A user assigned `IDP.Viewer` and `tenant.acme` signs in as a Viewer scoped to
 `acme-*`. Assigning them `tenant.globex` as well grants them no tenant until one of the
 two is removed.
 
-⚠️ **Entra must send an `email` claim.** A user's record is found by email, so a
-sign-in whose token carries no email is refused under `TenantGrantSource=IdpClaim`
-rather than recorded without one. Entra omits the claim for an account with no mailbox
+⚠️ **Entra must send an `email` claim.** The user pool requires email, so Cognito
+itself refuses a federated sign-in whose token carries none, with the error
+`attributes required: [email]`; the trigger also refuses to record a tenant without
+one. Entra omits the claim for an account with no mailbox
 unless the app registration adds the `email` optional claim (**Token configuration →
 Add optional claim → ID → email**); add it before switching.
 
