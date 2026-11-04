@@ -421,6 +421,76 @@ def test_rotating_an_existing_annotator_does_not_create_it_again(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("key", "email"),
+    [
+        ("Annotator-scoped", "ux-persona-annotator-scoped@example.invalid"),
+        (None, "ux-persona-annotator@example.invalid"),
+    ],
+)
+def test_rotating_an_existing_persona_with_profiles_is_refused(monkeypatch, key, email):
+    """createUser is what applies a limit, and an existing persona is not created
+    again, so a rotation given --profiles would print a limit its users-table row,
+    the only thing the product reads, never holds."""
+    pool = _Pool(existing={email})
+    pool.rows[email] = "user-1"
+    module = _module_with(pool, monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.cmd_setup(
+            _setup_args(group="Annotator", key=key, profiles="other", rotate=True)
+        )
+
+    message = str(excinfo.value)
+    assert "--rotate changes only its password" in message, message
+    assert "profile limit stays as its users-table row holds it" in message, message
+    assert f"teardown --email {email} --long-lived, then run setup again" in message
+    assert pool.created == [] and pool.managed == [] and pool.attributes == {}
+    assert [call[:2] for call in pool.aws_calls] == [("cognito-idp", "admin-get-user")]
+
+
+@pytest.mark.unit
+def test_rotating_an_existing_persona_without_profiles_prints_no_limit(
+    monkeypatch, capsys
+):
+    email = "ux-persona-annotator-scoped@example.invalid"
+    pool = _Pool(existing={email})
+    pool.rows[email] = "user-1"
+    module = _module_with(pool, monkeypatch)
+
+    rc = module.cmd_setup(
+        _setup_args(group="Annotator", key="Annotator-scoped", rotate=True)
+    )
+
+    assert rc == 0
+    assert pool.managed == []
+    assert [(e, g) for e, g, _ in pool.created] == [(email, "Annotator")]
+    session = json.loads(capsys.readouterr().out)
+    assert session["persona"]["Annotator-scoped"]["username"] == email
+    assert "profiles" not in session
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rotate", [False, True])
+def test_a_new_persona_given_profiles_prints_the_limit_it_was_created_with(
+    monkeypatch, capsys, rotate
+):
+    pool = _Pool()
+    module = _module_with(pool, monkeypatch)
+
+    rc = module.cmd_setup(
+        _setup_args(
+            group="Annotator", key="Annotator-scoped", profiles="a,b", rotate=rotate
+        )
+    )
+
+    assert rc == 0
+    ((field, arguments),) = pool.managed
+    assert (field, arguments["allowedConfigVersions"]) == ("createUser", ["a", "b"])
+    assert json.loads(capsys.readouterr().out)["profiles"] == ["a", "b"]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("rotate", [False, True])
 def test_an_annotator_in_the_pool_with_no_users_row_is_refused(monkeypatch, rotate):
     """Its row is what an Annotator is read from, so neither keeping nor rotating
