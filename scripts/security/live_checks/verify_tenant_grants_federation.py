@@ -377,13 +377,20 @@ def main() -> int:
             # user has a new Cognito sub, so each left a pointer behind.
             from boto3.dynamodb.conditions import Attr
 
-            pointers = users.scan(
-                FilterExpression=Attr("PK").begins_with("SUB#")
-                & Attr("userId").eq(row.get("userId")),
-                ProjectionExpression="PK, SK",
-            ).get(
-                "Items", []
-            )  # filtered-scan-ok: a throwaway stack's UsersTable, one page
+            pointers, kwargs = (
+                [],
+                {
+                    "FilterExpression": Attr("PK").begins_with("SUB#")
+                    & Attr("userId").eq(row.get("userId")),
+                    "ProjectionExpression": "PK, SK",
+                },
+            )
+            while True:
+                page = users.scan(**kwargs)
+                pointers.extend(page.get("Items", []))
+                if "LastEvaluatedKey" not in page:
+                    break
+                kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
             for item in [*pointers, row]:
                 users.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
         for step in reversed(cleanup):
