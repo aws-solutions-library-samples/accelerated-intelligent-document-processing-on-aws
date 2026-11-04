@@ -66,12 +66,14 @@ Both work equally well with this solution. Choose based on what your IdP team pr
 ## Annotators and the `allowedTestSets` Scope
 
 `Annotator` maps from an IdP claim exactly like the other four roles, but it is the
-only role where group membership alone grants nothing. An Annotator's access is
-scoped per-object by an `allowedTestSets` list, and that list is assigned in the Web
-UI's User Management screen — the IdP has no way to set it. So a claim-driven
-Annotator arrives with the role and an empty scope, which
+only role whose review work is granted per object rather than by the group. An
+Annotator works a Production review queue only when the queue lists them, and a test
+set only when it is in their `allowedTestSets` list, which an Admin sets in the Web
+UI's User Management screen or adds by listing the Annotator on a Test Studio queue or
+assigning them one of its documents — the IdP has no way to set it. So a claim-driven
+Annotator arrives with the role and an empty test-set scope, which
 [`testset_scope.py`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/testset_scope.py)
-treats as *denied everything*, until an Admin assigns them a test set. See
+treats as *denied every test set*, until an Admin gives them one. See
 [rbac.md](rbac.md) for the full role.
 
 Whether to set `ExternalIdPAnnotatorGroupName` at all is therefore a real choice:

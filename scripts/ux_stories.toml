@@ -345,6 +345,7 @@ first_visit = true
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
+rbac = "Work Production queue items"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
@@ -361,6 +362,7 @@ needs = ["review-queue-item", "out-of-scope-review-item"]
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
+rbac = "Work Production queue items"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
@@ -377,6 +379,7 @@ needs = ["assigned-review-item"]
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
+rbac = "Work Production queue items"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
@@ -393,6 +396,7 @@ needs = ["assigned-review-item"]
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
+rbac = "Work Production queue items"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
@@ -409,6 +413,7 @@ needs = ["assigned-review-item"]
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
+rbac = "Work Production queue items"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
@@ -425,6 +430,7 @@ needs = ["assigned-review-item"]
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
+rbac = "Work Production queue items"
 
 [stories.match]
 docs = ["web-ui.md#inbox", "review-queues.md#annotator-guide"]
@@ -441,6 +447,7 @@ needs = ["test-set-review-queue"]
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
+rbac = "Claim Test Studio documents"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]

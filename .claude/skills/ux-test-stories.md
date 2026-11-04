@@ -542,15 +542,20 @@ and never fewer than 30; looks are free up to twice the budget.
 **Personas and expectations (`as`).** Contrast roles only where the permission
 matrix in [`docs/rbac.md`](../../docs/rbac.md#permission-matrix) differs between their
 groups, and name that row in `rbac`: a ratchet checks every persona's cell against
-its expectation (✅ is `allowed`, ❌ is `refused` or `not_offered`). The intent of a
-`refused` or `not_offered` persona must not be completable through any row its group
-is allowed, because a `not_refused` result is a blocker finding and the ratchet
-reads only the named row. Keep one story every role is allowed
+its expectation (✅ is `allowed` with or without its footnote marks `*`, `†` and `‡`,
+❌ is `refused` or `not_offered`). The intent of a `refused` or `not_offered` persona
+must not be completable through any row its group is allowed, because a
+`not_refused` result is a blocker finding and the ratchet reads only the named row.
+Keep one story every role is allowed
 (`read-a-processed-document`): when it fails, the stack is at fault, not a role. A
 correct refusal is not a defect; `refused_as_expected` is that persona's good
 verdict. `mr_as` names the personas an MR tries first; it defaults to the first in
-`as`. A group the matrix has no column for, Annotator today, can only be `allowed`
-until the column is added, and the ratchet says so.
+`as`. The matrix has a column for every group a persona can sign in as, Annotator
+included, and the ratchet holds every persona to its group's cell alike. Its
+Annotator cells say what the API admits, and an Annotator-only console offers less, as
+the matrix's row notes say: a row such as **List documents** is ✅ for an Annotator and
+has no page in that console, so it is the wrong row for an Annotator story, which the
+ratchet would hold to `allowed`. The Annotator stories name the **REVIEW QUEUES** rows.
 
 **A persona's own account (`credentials`).** A persona signs in with its group's
 `UX_TEST_PERSONAS` entry unless it names another, as the profile-limited Annotator
