@@ -49,6 +49,7 @@ is the failure this exists to prevent, so a retry is the right answer for the us
 In every other ``TenantGrantSource`` the trigger behaves exactly as it did before
 tenant grants existed and imports nothing from ``idp_common``.
 """
+
 import json
 import logging
 import os
@@ -104,16 +105,27 @@ def load_tenants():
 def apply_claim_grant(user_attributes, username, idp_groups, target_groups, tenants):
     """Write the tenant the claim grants. Raises on any failure, failing the sign-in."""
     from idp_common.config.tenants import GRANT_REFUSED, resolve_grants
-    from idp_common.user_scope import SCOPE_SOURCE_IDP, apply_tenant_grant
+    from idp_common.user_scope import (
+        SCOPE_SOURCE_IDP,
+        apply_tenant_grant,
+        clear_granted_scope,
+    )
 
+    users_table = boto3.resource("dynamodb").Table(os.environ["USERS_TABLE_NAME"])
     if "Admin" in target_groups:
+        # No tenant is written for an Admin, and one the claim granted before the
+        # promotion is removed: nothing else may edit it under IdpClaim.
         logger.info(f"User {username} is an Admin; no tenant scope is written")
-        return None
+        return clear_granted_scope(
+            users_table,
+            email=str(user_attributes.get("email") or ""),
+            cognito_sub=str(user_attributes.get("sub") or ""),
+            source=SCOPE_SOURCE_IDP,
+        )
     resolution = resolve_grants(idp_groups, tenants)
     if resolution["outcome"] == GRANT_REFUSED:
         logger.warning(f"Granting no tenant to user {username}: {resolution['reason']}")
     persona = next((p for p in _PERSONA_ORDER if p in target_groups), "Viewer")
-    users_table = boto3.resource("dynamodb").Table(os.environ["USERS_TABLE_NAME"])
     return apply_tenant_grant(
         users_table,
         email=str(user_attributes.get("email") or ""),
@@ -127,6 +139,7 @@ def apply_claim_grant(user_attributes, username, idp_groups, target_groups, tena
         # revokes a tenant.
         create_missing=bool(target_groups),
     )
+
 
 # Trigger sources that represent a fresh sign-in, where Cognito has just applied
 # the provider's AttributeMapping. TokenGeneration_RefreshTokens is deliberately
@@ -172,9 +185,7 @@ def is_federated_via_configured_idp(user_pool_id, username):
         return False
 
     try:
-        response = cognito.admin_get_user(
-            UserPoolId=user_pool_id, Username=username
-        )
+        response = cognito.admin_get_user(UserPoolId=user_pool_id, Username=username)
     except Exception as e:
         logger.error(f"Failed to read user {username} for provenance check: {e}")
         return False
@@ -277,7 +288,9 @@ def handler(event, context):
         )
 
     if not target_groups:
-        logger.warning(f"No matching Cognito groups for user {username} with IdP groups {idp_groups}")
+        logger.warning(
+            f"No matching Cognito groups for user {username} with IdP groups {idp_groups}"
+        )
         return event
 
     # Get current Cognito groups for user

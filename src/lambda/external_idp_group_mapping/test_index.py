@@ -1238,6 +1238,16 @@ class TestClaimTenantGrant:
         self.mod.handler(self._event('["IdP-Admins", "tenant.acme"]'), None)
         assert self._scope() == ["globex_*"]
 
+    def test_a_promotion_to_admin_removes_the_scope_the_claim_granted(self):
+        self.mod.handler(self._event('["IdP-Viewers", "tenant.acme"]'), None)
+        assert self._scope() == ["acme-*"]
+        self.mod.handler(self._event('["IdP-Admins"]'), None)
+        row = self.users.get_item(Key=USER_ROW_KEY)["Item"]
+        assert "allowedConfigVersions" not in row
+        assert "scopeTenant" not in row and "scopeSource" not in row
+        pointer = self.users.get_item(Key={"PK": "SUB#sub-1", "SK": "SUB#sub-1"})
+        assert "Item" not in pointer
+
     def test_a_new_user_gets_a_row_with_the_mapped_persona(self):
         self.users.delete_item(Key=USER_ROW_KEY)
         self.mod.handler(self._event('["IdP-Authors", "tenant.globex"]'), None)

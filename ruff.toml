@@ -346,7 +346,6 @@ exclude = [
     "src/lambda/dashboard_merger/index.py",
     "src/lambda/discovery_processor/index.py",
     "src/lambda/docsplit_testset_deployer/index.py",
-    "src/lambda/external_idp_group_mapping/index.py",
     "src/lambda/finetuning_deployment_handler/index.py",
     "src/lambda/finetuning_job_creator/index.py",
     "src/lambda/finetuning_job_status_checker/index.py",

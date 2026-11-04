@@ -205,6 +205,51 @@ def find_user_row(
     return None
 
 
+def clear_granted_scope(
+    users_table: Any, *, email: str, cognito_sub: str = "", source: str
+) -> Optional[str]:
+    """Remove a configuration scope that ``source`` itself wrote, for a user who is
+    now an Admin.
+
+    Admins are never granted a tenant, but a user granted one before being promoted
+    keeps that row, and an Admin's row scope is still honoured by some paths (an
+    upload by a scoped Admin stays inside the scope). Under an external grant source
+    nothing else may edit the scope, so the source that wrote it has to remove it.
+    Only a scope this source wrote is touched: one an Admin set by hand before the
+    grant source changed is left alone.
+
+    Returns the user id when a scope was cleared, else ``None``. Raises on a read or
+    write failure, like :func:`apply_tenant_grant`.
+    """
+    row = find_user_row(
+        users_table, email=email, cognito_sub=cognito_sub, unique=not cognito_sub
+    )
+    if row is None or row.get("scopeSource") != source:
+        return None
+    user_id = str(row["userId"])
+    users_table.update_item(
+        Key=user_row_key(user_id),
+        UpdateExpression=(
+            "SET updatedAt = :now REMOVE allowedConfigVersions, scopeTenant, "
+            "scopeSource"
+        ),
+        ExpressionAttributeValues={":now": _now()},
+        ConditionExpression="attribute_exists(PK)",
+    )
+    # Unscoped now, so its pointer must go: a pointer only ever exists for a row
+    # carrying a restriction (see record_cognito_sub).
+    sub = cognito_sub or str(row.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
+    if sub and not record_cognito_sub(users_table, user_id, sub, scoped=False):
+        raise RuntimeError(
+            f"The tenant scope of Admin user {user_id} was removed, but its Cognito "
+            "sub pointer could not be; the removal is not reported as applied."
+        )
+    logger.info(
+        "Removed the %s-granted scope of user %s, now an Admin", source, user_id
+    )
+    return user_id
+
+
 def scope_for_resolution(resolution: Mapping[str, Any]) -> list:
     """The scope a grant resolution writes: one tenant's pattern, or the deny marker."""
     tenant = resolution.get("tenant")

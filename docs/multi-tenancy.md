@@ -201,7 +201,11 @@ decides who may read what; it does not change what ingest accepts. Set both for 
 isolation.
 
 Admins are not granted a tenant by either route; they remain cross-tenant (see
-[Strict mode](#strict-mode)).
+[Strict mode](#strict-mode)). Under `IdpClaim`, a user granted a tenant and later given
+the Admin role loses that tenant scope at their next fresh sign-in. Under `Api` the
+user keeps the last tenant pushed, and "no tenant" writes the deny marker rather than
+removing the scope, so to make such a user a cross-tenant Admin, delete them in User
+Management and create them again as an Admin.
 
 ### A user is confined to one tenant
 

@@ -174,6 +174,60 @@ def test_the_no_tenant_marker_cannot_be_a_profile_name():
 
 @pytest.mark.unit
 @mock_aws
+def test_clearing_removes_only_a_scope_the_source_wrote():
+    ddb, table = _users_table()
+    _row(
+        table,
+        "u1",
+        email="ann@example.com",
+        cognitoSub="sub-1",
+        allowedConfigVersions=["acme-*"],
+        scopeTenant="acme",
+        scopeSource=us.SCOPE_SOURCE_IDP,
+    )
+    table.put_item(Item={**us.sub_pointer_key("sub-1"), "userId": "u1"})
+    _row(table, "u2", email="bob@example.com", allowedConfigVersions=["globex_*"])
+    assert (
+        us.clear_granted_scope(
+            table, email="bob@example.com", source=us.SCOPE_SOURCE_IDP
+        )
+        is None
+    )
+    assert (
+        us.clear_granted_scope(table, email="nobody@example.com", source="idp") is None
+    )
+    assert (
+        us.clear_granted_scope(
+            table, email="ann@example.com", cognito_sub="sub-1", source="idp"
+        )
+        == "u1"
+    )
+    row = table.get_item(Key=user_row_key("u1"))["Item"]
+    assert not {"allowedConfigVersions", "scopeTenant", "scopeSource"} & set(row)
+    assert "Item" not in table.get_item(Key=us.sub_pointer_key("sub-1"))
+    bob = table.get_item(Key=user_row_key("u2"))["Item"]
+    assert bob["allowedConfigVersions"] == ["globex_*"]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_clearing_raises_when_the_pointer_cannot_be_removed(monkeypatch):
+    ddb, table = _users_table()
+    _row(
+        table,
+        "u1",
+        email="ann@example.com",
+        cognitoSub="sub-1",
+        allowedConfigVersions=["acme-*"],
+        scopeSource=us.SCOPE_SOURCE_IDP,
+    )
+    monkeypatch.setattr(us, "record_cognito_sub", lambda *a, **k: False)
+    with pytest.raises(RuntimeError, match="pointer could not be"):
+        us.clear_granted_scope(table, email="ann@example.com", source="idp")
+
+
+@pytest.mark.unit
+@mock_aws
 def test_a_grant_by_email_alone_refuses_an_ambiguous_address():
     """An API push knows only the email. With two rows for it, the one not chosen
     may hold the pointer resolution reads first, so the push is refused rather
