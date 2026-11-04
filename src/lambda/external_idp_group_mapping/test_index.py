@@ -1207,6 +1207,17 @@ class TestClaimTenantGrant:
         assert row["source"] == "cognito"
         assert row["allowedConfigVersions"] == ["globex_*"]
 
+    def test_a_claim_with_no_role_creates_no_row(self):
+        self.users.delete_item(Key=USER_ROW_KEY)
+        self.mod.handler(self._event('["tenant.globex"]'), None)
+        assert [
+            i for i in self.users.scan()["Items"] if i["PK"].startswith("USER#")
+        ] == []
+
+    def test_a_claim_with_no_role_still_rewrites_an_existing_row(self):
+        self.mod.handler(self._event('["tenant.acme"]'), None)
+        assert self._scope() == ["acme-*"]
+
     def test_an_unreadable_tenant_index_fails_the_sign_in(self, monkeypatch):
         def broken():
             raise RuntimeError("throttled")

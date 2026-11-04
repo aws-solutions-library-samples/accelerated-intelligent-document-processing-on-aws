@@ -114,14 +114,16 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     
     logger.info(f"Tool name from context: {tool_name_full} -> {tool_name}")
 
-    # Strict tenant isolation: every tool here (search, batch status, results,
-    # reprocess) acts across the whole deployment, and the gateway hands this
-    # function no user identity -- only a machine client's -- so there is no
-    # tenant to scope a call to and no way to tell an Admin from anyone else.
+    # Tenant isolation, from Strict or an external grant source: every tool here
+    # (search, batch status, results, reprocess) acts across the whole deployment,
+    # and the gateway hands this function no user identity -- only a machine
+    # client's -- so there is no tenant to scope a call to and no way to tell an
+    # Admin from anyone else.
     if unscoped_is_denied():
         if _MODE_UNKNOWN:
-            # Kept distinguishable from a configured Strict refusal: the mode could
-            # not be read at all, so the refusal is the fail-closed default.
+            # Kept distinguishable from a configured refusal: the mode or the grant
+            # source could not be read at all, so the refusal is the fail-closed
+            # default.
             logger.error(
                 f"Rejecting MCP tool {tool_name!r}: the tenant isolation mode cannot "
                 f"be determined (idp_common is not importable), so every tool is "

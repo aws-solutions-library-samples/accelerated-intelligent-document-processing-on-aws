@@ -666,8 +666,9 @@ def test_doc_processor_set_sink_redirects_emission():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("route", ["POST /chat/document", "POST /chat/agent"])
-def test_strict_isolation_refuses_an_unattributed_turn_before_the_stream(route):
-    """Under ``TenantIsolationMode=Strict`` a turn this transport cannot attribute
+def test_tenant_isolation_refuses_an_unattributed_turn_before_the_stream(route):
+    """Under ``TenantIsolationMode=Strict``, or an external ``TenantGrantSource``
+    (``IdpClaim`` or ``Api``), a turn this transport cannot attribute
     (GAP-07) must be refused with a 403, on BOTH routes.
 
     Asserted structurally for the reason the group-gate tests above give: the
@@ -676,7 +677,7 @@ def test_strict_isolation_refuses_an_unattributed_turn_before_the_stream(route):
     """
     fn = _route_functions(_app_ast())[route]
     calls = _calls_named(fn, "_refuse_unverified_when_unscoped_is_denied_or_403")
-    assert len(calls) == 1, f"{route} must apply the strict-isolation refusal once"
+    assert len(calls) == 1, f"{route} must apply the tenant-isolation refusal once"
     idx = next(
         i
         for i, st in enumerate(fn.body)
@@ -689,7 +690,7 @@ def test_strict_isolation_refuses_an_unattributed_turn_before_the_stream(route):
 
 
 @pytest.mark.unit
-def test_the_strict_refusal_is_conditional_on_the_mode_and_a_403():
+def test_the_refusal_is_conditional_on_unscoped_is_denied_and_a_403():
     src = open(os.path.join(_HERE, "app.py")).read()
     body = src[
         src.index("def _refuse_unverified_when_unscoped_is_denied_or_403(") : src.index(

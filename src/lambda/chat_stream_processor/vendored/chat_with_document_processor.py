@@ -445,9 +445,10 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
         raise ScopeLookupError("no identity on the chat event")
     identity = event["identity"]
     if identity is None and unscoped_is_denied():
-        # Strict tenant isolation closes the one fail-open path above: with no
-        # verified principal there is no way to tell a caller of one tenant from a
-        # caller of another, so the turn is denied rather than served unrestricted.
+        # Under strict isolation, or when tenants are granted externally, this closes
+        # the one fail-open path above: with no verified principal there is no way
+        # to tell a caller of one tenant from a caller of another, so the turn is
+        # denied rather than served unrestricted.
         logger.warning(
             "Denied chat turn (session=%s): tenant isolation requires a "
             "verified caller identity, and the invoking transport supplied none "

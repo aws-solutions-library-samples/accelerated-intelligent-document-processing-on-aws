@@ -55,7 +55,6 @@ from idp_common.user_scope import (
     GRANT_SOURCE_MANUAL,
     SCOPE_SOURCE_API,
     apply_tenant_grant,
-    find_user_row,
     tenant_grant_source,
 )
 from idp_common.user_scope import is_scoped as _is_scoped
@@ -269,7 +268,12 @@ def set_user_tenant(args):
         raise ValueError(
             "Admin users are cross-tenant by design and are not granted a tenant."
         )
-    row = find_user_row(table, email=email)
+    # Read the row back by its primary key with a strongly consistent read. The
+    # email index is eventually consistent, so querying it straight after the write
+    # can return the previous scope and make a successful push look like a failure.
+    row = table.get_item(Key=_user_row_key(result["userId"]), ConsistentRead=True).get(
+        "Item"
+    )
     return user_response_from_item(row)
 
 

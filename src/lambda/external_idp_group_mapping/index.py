@@ -121,6 +121,11 @@ def apply_claim_grant(user_attributes, username, idp_groups, target_groups, tena
         resolution=resolution,
         source=SCOPE_SOURCE_IDP,
         persona_for_new_row=persona,
+        # A claim that maps to no role gives the user no Cognito group, so a new row
+        # would list someone who cannot use the app under a persona they do not
+        # hold. An existing row is still rewritten, which is how an emptied claim
+        # revokes a tenant.
+        create_missing=bool(target_groups),
     )
 
 # Trigger sources that represent a fresh sign-in, where Cognito has just applied

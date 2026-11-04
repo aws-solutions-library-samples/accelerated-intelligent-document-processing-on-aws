@@ -1258,6 +1258,42 @@ class TestSetUserTenant:
         assert result["scopeTenant"] == "acme"
         assert result["scopeSource"] == "api"
 
+    def test_the_response_is_read_back_consistently(self, users_table, monkeypatch):
+        """The email index is eventually consistent, so a read through it right
+        after the write may return the previous scope. moto's indexes are
+        immediate, so the read itself is what is asserted: the base-table row,
+        by primary key, strongly consistent, and no index query."""
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", "Api")
+        index = _load_index()
+        _declare_tenants()
+        users_table.put_item(Item=dict(ANNOTATOR_ITEM))
+        real_table = index.dynamodb.Table
+        reads = []
+
+        def spying_table(name):
+            table = real_table(name)
+            if name != index.USERS_TABLE_NAME:
+                return table
+            get_item, query = table.get_item, table.query
+
+            def spy_get(**kw):
+                reads.append(("get", kw.get("ConsistentRead")))
+                return get_item(**kw)
+
+            def spy_query(**kw):
+                reads.append(("query", kw.get("IndexName")))
+                return query(**kw)
+
+            table.get_item, table.query = spy_get, spy_query
+            return table
+
+        monkeypatch.setattr(index.dynamodb, "Table", spying_table)
+        result = self._call(
+            index, {"email": ANNOTATOR_ITEM["email"], "tenantId": "acme"}
+        )
+        assert result["allowedConfigVersions"] == ["acme-*"]
+        assert reads[-1] == ("get", True), reads
+
     def test_no_tenant_writes_the_deny_marker(self, users_table, monkeypatch):
         monkeypatch.setenv("TENANT_GRANT_SOURCE", "Api")
         index = _load_index()

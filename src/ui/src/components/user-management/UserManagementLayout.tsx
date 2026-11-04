@@ -55,8 +55,9 @@ const UserManagementLayout = (): React.JSX.Element => {
   const { awsConfig } = useAppContext();
   const { settings } = useSettingsContext();
   const { isAdmin, loading: roleLoading } = useUserRole();
-  // Only the isolation mode is needed here: under Strict an empty scope denies
-  // everything rather than allowing everything, and the field text must say so.
+  // The isolation mode decides what an empty scope means (under Strict it denies
+  // everything), and the grant source decides whether the scope is editable here at
+  // all; `loaded` separates "not read yet" from "could not be read".
   const { isolationMode, grantSource, loaded: tenancyLoaded, loadTenants } = useTenants();
   // Under TenantGrantSource IdpClaim or Api the identity provider or an entitlement
   // system owns users' configuration scope; the server refuses an Admin edit, so the

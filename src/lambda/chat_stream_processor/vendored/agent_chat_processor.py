@@ -107,8 +107,9 @@ def _enforce_agent_chat_groups(event):
         raise PermissionError(
             "Unauthorized: Agent Chat requires Admin, Author or Viewer group"
         )
-    # Strict tenant isolation: agents read across every tenant's documents, so
-    # nothing scopes them to one. Same rule the resolver applies.
+    # Tenant isolation, from Strict or an external grant source: agents read across
+    # every tenant's documents, so nothing scopes them to one. Same rule the
+    # resolver applies.
     if unscoped_is_denied() and not _caller_in_groups(event, ("Admin",)):
         logger.warning(
             "Rejecting agent chat: tenant isolation restricts Agent Chat to Admin"

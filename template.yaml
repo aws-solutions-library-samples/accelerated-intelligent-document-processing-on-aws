@@ -14028,7 +14028,7 @@ Resources:
       # Cognito gives a pre-token trigger 5 seconds whatever Timeout says.
       # Under IdpClaim the trigger also imports idp_common and writes the user's
       # grant, inside Cognito's 5-second budget for a pre-token trigger. Measured
-      # cold starts on arm64, init included: 4.34 s at 512 MB, 2.74 s at 1024 MB,
+      # cold starts on x86_64 (the architecture the layer is built for), init included: 4.34 s at 512 MB, 2.74 s at 1024 MB,
       # 1.95 s at 1769 MB (one full vCPU); warm calls are under 1 s. 1769 keeps
       # three seconds of headroom for a few cents a month at sign-in volumes.
       MemorySize: !If [IsTenantGrantFromIdpClaim, 1769, 128]
