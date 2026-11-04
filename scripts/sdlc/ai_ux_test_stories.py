@@ -145,9 +145,11 @@ Environment
     A merge request run's API access: to read the MR and its notes, and with
     ``--post`` to reply. A scheduled ``--digest`` uses the same token only to
     read: develop's earlier scheduled pipelines and each one's ``digest.json``.
-``UX_TEST_STORIES_SLACK_WEBHOOK_URL``
-    Optional. A scheduled ``--digest`` posts its one-line summary to this Slack
-    Workflow Builder webhook; without it nothing is posted and nothing is said.
+``UX_TEST_STORIES_SLACK_WEBHOOK_URL``, ``SLACK_WEBHOOK_URL``
+    Optional. A scheduled ``--digest`` posts its one-line summary to the first of
+    these Slack Workflow Builder webhooks that is set: its own, else the nightly
+    channel's, which the integration build posts to through the same four
+    variables. With neither, nothing is posted and nothing is said.
 ``ANTHROPIC_MODEL``, ``AWS_REGION`` / ``AWS_DEFAULT_REGION``
     The Bedrock model id and the region of Bedrock, STS and Polly.
 ``UX_HARNESS``, ``UX_ENTRY``
@@ -323,9 +325,11 @@ HISTORY_REF = review.DEFAULT_TARGET_BRANCH
 #: How long reading the earlier nights may take; a night not reached by then is
 #: a gap in the history.
 HISTORY_SECONDS = 300.0
-#: The optional Slack Workflow Builder webhook a scheduled digest posts its
-#: summary to, and how long that post may take.
+#: The optional Slack Workflow Builder webhooks a scheduled digest posts its
+#: summary to, its own before the nightly channel's, and how long that post may
+#: take.
 SLACK_WEBHOOK_ENV = "UX_TEST_STORIES_SLACK_WEBHOOK_URL"
+SHARED_SLACK_WEBHOOK_ENV = "SLACK_WEBHOOK_URL"
 SLACK_SECONDS = 30.0
 
 _DEFAULT_REGION = "us-east-1"
@@ -942,7 +946,7 @@ def post_slack(
     error says about it.
     """
     if not _usable_webhook(webhook):
-        return f"not posted, because {SLACK_WEBHOOK_ENV} is not an https URL"
+        return "not posted, because the webhook is not an https URL"
     body = json.dumps(dict(payload), ensure_ascii=False).encode("utf-8")
     try:
         request = urllib.request.Request(
@@ -971,11 +975,22 @@ def post_digest_summary(
     """The scheduled digest's one-line Slack summary, when a webhook is set.
 
     ``story_digest.slack_payload`` builds it from closed values only, and
-    ``CI_JOB_URL`` is its link. Without :data:`SLACK_WEBHOOK_ENV` nothing is
-    posted or printed; outside a scheduled pipeline one line says it was not
-    posted; and whatever happens, the digest's own outcome does not change.
+    ``CI_JOB_URL`` is its link. It goes to :data:`SLACK_WEBHOOK_ENV`, else to
+    :data:`SHARED_SLACK_WEBHOOK_ENV`. With neither, nothing is posted or printed;
+    outside a scheduled pipeline one line says it was not posted; and whatever
+    happens, the digest's own outcome does not change.
     """
-    webhook = runtime.environ.get(SLACK_WEBHOOK_ENV, "").strip()
+    webhook = next(
+        (
+            value
+            for value in (
+                runtime.environ.get(name, "").strip()
+                for name in (SLACK_WEBHOOK_ENV, SHARED_SLACK_WEBHOOK_ENV)
+            )
+            if value
+        ),
+        "",
+    )
     if not webhook or runtime.slack is None:
         return
     scrub.redactor.add(webhook)

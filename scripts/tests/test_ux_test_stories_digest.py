@@ -592,7 +592,7 @@ def test_an_unconfirmed_regression_says_so_in_the_digest_and_on_slack() -> None:
         "fit; good on 4 of the last 4 comparable nights (completion)"
     ) in _section_of(text, "## Regressions")
     payload = story_digest.slack_payload(digest, job_url="")
-    assert payload["status"] == "regressions"
+    assert payload["status"] == "🧭 UX STORIES · ❌ REGRESSIONS"
     assert (
         f"Regressions: {KEY} (completion, stuck, unconfirmed, good 4 of 4)."
         in payload["summary"]
@@ -1228,7 +1228,7 @@ def test_the_slack_payload_has_four_plain_text_keys() -> None:
     )
     assert sorted(payload) == ["commit", "job_url", "status", "summary"]
     assert all(isinstance(value, str) for value in payload.values())
-    assert payload["status"] == "regressions"
+    assert payload["status"] == "🧭 UX STORIES · ❌ REGRESSIONS"
     assert payload["commit"] == "1a2b3c4d"
     assert payload["job_url"] == "https://gitlab.invalid/-/jobs/1"
     assert f"Regressions: {KEY} (completion, stuck, good 3 of 4)." in payload["summary"]
@@ -1313,7 +1313,7 @@ def test_the_slack_status_says_regressions_clean_degraded_or_no_run(
     digest, _, _ = _digest_fixture()
     assert (
         story_digest.slack_payload({**digest, **overrides}, job_url="")["status"]
-        == status
+        == story_digest.SLACK_STATUS_PREFIX + story_digest.SLACK_STATUS_LABELS[status]
     )
 
 
@@ -1438,7 +1438,7 @@ def test_a_night_no_shard_ran_says_so_and_is_a_gap_to_the_nights_after() -> None
     assert "No shard ran a flow tonight" in text
     assert "- `shard-1`: skipped — " in text and "<!--" not in text
     payload = story_digest.slack_payload(digest, job_url="")
-    assert payload["status"] == "no_run"
+    assert payload["status"] == "🧭 UX STORIES · ⏭️ NOT RUN"
     assert "No shard ran tonight; the stack's state is not known." in payload["summary"]
     assert "audits" not in payload["summary"]
     with pytest.raises(ValueError):

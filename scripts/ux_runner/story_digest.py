@@ -24,6 +24,13 @@ COMPLETION_GOOD = 3
 FIXED_NIGHTS = 2
 DIGEST_MAX_BYTES = 512 * 1024
 SLACK_SUMMARY_CHARS = 2000
+SLACK_STATUS_PREFIX = "🧭 UX STORIES · "
+SLACK_STATUS_LABELS = {
+    "regressions": "❌ REGRESSIONS",
+    "degraded": "⚠️ DEGRADED",
+    "no_run": "⏭️ NOT RUN",
+    "clean": "✅ CLEAN",
+}
 STACK_HEADER_PREFIX = "🌙 UX review stack ("
 STACK_STATES: tuple[str, ...] = (
     "updated",
@@ -1212,7 +1219,7 @@ def slack_payload(digest: Mapping[str, Any], *, job_url: str) -> dict[str, str]:
         lines.append(f"Spend: ${float(spend):.2f}.")
     url = section.flatten(job_url) if isinstance(job_url, str) else ""
     return {
-        "status": _status(digest),
+        "status": SLACK_STATUS_PREFIX + SLACK_STATUS_LABELS[_status(digest)],
         "commit": sha8,
         "job_url": url[:_URL_CHARS],
         "summary": _cut(lines, SLACK_SUMMARY_CHARS),
