@@ -57,7 +57,7 @@ const UserManagementLayout = (): React.JSX.Element => {
   const { isAdmin, loading: roleLoading } = useUserRole();
   // Only the isolation mode is needed here: under Strict an empty scope denies
   // everything rather than allowing everything, and the field text must say so.
-  const { isolationMode, grantSource, loadTenants } = useTenants();
+  const { isolationMode, grantSource, loaded: tenancyLoaded, loadTenants } = useTenants();
   // Under TenantGrantSource IdpClaim or Api the identity provider or an entitlement
   // system owns users' configuration scope; the server refuses an Admin edit, so the
   // field is shown read-only rather than offered and then refused.
@@ -69,7 +69,9 @@ const UserManagementLayout = (): React.JSX.Element => {
       ? "Granted by the identity provider's claim at each sign-in, not editable here."
       : grantSource === 'Api'
         ? 'Granted by an entitlement system through setUserTenant, not editable here.'
-        : 'Who grants tenants on this stack could not be read, so scope is not editable here. Reload to try again.';
+        : tenancyLoaded
+          ? 'Who grants tenants on this stack could not be read, so scope is not editable here. Reload to try again.'
+          : 'Checking who grants tenants on this stack…';
   // `null` when the mode could not be read (listTenants failed). The empty-scope
   // guidance is then stated for both modes rather than defaulting to Off's, which
   // would tell an Admin on a Strict stack the opposite of what an empty scope does.

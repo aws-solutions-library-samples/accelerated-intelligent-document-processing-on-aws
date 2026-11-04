@@ -110,6 +110,17 @@ describe('UserManagementLayout under an external grant source', () => {
     expect(callsFor('updateUser')[0][0].variables).not.toHaveProperty('allowedConfigVersions');
   });
 
+  it('says the grant source is still being read rather than that the read failed', async () => {
+    const pending = new Promise(() => {});
+    const base = mockGraphql.getMockImplementation()!;
+    mockGraphql.mockImplementation((args: { query: string }) => (args.query.includes('listTenants') ? pending : base(args)));
+    render(<UserManagementLayout />);
+    await screen.findByText('granted@example.com');
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit scope' }))[1]);
+    expect((await screen.findAllByText(/Checking who grants tenants on this stack/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/could not be read, so scope is not editable here/)).not.toBeInTheDocument();
+  });
+
   it('keeps the configuration axis under Manual', async () => {
     grantSource = 'Manual';
     render(<UserManagementLayout />);

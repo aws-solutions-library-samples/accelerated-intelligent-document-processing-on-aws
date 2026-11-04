@@ -709,7 +709,9 @@ class TenantStore:
             # enlarged each entry) can still edit and delete its way back under it.
             if len(updated) > MAX_TENANTS and len(updated) > len(entries):
                 raise ValueError(
-                    f"This deployment allows at most {MAX_TENANTS} tenants."
+                    f"This deployment allows at most {MAX_TENANTS} tenants, so no "
+                    "more can be added. Existing tenants can still be edited or "
+                    "deleted."
                 )
             try:
                 self.table.update_item(

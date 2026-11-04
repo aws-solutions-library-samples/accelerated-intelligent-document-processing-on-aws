@@ -64,6 +64,9 @@ const useTenants = () => {
   // `null` until read, and on a failed read: callers must not assume Manual then.
   const [grantSource, setGrantSource] = useState<GrantSource | null>(null);
   const [loading, setLoading] = useState(false);
+  // False until the first listTenants call settles, so a caller can tell "not read yet"
+  // from "could not be read" (both leave grantSource null).
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadTenants = useCallback(async () => {
@@ -89,6 +92,7 @@ const useTenants = () => {
       setTenants([]);
     } finally {
       setLoading(false);
+      setLoaded(true);
     }
   }, []);
 
@@ -135,7 +139,7 @@ const useTenants = () => {
     }
   }, []);
 
-  return { tenants, isolationMode, grantSource, loading, error, setError, loadTenants, saveTenant, removeTenant };
+  return { tenants, isolationMode, grantSource, loading, loaded, error, setError, loadTenants, saveTenant, removeTenant };
 };
 
 export default useTenants;
