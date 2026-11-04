@@ -434,12 +434,19 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
     if exists and not rotate:
         _name_persona(ctx, email, key)
         shown = " ".join(persona_display_name(key))
-        raise SystemExit(
+        message = (
             f"{email} already exists in {args.stack}; its display name is now "
             f"{shown!r} and its password is unchanged. That password lives in the CI "
             "variable UX_TEST_PERSONAS, and setting a new one breaks that variable "
-            "until it is updated. Re-run with --rotate to do that deliberately."
+            "until it is updated. Re-run with --rotate to do that deliberately"
         )
+        if profiles is not None:
+            message += (
+                ", and without --profiles, which --rotate cannot apply: the profile "
+                "limit stays as its users-table row holds it, and changing it means "
+                f"teardown --email {email} --long-lived, then setup again"
+            )
+        raise SystemExit(f"{message}.")
     password = _password()
     if not exists and needs_row:
         arguments: dict[str, object] = {"email": email, "persona": args.group}

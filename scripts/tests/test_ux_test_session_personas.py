@@ -450,6 +450,34 @@ def test_rotating_an_existing_persona_with_profiles_is_refused(monkeypatch, key,
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("profiles", [None, "other"])
+def test_the_refusal_without_rotate_names_the_limit_rotate_cannot_apply(
+    monkeypatch, profiles
+):
+    """Its remedy is to re-run with --rotate, and with --profiles still given that
+    re-run is refused too, so the remedy has to say to drop them."""
+    email = "ux-persona-annotator-scoped@example.invalid"
+    pool = _Pool(existing={email})
+    pool.rows[email] = "user-1"
+    module = _module_with(pool, monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.cmd_setup(
+            _setup_args(group="Annotator", key="Annotator-scoped", profiles=profiles)
+        )
+
+    message = str(excinfo.value)
+    assert "Re-run with --rotate to do that deliberately" in message, message
+    if profiles is None:
+        assert "--profiles" not in message, message
+        assert message.endswith("Re-run with --rotate to do that deliberately.")
+    else:
+        assert "and without --profiles, which --rotate cannot apply" in message
+        assert f"teardown --email {email} --long-lived, then setup again" in message
+    assert pool.created == [] and pool.managed == []
+
+
+@pytest.mark.unit
 def test_rotating_an_existing_persona_without_profiles_prints_no_limit(
     monkeypatch, capsys
 ):
