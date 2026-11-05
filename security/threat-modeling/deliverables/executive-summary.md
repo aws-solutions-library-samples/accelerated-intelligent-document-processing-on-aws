@@ -159,10 +159,13 @@ work, so the harness remains what catches a missing one (AUTH.T16).
    read is now an API call under a group floor, a fail-closed bucket allow-list and
    three caller-derived scope checks, one of them the owning document's
    configuration profile; the browser's Identity Pool role grants no S3, so there is
-   no path around them. What is missing is an ownership or tenancy attribute: the
-   profile axis narrows a *scoped* caller only, and scoping is opt-in per user, so a
-   caller whose scope is unset still reads any document by key
-   (**issue #1033**, partial)
+   no path around them, and every operation on a single document applies the
+   profile scope. Under the default `TenantIsolationMode: Off` the profile axis
+   narrows a *scoped* caller only, and scoping is opt-in per user, so a caller whose
+   scope is unset still reads any document by key; `Strict` refuses such a caller
+   every document, and tenant declarations confine each user's scope to one tenant.
+   What is still missing is a per-*user* ownership attribute (**issue #1033**,
+   partial)
 5. **Add bundle integrity verification (SRI) to the Feature Platform (FEAT.T01)** —
    installed extension UI code runs unsandboxed in the host origin with the user's session
 6. **Implement VPC egress controls** for MCP Lambda functions to prevent unauthorized data exfiltration

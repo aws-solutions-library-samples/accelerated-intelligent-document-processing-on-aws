@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 import boto3
 
+from idp_common import document_scope
 from idp_common.docs_service import create_document_service
 from idp_common.models import Status
 from idp_common.review_queues.statuses import SKIP_ALL_REASONS, LegacyHitlStatus
@@ -33,6 +34,8 @@ OUTPUT_BUCKET = os.environ.get("OUTPUT_BUCKET", "")
 TEST_SET_BUCKET = os.environ.get("TEST_SET_BUCKET", "")
 #: Longest skip note kept, the review queues' note limit.
 MAX_SKIP_NOTE = 1000
+# Per-container cache of callers' configuration scopes (see config_scope).
+_user_scope_cache: dict = {}
 
 
 def handler(event, context):
@@ -72,6 +75,12 @@ def handler(event, context):
         raise PermissionError(
             "Unauthorized: review operations require Admin, Reviewer or Annotator group"
         )
+
+    # Production HITL work is confined to the caller's configuration scope, the
+    # same axis every document read applies. Checked before anything else about
+    # the document is consulted, so an out-of-scope key learns nothing further.
+    if object_key:
+        _assert_configuration_scope(event, object_key, user_groups)
 
     # Documents in a review queue are worked only through the review-queue
     # operations (leases, dispositions), for every caller (D30).
@@ -201,6 +210,39 @@ def _assert_test_set_assignee(event, object_key, user_email):
     except ValueError as e:
         logger.warning(f"Rejecting save of {object_key}: {e}")
         raise ValueError(str(e)) from None
+
+
+def _assert_configuration_scope(event, object_key, user_groups):
+    """Refuse a production document outside the caller's configuration scope.
+
+    A Reviewer scoped to one profile (under strict tenant isolation, to one tenant)
+    must not claim, edit, skip or complete another profile's review. Applies to
+    production documents only: a Test Studio document (one carrying a
+    ``TestSetId``) is governed by the Annotator's ``allowedTestSets`` scope in
+    :func:`_assert_annotator_scope`, unchanged here. Admins skip the lookup.
+
+    A key with no tracked document is refused for a scoped caller, with the same
+    message as an out-of-scope one.
+    """
+    if "Admin" in user_groups:
+        return
+    doc = (
+        dynamodb.Table(TRACKING_TABLE_NAME)
+        .get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
+        .get("Item")
+    )
+    if doc and doc.get("TestSetId"):
+        return
+    scope = document_scope.resolve_caller_scope(
+        document_scope.caller_claims(event),
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=dynamodb,
+        cache=_user_scope_cache,
+    )
+    version = document_scope.config_version_of_item(doc)
+    document_scope.assert_document_in_scope(
+        object_key, scope, config_version_of=lambda _key: version
+    )
 
 
 def _assert_annotator_scope(event, groups, object_key, email):

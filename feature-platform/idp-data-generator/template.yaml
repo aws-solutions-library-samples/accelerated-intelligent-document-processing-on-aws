@@ -675,6 +675,7 @@ Resources:
           BOOTSTRAP_TRACKING_TABLE: !Ref BootstrapTrackingTable
           HOST_TRACKING_TABLE: { 'Fn::ImportValue': !Sub '${MainStackName}-TrackingTableName' }
           CONFIGURATION_TABLE_NAME: { 'Fn::ImportValue': !Sub '${MainStackName}-ConfigurationTableName' }
+          CONFIGURATION_BUCKET: { 'Fn::ImportValue': !Sub '${MainStackName}-ConfigurationBucketName' }
           TEST_SET_BUCKET: { 'Fn::ImportValue': !Sub '${MainStackName}-TestSetBucketName' }
           WORKING_BUCKET: { 'Fn::ImportValue': !Sub '${MainStackName}-WorkingBucketName' }
           SYNTHESIS_RUNTIME_ARN: !GetAtt GeneratorAgentRuntime.AgentRuntimeArn
@@ -717,6 +718,25 @@ Resources:
                 - !Sub
                   - "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${T}"
                   - T: { 'Fn::ImportValue': !Sub '${MainStackName}-TrackingTableName' }
+            # Configuration-profile revision bodies. merge_class_into_version saves a
+            # profile, and a save that cannot cut a revision leaves documents running
+            # the previously published one (#1778). ListBucket keeps a missing key a
+            # 404 rather than a 403 the revision store refuses to read as missing.
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+              Resource:
+                - !Sub
+                  - "arn:${AWS::Partition}:s3:::${B}/config_revisions/*"
+                  - B: { 'Fn::ImportValue': !Sub '${MainStackName}-ConfigurationBucketName' }
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource:
+                - !Sub
+                  - "arn:${AWS::Partition}:s3:::${B}"
+                  - B: { 'Fn::ImportValue': !Sub '${MainStackName}-ConfigurationBucketName' }
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
             - Effect: Allow
               Action: bedrock-agentcore:InvokeAgentRuntime
               Resource:

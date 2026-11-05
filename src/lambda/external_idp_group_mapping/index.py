@@ -28,7 +28,28 @@ self-set the attribute, and if their IdP later omits the group claim on a fresh
 sign-in, Cognito may leave the self-set value in place for this trigger to read.
 Assert the group claim for every federated user in the IdP to avoid that. See
 docs/external-idp.md.
+
+Tenant grants (``TenantGrantSource=IdpClaim``)
+---------------------------------------------
+
+The same claim can also grant the user a tenant. Its values are matched against
+each tenant declaration's ``grantedBy`` values (opaque strings: an Entra app-role
+value such as ``tenant.acme``, an Okta group name) and the user's configuration
+scope is written to exactly that tenant's profile pattern, or to the scope no
+profile matches when the claim grants no tenant or more than one. That happens
+under the same two checks as the group mapping -- a fresh sign-in, federated
+through the configured provider -- because the claim is equally user-writable on a
+refresh. An Admin is left alone: the role is cross-tenant by design.
+
+It fails the sign-in rather than leave a stale scope in place: if the tenant
+declarations cannot be read or the scope cannot be written, this raises, and
+Cognito refuses the token. Signing in with the tenant the IdP granted *yesterday*
+is the failure this exists to prevent, so a retry is the right answer for the user.
+
+In every other ``TenantGrantSource`` the trigger behaves exactly as it did before
+tenant grants existed and imports nothing from ``idp_common``.
 """
+
 import json
 import logging
 import os
@@ -59,6 +80,66 @@ COGNITO_GROUPS = set(GROUP_MAPPING.values())
 # from the ExternalIdPName stack parameter. Empty means no provider is trusted,
 # in which case no sign-in can be granted groups.
 EXTERNAL_IDP_NAME = os.environ.get("EXTERNAL_IDP_NAME", "").strip()
+
+# Persona recorded on a UsersTable row this trigger creates, most privileged first.
+_PERSONA_ORDER = ("Admin", "Author", "Reviewer", "Annotator", "Viewer")
+
+
+def grants_tenants_from_claim():
+    """Whether this stack runs with ``TenantGrantSource=IdpClaim``.
+
+    Read per call so a test can set it. Compared literally rather than through
+    ``idp_common`` so that every other mode imports nothing new.
+    """
+    return os.environ.get("TENANT_GRANT_SOURCE", "Manual") == "IdpClaim"
+
+
+def load_tenants():
+    """The tenant declarations. Raises when they cannot be read."""
+    from idp_common.config.tenants import TenantStore
+
+    table_name = os.environ["CONFIGURATION_TABLE_NAME"]
+    return TenantStore(boto3.resource("dynamodb").Table(table_name)).list()
+
+
+def apply_claim_grant(user_attributes, username, idp_groups, target_groups, tenants):
+    """Write the tenant the claim grants. Raises on any failure, failing the sign-in."""
+    from idp_common.config.tenants import GRANT_REFUSED, resolve_grants
+    from idp_common.user_scope import (
+        SCOPE_SOURCE_IDP,
+        apply_tenant_grant,
+        clear_granted_scope,
+    )
+
+    users_table = boto3.resource("dynamodb").Table(os.environ["USERS_TABLE_NAME"])
+    if "Admin" in target_groups:
+        # No tenant is written for an Admin, and one the claim granted before the
+        # promotion is removed: nothing else may edit it under IdpClaim.
+        logger.info(f"User {username} is an Admin; no tenant scope is written")
+        return clear_granted_scope(
+            users_table,
+            email=str(user_attributes.get("email") or ""),
+            cognito_sub=str(user_attributes.get("sub") or ""),
+            source=SCOPE_SOURCE_IDP,
+        )
+    resolution = resolve_grants(idp_groups, tenants)
+    if resolution["outcome"] == GRANT_REFUSED:
+        logger.warning(f"Granting no tenant to user {username}: {resolution['reason']}")
+    persona = next((p for p in _PERSONA_ORDER if p in target_groups), "Viewer")
+    return apply_tenant_grant(
+        users_table,
+        email=str(user_attributes.get("email") or ""),
+        cognito_sub=str(user_attributes.get("sub") or ""),
+        resolution=resolution,
+        source=SCOPE_SOURCE_IDP,
+        persona_for_new_row=persona,
+        # A claim that maps to no role gives the user no Cognito group, so a new row
+        # would list someone who cannot use the app under a persona they do not
+        # hold. An existing row is still rewritten, which is how an emptied claim
+        # revokes a tenant.
+        create_missing=bool(target_groups),
+    )
+
 
 # Trigger sources that represent a fresh sign-in, where Cognito has just applied
 # the provider's AttributeMapping. TokenGeneration_RefreshTokens is deliberately
@@ -104,9 +185,7 @@ def is_federated_via_configured_idp(user_pool_id, username):
         return False
 
     try:
-        response = cognito.admin_get_user(
-            UserPoolId=user_pool_id, Username=username
-        )
+        response = cognito.admin_get_user(UserPoolId=user_pool_id, Username=username)
     except Exception as e:
         logger.error(f"Failed to read user {username} for provenance check: {e}")
         return False
@@ -157,8 +236,11 @@ def handler(event, context):
     username = event.get("userName", "")
     user_attributes = event.get("request", {}).get("userAttributes", {})
     idp_groups_raw = user_attributes.get("custom:idp_groups", "")
+    grant_from_claim = grants_tenants_from_claim()
 
-    if not idp_groups_raw:
+    # With tenants granted from the claim, an empty claim is an answer too (no
+    # tenant), so it continues to the checks below instead of returning here.
+    if not idp_groups_raw and not grant_from_claim:
         logger.info(f"No IdP groups claim for user {username}")
         return event
 
@@ -179,13 +261,19 @@ def handler(event, context):
     logger.info(f"User {username} IdP groups: {idp_groups}")
 
     # Determine target Cognito groups from mapping
-    target_groups = set()
-    unmapped_groups = []
-    for idp_group in idp_groups:
-        if idp_group in GROUP_MAPPING:
-            target_groups.add(GROUP_MAPPING[idp_group])
-        else:
-            unmapped_groups.append(idp_group)
+    target_groups = {GROUP_MAPPING[g] for g in idp_groups if g in GROUP_MAPPING}
+
+    # An Admin is never granted a tenant, so the declarations are not read for one:
+    # a read failure would otherwise fail the sign-in of the role that can fix it.
+    read_tenants = grant_from_claim and "Admin" not in target_groups
+    tenants = load_tenants() if read_tenants else []
+    grant_values = {g for t in tenants for g in t.get("grantedBy") or []}
+    unmapped_groups = [
+        g for g in idp_groups if g not in GROUP_MAPPING and g not in grant_values
+    ]
+
+    if grant_from_claim:
+        apply_claim_grant(user_attributes, username, idp_groups, target_groups, tenants)
 
     # Name every discarded claim value. Without this a claim carrying one mapped
     # name plus an unmapped one produced no diagnostic at all: the warning below
@@ -200,7 +288,9 @@ def handler(event, context):
         )
 
     if not target_groups:
-        logger.warning(f"No matching Cognito groups for user {username} with IdP groups {idp_groups}")
+        logger.warning(
+            f"No matching Cognito groups for user {username} with IdP groups {idp_groups}"
+        )
         return event
 
     # Get current Cognito groups for user

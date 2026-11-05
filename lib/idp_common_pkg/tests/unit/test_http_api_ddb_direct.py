@@ -54,8 +54,38 @@ def ddb_env():
     os.environ["TRACKING_TABLE_NAME"] = "TrackingTable"
     os.environ["DISCOVERY_TABLE_NAME"] = "DiscoveryTable"
     os.environ["AGENT_TABLE_NAME"] = "AgentTable"
+    os.environ["USERS_TABLE_NAME"] = "UsersTable"
+    os.environ.pop("TENANT_ISOLATION_MODE", None)
     with mock_aws():
         ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        users = ddb.create_table(
+            TableName="UsersTable",
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+                {"AttributeName": "email", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "EmailIndex",
+                    "KeySchema": [{"AttributeName": "email", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        users.put_item(
+            Item={
+                "PK": "USER#scoped",
+                "SK": "USER#scoped",
+                "email": "scoped@example.com",
+                "allowedConfigVersions": ["acme-*"],
+            }
+        )
         ddb.create_table(
             TableName="TrackingTable",
             KeySchema=[
@@ -93,13 +123,15 @@ def ddb_env():
 
 def _ev(args, username="user@example.com", groups=("Admin",)):
     # Default to an Admin caller so RBAC-gated ops pass; individual tests pass
-    # groups=... to exercise the group checks that mirror the AppSync schema.
+    # groups=... to exercise the group checks that mirror the AppSync schema. The
+    # email claim is what the configuration-scope lookup joins on; `user@` has no
+    # UsersTable row, so a non-admin caller here is an unscoped one.
     return {
         "arguments": args,
         "identity": {
             "username": username,
             "sub": "sub-1",
-            "claims": {"cognito:groups": list(groups)},
+            "claims": {"cognito:groups": list(groups), "email": username},
         },
     }
 
@@ -365,3 +397,88 @@ def test_a_non_numeric_limit_is_a_valueerror_so_the_dispatcher_reports_400():
     mod = _load_ddb_direct()
     with pytest.raises(ValueError, match="limit must be an integer"):
         mod._clamped_limit("not-a-number")
+
+
+# ------------------------ configuration scope ------------------------------- #
+def _put_doc(ddb, key, profile=None):
+    item = {"PK": f"doc#{key}", "SK": "none", "ObjectKey": key}
+    if profile:
+        item["ConfigVersion"] = profile
+    ddb.Table("TrackingTable").put_item(Item=item)
+
+
+def _scoped(args):
+    return _ev(args, username="scoped@example.com", groups=("Viewer",))
+
+
+@pytest.mark.parametrize(
+    "key,profile,allowed",
+    [
+        ("a.pdf", "acme-invoices", True),
+        ("g.pdf", "globex-w2", False),
+        ("bare.pdf", None, False),
+        # An absent key is refused, not answered null, for a scoped caller.
+        ("missing.pdf", "skip", False),
+    ],
+)
+def test_get_document_is_refused_outside_the_callers_scope(
+    ddb_env, key, profile, allowed
+):
+    mod, ddb = ddb_env
+    if profile != "skip":
+        _put_doc(ddb, key, profile)
+    if allowed:
+        assert (
+            mod.dispatch("getDocument", _scoped({"ObjectKey": key}))["ObjectKey"] == key
+        )
+    else:
+        with pytest.raises(PermissionError, match="^Unauthorized"):
+            mod.dispatch("getDocument", _scoped({"ObjectKey": key}))
+
+
+def test_get_document_is_unchanged_for_an_admin_and_an_unscoped_user(ddb_env):
+    mod, ddb = ddb_env
+    _put_doc(ddb, "g.pdf", "globex-w2")
+    for groups in (("Admin",), ("Viewer",)):
+        out = mod.dispatch("getDocument", _ev({"ObjectKey": "g.pdf"}, groups=groups))
+        assert out["ObjectKey"] == "g.pdf"
+    assert (
+        mod.dispatch("getDocument", _ev({"ObjectKey": "nope"}, groups=("Viewer",)))
+        is None
+    )
+
+
+def test_strict_mode_refuses_get_document_to_an_unscoped_non_admin(
+    ddb_env, monkeypatch
+):
+    mod, ddb = ddb_env
+    _put_doc(ddb, "a.pdf", "acme-invoices")
+    monkeypatch.setenv("TENANT_ISOLATION_MODE", "Strict")
+    with pytest.raises(PermissionError):
+        mod.dispatch("getDocument", _ev({"ObjectKey": "a.pdf"}, groups=("Viewer",)))
+    assert (
+        mod.dispatch("getDocument", _ev({"ObjectKey": "a.pdf"}))["ObjectKey"] == "a.pdf"
+    )
+
+
+@pytest.mark.parametrize(
+    "field,args",
+    [
+        ("listDocumentsDateHour", {"date": "2026-06-29", "hour": 14}),
+        ("listDocumentsDateShard", {"date": "2026-06-29", "shard": 2}),
+    ],
+)
+def test_the_raw_date_partition_reads_refuse_a_scoped_caller(
+    ddb_env, monkeypatch, field, args
+):
+    mod, _ = ddb_env
+    with pytest.raises(PermissionError, match="configuration scope"):
+        mod.dispatch(field, _scoped(args))
+    # Unscoped and Admin callers are served as before ...
+    assert "Documents" in mod.dispatch(field, _ev(args, groups=("Viewer",)))
+    assert "Documents" in mod.dispatch(field, _ev(args))
+    # ... and under strict isolation only the Admin is.
+    monkeypatch.setenv("TENANT_ISOLATION_MODE", "Strict")
+    with pytest.raises(PermissionError):
+        mod.dispatch(field, _ev(args, groups=("Viewer",)))
+    assert "Documents" in mod.dispatch(field, _ev(args))

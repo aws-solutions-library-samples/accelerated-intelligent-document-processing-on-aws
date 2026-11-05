@@ -66,6 +66,18 @@ Parameters:
     Type: String
     Default: ""
     Description: DynamoDB table ARN for user management (config-version scoping)
+
+  TenantIsolationMode:
+    Type: String
+    Default: "Off"
+    AllowedValues: ["Off", "Strict"]
+    Description: Parent's TenantIsolationMode. Strict denies unscoped non-Admin callers.
+
+  TenantGrantSource:
+    Type: String
+    Default: "Manual"
+    AllowedValues: ["Manual", "IdpClaim", "Api"]
+    Description: Parent's TenantGrantSource. IdpClaim and Api deny unscoped non-Admin callers.
   
   # S3 Buckets
   InputBucketName:
@@ -467,6 +479,9 @@ Resources:
         - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           SETTINGS_PARAMETER: !Ref SettingsParameterName
           # create_document_service() (imported at module load) reads
@@ -481,6 +496,17 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref AbortWorkflowResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions,
+        # which this function enforces on the document it acts on. The lookup
+        # fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
         # Review queues: withdraw (abort, reprocess) or purge (delete) the
@@ -565,6 +591,8 @@ Resources:
       Runtime: python3.12
       Environment:
         Variables:
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           CHAT_MESSAGES_TABLE: !Ref ChatMessagesTableName
           AGENT_CHAT_PROCESSOR_FUNCTION: !Ref AgentChatProcessorFunctionArn
@@ -629,6 +657,8 @@ Resources:
       Timeout: 30
       Environment:
         Variables:
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           AGENT_TABLE: !Ref AgentTableName
           AGENT_PROCESSOR_FUNCTION: !Ref AgentProcessorFunctionArn
@@ -782,6 +812,8 @@ Resources:
           STACK_NAME: !Ref StackName
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref ConfigurationResolverFunctionLogGroup
       Policies:
@@ -843,6 +875,12 @@ Resources:
               Resource:
                 - !Ref UsersTableArn
                 - !Sub "${UsersTableArn}/index/*"
+            # Scan of the base table only (not its indexes): saving a tenant reads
+            # every stored allowedConfigVersions so that a tenant set leaving an
+            # existing user scoped across tenants is refused. Admin-only operation.
+            - Effect: Allow
+              Action: dynamodb:Scan
+              Resource: !Ref UsersTableArn
   NotificationsResolverFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -962,6 +1000,8 @@ Resources:
           TRACKING_TABLE: !Ref TrackingTableName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
           USER_POOL_ID: !Ref UserPoolId
           QUEUE_URL: !Ref DocumentQueueUrl
@@ -1115,6 +1155,9 @@ Resources:
         - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           OUTPUT_BUCKET: !Ref OutputBucketName
           EVALUATION_BASELINE_BUCKET: !If
@@ -1129,6 +1172,17 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref CopyToBaselineResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions,
+        # which this function enforces on the document it acts on. The lookup
+        # fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - S3CrudPolicy:
             BucketName: !Ref OutputBucketName
         - S3CrudPolicy:
@@ -1315,6 +1369,9 @@ Resources:
         - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE_NAME: !Ref TrackingTableName
           INPUT_BUCKET: !Ref InputBucketName
@@ -1323,6 +1380,17 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref DeleteDocumentResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions,
+        # which this function enforces on the document it acts on. The lookup
+        # fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
         # Review queues: withdraw (abort, reprocess) or purge (delete) the
@@ -1553,11 +1621,32 @@ Resources:
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTableName
           DISCOVERY_QUEUE_URL: !Ref DiscoveryQueueUrl
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           MULTI_DOC_DISCOVERY_STATE_MACHINE_ARN: !Ref MultiDocDiscoveryStateMachineArn
           S3_ENDPOINT_URL: !If [HasS3EndpointUrl, !Ref S3EndpointUrl, !Ref AWS::NoValue]
       LoggingConfig:
         LogGroup: !Ref DiscoveryUploadResolverFunctionLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3WritePolicy:
             BucketName: !Ref DiscoveryBucketName
         - S3ReadPolicy:
@@ -1726,6 +1815,8 @@ Resources:
           # unconditionally, so empty means a wiring regression, not a deployment
           # without RBAC.
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # RBAC: per-DOCUMENT scope on the Input and Output buckets. INPUT_BUCKET
           # and OUTPUT_BUCKET above are likewise not only allow-list entries — they
           # name the two buckets whose objects belong to a document, and
@@ -1926,6 +2017,8 @@ Resources:
           # document handled under a version outside their scope. Empty string in
           # single-user / pre-RBAC deployments (fail-open).
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref GetStepFunctionExecutionResolverFunctionLogGroup
       Policies:
@@ -2131,6 +2224,8 @@ Resources:
           # confines an Annotator to the test sets in their allowedTestSets, which
           # `testset_scope` resolves from the UsersTable EmailIndex.
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # Review queues: a document in review is regrouped only by the holder of
           # its review item, read from HITLTable.
           HITL_TABLE_NAME: !Ref HITLTableName
@@ -2262,6 +2357,8 @@ Resources:
         - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           KB_ACCOUNT_ID: !Ref AWS::AccountId
           KB_REGION: !Ref AWS::Region
@@ -2394,6 +2491,8 @@ Resources:
           # the parent template; an empty value denies a non-admin caller, because
           # a scope that cannot be evaluated is not a caller without restrictions.
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # The config prefix mappings, so a reprocess with no explicit profile
           # re-resolves them — which is how an operator re-runs a backlog under a
           # new profile. This resolver had no ConfigurationTable grant at all
@@ -2548,12 +2647,26 @@ Resources:
         - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           OUTPUT_BUCKET: !Ref OutputBucketName
           TRACKING_TABLE: !Ref TrackingTableName
       LoggingConfig:
         LogGroup: !Ref DocumentVersionsResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions,
+        # which this function enforces on the document it acts on. The lookup
+        # fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
         # Read manifest-pinned output object versions; delete a version's
@@ -2631,15 +2744,38 @@ Resources:
         Variables:
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           STACK_NAME: !Ref StackName
           # Used for RBAC scope enforcement: the resolver queries the
           # UsersTable EmailIndex to look up `allowedConfigVersions` for
           # non-admin callers and rejects syncBdaIdp calls against a
           # version outside their scope.
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref SyncBdaIdpResolverFunctionLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTableName
@@ -2723,6 +2859,9 @@ Resources:
       Timeout: 900
       Environment:
         Variables:
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE: !Ref TrackingTableName
           BASELINE_BUCKET: !Ref EvaluationBaselineBucketName
@@ -2754,6 +2893,17 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref TestResultsResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions,
+        # which this function enforces on the document it acts on. The lookup
+        # fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
         - S3ReadPolicy:
@@ -2893,11 +3043,29 @@ Resources:
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           TRACKING_TABLE: !Ref TrackingTableName
           FILE_COPY_QUEUE_URL: !Ref TestFileCopyQueueUrl
+          # RBAC: the caller's allowedConfigVersions, applied to the profile a run
+          # is started under. A run's documents are stamped with that profile and
+          # so become visible to whoever is scoped to it, which made an unscoped
+          # startTestRun a way to place documents into another scope's view.
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref TestRunnerFunctionLogGroup
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
+        # Read-only on UsersTable + EmailIndex for the caller's scope lookup. A
+        # failed lookup denies the run rather than treating the caller as
+        # unrestricted.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTableName
         # Read a pinned revision's stored configuration body.
@@ -2986,6 +3154,8 @@ Resources:
           # stored on the user record. Without this the scope lookup returns
           # "unrestricted" and a scoped Annotator would be denied everything.
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # Inbox notices for Test Studio assignments (assigned, unassigned).
           NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
           # Assignees must be in the Cognito Annotator group.
@@ -3168,6 +3338,8 @@ Resources:
           # value DENIES a caller rather than reading as unrestricted, because a
           # scope that cannot be evaluated is not a caller without restrictions.
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # The in-review check on section-result uploads: a document in a review
           # queue is edited only through its queue item, so an upload of one of its
           # section results to the Output bucket is refused (QUEUE_MANAGED).
@@ -3306,6 +3478,8 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE_NAME: !Ref TrackingTableName
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref ListDocumentsByDateRangeResolverFunctionLogGroup
       Policies:
@@ -3361,6 +3535,8 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE_NAME: !Ref TrackingTableName
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       Policies:
         - Statement:
             - Effect: Allow
@@ -3560,6 +3736,11 @@ Resources:
           TRACKING_TABLE_NAME: !Ref TrackingTableName
           DISCOVERY_TABLE_NAME: !Ref DiscoveryTrackingTableName
           AGENT_TABLE_NAME: !Ref AgentTableName
+          # getDocument (served here, not by a resolver) refuses a document outside
+          # the caller's configuration scope, which needs the scope lookup.
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # field -> resolver function ARN. Fields absent here are served by
           # ddb_direct.py (discovery/agent jobs, getDocument, date queries).
           # field -> resolver function ARN map is large (~60 ARNs > 4KB env
@@ -3597,6 +3778,18 @@ Resources:
             - Effect: Allow
               Action: ssm:GetParameter
               Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${StackName}/http-api/field-function-map"
+        # Read-only access on UsersTable + EmailIndex for the caller's
+        # allowedConfigVersions, which getDocument and the two date-partition
+        # lists enforce. Without it the lookup fails and the request is refused
+        # (the lookup fails closed), so a scoped caller could read nothing.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         # The TrackingTable/DiscoveryTable/AgentTable are KMS-encrypted; the
         # DDB-direct operations (getDocument, date queries, discovery/agent jobs)
         # need kms:Decrypt/GenerateDataKey on the customer-managed key.

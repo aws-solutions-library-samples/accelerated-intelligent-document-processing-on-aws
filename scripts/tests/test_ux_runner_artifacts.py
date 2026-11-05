@@ -142,6 +142,7 @@ def test_the_redactor_holds_every_value_the_job_can_see() -> None:
         "UX_TEST_UI_ENV": _b64(UI_ENV_TEXT),
         "UX_TEST_PERSONAS": personas,
         "UX_TEST_STORIES_SLACK_WEBHOOK_URL": "https://hooks.slack.example/t/a1b2c3",
+        "SLACK_WEBHOOK_URL": "https://hooks.slack.example/t/d4e5f6",
         "UNRELATED": "unrelated-value",
     }
     redactor = artifacts.redactor_for(environ)
@@ -153,6 +154,7 @@ def test_the_redactor_holds_every_value_the_job_can_see() -> None:
         "UX_TEST_UI_ENV",
         "UX_TEST_PERSONAS",
         "UX_TEST_STORIES_SLACK_WEBHOOK_URL",
+        "SLACK_WEBHOOK_URL",
     ):
         assert redactor(f"<{environ[name]}>") == "<[redacted]>", name
     for value in (
@@ -187,6 +189,7 @@ def test_the_environment_names_are_the_audited_ones() -> None:
         "AWS_SECURITY_TOKEN",
         "UX_TEST_AWS_ACCOUNT_ID",
         "UX_TEST_STORIES_SLACK_WEBHOOK_URL",
+        "SLACK_WEBHOOK_URL",
     )
     assert review.GITLAB.credential_env == "GITLAB_REVIEW_TOKEN"
     assert artifacts.FORGE_HOST_ENV_NAMES == ("CI_SERVER_HOST", "CI_SERVER_FQDN")

@@ -38,6 +38,18 @@ DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
 
 
+def _unscoped_is_denied():
+    """Whether tenant isolation is enforced: ``TenantIsolationMode=Strict``, or
+    tenants granted by the identity provider or an entitlement system.
+
+    The same test as ``idp_common.config_scope.unscoped_is_denied``, restated
+    because this function ships without the ``idp_common`` layer.
+    """
+    return os.environ.get("TENANT_ISOLATION_MODE", "Off") == "Strict" or os.environ.get(
+        "TENANT_GRANT_SOURCE", "Manual"
+    ) in ("IdpClaim", "Api")
+
+
 def _caller_in_groups(event, allowed):
     """Defense-in-depth RBAC check against the caller's Cognito groups.
 
@@ -107,6 +119,22 @@ def handler(event, context):
     ):
         raise PermissionError(
             "Unauthorized: Agent Chat requires Admin, Author or Viewer group"
+        )
+    # Strict tenant isolation: the agents answer across every document in the
+    # deployment (analytics over the reporting database, error analysis over every
+    # execution), so nothing scopes them to one tenant. Admin only.
+    if (
+        event.get("identity") is not None
+        and _unscoped_is_denied()
+        and not _caller_in_groups(event, ("Admin",))
+    ):
+        logger.warning(
+            "Rejecting agent chat: tenant isolation restricts Agent Chat to Admin"
+        )
+        raise PermissionError(
+            "Unauthorized: this deployment runs with tenant isolation, where "
+            "Agent Chat (which reads across every tenant's documents) is limited to "
+            "the Admin group"
         )
 
     try:

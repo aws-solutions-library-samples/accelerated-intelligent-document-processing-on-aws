@@ -258,10 +258,7 @@ def _assert_count_phrase(
     # those 9", so a page asserting the opposite of the measured value would
     # satisfy the presence check. It is reachable whenever a measured count is 1.
     present = any(
-        re.search(
-            r"(?<![\w-])" + re.escape(f), flat, re.IGNORECASE
-        )
-        for f in forms
+        re.search(r"(?<![\w-])" + re.escape(f), flat, re.IGNORECASE) for f in forms
     )
     if not present:
         pytest.fail(
@@ -613,6 +610,15 @@ def test_cloudwatch_alarm_counts() -> None:
         f"{word} are unconditional",
         f"{len(unconditional)} alarms declare no Condition.",
     )
+    # And the conditional figure, which the page states as its own sentence. With
+    # only the two above pinned, adding a CONDITIONAL alarm moves the total and
+    # leaves "a default deployment has <n>" true, so a stale conditional count
+    # beside it contradicts the arithmetic and nothing notices.
+    conditional = len(alarms) - len(unconditional)
+    _assert_phrase(
+        f"{NUMBER_WORDS[conditional].capitalize()} are conditional",
+        f"{conditional} of the {len(alarms)} alarms declare a Condition.",
+    )
 
 
 @pytest.mark.unit
@@ -793,7 +799,9 @@ def test_review_checklists_do_not_restate_a_measured_count_wrongly() -> None:
     assertions stay the primary check.
     """
     text = _doc()
-    sections = re.findall(r"^### Review checklist$(.*?)(?=^#{2,3} |\Z)", text, re.S | re.M)
+    sections = re.findall(
+        r"^### Review checklist$(.*?)(?=^#{2,3} |\Z)", text, re.S | re.M
+    )
     # Floor check: a heading rename would otherwise make this pass vacuously.
     assert len(sections) >= 5, (
         f"found {len(sections)} '### Review checklist' sections; the heading must "

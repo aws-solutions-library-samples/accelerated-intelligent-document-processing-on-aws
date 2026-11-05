@@ -314,6 +314,10 @@ FIELD_ALIASES: Dict[str, str] = {
     "putConfigPrefixMapping": "deleteConfigVersion",
     "deleteConfigPrefixMapping": "deleteConfigVersion",
     "resolveConfigPrefixMapping": "deleteConfigVersion",
+    # Tenant declarations, served by the same configuration resolver.
+    "listTenants": "deleteConfigVersion",
+    "putTenant": "deleteConfigVersion",
+    "deleteTenant": "deleteConfigVersion",
     "getConfigVersion": "deleteConfigVersion",
     "getConfigVersions": "deleteConfigVersion",
     "getConfigurationLibraryFile": "deleteConfigVersion",
@@ -351,6 +355,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "deleteUser": "createUser",
     "listUsers": "createUser",
     "getMyProfile": "createUser",
+    "setUserTenant": "createUser",
     # createFinetuningJob (FinetuningJobsResolverFunctionArn)
     "deleteFinetuningJob": "createFinetuningJob",
     "getFinetuningJob": "createFinetuningJob",

@@ -17,6 +17,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Headless Deployment](./headless-deployment.md) - Backend-only deployment (no Web UI, no UI REST API, no Cognito, no WAF) — for API-only / pipeline integrations in Commercial regions or GovCloud
 - [Configuration](./configuration.md) - Configuration and customization options
 - [Configuration Profiles](./configuration-profiles.md) - Managing multiple named configurations and their revision history
+- [Multi-Tenant Isolation](./multi-tenancy.md) - Tenant declarations, strict isolation mode, and hardening a shared deployment in your own AWS environment
 - [IDP Configuration Best Practices](./idp-configuration-best-practices.md) - Guidelines for effective configuration design
 - [JSON Schema Migration](./json-schema-migration.md) - JSON Schema format guide and legacy migration details
 - [Web UI](./web-ui.md) - Web interface features and usage

@@ -12,6 +12,7 @@ query ListConfigProfileRevisions($profileName: String!) {
       pinned
       published
     }
+    profileMatchesPublished
     error {
       type
       message

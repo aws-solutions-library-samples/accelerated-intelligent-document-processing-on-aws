@@ -53,3 +53,36 @@ if _CANONICAL_SANITIZER not in sys.modules:
     _module = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_module)
     sys.modules[_CANONICAL_SANITIZER] = _module
+
+
+import types  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _unscoped_review_callers(request, monkeypatch):
+    """Treat every caller in these suites as configuration-unscoped, by default.
+
+    The handler confines production review work to the caller's configuration
+    scope, and resolving a scope reads the UsersTable — which none of the
+    lifecycle suites here create, so every Reviewer they send would be refused on
+    the lookup (it fails closed) before reaching the behaviour under test. Those
+    suites are about review lifecycle, not scope; the scope rule itself is tested
+    for real, with moto tables, in ``test_configuration_scope.py``, which opts out
+    of this by setting ``REAL_CONFIGURATION_SCOPE = True``.
+
+    A suite that replaces ``idp_common`` with a ``MagicMock`` gets a mock
+    ``document_scope`` from the handler's import, which refuses nothing, so there is
+    nothing to patch there.
+    """
+    if getattr(request.module, "REAL_CONFIGURATION_SCOPE", False):
+        return
+    try:
+        import idp_common.document_scope as document_scope
+    except Exception:  # noqa: BLE001 - `idp_common` is a stub in this suite
+        return
+    if isinstance(document_scope, types.ModuleType):
+        monkeypatch.setattr(
+            document_scope, "resolve_caller_scope", lambda *args, **kwargs: None
+        )

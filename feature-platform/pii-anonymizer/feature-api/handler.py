@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
 from typing import Any, Dict, List, Optional
@@ -72,6 +73,102 @@ def _ddb() -> Any:
     if _dynamodb is None:
         _dynamodb = boto3.resource("dynamodb")
     return _dynamodb
+
+
+# Strict tenant isolation (the host's ``TenantIsolationMode``). Restated from
+# ``idp_common.config_scope`` for the same reason as the scope rule below. The mode
+# is read at run time from the SSM parameter the host publishes rather than from an
+# environment variable set at deploy time, because the host's value could then never
+# change once this stack imported it.
+TENANT_ISOLATION_MODE_PARAMETER = os.environ.get("TENANT_ISOLATION_MODE_PARAMETER", "")
+# The host's TenantGrantSource, published the same way. Under IdpClaim or Api an
+# unscoped non-Admin is denied as under Strict, because no tenant was granted.
+TENANT_GRANT_SOURCE_PARAMETER = os.environ.get("TENANT_GRANT_SOURCE_PARAMETER", "")
+EXTERNAL_GRANT_SOURCES = ("IdpClaim", "Api")
+ISOLATION_STRICT = "Strict"
+STRICT_UNSCOPED_DENY = "\x00no-tenant-scope"
+_MODE_TTL_SECONDS = 60.0
+_mode_cache: Dict[str, Any] = {}
+_ssm: Any = None
+
+
+def _isolation_mode() -> str:
+    """The host's TenantIsolationMode, cached for ``_MODE_TTL_SECONDS``.
+
+    Fails CLOSED: a parameter that exists but cannot be read (denied, throttled,
+    unreachable) is treated as ``Strict``. Reading it as ``Off`` would hand an
+    unscoped caller the PII mapping view of every tenant on a stack whose operator
+    chose Strict; reading it as ``Strict`` costs an unscoped non-Admin access for
+    as long as the fault lasts, which is the direction a re-identification key has
+    to fail in.
+
+    A parameter that does not EXIST is ``Off``: that is a host from before tenant
+    isolation existed, which has no strict mode to honour. The same answer for an
+    unwired environment variable — the template always sets it.
+    """
+    global _ssm
+    if not TENANT_ISOLATION_MODE_PARAMETER:
+        return "Off"
+    now = time.time()
+    cached = _mode_cache.get("mode")
+    if cached and now - cached[1] < _MODE_TTL_SECONDS:
+        return cached[0]
+    try:
+        if _ssm is None:
+            _ssm = boto3.client("ssm")
+        value = _ssm.get_parameter(Name=TENANT_ISOLATION_MODE_PARAMETER)["Parameter"][
+            "Value"
+        ]
+        mode = ISOLATION_STRICT if value == ISOLATION_STRICT else "Off"
+    except Exception as exc:  # noqa: BLE001
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        if code == "ParameterNotFound":
+            mode = "Off"
+        else:
+            logger.warning(
+                "Could not read the host's tenant isolation mode (%s); treating it "
+                "as Strict",
+                code or type(exc).__name__,
+            )
+            return ISOLATION_STRICT  # not cached: retried on the next request
+    _mode_cache["mode"] = (mode, now)
+    return mode
+
+
+def _grants_are_external() -> bool:
+    """Whether the host's TenantGrantSource is IdpClaim or Api, cached like the mode.
+
+    Fails CLOSED in the same way as :func:`_isolation_mode`: a parameter that exists
+    but cannot be read counts as external (unscoped callers denied), and one that
+    does not exist is ``Manual`` -- a host from before tenant grants existed.
+    """
+    global _ssm
+    if not TENANT_GRANT_SOURCE_PARAMETER:
+        return False
+    now = time.time()
+    cached = _mode_cache.get("grant")
+    if cached and now - cached[1] < _MODE_TTL_SECONDS:
+        return cached[0]
+    try:
+        if _ssm is None:
+            _ssm = boto3.client("ssm")
+        value = _ssm.get_parameter(Name=TENANT_GRANT_SOURCE_PARAMETER)["Parameter"][
+            "Value"
+        ]
+        external = value in EXTERNAL_GRANT_SOURCES
+    except Exception as exc:  # noqa: BLE001
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+        if code == "ParameterNotFound":
+            external = False
+        else:
+            logger.warning(
+                "Could not read the host's tenant grant source (%s); treating "
+                "unscoped callers as denied",
+                code or type(exc).__name__,
+            )
+            return True  # not cached: retried on the next request
+    _mode_cache["grant"] = (external, now)
+    return external
 
 
 class ScopeLookupError(Exception):
@@ -156,7 +253,9 @@ def _caller_allowed_versions(email: str, caller_sub: str = "") -> Optional[list]
     from their row, which on this route would otherwise hand out a
     re-identification key.
 
-    Returns None = unrestricted (no scope set, matching the host's own rule).
+    Returns None = unrestricted (no scope set, matching the host's own rule) —
+    except under the host's strict tenant isolation, where an unscoped caller gets
+    ``[STRICT_UNSCOPED_DENY]``, which matches nothing.
     Raises ScopeLookupError on a lookup failure so callers gating a sensitive
     resource (the PII mapping) FAIL CLOSED rather than treating a transient
     DynamoDB error as 'unrestricted'."""
@@ -211,9 +310,16 @@ def _caller_allowed_versions(email: str, caller_sub: str = "") -> Optional[list]
         # this is not an answer about the caller — their row may simply predate the
         # pointer writer — and there is no second key to try, so it denies.
         raise ScopeLookupError("no caller email, and no row records this caller's sub")
-    if row is None:
-        return None  # user has no explicit scope row → unrestricted
-    return _normalize_scope(row.get("allowedConfigVersions"))
+    scope = _normalize_scope(row.get("allowedConfigVersions")) if row else None
+    if scope is None and (
+        _isolation_mode() == ISOLATION_STRICT or _grants_are_external()
+    ):
+        # Strict isolation, or a tenant granted externally (TenantGrantSource of
+        # IdpClaim or Api), closes the "unscoped means unrestricted" branch, as
+        # ``idp_common.config_scope`` does on the host: a sentinel no profile name
+        # can equal. Admins never depend on this — ``_visible_to`` admits them first.
+        return [STRICT_UNSCOPED_DENY]
+    return scope
 
 
 def _parse_window(raw: Optional[str]) -> Optional[timedelta]:

@@ -1786,6 +1786,7 @@ _FRAME = "components/edit-screen/EditScreen.tsx"
 _PROCESS_CHANGES = "PROCESS_CHANGES_LABEL"
 _INBOX = "components/inbox/InboxMessagesTable.tsx"
 _MAPPINGS = "components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx"
+_TENANTS = "components/config-prefix-mappings/TenantsSection.tsx"
 _PRODUCTION_MODEL = "components/edit-screen/production-item-edit-model.tsx"
 _QUEUE = "components/review-queues/ReviewQueuePage.tsx"
 _QUEUE_SETTINGS = "components/review-queues/QueueDefinitionModal.tsx"
@@ -1911,6 +1912,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
     ),
     "DeleteConfigPrefixMapping": (Shipped(_MAPPINGS, "Delete"),),
+    "DeleteTenant": (Shipped(_TENANTS, "Delete tenant"),),
     "DeleteConfigProfileRevision": (Shipped(_REVISIONS, "Delete"),),
     "DeleteConfigVersion": (
         Shipped(
@@ -2026,6 +2028,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/test-studio/PublishVersionModal.tsx", "Publish version"),
     ),
     "PutConfigPrefixMapping": (Shipped(_MAPPINGS, "Save"),),
+    "PutTenant": (Shipped(_TENANTS, "Save tenant"),),
     "ReassignReviewItem": (Shipped(_ASSIGN, "Assign", inside_dialog=True),),
     "ReextractTestSetDocument": (Shipped(_SLOTS, "Re-extract", source="'Re-extract'"),),
     "ReleaseReview": (Shipped(_TABLE, "Release Review"),),

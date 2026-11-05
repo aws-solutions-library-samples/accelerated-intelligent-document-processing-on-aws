@@ -33,8 +33,8 @@ ARTIFACT_OPEN_FLAGS: int = (
     | getattr(os, "O_BINARY", 0)
 )
 #: Environment values that are credentials or identify the account, redacted
-#: wherever they appear. The Slack webhook the nightly story digest posts to is a
-#: bearer credential, and an unprotected CI variable reaches every job.
+#: wherever they appear. The Slack webhooks the nightly story digest may post to
+#: are bearer credentials, and an unprotected CI variable reaches every job.
 CREDENTIAL_ENV_NAMES: tuple[str, ...] = (
     review.GITLAB.credential_env,
     "CI_JOB_TOKEN",
@@ -44,6 +44,7 @@ CREDENTIAL_ENV_NAMES: tuple[str, ...] = (
     "AWS_SECURITY_TOKEN",
     "UX_TEST_AWS_ACCOUNT_ID",
     "UX_TEST_STORIES_SLACK_WEBHOOK_URL",
+    "SLACK_WEBHOOK_URL",
 )
 #: Environment values naming the GitLab instance, whose host may resolve only on
 #: an internal network: host names as they are, URLs by their host.

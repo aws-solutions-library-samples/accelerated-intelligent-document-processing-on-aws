@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         PublishOperation,
         SearchOperation,
         StackOperation,
+        TenancyOperation,
         TestingOperation,
     )
 
@@ -108,6 +109,7 @@ class IDPClient:
         config: ConfigOperation - Pipeline configuration
         manifest: ManifestOperation - Document manifest management
         testing: TestingOperation - Load and performance testing
+        tenancy: TenancyOperation - Tenant declarations, access policies, audit
     """
 
     def __init__(
@@ -160,6 +162,7 @@ class IDPClient:
             PublishOperation,
             SearchOperation,
             StackOperation,
+            TenancyOperation,
             TestingOperation,
         )
         from idp_sdk.operations.chat import ChatOperation
@@ -176,6 +179,7 @@ class IDPClient:
         self.assessment: AssessmentOperation = AssessmentOperation(self)
         self.publish: PublishOperation = PublishOperation(self)
         self.chat: ChatOperation = ChatOperation(self)
+        self.tenancy: TenancyOperation = TenancyOperation(self)
 
     @property
     def stack_name(self) -> Optional[str]:

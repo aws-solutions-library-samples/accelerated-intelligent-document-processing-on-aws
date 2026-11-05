@@ -493,6 +493,9 @@ number with no indication. Narrow the date range if a scoped count looks wrong.
 | **Document List** (server-side) | Both `listDocuments` resolvers filter by the `ConfigVersion` field using `allowedConfigVersions` from UsersTable (fails closed on an unstamped document) |
 | **Document Count** (server-side) | `getDocumentCount` — the header figure beside that list — applies the same two filters, from the same helpers, so it cannot report documents the list does not show |
 | **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents. ⚠️ Applies to turns that reach the processor through the REST API; chat streamed from the Lambda Function URL is **not** restricted by `allowedConfigVersions` — see [Known Limitations](#known-limitations) |
+| **Single-Document Operations** (server-side) | Every operation that acts on one document by key — `getDocument`, the three document-version operations, the five review operations on a production document (`claimReview`, `releaseReview`, `skipAllSectionsReview`, `saveSectionReviewEdits`, `completeSectionReview`), `deleteDocument`, `abortWorkflow` and `copyToBaseline` — refuses a scoped caller when the document's `ConfigVersion` is outside their scope, when it has none, or when no document is tracked for the key, with one non-disclosing message for all three. The shared check is `idp_common.document_scope`; Admins are never looked up. A multi-document request is refused whole if any one key is out of scope |
+| **Raw Index Reads** (server-side) | `listDocumentsDateHour` and `listDocumentsDateShard` return index rows that carry no profile, so they are refused to any caller with a scope rather than filtered. The web UI does not call them |
+| **Test Runs** (server-side) | `startTestRun` and `sendTestRunToReview` hold the run's profile to the caller's scope; `getTestRun`, `getTestRunStatus` and `compareTestRuns` refuse a run whose recorded profile is out of scope, and `getTestRuns` filters by it |
 | **Config Profile List** (server-side) | `getConfigVersions` Lambda resolver filters returned profiles |
 | **Config Profile Access** (server-side) | `getConfigVersion` Lambda resolver rejects requests for out-of-scope profiles |
 | **Revision Operations** (server-side) | All five `*ConfigProfileRevision*` operations reject out-of-scope profiles before doing any work |
@@ -525,6 +528,34 @@ Admins can manage user scope via the **User Management** page:
 3. **Remove scope**: Clear all selections to make a user unrestricted
 
 Admin users' scope cannot be edited (they are always unrestricted).
+
+The above applies when the stack's `TenantGrantSource` is `Manual`, the default. Under
+`IdpClaim` the identity provider's claim writes each user's scope at every fresh
+sign-in, and under `Api` an entitlement system writes it through `setUserTenant`. In
+both modes the scope is exactly one tenant's profile pattern or `!no-tenant-granted`
+(shown as *No tenant granted*, matching no profile), User Management shows it
+read-only with the tenant and its source, `createUser` and `updateUser` refuse a
+configuration-scope change, and a non-Admin with no scope sees nothing even when
+`TenantIsolationMode` is `Off`. See [Who grants a
+tenant](multi-tenancy.md#who-grants-a-tenant).
+
+### API: `setUserTenant` (Admin-only, `TenantGrantSource=Api`)
+
+```graphql
+mutation SetUserTenant($email: String!, $tenantId: String) {
+  setUserTenant(email: $email, tenantId: $tenantId) {
+    userId
+    email
+    allowedConfigVersions
+    scopeSource
+    scopeTenant
+  }
+}
+```
+
+A null `tenantId` grants no tenant. The user must already exist, the tenant must be
+declared, and an Admin is refused. Refused on a stack whose `TenantGrantSource` is not
+`Api`.
 
 ### API: `getMyProfile`
 
@@ -576,7 +607,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 127 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 131 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 27 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -651,9 +682,13 @@ was processed under, matched against the caller's `allowedConfigVersions`, and t
 axis is now enforced on the object-read path as well as on `listDocuments` — see the
 precise statement of what it closes below. Scoping is opt-in per user, so for a user
 whose `allowedConfigVersions` is unset a Viewer may still read any document a Viewer
-can see. If your documents must be private to their submitter or to a tenant, neither
-group membership nor the profile scope is the axis you want: no record here says which
-user or tenant a document belongs to.
+can see. If your documents must be private to their submitter, neither group
+membership nor the profile scope is the axis you want: no record here says which user
+a document belongs to. Privacy **per tenant** is what [tenant
+declarations](multi-tenancy.md) provide: they tie a tenant's Input-bucket prefixes to
+its profiles, confine each user's scope to one tenant, and — with
+`TenantIsolationMode=Strict` — deny unscoped users and refuse documents that would
+cross a tenant boundary at ingest.
 
 ⚠️ **The group floor gates the API, and the document bytes are now behind it rather
 than beside it.** `CognitoIdentityPoolSetRole` in `template.yaml` attaches a
@@ -867,7 +902,7 @@ enforcement itself is Layer 2.
 
 | Query | Allowed Roles |
 |-------|---------------|
-| `getDocument`, `listDocuments`, `listDocumentsByDateRange` | Any assigned group (`ANY_GROUP`); server-side row filtering in resolvers on top |
+| `getDocument`, `listDocuments`, `listDocumentsByDateRange` | Any assigned group (`ANY_GROUP`); configuration-profile scope applied server-side on top (see [Scope Enforcement Points](#scope-enforcement-points)) |
 | `getDocumentVersion`, `compareDocumentVersions` | Any assigned group (`ANY_GROUP`) |
 | `getFileContents`, `getFilePresignedUrl`, `getFilePresignedUrls` | Any assigned group (`ANY_GROUP`); bucket allow-list, **plus** per-document scope on the Input and Output buckets — the owning document's configuration profile must be within the caller's `allowedConfigVersions`, which narrows a **scoped** caller only, a caller whose row sets none being deliberately unrestricted. A bucket outside the allow-list, or a document outside a scoped caller's profiles, is **403** `Unauthorized`; the message names neither the bucket, the allow-list, the document, nor whether any of them exist |
 | `getDocumentCount`, `listDocumentVersions`, `listDocumentsDateHour`, `listDocumentsDateShard`, `getStepFunctionExecution` | Any assigned group (`ANY_GROUP`). These return no extracted value themselves, but they return the keys, section and page URIs, extracted-attribute names, model-written page descriptions and execution detail that lead to one, and that chain was measured composing end to end for a caller in no group. `getDocumentCount` and `getStepFunctionExecution` keep their config-version scope on top; both of the narrowings available to them stand down for a self-registered caller, who is not a Reviewer and whose absent UsersTable row means "unrestricted" |
@@ -1076,6 +1111,9 @@ Admins can create users with any of the five roles via the User Management page.
 | `status` | User status (active) |
 | `allowedConfigVersions` | Optional list of Configuration Profile names (or glob patterns) for scoping |
 | `allowedTestSets` | Optional list of test set ids an Annotator may read and annotate. A separate scope axis from `allowedConfigVersions`, not a replacement — a user may carry both. |
+| `scopeSource` | Set when the scope was granted rather than edited: `idp` (the identity provider's claim) or `api` (`setUserTenant`) |
+| `scopeTenant` | The tenant the grant gave, absent when it gave none |
+| `source` | `cognito` on a row the sign-in trigger created for an existing Cognito user, so the user-sync stream does not create a second account |
 | `createdAt` | Creation timestamp |
 
 ## Architecture

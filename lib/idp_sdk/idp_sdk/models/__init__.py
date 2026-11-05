@@ -92,6 +92,20 @@ from .stack import (
     StackResources,
     StackStableStateResult,
 )
+from .tenancy import (
+    TenantApplyResult,
+    TenantAuditFinding,
+    TenantAuditResult,
+    TenantInfo,
+    TenantListResult,
+    TenantPlanAction,
+    TenantPlanItem,
+    TenantPolicyResult,
+    TenantUserGrant,
+    TenantVerifyCheck,
+    TenantVerifyOutcome,
+    TenantVerifyResult,
+)
 from .testing import (
     DocumentsAbortedResult,
     ExecutionsStoppedResult,
@@ -199,4 +213,17 @@ __all__ = [
     "AssessmentGeometryResult",
     "AssessmentFieldGeometry",
     "AssessmentMetrics",
+    # Tenancy models
+    "TenantApplyResult",
+    "TenantAuditFinding",
+    "TenantAuditResult",
+    "TenantInfo",
+    "TenantListResult",
+    "TenantPlanAction",
+    "TenantPlanItem",
+    "TenantPolicyResult",
+    "TenantVerifyCheck",
+    "TenantVerifyOutcome",
+    "TenantUserGrant",
+    "TenantVerifyResult",
 ]

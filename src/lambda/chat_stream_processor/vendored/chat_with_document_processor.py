@@ -50,7 +50,12 @@ from idp_common.bedrock.client import (
 from idp_common.bedrock.model_utils import parse_model_id
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config import get_config
-from idp_common.config_scope import normalize_scope, scope_allows
+from idp_common.config_scope import (
+    STRICT_UNSCOPED_DENY,
+    normalize_scope,
+    scope_allows,
+    unscoped_is_denied,
+)
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -439,6 +444,18 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
     if "identity" not in event:
         raise ScopeLookupError("no identity on the chat event")
     identity = event["identity"]
+    if identity is None and unscoped_is_denied():
+        # Under strict isolation, or when tenants are granted externally, this closes
+        # the one fail-open path above: with no verified principal there is no way
+        # to tell a caller of one tenant from a caller of another, so the turn is
+        # denied rather than served unrestricted.
+        logger.warning(
+            "Denied chat turn (session=%s): tenant isolation requires a "
+            "verified caller identity, and the invoking transport supplied none "
+            "(GAP-07).",
+            event.get("sessionId") or "unknown",
+        )
+        raise ScopeLookupError("tenant isolation: no verified caller identity")
     if identity is None:
         logger.warning(
             "Config-version scope NOT enforced for this chat turn (session=%s): "
@@ -450,9 +467,28 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
         return None
     if not isinstance(identity, dict):
         raise ScopeLookupError(f"unusable identity of type {type(identity).__name__}")
+    if unscoped_is_denied():
+        # Under strict isolation, or when tenants are granted externally, an
+        # unscoped caller is denied, as everywhere else (`idp_common.config_scope`),
+        # and an Admin stays unrestricted — the other consumers skip the lookup for
+        # an Admin, so this one must not deny one.
+        if "Admin" in _caller_groups(identity):
+            return None
+        scope = _get_user_allowed_config_versions(
+            _caller_email(identity), _caller_sub(identity)
+        )
+        return scope if scope else [STRICT_UNSCOPED_DENY]
     return _get_user_allowed_config_versions(
         _caller_email(identity), _caller_sub(identity)
     )
+
+
+def _caller_groups(identity: dict) -> list[str]:
+    """``cognito:groups`` from verified claims, as a list whichever shape it arrived in."""
+    groups = (identity.get("claims") or {}).get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = [g.strip() for g in groups.strip("[]").replace(",", " ").split()]
+    return [str(g) for g in groups]
 
 
 def _get_full_text(bucket: str, object_key: str, document: dict) -> str:

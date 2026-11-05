@@ -663,3 +663,39 @@ def test_doc_processor_set_sink_redirects_emission():
     assert captured[0]["content"] == "delta"
     assert doc_proc._active_sink is None
     del sys.modules["index"]
+
+@pytest.mark.unit
+@pytest.mark.parametrize("route", ["POST /chat/document", "POST /chat/agent"])
+def test_tenant_isolation_refuses_an_unattributed_turn_before_the_stream(route):
+    """Under ``TenantIsolationMode=Strict``, or an external ``TenantGrantSource``
+    (``IdpClaim`` or ``Api``), a turn this transport cannot attribute
+    (GAP-07) must be refused with a 403, on BOTH routes.
+
+    Asserted structurally for the reason the group-gate tests above give: the
+    call has to be a bare top-level statement ahead of ``StreamingResponse`` or
+    its 403 is either swallowed or downgraded to an error frame on a 200.
+    """
+    fn = _route_functions(_app_ast())[route]
+    calls = _calls_named(fn, "_refuse_unverified_when_unscoped_is_denied_or_403")
+    assert len(calls) == 1, f"{route} must apply the tenant-isolation refusal once"
+    idx = next(
+        i
+        for i, st in enumerate(fn.body)
+        if isinstance(st, ast.Expr) and st.value is calls[0]
+    )
+    streams = [
+        i for i, st in enumerate(fn.body) if _calls_named(st, "StreamingResponse")
+    ]
+    assert idx < min(streams)
+
+
+@pytest.mark.unit
+def test_the_refusal_is_conditional_on_unscoped_is_denied_and_a_403():
+    src = open(os.path.join(_HERE, "app.py")).read()
+    body = src[
+        src.index("def _refuse_unverified_when_unscoped_is_denied_or_403(") : src.index(
+            "def _resolve_caller_sub("
+        )
+    ]
+    assert "identity is None and unscoped_is_denied()" in body
+    assert "status_code=403" in body

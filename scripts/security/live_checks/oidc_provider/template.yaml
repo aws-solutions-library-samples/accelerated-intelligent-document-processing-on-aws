@@ -151,7 +151,7 @@ Resources:
                       ],
                       "claims_supported": [
                           "sub", "email", "email_verified", "given_name",
-                          "family_name", "memberOf",
+                          "family_name", "memberOf", "roles",
                       ],
                   })
 
@@ -196,12 +196,22 @@ Resources:
                   claims = {
                       "iss": ISSUER, "sub": u["sub"], "aud": CLIENT_ID,
                       "iat": now, "exp": now + 3600, "auth_time": now,
-                      "email": u["email"], "email_verified": True,
                       "given_name": u.get("given_name", ""),
                       "family_name": u.get("family_name", ""),
                   }
+                  # `email: null` omits the claim, as Entra does for a user with no
+                  # mailbox unless the optional claim is configured.
+                  if u.get("email") is not None:
+                      claims["email"] = u["email"]
+                      claims["email_verified"] = True
                   if u.get("memberOf") is not None:
                       claims["memberOf"] = u["memberOf"]
+                  # Any further claims verbatim, so a run can issue a token shaped
+                  # like a specific provider's -- Entra's `roles`, `oid`, `tid` and
+                  # `preferred_username`, say -- without this provider knowing it.
+                  for name, value in (u.get("extraClaims") or {}).items():
+                      if name not in ("iss", "sub", "aud", "iat", "exp", "auth_time"):
+                          claims[name] = value
                   return json_response({
                       "access_token": "verification-access-token",
                       "token_type": "Bearer", "expires_in": 3600,
@@ -211,10 +221,16 @@ Resources:
               if path == "/userinfo":
                   u = user()
                   info = {
-                      "sub": u["sub"], "email": u["email"], "email_verified": True,
+                      "sub": u["sub"],
                       "given_name": u.get("given_name", ""),
                       "family_name": u.get("family_name", ""),
                   }
+                  if u.get("email") is not None:
+                      info["email"] = u["email"]
+                      info["email_verified"] = True
+                  for name, value in (u.get("extraClaims") or {}).items():
+                      if name != "sub":
+                          info[name] = value
                   # Only present when the mock user has one, so a sign-in whose
                   # assertion omits the group claim can be exercised too.
                   if u.get("memberOf") is not None:

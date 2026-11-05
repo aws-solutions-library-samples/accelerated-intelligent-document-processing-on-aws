@@ -273,6 +273,11 @@ type User @aws_cognito_user_pools {
   # Test sets a scoped Annotator may read and annotate. A different axis from
   # allowedConfigVersions, not a replacement; a user may carry both.
   allowedTestSets: [String]
+  # Where allowedConfigVersions came from when an identity provider (idp) or an
+  # entitlement push (api) granted it, and the tenant granted. Absent when an Admin
+  # set the scope by hand.
+  scopeSource: String
+  scopeTenant: String
 }
 
 type UserList @aws_cognito_user_pools {
@@ -338,6 +343,10 @@ type ConfigProfileRevision @aws_cognito_user_pools @aws_iam {
 type ConfigProfileRevisionsResponse @aws_cognito_user_pools @aws_iam {
   success: Boolean!
   revisions: [ConfigProfileRevision]
+  # False when the profile's configuration was changed without recording a
+  # revision, so new documents run the published revision rather than what the
+  # editor shows; null when there is nothing to compare (no revision history).
+  profileMatchesPublished: Boolean
   error: ConfigurationError
 }
 
@@ -403,6 +412,42 @@ type ConfigPrefixMappingMutationResponse @aws_cognito_user_pools @aws_iam {
   success: Boolean!
   message: String
   mapping: ConfigPrefixMapping
+  error: ConfigurationError
+}
+
+# Tenant declarations: the Input-bucket prefix subtrees and the profile-name pattern
+# that belong to one tenant. Admin-only for the reason prefix mappings are: a
+# declaration decides which documents and profiles a scoped user is confined to.
+# See idp_common.config.tenants.
+type Tenant @aws_cognito_user_pools @aws_iam {
+  tenantId: String!
+  # Each ends in '/'; disjoint from every other tenant's prefixes.
+  prefixes: [String!]!
+  # A literal stem ending in '-', '_' or '.', then '*' -- for example 'acme-*'.
+  profilePattern: String!
+  # Claim or entitlement values that grant this tenant (TenantGrantSource IdpClaim
+  # or Api), e.g. an Entra app-role value such as tenant.acme.
+  grantedBy: [String!]
+  description: String
+  createdAt: String
+  createdBy: String
+  updatedAt: String
+  updatedBy: String
+}
+
+type TenantsResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  tenants: [Tenant]
+  # The stack's TenantIsolationMode: "Strict" or "Off".
+  isolationMode: String
+  grantSource: String
+  error: ConfigurationError
+}
+
+type TenantMutationResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  message: String
+  tenant: Tenant
   error: ConfigurationError
 }
 
@@ -2052,6 +2097,10 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
   deleteUser(userId: ID!): Boolean
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # Grant a user one tenant (tenantId) or none (null). Only when the stack's
+  # TenantGrantSource is Api, for an entitlement system pushing grants.
+  setUserTenant(email: String!, tenantId: String): User
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   updatePricing(pricingConfig: AWSJSON!): UpdatePricingResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
   restoreDefaultPricing: UpdatePricingResponse
@@ -2102,6 +2151,19 @@ type Mutation {
   ): ConfigPrefixMappingMutationResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
   deleteConfigPrefixMapping(prefix: String!): ConfigPrefixMappingMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # Tenant declarations. Admin-only: a declaration decides which prefixes and
+  # profiles a scoped user may be confined to, and is checked against every
+  # existing prefix mapping when it is saved.
+  putTenant(
+    tenantId: String!
+    prefixes: [String!]!
+    profilePattern: String!
+    description: String
+    grantedBy: [String!]
+  ): TenantMutationResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  deleteTenant(tenantId: String!): TenantMutationResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
   generateRuleJson(ruleDescription: String!): GenerateRuleJsonResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
@@ -2740,6 +2802,11 @@ type Query @aws_cognito_user_pools @aws_iam {
   # rule is actively misleading — you cannot tell which mapping wins when some are
   # hidden from you.
   listConfigPrefixMappings: ConfigPrefixMappingsResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # Tenant declarations, plus the stack's isolation mode. Admin-only, like the
+  # mapping list it is read beside: it is a statement of the deployment's
+  # isolation policy.
+  listTenants: TenantsResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
   # The DRY RUN is readable by the two roles that can UPLOAD, because "what will
   # happen to this key?" is the question that makes a longest-prefix rule checkable

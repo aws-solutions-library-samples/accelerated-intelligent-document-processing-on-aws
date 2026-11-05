@@ -20,7 +20,9 @@ configuration resolver denied an absent version.
 Two rules, both deliberate:
 
 - **An empty or unset scope means unrestricted.** This is the default for most
-  users and must stay that way; scoping is opt-in per user.
+  users and must stay that way; scoping is opt-in per user. The one exception is a
+  stack deployed with ``TenantIsolationMode=Strict``, where an unscoped non-admin
+  resolves to a scope that matches nothing — see :func:`is_strict_isolation`.
 - **A set scope fails closed.** A document or profile with no name to match
   against is denied, not admitted. An unnamed object cannot be proven in scope,
   and "cannot prove" must not mean "allow" on a security boundary.
@@ -118,6 +120,68 @@ SCOPE_SUB_CLAIM = "sub"
 # polling otherwise costs one Query per request. Only *successful* lookups are
 # cached; a failure is never remembered as an answer.
 SCOPE_CACHE_TTL_SECONDS = 60.0
+
+
+# Strict tenant isolation (the ``TenantIsolationMode`` stack parameter). Defined
+# here rather than in ``idp_common.config.tenants`` because this file is vendored
+# verbatim into resolvers that carry no ``idp_common``, and the strict half of the
+# scope rule below has to work there too. ``tenants`` re-exports these.
+TENANT_ISOLATION_ENV = "TENANT_ISOLATION_MODE"
+ISOLATION_OFF = "Off"
+ISOLATION_STRICT = "Strict"
+
+# The scope an unscoped non-admin caller resolves to under strict isolation. An entry
+# no profile can equal (profile names are validated to letters, digits, ``-``, ``_``
+# and ``.``) and that is not a glob, so :func:`scope_allows` denies every profile and
+# every document while a caller that only tests "is a scope set?" still reads the
+# caller as restricted. A sentinel rather than a new return type, so that every one
+# of this function's consumers inherits the rule without an edit.
+STRICT_UNSCOPED_DENY = "\x00no-tenant-scope"
+
+
+def is_strict_isolation(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether this function runs in a stack deployed with ``TenantIsolationMode=Strict``.
+
+    Read per call rather than at import, so a test can set it. Anything other than
+    the exact value ``Strict`` is off: the parameter is an enum, so a different
+    value means the variable was not wired, and
+    ``scripts/tests/test_tenant_isolation_wiring.py`` is what fails on that.
+    """
+    import os
+
+    env = os.environ if environ is None else environ
+    return env.get(TENANT_ISOLATION_ENV, ISOLATION_OFF) == ISOLATION_STRICT
+
+
+# Where users' configuration scope comes from (the ``TenantGrantSource`` stack
+# parameter): ``Manual`` (an Admin, in User Management), ``IdpClaim`` (the identity
+# provider's claim at each fresh sign-in) or ``Api`` (an entitlement system). Under
+# the last two an unscoped non-admin is denied exactly as under strict isolation,
+# because the source of truth has not granted them a tenant -- and "no row yet" is
+# the ordinary state of a user between their first sign-in and the first push.
+TENANT_GRANT_SOURCE_ENV = "TENANT_GRANT_SOURCE"
+GRANT_SOURCE_MANUAL = "Manual"
+GRANT_SOURCE_IDP_CLAIM = "IdpClaim"
+GRANT_SOURCE_API = "Api"
+EXTERNAL_GRANT_SOURCES = (GRANT_SOURCE_IDP_CLAIM, GRANT_SOURCE_API)
+
+
+def grants_are_external(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether an identity provider or entitlement system grants users' tenants."""
+    import os
+
+    env = os.environ if environ is None else environ
+    return (
+        env.get(TENANT_GRANT_SOURCE_ENV, GRANT_SOURCE_MANUAL) in EXTERNAL_GRANT_SOURCES
+    )
+
+
+def unscoped_is_denied(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether an unscoped non-admin caller is denied rather than unrestricted.
+
+    True under strict isolation, and whenever tenants are granted externally.
+    """
+    return is_strict_isolation(environ) or grants_are_external(environ)
 
 
 class ScopeLookupError(Exception):
@@ -369,6 +433,10 @@ def resolve_allowed_config_versions(
         is the one "absence means allow" branch in this module, and it is an
         *answer* from the table, not a failure to get one.
 
+        Under strict tenant isolation (:func:`is_strict_isolation`) that branch is
+        closed: an unscoped caller gets ``[STRICT_UNSCOPED_DENY]``, which no profile
+        matches.
+
         Otherwise the list of profile names (or glob patterns) the caller may see,
         to be passed to :func:`scope_allows`.
 
@@ -396,7 +464,7 @@ def resolve_allowed_config_versions(
     if cache is not None:
         cached = cache.get(cache_key)
         if cached and (now - cached["timestamp"]) < cache_ttl:
-            return cached["scope"]
+            return _apply_isolation_mode(cached["scope"])
 
     # Imported here, not at module scope, so the matcher above stays importable
     # with no boto3 present and the vendored copies of this file add no
@@ -461,4 +529,25 @@ def resolve_allowed_config_versions(
     scope = normalize_scope(row.get("allowedConfigVersions")) if row else None
     if cache is not None:
         cache[cache_key] = {"scope": scope, "timestamp": now}
+    return _apply_isolation_mode(scope)
+
+
+def _apply_isolation_mode(scope: Optional[List[str]]) -> Optional[List[str]]:
+    """``scope``, or the deny-all sentinel for an unscoped caller in strict mode,
+    or when tenants are granted externally (:func:`unscoped_is_denied`).
+
+    Applied after the cache, so a cached answer is re-judged against the mode the
+    function is running in rather than the mode it was cached under.
+
+    ⚠️ This function cannot tell an Admin from anyone else, so keeping Admins
+    unrestricted in strict mode is each **consumer's** job: it must skip the lookup
+    for an Admin, as the document-list resolvers do. A consumer that looks Admins up
+    as well hands an unscoped Admin the deny sentinel in strict mode, so it has to
+    recognise the sentinel: ``upload_resolver`` looks every caller up, holds an
+    Admin who carries a scope row to it in both modes, and waives only the sentinel
+    for an Admin. A consumer with its own lookup (the document chat processor) does
+    not reach this rule at all and applies it by hand.
+    """
+    if scope is None and unscoped_is_denied():
+        return [STRICT_UNSCOPED_DENY]
     return scope

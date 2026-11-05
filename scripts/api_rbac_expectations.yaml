@@ -144,6 +144,8 @@ operations:
   getDocument:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    scope_enforced_in: _get_document
     enforced_in: *ddb
     args: { ObjectKey: "__nonexistent__.pdf" }
   listDocuments:
@@ -171,6 +173,8 @@ operations:
   listDocumentsDateHour:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    scope_enforced_in: _refuse_scoped_date_partition_read
     enforced_in: *ddb
     args: {}
     note: >-
@@ -183,6 +187,8 @@ operations:
   listDocumentsDateShard:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    scope_enforced_in: _refuse_scoped_date_partition_read
     enforced_in: *ddb
     args: {}
     note: >-
@@ -349,6 +355,8 @@ operations:
   listDocumentVersions:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    scope_enforced_in: handler
     enforced_in: nested/api-resolvers/src/lambda/document_versions_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf" }
     note: >-
@@ -368,11 +376,15 @@ operations:
   getDocumentVersion:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    scope_enforced_in: handler
     enforced_in: nested/api-resolvers/src/lambda/document_versions_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf", runId: "__x__" }
   compareDocumentVersions:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    scope_enforced_in: handler
     enforced_in: nested/api-resolvers/src/lambda/document_versions_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf", runIdA: "__a__", runIdB: "__b__" }
 
@@ -382,6 +394,7 @@ operations:
   deleteDocument:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/delete_document_resolver/index.py
     args: { objectKeys: ["__nope__"] }
   reprocessDocument:
@@ -393,11 +406,13 @@ operations:
   abortWorkflow:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/abort_workflow_resolver/index.py
     args: { objectKeys: ["__nope__"] }
   copyToBaseline:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/copy_to_baseline_resolver/index.py
     # schema: copyToBaseline(objectKey: String!) — single key, not a list
     args: { objectKey: "__nope__" }
@@ -550,6 +565,32 @@ operations:
     kind: mutation
     enforced_in: *cfg
     args: { prefix: "__nope__/" }
+  # Tenant declarations. Admin-only on the same grounds as mapping CRUD: a
+  # declaration decides which prefixes and profiles a scoped user can be confined
+  # to, and saving one re-judges every existing mapping against it.
+  listTenants:
+    groups: [Admin]
+    kind: read
+    enforced_in: *cfg
+    args: {}
+    note: >
+      Not scope-filtered, and Admin-only for that reason: the tenant set is the
+      deployment's isolation policy, and its prefixes and patterns would tell a
+      scoped user where every other tenant's documents land.
+  putTenant:
+    groups: [Admin]
+    kind: mutation
+    enforced_in: *cfg
+    # `profilePattern: "nope"` has no separator-and-`*` tail, so an allowed caller
+    # is refused by validation after the group check and nothing is written; every
+    # other value here is valid, and a valid set would declare a real tenant on
+    # the stack under test.
+    args: { tenantId: "nope", prefixes: ["__nope__/"], profilePattern: "nope" }
+  deleteTenant:
+    groups: [Admin]
+    kind: mutation
+    enforced_in: *cfg
+    args: { tenantId: "nope" }
   resolveConfigPrefixMapping:
     # Admin+Author, NOT Viewer. The dry run exists to serve the upload form, and
     # Author is the lowest role that can upload at all -- a Viewer has no Upload
@@ -688,33 +729,47 @@ operations:
     groups: [Admin, Author]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_runner/index.py
+    # A run's documents are stamped with its profile and so become visible to
+    # everyone scoped to it, so the profile the run starts under (named, or the
+    # active one) is held to the caller's allowedConfigVersions. Named because
+    # startTestRun is the handler's default branch, with no `if` on its name.
+    scope_checked: true
+    scope_enforced_in: _require_profile_in_scope
     # schema: startTestRun(input: TestRunInput!) — wrapped input object
     args: { input: {} }
   sendTestRunToReview:
     groups: [Admin, Author]
     kind: mutation
     # Shares TestRunnerFunction with startTestRun; the resolver branches on
-    # fieldName after the Admin/Author group check.
+    # fieldName after the Admin/Author group check. Queueing a run's documents for
+    # review acts on documents stamped with the run's profile, so that profile is
+    # held to the caller's allowedConfigVersions, as when the run was started.
     enforced_in: nested/api-resolvers/src/lambda/test_runner/index.py
+    scope_checked: true
+    scope_enforced_in: _require_profile_in_scope
     args: { testRunId: "__nope__" }
   getTestRun:
     groups: [Admin, Author]
     kind: read
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_results_resolver/index.py
     args: { testRunId: "__x__" }
   getTestRuns:
     groups: [Admin, Author]
     kind: read
+    scope_filtered: true
     enforced_in: nested/api-resolvers/src/lambda/test_results_resolver/index.py
     args: {}
   getTestRunStatus:
     groups: [Admin, Author]
     kind: read
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_results_resolver/index.py
     args: { testRunId: "__x__" }
   compareTestRuns:
     groups: [Admin, Author]
     kind: read
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_results_resolver/index.py
     args: { testRunIds: ["__x__"] }
   deleteTests:
@@ -1016,6 +1071,7 @@ operations:
     # requires the document's test set to be in their allowedTestSets.
     groups: [Admin, Reviewer, Annotator]
     kind: mutation
+    scope_checked: true
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__", sectionId: "1" }
     # This operation is the handler's FALL-THROUGH path — claimReview, releaseReview
@@ -1040,6 +1096,11 @@ operations:
     # requires the document's test set to be in their allowedTestSets.
     groups: [Admin, Reviewer, Annotator]
     kind: mutation
+    scope_checked: true
+    # The configuration-scope check runs in the handler before any branch, and
+    # before the queue-managed guard, whose distinct refusal would otherwise tell an
+    # out-of-scope caller something about the document; so the handler is the entry.
+    scope_enforced_in: handler
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__" }
     object_scoped_roles: [Annotator]
@@ -1056,6 +1117,11 @@ operations:
     # requires the document's test set to be in their allowedTestSets.
     groups: [Admin, Reviewer, Annotator]
     kind: mutation
+    scope_checked: true
+    # The configuration-scope check runs in the handler before any branch, and
+    # before the queue-managed guard, whose distinct refusal would otherwise tell an
+    # out-of-scope caller something about the document; so the handler is the entry.
+    scope_enforced_in: handler
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__" }
     object_scoped_roles: [Annotator]
@@ -1068,6 +1134,11 @@ operations:
   skipAllSectionsReview:
     groups: [Admin, Reviewer]
     kind: mutation
+    scope_checked: true
+    # The configuration-scope check runs in the handler before any branch, and
+    # before the queue-managed guard, whose distinct refusal would otherwise tell an
+    # out-of-scope caller something about the document; so the handler is the entry.
+    scope_enforced_in: handler
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__", reason: "Other (see note)" }
     note: >-
@@ -1080,6 +1151,11 @@ operations:
   saveSectionReviewEdits:
     groups: [Admin, Reviewer]
     kind: mutation
+    scope_checked: true
+    # The configuration-scope check runs in the handler before any branch, and
+    # before the queue-managed guard, whose distinct refusal would otherwise tell an
+    # out-of-scope caller something about the document; so the handler is the entry.
+    scope_enforced_in: handler
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__", sectionId: "1", editedData: "{}" }
     note: >-
@@ -1526,6 +1602,15 @@ operations:
     enforced_in: src/lambda/user_management/index.py
     # schema: deleteUser(userId: ID!) — keyed by userId, not email
     args: { userId: "__nope__" }
+  setUserTenant:
+    groups: [Admin]
+    kind: mutation
+    enforced_in: src/lambda/user_management/index.py
+    # Writes another user's configuration scope, so Admin-only, and only on a stack
+    # whose TenantGrantSource is Api. The probe address has no user, so an allowed
+    # caller is refused (by the mode check, or as user-not-found) and nothing is
+    # written.
+    args: { email: "__no@no.invalid" }
   listUsers:
     groups: [Admin]
     kind: read

@@ -94,14 +94,15 @@ the optional knowledge base (`nested/bedrockkb/`), and multi-document discovery
 (`nested/multi-doc-discovery/`). Deployment is reproducible from source through
 `publish.py` or the `idp-cli deploy` command.
 
-Monitoring is concrete rather than aspirational. 31 `AWS::CloudWatch::Alarm`
+Monitoring is concrete rather than aspirational. 32 `AWS::CloudWatch::Alarm`
 resources are declared in `template.yaml`, and all alerting for the whole solution runs
-through them — the nested stacks declare none. 30 of the thirty-one alarms publish to the
+through them — the nested stacks declare none. 31 of the thirty-two alarms publish to the
 `AlertsTopic` SNS topic; the remaining one, `BedrockServiceOutageAlarm`, publishes to
 `CircuitBreakerTopic`.
-Eight are conditional, so a default deployment has twenty-three:
-`BedrockServiceOutageAlarm` exists only when you enable the circuit breaker, and the seven
-malware-scanning alarms only when `MalwareScanning` is not `DISABLED`. The other
+Nine are conditional, so a default deployment has twenty-three:
+`BedrockServiceOutageAlarm` exists only when you enable the circuit breaker, the seven
+malware-scanning alarms only when `MalwareScanning` is not `DISABLED`, and
+`TenantIsolationLookupFailedAlarm` only when `TenantIsolationMode` is `Strict`. The other
 twenty-three are unconditional. They fall into nine groups:
 
 | Alarm | What it detects |
@@ -259,7 +260,7 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-164 operations. 154 of them require Cognito group membership and 2
+168 operations. 158 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
 principals, rejecting every Cognito caller. 27 of those accept any assigned group
 rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
@@ -458,7 +459,7 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 355 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 356 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more
