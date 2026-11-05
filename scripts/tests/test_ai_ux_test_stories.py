@@ -3229,6 +3229,8 @@ def test_the_digest_posts_to_its_own_webhook_and_never_the_integration_builds(
 def test_an_unusable_webhook_posts_nothing_and_is_named(
     harness: StoryHarness, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """A value that is not an https URL is reported by the variable's name and
+    posts nothing, and the integration build's webhook is not tried instead."""
     _shard_runs(harness)
     harness.environ.update(
         _scheduled(
@@ -3822,12 +3824,27 @@ def test_ai_mr_review_is_reached_only_through_gitlab_api() -> None:
         assert not any(name.split(".")[0] == "ai_mr_review" for name in names)
 
 
-BARE_ENV_NAMES = ("PATH", "SYSTEMROOT", "LANG")
+BARE_ENV_NAMES = (
+    "PATH",
+    "SYSTEMROOT",
+    "LANG",
+    "TMP",
+    "TEMP",
+    "TMPDIR",
+    "COVERAGE_PROCESS_START",
+    "COVERAGE_FILE",
+    "COVERAGE_SUBPROCESS_SOURCE",
+)
 
 
 def _bare_env() -> dict[str, str]:
     """The script's subprocess environment: what Python needs to start, nothing a
-    CI job holds, so a run under a scheduled pipeline reaches no credential."""
+    CI job holds, so a run under a scheduled pipeline reaches no credential.
+
+    The three ``COVERAGE_*`` names are the ones ``coverage_all.py`` hands every
+    test run so a subprocess is measured too; without them these runs of the
+    script would count for nothing in its coverage floor. None is a credential.
+    """
     return {name: os.environ[name] for name in BARE_ENV_NAMES if name in os.environ}
 
 
@@ -3852,14 +3869,29 @@ def test_the_bare_python_runs_inherit_no_ci_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The digest run below posts to Slack from a scheduled pipeline whenever its
-    environment holds a webhook, so it must not inherit the job's."""
-    monkeypatch.setenv("CI_PIPELINE_SOURCE", "schedule")
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", SHARED_WEBHOOK)
-    monkeypatch.setenv("UX_TEST_STORIES_SLACK_WEBHOOK_URL", WEBHOOK)
-    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", CREDENTIAL)
-    env = _bare_env()
-    assert set(env) <= set(BARE_ENV_NAMES)
-    assert "PATH" in env
+    environment holds a webhook, so the subprocess must not inherit the job's."""
+    planted = {
+        "CI_PIPELINE_SOURCE": "schedule",
+        "SLACK_WEBHOOK_URL": SHARED_WEBHOOK,
+        "UX_TEST_STORIES_SLACK_WEBHOOK_URL": WEBHOOK,
+        "GITLAB_REVIEW_TOKEN": CREDENTIAL,
+    }
+    for name, value in planted.items():
+        monkeypatch.setenv(name, value)
+    seen: list[dict[str, str] | None] = []
+    real_run = subprocess.run
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("env"))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    code, _, out = _heavy_imports("--help")
+    assert code == 0, out
+    (env,) = seen
+    assert env is not None, "the subprocess would inherit the whole environment"
+    assert not set(planted) & set(env), sorted(set(planted) & set(env))
+    assert all(value not in env.values() for value in planted.values())
 
 
 @pytest.mark.unit
