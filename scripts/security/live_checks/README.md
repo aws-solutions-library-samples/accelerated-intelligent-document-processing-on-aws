@@ -141,8 +141,13 @@ their own tenant's document, strict-mode ingest refuses an outside-every-tenant
 upload, and an upload naming another tenant's profile stays in its own tenant), deploys the template `idp-cli tenancy generate-policies`
 writes for two throwaway uploader roles and checks that each can write only under its
 own prefix through its own access point, then runs `idp-cli tenancy audit`. Every row
-is `PASS`, `FAIL` or `ERROR`; it exits non-zero unless every row passes, and removes
-what it created in a `finally`.
+is `PASS`, `FAIL`, `SKIP` or `ERROR`; it exits non-zero unless every row passes, and
+removes what it created in a `finally`.
+
+The same harness is the `tenancy` deployment-variant probe: on the weekly
+variant-probe schedule CI deploys a throwaway `TenantIsolationMode=Strict` stack, runs
+it with `--yes`, and tears the stack down. `make stacktest-tenancy` runs that probe
+by hand; see `.claude/skills/run-stack-tests.md`.
 
 ## Tenant grants from the identity provider's claim
 

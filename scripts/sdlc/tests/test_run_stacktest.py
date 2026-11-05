@@ -31,7 +31,7 @@ def test_list_returns_zero(rp, monkeypatch, capsys):
     rc = rp.main()
     out = capsys.readouterr().out
     assert rc == 0
-    assert "zapdast" in out and "jobsapi" in out
+    assert "zapdast" in out and "jobsapi" in out and "tenancy" in out
 
 
 def test_unknown_probe_errs(rp, monkeypatch):

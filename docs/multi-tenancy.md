@@ -207,6 +207,13 @@ user keeps the last tenant pushed, and "no tenant" writes the deny marker rather
 removing the scope, so to make such a user a cross-tenant Admin, delete them in User
 Management and create them again as an Admin.
 
+The reverse change is not picked up on its own. The user's stored role is set when
+their record is created and is not resynced, and an Admin record is never granted a
+tenant. So a user stored as Admin whose claim now maps to an ordinary role and a
+tenant is granted nothing and, under `IdpClaim`, sees nothing. The sign-in logs a
+warning naming the user. Delete them in User Management, and their next sign-in
+recreates the record from the claim with the right role and tenant.
+
 ### A user is confined to one tenant
 
 Each tenant declaration has an optional list of **Granted by** values (`grantedBy`):
@@ -317,7 +324,9 @@ inside the stack. That has these consequences:
   match the declaration. That proves the declared check exists, not that every
   operation that should declare one does: a new operation that reads documents
   without a check is a cross-tenant read until it is added. `idp-cli tenancy verify`
-  and `make verify-tenant-isolation` exercise the boundary on a live stack.
+  and `make verify-tenant-isolation` exercise the boundary on a live stack, and the
+  same harness runs on a throwaway Strict stack on the CI's weekly variant-probe
+  schedule (`make stacktest-tenancy` runs that probe by hand).
 - **Test sets have no tenant.** An Annotator's test-set scope (`allowedTestSets`) is
   not checked against tenant declarations, because a test set records no tenant. In a
   shared stack, keep test sets built from one tenant's documents assigned only to that
