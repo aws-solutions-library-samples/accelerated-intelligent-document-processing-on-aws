@@ -207,6 +207,13 @@ user keeps the last tenant pushed, and "no tenant" writes the deny marker rather
 removing the scope, so to make such a user a cross-tenant Admin, delete them in User
 Management and create them again as an Admin.
 
+The reverse change is not picked up on its own. The user's stored role is set when
+their record is created and is not resynced, and an Admin record is never granted a
+tenant. So a user stored as Admin whose claim now maps to an ordinary role and a
+tenant is granted nothing and, under `IdpClaim`, sees nothing. The sign-in logs a
+warning naming the user. Delete them in User Management, and their next sign-in
+recreates the record from the claim with the right role and tenant.
+
 ### A user is confined to one tenant
 
 Each tenant declaration has an optional list of **Granted by** values (`grantedBy`):
