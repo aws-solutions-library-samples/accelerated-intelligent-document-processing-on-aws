@@ -1578,15 +1578,15 @@ Upload configuration to a deployed stack.
 
 **Parameters:**
 - `config_file` (str, required): Path to the YAML or JSON configuration file
-- `config_profile` (alias: `config_version`) (str, required): Configuration profile to upload to (e.g., `"default"`, `"v1"`, `"production"`). If the profile doesn't exist, it will be created automatically.
+- `config_profile` (alias: `config_version`) (str, required): Configuration profile to upload to (e.g., `"default"`, `"lending"`, `"production"`). If the profile doesn't exist, it will be created automatically.
 - `stack_name` (str, optional): Stack name override
 - `validate` (bool, optional): Validate configuration before uploading (default: `True`)
 - `pattern` (str, optional): Pattern to validate against (default: `"pattern-2"`)
-- `description` (str, optional): Description for the configuration version
+- `description` (str, optional): Description for the configuration profile (overwritten by every save)
 - `created_by` (str, optional): Recorded as the revision's author and shown as **By** in the revision history. The Web UI derives this from the caller's Cognito identity; an SDK caller has none, so it defaults to `system` — set it to something that identifies your automation if you want its saves attributable.
 - `revision_notes` (str, optional): What this upload changed, recorded on the revision and shown as **Notes** in the revision history. Distinct from `description`, which belongs to the profile and is overwritten by every save.
 
-**Returns:** `ConfigUploadResult` with `success`, `version`, `version_created`, `revision`, and `error`
+**Returns:** `ConfigUploadResult` with `success`, `version` (the profile name), `version_created` (whether the profile was newly created), `revision`, and `error`
 
 `revision` is the revision number this upload produced — pass it as
 `config_revision=` to pin processing to exactly what was just uploaded. It is
@@ -1595,7 +1595,7 @@ no new revision, so `revision` is then the one already current, which is still
 the right value to pin.
 
 ```python
-# Upload to the default version
+# Upload to the default profile
 result = client.config.upload(
     config_file="./my-config.yaml",
     config_profile="default",
@@ -1605,24 +1605,25 @@ result = client.config.upload(
 if result.success:
     print("Configuration uploaded")
 
-# Create a new named version
+# Upload to a named profile, creating it if it does not exist
 result = client.config.upload(
     config_file="./my-config.yaml",
-    config_profile="v2",
-    description="Updated extraction rules"
+    config_profile="lending",
+    description="Lending package configuration",
+    revision_notes="Updated extraction rules",
 )
 
 if result.success:
     if result.version_created:
-        print(f"New version created: {result.version}")
+        print(f"New profile created: {result.version} (r{result.revision})")
     else:
-        print(f"Version updated: {result.version}")
+        print(f"Profile updated: {result.version} (r{result.revision})")
 
 # Score exactly what was uploaded, rather than "whatever that profile holds now"
 result = client.config.upload(
     config_file="./attempt.yaml",
     config_profile="tuning-run-42",
-    description="raised topK to 20",
+    revision_notes="raised topK to 20",
 )
 client.batch.process(
     directory="./docs/",
@@ -1640,7 +1641,7 @@ Download configuration from a deployed stack.
 - `output` (str, optional): Output file path
 - `format` (str, optional): Format type — `"full"` or `"minimal"` (default: `"full"`)
 - `pattern` (str, optional): Pattern override (auto-detected if not provided)
-- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to download (default: active version)
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to download (default: active profile)
 - `config_revision` (int, optional): Download an exact **revision** of that profile instead of its current configuration
 
 **Returns:** `ConfigDownloadResult` with `config`, `yaml_content`, `output_path`, and `revision`
@@ -1672,12 +1673,12 @@ earlier = client.config.download(config_profile="lending", config_revision=7)
 
 ### config.list()
 
-List all configuration versions in a deployed stack.
+List all configuration profiles in a deployed stack.
 
 **Parameters:**
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `ConfigListResult` with `versions` (list of `ConfigVersionInfo`) and `count`
+**Returns:** `ConfigListResult` with `versions` (list of `ConfigVersionInfo`, one per profile) and `count`
 
 **ConfigVersionInfo fields:** `version_name`, `is_active`, `created_at`, `updated_at`, `description`, `latest_revision`, `published_revision`
 
@@ -1689,10 +1690,10 @@ flight. Both are `None` for a profile with no history.
 result = client.config.list()
 
 print(f"Found {result.count} profiles:")
-for version in result.versions:
-    status = " (ACTIVE)" if version.is_active else ""
-    at = f" @r{version.published_revision}" if version.published_revision else ""
-    print(f"  - {version.version_name}{status}{at}")
+for profile in result.versions:
+    status = " (ACTIVE)" if profile.is_active else ""
+    at = f" @r{profile.published_revision}" if profile.published_revision else ""
+    print(f"  - {profile.version_name}{status}{at}")
 ```
 
 ### config.revisions()
@@ -1749,7 +1750,7 @@ deployment.
 
 ### config.activate()
 
-Activate a configuration version. If the configuration uses BDA (`use_bda=True`), a BDA blueprint sync is performed before activation.
+Activate a configuration profile. If the configuration uses BDA (`use_bda=True`), a BDA blueprint sync is performed before activation.
 
 **Parameters:**
 - `config_profile` (alias: `config_version`) (str, required): Configuration profile to activate
@@ -1764,10 +1765,10 @@ whatever happened to the classes, so an aborted activation is the outcome most l
 have left one, and `bda_synced` is `False` on every failing path.
 
 ```python
-result = client.config.activate("v2")
+result = client.config.activate("lending")
 
 if result.success:
-    print(f"Activated version: {result.activated_version}")
+    print(f"Activated profile: {result.activated_version}")
     if result.bda_synced:
         print(f"BDA synced: {result.bda_classes_synced} classes")
 else:
@@ -1780,7 +1781,7 @@ for arn in result.bda_orphaned_blueprint_arns:
 
 ### config.delete()
 
-Delete a configuration version.
+Delete a configuration profile, together with its revision history.
 
 **Parameters:**
 - `config_profile` (alias: `config_version`) (str, required): Configuration profile to delete
@@ -1789,15 +1790,15 @@ Delete a configuration version.
 **Returns:** `ConfigDeleteResult` with `success`, `deleted_version`, and `error`
 
 ```python
-result = client.config.delete("old-version")
+result = client.config.delete("old-profile")
 
 if result.success:
-    print(f"Deleted version: {result.deleted_version}")
+    print(f"Deleted profile: {result.deleted_version}")
 else:
     print(f"Failed to delete: {result.error}")
 ```
 
-**Note:** Cannot delete `"default"` or currently active versions.
+**Note:** Cannot delete the `"default"` profile or the currently active profile.
 
 ### config.sync_bda()
 
@@ -1806,7 +1807,7 @@ Synchronize IDP document class schemas with BDA (Bedrock Data Automation) bluepr
 **Parameters:**
 - `direction` (str, optional): Sync direction — `"bidirectional"` (default), `"bda_to_idp"`, or `"idp_to_bda"`
 - `mode` (str, optional): Sync mode — `"replace"` (default, full alignment) or `"merge"` (additive)
-- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to sync (default: active version)
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to sync (default: active profile)
 - `stack_name` (str, optional): Stack name override
 
 **Returns:** `ConfigSyncBdaResult` with `success`, `direction`, `mode`, `classes_synced`, `classes_failed`, `processed_classes`, `orphaned_blueprint_arns`, and `error`
@@ -1969,7 +1970,7 @@ batch_result = client.discovery.run(
 for r in batch_result.results:
     print(f"{r.document_class} (pages {r.page_range}): {r.status}")
 
-# Save to specific config version
+# Save to a specific configuration profile
 result = client.discovery.run(
     "./form.pdf",
     config_profile="v2"

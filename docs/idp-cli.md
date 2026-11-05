@@ -923,7 +923,7 @@ idp-cli run-inference [OPTIONS]
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--number-of-files`: Limit number of files to process
 - `--config`: **Refused.** A configuration file is not applied to a batch submission, so passing one exits non-zero rather than running under the stack's existing configuration. Upload the file as a profile with [`config-upload`](#config-upload), then pass `--config-profile`.
-- `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., v1, v2)
+- `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., `default`, `lending`)
 - `--context`: Context description for test run (used with --test-set, e.g., "Model v2.1", "Production validation")
 - `--monitor`: Monitor progress until completion
 - `--refresh-interval`: Seconds between status checks (default: 5)
@@ -1007,15 +1007,15 @@ idp-cli process \
 idp-cli process \
     --stack-name my-stack \
     --dir ./documents/ \
-    --config-profile v2 \
+    --config-profile lending \
     --monitor
 
 # Process test set with configuration profile
 idp-cli process \
     --stack-name my-stack \
     --test-set fcc-example-test \
-    --config-profile v1 \
-    --context "Testing with config v1" \
+    --config-profile lending \
+    --context "Testing with the lending profile" \
     --monitor
 ```
 
@@ -2215,19 +2215,26 @@ not at one of them.
 
 ### Iterative Configuration Testing
 
-Test different extraction prompts or configurations:
+Test different extraction prompts or configurations without redeploying the stack.
+Upload each attempt to one profile — every upload cuts a new **revision** — and
+process under that revision
+([Iterating on one profile instead of many](#iterating-on-one-profile-instead-of-many)):
 
 ```bash
-# Test with configuration v1
-idp-cli deploy --stack-name my-stack --custom-config ./config-v1.yaml --wait
-idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id config-v1 --monitor
+# Attempt 1: upload, then process under the revision it printed (here r1)
+idp-cli config-upload --stack-name my-stack --config-file ./attempt-1.yaml \
+    --config-profile tuning --revision-notes "baseline prompts"
+idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id config-v1 \
+    --config-profile tuning --config-revision 1 --monitor
 
 # Download and analyze results
 idp-cli download-results --stack-name my-stack --batch-id config-v1 --output-dir ./results-v1/
 
-# Test with configuration v2
-idp-cli deploy --stack-name my-stack --custom-config ./config-v2.yaml --wait
-idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id config-v2 --monitor
+# Attempt 2: upload the change to the same profile, then process under its revision (here r2)
+idp-cli config-upload --stack-name my-stack --config-file ./attempt-2.yaml \
+    --config-profile tuning --revision-notes "improved extraction prompt"
+idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id config-v2 \
+    --config-profile tuning --config-revision 2 --monitor
 
 # Compare in Athena
 # SELECT batch_id, AVG(overall_accuracy) FROM evaluation_results 
@@ -2582,7 +2589,7 @@ idp-cli config-download [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--output`, `-o`: Output file path (default: stdout)
 - `--format`: Output format - `full` (default) or `minimal` (only differences from defaults)
-- `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile
+- `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., `default`, `lending`). If not specified, downloads the active profile
 - `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained, or if its body has expired under `DataRetentionInDays`, unless it is the profile's current published revision and the profile still provably holds that configuration, in which case it is rebuilt from the profile ([Retention](configuration-profiles.md#retention)), rather than silently returning the current configuration. The file is written in the current configuration format whichever release cut the revision, so it has the same shape as a download of the profile's current configuration ([Revision History](configuration-profiles.md#revision-history))
 - `--region`: AWS region (optional)
 
@@ -2593,7 +2600,7 @@ idp-cli config-download [OPTIONS]
 idp-cli config-download --stack-name my-stack --output config.yaml
 
 # Download a specific profile
-idp-cli config-download --stack-name my-stack --config-profile v2 --output config.yaml
+idp-cli config-download --stack-name my-stack --config-profile lending --output config.yaml
 
 # Download minimal config (only customizations)
 idp-cli config-download --stack-name my-stack --format minimal --output config.yaml
@@ -2632,7 +2639,7 @@ idp-cli config-upload [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--config-file`, `-f` (required): Path to configuration file (YAML or JSON)
 - `--validate/--no-validate`: Validate config before uploading (default: validate)
-- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `v1`, `v2`). If the profile doesn't exist, it will be created automatically. An **empty** value is refused with exit 1 and nothing is written; it used to land the configuration on a key no profile listing can see, reported as "Configuration is now active!" with exit 0
+- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `Production`). If the profile doesn't exist, it will be created automatically. An **empty** value is refused with exit 1 and nothing is written; it used to land the configuration on a key no profile listing can see, reported as "Configuration is now active!" with exit 0
 - `--version-description`: Description for the configuration **profile** (persisted on the profile and overwritten by every save)
 - `--revision-notes`: What this upload changed, recorded on the **revision** it cuts and shown as *Notes* in the revision history (e.g. `'raised topK to 20'`). Per-revision and immutable, unlike `--version-description`
 - `--region`: AWS region (optional)
@@ -2748,7 +2755,7 @@ revisions:
 ```bash
 # Upload attempt N and capture the revision it became
 rev=$(idp-cli config-upload --stack-name my-stack --config-file attempt.yaml \
-        --config-profile tuning-run-42 --version-description "raised topK to 20" \
+        --config-profile tuning-run-42 --revision-notes "raised topK to 20" \
       | sed -n 's/^Revision: r//p')
 
 # Score exactly that revision

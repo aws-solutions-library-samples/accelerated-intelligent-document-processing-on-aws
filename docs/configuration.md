@@ -28,40 +28,41 @@ The web interface allows real-time configuration updates without stack redeploym
 - **Evaluation Methods**: Set evaluation methods and thresholds for each attribute
 - **Summarization**: Configure model, prompts, parameters, and enable/disable document summarization via the `enabled` property
 
-### Configuration Versions
+### Configuration Profiles
 
-The solution supports **multiple named configuration versions**, enabling you to maintain independent configuration snapshots for A/B testing, environment separation, and iterative prompt tuning — all without redeploying the stack. Each version stores a complete, self-contained configuration. The active version determines which configuration is used for new document processing.
+The solution supports **multiple named configuration profiles**, enabling you to maintain independent configurations for A/B testing and environment separation — all without redeploying the stack. Each profile stores a complete, self-contained configuration, and every save of a profile records an immutable **revision**, so iterative prompt tuning happens inside one profile rather than across a series of new names. The active profile determines which configuration is used for new document processing.
 
 Key capabilities:
-- **Create, edit, and delete** configuration versions with unique names and descriptions
-- **Activate** any version to make it the default for new processing
-- **Compare** versions side-by-side to see differences (exportable as CSV/JSON)
-- **Track** which version was used for each processed document and test run
-- **Select** a specific version when uploading documents, running tests, or using the CLI
+- **Create, edit, and delete** configuration profiles with unique names and descriptions
+- **Activate** any profile to make it the default for new processing
+- **Compare** profiles side-by-side to see differences (exportable as CSV/JSON)
+- **Revision history** — view, compare, label and restore earlier revisions of a profile; restoring is forward-only, so no save is ever lost
+- **Track** which profile (and revision) was used for each processed document and test run
+- **Select** a specific profile when uploading documents, running tests, or using the CLI (`--config-profile`, with `--config-revision` to pin a revision)
 
-#### Managed Configuration Versions
+#### Managed Configuration Profiles
 
-The stack automatically deploys **managed configuration versions** for each pre-deployed test set (`fake-w2`, `docsplit`, `ocr-benchmark`, `realkie-fcc-verified`). These are marked with `managed: true` and have the following behavior:
+The stack automatically deploys **managed configuration profiles** for each pre-deployed test set (`fake-w2`, `docsplit`, `ocr-benchmark`, `realkie-fcc-verified`). These are marked with `managed: true` and have the following behavior:
 
-- **Overwritten on stack updates** — always reflect the latest defaults shipped with the solution
+- **Overwritten on stack updates** — always reflect the latest defaults shipped with the solution (each update that changes one is recorded as a new revision)
 - **Save disabled** — the Save button is disabled and an info banner explains the config is stack-managed
-- **Delete disabled** — managed versions cannot be deleted in the UI or via the API
+- **Delete disabled** — managed profiles cannot be deleted in the UI or via the API
 - **Editable copies** — use **Create profile** in the Configuration Profiles table to create a custom, editable copy
 - **Not importable** — managed configs are stored separately (`config_library/managed_config/`) and do not appear in the configuration import browser
-- **Test Studio integration** — when a test set is selected, the matching managed config version is auto-selected
+- **Test Studio integration** — when a test set is selected, the matching managed configuration profile is auto-selected
 
 For comprehensive documentation, see [configuration-profiles.md](configuration-profiles.md).
 
 ### Configuration Management Features
 
-- **Save Changes**: Save your current configuration changes. The button is **enabled only when you have unsaved changes** (comparing your edits against the last saved configuration); when it's disabled on a stack-managed version, hovering it explains why. After a successful save, a confirmation banner **and** a brief success toast (top-right notification area) are shown. Less-frequent actions (Export, Save as default, Restore default (All), Save current edits as new profile, and BDA sync) are grouped under an **Actions** menu next to Save changes. To create a new profile from an existing one's *saved* state, use **Create profile** in the Configuration Profiles table instead.
-- **Unsaved Changes Indicator**: Individual fields with unsaved edits display an orange dot next to the field label, and an info banner with a "Discard changes" button appears when the configuration form has unsaved edits (shown on all versions, including the stack-managed `default`).
+- **Save Changes**: Save your current configuration changes. The button is **enabled only when you have unsaved changes** (comparing your edits against the last saved configuration); when it's disabled on a stack-managed profile, hovering it explains why. After a successful save, a confirmation banner **and** a brief success toast (top-right notification area) are shown. Less-frequent actions (Export, Save as default, Restore default (All), Save current edits as new profile, and BDA sync) are grouped under an **Actions** menu next to Save changes. To create a new profile from an existing one's *saved* state, use **Create profile** in the Configuration Profiles table instead.
+- **Unsaved Changes Indicator**: Individual fields with unsaved edits display an orange dot next to the field label, and an info banner with a "Discard changes" button appears when the configuration form has unsaved edits (shown on all profiles, including the stack-managed `default`).
 - **Browser Navigation Guard**: The browser warns before leaving the page when unsaved configuration changes exist (both on browser close/refresh and SPA navigation).
-- **Save as Default**: Save your current version's configuration as the new default baseline. This replaces the existing default configuration. **Warning**: Default configurations may be overwritten during solution upgrades - export your configuration first for backup.
-- **Restore Default (All)**: Reset the current version's configuration back to the default values, replacing all customizations.
+- **Save as Default**: Save the current profile's configuration as the new `default` baseline. The configuration it replaces is kept in `default`'s revision history. Stack upgrades also write to `default` (each as a new revision), so keep long-lived customizations in a custom profile rather than in `default`.
+- **Restore Default (All)**: Reset the current profile's configuration back to the default values, replacing all customizations. The save is recorded as a revision, so the customizations can be restored from **Configuration revisions…**.
 - **Refresh**: Reload the configuration from the server. Use this to sync your view with the latest saved configuration, discard unsaved local changes, or verify your configuration after external updates.
 - **Export Configuration**: Download your current configuration to local files in JSON or YAML format with customizable filenames. Use this to backup configurations before upgrades or share configurations between environments.
-- **Import Configuration**: Upload configuration files from your local machine OR import from the Configuration Library:
+- **Import Configuration** (**Import** in the Configuration Profiles table, Admin only): Create a **new profile** from a configuration file on your local machine OR from the Configuration Library:
   - **From Local File**: Upload configuration files from your computer in JSON or YAML format with automatic format detection and validation
   - **From Configuration Library**: Browse and import pre-configured document processing workflows from the solution's built-in configuration library
     - **Library Scope**: Shows the configurations under `config_library/unified/`, which cover both processing modes
@@ -69,9 +70,9 @@ For comprehensive documentation, see [configuration-profiles.md](configuration-p
     - **README Preview**: View markdown-formatted documentation before importing to understand configuration purpose and features
     - **Format Indicators**: Visual badges show file format (YAML/JSON) and README availability
     - **Library Contents**: Includes sample configurations like lending-package-sample, bank-statement-sample and rvl-cdip
-  - **Important**: Importing a configuration **replaces** your existing custom configuration entirely. Any prior customizations not included in the imported file will be reset to defaults. Export your current configuration first if you want to preserve it.
+  - **Existing profiles are untouched**: the imported configuration becomes a new profile you name in the import dialog.
 
-Configuration changes are validated and applied immediately, with rollback capability if issues arise. See [web-ui.md](web-ui.md) for details on using the administration interface.
+Configuration changes are validated and applied immediately; to roll back a save, restore an earlier revision from **Configuration revisions…**. See [web-ui.md](web-ui.md) for details on using the administration interface.
 
 ### Configuration Management via CLI
 

@@ -24,7 +24,7 @@ When the [Test Set Generator](extensions/idp-data-generator.md) extension is
 installed, the **Test Sets** tab shows a **Generate Test Set** button. It
 opens a modal to generate labeled synthetic documents (PDF + ground-truth JSON)
 — either from a plain-language description of a document type, or from an
-existing configuration version's document class. You can add an optional
+existing configuration profile's document class. You can add an optional
 **scenario** theme (with an AI **Suggest** helper), choose a **quality** level
 (faster vs. higher quality), and see an estimated cost/time band before starting.
 Generation runs as a background job; the resulting test set appears in the list
@@ -59,7 +59,7 @@ The accelerator automatically deploys **four benchmark datasets** from HuggingFa
 3. **DocSplit-Poly-Seq**: 500 multi-page packets with 13 document types
 4. **Fake-W2-Tax-Forms**: 2,000 synthetic US W-2 tax form images with 45-field ground truth
 
-All datasets are deployed automatically with zero manual steps required. Each test set has a corresponding **managed configuration version** (e.g., `fake-w2`, `docsplit`) that is auto-selected in Test Studio when the test set is chosen. See [Configuration — Managed Configuration Versions](configuration.md#managed-configuration-versions) for details.
+All datasets are deployed automatically with zero manual steps required. Each test set has a corresponding **managed configuration profile** (e.g., `fake-w2`, `docsplit`) that is auto-selected in Test Studio when the test set is chosen. See [Configuration — Managed Configuration Profiles](configuration.md#managed-configuration-profiles) for details.
 
 ---
 
@@ -1258,7 +1258,7 @@ packets ranks fewer documents at a time than a set of single-section ones.
 > is a user-management change rather than a URL rotation.
 
 `allowedTestSets` is a separate axis from `allowedConfigVersions` (which restricts
-*which config versions'* documents a user sees). A user can carry both.
+*which configuration profiles'* documents a user sees). A user can carry both.
 
 A **Reviewer** works Production review queues only. Test Studio queues, labelling and
 test-set file reads are for Admins, Authors and Annotators: a Reviewer who labels test
@@ -1310,15 +1310,15 @@ To find misclassifications *measured against a baseline*, use the
 [Classification errors](#finding-classification-errors) panel on a test run.
 
 
-A section's class is changed in **Edit Page Grouping**, whose class list holds the classes defined by the config
-version that produced these labels — not the deployment's currently active
+A section's class is changed in **Edit Page Grouping**, whose class list holds the classes defined by the configuration
+profile that produced these labels — not the deployment's currently active
 configuration, which may have moved on since. A badge above the fields always
 names which config the class list came from, and says so explicitly when it is a
 fallback ("… (active config)", "built-in default"), because a list of classes
 from the wrong config looks exactly like a list of classes from the right one.
 
 The order is: the config stamped on the baseline; failing that the test set's own
-declared version; failing that the deployment's **active** config. Hand-uploaded
+declared profile; failing that the deployment's **active** config. Hand-uploaded
 and synthetic ground truth carries no stamp — nothing produced it through the
 pipeline — so those sets fall to the active config rather than to the built-in
 preset. After a section's class is changed and saved in **Edit Page Grouping**, the
@@ -1583,7 +1583,7 @@ be able to discard the team's annotation work.
 
 ![Run Test Set form with the test set, test set version, configuration profile and revision, file limit and context fields](../images/test-studio-run-test-set.png)
 
-### Configuration Versioning
+### Configuration Profiles and Revisions
 The Test Studio supports running tests with specific Configuration Profiles and
 revisions:
 - **Profile selection**: Choose from available Configuration Profiles (e.g., `default`, `Production`, `lending`)
@@ -1592,7 +1592,7 @@ revisions:
 - **Comparison**: Compare two runs of the *same* profile at different revisions — this is how you tell "the prompt change helped" from "the ground truth moved", because each run also pins the test-set version it scored against
 - **Retention**: A revision pinned by a run is exempt from revision pruning, so later saves never push it out of the profile's history, but its body still expires `DataRetentionInDays` after the revision was cut, like every revision's ([Retention](configuration-profiles.md#retention))
 - **Validation**: A run that names a profile that does not exist, or a revision whose body cannot be read (deleted, pruned, expired under the Configuration bucket's `DataRetentionInDays` lifecycle rule, or never cut), is rejected when submitted rather than queued to fail per document
-- **Context Generation**: Test context automatically includes the selected version information
+- **Context Generation**: Test context automatically includes the selected profile and revision
 
 For full details on configuration profiles and their revisions, see [configuration-profiles.md](configuration-profiles.md).
 
@@ -1653,7 +1653,7 @@ The abort then waits for the run's documents to reach a final status. A document
 ![Test results for a Fake-W2-Tax-Forms run: cost, confidence and accuracy summary above the weighted overall score distribution](../images/test-studio-results.png)
 
 - Comprehensive metrics display including:
-  - **Test run metadata**: Configuration version, duration, context, file counts
+  - **Test run metadata**: Configuration profile and revision, duration, context, file counts
   - **Overall accuracy and confidence metrics**
   - **Cost metrics**: Total cost and average cost per page
   - **Accuracy breakdown** (precision, recall, F1-score, false alarm rate, false discovery rate)
@@ -1668,7 +1668,7 @@ The abort then waits for the run's documents to reach a final status. A document
     differently from the ground truth, and how (see
     [Finding classification errors](#finding-classification-errors))
   - **Cost breakdown** by service and context
-- Side-by-side test comparison with all metrics including configuration versions
+- Side-by-side test comparison with all metrics including configuration profiles and revisions
 - Export capabilities (JSON/CSV downloads include all metrics)
 - Integrated delete operations
 

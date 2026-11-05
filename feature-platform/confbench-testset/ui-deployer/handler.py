@@ -22,26 +22,21 @@ ingest job from the feature UI. That separation is the whole point — it keeps
 install fast and makes the storage cost an explicit, subset-able decision rather
 than a side effect of deploying the accelerator.
 
-Config-version naming and Test Studio
--------------------------------------
-Test Studio auto-selects a configuration by matching the config version name to
-the *test set id* (src/ui/src/components/test-studio/TestRunner.tsx). That
-convention serves the main stack's `managed_config/*` entries, whose version
+Configuration-profile naming and Test Studio
+--------------------------------------------
+Test Studio auto-selects a configuration profile by matching the profile name
+to the *test set id* (src/ui/src/components/test-studio/TestRunner.tsx). That
+convention serves the main stack's `managed_config/*` entries, whose profile
 names are bare (`fake-w2`, `realkie-fcc-verified`).
 
-The platform resolver always derives `<featureId>-v<version>`, so this
-extension's preset lands as `confbench-testset-v0.1.0`, which no `confbench*`
-test set id can equal.
-
-Rather than bend the naming, the host now lets a test set DECLARE its config
-version: the ingest planner writes `configVersion` onto each test-set record and
-Test Studio preselects it (falling back to the id-name convention, then to the
-active version). So the name derived here does not need to match anything — it
-just needs to be what the planner records, which is why the same
-`<featureId>-v<version>` string is computed in both places (see
+This extension's test sets have ids of their own, so instead the test set
+DECLARES its profile: the ingest planner writes `configVersion` onto each
+test-set record and Test Studio preselects it (falling back to the id-name
+convention, then to the active profile). The name only needs to be what the
+planner records, which is why the same string is computed in both places (see
 `config_version_name()` below and CONFIG_VERSION_NAME in the template). That
 string is the feature id alone: the host records each release as a REVISION of
-one profile rather than creating `<featureId>-v<version>` per release.
+one profile rather than creating a profile per release.
 """
 
 from __future__ import annotations
@@ -222,7 +217,7 @@ def config_version_name() -> str:
 
 
 def _apply_config_preset() -> None:
-    """Apply the bundled Invoice preset as a non-active config version."""
+    """Apply the bundled Invoice preset as a non-active configuration profile."""
     preset = _load_preset()
     result = _invoke_resolver(
         _APPLY_FEATURE_CONFIG_PRESET_FUNCTION_ARN,

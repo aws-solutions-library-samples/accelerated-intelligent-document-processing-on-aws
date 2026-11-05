@@ -4,7 +4,7 @@
 /**
  * Config Pairing wizard — the primary UX for enabling PII redaction.
  *
- * An admin picks an EXISTING working config version and a mode; the wizard
+ * An admin picks an EXISTING working configuration profile and a mode; the wizard
  * derives a matched PAIR by cloning that base:
  *   - initiating version  (<base>__pii_redacted_only | <base>__pii_both):
  *       a copy of the base + a `preprocessing` block (mode, model, redaction,
@@ -106,7 +106,7 @@ const ConfigPairingView: React.FC<{ enabled: boolean; hookFunctionArn: string | 
 
   useEffect(refresh, [refresh]);
 
-  // Short, intuitive suffixes (config version names are capped at 50 chars):
+  // Short, intuitive suffixes (profile names are capped at 50 chars):
   //   __pii_stop    initiating, redactcopy_and_stop
   //   __pii_go      initiating, redactcopy_and_continue
   //   __pii_target  companion (processes the redacted copy)
@@ -219,13 +219,13 @@ const ConfigPairingView: React.FC<{ enabled: boolean; hookFunctionArn: string | 
       header={
         <Header
           variant="h2"
-          description="Create a matched pair of config versions that redact PII before processing, cloned from one of your existing config versions."
+          description="Create a matched pair of configuration profiles that redact PII before processing, cloned from one of your existing profiles."
           actions={
             <Button
               iconName="refresh"
               onClick={refresh}
               disabled={busy}
-              ariaLabel="Refresh config versions"
+              ariaLabel="Refresh configuration profiles"
             />
           }
         >
@@ -245,15 +245,15 @@ const ConfigPairingView: React.FC<{ enabled: boolean; hookFunctionArn: string | 
         ) : (
           <SpaceBetween size="l">
             <FormField
-              label="Base config version"
+              label="Base configuration profile"
               description="Your existing working config. The pair is cloned from this so your extraction settings are preserved."
             >
               <Select
                 selectedOption={base}
                 onChange={({ detail }) => setBase(detail.selectedOption as Opt)}
                 options={versionOptions}
-                placeholder="Choose a config version to protect"
-                empty="No eligible config versions found"
+                placeholder="Choose a configuration profile to protect"
+                empty="No eligible configuration profiles found"
               />
             </FormField>
 
@@ -286,7 +286,7 @@ const ConfigPairingView: React.FC<{ enabled: boolean; hookFunctionArn: string | 
 
             <FormField
               label="Store PII mapping (sensitive)"
-              description="When synthetic redaction is used, save the original→fake value map so it can be viewed in the Redaction Report. The mapping IS real PII (a re-identification key); it is encrypted and shown only to users with access to the original's config version. Off by default."
+              description="When synthetic redaction is used, save the original→fake value map so it can be viewed in the Redaction Report. The mapping IS real PII (a re-identification key); it is encrypted and shown only to users with access to the original's configuration profile. Off by default."
             >
               <Checkbox
                 checked={storeMapping}

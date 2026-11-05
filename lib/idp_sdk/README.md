@@ -256,20 +256,21 @@ reprocess = client.batch.reprocess(
 )
 ```
 
-### Configuration Versioning
+### Profiles and Revisions
 
 ```python
-# Create and upload a new configuration profile
-client.config.upload(
+# Upload to a profile (created if it does not exist); every save cuts a new revision
+upload = client.config.upload(
     config_file="config.yaml",
-    config_profile="v2.0",
-    description="Updated extraction rules"
+    config_profile="lending",
+    revision_notes="Updated extraction rules"
 )
 
-# Process with a specific profile
+# Process with a specific profile, pinned to the revision just uploaded
 result = client.batch.process(
     directory="./docs/",
-    config_profile="v2.0"
+    config_profile="lending",
+    config_revision=upload.revision
 )
 ```
 
@@ -280,7 +281,7 @@ See [docs/idp-sdk.md](../../docs/idp-sdk.md) for complete API reference.
 ## Examples
 
 - [basic_processing.py](examples/basic_processing.py) - Basic document processing workflow
-- [config_operations.py](examples/config_operations.py) - Configuration management with versioning
+- [config_operations.py](examples/config_operations.py) - Configuration profile management
 - [manifest_operations.py](examples/manifest_operations.py) - Manifest generation and validation
 - [workflow_control.py](examples/workflow_control.py) - Batch monitoring and reprocessing
 - [lambda_function.py](examples/lambda_function.py) - Lambda function integration example

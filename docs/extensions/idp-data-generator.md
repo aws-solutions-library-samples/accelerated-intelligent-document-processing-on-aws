@@ -14,7 +14,7 @@ paired ground-truth JSON label per document — using the open-source
 generator (`seed-data`) on an Amazon Bedrock AgentCore Runtime.
 
 Generate test sets from a plain-language description of a document type, or from
-an existing configuration version's class schema. The output lands in the host's
+an existing configuration profile's class schema. The output lands in the host's
 Test Set bucket in the layout [Test Studio](../test-studio.md) auto-discovers, so
 generated documents are immediately usable for evaluation runs.
 
@@ -28,7 +28,7 @@ Produces realistic, schema-conformant synthetic documents with ground-truth
 labels for evaluating OCR, classification, and extraction:
 
 - **Two generation modes** — from a document-type description (a schema is
-  authored on the fly), or from an existing configuration version + document
+  authored on the fly), or from an existing configuration profile + document
   class (the class schema seeds generation).
 - **Scenario theming** — an optional high-level theme (e.g. "small-business
   owners in retail") that the generator diversifies into distinct documents. A
@@ -49,7 +49,7 @@ Once installed, the generator is reachable three ways:
 
 - **Test Studio → Test Sets → Generate Test Set** — a modal (shown only
   when this extension is installed) to generate from a description or a
-  configuration version/class, with scenario, quality, and document-count
+  configuration profile/class, with scenario, quality, and document-count
   controls. Choose a **destination**: create a new test set (a unique name is
   required — a name that already exists is rejected) or add the generated
   documents to an existing test set. The resulting test set appears in the list
@@ -57,7 +57,7 @@ Once installed, the generator is reachable three ways:
   documents without running a test execution.
 - **View/Edit Configuration → Document Schema** — a **Generate test set** button
   deep-links into Test Studio with the modal pre-filled for the current
-  configuration version.
+  configuration profile.
 - **Quick Start** — the onboarding agent discovers the extension and can
   generate synthetic documents directly (including passing a scenario).
 
@@ -84,7 +84,7 @@ A self-contained extension stack that plugs into the host contract:
   Bedrock; `GET /jobs` lists in-flight jobs and `GET /jobs/{id}` returns one
   job's status.
 - **BootstrapProcessor** (SQS-driven Lambda) — authors/resolves the document
-  class schema, writes it into a configuration version, and invokes the
+  class schema, writes it into a configuration profile, and invokes the
   AgentCore Runtime asynchronously.
 - **AgentCore Runtime** (arm64 container) — runs the SEED pipeline
   (`seed-data` + the accelerator's `idp_common.synthesis` adapter), writes the
@@ -152,7 +152,7 @@ re-running is the remedy.
 ## Command line
 
 The [`idp-cli bootstrap`](../idp-cli.md) command runs the same synthesis pipeline
-in-process (prompt → schema → configuration version → labeled test set), with
+in-process (prompt → schema → configuration profile → labeled test set), with
 `--count`, `--threshold`, and `--augment` options. It uses the
 `idp_common[synthesis]` adapter directly rather than the deployed extension.
 

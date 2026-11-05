@@ -20,14 +20,14 @@ the re-sync procedure.
 
 ## How it works
 
-1. A document is uploaded under a config version that carries a `preprocessing`
+1. A document is uploaded under a configuration profile that carries a `preprocessing`
    block + hook (created by the Config Pairing wizard).
 2. The `preprocessing` hook (`hook/handler.py`) runs first. It detects + redacts
    PII and writes a **de-identified copy** into the Input bucket beside the
    original with a `(REDACTED)` marker in its name (e.g. `report(REDACTED).pdf`),
    stamped with S3 metadata `config-version=<companion>`.
 3. That upload re-triggers processing — the redacted copy is processed under the
-   **companion** config version (which has **no** preprocessing hook, so it is
+   **companion** configuration profile (which has **no** preprocessing hook, so it is
    not redacted again; a `(REDACTED)`-marker guard is the belt-and-suspenders).
 4. Depending on **mode**, the hook either deletes the original or lets it run too.
 
@@ -50,26 +50,26 @@ directly on the section (no nested list). The hook reads its own config from
 ## Config Pairing wizard (primary UX)
 
 The feature UI's **Config Pairing** tab clones an admin's **existing** working
-config version into a matched pair (base truncated to keep names ≤ 50 chars):
+configuration profile into a matched pair (base truncated to keep names ≤ 50 chars):
 
-- `<base>__pii_stop` / `<base>__pii_go` — *initiating* version: base + the
+- `<base>__pii_stop` / `<base>__pii_go` — *initiating* profile: base + the
   generic `preprocessing` hook (ARN + PII args, flat on the section).
-- `<base>__pii_target` — *companion* version: base with **no** preprocessing
+- `<base>__pii_target` — *companion* profile: base with **no** preprocessing
   hook; the redacted copy is processed under it.
 
-Both are created **non-active**; the admin activates the initiating version (one
+Both are created **non-active**; the admin activates the initiating profile (one
 click). A minimal `config-preset/pii-preprocessing.yaml` is also installed as a
-non-active `pii-anonymizer-v<version>` quick-start reference.
+non-active `pii-anonymizer` profile, a quick-start reference.
 
 ## Redaction Report + PII mapping (RBAC-gated)
 
 The **Redaction Report** tab shows a **metadata-only** audit: per-document PII
-count, mode, companion version, redacted-copy key, timestamp.
+count, mode, companion profile, redacted-copy key, timestamp.
 
 Optionally (wizard toggle, off by default) the original→synthetic **mapping** is
-stored CMK-encrypted in the Output bucket. It contains **real PII**; the report's
+stored KMS-encrypted in a feature-owned DynamoDB table. It contains **real PII**; the report's
 **View mapping** action reveals it only to callers whose `allowedConfigVersions`
-include the **original** document's config version (Admins always pass).
+include the **original** document's configuration profile (Admins always pass).
 
 ## Cost note
 

@@ -340,7 +340,7 @@ const RedactionReportView: React.FC<{ api: ApiClient; enabled: boolean }> = ({
         <SpaceBetween size="s">
           <Alert type="warning">
             This is the original→synthetic mapping — it contains the real PII. You
-            can see it because you have access to the config version that processed
+            can see it because you have access to the configuration profile that processed
             the original document.
           </Alert>
           {mapError && <Alert type="error">{mapError}</Alert>}
