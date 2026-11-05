@@ -163,8 +163,9 @@ you already hold, if your scope has been narrowed since.
     a Production draft, is kept.
   - **Production item**: **Review Reason**, above the editor, lists why it is in review,
     worst first. The five lowest-confidence alerts are shown; **+N more alerts**
-    lists the rest and **Show fewer** collapses them again. Hover a reason chip to
-    see the field, the score and the threshold; choose it to move to that field.
+    lists the rest and **Show fewer** collapses them again. Each reason is its own
+    yellow chip. Hover a reason chip to see the field, the score and the threshold;
+    choose it (or press Enter on it) to move to that field.
     **Next alert**, in the Review Reason header, steps through the reasons' fields
     in turn. Your edits are saved as a draft as
     you type, or straight away with **Save**. **Process Changes** saves

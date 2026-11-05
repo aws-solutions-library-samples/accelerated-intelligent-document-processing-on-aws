@@ -7,8 +7,10 @@
 // Reasons arrive worst first (largest gap below the threshold), so the first few are
 // the ones to look at. Only TOP_REASONS are shown until the reviewer asks for the
 // rest; the server stores at most its own cap, so the total beyond that is a count.
-// Each reason is a link that moves focus to its field (`onReasonClick`), with its
-// details on the popover, and Next alert steps through the stored reasons in order.
+// Each reason is a yellow (severity-medium) badge inside an inline-link button, so it
+// stays a highlighted chip yet moves focus to its field (`onReasonClick`) by mouse or
+// keyboard. Its details are on the popover, and Next alert steps through the stored
+// reasons in order.
 import React, { useState } from 'react';
 import { Alert, Badge, Box, Button, Container, Header, Popover, SpaceBetween } from '@cloudscape-design/components';
 
@@ -83,8 +85,8 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
                 </SpaceBetween>
               }
             >
-              <Button variant="inline-link" onClick={() => onReasonClick?.(reason)}>
-                {reasonText(reason)}
+              <Button variant="inline-link" ariaLabel={reasonText(reason)} onClick={() => onReasonClick?.(reason)}>
+                <Badge color="severity-medium">{reasonText(reason)}</Badge>
               </Button>
             </Popover>
           ))}

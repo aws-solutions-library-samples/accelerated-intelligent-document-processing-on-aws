@@ -128,7 +128,8 @@ beside it, left to right:
 
 - **Details | Source** — Source shows the original file in place of the page's panels;
   Details brings them back, as you left them.
-- **Reports** — read-only views, each in a dialog: **Summary**, **Evaluation Report**
+- **Reports** — read-only views, each in a dialog of the same width as the edit page's
+  Reports dialogs (Evaluation Report opens wider): **Summary**, **Evaluation Report**
   (see [Evaluation report](#evaluation-report)), **Rule Validation Summary**,
   **Estimated Cost** (the document's metering, priced, with the cost per page in the
   dialog's title; for the roles that may read the pricing, Admin, Author and Viewer) and
@@ -776,7 +777,7 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   disabled with the reason otherwise, for example "Claim this item first"). They are hidden while the original file is shown.
   The page's actions are in one bar at the top, left to right: **Edit | View** (the original
   file in the editor's place); **Reports** (**History**, field edits and review
-  activity; **Summary**; **Processing Report**); **More Actions** (**Use As Evaluation
+  activity; **Summary**; **Processing Report**; each in a dialog of the same width); **More Actions** (**Use As Evaluation
   Baseline**, for Admins and Authors); **Refresh** (read the document again, asking first when there
   are unsaved edits); then **Skip** (queue items, for the assignee, with a reason), **Cancel**
   (leave, discarding unsaved edits after asking), **Save** and **Process Changes**. A
@@ -824,8 +825,7 @@ entry points:
 - **Inbox (left navigation).** **Inbox** is the first entry of **Home**, with a badge
   showing the unread count, for every user.
 - **Inbox page.** The Inbox page lists your messages with when they were received,
-  their title (an unread message has a blue **Unread** badge before a bold title; a read
-  title is in normal weight; long titles are shortened, with the full title on hover),
+  their title (an unread title is bold and a read title is in normal weight; long titles are shortened, with the full title on hover),
   type and severity. Find messages by text, or filter by read
   state (**All** or **Unread**), type and severity, and sort by any column (severity
   sorts from success to error). Select messages to **Mark as read**, **Mark as unread**
@@ -843,8 +843,9 @@ it is not stored and not counted. Turning a type back on affects new messages on
 share one check for new messages, about every 60 seconds while the browser tab is
 visible. Checking pauses while the tab is hidden and resumes when you return to it.
 New messages update the badges and never raise a pop-up notification. Your own
-actions (marking messages read or unread, deleting them) update the unread count
-on the bell and the navigation badge straight away.
+actions (marking messages read or unread, **Mark all as read**, deleting them) update
+the unread count on the bell and the navigation badge as soon as they complete,
+without waiting for the next check.
 
 **Retention.** Messages are kept for a limited time and up to a per-user cap; when
 the cap is reached, the oldest read messages are removed first. Administrators set

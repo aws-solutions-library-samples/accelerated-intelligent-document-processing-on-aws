@@ -23,7 +23,6 @@ vi.mock('../../common/SafeMarkdown', () => ({
 
 import InboxPage from '../InboxPage';
 import { EMPTY_DESCRIPTION, EMPTY_TITLE } from '../InboxMessagesTable';
-import { UNREAD_LABEL } from '../../common/labels';
 
 const msg = (id: string, minutesAgo: number, over: Partial<InboxMessage> = {}): InboxMessage => ({
   id,
@@ -77,8 +76,10 @@ const inbox = {
   markAllRead: vi.fn(),
   deleteMessages: vi.fn(),
   clearRead: vi.fn(),
-  syncUnreadCount: vi.fn(),
+  beginUnreadSync: vi.fn(),
 };
+// What beginUnreadSync hands back: applies the listed unread count (never stale here).
+const applyUnread = vi.fn();
 
 const renderPage = (path = '/inbox') =>
   render(
@@ -132,6 +133,8 @@ describe('InboxPage', () => {
     inbox.markAllRead.mockResolvedValue(result);
     inbox.deleteMessages.mockResolvedValue(result);
     inbox.clearRead.mockResolvedValue(result);
+    applyUnread.mockReset().mockReturnValue(true);
+    inbox.beginUnreadSync.mockReturnValue(applyUnread);
     inboxRef.current = { unreadCount: 2, changeToken: 0, recent: [], loaded: true, ...inbox };
     localStorage.clear();
   });
@@ -150,7 +153,7 @@ describe('InboxPage', () => {
     expect(await screen.findByText(EMPTY_TITLE)).toBeTruthy();
     expect(screen.getByText(EMPTY_DESCRIPTION)).toBeTruthy();
     expect(EMPTY_DESCRIPTION).toBe("You'll see messages here when work is assigned to you or something needs your attention.");
-    expect(inbox.syncUnreadCount).toHaveBeenCalledWith(2);
+    expect(applyUnread).toHaveBeenCalledWith(2);
   });
 
   it('shows no-match with a working clear-filter action', async () => {
@@ -297,7 +300,7 @@ describe('InboxPage', () => {
     expect(inbox.deleteMessages).toHaveBeenCalledWith([M3]);
   });
 
-  it('marks an unread row with an Unread badge and renders a read title in normal weight', async () => {
+  it('shows no Unread badge: an unread title is bold, a read title is normal weight', async () => {
     renderPage();
     await loaded();
     const TITLE_COLUMN = 3;
@@ -305,12 +308,13 @@ describe('InboxPage', () => {
 
     // Row 1 is M1 (unread), row 2 is M2 (read).
     const unread = titleCell(1);
-    expect(unread.findBadge()?.getElement().textContent).toBe(UNREAD_LABEL);
+    expect(unread.findBadge()).toBeNull();
+    expect(unread.getElement().textContent).toBe('Message 1');
     expect(unread.find('span[title="Message 1"]')!.getElement().style.fontWeight).toBe('bold');
 
     const read = titleCell(2);
     expect(read.findBadge()).toBeNull();
-    expect(read.getElement().textContent).not.toContain(UNREAD_LABEL);
+    expect(read.getElement().textContent).toBe('Message 2');
     expect(read.find('span[title="Message 2"]')!.getElement().style.fontWeight).toBe('normal');
   });
 

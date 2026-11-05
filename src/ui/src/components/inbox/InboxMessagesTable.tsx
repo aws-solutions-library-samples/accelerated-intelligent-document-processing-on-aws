@@ -10,7 +10,6 @@ import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { SelectProps, TableProps } from '@cloudscape-design/components';
 import {
   Alert,
-  Badge,
   Box,
   Button,
   ButtonDropdown,
@@ -30,7 +29,7 @@ import { getInboxPreferences as getInboxPreferencesQuery, listInboxMessages as l
 import type { InboxMessage, InboxMessageType, ListInboxMessagesQuery } from '../../graphql/generated/operation-types';
 import useInbox from '../../hooks/use-inbox';
 import { describeApiError } from '../../hooks/utils/graphql-error';
-import { UNREAD_LABEL, paginationLabels } from '../common/labels';
+import { paginationLabels } from '../common/labels';
 import useLocalStorage from '../common/local-storage';
 import { TableEmptyState, TableHeader, TableNoMatchState, getFilterCounterText } from '../common/table';
 import TruncatedText from '../common/TruncatedText';
@@ -69,7 +68,7 @@ const markRead = (m: InboxMessage, read: boolean, readAt: string | null): InboxM
 
 const InboxMessagesTable = (): React.JSX.Element => {
   // 1. Hooks
-  const { unreadCount, changeToken, syncUnreadCount, markMessages, markAllRead, deleteMessages, clearRead } = useInbox();
+  const { unreadCount, changeToken, beginUnreadSync, markMessages, markAllRead, deleteMessages, clearRead } = useInbox();
   const [items, setItems] = useState<InboxMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -94,6 +93,9 @@ const InboxMessagesTable = (): React.JSX.Element => {
 
   const loadAll = async (): Promise<void> => {
     setLoading(true);
+    // A mark, delete or clear that starts while this read is on the wire makes it
+    // stale: its rows and count predate the action. Read again instead of applying it.
+    const sync = beginUnreadSync();
     try {
       const all: InboxMessage[] = [];
       let nextToken: string | null | undefined = null;
@@ -109,10 +111,13 @@ const InboxMessagesTable = (): React.JSX.Element => {
         nextToken = page?.nextToken;
         if (!nextToken) break;
       }
+      if (!sync(count)) {
+        await loadAll();
+        return;
+      }
       setItems(all);
       setLoadError(null);
       setStale(false);
-      if (count != null) syncUnreadCount(count);
     } catch (err) {
       logger.error('listInboxMessages failed', err);
       setLoadError(describeApiError(err, 'load your messages'));
@@ -285,8 +290,8 @@ const InboxMessagesTable = (): React.JSX.Element => {
   const noSelectionReason = 'Select one or more messages';
   // Received | Title | Type | Severity | Action, sized to fit without horizontal
   // scrolling: the title takes the remaining width and truncates. Plain text in every
-  // cell (no status icons); an unread message's title has an Unread badge before it
-  // and is bold, a read title is normal weight.
+  // cell (no status icons or badges); an unread message's title is bold, a read
+  // title is normal weight.
   const columnDefinitions: TableProps.ColumnDefinition<InboxMessage>[] = [
     {
       id: 'createdAt',
@@ -300,14 +305,9 @@ const InboxMessagesTable = (): React.JSX.Element => {
       header: 'Title',
       minWidth: 260,
       cell: (m) => (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
-          {!m.read && <Badge color="blue">{UNREAD_LABEL}</Badge>}
-          <div style={{ minWidth: 0 }}>
-            <Button variant="inline-link" onClick={() => setOpenMessage(m)}>
-              <TruncatedText bold={!m.read}>{m.title}</TruncatedText>
-            </Button>
-          </div>
-        </div>
+        <Button variant="inline-link" onClick={() => setOpenMessage(m)}>
+          <TruncatedText bold={!m.read}>{m.title}</TruncatedText>
+        </Button>
       ),
       sortingField: 'title',
     },

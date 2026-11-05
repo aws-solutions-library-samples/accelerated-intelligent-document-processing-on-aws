@@ -19,6 +19,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
+- **The Reports dialogs share one, wider size.** Processing Report, Summary, Estimated Cost and the edit page's History (and Rule Validation Summary) open at the same width, wider than before; Evaluation Report keeps its own full width. See [Web UI](docs/web-ui.md).
+
 - **Reviewers work production review queues only.** Test Studio queues, labelling and test-set file reads are for Admins, Authors and Annotators: a Reviewer is no longer shown Test Studio queues or work in Home › Queues and Home › Tasks, the Test Studio operations refuse a caller whose only review role is Reviewer, and the legacy review operations, **Process Changes** and **Edit Page Grouping** refuse such a caller a document that belongs to a test set. A Reviewer also no longer reads a test set's files through the file operations. Production review queues are unchanged for Reviewers, and an Admin still cannot assign work to a Reviewer. **Action:** give a Reviewer who labels test sets the Annotator role, and list them on the set's queue (Review Management › the queue's **Settings** › **Eligible Annotators**). See [Role-Based Access Control](docs/rbac.md#annotators-and-review-queues).
 
 - **Test Studio ground-truth editing is draft-first.** A Test Studio document's fields are editable with no **Start editing** step, which is removed, and **Save** keeps a draft without opening a version. **Process Changes** writes the labels as reviewed ground truth; when no draft version of the set is open it first asks **Open a new version and save ground truth**, and confirming opens the next version, leaving the current one as it is. While a draft version is open, the edit page header and the queue page show a `v{base} → v{draft}` badge. Production queue items and direct edits are unchanged. See [Test Studio](docs/test-studio.md#annotating-creates-a-new-version-of-the-set).
@@ -53,7 +55,9 @@ SPDX-License-Identifier: MIT-0
 
 - **Test Studio ground-truth values are labelled as ground truth.** In the field editor and the JSON tab, the values of a test-set document were labelled *Predicted:* and *Predicted Results*, even when they were reviewed or uploaded ground truth. They are now labelled *Ground truth:*, and the JSON panel **Ground truth**, whatever their label source; *Predicted:* labels model output on production documents. See [Test Studio](docs/test-studio.md).
 
-- **Unread Inbox messages are marked Unread.** On the Inbox page an unread message has a blue **Unread** badge before its title, read titles are in normal weight, and the bell menu marks unread messages **Unread**, so the read state no longer rests on bold text alone. See [Web UI](docs/web-ui.md).
+- **Unread Inbox messages are marked Unread.** On the Inbox page an unread message's title is bold and a read title is in normal weight, and the bell menu marks unread messages **Unread**. See [Web UI](docs/web-ui.md).
+
+- **Mark all as read clears the unread counts at once.** Marking messages read or unread, or choosing **Mark all as read**, updates the bell and the Inbox navigation badge as soon as the action completes, and a list read that was already under way can no longer put the old count back until the next check. See [Web UI](docs/web-ui.md).
 
 - **The edit page names its finishing action one way.** The button, the banner, the alert text and the confirmation all say **Process Changes**, and the copy no longer points at controls by their position. See [Web UI](docs/web-ui.md#review-studio).
 
@@ -61,7 +65,7 @@ SPDX-License-Identifier: MIT-0
 
 - **Test Studio editing says what each step writes.** A banner says that **Save** keeps a draft, **Process Changes** opens the next version and writes the labels as reviewed ground truth, and **Publish version** freezes it, and **Save**'s message says the same. While a draft version is open, the header's `v{base} → v{draft}` badge says which version the corrections go into and which is preserved. See [Test Studio](docs/test-studio.md).
 
-- **Review reasons lead to their fields.** Each reason under **Review Reason** is a link that moves to and focuses its field, and **Next alert** steps through them. A Test Studio document with confidence alerts opens on its alert fields, with a notice saying how many fields are below the threshold and its own **Next alert**. See [Review queues](docs/review-queues.md#annotator-guide).
+- **Review reasons lead to their fields.** Each reason under **Review Reason** is its own yellow chip that, chosen with the mouse or the keyboard, moves to and focuses its field, and **Next alert** steps through them. A Test Studio document with confidence alerts opens on its alert fields, with a notice saying how many fields are below the threshold and its own **Next alert**. See [Review queues](docs/review-queues.md#annotator-guide).
 
 - **Edit ground truth means one thing, and a fully labelled set can still be corrected.** On the **Test Sets** list and on a test set's page, **Edit ground truth** opens the review-effort dialog. For a set whose documents are all labelled, its primary button is **Review the set's documents**, which opens the set's queue with its reviewed documents shown, where it was a disabled **Continue to annotation**. The **Generate draft labels** dialog now says that generated labels are written to the set's ground truth immediately, as draft labels to review, while its current labels are kept in the set's published version. See [Test Studio](docs/test-studio.md).
 
