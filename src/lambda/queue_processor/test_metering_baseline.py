@@ -46,9 +46,10 @@ CUMULATIVE = {
 
 @pytest.fixture
 def processor(monkeypatch):
+    # Placeholder credentials for moto, set one by one rather than in the dict below.
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     env = {
-        "AWS_ACCESS_KEY_ID": "testing",
-        "AWS_SECRET_ACCESS_KEY": "testing",
         "AWS_DEFAULT_REGION": _REGION,
         "AWS_REGION": _REGION,
         "TRACKING_TABLE": _TRACKING_TABLE,
