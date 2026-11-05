@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -420,6 +421,37 @@ def test_rotating_an_existing_annotator_does_not_create_it_again(monkeypatch):
     assert [(e, g) for e, g, _ in pool.created] == [(email, "Annotator")]
 
 
+def _assert_names_the_in_place_route_first(message: str, email: str) -> None:
+    """The edit that keeps the password comes before the teardown that resets it,
+    and the teardown says what it costs."""
+    in_place = (
+        "To change the limit and keep the password, an Admin edits it in place: "
+        "Edit scope on the persona's row of the web UI's User Management page, or "
+        "the user-management updateUser operation."
+    )
+    teardown = f"teardown --email {email} --long-lived"
+    assert in_place in message, message
+    assert teardown in message, message
+    assert message.index(in_place) < message.index(teardown), message
+    assert "sets a new password, so UX_TEST_PERSONAS must be updated" in message
+
+
+@pytest.mark.unit
+def test_the_in_place_route_is_one_the_product_offers():
+    """The refusals send an Admin to a page and a row action by their labels, and
+    to an operation by name, so all three have to exist as named."""
+    repo = _SCRIPTS.parent
+    page = (
+        repo / "src/ui/src/components/user-management/UserManagementLayout.tsx"
+    ).read_text("utf-8")
+    assert re.search(r">\s*User Management\s*</Header>", page)
+    assert re.search(r">\s*Edit scope\s*</Button>", page)
+    handler = (repo / "src/lambda/user_management/index.py").read_text("utf-8")
+    admin_only = re.search(r"if field in \(([^)]*)\):", handler)
+    assert admin_only and '"updateUser"' in admin_only.group(1)
+    assert 'field == "updateUser":\n        return update_user(arguments)' in handler
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("key", "email"),
@@ -444,7 +476,7 @@ def test_rotating_an_existing_persona_with_profiles_is_refused(monkeypatch, key,
     message = str(excinfo.value)
     assert "--rotate changes only its password" in message, message
     assert "profile limit stays as its users-table row holds it" in message, message
-    assert f"teardown --email {email} --long-lived, then run setup again" in message
+    _assert_names_the_in_place_route_first(message, email)
     assert pool.created == [] and pool.managed == [] and pool.attributes == {}
     assert [call[:2] for call in pool.aws_calls] == [("cognito-idp", "admin-get-user")]
 
@@ -473,7 +505,7 @@ def test_the_refusal_without_rotate_names_the_limit_rotate_cannot_apply(
         assert message.endswith("Re-run with --rotate to do that deliberately.")
     else:
         assert "and without --profiles, which --rotate cannot apply" in message
-        assert f"teardown --email {email} --long-lived, then setup again" in message
+        _assert_names_the_in_place_route_first(message, email)
     assert pool.created == [] and pool.managed == []
 
 

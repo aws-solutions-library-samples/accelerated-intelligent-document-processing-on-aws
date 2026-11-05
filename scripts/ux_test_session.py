@@ -46,8 +46,11 @@ users-table row an Annotator and a profile limit are read from, so this script
 never re-implements it, and ``teardown --long-lived`` removes such a persona the
 same way, with ``deleteUser``. ``--rotate`` changes only an existing persona's
 password, so ``--profiles`` is refused with it on one: the limit stays as the
-users-table row holds it, and changing it means that teardown and then setup
-again. ``--key`` names a second persona of one group, such as an Annotator
+users-table row holds it. An Admin changes that limit in place, keeping the
+password, with **Edit scope** on the persona's row of the web UI's User
+Management page or the user-management ``updateUser`` operation. That teardown and
+then setup again also works, but sets a new password, so ``UX_TEST_PERSONAS`` must
+be updated. ``--key`` names a second persona of one group, such as an Annotator
 limited to one profile: its address is ``ux-persona-<key>@example.invalid`` and its
 ``UX_TEST_PERSONAS`` entry is ``<key>``, which its catalogue persona names as
 ``credentials``.
@@ -381,6 +384,26 @@ def _user_exists(ctx: dict, email: str) -> bool:
     return True
 
 
+def _limit_remedy(email: str) -> str:
+    """How an existing persona's profile limit is changed, the route that keeps
+    its password first.
+
+    ``updateUser``, which the User Management page's Edit scope calls, sets
+    ``allowedConfigVersions`` on the existing users-table row and leaves the
+    Cognito user alone. It is Admin-only and refused, as ``createUser`` with a
+    limit is, where another source owns the scope, so it is open wherever
+    ``--profiles`` is. Teardown and setup works too, but mints a new password.
+    """
+    return (
+        "To change the limit and keep the password, an Admin edits it in place: "
+        "Edit scope on the persona's row of the web UI's User Management page, or "
+        "the user-management updateUser operation. Removing the persona with "
+        f"teardown --email {email} --long-lived and running setup again with "
+        "--profiles also works, but sets a new password, so UX_TEST_PERSONAS must "
+        "be updated"
+    )
+
+
 def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
     """Create a group's long-lived persona and print its UX_TEST_PERSONAS entry.
 
@@ -394,7 +417,9 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
     created again, so --rotate changes only its password and its profile limit
     stays as that row holds it; --profiles with --rotate on an existing persona is
     therefore refused before anything is written, rather than printed as a limit
-    that was never applied. The persona is given a display name
+    that was never applied. Both refusals that mention a limit name the route that
+    keeps the password (:func:`_limit_remedy`), an Admin's in-place edit, ahead of
+    teardown and setup, which sets a new one. The persona is given a display name
     (:func:`persona_display_name`), so the UI's top bar shows that rather than the
     sign-in address. An existing persona is given it too before the refusal without
     --rotate, since naming does not touch the password: one made before the
@@ -427,9 +452,7 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
             f"{email} already exists in {args.stack}, and --rotate changes only "
             "its password: its profile limit stays as its users-table row holds "
             "it, whatever --profiles names. Nothing was changed. Drop --profiles "
-            "to set a new password alone; to change the limit, remove the persona "
-            f"with teardown --email {email} --long-lived, then run setup again "
-            "with --profiles"
+            f"to set a new password alone. {_limit_remedy(email)}."
         )
     if exists and not rotate:
         _name_persona(ctx, email, key)
@@ -443,8 +466,7 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
         if profiles is not None:
             message += (
                 ", and without --profiles, which --rotate cannot apply: the profile "
-                "limit stays as its users-table row holds it, and changing it means "
-                f"teardown --email {email} --long-lived, then setup again"
+                f"limit stays as its users-table row holds it. {_limit_remedy(email)}"
             )
         raise SystemExit(f"{message}.")
     password = _password()
