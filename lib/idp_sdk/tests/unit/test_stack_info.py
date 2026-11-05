@@ -21,7 +21,9 @@ things "absent" can mean here:
 * A **resource** that is missing behaves two ways depending on which one it is:
   a missing ``DocumentQueue`` raises out of ``get_resources`` entirely, while a
   missing ``TrackingTable`` degrades to ``""``. Both are pinned; the asymmetry is
-  the kind of thing that gets "tidied" in the wrong direction.
+  the kind of thing that gets "tidied" in the wrong direction. The ``""`` becomes
+  an error only in ``tracking_table_name``, which the operations that need the
+  table call and the rest never do.
 
 Most tests run against ``moto``'s CloudFormation with a real template, so the
 physical ids are the ones CloudFormation itself would produce — an SQS queue's
@@ -42,7 +44,12 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from idp_sdk._core.stack_info import StackInfo, get_stack_resources
+from idp_sdk._core.stack_info import (
+    StackInfo,
+    get_stack_resources,
+    tracking_table_name,
+)
+from idp_sdk.exceptions import IDPResourceNotFoundError
 
 STACK_NAME = "IDP-test"
 REGION = "us-east-1"
@@ -239,21 +246,42 @@ def test_a_missing_document_queue_makes_the_whole_resolution_fail(aws):
 
 
 @pytest.mark.unit
-def test_a_missing_tracking_table_degrades_to_an_empty_string(aws):
+def test_a_missing_tracking_table_degrades_to_an_empty_string(aws, caplog):
     """``_get_table_name`` swallows everything and returns ``""``.
 
     The consequence is concrete: ``WorkflowStopper`` reports "DocumentsTable not
     found in stack resources" and skips aborting queued documents, while the rest
     of the command runs. That is a recoverable outcome, unlike the queue case, so
-    the difference is deliberate — but it means a renamed table logical id is a
-    silent partial failure.
+    the difference is deliberate. What keeps a renamed table logical id from being
+    a silent partial failure is the warning, which names the logical id and the
+    stack at resolution time, before any operation reaches for the table.
     """
     create_stack(template(ALL_OUTPUTS, with_table=False))
 
-    resources = StackInfo(STACK_NAME, REGION).get_resources()
+    with caplog.at_level("WARNING", logger="idp_sdk._core.stack_info"):
+        resources = StackInfo(STACK_NAME, REGION).get_resources()
 
     assert resources["DocumentsTable"] == ""
     assert resources["DocumentQueueUrl"].endswith(QUEUE_NAME)
+    assert f"TrackingTable not found in the resources of stack '{STACK_NAME}'" in (
+        caplog.text
+    )
+
+
+@pytest.mark.unit
+def test_a_stack_with_its_tracking_table_logs_no_warning(aws, caplog):
+    """The warning fires only when the table is absent.
+
+    Every deployment variant, headless included, declares ``TrackingTable``, so
+    on a healthy stack the warning must not appear: one that did would be printed
+    by every CLI command and soon read as noise.
+    """
+    create_stack(template(ALL_OUTPUTS))
+
+    with caplog.at_level("WARNING", logger="idp_sdk._core.stack_info"):
+        StackInfo(STACK_NAME, REGION).get_resources()
+
+    assert "TrackingTable" not in caplog.text
 
 
 @pytest.mark.unit
@@ -337,6 +365,53 @@ def test_the_convenience_function_returns_the_same_mapping(aws):
     assert get_stack_resources(STACK_NAME, REGION) == (
         StackInfo(STACK_NAME, REGION).get_resources()
     )
+
+
+# ---------------------------------------------------------------------------
+# tracking_table_name
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_the_tracking_table_name_is_read_from_the_resolved_map(aws):
+    """The table is a resource, not an output, and the map already holds it.
+
+    This is the stack shape every caller sees in production: no output names the
+    tracking table, so a reader that looked for ``TrackingTable`` in the map, as
+    ``list_document_versions`` once did, finds nothing. The helper reads the
+    ``DocumentsTable`` entry ``get_resources`` resolved by logical id.
+    """
+    create_stack(template(ALL_OUTPUTS))
+    resources = StackInfo(STACK_NAME, REGION).get_resources()
+
+    assert "TrackingTable" not in resources
+    assert tracking_table_name(resources, STACK_NAME) == TABLE_NAME
+
+
+@pytest.mark.unit
+def test_a_stack_without_a_tracking_table_is_refused_by_name(aws):
+    """``get_resources`` degrades a missing table to ``""``; the helper does not.
+
+    The error names the logical id and the stack, so the caller of a command that
+    needs the table is told what is missing and where, rather than receiving a
+    ``KeyError`` for an internal dictionary key or an empty table name passed on
+    to DynamoDB.
+    """
+    create_stack(template(ALL_OUTPUTS, with_table=False))
+    resources = StackInfo(STACK_NAME, REGION).get_resources()
+
+    with pytest.raises(IDPResourceNotFoundError) as raised:
+        tracking_table_name(resources, STACK_NAME)
+
+    assert "TrackingTable" in str(raised.value)
+    assert f"'{STACK_NAME}'" in str(raised.value)
+
+
+@pytest.mark.unit
+def test_a_map_with_no_table_entry_at_all_is_refused_the_same_way():
+    """A map built by hand, as a stub or a narrower caller would, has no key."""
+    with pytest.raises(IDPResourceNotFoundError, match="TrackingTable not found"):
+        tracking_table_name({"OutputBucket": "out"}, "some-stack")
 
 
 @pytest.mark.unit

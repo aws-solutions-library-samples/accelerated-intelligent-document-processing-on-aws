@@ -18,7 +18,10 @@ directory creation and the downloads are all the production code paths.
 
 `list-batches` and `list-versions` are read-only renderers, and what matters about them
 is the empty case (both return quietly rather than failing), the numbers they compute
-from the SDK model, and the truncation they apply to timestamps.
+from the SDK model, and the truncation they apply to timestamps. `list-versions` is also
+run through the real SDK against a `moto` tracking table, with the same `StackInfo`
+substitute as `download-results`, because a mocked `client.batch` cannot show that the
+command reaches the table at all.
 
 The `status` tests here are deliberately narrow: `tests/test_status_command.py` already
 covers the search, the two refusals, `--get-time`, `--show-details`, `--document-id` and
@@ -800,6 +803,71 @@ class TestListVersions:
         assert result.exit_code == 1
         assert "Error: no such document" in result.output
 
+    def test_versions_are_read_from_the_stacks_tracking_table(self, runner):
+        """The SDK is real here; only the stack lookup is substituted.
+
+        The resource map holds the table as `DocumentsTable` and has no
+        `TrackingTable` key, which is what `StackInfo` produces for every stack and
+        what made this command fail with `KeyError: 'TrackingTable'`.
+        """
+        with mock_aws():
+            table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+                TableName=StubStackInfo.TRACKING_TABLE,
+                KeySchema=[
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "SK", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "PK", "AttributeType": "S"},
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            for run in ("20250707T141530Z-exec-a", "20250708T090000Z-exec-b"):
+                table.put_item(
+                    Item={
+                        "PK": "doc#loan-123/package.pdf",
+                        "SK": f"run#{run}",
+                        "RunId": run,
+                    }
+                )
+            with patch("idp_sdk._core.batch_processor.StackInfo", StubStackInfo):
+                result = runner.invoke(
+                    cli,
+                    [
+                        "list-versions",
+                        "--stack-name",
+                        "my-stack",
+                        "--document-id",
+                        "loan-123/package.pdf",
+                    ],
+                )
+
+        assert result.exit_code == 0, result.output
+        lines = result.output.splitlines()
+        newer = next(i for i, line in enumerate(lines) if "exec-b" in line)
+        older = next(i for i, line in enumerate(lines) if "exec-a" in line)
+        assert newer < older
+
+    def test_a_stack_without_a_tracking_table_is_named_in_the_error(self, runner):
+        with (
+            mock_aws(),
+            patch("idp_sdk._core.batch_processor.StackInfo", StubStackInfoWithoutTable),
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "list-versions",
+                    "--stack-name",
+                    "my-stack",
+                    "--document-id",
+                    "loan-123/package.pdf",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "Error: TrackingTable not found in stack 'my-stack'" in result.output
+
 
 # ---------------------------------------------------------------------------
 # download-results
@@ -814,6 +882,8 @@ class StubStackInfo:
     running against `moto`.
     """
 
+    TRACKING_TABLE = "my-stack-documents"
+
     def __init__(self, stack_name, region=None):
         self.stack_name = stack_name
         self.region = region
@@ -825,8 +895,15 @@ class StubStackInfo:
         return {
             "OutputBucket": OUTPUT_BUCKET,
             "InputBucket": "my-stack-inputbucket",
-            "DocumentsTable": "my-stack-documents",
+            "DocumentsTable": self.TRACKING_TABLE,
         }
+
+
+class StubStackInfoWithoutTable(StubStackInfo):
+    """A stack with no `TrackingTable` resource, which `StackInfo` maps to `""`."""
+
+    def get_resources(self) -> dict:
+        return {**super().get_resources(), "DocumentsTable": ""}
 
 
 #: One batch's worth of output, in the layout the pipeline writes: a directory per

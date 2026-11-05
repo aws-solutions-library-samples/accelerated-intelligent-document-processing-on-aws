@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -418,6 +419,135 @@ def test_rotating_an_existing_annotator_does_not_create_it_again(monkeypatch):
 
     assert pool.managed == []
     assert [(e, g) for e, g, _ in pool.created] == [(email, "Annotator")]
+
+
+def _assert_names_the_in_place_route_first(message: str, email: str) -> None:
+    """The edit that keeps the password comes before the teardown that resets it,
+    and the teardown says what it costs."""
+    in_place = (
+        "To change the limit and keep the password, an Admin edits it in place: "
+        "Edit scope on the persona's row of the web UI's User Management page, or "
+        "the user-management updateUser operation."
+    )
+    teardown = f"teardown --email {email} --long-lived"
+    assert in_place in message, message
+    assert teardown in message, message
+    assert message.index(in_place) < message.index(teardown), message
+    assert "sets a new password, so UX_TEST_PERSONAS must be updated" in message
+
+
+@pytest.mark.unit
+def test_the_in_place_route_is_one_the_product_offers():
+    """The refusals send an Admin to a page and a row action by their labels, and
+    to an operation by name, so all three have to exist as named."""
+    repo = _SCRIPTS.parent
+    page = (
+        repo / "src/ui/src/components/user-management/UserManagementLayout.tsx"
+    ).read_text("utf-8")
+    assert re.search(r">\s*User Management\s*</Header>", page)
+    assert re.search(r">\s*Edit scope\s*</Button>", page)
+    handler = (repo / "src/lambda/user_management/index.py").read_text("utf-8")
+    admin_only = re.search(r"if field in \(([^)]*)\):", handler)
+    assert admin_only and '"updateUser"' in admin_only.group(1)
+    assert 'field == "updateUser":\n        return update_user(arguments)' in handler
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("key", "email"),
+    [
+        ("Annotator-scoped", "ux-persona-annotator-scoped@example.invalid"),
+        (None, "ux-persona-annotator@example.invalid"),
+    ],
+)
+def test_rotating_an_existing_persona_with_profiles_is_refused(monkeypatch, key, email):
+    """createUser is what applies a limit, and an existing persona is not created
+    again, so a rotation given --profiles would print a limit its users-table row,
+    the only thing the product reads, never holds."""
+    pool = _Pool(existing={email})
+    pool.rows[email] = "user-1"
+    module = _module_with(pool, monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.cmd_setup(
+            _setup_args(group="Annotator", key=key, profiles="other", rotate=True)
+        )
+
+    message = str(excinfo.value)
+    assert "--rotate changes only its password" in message, message
+    assert "profile limit stays as its users-table row holds it" in message, message
+    _assert_names_the_in_place_route_first(message, email)
+    assert pool.created == [] and pool.managed == [] and pool.attributes == {}
+    assert [call[:2] for call in pool.aws_calls] == [("cognito-idp", "admin-get-user")]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("profiles", [None, "other"])
+def test_the_refusal_without_rotate_names_the_limit_rotate_cannot_apply(
+    monkeypatch, profiles
+):
+    """Its remedy is to re-run with --rotate, and with --profiles still given that
+    re-run is refused too, so the remedy has to say to drop them."""
+    email = "ux-persona-annotator-scoped@example.invalid"
+    pool = _Pool(existing={email})
+    pool.rows[email] = "user-1"
+    module = _module_with(pool, monkeypatch)
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.cmd_setup(
+            _setup_args(group="Annotator", key="Annotator-scoped", profiles=profiles)
+        )
+
+    message = str(excinfo.value)
+    assert "Re-run with --rotate to do that deliberately" in message, message
+    if profiles is None:
+        assert "--profiles" not in message, message
+        assert message.endswith("Re-run with --rotate to do that deliberately.")
+    else:
+        assert "and without --profiles, which --rotate cannot apply" in message
+        _assert_names_the_in_place_route_first(message, email)
+    assert pool.created == [] and pool.managed == []
+
+
+@pytest.mark.unit
+def test_rotating_an_existing_persona_without_profiles_prints_no_limit(
+    monkeypatch, capsys
+):
+    email = "ux-persona-annotator-scoped@example.invalid"
+    pool = _Pool(existing={email})
+    pool.rows[email] = "user-1"
+    module = _module_with(pool, monkeypatch)
+
+    rc = module.cmd_setup(
+        _setup_args(group="Annotator", key="Annotator-scoped", rotate=True)
+    )
+
+    assert rc == 0
+    assert pool.managed == []
+    assert [(e, g) for e, g, _ in pool.created] == [(email, "Annotator")]
+    session = json.loads(capsys.readouterr().out)
+    assert session["persona"]["Annotator-scoped"]["username"] == email
+    assert "profiles" not in session
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rotate", [False, True])
+def test_a_new_persona_given_profiles_prints_the_limit_it_was_created_with(
+    monkeypatch, capsys, rotate
+):
+    pool = _Pool()
+    module = _module_with(pool, monkeypatch)
+
+    rc = module.cmd_setup(
+        _setup_args(
+            group="Annotator", key="Annotator-scoped", profiles="a,b", rotate=rotate
+        )
+    )
+
+    assert rc == 0
+    ((field, arguments),) = pool.managed
+    assert (field, arguments["allowedConfigVersions"]) == ("createUser", ["a", "b"])
+    assert json.loads(capsys.readouterr().out)["profiles"] == ["a", "b"]
 
 
 @pytest.mark.unit

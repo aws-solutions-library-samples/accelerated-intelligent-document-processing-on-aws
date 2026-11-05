@@ -3157,7 +3157,10 @@ def test_the_scheduled_digest_compares_with_the_nights_it_read_and_posts_once(
         ({"UX_TEST_STORIES_SLACK_WEBHOOK_URL": None}, []),
         ({"UX_TEST_STORIES_SLACK_WEBHOOK_URL": "   "}, []),
         (
-            {"UX_TEST_STORIES_SLACK_WEBHOOK_URL": None, "SLACK_WEBHOOK_URL": "   "},
+            {
+                "UX_TEST_STORIES_SLACK_WEBHOOK_URL": None,
+                "SLACK_WEBHOOK_URL": "https://hooks.slack.test/triggers/T0/2/x",
+            },
             [],
         ),
         (
@@ -3165,7 +3168,7 @@ def test_the_scheduled_digest_compares_with_the_nights_it_read_and_posts_once(
             ["slack: not posted, because this is not a scheduled pipeline"],
         ),
     ],
-    ids=["no-webhook", "blank-webhook", "blank-shared-webhook", "manual-pipeline"],
+    ids=["no-webhook", "blank-webhook", "integration-webhook-only", "manual-pipeline"],
 )
 def test_the_digest_posts_to_slack_only_from_a_schedule_with_a_webhook(
     harness: StoryHarness,
@@ -3193,37 +3196,17 @@ SHARED_WEBHOOK = "https://hooks.slack.test/triggers/T0/2/sharedsecretvalue"
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    ("changes", "expected"),
-    [
-        ({"SLACK_WEBHOOK_URL": SHARED_WEBHOOK}, SHARED_WEBHOOK),
-        (
-            {
-                "UX_TEST_STORIES_SLACK_WEBHOOK_URL": WEBHOOK,
-                "SLACK_WEBHOOK_URL": SHARED_WEBHOOK,
-            },
-            WEBHOOK,
-        ),
-        (
-            {
-                "UX_TEST_STORIES_SLACK_WEBHOOK_URL": "  ",
-                "SLACK_WEBHOOK_URL": SHARED_WEBHOOK,
-            },
-            SHARED_WEBHOOK,
-        ),
-    ],
-    ids=["shared-only", "own-first", "blank-own"],
-)
-def test_the_digest_posts_to_its_own_webhook_else_the_nightly_channels(
-    harness: StoryHarness,
-    capsys: pytest.CaptureFixture[str],
-    changes: dict[str, str],
-    expected: str,
+def test_the_digest_posts_to_its_own_webhook_and_never_the_integration_builds(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The nightly channel's webhook is the one the integration build posts to;
-    the digest's own, when set, comes first, and neither is ever printed."""
+    """``SLACK_WEBHOOK_URL`` reaches every job, so a digest run anywhere in a
+    scheduled pipeline, a test among them, must not post through it."""
     _shard_runs(harness)
-    harness.environ.update(_scheduled(**changes))
+    harness.environ.update(
+        _scheduled(
+            UX_TEST_STORIES_SLACK_WEBHOOK_URL=WEBHOOK, SLACK_WEBHOOK_URL=SHARED_WEBHOOK
+        )
+    )
     runtime = harness.runtime()
     posted: list[str] = []
 
@@ -3236,37 +3219,25 @@ def test_the_digest_posts_to_its_own_webhook_else_the_nightly_channels(
     capsys.readouterr()
     argv = ["--digest", str(harness.tmp / "shards"), "--out", str(out)]
     assert runner.main(argv, runtime) == 0
-    assert posted == [expected]
+    assert posted == [WEBHOOK]
     printed = "\n".join(_lines(capsys))
     assert "slack: posted (200)" in printed
     assert "hooksecretvalue" not in printed and "sharedsecretvalue" not in printed
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    ("changes", "named"),
-    [
-        (
-            {
-                "UX_TEST_STORIES_SLACK_WEBHOOK_URL": "http://hooks.slack.test/x",
-                "SLACK_WEBHOOK_URL": SHARED_WEBHOOK,
-            },
-            "UX_TEST_STORIES_SLACK_WEBHOOK_URL",
-        ),
-        ({"SLACK_WEBHOOK_URL": "not a url"}, "SLACK_WEBHOOK_URL"),
-    ],
-    ids=["unusable-own", "unusable-shared"],
-)
 def test_an_unusable_webhook_posts_nothing_and_is_named(
-    harness: StoryHarness,
-    capsys: pytest.CaptureFixture[str],
-    changes: dict[str, str],
-    named: str,
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The first webhook set is the one used, so a bad value of the digest's own
-    is not passed over for the nightly channel's; the line names which is bad."""
+    """A value that is not an https URL is reported by the variable's name and
+    posts nothing, and the integration build's webhook is not tried instead."""
     _shard_runs(harness)
-    harness.environ.update(_scheduled(**changes))
+    harness.environ.update(
+        _scheduled(
+            UX_TEST_STORIES_SLACK_WEBHOOK_URL="http://hooks.slack.test/x",
+            SLACK_WEBHOOK_URL=SHARED_WEBHOOK,
+        )
+    )
     runtime = harness.runtime()
     runtime.slack = lambda webhook, payload: pytest.fail("Slack was posted to")
     out = harness.tmp / "digest"
@@ -3275,7 +3246,8 @@ def test_an_unusable_webhook_posts_nothing_and_is_named(
     assert runner.main(argv, runtime) == 0
     lines = _lines(capsys)
     assert [line for line in lines if line.startswith("slack:")] == [
-        f"slack: not posted, because {named} is not an https URL"
+        "slack: not posted, because UX_TEST_STORIES_SLACK_WEBHOOK_URL is not an "
+        "https URL"
     ]
     assert "sharedsecretvalue" not in "\n".join(lines)
 
@@ -3852,6 +3824,30 @@ def test_ai_mr_review_is_reached_only_through_gitlab_api() -> None:
         assert not any(name.split(".")[0] == "ai_mr_review" for name in names)
 
 
+BARE_ENV_NAMES = (
+    "PATH",
+    "SYSTEMROOT",
+    "LANG",
+    "TMP",
+    "TEMP",
+    "TMPDIR",
+    "COVERAGE_PROCESS_START",
+    "COVERAGE_FILE",
+    "COVERAGE_SUBPROCESS_SOURCE",
+)
+
+
+def _bare_env() -> dict[str, str]:
+    """The script's subprocess environment: what Python needs to start, nothing a
+    CI job holds, so a run under a scheduled pipeline reaches no credential.
+
+    The three ``COVERAGE_*`` names are the ones ``coverage_all.py`` hands every
+    test run so a subprocess is measured too; without them these runs of the
+    script would count for nothing in its coverage floor. None is a credential.
+    """
+    return {name: os.environ[name] for name in BARE_ENV_NAMES if name in os.environ}
+
+
 def _heavy_imports(*argv: str) -> tuple[int, list[str], str]:
     completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
         [sys.executable, "-X", "importtime", "-B", str(SCRIPT), *argv],
@@ -3861,10 +3857,41 @@ def _heavy_imports(*argv: str) -> tuple[int, list[str], str]:
         errors="replace",
         timeout=120,
         check=False,
+        env=_bare_env(),
     )
     imported = re.findall(r"\|\s+(\S+)\s*$", completed.stderr, flags=re.M)
     heavy = sorted({m for m in imported if m.split(".")[0] in ("boto3", "yaml", "PIL")})
     return completed.returncode, heavy, completed.stdout
+
+
+@pytest.mark.unit
+def test_the_bare_python_runs_inherit_no_ci_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The digest run below posts to Slack from a scheduled pipeline whenever its
+    environment holds a webhook, so the subprocess must not inherit the job's."""
+    planted = {
+        "CI_PIPELINE_SOURCE": "schedule",
+        "SLACK_WEBHOOK_URL": SHARED_WEBHOOK,
+        "UX_TEST_STORIES_SLACK_WEBHOOK_URL": WEBHOOK,
+        "GITLAB_REVIEW_TOKEN": CREDENTIAL,
+    }
+    for name, value in planted.items():
+        monkeypatch.setenv(name, value)
+    seen: list[dict[str, str] | None] = []
+    real_run = subprocess.run
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("env"))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    code, _, out = _heavy_imports("--help")
+    assert code == 0, out
+    (env,) = seen
+    assert env is not None, "the subprocess would inherit the whole environment"
+    assert not set(planted) & set(env), sorted(set(planted) & set(env))
+    assert all(value not in env.values() for value in planted.values())
 
 
 @pytest.mark.unit

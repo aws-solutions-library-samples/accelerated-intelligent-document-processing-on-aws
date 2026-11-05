@@ -29,8 +29,11 @@ mock, and would misreport which run produced which result.
 manifest is data read out of S3; a key of ``../`` or an absolute path must not
 write outside the caller's output directory.
 
-``list_document_versions`` is unusable as shipped — see
-``test_list_document_versions_raises_keyerror_on_a_real_stack``.
+**The tracking table is found the way a real stack exposes it.** The stack
+declares ``TrackingTable`` as a resource and publishes no output naming it, and
+no test adds a resource key the production ``StackInfo`` path does not produce.
+A test that injected one is how a ``KeyError`` raised against every real stack
+once passed here.
 """
 
 import base64
@@ -42,8 +45,10 @@ import pytest
 from moto import mock_aws
 
 from idp_sdk._core.batch_processor import BatchListDict, BatchProcessor
+from idp_sdk.exceptions import IDPResourceNotFoundError
 
 STACK_NAME = "test-idp-stack"
+TABLELESS_STACK = "test-idp-stack-no-table"
 INPUT_BUCKET = "idp-input-bucket"
 OUTPUT_BUCKET = "idp-output-bucket"
 TRACKING_TABLE = "idp-tracking-table"
@@ -81,12 +86,27 @@ _TEMPLATE = json.dumps(
 )
 
 
+def _without_tracking_table(template_body):
+    template = json.loads(template_body)
+    del template["Resources"]["TrackingTable"]
+    return json.dumps(template)
+
+
 @pytest.fixture
 def idp_stack(aws_credentials):
-    """A live moto account holding the stack, its buckets and its table."""
+    """A live moto account holding the stack, its buckets and its table.
+
+    ``TABLELESS_STACK`` is the same stack without a ``TrackingTable`` resource,
+    sharing the buckets, for the operations that need the table and must say
+    when it is missing.
+    """
     with mock_aws():
         cfn = boto3.client("cloudformation", region_name=aws_credentials)
         cfn.create_stack(StackName=STACK_NAME, TemplateBody=_TEMPLATE)
+        cfn.create_stack(
+            StackName=TABLELESS_STACK,
+            TemplateBody=_without_tracking_table(_TEMPLATE),
+        )
         s3_client = boto3.client("s3", region_name=aws_credentials)
         for bucket in (INPUT_BUCKET, OUTPUT_BUCKET):
             s3_client.create_bucket(Bucket=bucket)
@@ -96,6 +116,11 @@ def idp_stack(aws_credentials):
 @pytest.fixture
 def processor(idp_stack):
     return BatchProcessor(stack_name=STACK_NAME, region=idp_stack)
+
+
+@pytest.fixture
+def tableless_processor(idp_stack):
+    return BatchProcessor(stack_name=TABLELESS_STACK, region=idp_stack)
 
 
 @pytest.fixture
@@ -408,35 +433,40 @@ class TestDownloadBatchResults:
 class TestListDocumentVersions:
     """Listing a document's processing runs out of the tracking table."""
 
-    def test_list_document_versions_raises_keyerror_on_a_real_stack(self, processor):
-        """DEFECT, pinned as-is: ``batch_processor.py:1019``.
+    def test_the_table_is_found_although_no_stack_output_names_it(
+        self, processor, tracking_table
+    ):
+        """The processor is built exactly as production builds it, and queried.
 
-        The method reads ``self.resources["TrackingTable"]``, but the resource map
-        ``StackInfo.get_resources`` builds has no such key — it records the very
-        same table under ``DocumentsTable`` (``stack_info.py:66``). ``resources``
-        comes from ``StackInfo`` and from nowhere else, so the lookup can never
-        succeed and the method raises ``KeyError: 'TrackingTable'`` for every
-        input against every stack.
-
-        The observable consequence reaches the public API: ``client.batch.list_versions``
-        does not wrap exceptions, so a caller gets a bare ``KeyError`` naming an
-        internal resource key instead of a version list. ``batch.download_version``
-        is unaffected — it reads the manifest from S3 and never touches the table.
-
-        When it is fixed, this test fails; the assertions in the rest of this class
-        (which inject the key the code asks for) describe the intended behaviour.
+        No output names the tracking table and the resource map holds no
+        ``TrackingTable`` key, which is the shape that made this method raise
+        ``KeyError: 'TrackingTable'`` against every stack. The table is the one
+        ``StackInfo`` resolved from the stack's resources.
         """
-        with pytest.raises(KeyError, match="TrackingTable"):
-            processor.list_document_versions("batch-1/a.pdf")
+        tracking_table.put_item(
+            Item={"PK": "doc#batch-1/a.pdf", "SK": "run#001", "RunId": "001"}
+        )
 
-    @pytest.fixture
-    def versioned(self, processor):
-        """The processor with the resource key the method asks for, so the query
-        itself can be tested. See the defect above for why this is needed."""
-        processor.resources["TrackingTable"] = TRACKING_TABLE
-        return processor
+        assert "TrackingTable" not in processor.resources
+        runs = processor.list_document_versions("batch-1/a.pdf")
 
-    def test_runs_come_back_newest_first(self, versioned, tracking_table):
+        assert [item["RunId"] for item in runs] == ["001"]
+
+    def test_a_stack_without_a_tracking_table_is_refused_by_name(
+        self, tableless_processor
+    ):
+        """The error names the missing resource and the stack, not a dict key.
+
+        ``list_versions`` passes it through unchanged, so this message is what an
+        SDK caller and ``idp-cli list-versions`` both show.
+        """
+        with pytest.raises(IDPResourceNotFoundError) as raised:
+            tableless_processor.list_document_versions("batch-1/a.pdf")
+
+        assert "TrackingTable" in str(raised.value)
+        assert f"'{TABLELESS_STACK}'" in str(raised.value)
+
+    def test_runs_come_back_newest_first(self, processor, tracking_table):
         for run in ("001", "002", "003"):
             tracking_table.put_item(
                 Item={
@@ -447,13 +477,13 @@ class TestListDocumentVersions:
                 }
             )
 
-        runs = versioned.list_document_versions("batch-1/a.pdf")
+        runs = processor.list_document_versions("batch-1/a.pdf")
 
         assert [item["RunId"] for item in runs] == ["003", "002", "001"]
         assert runs[0]["ConfigVersion"] == "profile-a"
 
     def test_only_run_records_for_that_document_are_returned(
-        self, versioned, tracking_table
+        self, processor, tracking_table
     ):
         """The table holds more than runs under the same partition, and other
         documents' runs under their own. A key condition that matched either
@@ -468,14 +498,14 @@ class TestListDocumentVersions:
             Item={"PK": "doc#batch-1/b.pdf", "SK": "run#009", "RunId": "009"}
         )
 
-        runs = versioned.list_document_versions("batch-1/a.pdf")
+        runs = processor.list_document_versions("batch-1/a.pdf")
 
         assert [item["RunId"] for item in runs] == ["001"]
 
-    def test_a_document_with_no_runs_returns_an_empty_list(self, versioned):
-        assert versioned.list_document_versions("batch-1/never-run.pdf") == []
+    def test_a_document_with_no_runs_returns_an_empty_list(self, processor):
+        assert processor.list_document_versions("batch-1/never-run.pdf") == []
 
-    def test_every_page_of_a_long_history_is_returned(self, versioned, tracking_table):
+    def test_every_page_of_a_long_history_is_returned(self, processor, tracking_table):
         """A DynamoDB query answers at most 1 MB per call, so a document with a
         long history needs the ``LastEvaluatedKey`` loop. The items here are
         padded so the first response really is truncated — the loop cannot be
@@ -495,7 +525,7 @@ class TestListDocumentVersions:
                     }
                 )
 
-        runs = versioned.list_document_versions("batch-1/a.pdf")
+        runs = processor.list_document_versions("batch-1/a.pdf")
 
         assert len(runs) == total
         assert [item["RunId"] for item in runs] == [
@@ -515,6 +545,27 @@ class TestDownloadVersionResults:
             Key=f"{document_id}/runs/{run_id}/manifest.json",
             Body=json.dumps({"files": files}).encode("utf-8"),
         )
+
+    def test_a_version_downloads_without_resolving_the_tracking_table(
+        self, tableless_processor, s3, tmp_path
+    ):
+        """The manifest in S3 is the whole input; the table is never consulted.
+
+        Run against a stack with no ``TrackingTable`` resource at all, so a
+        download that came to depend on the table would raise here rather than
+        pass on a stack that happens to have one.
+        """
+        key = "batch-1/a.pdf/summary/summary.json"
+        s3.put_object(Bucket=OUTPUT_BUCKET, Key=key, Body=b"run-1 output")
+        self._put_manifest(s3, "batch-1/a.pdf", "run-1", [{"key": key}])
+        destination = tmp_path / "out"
+
+        stats = tableless_processor.download_version_results(
+            "batch-1/a.pdf", "run-1", str(destination)
+        )
+
+        assert stats["files_downloaded"] == 1
+        assert (destination / "run-1" / key).read_bytes() == b"run-1 output"
 
     def test_a_missing_manifest_names_the_version_that_has_none(
         self, processor, tmp_path

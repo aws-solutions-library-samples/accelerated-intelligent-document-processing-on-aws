@@ -768,8 +768,9 @@ def test_default_probe_table_has_global_apigw_row(cbd):
 
 def test_default_probe_table_covers_all_four_variants(cbd):
     by_suffix = {p.stack_suffix: p for p in cbd.PROBE_VARIANTS}
-    # The four deployment-hosting variants are present (the ZAP DAST probe is a
-    # fifth row, asserted separately in test_zap_dast_probe.py).
+    # The four deployment-hosting variants are present (the ZAP DAST and tenant
+    # isolation probes are asserted separately, in test_zap_dast_probe.py and
+    # test_tenancy_probe.py).
     assert {"apigw", "waf", "apigwpriv", "jobsapi"} <= set(by_suffix)
     # No-VPC probes.
     assert by_suffix["apigw"].requires_vpc is False
@@ -784,6 +785,32 @@ def test_default_probe_table_covers_all_four_variants(cbd):
     # Every row wires a distinct validator.
     validators = {p.validate_fn for p in cbd.PROBE_VARIANTS}
     assert len(validators) == len(cbd.PROBE_VARIANTS)
+
+
+def test_every_probe_param_is_a_template_parameter_with_an_allowed_value(cbd):
+    # A probe passes its deploy_params to `idp-cli deploy --parameters` against
+    # the published main template. A misspelt name or a value outside
+    # AllowedValues fails only at deploy time, on the weekly run, as a rollback
+    # that reads like an infrastructure fault — so check it against the source.
+    import pathlib
+
+    import yaml
+    from test_config_schema_order import _CfnSafeLoader
+
+    template = pathlib.Path(__file__).resolve().parents[3] / "template.yaml"
+    declared = yaml.load(template.read_text(), Loader=_CfnSafeLoader)["Parameters"]
+    for probe in cbd.PROBE_VARIANTS:
+        for name, value in probe.deploy_params.items():
+            assert name in declared, (
+                f"probe {probe.stack_suffix!r} passes {name!r}, which template.yaml "
+                "does not declare"
+            )
+            allowed = declared[name].get("AllowedValues")
+            if allowed is not None:
+                assert value in [str(v) for v in allowed], (
+                    f"probe {probe.stack_suffix!r} passes {name}={value!r}; "
+                    f"template.yaml allows {allowed}"
+                )
 
 
 def test_probe_deploy_params_carry_no_vpc_params_statically(cbd):

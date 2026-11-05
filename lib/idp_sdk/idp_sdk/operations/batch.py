@@ -712,6 +712,10 @@ class BatchOperation:
         Returns:
             List of run records (dicts with RunId, CompletionTime,
             ConfigVersion, FileCount, ManifestUri, ...).
+
+        Raises:
+            IDPResourceNotFoundError: If the stack's tracking table cannot be
+                resolved
         """
         from idp_sdk._core.batch_processor import BatchProcessor
 
