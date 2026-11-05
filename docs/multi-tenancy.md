@@ -18,7 +18,7 @@ This walkthrough sets up a tenant, its prefix mapping and a user, shows the
 safeguards and the strict-mode upload checks, and runs the `idp-cli tenancy`
 commands (about 4.5 minutes):
 
-<!-- DEMO VIDEO PLACEHOLDER: replace this line with the GitHub asset URL for the tenant isolation demo -->
+https://github.com/user-attachments/assets/27e12b5d-0595-4c24-a4f3-ab5eaff6d6f7
 
 ## How isolation works
 
@@ -376,7 +376,7 @@ template that creates, for each tenant:
 
 In strict mode the stack's Input and Output bucket policies delegate access control
 to access points owned by the stack's own account, so the generated access points
-take effect once deployed. Review the generated template before deploying it. Each
+take effect once deployed (the procedure is [below](#generate-and-deploy-the-access-points-step-by-step)). Review the generated template before deploying it. Each
 access point policy confines with explicit denies, so the confinement holds whatever
 the roles' own policies allow through an access point. What it cannot stop is access
 granted on the **bucket** itself, which never passes through an access point, so grant
@@ -394,6 +394,101 @@ grants a different principal, or another account, access to any tenant's prefix.
 Grant those two actions only to the people who deploy the generated template, and
 alarm on CloudTrail `CreateAccessPoint` and `PutAccessPointPolicy` events naming the
 stack's buckets.
+
+### Generate and deploy the access points, step by step
+
+This takes a stack from declared tenants to uploaders and consumers that can reach only
+their own tenant's prefixes. Before starting:
+
+- the stack runs with `TenantIsolationMode=Strict`, because only then do its bucket
+  policies delegate to access points, and the generated ones grant nothing otherwise;
+- every tenant is declared and mapped (`idp-cli tenancy list` shows them);
+- each tenant's uploader and consumer is an IAM role of its own, with **no** grant on
+  the Input or Output bucket itself;
+- creating access points is restricted as described in the warning above.
+
+**1. Name each tenant's roles** in a `principals.yaml`. A role may be both a tenant's
+uploader and its consumer; an account-root ARN is refused.
+
+```yaml
+acme:
+  uploaders: [arn:aws:iam::<account-id>:role/acme-uploader]
+  consumers: [arn:aws:iam::<account-id>:role/acme-results-reader]
+globex:
+  uploaders: [arn:aws:iam::<account-id>:role/globex-uploader]
+  consumers: [arn:aws:iam::<account-id>:role/globex-results-reader]
+```
+
+A declared tenant with no entry gets no access points, and the command says so.
+
+**2. Let the roles use the stack's encryption key.** The buckets are encrypted with the
+stack's `CustomerManagedEncryptionKey`. Uploaders need `kms:GenerateDataKey` on it and
+consumers `kms:Decrypt`. Find its ARN, then attach a statement like this to each role:
+
+```bash
+KEY_ID=$(aws cloudformation describe-stack-resource --stack-name <stack> \
+  --logical-resource-id CustomerManagedEncryptionKey \
+  --query StackResourceDetail.PhysicalResourceId --output text)
+aws kms describe-key --key-id "$KEY_ID" --query KeyMetadata.Arn --output text
+```
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["kms:GenerateDataKey", "kms:Decrypt"],
+  "Resource": "<key-arn>"
+}
+```
+
+A role in the stack's account needs **no S3 permission of its own**: the access point
+policy is the grant. A role in another account also needs an identity policy allowing
+`s3:PutObject` (uploaders) or `s3:GetObject` and `s3:ListBucket` (consumers) on its own
+access point's ARN, and the key policy must admit it.
+
+**3. Review the template, then deploy it.** The first command only writes the template;
+the second writes it again and deploys it as its own CloudFormation stack, separate
+from the IDP stack, named `<stack>-tenant-access-points` unless `--access-point-stack`
+says otherwise. Running it again updates that stack in place.
+
+```bash
+idp-cli tenancy generate-policies --stack-name <stack> --principals principals.yaml \
+  --output tenant-access-points.yaml
+idp-cli tenancy generate-policies --stack-name <stack> --principals principals.yaml \
+  --output tenant-access-points.yaml --deploy
+```
+
+The deploy prints, per tenant, an **upload** access point on the Input bucket and a
+**read** access point on the Output bucket, each with its ARN and alias. `--json`
+prints the same as JSON. The stack's outputs hold them too.
+
+**4. Address the access point, not the bucket.** An alias works wherever a bucket name
+does, so a tenant's tooling changes only the bucket part of each S3 URI. An uploader
+writes under its tenant's prefix through the upload alias:
+
+```bash
+aws s3 cp invoice.pdf s3://<acme-upload-alias>/clients/acme/2026/invoice.pdf
+```
+
+A consumer reads results through the read alias. A document's results sit under its
+input key, so the results of the upload above are under
+`s3://<acme-read-alias>/clients/acme/2026/invoice.pdf/`:
+
+```bash
+aws s3 ls s3://<acme-read-alias>/clients/acme/2026/invoice.pdf/ --recursive
+```
+
+Anything else is refused with `AccessDenied`: the same role writing under another
+tenant's prefix through its own access point, using another tenant's access point, or
+writing to the bucket directly.
+
+**5. Check what is deployed.** `idp-cli tenancy audit --stack-name <stack> --principals
+principals.yaml` compares each deployed access point policy with what the generator
+would produce now, and reports any difference. Re-run step 3 with `--deploy` after
+changing a tenant's prefixes or the principals file, and the audit again afterwards.
+
+To remove the access points, delete the access point stack
+(`aws cloudformation delete-stack --stack-name <stack>-tenant-access-points`). The IDP
+stack and its data are untouched.
 
 ### Other controls
 
@@ -435,7 +530,7 @@ stack boundary do the separating. The cost is one deployment to operate per tena
 | `idp-cli tenancy set-user-tenant` | Grants one user one tenant, or none, when `TenantGrantSource=Api` |
 | `idp-cli tenancy apply --file tenants.yaml` | Declarative: shows the difference, then writes it with `--yes` (`--prune` removes undeclared tenants) |
 | `idp-cli tenancy audit` | Read-only. Reports boundary-crossing mappings, unscoped or multi-tenant users, users granted no tenant, mismatched documents and the stack's mode. Exits 1 when it finds anything |
-| `idp-cli tenancy generate-policies` | Writes the per-tenant access point template described above |
+| `idp-cli tenancy generate-policies` | Writes the per-tenant access point template described above, and with `--deploy` deploys it as its own stack (see [Generate and deploy the access points, step by step](#generate-and-deploy-the-access-points-step-by-step)) |
 | `idp-cli tenancy verify` | Live cross-tenant test against a deployed stack, cleaning up after itself |
 
 See [IDP CLI](idp-cli.md#tenancy) for options. The checks behind every command live

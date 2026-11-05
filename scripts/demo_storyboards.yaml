@@ -253,5 +253,5 @@ storyboards:
       - Creating the initech-invoices Configuration Profile (a fixture).
       - The Test Studio and PII anonymizer exceptions to the ingest rule.
     docs: docs/multi-tenancy.md
-    category: Role-Based Access Control (RBAC)
+    category: Access Control & Tenant Isolation
     last_recorded: {date: 2026-11-05, version: 0.6.13}

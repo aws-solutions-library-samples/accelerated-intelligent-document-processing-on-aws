@@ -296,13 +296,48 @@ def apply_tenants(
     help="YAML: tenantId -> {uploaders: [...], consumers: [...], kmsKeyArn: ...}",
 )
 @click.option("--output", default="-", help="Template file to write, or '-' for stdout")
+@click.option(
+    "--deploy",
+    is_flag=True,
+    help="Also deploy the template as its own CloudFormation stack (created, or "
+    "updated when it exists) and print each tenant's access point ARN and alias.",
+)
+@click.option(
+    "--access-point-stack",
+    help="Name of the access point stack --deploy writes. "
+    "Default: <stack-name>-tenant-access-points.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="With --deploy, print the deployed access points as JSON to stdout",
+)
 def generate_policies(
-    stack_name: str, region: Optional[str], principals_path: str, output: str
+    stack_name: str,
+    region: Optional[str],
+    principals_path: str,
+    output: str,
+    deploy: bool,
+    access_point_stack: Optional[str],
+    as_json: bool,
 ):
-    """Write a CloudFormation template of per-tenant S3 access points."""
+    """Write a CloudFormation template of per-tenant S3 access points.
+
+    With --deploy, deploy it too, as a stack separate from the IDP stack.
+    """
     from idp_sdk import IDPError
 
     principals = _load_yaml(principals_path) or {}
+    if access_point_stack and not deploy:
+        _fail("--access-point-stack applies only with --deploy")
+    if as_json and not deploy:
+        _fail("--json applies only with --deploy; the template itself is YAML")
+    if deploy:
+        _deploy_policies(
+            stack_name, region, principals, output, access_point_stack, as_json
+        )
+        return
     try:
         result = _client(stack_name, region).tenancy.generate_policies(principals)
     except IDPError as e:
@@ -316,6 +351,47 @@ def generate_policies(
         )
     for warning in result.warnings:
         err_console.print(f"[yellow]{escape(warning)}[/yellow]")
+
+
+def _deploy_policies(
+    stack_name: str,
+    region: Optional[str],
+    principals: Any,
+    output: str,
+    access_point_stack: Optional[str],
+    as_json: bool,
+) -> None:
+    from idp_sdk import IDPError
+
+    client = _client(stack_name, region)
+    try:
+        if output != "-":
+            generated = client.tenancy.generate_policies(principals)
+            Path(output).write_text(generated.template, encoding="utf-8")
+            err_console.print(f"[green]Wrote {escape(output)}[/green]")
+        err_console.print("Deploying the access point stack; this takes a few minutes…")
+        result = client.tenancy.deploy_policies(
+            principals, access_point_stack=access_point_stack
+        )
+    except IDPError as e:
+        _fail(str(e))
+    for warning in result.warnings:
+        err_console.print(f"[yellow]{escape(warning)}[/yellow]")
+    if as_json:
+        click.echo(json.dumps(result.model_dump(), indent=2))
+        return
+    err_console.print(
+        f"[green]Access point stack {escape(result.stack_name)}: {result.operation}[/green]"
+    )
+    table = Table("Tenant", "Bucket", "Alias (use as the bucket name)", "ARN")
+    for ap in result.access_points:
+        table.add_row(
+            ap.tenant_id,
+            "Input (upload)" if ap.direction == "upload" else "Output (read)",
+            ap.alias or "",
+            ap.arn,
+        )
+    Console().print(table)
 
 
 @tenancy.command(name="audit")

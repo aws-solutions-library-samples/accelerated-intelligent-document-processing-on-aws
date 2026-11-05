@@ -2155,6 +2155,7 @@ See [Multi-Tenant Isolation](multi-tenancy.md) for the model.
 | `tenancy.delete(tenant_id)` | `bool` | Remove one tenant; whether it existed |
 | `tenancy.apply(declarations, *, prune=False, dry_run=True)` | `TenantApplyResult` | Plan, and with `dry_run=False` write, the changes that make the stack match `declarations` |
 | `tenancy.generate_policies(principals)` | `TenantPolicyResult` | A CloudFormation template of per-tenant S3 access points, plus warnings |
+| `tenancy.deploy_policies(principals, *, access_point_stack=None)` | `TenantPolicyDeployResult` | Generates that template and deploys it as its own stack (default `<stack>-tenant-access-points`), creating or updating it and waiting; returns each tenant's access point ARN and alias as `TenantAccessPoint` items, and `operation` `created`, `updated` or `unchanged` |
 | `tenancy.audit(*, principals=None, document_sample=500)` | `TenantAuditResult` | Read-only findings that weaken isolation |
 | `tenancy.verify(document, document_name="tenancy-verify.pdf", *, tenant_ids=None, timeout_seconds=240, email_domain=None)` | `TenantVerifyResult` | Live cross-tenant check with throwaway users; every row is `PASS`, `FAIL`, `SKIP` or `ERROR` |
 
