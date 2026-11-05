@@ -1096,7 +1096,7 @@ api-test-static: ## Static RBAC/authorization scan of all API operations (no AWS
 # the way running them all at once in one pipeline did.
 #
 # The deploy-variant stack-tests (APIGateway hosting, WAF, PRIVATE/VPC, Jobs API,
-# ZAP DAST) in particular run in CI only on the weekly variant-probe schedule,
+# ZAP DAST, tenant isolation) in particular run in CI only on the weekly variant-probe schedule,
 # never on the nightly; run them here on demand, each on its own stack. Two modes:
 #   * STACK_NAME=<existing>  → validate that already-deployed stack (fast)
 #   * omit STACK_NAME        → self-deploy a throwaway stack + validate + teardown
@@ -1188,7 +1188,9 @@ endif
 
 # Live tenant-isolation check against a stack deployed with TenantIsolationMode=Strict.
 # Creates throwaway profiles, tenants, users, IAM roles and an access point stack,
-# and removes them. Not in CI (it creates IAM roles). See docs/multi-tenancy.md.
+# and removes them. In CI it runs only as the weekly variant-probe `tenancy` probe,
+# on a throwaway Strict stack; `make stacktest-tenancy` is that probe run by hand.
+# See docs/multi-tenancy.md.
 verify-tenant-isolation: ## Live tenant-isolation checks vs a Strict stack (STACK_NAME, REGION, YES=1 to skip the prompt)
 ifndef STACK_NAME
 	$(error STACK_NAME is not set. See docs/multi-tenancy.md)
@@ -1251,6 +1253,13 @@ stacktest-hosting-private: ## APIGateway PRIVATE (VPC) hosting variant (needs VP
 
 stacktest-jobsapi: ## Jobs API (VPC) variant (needs VPC_ID=...)
 	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py jobsapi $(_STACKTEST_ARGS)
+
+# Runs the same harness as verify-tenant-isolation. Against STACK_NAME, that stack must
+# already be TenantIsolationMode=Strict; the self-deploy form deploys one. Either way it
+# creates and removes throwaway profiles, tenants, users, two IAM roles and an access
+# point stack. See docs/multi-tenancy.md.
+stacktest-tenancy: ## Tenant isolation (TenantIsolationMode=Strict) variant: runs verify-tenant-isolation (STACK_NAME=... or self-deploy w/ TEMPLATE_URL=...)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py tenancy $(_STACKTEST_ARGS)
 
 # --- Template-TRANSFORM deploy tests (--headless / --govcloud) ---------------
 # These do NOT go through run_stacktest.py: every probe there deploys the

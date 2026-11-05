@@ -2,7 +2,7 @@
 """Run a single deployment-variant stack-test MANUALLY, outside the CI pipeline.
 
 The deploy-variant stack-tests (APIGateway hosting, WAF, PRIVATE/VPC hosting,
-Jobs API, ZAP DAST) used to run automatically on every integration pipeline —
+Jobs API, ZAP DAST, tenant isolation) used to run automatically on every integration pipeline —
 concurrently with the primary suite. Standing up 6 stacks at once bursts the
 account-wide control planes (CloudWatch Logs create-consistency, CodeBuild
 role-trust propagation, IAM CreatePolicy rate limit) and caused flaky failures
@@ -180,7 +180,7 @@ def main():
         return 0
     if ok:
         print(f"✅ Stack-test '{test.name}' PASSED")
-        for k in ("zap_alerts", "jobs_url", "web_acl_arn"):
+        for k in ("zap_alerts", "jobs_url", "web_acl_arn", "tenancy_checks"):
             if k in result:
                 print(f"   {k}: {result[k]}")
         # Point at the full report file(s) so they're easy to open (the detailed

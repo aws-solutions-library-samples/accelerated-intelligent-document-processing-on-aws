@@ -23,6 +23,7 @@ its `make` target and the skill that documents how to run it.
 | WAF-enabled hosting | `make stacktest-waf` | `.claude/skills/run-stack-tests.md` |
 | APIGateway PRIVATE (VPC) hosting | `make stacktest-hosting-private VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
 | Jobs API (VPC) | `make stacktest-jobsapi VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
+| Tenant isolation (`TenantIsolationMode=Strict`) | `make stacktest-tenancy` · against an existing Strict stack: `make verify-tenant-isolation STACK_NAME=…` | `.claude/skills/run-stack-tests.md` |
 | List deploy-variant stack-tests | `make stacktest-list` | `.claude/skills/run-stack-tests.md` |
 | Release-vs-release benchmark | `make benchmark-release …` (alias `make stacktest-benchmark`) | `.claude/skills/run-benchmarks.md` |
 | In-place upgrade (X→Y) test | `make stacktest-upgrade` (pointer) | `.claude/skills/test-upgrade.md` |
@@ -112,7 +113,7 @@ nightly schedule or on request.
 | **ux_nightly** | `ai_ux_test_stories_nightly` (the nightly story set, in parallel shards), then `ai_ux_test_stories_digest` (merges the shards into the night's digest and, on the schedule, compares it with earlier scheduled nights)⁴; on the scheduled `develop` pipeline (not the weekly variant-probe schedule), on a manual one with `UX_TEST_STORIES_RUN=all`, and as a manual button on a push to `develop` | Yes for the shards (Bedrock, Polly; they read the review stack); the digest needs none | after `notify`, so `nightly_notification` never waits for it; each shard keeps to the catalogue's dollar cap and deadline inside a 60-minute job |
 
 **The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE
-hosting, Jobs API) run on their own weekly scheduled pipeline**, not on the nightly,
+hosting, Jobs API, tenant isolation) run on their own weekly scheduled pipeline**, not on the nightly,
 not on a manually clicked deploy, and not on a merge request. The nightly runs the
 primary suite only.
 
@@ -1213,8 +1214,8 @@ commands.
 
 ### Concurrent deployment-variant probes (own stacks)
 - The **deployment-variant probe framework** (below) deploys SECOND,
-  independent stacks — one per probe. Five probes run by default (GLOBAL APIGW,
-  WAF, PRIVATE APIGW, Jobs API, ZAP DAST), **concurrently with the primary suite
+  independent stacks — one per row of `PROBE_VARIANTS` (GLOBAL APIGW, WAF,
+  PRIVATE APIGW, Jobs API, ZAP DAST, tenant isolation), **concurrently with the primary suite
   AND with each other** on their own threads, so their ~30-min deploys overlap the
   primary deploy instead of running back-to-back. Each opts out of the primary
   suite's fail-fast abort machinery, so a primary failure never kills a probe's
@@ -1715,6 +1716,7 @@ a validator**, not a copy-pasted deploy/validate/cleanup function.
 | **APIGateway hosting (PRIVATE)** | `apigwpriv` | `WebUIHosting=APIGateway`, `ApiGatewayVisibility=PRIVATE` | yes | REST API endpoint type is **PRIVATE** and carries a **resource policy** (VPC-only → structural check; CodeBuild can't fetch a private endpoint) |
 | **Jobs API** | `jobsapi` | `EnableJobsApi=true` | yes | stack exposes the **`ApiGatewayEndpoint`** output and its REST API exists (private → structural check) |
 | **ZAP DAST scan** | `zapdast` | *(default hosting)* | no | authenticated **OWASP ZAP** dynamic scan of the deployed UI API — injection/headers/TLS/info-leak classes; **WARN-only** (reports, does not gate yet) |
+| **Tenant isolation (Strict)** | `tenancy` | `TenantIsolationMode=Strict` | no | the live tenant-isolation harness passes every row: cross-tenant reads and uploads refused, strict-mode ingest refusals, generated access points confine each tenant's uploader (see below) |
 
 > **Note:** the Jobs API probe exercises the *additive* `EnableJobsApi` CFN
 > parameter on the STANDARD published template — it does **not** exercise the
@@ -1733,7 +1735,53 @@ a validator**, not a copy-pasted deploy/validate/cleanup function.
 Validators live in `scripts/sdlc/codebuild_deployment.py`:
 `validate_apigw_global_hosting`, `validate_waf_enabled`,
 `validate_apigw_private_hosting`, `validate_jobs_api`,
-`validate_zap_dast`.
+`validate_zap_dast`, `validate_tenant_isolation`.
+
+#### Tenant isolation probe
+
+The `tenancy` probe deploys a stack with `TenantIsolationMode=Strict` and runs
+`scripts/security/live_checks/verify_tenant_isolation.py` against it — the harness
+behind `make verify-tenant-isolation`, run unchanged as a subprocess with `--yes`.
+It needs its own stack because Strict changes the Input and Output bucket policies
+and refuses any upload outside every tenant's prefixes, which the primary suite's
+default-mode stack must not be subject to. It is the one probe that goes beyond
+deploy + feature-smoke: it declares two throwaway tenants, asserts each tenant's
+users read their own document and are refused the other's, asserts the strict-mode
+ingest refusals, deploys the per-tenant access point template
+`idp-cli tenancy generate-policies` writes and asserts a cross-tenant upload is
+refused, and runs `idp-cli tenancy audit`.
+
+`validate_tenant_isolation` passes only when the harness exits 0, prints a complete
+`<passed>/<total> PASS` tally, and reports at least one `verify:` row; each
+condition alone has a form that passes without asserting anything. The tally is in
+the result as `tenancy_checks`, and the failing rows are named in the error.
+
+What it costs over the other probes: one more full IDP stack on the weekly run,
+launched last in the stagger, plus — unlike the structural probes — real document
+processing (`samples/lending_package.pdf`, uploaded once per tenant and once per
+strict-ingest case, though a refused case is not processed) and its own side
+resources: throwaway Configuration Profiles, tenants and Cognito users, two IAM
+roles `idp-tiv-uploader-<tenant>-<hex>` created **without** a permissions boundary,
+and one CloudFormation stack `<stack>-tiv-ap-<hex>`. The harness removes all of
+them in a `finally`. If the build is killed before that runs, the access point
+stack is an `idp-` stack and is reaped by `cleanup_stale_idp_stacks`; the two
+roles are not reaped by anything.
+
+⚠️ The harness calls IAM, STS, CloudFormation, S3 and Cognito directly with the
+build's own credentials, not through the deploy service role. It needs
+`iam:CreateRole`, `iam:PutRolePolicy` and `iam:DeleteRole` on the two roles it
+creates, `sts:AssumeRole` on them, and `cloudformation:CreateStack` on an `idp-`
+stack that creates S3 access points. The roles are named under `idp-` so that the
+IAM writes are covered whichever role the build runs as: `codepipeline-s3.yml`'s own
+`CodeBuildRole` grants `iam:*` on `role/idp-*`, and an external `CodeBuildRoleArn`
+such as `sdlc-iam-role.yml`'s `BuilderRole` (`PowerUserAccess` plus
+`LimitedIAMAccess`) covers them too. **`sts:AssumeRole` is not covered under the
+first shape:** `CodeBuildRole` scopes it to `role/*-failure-agent` on purpose,
+because the CI account is shared between pipelines. Under that shape the harness's
+access-point checks report an `ERROR` row naming the refused assume, and the probe
+fails until the role is granted `sts:AssumeRole` on `role/idp-tiv-uploader-*`,
+which is a decision about the shared CI role, not a code change. Which shape the
+CI account runs is not readable from this tree; the first weekly run shows it.
 
 #### ZAP DAST probe (dynamic security testing)
 

@@ -458,8 +458,8 @@ the deploy works.** It was automatic on `develop` and on non-Draft MRs, which pu
 nightly schedule, a weekly variant-probe schedule (below), and a **manual play button**, available on any MR targeting
 `develop` and on a `develop` pipeline.
 
-The nightly runs the primary suite only. The deployment-variant probes (ZAP DAST and
-the deploy variants in [section 6](#6-live-stack-tiers-manual-plus-the-weekly-probe-schedule)) run on a separate
+The nightly runs the primary suite only. The deployment-variant probes (ZAP DAST,
+tenant isolation and the deploy variants in [section 6](#6-live-stack-tiers-manual-plus-the-weekly-probe-schedule)) run on a separate
 **weekly** schedule, so a probe failure is never read as a nightly regression.
 The schedule itself is a GitLab project setting (**Build › Pipeline schedules**,
 carrying `IDP_RUN_PROBES=true`), not something in this repository; the probes run
@@ -487,8 +487,8 @@ procedure, and each but the first-time-user stories is mandatory for a release.
 Several also run in CI in some form, on GitLab only, so a GitHub pull request covers
 none of them: the dynamic API RBAC matrix is step 12 of the GitLab
 `integration_tests` deployment (`scripts/sdlc/codebuild_deployment.py` shells out to
-`make api-test` against the stack that job deploys); the ZAP DAST and deploy-variant
-rows run on the weekly variant-probe schedule, a scheduled pipeline of its own
+`make api-test` against the stack that job deploys); the ZAP DAST, tenant isolation
+and deploy-variant rows run on the weekly variant-probe schedule, a scheduled pipeline of its own
 separate from the nightly; the UX review runs unattended as the advisory
 `ai_ux_test` job on merge requests that change `src/ui/`; and the first-time-user
 stories run as advisory jobs on merge requests that change `CHANGELOG.md` and every
@@ -507,6 +507,7 @@ the rows run only when a person asks.
 | Inbox end to end | that a message posted through `idp_common.notifications` (direct, Cognito group fan-out, idempotency key, dedupe key) is the one the **deployed** API lists, counts and marks read for its recipient, and that another user cannot reach it. Creates and removes a temporary Cognito group, two users and their Inbox items | `make stacktest-inbox STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Review queues end to end | that a document routed under a profile with review queues on reaches the **deployed** queue, can be claimed, edited and completed through the API with a real Annotator token, and finishes with the final status object, an unchanged machine manifest and a final manifest. Creates and removes a temporary profile, Annotator, Admin and document, and lists that Annotator on the Default queue for the duration of the run (`CHECK_EVENTS=1` adds a temporary EventBridge rule and SQS queue) | `make stacktest-review-queues STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | ZAP DAST (also on the weekly probe schedule, while it is active) | that the deployed HTTP surface has no exploitable finding | `make stacktest-zap STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
+| Tenant isolation (also on the weekly probe schedule, while it is active) | that a stack deployed with `TenantIsolationMode=Strict` keeps two tenants apart: each tenant's users read their own document and are refused the other's, strict-mode ingest refuses an upload outside every tenant's prefixes, and the generated per-tenant access points refuse a cross-tenant upload. Creates and removes throwaway profiles, tenants, Cognito users, two IAM roles and an access point stack | `make stacktest-tenancy` (self-deploys a Strict stack) · `make verify-tenant-isolation STACK_NAME=…` (an existing Strict stack) | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Deploy variants (also on the weekly probe schedule, while it is active) | that each hosting/parameter combination actually creates and serves | `make stacktest-hosting-global` · `make stacktest-waf` · `make stacktest-hosting-private` (VPC) · `make stacktest-jobsapi` (VPC) — list them with `make stacktest-list` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Template transforms | that a **transformed** template deploys and processes a real document — the only tier that can | `make transform-deploy-test-headless` · `make transform-deploy-test-govcloud` · both: `make transform-deploy-test-all` | [`transform-deploy-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/transform-deploy-test.md) |
 | Seller Entitlement Service e2e | that the service deploys into a seller account, grants correctly, and **refuses** correctly | `make stacktest-seller` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
