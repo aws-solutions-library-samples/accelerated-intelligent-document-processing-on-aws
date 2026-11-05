@@ -560,7 +560,8 @@ jobs:
 
 @pytest.mark.unit
 def test_the_lines_that_hid_an_npm_failure_are_caught() -> None:
-    """The ``.gitlab-ci.yml`` lines this module was written for, verbatim.
+    """The ``.gitlab-ci.yml`` install lines this module was written for, as they
+    stood before this change, abridged to the commands around each one.
 
     The three ``before_script`` installs are refused: each is followed by the job's
     gate, which is the command that reported a missing ``make`` target in place of
