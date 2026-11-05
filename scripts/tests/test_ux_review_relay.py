@@ -95,6 +95,7 @@ QUEUE_ITEM = (
     '    uid=1_12 button "Process Changes"',
     '    uid=1_13 textbox "Loan amount" value="250000" focusable',
     '    uid=1_14 checkbox "Signed"',
+    '    uid=1_15 button "Edit Page Grouping"',
 )
 PROCESS_CHANGES = "1_12"
 
@@ -273,9 +274,10 @@ def test_after_the_refusal_the_review_goes_on_with_what_commits_nothing(
 def test_every_control_on_the_queue_item_that_would_commit_is_refused(
     make_rig: Callable[..., Rig],
 ) -> None:
-    """Skip and Save by name, and every key but Tab and Escape and every edit,
-    because the item's editor saves a draft by itself and its first save claims
-    the item as surely as Process Changes does. Tab still moves the focus."""
+    """Skip and Save by name, and every key but Tab and Escape, every edit and Edit
+    Page Grouping, because the item's editor saves a draft by itself and its first
+    save claims the item as surely as Process Changes does, and so does opening the
+    grouping board. Tab still moves the focus."""
     rig = make_rig({"calls": {"take_snapshot": [page(*QUEUE_ITEM)]}})
     rig.call("take_snapshot")
     calls: list[tuple[str, dict[str, Any]]] = [
@@ -288,6 +290,7 @@ def test_every_control_on_the_queue_item_that_would_commit_is_refused(
         ("type_text", {"text": "1"}),
         ("drag", {"from_uid": "1_13", "to_uid": "1_14"}),
         ("click", {"uid": "1_14"}),
+        ("click", {"uid": "1_15"}),
     ]
     for name, arguments in calls:
         answer = rig.relay.call(name, arguments)
@@ -303,6 +306,7 @@ def test_every_control_on_the_queue_item_that_would_commit_is_refused(
         ("type_text", editor),
         ("drag", editor),
         ("click", editor),
+        ("click", "Edit Page Grouping"),
     ]
     assert {line["refused"] for line in rig.refusals()} == {"commit_point"}
     assert rig.call("press_key", key="Tab").result == recorded("press_key")

@@ -26,8 +26,10 @@ control) by the element that has focus, whether ``press_key`` presses it or
 as Space. On a page whose editor may save its own edits, which the edit screen's
 does and marks with Cancel and discard changes while it is editable
 (:data:`AUTOSAVE_CONTROLS`), it also refuses every call that changes a value there:
-the editing tools, a key other than Tab or Escape, and a click on a checkbox, option
-or another control a click sets. It judges all of these against the page as it is
+the editing tools, a key other than Tab or Escape, a click on a checkbox, option
+or another control a click sets, and a click on a control that claims the item
+before it opens what its name says (:data:`CLAIM_FIRST_CONTROLS`), as the edit
+screen's Edit Page Grouping does. It judges all of these against the page as it is
 when the call arrives: after any browser call but a screenshot whose answer held no
 snapshot, the relay reads the page again for itself before it lets such a call
 through, so a control relabelled in place (a wizard's "Next" that becomes "Create")
@@ -90,7 +92,7 @@ from . import agent, processes, tool_profiles
 
 #: Bumped when the relay would serve, refuse or journal a call differently for the
 #: same page, which starts a new series for every flow.
-RELAY_REVISION = 6
+RELAY_REVISION = 7
 PROTOCOL_VERSION = "2025-06-18"
 CLIENT_NAME = "ux-story"
 CLIENT_VERSION = "1"
@@ -190,6 +192,14 @@ AUTOSAVE_CONTROLS: tuple[str, ...] = (
     "discard changes",
     "cancel and discard changes",
 )
+#: Controls refused on a page with an :data:`AUTOSAVE_CONTROLS` marker, though their
+#: names commit nothing: on such a page each can claim an unassigned review-queue item
+#: before it does what its name says, as the editor's first save does. The edit
+#: screen's Edit Page Grouping opens the grouping board only once the item is the
+#: Admin's (``production-item-edit-model.tsx``, the board's ``beforeOpen``). The page
+#: shows the marker on every item that would claim, and on an item the Admin already
+#: holds as well, where the refusal costs a look at the board and nothing more.
+CLAIM_FIRST_CONTROLS: tuple[str, ...] = ("edit page grouping",)
 #: The browser tools that set a value wherever they are pointed.
 EDITING_TOOLS: tuple[str, ...] = ("fill", "fill_form", "type_text", "drag")
 #: Roles of the controls a click sets a value on.
@@ -705,6 +715,24 @@ class Snapshot:
         for index in self.indices(uid):
             if any(node.role in EDITING_ROLES for node in self.chain(index)):
                 return "commit_point", marker
+        return None
+
+    def claims_first(self, uid: str) -> tuple[str, str] | None:
+        """``(commit_point, name)`` when clicking ``uid`` would claim before it opens.
+
+        That is a click on a page with an :attr:`autosave_control` on an element
+        carrying ``uid`` whose own name, or the name of a control holding it, begins
+        with one of :data:`CLAIM_FIRST_CONTROLS`; ``name`` is that one's.
+        """
+        if self.autosave_control is None:
+            return None
+        for index in self.indices(uid):
+            for position in self._chain_indices(index):
+                node = self.nodes[position]
+                if position != index and node.role not in CONTROL_ROLES:
+                    continue
+                if begins_with(plain(node.name), CLAIM_FIRST_CONTROLS):
+                    return "commit_point", node.name
         return None
 
     def _submits(self, index: int) -> bool:
@@ -1541,7 +1569,7 @@ class CommitGuard:
                     return "invalid", None, PAGE_CHANGED_TEXT
                 found = page.control_of(uid)
             if found is None:
-                found = page.sets_a_value(uid)
+                found = page.sets_a_value(uid) or page.claims_first(uid)
         return None if found is None else self._refusal(found)
 
     def _guard_edit(self) -> tuple[str, str | None, str] | None:

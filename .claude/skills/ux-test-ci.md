@@ -66,10 +66,13 @@ name, so a button such as Delete or Process Changes is refused whether it commit
 at once or only opens a confirmation, and Process Changes on a review-queue item
 commits at once, with no confirmation. On a page whose editor saves its own edits,
 which the edit screen marks with Cancel and discard changes, every edit and every
-key but Tab and Escape is refused. A refusal is the guard working, not a finding:
-report the step it stopped under `not_covered` and carry on another way. Each one is
-listed in the job's `refusals.jsonl`. The guard reads names only, so the rule above
-still binds wherever it lets a control through.
+key but Tab and Escape is refused, and so is Edit Page Grouping, because on a
+review-queue item nobody holds, opening the grouping board claims the item first.
+Open the grouping board from a document page's More Actions instead. A refusal is
+the guard working, not a finding: report the step it stopped under `not_covered`
+and carry on another way. Each one is listed in the job's `refusals.jsonl`. The
+guard reads names and the page, never what a control sends, so the rule above still
+binds wherever it lets a control through.
 
 ### 5. Blocked is an outcome, not breakage
 

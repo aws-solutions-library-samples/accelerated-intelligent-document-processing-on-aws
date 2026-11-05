@@ -772,15 +772,21 @@ treats that file as diagnostics only.
   prompt, and any edit or key but Tab and Escape on a page whose editor saves its own
   edits are refused and never sent, so Process Changes on an unassigned review-queue
   item, which claims and finishes it with no confirmation, cannot consume a shared
-  fixture. The model is told the step would change the shared stack, the run goes on,
+  fixture. On such a page Edit Page Grouping is refused too
+  (`story_relay.CLAIM_FIRST_CONTROLS`), because opening the grouping board claims an
+  unassigned item before the board opens. The model is told the step would change the shared stack, the run goes on,
   and each refusal is listed in `refusals.jsonl` with `origin` `guard` after the
   proxy's records, and counted in `summary.json` (`guard`). The guard is the one
   `scripts/tests/test_ux_story_relay.py` closes over every mutation the web UI
   declares (`MUTATION_CONTROLS`), so a control added to the UI is checked once, for
-  both; `scripts/tests/test_ux_review_relay.py` and `scripts/tests/test_ai_ux_test.py`
+  both, and that suite also finds every call in `src/ui/src` that claims an item and
+  fails on one not mapped to the controls that reach it (`CLAIM_CALL_SITES`), a
+  callback such as the grouping board's `beforeOpen` included.
+  `scripts/tests/test_ux_review_relay.py` and `scripts/tests/test_ai_ux_test.py`
   replay the Process Changes click through the relay and the orchestrator. It judges
-  names only, so a control that commits under a name it has no verb for still gets
-  through. Everything the guard lets through is forwarded as the model sent it and
+  names and the page, not what a handler sends, so a control that commits under a
+  name it has no verb for still gets through, and which control reaches a claim call
+  is written by hand rather than derived. Everything the guard lets through is forwarded as the model sent it and
   answered with `chrome-devtools-mcp`'s own answer.
 - None of the granted browser tools runs script in the page. Denying
   `evaluate_script` by name is not enough for that, because by default
