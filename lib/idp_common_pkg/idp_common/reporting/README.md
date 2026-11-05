@@ -184,10 +184,23 @@ reporter = SaveReportingData(
 > `tests/unit/reporting/test_pricing_lookup.py` pins the rates by hand and
 > asserts every selectable model has an exact pricing entry.
 
+### Each run reports only its own usage
+
+`save_metering_data` receives `document.metering`, which holds only the current run's
+usage. A resubmitted document (Process Changes, a review finalize, the SDK rerun)
+arrives at `queue_processor.start_workflow` carrying the usage of its earlier runs,
+which is moved into `document.metering_baseline` there; callers of SaveReportingData
+strip `metering_baseline` from the payload. So each run writes one set of metering
+rows and one `DocumentEstimatedCost` datapoint for the stages it ran, and a
+document's rows summed over its runs give its total. The tracking-table `Metering`
+attribute keeps the cumulative total (`idp_common.utils.cumulative_metering`), which
+is what the Web UI's Estimated Cost shows. Rows already written for documents
+reprocessed before this split was introduced are not rewritten.
+
 ### One rate per unit: pricing sees sums, never single requests
 
 Step 4 prices an **aggregate**. By the time `save_metering_data` runs, every call
-made on a document has been merged by `idp_common.utils.merge_metering_data`,
+made on a document in this run has been merged by `idp_common.utils.merge_metering_data`,
 which adds values per (metering key, unit); the Athena rollups
 (`src/lambda/data_mart_rollup`), the Web UI document cost table, the benchmark
 harness and the Test Studio results resolver all sum further, across documents

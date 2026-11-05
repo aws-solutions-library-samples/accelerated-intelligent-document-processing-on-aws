@@ -215,6 +215,10 @@ const GenerateDraftLabelsModal = ({ visible, testSetId, setTotalCount, onDismiss
       }
     >
       <SpaceBetween size="l">
+        <Box>
+          Generated labels are written to this set&apos;s ground truth immediately, as draft labels to review. Its current labels are
+          preserved in the set&apos;s published version.
+        </Box>
         {pageLabelable.length === 0 && !loadingDocs && !isPartialView && (
           <Alert type="info" header="Every document already has ground truth">
             There is nothing to draft-label. Run a test to score the pipeline against this set instead.

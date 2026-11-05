@@ -22,7 +22,9 @@ import { Box, Container, Header, SpaceBetween } from '@cloudscape-design/compone
 import ActionBar from '../common/ActionBar';
 import type { ActionBarControl } from '../common/ActionBar';
 import DocumentPageHeader from '../common/DocumentPageHeader';
+import { PROCESS_CHANGES_LABEL } from '../common/labels';
 import { ReportModal, SummaryReportModal } from '../common/ReportModal';
+import VersionBadge from '../common/VersionBadge';
 import EditScreenLayout from './EditScreenLayout';
 import ProcessingReportContent from './ProcessingReportContent';
 import type { EditView } from './use-edit-view';
@@ -230,7 +232,7 @@ const EditActions = ({
         {
           kind: 'button',
           id: 'process',
-          text: 'Process Changes',
+          text: PROCESS_CHANGES_LABEL,
           variant: 'primary',
           disabledReason: primaryReason,
           loading: busy === 'process',
@@ -257,6 +259,8 @@ interface EditScreenProps {
   status?: string | null;
   /** The full object key, shown under the title. */
   objectKey: string;
+  /** After the status: the open test-set version's `vN → vM` badge, with its hover text. */
+  badge?: { text: string; hover: string };
   actions: EditActionsProps;
   /** Alerts about the item's state (one EditorNotices). */
   notices?: React.ReactNode;
@@ -287,6 +291,7 @@ const EditScreen = ({
   title,
   status,
   objectKey,
+  badge,
   actions,
   notices,
   context,
@@ -307,6 +312,7 @@ const EditScreen = ({
             title={title}
             status={status}
             objectKey={objectKey}
+            badge={badge && <VersionBadge text={badge.text} hover={badge.hover} />}
             actions={
               <EditActions
                 {...actions}

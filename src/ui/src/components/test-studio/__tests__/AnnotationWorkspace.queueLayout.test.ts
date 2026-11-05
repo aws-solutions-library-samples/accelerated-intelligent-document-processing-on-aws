@@ -36,6 +36,12 @@ describe('document filters', () => {
     expect(SOURCE).toMatch(/case 'unassigned':\s*return !isDone\(d\) && !d\.assignedTo;/);
     expect(SOURCE).toMatch(/const isClaimable = \(item: QueueItem\): boolean => !item\.assignedTo && !isDone\(item\);/);
   });
+
+  it('opens on every document, reviewed ones included, from a ?show=reviewed link', () => {
+    // A fully labelled set's "Review the set's documents" lands here (testSetReviewedHref).
+    expect(SOURCE).toMatch(/searchParams\.get\('show'\) === SHOW_REVIEWED \? 'all' : DEFAULT_STATUS_FILTER/);
+    expect(SOURCE).toMatch(/const showReviewed = statusFilter === 'all';/);
+  });
 });
 
 describe('queue progress, key metrics and annotators', () => {

@@ -132,7 +132,13 @@ def _handle(event, context):
         )
         if section_already_processed:
             logger.info(f"Skipping rule validation for section {section_id} - already has rule validation results")
-            
+
+            # The section result carries only what this invocation spent, as in
+            # the extraction skip branch (#1665): the per-section results are
+            # merged onto the document metering downstream, so returning the
+            # incoming metering here would count it once more per section.
+            full_document.metering = {}
+
             # Add Lambda metering for rule validation skip execution
             try:
                 lambda_metering = calculate_lambda_metering("RuleValidation", context, start_time)

@@ -18,7 +18,6 @@ query GetMyReviewQueues($itemLimit: Int) {
       definedInConfig
     }
     myClaimCount
-    enabledProfiles
     items {
       items {
         objectKey

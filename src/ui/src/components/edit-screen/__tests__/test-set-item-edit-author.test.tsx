@@ -3,9 +3,9 @@
 
 /**
  * An Author on a Test Studio item, over the real adapter and edit flags. What has to
- * hold: an Author edits authored ground truth once Start editing has opened the version
- * transition; Save keeps a draft through the server (saveTestSetDocumentSectionDraft) and
- * Process Changes applies it (saveTestSetDocumentSection), never straight to S3; a document with a review copy stays view-only for an Author, whose
+ * hold: an Author edits authored ground truth with no version open (draft-first); Save keeps a draft through the server (saveTestSetDocumentSectionDraft) and
+ * Process Changes opens the version behind a confirmation and applies it
+ * (saveTestSetDocumentSection), never straight to S3; a document with a review copy stays view-only for an Author, whose
  * completion (completeSectionReview) excludes them, and says why.
  */
 
@@ -32,6 +32,7 @@ vi.mock('../../../hooks/use-user-role', () => ({
     isReviewer: false,
     isAnnotator: false,
     canAnnotate: true,
+    canWorkTestSetQueues: false,
     loading: false,
     allowedConfigVersions: null,
   }),
@@ -120,16 +121,16 @@ const renderItem = () =>
   );
 
 describe('an Author on a Test Studio item', () => {
-  it('edits authored ground truth after Start editing, saving a draft and applying it through the server', async () => {
+  it('edits authored ground truth with no version open, saving a draft and applying it through the server', async () => {
     renderItem();
     await waitFor(() => expect(editorProps).not.toBeNull());
-    // Read-only until the version transition is open.
-    expect(editorProps!.isReadOnly).toBe(true);
-    const start = createWrapper(document.body)
-      .findAllButtons()
-      .find((b) => b.getElement().textContent === 'Start editing')!;
-    await act(async () => start.click());
-    await waitFor(() => expect(editorProps!.isReadOnly).toBe(false));
+    // Draft-first: editable before a version is open, with no separate step to open it.
+    expect(editorProps!.isReadOnly).toBe(false);
+    expect(
+      createWrapper(document.body)
+        .findAllButtons()
+        .some((b) => b.getElement().textContent === 'Start editing'),
+    ).toBe(false);
 
     await act(async () => {
       await (editorProps!.onSave as (id: string, d: Record<string, unknown>) => Promise<unknown>)('1', { inference_result: { Total: 1 } });
@@ -137,6 +138,8 @@ describe('an Author on a Test Studio item', () => {
     const draft = graphql.mock.calls.find(([arg]) => (arg as { query: unknown }).query === saveTestSetDocumentSectionDraft);
     expect(draft?.[0].variables).toMatchObject({ testSetId: 'ts-1', objectKey: 'a.pdf', sectionId: '1', baseRevision: 0 });
     expect(sent()).not.toContain(saveTestSetDocumentSection);
+    // Save opened no version.
+    expect(sent()).not.toContain(openTestSetAnnotationDraft);
 
     const primary = createWrapper(document.body)
       .findHeader()!
@@ -144,7 +147,19 @@ describe('an Author on a Test Studio item', () => {
       .findAllButtons()
       .find((b) => (b.findTextRegion()?.getElement().textContent ?? b.getElement().textContent) === 'Process Changes')!;
     await act(async () => primary.click());
+    // No version is open, so Process Changes asks first.
+    await waitFor(() => expect(createWrapper(document.body).findModal()).not.toBeNull());
+    const modal = createWrapper(document.body).findModal()!;
+    expect(modal.findHeader().getElement().textContent).toBe('Open a new version and save ground truth');
+    await act(async () =>
+      modal
+        .findFooter()!
+        .findAllButtons()
+        .find((b) => b.getElement().textContent === 'Process Changes')!
+        .click(),
+    );
     await waitFor(() => expect(sent()).toContain(saveTestSetDocumentSection));
+    expect(sent()).toContain(openTestSetAnnotationDraft);
     expect(sent()).not.toContain(uploadDocument);
     expect(sent()).not.toContain(completeSectionReview);
   });

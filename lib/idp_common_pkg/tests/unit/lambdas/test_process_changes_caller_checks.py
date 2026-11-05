@@ -419,6 +419,36 @@ class TestConfigScope:
         _assert_untouched(env, "InProgress")
 
 
+@pytest.mark.unit
+class TestReviewerOnATestSetDocument:
+    """Test-set documents are worked by Annotators: a Reviewer-only caller is refused
+    processChanges on a document carrying a ``TestSetId``, even as its review owner,
+    and nothing is written."""
+
+    def test_a_reviewer_owner_is_refused_a_test_set_document(self, env, caplog):
+        _seed(env, **_owned(), TestSetId="ts-1")
+        with caplog.at_level("WARNING"):
+            with pytest.raises(
+                PermissionError, match="^Unauthorized: test-set documents are worked"
+            ) as raised:
+                _call(env)
+        # Attributed to the object, not to the group floor.
+        assert type(raised.value).__name__ == "ResourceAccessDenied"
+        assert "Forbidden: reviewer" in caplog.text
+        _assert_untouched(env, "InProgress")
+
+    @pytest.mark.parametrize("extra", ["Author", "Annotator"])
+    def test_a_reviewer_who_also_works_test_sets_is_not_refused_by_this_rule(
+        self, env, extra
+    ):
+        _seed(env, **_owned(), TestSetId="ts-1")
+        _assert_processed(env, _call(env, groups=("Reviewer", extra)))
+
+    def test_an_admin_processes_a_test_set_document(self, env):
+        _seed(env, **_owned(HITLReviewOwner="alice"), TestSetId="ts-1")
+        _assert_processed(env, _call(env, groups=("Admin",), username="admin"))
+
+
 # --------------------------------------------------------------------- allowed
 
 

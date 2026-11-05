@@ -2948,9 +2948,15 @@ Resources:
                 maximum: 1.0
                 default: 0.8
                 order: 1
+              route_missing_required_fields:
+                type: boolean
+                title: Review missing required fields
+                description: "With the Default review queue on, also send a document to review when a field its class schema marks required has no extracted value. Legacy HITL triggers on confidence alerts only."
+                default: true
+                order: 2
               notifications:
                 type: object
-                order: 2
+                order: 3
                 sectionLabel: "Inbox messages"
                 description: "Retention and per-user cap for Inbox messages. Applies whether or not HITL review is enabled; changes apply to messages written after the change."
                 properties:

@@ -1258,7 +1258,6 @@ export const getMyReviewQueues = /* GraphQL */ `
         definedInConfig
       }
       myClaimCount
-      enabledProfiles
       items {
         items {
           objectKey

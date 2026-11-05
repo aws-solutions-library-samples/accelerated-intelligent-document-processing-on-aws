@@ -606,8 +606,7 @@ class TestAnnotatorObjectScope:
         service.update_document.assert_called_once()
 
     # -- roles the check does not apply to are unchanged ---------------------
-    @pytest.mark.parametrize("group", ["Admin", "Reviewer"])
-    def test_admin_and_reviewer_are_unaffected(self, resolver, document, group):
+    def test_admin_is_unaffected(self, resolver, document):
         """Pinned, because a scope check that caught the roles it does not apply to
         would break ordinary review. Neither table name is configured here, so a
         check that ran at all would fail closed and this would refuse."""
@@ -615,11 +614,65 @@ class TestAnnotatorObjectScope:
         result, service = _call(
             resolver,
             document,
-            _event(object_key=document_key, sections=self._regroup(), groups=(group,)),
+            _event(
+                object_key=document_key, sections=self._regroup(), groups=("Admin",)
+            ),
         )
 
         assert result["success"] is True
         service.update_document.assert_called_once()
+
+    def test_a_reviewer_regroups_a_production_document(self, resolver, document):
+        """A Reviewer works production review: a document with no `TestSetId` is
+        re-grouped as before, after the one tracking-table read."""
+        tracking = _FakeTable(item={"ObjectKey": "packet.pdf"})
+        result, service = _call_scoped(
+            resolver,
+            document,
+            _event(sections=self._regroup(), groups=("Reviewer",)),
+            tracking=tracking,
+            users=_FakeTable(),
+        )
+
+        assert result["success"] is True
+        service.update_document.assert_called_once()
+        assert tracking.get_item_calls == 1
+
+    def test_a_reviewer_is_refused_a_test_set_document(
+        self, resolver, document, caplog
+    ):
+        """Test-set documents are worked by Annotators: a Reviewer-only caller is
+        refused, as an object refusal (`ResourceAccessDenied`, a `PermissionError`),
+        with a WARNING "Forbidden" line, and nothing is written."""
+        tracking = _FakeTable(item={"TestSetId": "set-a"})
+        with caplog.at_level("WARNING"):
+            with pytest.raises(
+                resolver.ResourceAccessDenied,
+                match="^Unauthorized: test-set documents are worked by Annotators",
+            ) as raised:
+                _call_scoped(
+                    resolver,
+                    document,
+                    _event(sections=self._regroup(), groups=("Reviewer",)),
+                    tracking=tracking,
+                    users=_FakeTable(),
+                )
+        assert isinstance(raised.value, PermissionError)
+        assert "Forbidden: reviewer" in caplog.text
+        assert tracking.get_item_calls == 1
+
+    def test_a_reviewer_whose_document_cannot_be_read_is_refused(
+        self, resolver, document
+    ):
+        """An unanswerable test-set lookup refuses, as it does for an Annotator."""
+        with pytest.raises(resolver.ResourceAccessDenied):
+            _call_scoped(
+                resolver,
+                document,
+                _event(sections=self._regroup(), groups=("Reviewer",)),
+                tracking=_FakeTable(raises=RuntimeError("throttled")),
+                users=_FakeTable(),
+            )
 
     def test_a_caller_holding_both_reviewer_and_annotator_is_still_scoped(
         self, resolver, document

@@ -107,6 +107,7 @@ _MEMBERSHIP_HALVES = {
     "_caller_refs": ("self.directory.in_scope(", "self.directory.is_member("),
 }
 _ITEM_SCOPE_RULE = "_sees"
+_PROFILE_SCOPE_RULE = "_admits"
 
 # Test Studio queue reads an Annotator reaches across sets, which a single
 # `testSetId` cannot confine: the queue list is filtered to the sets whose queue
@@ -371,13 +372,17 @@ def test_the_review_queue_membership_rules_check_scope_and_membership():
         body = ast.unparse(methods[rule])
         for half in _MEMBERSHIP_HALVES[rule]:
             assert half in body, f"{rule} no longer calls {half}"
-    # The item rule compares the item's own profile with `scope_allows`.
-    assert _ITEM_SCOPE_RULE in methods, (
-        f"{_REVIEW_QUEUE_SERVICE_CLASS}.{_ITEM_SCOPE_RULE} not found"
-    )
+    # The item rule compares the item's own profile with `scope_allows`, through the
+    # one profile matcher the queue summaries share (`_admits`).
+    for rule in (_ITEM_SCOPE_RULE, _PROFILE_SCOPE_RULE):
+        assert rule in methods, f"{_REVIEW_QUEUE_SERVICE_CLASS}.{rule} not found"
     item_rule = ast.unparse(methods[_ITEM_SCOPE_RULE])
-    assert "scope_allows(caller.allowed_versions, record.profile)" in item_rule, (
-        f"{_ITEM_SCOPE_RULE} no longer compares the item's own profile with scope_allows"
+    assert "_admits(caller, record.profile)" in item_rule, (
+        f"{_ITEM_SCOPE_RULE} no longer decides by the item's own profile"
+    )
+    profile_rule = ast.unparse(methods[_PROFILE_SCOPE_RULE])
+    assert "scope_allows(caller.allowed_versions, profile)" in profile_rule, (
+        f"{_PROFILE_SCOPE_RULE} no longer compares the profile with scope_allows"
     )
 
     ops = _operations()

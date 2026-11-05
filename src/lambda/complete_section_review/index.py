@@ -65,7 +65,8 @@ def handler(event, context):
     # which AppSync silently ignores on a multi-auth API).
     #
     # Annotator group membership only reaches the operation; _assert_annotator_scope
-    # then narrows it to documents in the caller's allowedTestSets.
+    # then narrows it to documents in the caller's allowedTestSets, and keeps a
+    # Reviewer-only caller to production documents.
     if not ({"Admin", "Reviewer", "Annotator"}.intersection(user_groups)):
         logger.warning(
             f"Forbidden: caller {user_email} (groups={user_groups}) "
@@ -89,13 +90,13 @@ def handler(event, context):
     if field_name == "claimReview":
         if not object_key:
             raise ValueError("objectKey is required")
-        _assert_annotator_scope(event, object_key)
+        _assert_annotator_scope(event, user_groups, object_key, user_email)
         return claim_review(object_key, username, user_email)
 
     if field_name == "releaseReview":
         if not object_key:
             raise ValueError("objectKey is required")
-        _assert_annotator_scope(event, object_key)
+        _assert_annotator_scope(event, user_groups, object_key, user_email)
         return release_review(object_key, username, user_email, is_admin)
 
     if field_name == "skipAllSectionsReview":
@@ -117,6 +118,7 @@ def handler(event, context):
                 "reason is required and must be one of: " + ", ".join(SKIP_ALL_REASONS)
             )
         note = (arguments.get("note") or "").strip()[:MAX_SKIP_NOTE] or None
+        _assert_annotator_scope(event, user_groups, object_key, user_email)
         return skip_all_sections_review(
             object_key, username, user_email, reason, note, is_admin=is_admin
         )
@@ -135,6 +137,7 @@ def handler(event, context):
             raise ValueError("objectKey and sectionId are required")
         if not edited_data:
             raise ValueError("editedData is required")
+        _assert_annotator_scope(event, user_groups, object_key, user_email)
         return save_section_review_edits(
             object_key, section_id, edited_data, username, is_admin
         )
@@ -142,7 +145,7 @@ def handler(event, context):
     if not object_key or not section_id:
         raise ValueError("objectKey and sectionId are required")
 
-    _assert_annotator_scope(event, object_key)
+    _assert_annotator_scope(event, user_groups, object_key, user_email)
     _assert_test_set_assignee(event, object_key, user_email)
     result = complete_section_review(
         object_key, section_id, edited_data, username, user_email
@@ -242,24 +245,43 @@ def _assert_configuration_scope(event, object_key, user_groups):
     )
 
 
-def _assert_annotator_scope(event, object_key):
-    """Verify a scoped Annotator may touch this document's test set.
+def _assert_annotator_scope(event, groups, object_key, email):
+    """Verify the caller may work this document, given its test set (if any).
 
-    A review document carries its originating ``TestSetId``, which is checked
-    against the caller's allowedTestSets. A document with no test set is production
-    HITL work and is refused.
+    The document's tracking item is read once, and only for a caller who is scoped:
+
+    * A scoped Annotator: a review document carries its originating ``TestSetId``,
+      which is checked against the caller's allowedTestSets. A document with no test
+      set is production HITL work and is refused.
+    * A Reviewer who is not also Admin, Author or Annotator works production review
+      only: a document with a ``TestSetId`` is refused. Test-set documents are
+      worked by Annotators.
 
     Only Admin and Author are exempt — the same set ``testset_scope`` treats as
     unscoped. Exempting Reviewer as well turned object scope *off* for anyone holding
-    both groups instead of intersecting the two, so the two enforcement layers
-    disagreed: the library refuses such a caller, this Lambda waved them through.
-    Since annotators are assigned by hand in Cognito (there is no external-IdP
-    mapping for the role), holding both is an easy mistake to make.
+    both Reviewer and Annotator instead of intersecting the two, so the two
+    enforcement layers disagreed: the library refuses such a caller, this Lambda
+    waved them through. Since annotators are assigned by hand in Cognito (there is no
+    external-IdP mapping for the role), holding both is an easy mistake to make.
     """
-    groups = (event.get("identity") or {}).get("claims", {}).get("cognito:groups") or []
-    if isinstance(groups, str):
-        groups = [groups]
-    if "Annotator" not in groups or {"Admin", "Author"}.intersection(groups):
+    if {"Admin", "Author"}.intersection(groups):
+        return
+    is_annotator = "Annotator" in groups
+    if not is_annotator and "Reviewer" not in groups:
+        return
+
+    test_set_id, _filename, _doc = _test_set_of(object_key)
+
+    if not is_annotator:
+        if test_set_id:
+            logger.warning(
+                "Forbidden: reviewer %s may not work test-set document %s",
+                email,
+                object_key,
+            )
+            raise PermissionError(
+                "Unauthorized: test-set documents are worked by Annotators"
+            )
         return
 
     from idp_common.testset_scope import (
@@ -267,11 +289,6 @@ def _assert_annotator_scope(event, object_key):
         assert_can_access_test_set,
     )
 
-    table = dynamodb.Table(TRACKING_TABLE_NAME)
-    doc = (
-        table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get("Item") or {}
-    )
-    test_set_id = doc.get("TestSetId")
     if not test_set_id:
         logger.warning(
             f"Forbidden: annotator attempted review of non-test-set document "
