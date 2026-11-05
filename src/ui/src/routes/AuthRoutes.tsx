@@ -19,6 +19,7 @@ import DocumentsRoutes from './DocumentsRoutes';
 import DocumentsQueryRoutes from './DocumentsQueryRoutes';
 import DocumentsAnalyticsRoutes from './DocumentsAnalyticsRoutes';
 import TestStudioRoutes from './TestStudioRoutes';
+import RequireRole from './RequireRole';
 import AgentChatRoutes from './AgentChatRoutes';
 import QuickStartWidget from '../components/agent-chat/QuickStartWidget';
 import FeaturesRoutes from './FeaturesRoutes';
@@ -47,6 +48,9 @@ import {
 } from './constants';
 
 const logger = new ConsoleLogger('AuthRoutes');
+
+// Who opens Test Studio. A Reviewer works Production review queues only.
+const TEST_STUDIO_ROLES = ['Admin', 'Author', 'Annotator', 'Viewer'] as const;
 
 interface AuthRoutesProps {
   redirectParam: string;
@@ -167,7 +171,15 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
       <Route path={`${FEATURES_PATH_PREFIX}/*`} element={<FeaturesRoutes />} />
       <Route path={`${DOCUMENTS_KB_QUERY_PATH}/*`} element={<DocumentsQueryRoutes />} />
       <Route path={`${DOCUMENTS_ANALYTICS_PATH}/*`} element={<DocumentsAnalyticsRoutes />} />
-      <Route path={`${TEST_STUDIO_PATH}/*`} element={<TestStudioRoutes />} />
+      {/* Test Studio is not a Reviewer's: a Reviewer who also holds one of these roles keeps it. */}
+      <Route
+        path={`${TEST_STUDIO_PATH}/*`}
+        element={
+          <RequireRole roles={TEST_STUDIO_ROLES}>
+            <TestStudioRoutes />
+          </RequireRole>
+        }
+      />
       <Route path={`${DOCUMENTS_PATH}/*`} element={<DocumentsRoutes />} />
       {/* Home › Inbox, which every user has. */}
       <Route path={`${INBOX_PATH}/*`} element={<InboxRoutes />} />

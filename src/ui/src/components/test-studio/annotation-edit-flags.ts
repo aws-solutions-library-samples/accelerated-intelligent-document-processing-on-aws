@@ -11,6 +11,8 @@
  * them without importing a page.
  */
 
+import { PROCESS_CHANGES_LABEL } from '../common/labels';
+
 /** The role flags these decisions read, as `useUserRole` reports them. */
 export interface AnnotationRoles {
   isAdmin: boolean;
@@ -47,9 +49,10 @@ export interface AnnotationSelection {
  * `canAnnotate`.
  *
  * A document with a review record saves through `completeSectionReview`
- * (`Admin, Reviewer, Annotator`). One without saves through the editor's direct-to-S3
- * write, which needs `uploadDocument` (`Admin, Author`). So `Author` is refused the
- * first and `Annotator` the second.
+ * (`Admin, Annotator` on a test-set document; its Reviewer group covers Production
+ * documents only). One without saves through `saveTestSetDocumentSection`
+ * (`Admin, Author, Annotator`). So `Author` is refused the first. A Reviewer works
+ * Production queues only and is refused both.
  *
  * Gating on `canAnnotate` (Admin | Author | Annotator) offered editing to users the
  * server would refuse: an Annotator would have corrected a class and lost it to an
@@ -59,15 +62,17 @@ export interface AnnotationSelection {
 export const saveCapabilities = (
   roles: AnnotationRoles,
 ): { canSaveViaReview: boolean; canSaveDirectToBaseline: boolean; canDraft: boolean } => ({
-  canSaveViaReview: roles.isAdmin || roles.isReviewer || roles.isAnnotator,
-  // saveTestSetDocumentSection: an Annotator or a Reviewer saves only documents assigned to them.
-  canSaveDirectToBaseline: roles.isAdmin || roles.isAuthor || roles.isAnnotator || roles.isReviewer,
+  // completeSectionReview also admits a Reviewer, but only on Production documents: the
+  // server refuses a Reviewer-only caller on a test-set document.
+  canSaveViaReview: roles.isAdmin || roles.isAnnotator,
+  // saveTestSetDocumentSection: an Annotator saves only documents assigned to them.
+  canSaveDirectToBaseline: roles.isAdmin || roles.isAuthor || roles.isAnnotator,
   // saveTestSetDocumentSectionDraft: an Author only on authored ground truth.
-  canDraft: roles.isAdmin || roles.isAuthor || roles.isAnnotator || roles.isReviewer,
+  canDraft: roles.isAdmin || roles.isAuthor || roles.isAnnotator,
 });
 
 export interface AnnotationEditFlags {
-  /** Field edits are refused: no open transition, or the server would refuse this save path. */
+  /** Field edits are refused: the server would refuse this save path for these roles. */
   isReadOnly: boolean;
   /** Save through `completeSectionReview` (true) or the editor's direct write (false). */
   saveViaReview: boolean;
@@ -85,11 +90,12 @@ export interface AnnotationEditFlags {
 /**
  * The editor's gating for one selected document.
  *
- * Read-only until the transition is open, as well as by role: letting someone edit first
- * and open the version afterwards would put the commitment back where it was — implicit,
- * and discovered only once the labels had already changed. Looking is always allowed.
+ * Draft-first: fields are editable whether or not a draft version is open, and Save keeps
+ * the edits as a draft without opening one. Process Changes is what opens the next version,
+ * behind a confirmation, so the commitment is explicit without blocking the edits before
+ * it. Looking is always allowed.
  *
- * The role half is chosen per save path. It used to be `!canAnnotate ||
+ * The read-only half is chosen per save path, by role. It used to be `!canAnnotate ||
  * !selected.reviewObjectKey`, so a missing review record forced read-only whatever the
  * role: an Admin opening a document that already carried authored ground truth got a
  * disabled class dropdown under an alert promising they could correct the values
@@ -103,15 +109,14 @@ export interface AnnotationEditFlags {
 export const annotationEditFlags = (
   roles: AnnotationRoles,
   selected: Pick<AnnotationSelection, 'reviewObjectKey'>,
-  draft: AnnotationDraft | null,
 ): AnnotationEditFlags => {
   const { canSaveViaReview, canSaveDirectToBaseline } = saveCapabilities(roles);
   const saveViaReview = Boolean(selected.reviewObjectKey);
   // A review copy is edited (saved as a draft, then completed) by an Admin or an
-  // Annotator: the draft operation has no Reviewer, and completion has no Author.
-  const mayEditReviewCopy = canSaveViaReview && (roles.isAdmin || roles.isAnnotator || roles.isReviewer);
+  // Annotator: completion has no Author, and a Reviewer does not work test sets.
+  const mayEditReviewCopy = canSaveViaReview && (roles.isAdmin || roles.isAnnotator);
   return {
-    isReadOnly: !draft || (saveViaReview ? !mayEditReviewCopy : !canSaveDirectToBaseline),
+    isReadOnly: saveViaReview ? !mayEditReviewCopy : !canSaveDirectToBaseline,
     saveViaReview,
     canChangeClass: roles.canAnnotate,
     canSaveViaReview,
@@ -139,8 +144,8 @@ export const requireReviewObjectKey = (selected: Pick<AnnotationSelection, 'revi
  * Read from `getAnnotationQueue` rather than probed with the mutation: opening a draft
  * records the transition, and publishes an unpublished set's arriving labels, so using it
  * to *find out* whether one exists would commit to a transition merely by visiting the
- * page. `openedDraft` covers the gap between clicking Start annotating and the next queue
- * refresh returning the same numbers.
+ * page. `openedDraft` covers the gap between Process Changes opening the version and the
+ * next queue refresh returning the same numbers.
  */
 export const currentDraft = (
   queue: { draftVersion?: number | null; baseVersion?: number | null } | null,
@@ -188,32 +193,27 @@ export const staleLinkVersion = (requestedVersion: string | null, draft: Annotat
   return draft && requested !== null && requested !== draft.draftVersion ? requested : null;
 };
 
-/** The confirmation shown when a transition opens, naming what the server preserved. */
-export const draftOpenedMessage = (opened: AnnotationDraft): string =>
-  opened.alreadyOpen
-    ? `Version ${opened.draftVersion} was already open on this set; your corrections continue into it.`
-    : `Version ${opened.baseVersion} preserved (${(opened.snapshotObjectCount ?? 0).toLocaleString()} objects). Your corrections go into version ${opened.draftVersion}.`;
+/** The `vN → vM` badge of an open transition, on the queue page and in the edit header. */
+export const versionBadgeText = (draft: AnnotationDraft): string => `v${draft.baseVersion} → v${draft.draftVersion}`;
 
-/** Hover text for the `vN → vM` badge, for a reader who did not open the transition. */
+/** Hover text for the `vN → vM` badge: where corrections go while a draft version is open. */
 export const draftBadgeHover = (draft: AnnotationDraft): string =>
-  `Corrections made here go into version ${draft.draftVersion}. Version ${draft.baseVersion}, the labels this set had before, is preserved and can still be scored against.`;
-
-export const DRAFT_PROMPT_HEADER = 'Editing this set creates a new version of it';
-export const DRAFT_PROMPT_BODY =
-  'Its current labels are preserved as a version you can go back to and score against, so a run that was measured against them stays reproducible. Your corrections go into the next version.';
+  `Corrections go into version v${draft.draftVersion}; v${draft.baseVersion} is preserved.`;
 
 /**
- * The closing sentence of the "Already ground truth" alert.
- *
- * Three states, not two. Before a transition is open the editor is read-only, so
- * promising "you can still correct it below" contradicted the alert above it; and the
- * direct save counts as a review, so copy denying that was false.
+ * The edit screen's prompt while no draft version is open: what each step writes. No
+ * version numbers, because the queue reports none until a draft version is open.
  */
-export const groundTruthAlertSuffix = (canSaveDirectToBaseline: boolean, draft: AnnotationDraft | null): string =>
+export const DRAFT_PROMPT_HEADER = 'Save keeps a draft';
+export const DRAFT_PROMPT_BODY = `${PROCESS_CHANGES_LABEL} opens the next version of this set (the current version stays as it is) and writes these labels as reviewed ground truth. Publish version on the test set freezes it.`;
+
+/**
+ * The closing sentence of the "Already ground truth" alert, by whether this user may save
+ * it. The direct save counts as a review, so copy denying that would be false.
+ */
+export const groundTruthAlertSuffix = (canSaveDirectToBaseline: boolean): string =>
   canSaveDirectToBaseline
-    ? draft
-      ? ' Save keeps your changes; Process Changes writes the ground truth and counts the document as reviewed.'
-      : ' Use Start annotating, above, to correct it.'
+    ? ` Save keeps your changes; ${PROCESS_CHANGES_LABEL} writes the ground truth and counts the document as reviewed.`
     : ' Only its assignee, an Admin or an Author can change it — you can inspect the values below.';
 
 /**
@@ -225,33 +225,6 @@ export const queueEmptyText = (queueFilter: string): string =>
 
 /** Why a search can come up empty: the likeliest reason is hidden by default. */
 export const REVIEWED_HIDDEN_HINT = 'Reviewed documents are hidden — show them to search those too.';
-
-export interface DocumentActionState {
-  claimVariant: 'primary' | 'normal';
-  confirmVariant: 'primary' | 'normal';
-  confirmDisabled: boolean;
-}
-
-/**
- * The per-document action buttons.
- *
- * Exactly one primary at a time, and it is whichever action comes next: claim an
- * unclaimed document, then confirm the one you hold. Before a transition is open neither
- * is next — "Start annotating" is, and it is the primary in its alert.
- *
- * Confirming is gated on the transition too: it tags every section reviewed-human, which
- * is precisely the draft-machine → reviewed-human change a version brackets. Gating only
- * the editor left this as an ungated second route to the same commitment.
- */
-export const documentActionState = (
-  selected: AnnotationSelection,
-  draft: AnnotationDraft | null,
-  isLoading: boolean,
-): DocumentActionState => ({
-  claimVariant: draft ? 'primary' : 'normal',
-  confirmVariant: draft && (selected.claimedByMe || selected.reviewed || !selected.reviewObjectKey) ? 'primary' : 'normal',
-  confirmDisabled: isLoading || !selected.reviewObjectKey || !draft,
-});
 
 /**
  * Whether the editor may change the CLASS. Defaults to `!isReadOnly`, so a caller that

@@ -5,8 +5,9 @@
  * The Annotator-only shell, rendered for real (a real router and the real AuthRoutes;
  * only the pages are stand-ins). What has to hold: an Annotator-only user opens a
  * document's edit page, the key decoded once, because Inbox messages and Tasks link
- * there; the rest of /documents is not theirs and lands on Home › Tasks; and a user
- * with the full shell reaches the same edit page.
+ * there; the rest of /documents is not theirs and lands on Home › Tasks; a user
+ * with the full shell reaches the same edit page; and Test Studio is refused to a
+ * Reviewer-only user but not to a Reviewer who also holds another role.
  */
 
 import React from 'react';
@@ -38,7 +39,7 @@ vi.mock('../InboxRoutes', () => ({ default: () => <Probe name="inbox" /> }));
 vi.mock('../ReviewQueuesRoutes', () => ({ default: () => <Probe name="review-queues" /> }));
 vi.mock('../DocumentsQueryRoutes', () => ({ default: () => <div /> }));
 vi.mock('../DocumentsAnalyticsRoutes', () => ({ default: () => <div /> }));
-vi.mock('../TestStudioRoutes', () => ({ default: () => <div /> }));
+vi.mock('../TestStudioRoutes', () => ({ default: () => <Probe name="test-studio" /> }));
 vi.mock('../AgentChatRoutes', () => ({ default: () => <div /> }));
 vi.mock('../FeaturesRoutes', () => ({ default: () => <div /> }));
 vi.mock('../../pages/WelcomePage', () => ({ default: () => <div /> }));
@@ -104,5 +105,25 @@ describe('where a user lands after sign-in', () => {
     renderAt('/login');
     expect(screen.queryByTestId('my-work')).toBeNull();
     expect(screen.getByTestId('documents-app').getAttribute('data-path')).toBe('/documents');
+  });
+});
+
+describe('Test Studio', () => {
+  it('is refused to a Reviewer-only user', () => {
+    roleRef.current = { ...FULL_SHELL, groups: ['Reviewer'], isReviewer: true, isReviewerOnly: true };
+    renderAt('/test-studio');
+    expect(screen.queryByTestId('test-studio')).toBeNull();
+    expect(screen.getByText("You don't have access to this page")).toBeTruthy();
+  });
+
+  it.each([
+    ['a Reviewer + Author user', ['Reviewer', 'Author']],
+    ['an Author', ['Author']],
+    ['a Viewer', ['Viewer']],
+    ['an Admin', ['Admin']],
+  ])('opens for %s', (_name, groups) => {
+    roleRef.current = { ...FULL_SHELL, groups, isReviewer: groups.includes('Reviewer'), isReviewerOnly: false };
+    renderAt('/test-studio');
+    expect(screen.getByTestId('test-studio')).toBeTruthy();
   });
 });

@@ -37,8 +37,11 @@ import useUnsavedChangesGuard from '../../hooks/use-unsaved-changes-guard';
 import PageImageViewer from '../common/PageImageViewer';
 import FormFieldRenderer from '../document-viewer/FormFieldRenderer';
 import JSONEditorTab from '../document-viewer/JSONEditorTab';
+import { valueSourceLabel } from '../common/labels';
 import { SectionClassEvaluation } from '../common/ClassMismatchIndicator';
 import { buildEditEntry, diffLeafPaths } from './document-edit-save';
+import { collapseKeysAbove, focusFieldNode } from './field-focus';
+import type { FieldFocusRequest } from './field-focus';
 import type { LoadedSection, ReviewPage, ReviewSectionRef } from './types';
 import type { SectionEvaluation } from './use-section-evaluation';
 
@@ -91,8 +94,10 @@ export interface SectionEditorProps {
    * Omitted where the mode offers no regrouping.
    */
   regroup?: { disabledReason?: string; loading?: boolean; onClick: () => void };
-  /** Canonical path of a field to select on open ("LineItems[0].Rate"). */
+  /** Canonical path of a field to select on open ("LineItems[0].Rate"): the first focus request. */
   focusFieldPath?: string | null;
+  /** Move to a field: open its section, expand the groups above it, scroll to it and focus it. */
+  focusRequest?: FieldFocusRequest | null;
   /** Builds a shareable link to one field; omitted hides the affordance. */
   buildFieldLink?: ((fieldPath: string) => string) | null;
   /** Bumped by the adapter to re-read the open section (its key is unchanged). */
@@ -165,6 +170,7 @@ const SectionEditor = ({
   onDataChange,
   onDirtyChange,
   focusFieldPath = null,
+  focusRequest = null,
   buildFieldLink = null,
   reloadToken = 0,
   headerExtras,
@@ -298,6 +304,9 @@ const SectionEditor = ({
     return changes;
   }, [localData, originalJson]);
 
+  // Test-set values carry a label source and are ground truth, not predictions.
+  const labelSource = localData?.labelSource;
+  const valueLabels = useMemo(() => valueSourceLabel(typeof labelSource === 'string' ? labelSource : null), [labelSource]);
   const explainabilityInfo = (localData?.explainability_info as Record<string, unknown> | Record<string, unknown>[] | null) ?? null;
   const inferenceResult =
     (localData?.inference_result as Record<string, unknown> | undefined) ??
@@ -430,23 +439,45 @@ const SectionEditor = ({
     setActiveFieldGeometry(geometry ?? null);
   };
 
-  /**
-   * Bring a deep-linked field on screen and select it.
-   *
-   * Runs after the section's data has rendered, hence the dependency on `localData`
-   * rather than on mount.
+  /*
+   * Bring a requested field on screen, select it and focus it: the `?field=` link first,
+   * then each review reason or Next alert (a new nonce repeats the same field). The
+   * section switches first; the field is focused once that section's data has rendered,
+   * hence the dependency on `localData` and `isLoading` rather than on the request alone.
    */
+  const initialFocus = useMemo<FieldFocusRequest | null>(
+    () => (focusFieldPath ? { sectionId: '', fieldPath: focusFieldPath, nonce: 0 } : null),
+    [focusFieldPath],
+  );
+  const request = focusRequest ?? initialFocus;
+  const [pendingFocus, setPendingFocus] = useState<FieldFocusRequest | null>(null);
   useEffect(() => {
-    if (!focusFieldPath || !localData) return;
-    setSelectedFieldPath(focusFieldPath);
-    // Defer to the paint that renders the fields; the node does not exist yet on
-    // the tick that localData lands.
+    if (!request) return;
+    setPendingFocus(request);
+    if (request.sectionId && request.sectionId !== selectedSectionId && sections.some((s) => s.sectionId === request.sectionId)) {
+      setSelectedSectionId(request.sectionId);
+    }
+  }, [request?.nonce, request?.sectionId, request?.fieldPath]);
+  useEffect(() => {
+    if (!pendingFocus || !localData || isLoading) return undefined;
+    if (pendingFocus.sectionId && pendingFocus.sectionId !== selectedSection?.sectionId) return undefined;
+    const { fieldPath } = pendingFocus;
+    if (!fieldPath) {
+      setPendingFocus(null);
+      return undefined;
+    }
+    setSelectedFieldPath(fieldPath);
+    setActiveTabId('visual');
+    const above = collapseKeysAbove(fieldPath);
+    setCollapsedPaths((prev) => (above.some((k) => prev.has(k)) ? new Set([...prev].filter((k) => !above.includes(k))) : prev));
+    // Defer to the paint that renders the fields; the node does not exist yet on the
+    // tick that localData lands.
     const timer = window.setTimeout(() => {
-      const node = document.querySelector(`[data-field-path="${CSS.escape(focusFieldPath)}"]`);
-      if (node) node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      focusFieldNode(fieldPath);
+      setPendingFocus(null);
     }, 100);
     return () => window.clearTimeout(timer);
-  }, [focusFieldPath, localData]);
+  }, [pendingFocus, localData, isLoading, selectedSection?.sectionId]);
 
   const handleToggleCollapse = (pathKey: string) => {
     setCollapsedPaths((prev) => {
@@ -677,6 +708,7 @@ const SectionEditor = ({
                           onToggleCollapse={handleToggleCollapse}
                           filterMode={filterMode.value}
                           displayPath={[]}
+                          valueLabel={valueLabels}
                         />
                       </>
                     ) : emptyFieldsSlot ? (
@@ -704,6 +736,7 @@ const SectionEditor = ({
                     showBaseline={comparing}
                     isBaselineAvailable={!!evaluation?.available}
                     loadingEvaluation={!!evaluation?.loading}
+                    predictionTitle={valueLabels.panelTitle}
                   />
                 ),
               },

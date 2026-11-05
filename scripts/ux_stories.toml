@@ -38,14 +38,18 @@ group = "Annotator"
 credentials = "Annotator-scoped"
 background = "You review documents for one team, and you were told you can only work on that team's documents. You started this week."
 
+[personas.reviewer]
+group = "Reviewer"
+background = "You check documents the system was unsure about before they go back to the business. You were told the production review work is yours to pick up, and test sets are someone else's job."
+
 [fixtures.complete-document]
 description = "a shipped sample (samples/lending_package.pdf) processed to COMPLETE"
 
 [fixtures.reprocessed-document]
-description = "a shipped sample processed twice, so it has an earlier version"
+description = "a shipped sample processed, then reprocessed once it was complete, so idp-cli list-versions lists two versions"
 
 [fixtures.evaluated-document]
-description = "a shipped sample processed in a Test Studio run against its expected results"
+description = "a shipped sample with a baseline, in a test set run with idp-cli process --test-set <test set ID>, the run finished"
 
 [fixtures.test-run-documents]
 description = "documents submitted by a Test Studio run, beside ordinary uploads"
@@ -54,7 +58,7 @@ description = "documents submitted by a Test Studio run, beside ordinary uploads
 description = "shipped samples uploaded without expected results"
 
 [fixtures.feature-platform]
-description = "the Feature Platform enabled, with at least one extension installed"
+description = "the Feature Platform enabled and Sample: Health Insurance Review installed; its hook is at rule_validation.postHook of the inactive sample-health-insurance-review profile"
 
 [fixtures.review-queue-item]
 description = "a profile with HITL on, the Default queue listing the review stack's Annotators, and a shipped sample waiting in it unassigned"
@@ -66,7 +70,7 @@ description = "a shipped sample waiting in the Default queue and assigned to the
 description = "a shipped sample waiting in the Default queue under a HITL profile outside the profile-limited Annotator's limit"
 
 [fixtures.test-set-review-queue]
-description = "a test set whose queue lists the review stack's Annotator, with documents nobody holds"
+description = "a labelled test set with at least one unassigned document, its queue listing the review stack's Annotator in Eligible Annotators"
 
 # ---- p0 ----------------------------------------------------------------------------
 
@@ -345,7 +349,7 @@ first_visit = true
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
-rbac = "Work Production queue items"
+rbac = "Work Production queues"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
@@ -362,7 +366,7 @@ needs = ["review-queue-item", "out-of-scope-review-item"]
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
-rbac = "Work Production queue items"
+rbac = "Work Production queues"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
@@ -379,7 +383,7 @@ needs = ["assigned-review-item"]
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
-rbac = "Work Production queue items"
+rbac = "Work Production queues"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
@@ -396,7 +400,7 @@ needs = ["assigned-review-item"]
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
-rbac = "Work Production queue items"
+rbac = "Work Production queues"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
@@ -413,7 +417,7 @@ needs = ["assigned-review-item"]
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
-rbac = "Work Production queue items"
+rbac = "Work Production queues"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
@@ -430,7 +434,7 @@ needs = ["assigned-review-item"]
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
-rbac = "Work Production queue items"
+rbac = "Work Production queues"
 
 [stories.match]
 docs = ["web-ui.md#inbox", "review-queues.md#annotator-guide"]
@@ -447,7 +451,7 @@ needs = ["test-set-review-queue"]
 tier = "p1"
 since = "0.6.13"
 origin = "smoke"
-rbac = "Claim Test Studio documents"
+rbac = "Work Test Studio queues"
 
 [stories.match]
 docs = ["review-queues.md#annotator-guide"]
@@ -533,3 +537,36 @@ claims = [{ lead = "An Inbox for every user." }]
 [stories.match]
 docs = ["web-ui.md#inbox"]
 terms = ["inbox", "bell"]
+
+[[stories]]
+id = "work-production-review-queue"
+title = "Take a production document that is waiting for review"
+intent = "You check the documents the system was unsure about. Find a document that is waiting for a person to check it and that nobody has taken yet, and take it so that it is yours to work on."
+kind = "commit_point"
+documented_steps = 3
+as = { reviewer = "allowed" }
+needs = ["review-queue-item"]
+tier = "p1"
+since = "0.6.13"
+origin = "smoke"
+rbac = "Work Production queues"
+
+[stories.match]
+docs = ["review-queues.md#annotator-guide"]
+terms = ["claim", "production queue"]
+
+[[stories]]
+id = "reviewer-cannot-label-test-sets"
+title = "Find out whether you can check test labels"
+intent = "A colleague asked you to help check the expected results of a test set. Find out whether that work is open to you, and where it is done. Change nothing."
+kind = "read"
+documented_steps = 2
+as = { reviewer = "not_offered" }
+tier = "p1"
+since = "0.6.13"
+origin = "smoke"
+rbac = "Work Test Studio queues"
+
+[stories.match]
+docs = ["rbac.md#annotators-and-review-queues"]
+terms = ["test studio queues"]

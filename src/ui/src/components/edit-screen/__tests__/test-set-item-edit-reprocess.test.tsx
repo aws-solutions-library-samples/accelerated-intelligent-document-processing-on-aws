@@ -19,6 +19,9 @@ import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const applyAndComplete = vi.fn();
+const openDraft = vi.fn();
+/** The adapter's open draft version; null = none open yet. */
+let adapterDraft: { baseVersion: number; draftVersion: number } | null = { baseVersion: 1, draftVersion: 2 };
 const saveDraft = vi.fn();
 const exit = vi.fn();
 const setErrorMessage = vi.fn();
@@ -48,11 +51,11 @@ vi.mock('../test-set-item-edit-adapter', () => ({
       ],
       ...docOver,
     },
-    draft: { baseVersion: 1, draftVersion: 2 },
+    draft: adapterDraft,
     loading: false,
     loadError: null,
     reload: vi.fn(),
-    openDraft: vi.fn(),
+    openDraft: (...a: unknown[]) => openDraft(...a),
     saveDraft: (...a: unknown[]) => saveDraft(...a),
     loadSection: vi.fn(),
     reloadToken: 0,
@@ -135,6 +138,7 @@ vi.mock('../../../hooks/use-user-role', () => ({
     isReviewer: false,
     isAnnotator: true,
     canAnnotate: true,
+    canWorkTestSetQueues: true,
     loading: false,
     allowedConfigVersions: null,
   }),
@@ -165,6 +169,8 @@ beforeEach(() => {
   boardProps = null;
   for (const k of Object.keys(docOver)) delete docOver[k];
   applyAndComplete.mockReset().mockResolvedValue({ reviewed: true });
+  openDraft.mockReset().mockResolvedValue({ baseVersion: 1, draftVersion: 2 });
+  adapterDraft = { baseVersion: 1, draftVersion: 2 };
   saveDraft.mockReset().mockResolvedValue(undefined);
   exit.mockReset();
   setErrorMessage.mockReset();
@@ -200,6 +206,42 @@ describe('the primary action on a Test Studio document', () => {
     expect(applyAndComplete).toHaveBeenCalledTimes(1);
     expect(controller.save.mock.invocationCallOrder[0]).toBeLessThan(applyAndComplete.mock.invocationCallOrder[0]);
     expect(exit.mock.calls[0][0].message).toContain('Its labels are marked reviewed.');
+    // A draft version is open, so nothing is confirmed and no version is opened.
+    expect(createWrapper(document.body).findModal()).toBeNull();
+    expect(openDraft).not.toHaveBeenCalled();
+  });
+
+  it('with no draft version open, confirms opening the next version, then opens it and applies', async () => {
+    adapterDraft = null;
+    renderScreen();
+    button('Process Changes').click();
+    await waitFor(() => expect(createWrapper(document.body).findModal()).not.toBeNull());
+    const modal = createWrapper(document.body).findModal()!;
+    expect(modal.findHeader().getElement().textContent).toBe('Open a new version and save ground truth');
+    expect(openDraft).not.toHaveBeenCalled();
+    expect(applyAndComplete).not.toHaveBeenCalled();
+    await act(async () =>
+      modal
+        .findFooter()!
+        .findAllButtons()
+        .find((b) => b.getElement().textContent === 'Process Changes')!
+        .click(),
+    );
+    await waitFor(() => expect(exit).toHaveBeenCalledTimes(1));
+    expect(openDraft).toHaveBeenCalledTimes(1);
+    expect(openDraft.mock.invocationCallOrder[0]).toBeLessThan(applyAndComplete.mock.invocationCallOrder[0]);
+  });
+
+  it('with no draft version open, keeps the editor editable and Save available, says what each step writes, and shows no badge', () => {
+    adapterDraft = null;
+    renderScreen();
+    expect(editorProps!.isReadOnly).toBe(false);
+    expect(barButtonLabels()).toContain('Save');
+    const alert = createWrapper(document.body).findAlert()!;
+    expect(alert.getElement().textContent).toContain('Save keeps a draft.');
+    expect(alert.getElement().textContent).toContain('Process Changes opens the next version of this set');
+    expect(alert.findActionButton()).toBeNull();
+    expect(createWrapper(document.body).findHeader()!.getElement().textContent).not.toMatch(/v\d+ → v\d+/);
   });
 
   it('stays and shows the reason when the server says the document is not reviewed yet', async () => {
@@ -230,7 +272,7 @@ describe('the primary action on a Test Studio document', () => {
     await waitFor(() => expect(controller.save).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(setSuccessMessage).toHaveBeenCalledWith(
-        'Saved your changes to a.pdf. They count as reviewed once you choose Process Changes.',
+        'Saved your changes to a.pdf as a draft. Process Changes writes them as reviewed ground truth.',
       ),
     );
     // The editor saves through the adapter's draft save, for each section in turn.
@@ -273,14 +315,14 @@ describe('the primary action on a Test Studio document', () => {
     expect(shown.querySelector('[data-testid="source-viewer"]')).not.toBeNull();
   });
 
-  it('titles the document with its status over its key, with no Test Studio badge', () => {
+  it('titles the document with its status over its key and the open version badge, with no Test Studio badge', () => {
     renderScreen();
     const header = createWrapper(document.body).findHeader()!;
-    expect(header.findHeadingText().getElement().textContent).toBe('a.pdf (To review)');
+    // The open version transition's badge follows the status; the editor hides its own
+    // title and provenance badges.
+    expect(header.findHeadingText().getElement().textContent).toBe('a.pdf (To review) v1 → v2');
     expect(header.findDescription()!.getElement().textContent).toBe('a.pdf');
     expect(document.body.textContent).not.toContain('Test Studio');
-    // No version-transition badge, and the editor hides its own title and provenance badges.
-    expect(document.body.textContent).not.toMatch(/v1\s*→\s*v2/);
     // No provenance badges: a machine draft's label source and the class source stay off the editor.
     const extras = (editorProps!.headerExtras as (c: unknown) => React.ReactNode)({
       data: { labelSource: 'draft-machine' },
@@ -297,6 +339,34 @@ describe('the primary action on a Test Studio document', () => {
     renderScreen();
     expect(createWrapper(document.body).findAllAlerts()).toHaveLength(0);
     expect(document.body.textContent).not.toContain('You can still correct and complete it');
+  });
+
+  it('opens a document with alerts on the alert filter, with a summary whose Next alert moves to each field', async () => {
+    docOver.alertCount = 2;
+    renderScreen();
+    expect(editorProps!.defaultFilter).toBe('confidence-alerts');
+    const alert = createWrapper(document.body).findAlert()!;
+    expect(alert.getElement().textContent).toContain('2 fields are below the confidence threshold.');
+    // The open section's data names the fields below the threshold.
+    await act(async () => {
+      (editorProps!.onSelectedSectionChange as (id: string) => void)('1');
+      (editorProps!.onDataChange as (d: Record<string, unknown>) => void)({
+        inference_result: { Total: 5, Name: 'Ann' },
+        explainability_info: [{ Total: { confidence: 0.1 }, Name: { confidence: 0.2 } }],
+      });
+    });
+    const next = () => createWrapper(document.body).findAlert()!.findActionSlot()!.findButton()!;
+    expect(next().getElement().textContent).toBe('Next alert');
+    await act(async () => next().click());
+    expect(editorProps!.focusRequest).toMatchObject({ sectionId: '1', fieldPath: 'Total' });
+    await act(async () => next().click());
+    expect(editorProps!.focusRequest).toMatchObject({ sectionId: '1', fieldPath: 'Name' });
+  });
+
+  it('opens a document without alerts on every field, with no alert summary', () => {
+    renderScreen();
+    expect(editorProps!.defaultFilter).toBe('none');
+    expect(document.body.textContent).not.toContain('below the confidence threshold');
   });
 
   it('tells the breadcrumbs the set name, on the trail the Annotator came by', () => {

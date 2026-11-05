@@ -14,6 +14,12 @@ strict mode that makes it fail closed, who grants a user their tenant, which con
 environment rather than in the solution, and when separate stacks are the better
 answer.
 
+This walkthrough sets up a tenant, its prefix mapping and a user, shows the
+safeguards and the strict-mode upload checks, and runs the `idp-cli tenancy`
+commands (about 4.5 minutes):
+
+<!-- DEMO VIDEO PLACEHOLDER: replace this line with the GitHub asset URL for the tenant isolation demo -->
+
 ## How isolation works
 
 Isolation is built from three things the solution already has, joined together:

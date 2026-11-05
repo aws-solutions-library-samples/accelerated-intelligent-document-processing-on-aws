@@ -16,7 +16,7 @@
  * which rests on a stored counter that can be stale or absent.
  */
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -62,21 +62,31 @@ const estimate = (totalDocs: number, inspectedDocs: number, setDocs: number, who
   reliabilityTable: [],
 });
 
+const onReviewDocuments = vi.fn();
+const onContinue = vi.fn();
+
 const renderWith = async (totalDocs: number, inspectedDocs = 3, setDocs = 3, wholeSetInspected = true) => {
   graphql.mockResolvedValue({ data: { estimateReviewEffort: estimate(totalDocs, inspectedDocs, setDocs, wholeSetInspected) } });
-  render(<ReviewEffortModal visible testSetId="docsplit" onDismiss={() => {}} onContinue={() => {}} />);
+  render(
+    <ReviewEffortModal visible testSetId="docsplit" onDismiss={() => {}} onContinue={onContinue} onReviewDocuments={onReviewDocuments} />,
+  );
   await waitFor(() => expect(graphql).toHaveBeenCalled());
   // The header gains its " · " detail only once the estimate has arrived.
   await screen.findByText(/^docsplit · /);
 };
 
-const continueDisabled = (): boolean => {
-  const button = screen.getByRole('button', { name: 'Continue to annotation' }) as HTMLButtonElement;
+const isDisabled = (name: string): boolean => {
+  const button = screen.getByRole('button', { name }) as HTMLButtonElement;
   return button.disabled || button.getAttribute('aria-disabled') === 'true';
 };
+const continueDisabled = (): boolean => isDisabled('Continue to annotation');
 
 describe('ReviewEffortModal with nothing to review', () => {
-  beforeEach(() => graphql.mockReset());
+  beforeEach(() => {
+    graphql.mockReset();
+    onReviewDocuments.mockReset();
+    onContinue.mockReset();
+  });
 
   it('shows only the nothing-to-review alert', async () => {
     await renderWith(0);
@@ -86,7 +96,13 @@ describe('ReviewEffortModal with nothing to review', () => {
     expect(screen.queryByText(/Rough estimate/)).toBeNull();
     expect(screen.queryByText('How much should annotators review?')).toBeNull();
     expect(screen.queryByText(/Show the math/)).toBeNull();
-    expect(continueDisabled()).toBe(true);
+    // Not a disabled Continue: the way on is to the set's documents, to correct one.
+    expect(screen.queryByRole('button', { name: 'Continue to annotation' })).toBeNull();
+    expect(isDisabled("Review the set's documents")).toBe(false);
+    expect(screen.getByText(/Labels can still be corrected one document at a time/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: "Review the set's documents" }));
+    expect(onReviewDocuments).toHaveBeenCalledTimes(1);
+    expect(onContinue).not.toHaveBeenCalled();
   });
 
   it('does not call a partly sampled set fully labelled, and keeps the queue open', async () => {
@@ -113,7 +129,7 @@ describe('ReviewEffortModal with nothing to review', () => {
     // fileCount says 10 but the listing ended after 3: the whole set was read.
     await renderWith(0, 3, 10, true);
     expect(screen.getByText('Nothing to review')).toBeTruthy();
-    expect(continueDisabled()).toBe(true);
+    expect(isDisabled("Review the set's documents")).toBe(false);
   });
 
   it('still shows the estimate when there is something to review', async () => {

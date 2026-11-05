@@ -22,6 +22,7 @@ import { MY_QUEUES_PATH, documentEditHref, parseEditOrigin, productionQueuePath 
 import type { ReviewItem, ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/copy-to-baseline';
 import { saveDocumentGroupingOrThrow } from '../common/document-grouping';
+import { PROCESS_CHANGES_LABEL } from '../common/labels';
 import { QueueItemState, reviewItemStateView } from '../common/review-status';
 import { editActiveHref, editTrail } from '../review-queues/breadcrumbs';
 import { claimItem, documentName, releaseItem, reviewErrorCode, takeOverItem } from '../review-queues/review-api';
@@ -199,6 +200,29 @@ export const useProductionItemEditModel = (
   if (terminal) lockedReason = `This item is ${stateView.label.toLowerCase()}`;
   else if (!canEdit) lockedReason = assignee ? `Assigned to ${assignee}` : 'This item is not assigned to you';
 
+  // Why the fields can't be edited, shown first: with Take over for an Admin on someone
+  // else's item, and Claim (from the bar's claim) for an Annotator on an unassigned one.
+  let readOnlyReason: string | undefined;
+  if (terminal)
+    readOnlyReason =
+      item.state === QueueItemState.HOLDING
+        ? HOLDING_NOTICE
+        : item.state === QueueItemState.FINALIZE_FAILED
+          ? FINALIZE_FAILED_NOTICE
+          : item.state === 'FINALIZING'
+            ? 'This review is finished: it was submitted and its corrections are being applied.'
+            : `This review is finished: the item is ${stateView.label.toLowerCase()} and can no longer be edited.`;
+  else if (canTakeOver)
+    readOnlyReason = assignedJustNow
+      ? `Assigned to ${assignee ?? assignedJustNow} just now. Take over to edit it and process its changes.`
+      : `Assigned to ${assignee}. Take over to edit it and process its changes.`;
+  else if (!canEdit)
+    readOnlyReason = assignee
+      ? `View only. This item is assigned to ${assignee}.`
+      : canClaim
+        ? 'View only. Claim this item to work on it; it is then assigned to you and shows in Home › Tasks.'
+        : 'View only.';
+
   const queuePath = productionQueuePath(item.queue);
   const workItemId = productionWorkItemId(objectKey);
 
@@ -234,48 +258,14 @@ export const useProductionItemEditModel = (
       },
       // One alert for the screen's notices, so the space stays given over to the review.
       notices: [
-        terminal && {
-          id: 'finished',
-          type: 'info',
-          content:
-            item.state === QueueItemState.HOLDING
-              ? HOLDING_NOTICE
-              : item.state === QueueItemState.FINALIZE_FAILED
-                ? FINALIZE_FAILED_NOTICE
-                : item.state === 'FINALIZING'
-                  ? 'This review is finished: it was submitted and its corrections are being applied.'
-                  : `This review is finished: the item is ${stateView.label.toLowerCase()} and can no longer be edited.`,
-        },
         adminOnOpen && {
           id: 'unassigned',
           type: 'info',
-          content: 'Not assigned yet. Editing it, or choosing Process Changes, assigns it to you.',
+          content: `Not assigned yet. Editing it, or choosing ${PROCESS_CHANGES_LABEL}, assigns it to you.`,
         },
-        canTakeOver && {
-          id: 'take-over',
-          type: assignedJustNow ? 'warning' : 'info',
-          content: assignedJustNow
-            ? `Assigned to ${assignee ?? assignedJustNow} just now. Take over to edit it and process its changes.`
-            : `Assigned to ${assignee}. Take over to edit it and process its changes.`,
-          action: (
-            <Button onClick={() => void handleTakeOver()} loading={takingOver} disabled={session.busy !== null}>
-              Take over
-            </Button>
-          ),
-        },
-        !terminal &&
-          !canEdit &&
-          !isAdmin && {
-            id: 'view-only',
-            type: 'info',
-            content: assignee
-              ? `View only. This item is assigned to ${assignee}.`
-              : canClaim
-                ? 'View only. Claim this item to work on it; it is then assigned to you and shows in Home › Tasks.'
-                : 'View only.',
-          },
       ],
-      context: <ReviewTaskContext detail={detail} />,
+      // A reason's chip, or Next alert, moves to its field.
+      context: <ReviewTaskContext detail={detail} onReasonClick={(r) => session.focusField(r.sectionId, r.field ?? '')} />,
       bar: {
         primaryDisabledReason: lockedReason ?? (saving ? 'Saving your latest edits…' : undefined),
         primaryHint:
@@ -304,6 +294,12 @@ export const useProductionItemEditModel = (
         pages: adapter.pages,
         pagesLoading: adapter.pagesLoading,
         readOnly: !canEdit,
+        readOnlyReason,
+        readOnlyAction: canTakeOver ? (
+          <Button onClick={() => void handleTakeOver()} loading={takingOver} disabled={session.busy !== null}>
+            Take over
+          </Button>
+        ) : undefined,
         loadSection: adapter.loadSection,
         saveSection,
         recordEditHistory: { editedBy: user?.username || 'unknown', source: 'review-queue' },
@@ -329,8 +325,8 @@ export const useProductionItemEditModel = (
         consequence: (
           <>
             Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted values and your draft edits are <b>kept</b>{' '}
-            with their sections, and the document finishes with this grouping when you choose <b>Process Changes</b>. A section you remove
-            takes its draft edits with it.
+            with their sections, and the document finishes with this grouping when you choose <b>{PROCESS_CHANGES_LABEL}</b>. A section you
+            remove takes its draft edits with it.
           </>
         ),
         // Regrouping is part of review: like a first save, it assigns an unassigned item to

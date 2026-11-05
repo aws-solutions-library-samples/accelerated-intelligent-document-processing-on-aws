@@ -437,7 +437,10 @@ def test_admin_and_author_are_the_only_groups_exempt_from_test_set_scope(
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
     with recorded(mod.dynamodb, "Table") as lookups:
         mod._assert_annotator_scope(
-            event("completeSectionReview", ["Annotator", unscoped]), OBJECT_KEY
+            event("completeSectionReview", ["Annotator", unscoped]),
+            ["Annotator", unscoped],
+            OBJECT_KEY,
+            "rev@example.com",
         )
     assert lookups == []
 
@@ -454,7 +457,10 @@ def test_an_annotator_scoped_to_the_documents_test_set_is_allowed(mod, table):
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine", "ts-2"])
     with recorded(testset_scope, "assert_can_access_test_set") as checks:
         mod._assert_annotator_scope(
-            event("completeSectionReview", ["Annotator"]), OBJECT_KEY
+            event("completeSectionReview", ["Annotator"]),
+            ["Annotator"],
+            OBJECT_KEY,
+            "rev@example.com",
         )
     assert len(checks) == 1
     assert checks[0][0][1] == "ts-mine"
@@ -467,7 +473,10 @@ def test_an_annotator_may_not_review_a_production_document(mod, table):
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
     with pytest.raises(PermissionError, match="only review test-set documents"):
         mod._assert_annotator_scope(
-            event("completeSectionReview", ["Annotator"]), OBJECT_KEY
+            event("completeSectionReview", ["Annotator"]),
+            ["Annotator"],
+            OBJECT_KEY,
+            "rev@example.com",
         )
 
 
@@ -479,7 +488,10 @@ def test_an_annotator_with_no_scope_at_all_is_denied_rather_than_unrestricted(
     put_doc(table, TestSetId="ts-mine")  # users table left empty
     with pytest.raises(PermissionError, match="not assigned to any test set"):
         mod._assert_annotator_scope(
-            event("completeSectionReview", ["Annotator"]), OBJECT_KEY
+            event("completeSectionReview", ["Annotator"]),
+            ["Annotator"],
+            OBJECT_KEY,
+            "rev@example.com",
         )
 
 
@@ -654,13 +666,11 @@ def test_the_set_of_handler_branches_that_assert_annotator_scope_is_pinned():
     annotator. The three tests above close that, and this one closes the class — a
     fifth `fieldName` added later without the call fails here rather than shipping.
 
-    `skipAllSectionsReview` and `saveSectionReviewEdits` are deliberately not in the
-    set: `Annotator` is refused both outright at the top of their branch, so no
-    scoped caller survives to be narrowed (pinned behaviourally by
-    `test_an_annotator_may_not_skip_a_document_without_looking_at_it` and
-    `test_an_annotator_may_not_use_the_save_only_path`). `completeSectionReview` is
-    the dispatcher's fall-through rather than a `field_name ==` branch, and is
-    asserted separately below.
+    Every branch is scoped: `skipAllSectionsReview` and `saveSectionReviewEdits`
+    refuse `Annotator` alone outright, but a Reviewer-only caller must still be kept
+    off a test-set document there, and a caller holding both Reviewer and Annotator
+    stays test-set scoped. `completeSectionReview` is the dispatcher's fall-through
+    rather than a `field_name ==` branch, and is asserted separately below.
     """
     branches = _handler_field_branches()
     assert set(branches) == {
@@ -672,7 +682,12 @@ def test_the_set_of_handler_branches_that_assert_annotator_scope_is_pinned():
     scoped = {
         field for field, calls in branches.items() if "_assert_annotator_scope" in calls
     }
-    assert scoped == {"claimReview", "releaseReview"}
+    assert scoped == {
+        "claimReview",
+        "releaseReview",
+        "skipAllSectionsReview",
+        "saveSectionReviewEdits",
+    }
     assert "skip_all_sections_review" in branches["skipAllSectionsReview"]
     assert "save_section_review_edits" in branches["saveSectionReviewEdits"]
 
@@ -692,6 +707,107 @@ def test_the_fall_through_route_to_completion_also_asserts_scope(mod, table):
         ):
             mod.handler(event("completeSectionReview", ["Annotator"]), None)
     completion.assert_not_called()
+
+
+# --------------------------------------------------------------------------
+# Reviewer: production review only, never a test-set document
+# --------------------------------------------------------------------------
+
+#: Every review operation, with the arguments that pass its argument checks.
+_REVIEW_OPERATIONS = [
+    ("claimReview", {"objectKey": OBJECT_KEY}),
+    ("releaseReview", {"objectKey": OBJECT_KEY}),
+    (
+        "skipAllSectionsReview",
+        {"objectKey": OBJECT_KEY, "reason": "Duplicate document"},
+    ),
+    (
+        "saveSectionReviewEdits",
+        {"objectKey": OBJECT_KEY, "sectionId": "sec-1", "editedData": "{}"},
+    ),
+    ("completeSectionReview", {"objectKey": OBJECT_KEY, "sectionId": "sec-1"}),
+]
+_REVIEW_WORKERS = {
+    "claimReview": "claim_review",
+    "releaseReview": "release_review",
+    "skipAllSectionsReview": "skip_all_sections_review",
+    "saveSectionReviewEdits": "save_section_review_edits",
+    "completeSectionReview": "complete_section_review",
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field_name,arguments", _REVIEW_OPERATIONS, ids=[f for f, _ in _REVIEW_OPERATIONS]
+)
+def test_a_reviewer_is_refused_a_test_set_document_on_every_operation(
+    mod, table, field_name, arguments, caplog
+):
+    """Test-set documents are worked by Annotators. A Reviewer-only caller is
+    refused on every route before the operation runs, with a `PermissionError`
+    (403) and a WARNING "Forbidden" line."""
+    put_doc(table, TestSetId="ts-1", HITLReviewOwner="")
+    with (
+        patch.object(mod, _REVIEW_WORKERS[field_name]) as worker,
+        caplog.at_level("WARNING"),
+    ):
+        with pytest.raises(
+            PermissionError, match="^Unauthorized: test-set documents are worked by"
+        ):
+            mod.handler(event(field_name, ["Reviewer"], arguments=arguments), None)
+    worker.assert_not_called()
+    assert "Forbidden: reviewer" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field_name,arguments", _REVIEW_OPERATIONS, ids=[f for f, _ in _REVIEW_OPERATIONS]
+)
+def test_a_reviewer_works_a_production_document_on_every_operation(
+    mod, table, field_name, arguments
+):
+    """The other direction: a document with no `TestSetId` reaches the operation."""
+    put_doc(table, HITLReviewOwner="")  # no TestSetId
+    with patch.object(mod, _REVIEW_WORKERS[field_name]) as worker:
+        mod.handler(event(field_name, ["Reviewer"], arguments=arguments), None)
+    worker.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("extra", ["Admin", "Author"])
+def test_a_reviewer_who_is_also_admin_or_author_works_a_test_set_document(
+    mod, table, extra
+):
+    put_doc(table, TestSetId="ts-1", HITLReviewOwner="")
+    with patch.object(mod, "claim_review") as worker:
+        mod.handler(
+            event(
+                "claimReview", ["Reviewer", extra], arguments={"objectKey": OBJECT_KEY}
+            ),
+            None,
+        )
+    worker.assert_called_once()
+
+
+@pytest.mark.unit
+def test_an_annotators_scope_is_unchanged_by_the_reviewer_rule(mod, table):
+    """An Annotator (alone or also holding Reviewer) is decided by allowedTestSets:
+    admitted to their own set, refused another, as before."""
+    scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
+    for groups in (["Annotator"], ["Annotator", "Reviewer"]):
+        put_doc(table, TestSetId="ts-mine", HITLReviewOwner="")
+        with patch.object(mod, "claim_review") as worker:
+            mod.handler(
+                event("claimReview", groups, arguments={"objectKey": OBJECT_KEY}), None
+            )
+        worker.assert_called_once()
+        put_doc(table, TestSetId="ts-other", HITLReviewOwner="")
+        with pytest.raises(
+            PermissionError, match="not assigned to test set 'ts-other'"
+        ):
+            mod.handler(
+                event("claimReview", groups, arguments={"objectKey": OBJECT_KEY}), None
+            )
 
 
 # --------------------------------------------------------------------------
@@ -932,10 +1048,13 @@ def test_saving_edits_on_a_single_section_document_keeps_the_review_in_progress(
 
 @pytest.mark.unit
 def test_saving_edits_writes_no_test_set_baseline(mod, table):
-    """Tagging a baseline reviewed-human is a completion; a save is not one."""
+    """Tagging a baseline reviewed-human is a completion; a save is not one.
+
+    Saved by an Admin: a Reviewer is refused a test-set document outright, and an
+    Annotator may not use the save-only path."""
     put_doc(table, HITLStatus="InProgress", HITLReviewOwner="rev", TestSetId="ts-1")
     with recorded(mod, "write_correction_to_test_set_baseline") as calls:
-        run_save(mod, ["Reviewer"])
+        run_save(mod, ["Admin"], email="admin@example.com")
     assert calls == []
 
 
@@ -2202,25 +2321,27 @@ def test_a_failed_queue_summary_refresh_does_not_fail_the_review(
 def test_completing_a_review_refreshes_the_test_set_task(mod, table, hitl_table):
     """The handler's completion route finishes the task after the review succeeds."""
     put_doc(table, TestSetId="ts-1")
+    scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-1"])
     hitl_table.put_item(Item={**TSDOC_KEY, "Assignee": "rev@example.com"})
     with (
         patch.object(mod, "complete_section_review", return_value={"ok": 1}),
         patch.object(mod, "_finish_test_set_task") as finish,
     ):
-        result = mod.handler(event("completeSectionReview", ["Reviewer"]), None)
+        result = mod.handler(event("completeSectionReview", ["Annotator"]), None)
     assert result == {"ok": 1}
     finish.assert_called_once_with(OBJECT_KEY, "rev@example.com")
 
 
 @pytest.mark.unit
-def test_a_reviewer_may_not_save_a_document_assigned_to_someone_else(
+def test_an_annotator_may_not_save_a_document_assigned_to_someone_else(
     mod, table, hitl_table
 ):
     put_doc(table, TestSetId="ts-1")
+    scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-1"])
     hitl_table.put_item(Item={**TSDOC_KEY, "Assignee": "bob@example.com"})
     with patch.object(mod, "complete_section_review") as completion:
         with pytest.raises(ValueError, match="assigned to bob@example.com"):
-            mod.handler(event("completeSectionReview", ["Reviewer"]), None)
+            mod.handler(event("completeSectionReview", ["Annotator"]), None)
     completion.assert_not_called()
 
 
@@ -2231,7 +2352,7 @@ def test_an_unassigned_test_set_document_is_refused_with_not_assigned(
     put_doc(table, TestSetId="ts-1")
     with pytest.raises(ValueError, match="^NOT_ASSIGNED:"):
         mod._assert_test_set_assignee(
-            event("completeSectionReview", ["Reviewer"]), OBJECT_KEY, "rev@example.com"
+            event("completeSectionReview", ["Annotator"]), OBJECT_KEY, "rev@example.com"
         )
 
 
@@ -2240,7 +2361,7 @@ def test_the_assignee_may_save_their_own_document(mod, table, hitl_table):
     put_doc(table, TestSetId="ts-1")
     hitl_table.put_item(Item={**TSDOC_KEY, "Assignee": "rev@example.com"})
     mod._assert_test_set_assignee(
-        event("completeSectionReview", ["Reviewer"]), OBJECT_KEY, "Rev@example.com"
+        event("completeSectionReview", ["Annotator"]), OBJECT_KEY, "Rev@example.com"
     )
 
 

@@ -9,6 +9,7 @@ import { Box, Button, Modal, Tabs } from '@cloudscape-design/components';
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { ReviewHistoryTable } from '../review-queues/ReviewHistoryModal';
+import { REPORT_MODAL_SIZE } from '../common/ReportModal';
 import FieldEditsTable from './FieldEditsTable';
 
 /** Every tab shares one height, so switching tabs doesn't resize the dialog. */
@@ -34,7 +35,7 @@ const EditorHistoryModal = ({
 }: EditorHistoryModalProps): React.JSX.Element => (
   <Modal
     visible={visible}
-    size="large"
+    size={REPORT_MODAL_SIZE}
     onDismiss={onDismiss}
     header="History"
     footer={
