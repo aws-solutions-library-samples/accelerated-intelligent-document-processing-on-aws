@@ -1788,6 +1788,8 @@ _BREAKER = "components/common/CircuitBreakerPanel.tsx"
 _CONFIG = "components/configuration-layout/ConfigurationLayout.tsx"
 _DETAIL_ACTIONS = "components/document-actions/use-document-actions.tsx"
 _EDIT_TEXT = "components/document-actions/EditPageTextDialog.tsx"
+#: The edit page's read-only notice, which offers Claim beside the bar's own.
+_EDIT_PAGE = "components/edit-screen/EditPage.tsx"
 _FRAME = "components/edit-screen/EditScreen.tsx"
 #: The edit screen names Process Changes with one shared constant (common/labels.ts).
 _PROCESS_CHANGES = "PROCESS_CHANGES_LABEL"
@@ -1804,6 +1806,9 @@ _REVISIONS = "components/configuration-layout/ConfigRevisionHistoryPanel.tsx"
 _SLOTS = "components/edit-screen/test-set-editor-slots.tsx"
 _SUPERVISOR = "components/review-queues/SupervisorModals.tsx"
 _TABLE = "components/document-list/documents-table-config.tsx"
+#: The test-set item's edit model, whose Claim calls claimTestSetDocument
+#: (:data:`CLAIM_CALL_SITES`).
+_TEST_SET_MODEL = "components/edit-screen/test-set-item-edit-model.tsx"
 _UPLOAD = "components/upload-document/UploadDocumentPanel.tsx"
 _WIZARD = "components/test-studio/CreateTestSetWizard.tsx"
 
@@ -1857,6 +1862,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_QUEUE, "Claim (2)", source="counted('Claim'"),
         Shipped(_QUEUE, "Claim", source="text: 'Claim'"),
         Shipped(_FRAME, "Claim"),
+        Shipped(_EDIT_PAGE, "Claim"),
         Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
         Shipped(_FRAME, "Save"),
         Shipped(
@@ -1871,6 +1877,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_ANNOTATE, "Claim (2)", source="`Claim (${claimable.length})`"),
         Shipped(_ANNOTATE, "Claim", source="text: 'Claim'"),
         Shipped(_FRAME, "Claim"),
+        Shipped(_EDIT_PAGE, "Claim"),
     ),
     "ClearDraftLabels": (
         Shipped("components/test-studio/TestSetDetail.tsx", "Delete draft labels"),
@@ -2463,13 +2470,15 @@ CLAIM_CALL_SITES: dict[tuple[str, str], tuple[Shipped, ...]] = {
         Shipped(_SECTION_EDITOR, "Edit Page Grouping", kind="claims_first"),
     ),
     (_PRODUCTION_MODEL, "useProductionItemEditModel.state.process.run"): (
-        Shipped(_FRAME, "Process Changes"),
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
     ),
     (_PRODUCTION_MODEL, "useProductionItemEditModel.state.claim"): (
         Shipped(_FRAME, "Claim"),
+        Shipped(_EDIT_PAGE, "Claim"),
     ),
     (_TEST_SET_MODEL, "useTestSetItemEditModel.state.claim"): (
         Shipped(_FRAME, "Claim"),
+        Shipped(_EDIT_PAGE, "Claim"),
     ),
     (_QUEUE, "ReviewQueuePage.claim"): (
         Shipped(_QUEUE, "Claim (2)", source="counted('Claim'"),
