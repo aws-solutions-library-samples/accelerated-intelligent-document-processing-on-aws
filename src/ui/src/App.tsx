@@ -12,6 +12,7 @@ import { AgentChatProvider } from './contexts/agentChat';
 import { GuidedTourProvider } from './contexts/guidedTour';
 import useAwsConfig from './hooks/use-aws-config';
 import useCurrentSessionCreds from './hooks/use-current-session-creds';
+import { LocaleProvider } from './i18n/LocaleProvider';
 
 import Routes from './routes/Routes';
 
@@ -75,11 +76,13 @@ const AppContent = (): React.JSX.Element => {
 
 const App = (): React.JSX.Element => {
   return (
-    <ThemeProvider>
-      <Authenticator.Provider>
-        <AppContent />
-      </Authenticator.Provider>
-    </ThemeProvider>
+    <LocaleProvider>
+      <ThemeProvider>
+        <Authenticator.Provider>
+          <AppContent />
+        </Authenticator.Provider>
+      </ThemeProvider>
+    </LocaleProvider>
   );
 };
 
