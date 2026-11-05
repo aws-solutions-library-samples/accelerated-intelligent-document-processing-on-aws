@@ -44,10 +44,16 @@ own user management, the Lambda ``createUser`` reaches through the API, invoked
 directly with the operator's AWS credentials as an Admin. That writes the
 users-table row an Annotator and a profile limit are read from, so this script
 never re-implements it, and ``teardown --long-lived`` removes such a persona the
-same way, with ``deleteUser``. ``--key`` names a second persona of one group, such
-as an Annotator limited to one profile: its address is
-``ux-persona-<key>@example.invalid`` and its ``UX_TEST_PERSONAS`` entry is ``<key>``,
-which its catalogue persona names as ``credentials``.
+same way, with ``deleteUser``. ``--rotate`` changes only an existing persona's
+password, so ``--profiles`` is refused with it on one: the limit stays as the
+users-table row holds it. An Admin changes that limit in place, keeping the
+password, with **Edit scope** on the persona's row of the web UI's User
+Management page or the user-management ``updateUser`` operation. That teardown and
+then setup again also works, but sets a new password, so ``UX_TEST_PERSONAS`` must
+be updated. ``--key`` names a second persona of one group, such as an Annotator
+limited to one profile: its address is ``ux-persona-<key>@example.invalid`` and its
+``UX_TEST_PERSONAS`` entry is ``<key>``, which its catalogue persona names as
+``credentials``.
 
 The app client's auth flows are deliberately NOT modified. Setting a known
 password non-interactively needs only ``admin-set-user-password --permanent``,
@@ -216,6 +222,13 @@ def _user_management(ctx: dict, field: str, arguments: dict) -> object:
     The event has the shape the API's dispatcher passes the same Lambda, so the
     product's own code checks the arguments and writes the users-table row, the
     Cognito user and its group. A refusal stops the command with its message.
+
+    It is not the API's path, and proves nothing about how the API authorizes. A
+    direct ``lambda invoke`` never reaches the API's authorizer, and the identity
+    in the event is one this script builds itself, :data:`_OPERATOR_IDENTITY`, an
+    Admin claim, so the handler's in-function Admin check is satisfied by a claim
+    the caller made. What gates this call is the operator's
+    ``lambda:InvokeFunction`` permission on that function.
     """
     function = aws(
         "cloudformation",
@@ -371,6 +384,26 @@ def _user_exists(ctx: dict, email: str) -> bool:
     return True
 
 
+def _limit_remedy(email: str) -> str:
+    """How an existing persona's profile limit is changed, the route that keeps
+    its password first.
+
+    ``updateUser``, which the User Management page's Edit scope calls, sets
+    ``allowedConfigVersions`` on the existing users-table row and leaves the
+    Cognito user alone. It is Admin-only and refused, as ``createUser`` with a
+    limit is, where another source owns the scope, so it is open wherever
+    ``--profiles`` is. Teardown and setup works too, but mints a new password.
+    """
+    return (
+        "To change the limit and keep the password, an Admin edits it in place: "
+        "Edit scope on the persona's row of the web UI's User Management page, or "
+        "the user-management updateUser operation. Removing the persona with "
+        f"teardown --email {email} --long-lived and running setup again with "
+        "--profiles also works, but sets a new password, so UX_TEST_PERSONAS must "
+        "be updated"
+    )
+
+
 def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
     """Create a group's long-lived persona and print its UX_TEST_PERSONAS entry.
 
@@ -378,12 +411,18 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
     password has to live in a masked CI variable rather than in a session that
     ends. Setting a new password on an existing persona is therefore an explicit
     act, --rotate, because until the variable is updated every MR UX test fails to
-    sign in. An Annotator, or a persona given ``--profiles``, is created through the
-    stack's user management (:func:`_user_management`), which writes the
-    users-table row the product reads either from. The persona is given
-    a display name (:func:`persona_display_name`), so the UI's top bar shows that
-    rather than the sign-in address. An existing persona is given it too before
-    the refusal, since naming does not touch the password: one made before the
+    sign in. A new Annotator, or a new persona given ``--profiles``, is created
+    through the stack's user management (:func:`_user_management`), which writes
+    the users-table row the product reads either from. An existing one is not
+    created again, so --rotate changes only its password and its profile limit
+    stays as that row holds it; --profiles with --rotate on an existing persona is
+    therefore refused before anything is written, rather than printed as a limit
+    that was never applied. Both refusals that mention a limit name the route that
+    keeps the password (:func:`_limit_remedy`), an Admin's in-place edit, ahead of
+    teardown and setup, which sets a new one. The persona is given a display name
+    (:func:`persona_display_name`), so the UI's top bar shows that rather than the
+    sign-in address. An existing persona is given it too before the refusal without
+    --rotate, since naming does not touch the password: one made before the
     display name existed would otherwise keep showing its address.
     """
     key = _persona_key(args)
@@ -407,15 +446,29 @@ def _setup_long_lived(args: argparse.Namespace, ctx: dict, url: str) -> int:
             f"asked for. Remove it with teardown --email {email} --long-lived, "
             "then run setup again"
         )
-    if exists and getattr(args, "rotate", False) is not True:
+    rotate = getattr(args, "rotate", False) is True
+    if exists and rotate and profiles is not None:
+        raise SystemExit(
+            f"{email} already exists in {args.stack}, and --rotate changes only "
+            "its password: its profile limit stays as its users-table row holds "
+            "it, whatever --profiles names. Nothing was changed. Drop --profiles "
+            f"to set a new password alone. {_limit_remedy(email)}."
+        )
+    if exists and not rotate:
         _name_persona(ctx, email, key)
         shown = " ".join(persona_display_name(key))
-        raise SystemExit(
+        message = (
             f"{email} already exists in {args.stack}; its display name is now "
             f"{shown!r} and its password is unchanged. That password lives in the CI "
             "variable UX_TEST_PERSONAS, and setting a new one breaks that variable "
-            "until it is updated. Re-run with --rotate to do that deliberately."
+            "until it is updated. Re-run with --rotate to do that deliberately"
         )
+        if profiles is not None:
+            message += (
+                ", and without --profiles, which --rotate cannot apply: the profile "
+                f"limit stays as its users-table row holds it. {_limit_remedy(email)}"
+            )
+        raise SystemExit(f"{message}.")
     password = _password()
     if not exists and needs_row:
         arguments: dict[str, object] = {"email": email, "persona": args.group}
@@ -643,7 +696,8 @@ def main() -> int:
         action="store_true",
         help=(
             "With --long-lived, set a new password on a persona that already "
-            "exists. UX_TEST_PERSONAS is broken until it is updated"
+            "exists. Its profile limit is kept, so --profiles is refused with it "
+            "on such a persona. UX_TEST_PERSONAS is broken until it is updated"
         ),
     )
     setup.set_defaults(func=cmd_setup)

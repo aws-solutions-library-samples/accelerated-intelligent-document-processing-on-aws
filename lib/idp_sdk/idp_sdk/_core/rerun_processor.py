@@ -14,6 +14,8 @@ from typing import Dict, List
 
 import boto3
 
+from idp_sdk._core.stack_info import tracking_table_name
+
 logger = logging.getLogger(__name__)
 
 #: Statuses the malware-scanning ingest gate puts a document in, and the reason
@@ -121,25 +123,9 @@ class RerunProcessor:
             )
 
         self.resources = stack_info.get_resources()
-
-        # Also get TrackingTable and AppSync API from CloudFormation (not in outputs)
-        self._add_tracking_table()
         self._add_appsync_api()
 
         logger.info(f"Initialized rerun processor for stack: {stack_name}")
-
-    def _add_tracking_table(self):
-        """Add TrackingTable to resources by querying CloudFormation"""
-        try:
-            cfn = boto3.client("cloudformation", region_name=self.region)
-            response = cfn.describe_stack_resource(
-                StackName=self.stack_name, LogicalResourceId="TrackingTable"
-            )
-            physical_id = response["StackResourceDetail"]["PhysicalResourceId"]
-            self.resources["TrackingTable"] = physical_id
-            logger.info(f"Added TrackingTable to resources: {physical_id}")
-        except Exception as e:
-            logger.warning(f"Could not retrieve TrackingTable: {e}")
 
     def _add_appsync_api(self):
         """Add AppSync API URL to resources by parsing CloudFormation outputs"""
@@ -270,9 +256,7 @@ class RerunProcessor:
             from idp_common.docs_service import create_document_service
 
             # Set environment variables for DynamoDB service
-            tracking_table = self.resources.get("TrackingTable")
-            if not tracking_table:
-                raise ValueError("TrackingTable not found in stack resources")
+            tracking_table = tracking_table_name(self.resources, self.stack_name)
 
             # Temporarily set environment variables
             original_tracking = os.environ.get("TRACKING_TABLE")
@@ -447,7 +431,7 @@ class RerunProcessor:
             original_region = os.environ.get("AWS_REGION")
             original_appsync = os.environ.get("APPSYNC_API_URL")
 
-            tracking_table = self.resources.get("TrackingTable")
+            tracking_table = tracking_table_name(self.resources, self.stack_name)
             appsync_url = self.resources.get("AppSyncApiUrl")
 
             os.environ["TRACKING_TABLE"] = tracking_table
