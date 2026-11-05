@@ -324,7 +324,9 @@ inside the stack. That has these consequences:
   match the declaration. That proves the declared check exists, not that every
   operation that should declare one does: a new operation that reads documents
   without a check is a cross-tenant read until it is added. `idp-cli tenancy verify`
-  and `make verify-tenant-isolation` exercise the boundary on a live stack.
+  and `make verify-tenant-isolation` exercise the boundary on a live stack, and the
+  same harness runs on a throwaway Strict stack on the CI's weekly variant-probe
+  schedule (`make stacktest-tenancy` runs that probe by hand).
 - **Test sets have no tenant.** An Annotator's test-set scope (`allowedTestSets`) is
   not checked against tenant declarations, because a test set records no tenant. In a
   shared stack, keep test sets built from one tenant's documents assigned only to that

@@ -164,7 +164,9 @@ def _access_points(
     suffix = uuid.uuid4().hex[:8]
     roles = {}
     for tenant in (TENANT_A, TENANT_B):
-        name = f"tiv-uploader-{tenant}-{suffix}"
+        # Under `idp-` so the CI build role's `role/idp-*` IAM grant covers it
+        # (scripts/sdlc/cfn/codepipeline-s3.yml), whichever role shape CI runs as.
+        name = f"idp-tiv-uploader-{tenant}-{suffix}"
         arn = iam.create_role(
             RoleName=name,
             AssumeRolePolicyDocument=json.dumps(
