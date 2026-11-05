@@ -18,8 +18,8 @@
  * The decisions are pure helpers in `annotation-edit-flags.ts`. The rest is checked
  * against the component source: the queue page (AnnotationWorkspace) carries the link
  * and its stale-version warning, and the edit screen
- * (TestSetItemEdit, whose model is over the test-set adapter) carries the Start editing prompt
- * and the primary action (Reprocess or Complete).
+ * (TestSetItemEdit, whose model is over the test-set adapter) carries the draft prompt and
+ * Process Changes, which opens the version behind a confirmation.
  */
 
 import { readFileSync } from 'node:fs';
@@ -27,17 +27,9 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  DRAFT_PROMPT_BODY,
-  DRAFT_PROMPT_HEADER,
-  annotationQueueLink,
-  currentDraft,
-  documentActionState,
-  staleLinkVersion,
-} from '../annotation-edit-flags';
+import { DRAFT_PROMPT_BODY, DRAFT_PROMPT_HEADER, annotationQueueLink, currentDraft, staleLinkVersion } from '../annotation-edit-flags';
 
 const DRAFT = { baseVersion: 1, draftVersion: 2 };
-const UNCLAIMED = { reviewObjectKey: 'ts1/x.pdf', claimedByMe: false, reviewed: false };
 
 const HERE = join(__dirname, '..');
 const SOURCE = readFileSync(join(HERE, 'AnnotationWorkspace.tsx'), 'utf-8');
@@ -51,19 +43,17 @@ describe('AnnotationWorkspace version transition', () => {
     // openTestSetAnnotationDraft snapshots the baselines, so calling it to *discover*
     // whether a draft exists would commit on arrival — the exact behaviour being fixed.
     // It may only be called from the explicit handler. The queue page does not call it at
-    // all; the adapter wraps it once, and the screen calls that only from Start editing.
+    // all; the adapter wraps it once, and the screen calls that only from Process Changes.
     expect(SOURCE).not.toMatch(/openTestSetAnnotationDraft|openDraft\(/);
     const calls = ADAPTER.split('openTestSetAnnotationDraft').length - 1;
     // The import, the mutation call, and reading it off the response.
     expect(calls).toBeLessThanOrEqual(3);
     expect(ADAPTER).not.toMatch(/useEffect\([^)]*openDraft/);
-    // Two explicit call sites on the screen: Start editing, and the primary action, which
-    // opens the transition itself when none is open (see the primary action test below).
+    // One explicit call site on the screen: Process Changes, which opens the transition
+    // itself when none is open (see the primary action test below).
     const screenCalls = SCREEN.match(/\bopenDraft\(\)/g) ?? [];
-    expect(screenCalls).toHaveLength(2);
-    expect(SCREEN).toMatch(
-      /const handleOpenDraft = async \(\) => \{\s*setIsOpeningDraft\(true\);\s*try \{\s*const opened = await adapter\.openDraft\(\);/,
-    );
+    expect(screenCalls).toHaveLength(1);
+    expect(SCREEN).not.toMatch(/handleOpenDraft/);
   });
 
   it('reads an existing transition from the queue instead of probing for it', () => {
@@ -87,14 +77,18 @@ describe('AnnotationWorkspace version transition', () => {
   });
 
   it('asks before committing, and says what the commitment preserves', () => {
-    expect(DRAFT_PROMPT_HEADER).toMatch(/Editing this set creates a new version of it/);
-    // The reassurance is the load-bearing half: the reason it is safe to agree is that
-    // the current labels survive as something scoreable.
-    expect(DRAFT_PROMPT_BODY).toMatch(/current labels are preserved/);
-    // The edit screen asks, with the prompt above, until a transition is open
-    // (one notice in the screen's consolidated alert).
-    expect(SCREEN).toMatch(/!draft && \{\s*id: 'draft',[\s\S]*?<b>\{DRAFT_PROMPT_HEADER\}\.<\/b> \{DRAFT_PROMPT_BODY\}/);
-    expect(SCREEN).toMatch(/onClick=\{\(\) => void handleOpenDraft\(\)\}>\s*Start editing/);
+    // What each step writes: Save a draft, Process Changes the next version (the current
+    // one preserved) as reviewed ground truth, Publish version freezes it.
+    expect(DRAFT_PROMPT_HEADER).toBe('Save keeps a draft');
+    expect(DRAFT_PROMPT_BODY).toBe(
+      'Process Changes opens the next version of this set (the current version stays as it is) and writes these labels as reviewed ground truth. Publish version on the test set freezes it.',
+    );
+    // Shown, with no action, while no draft version is open and the user may edit.
+    expect(SCREEN).toMatch(
+      /!draft &&\s*!editorReadOnly && \{\s*id: 'draft',[\s\S]*?<b>\{DRAFT_PROMPT_HEADER\}\.<\/b> \{DRAFT_PROMPT_BODY\}/,
+    );
+    // Process Changes asks for the version, while none is open, with a confirmation.
+    expect(SCREEN).toMatch(/confirm: draft \? undefined : \{ kind: 'version' \}/);
   });
 
   it('puts the transition in the queue link', () => {
@@ -127,46 +121,21 @@ describe('AnnotationWorkspace version transition', () => {
     expect(staleLinkVersion(null, DRAFT)).toBeNull();
   });
 
-  it('keeps the transition visible on the queue page, not on the editor', () => {
-    // Which version a correction landed in is the question asked later, when a run's
-    // score is attributed to one; the queue page shows it. The editor leaves it out to
-    // keep its space for annotation.
-    expect(SOURCE).toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
-    expect(SCREEN).not.toMatch(/v\{draft\.baseVersion\} &rarr; v\{draft\.draftVersion\}/);
+  it('shows the transition on the queue page and in the edit header, with one badge', () => {
+    // Which version a correction lands in is asked while editing too, so the edit header
+    // shows the same badge as the queue page while a draft version is open.
+    expect(SOURCE).toMatch(/<VersionBadge text=\{versionBadgeText\(draft\)\} hover=\{draftBadgeHover\(draft\)\} \/>/);
+    expect(SCREEN).toMatch(/badge: draft \? \{ text: versionBadgeText\(draft\), hover: draftBadgeHover\(draft\) \} : undefined/);
   });
 
   it('lets the primary action open the transition itself, only when none is open, and only on click', () => {
-    // HITL review queues (IDP-0002 R2-N): the primary action needs no edit and no Start
-    // editing first. Choosing it is the explicit act that opens the version transition, so
+    // HITL review queues (IDP-0002 R2-N): the primary action needs no edit first. Choosing it is the explicit act that opens the version transition, so
     // the commitment is still never made on arrival - only from the primary action's
     // handler, and only when no transition is open yet, before the sections are applied.
     const handler = SCREEN.slice(SCREEN.indexOf('      process: {'), SCREEN.indexOf('      cancelTo:'));
     expect(handler).toMatch(/if \(!draft\) await adapter\.openDraft\(\);\s*const \{ reviewed \} = await adapter\.applyAndComplete\(\);/);
     // Only the role half of the editor's read-only state disables the primary action.
-    expect(SCREEN).not.toMatch(/completeReason = [^;]*Start editing/);
+    expect(SCREEN).not.toMatch(/completeReason = [^;]*draft/);
     expect(SCREEN).toMatch(/primaryDisabledReason: completeReason/);
-  });
-
-  it('gates confirming labels on the transition, not only editing them', () => {
-    // Confirming calls completeSectionReview for every section, which tags each one
-    // reviewed-human server-side — the draft-machine -> reviewed-human change a version
-    // is supposed to bracket. With the button enabled before a transition existed, an
-    // entire set could be confirmed, and its provenance rewritten, with no version
-    // recording what the labels had been.
-    expect(documentActionState(UNCLAIMED, null, false).confirmDisabled).toBe(true);
-    expect(documentActionState(UNCLAIMED, DRAFT, false).confirmDisabled).toBe(false);
-    expect(documentActionState(UNCLAIMED, DRAFT, true).confirmDisabled).toBe(true);
-    expect(documentActionState({ ...UNCLAIMED, reviewObjectKey: null }, DRAFT, false).confirmDisabled).toBe(true);
-  });
-
-  it('leaves one primary action, and it is the one that unblocks the rest', () => {
-    // Before a transition is open, neither claiming nor confirming is the next step —
-    // "Start annotating" is, and it is the primary inside that alert.
-    const before = documentActionState(UNCLAIMED, null, false);
-    expect(before.claimVariant).toBe('normal');
-    expect(before.confirmVariant).toBe('normal');
-    // Then claim an unclaimed document, then confirm the one you hold.
-    expect(documentActionState(UNCLAIMED, DRAFT, false)).toMatchObject({ claimVariant: 'primary', confirmVariant: 'normal' });
-    expect(documentActionState({ ...UNCLAIMED, claimedByMe: true }, DRAFT, false).confirmVariant).toBe('primary');
   });
 });

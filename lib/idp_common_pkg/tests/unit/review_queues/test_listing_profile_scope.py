@@ -63,7 +63,15 @@ def service(review_table, monkeypatch):
 _clock = [int(time.time() * 1000)]
 
 
-def _seed(service, doc_key, profile, *, queue="first", owner=None):
+def _seed(
+    service,
+    doc_key,
+    profile,
+    *,
+    queue="first",
+    owner=None,
+    enqueued_at="2026-10-16T00:00:00.000Z",
+):
     """An item, enqueued after every item seeded before it."""
     _clock[0] += 1000
     fields = dict(
@@ -72,7 +80,7 @@ def _seed(service, doc_key, profile, *, queue="first", owner=None):
         profile=profile,
         queue=queue,
         state="OPEN",
-        enqueued_at="2026-10-16T00:00:00.000Z",
+        enqueued_at=enqueued_at,
         enqueued_at_ms=_clock[0],
         sections=["1"],
         version=1,
@@ -250,3 +258,124 @@ class TestPagingPastItemsLeftOut:
             )
         )
         assert len(listed) == 32 and len(set(listed)) == 32
+
+
+OTHER = _caller(admin=True)  # holds the claims that are not the caller's own
+
+
+def _summary(result, name):
+    (found,) = [q for q in result.queues if q.name == name]
+    return found
+
+
+@pytest.mark.unit
+class TestQueueSummaryScope:
+    """My Queues counts, oldest time and own-claim counts follow the caller's scope."""
+
+    def _seed_first(self, service, caller):
+        # In enqueue order on the "first" queue: oldest first.
+        _seed(service, "none.pdf", "", enqueued_at="2026-10-16T00:00:01.000Z")
+        _seed(service, "b1.pdf", "profile-b", enqueued_at="2026-10-16T00:00:02.000Z")
+        _seed(service, "a1.pdf", "profile-a", enqueued_at="2026-10-16T00:00:03.000Z")
+        _seed(
+            service,
+            "a2.pdf",
+            "profile-a",
+            owner=OTHER,
+            enqueued_at="2026-10-16T00:00:04.000Z",
+        )
+        _seed(
+            service,
+            "b2.pdf",
+            "profile-b",
+            owner=OTHER,
+            enqueued_at="2026-10-16T00:00:05.000Z",
+        )
+        _seed(
+            service,
+            "a3.pdf",
+            "profile-a",
+            owner=caller,
+            enqueued_at="2026-10-16T00:00:06.000Z",
+        )
+        _seed(
+            service,
+            "b3.pdf",
+            "profile-b",
+            owner=caller,
+            enqueued_at="2026-10-16T00:00:07.000Z",
+        )
+
+    def _no_counts(self, service, monkeypatch):
+        def refuse(*_a, **_k):
+            raise AssertionError("count_queue called for a scoped caller")
+
+        monkeypatch.setattr(service.store, "count_queue", refuse)
+
+    @pytest.mark.parametrize(
+        "scope", [["profile-a"], ["profile-*a"]], ids=["literal", "glob"]
+    )
+    def test_a_scoped_caller_counts_only_the_items_in_scope(
+        self, service, monkeypatch, scope
+    ):
+        caller = _caller(scope)
+        self._seed_first(service, caller)
+        self._no_counts(service, monkeypatch)
+        first = _summary(service.get_my_queues(caller), "first")
+        assert (first.depth, first.unclaimed, first.claimed) == (3, 1, 2)
+        assert first.oldest_enqueued_at == "2026-10-16T00:00:03.000Z"
+
+    def test_a_glob_scope_admits_every_matching_profile(self, service, monkeypatch):
+        caller = _caller(["profile-*"])
+        self._seed_first(service, caller)
+        self._no_counts(service, monkeypatch)
+        result = service.get_my_queues(caller)
+        first = _summary(result, "first")
+        # Everything but the item with no profile.
+        assert (first.depth, first.unclaimed, first.claimed) == (6, 2, 4)
+        assert first.oldest_enqueued_at == "2026-10-16T00:00:02.000Z"
+        assert first.claimed_by_me == 2 and result.my_claim_count == 2
+
+    def test_an_item_with_no_profile_is_left_out_for_a_scoped_caller(
+        self, service, monkeypatch
+    ):
+        _seed(service, "none.pdf", "", enqueued_at="2026-10-16T00:00:01.000Z")
+        self._no_counts(service, monkeypatch)
+        first = _summary(service.get_my_queues(SCOPED), "first")
+        assert (first.depth, first.unclaimed, first.claimed) == (0, 0, 0)
+        assert first.oldest_enqueued_at is None
+
+    @pytest.mark.parametrize(
+        "caller",
+        [UNSCOPED, ADMIN, _caller([])],
+        ids=["unscoped", "admin", "empty-scope"],
+    )
+    def test_an_unscoped_caller_and_an_admin_get_the_whole_queue(
+        self, service, monkeypatch, caller
+    ):
+        self._seed_first(service, caller)
+        calls = []
+        real = service.store.count_queue
+        monkeypatch.setattr(
+            service.store,
+            "count_queue",
+            lambda *a, **k: calls.append(1) or real(*a, **k),
+        )
+        monkeypatch.setattr(
+            service.store,
+            "queue_scope_rows",
+            lambda *a, **k: pytest.fail("projected pass for an unscoped caller"),
+        )
+        result = service.get_my_queues(caller)
+        first = _summary(result, "first")
+        assert (first.depth, first.unclaimed, first.claimed) == (7, 3, 4)
+        assert first.oldest_enqueued_at == "2026-10-16T00:00:01.000Z"
+        assert calls  # the cheap count path ran
+        if caller is not ADMIN:
+            assert first.claimed_by_me == 2 and result.my_claim_count == 2
+
+    def test_own_claim_counts_leave_out_a_claim_outside_scope(self, service):
+        self._seed_first(service, SCOPED)
+        result = service.get_my_queues(SCOPED)
+        assert _summary(result, "first").claimed_by_me == 1
+        assert result.my_claim_count == 1

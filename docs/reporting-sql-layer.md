@@ -115,6 +115,10 @@ from reuse — Athena caches SELECT results only.
   completed in the last 24h" — since completion = write time.
 - `initial_event_time` is preserved as a column on the row for
   consumers that need queue-time semantics.
+- Each run of a document writes only its own usage. A reprocess or a
+  finished review lands in the partition of the time it completed and
+  carries the stages that run executed, never the earlier runs' usage
+  again, so the earlier partitions stay correct as they are.
 
 `metering` also gains an `hour` partition key so the current-hour tail
 query in the tier picker partition-prunes to ~40 MB instead of scanning
@@ -537,6 +541,12 @@ future dashboards):
   from a consumer.
 - **Pick the tier** by requested range (see §2). Live tail from raw
   `metering` for the current hour/day is expected.
+- **Sum rows per document across runs.** Every metering row is the
+  usage of one run; a document reprocessed later contributes a new set
+  of rows with that run's own usage. The sum over a document's rows is
+  its total; there is no cumulative row to subtract. Rows written for
+  documents reprocessed before this rule was introduced are not
+  rewritten and may repeat an earlier run's usage.
 - **Assume append-only.** A partition, once written, never changes.
   Athena result reuse is safe for sealed partitions — enable it
   explicitly on each `StartQueryExecution` via

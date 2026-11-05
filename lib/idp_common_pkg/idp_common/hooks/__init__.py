@@ -30,8 +30,13 @@ Why go through these helpers rather than editing the raw event dict:
   ``{compressed: true, s3_uri, ...}`` wrapper), not the document itself.
   :func:`load_hook_document` resolves either shape.
 - Returning a document you built from scratch silently drops ``metering``,
-  ``errors``, ``hitl_metadata``, and ``processing_issues``. Load → mutate →
-  return keeps them.
+  ``metering_baseline``, ``errors``, ``hitl_metadata``, and
+  ``processing_issues``. Load → mutate → return keeps them.
+- ``metering`` holds only this run's own usage; ``metering_baseline`` holds the
+  usage of the document's earlier runs (set at run start when a document is
+  reprocessed). The tracking table stores their sum and reporting gets
+  ``metering`` alone, so a hook that returns a rebuilt document must carry both
+  over, or the document's earlier usage is lost from its total.
 - The dispatcher only honors a document returned under the ``updatedDocument``
   key; :func:`updated_document_result` spells that contract for you.
 

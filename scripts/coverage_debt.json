@@ -309,6 +309,7 @@
         "idp_common/utils/few_shot_example_builder.py": 50.0,
         "idp_common/utils/lambda_metering.py": 66.67,
         "idp_common/utils/log_sanitizer.py": 92.0,
+        "idp_common/utils/metering.py": 88.89,
         "idp_common/utils/s3util.py": 63.89,
         "idp_common/utils/settings_helper.py": 80.95,
         "idp_common/utils/strands_agent_tools/__init__.py": 100.0,

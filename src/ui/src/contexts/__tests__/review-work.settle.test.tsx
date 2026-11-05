@@ -15,10 +15,14 @@ import { ReviewWorkProvider, SETTLED_HIDE_MS } from '../review-work';
 import type { ReviewWorkContextValue } from '../review-work';
 import useReviewWork from '../../hooks/use-review-work';
 
-const { graphqlMock } = vi.hoisted(() => ({ graphqlMock: vi.fn() }));
+const { graphqlMock, role } = vi.hoisted(() => ({
+  graphqlMock: vi.fn(),
+  role: { canWorkTestSetQueues: true, isAuthor: false, loading: false },
+}));
 vi.mock('../../api/client-shim', () => ({
   generateClient: () => ({ graphql: graphqlMock }),
 }));
+vi.mock('../../hooks/use-user-role', () => ({ default: () => role }));
 
 const task = (objectKey: string) => ({ testSetId: 'ts1', objectKey, assignedTo: 'a@example.com', documentClasses: [] });
 
@@ -51,6 +55,7 @@ describe('ReviewWorkProvider.settle', () => {
     vi.useFakeTimers();
     graphqlMock.mockReset().mockImplementation(answer);
     server = { production: ['doc-p.pdf'], testSet: ['doc-a.pdf', 'doc-b.pdf'] };
+    Object.assign(role, { canWorkTestSetQueues: true, isAuthor: false, loading: false });
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
     render(
       <ReviewWorkProvider>
@@ -113,5 +118,71 @@ describe('ReviewWorkProvider.settle', () => {
       await latest.refresh();
     });
     expect(latest.count).toBe(3);
+  });
+});
+
+/**
+ * A Reviewer-only user works Production queues only, and the server refuses them
+ * `listMyTestSetTasks`. The poll must not ask, and must still settle: the Test Studio
+ * source is answered with an empty list rather than reported as a failure.
+ */
+describe('ReviewWorkProvider for a Reviewer-only user', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    graphqlMock.mockReset().mockImplementation(answer);
+    server = { production: ['doc-p.pdf'], testSet: ['doc-a.pdf'] };
+    Object.assign(role, { canWorkTestSetQueues: false, isAuthor: false, loading: false });
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    render(
+      <ReviewWorkProvider>
+        <Consumer />
+      </ReviewWorkProvider>,
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const testSetCalls = () => graphqlMock.mock.calls.filter(([arg]) => (arg as { query: string }).query.includes('listMyTestSetTasks'));
+
+  it('makes no listMyTestSetTasks call and reports no error', async () => {
+    await flush();
+    expect(testSetCalls()).toHaveLength(0);
+    expect(latest.loaded).toBe(true);
+    expect(latest.pollError).toBeNull();
+    expect(latest.testSetTasks).toEqual([]);
+    expect(latest.count).toBe(1);
+  });
+
+  it('still settles a finished production item', async () => {
+    await flush();
+    act(() => latest.settle('p:doc-p.pdf'));
+    server.production = [];
+    await act(async () => {
+      await latest.refresh();
+    });
+    expect(latest.count).toBe(0);
+    expect(testSetCalls()).toHaveLength(0);
+  });
+});
+
+describe('ReviewWorkProvider for an Author', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reads Test Studio tasks', async () => {
+    vi.useFakeTimers();
+    graphqlMock.mockReset().mockImplementation(answer);
+    server = { production: [], testSet: ['doc-a.pdf'] };
+    Object.assign(role, { canWorkTestSetQueues: false, isAuthor: true, loading: false });
+    render(
+      <ReviewWorkProvider>
+        <Consumer />
+      </ReviewWorkProvider>,
+    );
+    await flush();
+    expect(latest.count).toBe(1);
   });
 });

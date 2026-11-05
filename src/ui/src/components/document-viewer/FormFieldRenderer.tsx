@@ -18,6 +18,7 @@ import {
 } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { getFieldConfidenceInfo } from '../common/confidence-alerts-utils';
+import { valueSourceLabel } from '../common/labels';
 import FieldGeometryAffordance from '../common/FieldGeometryAffordance';
 import { hasAnyDrawableGeometry, summariseGeometryCoverage } from '../common/geometry-coverage';
 
@@ -30,6 +31,9 @@ type ExtendedBoxProps = BoxProps & React.HTMLAttributes<HTMLDivElement>;
 const ExtBox = Box as React.ComponentType<ExtendedBoxProps>;
 
 const logger = new ConsoleLogger('FormFieldRenderer');
+
+/** The default value labels: the values are model predictions. */
+const PREDICTION_VALUE_LABEL = valueSourceLabel(null);
 
 // Build the canonical Stickler comparison key for a field from its render path.
 // e.g. path=["LineItems", 0, "Description"] -> "LineItems[0].Description".
@@ -130,6 +134,8 @@ const FormFieldRenderer = memo<Record<string, any>>(
     baselineChanges = new Map(),
     _onRevertPrediction = null,
     _onRevertBaseline = null,
+    /** The value labels ({ value, changed }): prediction wording unless the values are ground truth. */
+    valueLabel = PREDICTION_VALUE_LABEL,
   }) => {
     // Calculate path key for collapse state using displayPath
     const pathKey = [...displayPath, fieldKey].join('.');
@@ -678,7 +684,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     {/* Not "Predicted" once a human has replaced it — the label is a
                         provenance claim, and it was still asserting the model's. */}
                     <ExtBox fontSize="body-s" color="text-body-secondary">
-                      {isPredictionChanged ? 'Your value:' : 'Predicted:'}
+                      {isPredictionChanged ? valueLabel.changed : valueLabel.value}
                     </ExtBox>
                     {isPredictionChanged && (
                       <ExtBox fontSize="body-s" color="text-status-info" fontWeight="bold">
@@ -899,7 +905,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     {/* Not "Predicted" once a human has replaced it — the label is a
                         provenance claim, and it was still asserting the model's. */}
                     <ExtBox fontSize="body-s" color="text-body-secondary">
-                      {isPredictionChanged ? 'Your value:' : 'Predicted:'}
+                      {isPredictionChanged ? valueLabel.changed : valueLabel.value}
                     </ExtBox>
                     {isPredictionChanged && (
                       <ExtBox fontSize="body-s" color="text-status-info" fontWeight="bold">
@@ -1130,7 +1136,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     {/* Not "Predicted" once a human has replaced it — the label is a
                         provenance claim, and it was still asserting the model's. */}
                     <ExtBox fontSize="body-s" color="text-body-secondary">
-                      {isPredictionChanged ? 'Your value:' : 'Predicted:'}
+                      {isPredictionChanged ? valueLabel.changed : valueLabel.value}
                     </ExtBox>
                     {isPredictionChanged && (
                       <ExtBox fontSize="body-s" color="text-status-info" fontWeight="bold">
@@ -1488,6 +1494,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         displayPath={[...displayPath, fieldKey]}
                         predictionChanges={predictionChanges}
                         baselineChanges={baselineChanges}
+                        valueLabel={valueLabel}
                       />
                     );
                   })}
@@ -1591,7 +1598,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     {/* Not "Predicted" once a human has replaced it — the label is a
                         provenance claim, and it was still asserting the model's. */}
                     <ExtBox fontSize="body-s" color="text-body-secondary">
-                      {isPredictionChanged ? 'Your value:' : 'Predicted:'}
+                      {isPredictionChanged ? valueLabel.changed : valueLabel.value}
                     </ExtBox>
                     {isPredictionChanged && (
                       <ExtBox fontSize="body-s" color="text-status-info" fontWeight="bold">
@@ -1910,6 +1917,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                         displayPath={[...displayPath, fieldKey]}
                         predictionChanges={predictionChanges}
                         baselineChanges={baselineChanges}
+                        valueLabel={valueLabel}
                       />
                     );
                   })}

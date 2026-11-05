@@ -40,6 +40,10 @@ export const testSetItemPath = (testSetId: string, objectKey: string): string =>
  */
 export const testSetAnnotateHref = (testSetId: string, objectKey?: string, from?: EditOrigin): string =>
   `#${objectKey ? testSetItemPath(testSetId, objectKey) : testSetQueuePath(testSetId)}${objectKey && from ? `?from=${from}` : ''}`;
+/** `?show=` value that opens a test set's queue with its reviewed documents listed. */
+export const SHOW_REVIEWED = 'reviewed';
+/** Hash-link helper: a test set's queue with its reviewed documents shown, so each can be opened and corrected. */
+export const testSetReviewedHref = (testSetId: string): string => `${testSetAnnotateHref(testSetId)}?show=${SHOW_REVIEWED}`;
 /**
  * Landing page for an annotator assigned to more than one test set (or before
  * their scope has resolved). Lists their queues; a single-set annotator is sent

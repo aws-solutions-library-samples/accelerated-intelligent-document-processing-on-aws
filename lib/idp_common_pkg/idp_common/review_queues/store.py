@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from idp_common.dynamodb.client import (
     CONDITIONAL_CHECK_FAILED,
@@ -352,6 +352,31 @@ class ReviewStore:
             start_key=start_key,
             client=client,
         )
+
+    def queue_scope_rows(
+        self, ref: QueueRef, *, client: Optional[DynamoDBClient] = None
+    ) -> Iterator[dict[str, Any]]:
+        """Every item of a queue (OPEN and CLAIMED), oldest first, as raw rows.
+
+        Each row carries only ``Profile``, ``State`` and ``EnqueuedAt`` (a projected
+        QueueIndex query, followed across pages), so a caller can count the items its
+        scope admits without hydrating records (rows are not ``ReviewItemRecord``s).
+        """
+        pages = (client or self.client).query_pages(
+            "#qp = :h",
+            expression_attribute_names={
+                "#qp": "QueuePK",
+                "#p": "Profile",
+                "#st": "State",
+                "#e": "EnqueuedAt",
+            },
+            expression_attribute_values={":h": ref.partition},
+            index_name=keys.QUEUE_INDEX,
+            scan_index_forward=True,
+            projection_expression="#p, #st, #e",
+        )
+        for page in pages:
+            yield from page.get("Items", [])
 
     def count_queue(
         self, ref: QueueRef, *, open_only: bool, client: Optional[DynamoDBClient] = None

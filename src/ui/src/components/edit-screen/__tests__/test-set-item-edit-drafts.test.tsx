@@ -29,6 +29,7 @@ vi.mock('../../../hooks/use-user-role', () => ({
     isReviewer: false,
     isAnnotator: true,
     canAnnotate: true,
+    canWorkTestSetQueues: true,
     loading: false,
     allowedConfigVersions: null,
   }),
