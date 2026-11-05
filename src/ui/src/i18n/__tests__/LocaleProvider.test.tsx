@@ -10,10 +10,11 @@ import { LocaleProvider, onIntlError, useLocale } from '../LocaleProvider';
 const EN_FR: readonly Locale[] = ['en', 'fr-CA'];
 
 const Probe = (): React.JSX.Element => {
-  const { locale, setLocale, enabledLocales } = useLocale();
+  const { locale, intlLocale, setLocale, enabledLocales } = useLocale();
   return (
     <div>
       <span data-testid="locale">{locale}</span>
+      <span data-testid="intl-locale">{String(intlLocale)}</span>
       <span data-testid="enabled">{enabledLocales.join(',')}</span>
       <button type="button" onClick={() => setLocale('fr-CA')}>
         choose fr-CA
@@ -84,6 +85,18 @@ describe('LocaleProvider', () => {
     );
     expect(screen.getByTestId('locale')).toHaveTextContent('fr-CA');
     expect(document.documentElement.lang).toBe('fr-CA');
+  });
+
+  it('exposes the Intl formatting locale: none under en, the tag under fr-CA', () => {
+    setBrowserLanguages(['en-US']);
+    render(
+      <LocaleProvider enabledLocales={EN_FR}>
+        <Probe />
+      </LocaleProvider>,
+    );
+    expect(screen.getByTestId('intl-locale')).toHaveTextContent('undefined');
+    fireEvent.click(screen.getByRole('button', { name: 'choose fr-CA' }));
+    expect(screen.getByTestId('intl-locale')).toHaveTextContent('fr-CA');
   });
 
   it('persists an enabled choice under idp-locale', () => {

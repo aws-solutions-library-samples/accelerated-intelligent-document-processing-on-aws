@@ -6,6 +6,7 @@ import { IntlProvider, ReactIntlErrorCode, type IntlConfig } from 'react-intl';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { applyAmplifyLanguage, registerAmplifyVocabularies } from './amplify';
 import { useCloudscapeMessages } from './cloudscape';
+import { formattingLocale } from './format';
 import { EMPTY_CATALOG, loadCatalog, type CatalogMessages } from './loadCatalog';
 import { DEFAULT_LOCALE, ENABLED_LOCALES, LOCALE_STORAGE_KEY, isEnabledLocale, type Locale } from './locales';
 import { readResolvedLocale } from './resolveLocale';
@@ -14,6 +15,14 @@ const logger = new ConsoleLogger('LocaleProvider');
 
 export interface LocaleContextValue {
   locale: Locale;
+  /**
+   * The locale the UI formats dates and numbers with, as `Intl` takes it (`formattingLocale`):
+   * `undefined` under `en` and `en-XA`, meaning the runtime default that today's bare
+   * `toLocaleString()` calls use, and the tag itself otherwise (`'fr-CA'`). For a consumer that
+   * hands a locale to `Intl` or to a component's `locale` prop directly instead of going
+   * through the `format.ts` helpers.
+   */
+  intlLocale: string | undefined;
   /** Switch the UI locale and remember it. A value outside `enabledLocales` is ignored. */
   setLocale: (next: string) => void;
   enabledLocales: readonly Locale[];
@@ -127,7 +136,10 @@ export const LocaleProvider = ({ children, enabledLocales = ENABLED_LOCALES }: L
     [enabledLocales],
   );
 
-  const value = useMemo<LocaleContextValue>(() => ({ locale, setLocale, enabledLocales }), [locale, setLocale, enabledLocales]);
+  const value = useMemo<LocaleContextValue>(
+    () => ({ locale, intlLocale: formattingLocale(locale), setLocale, enabledLocales }),
+    [locale, setLocale, enabledLocales],
+  );
 
   // Cloudscape's provider reads `<html lang>` when `locale` is omitted; it is passed
   // explicitly so the two can never disagree.
