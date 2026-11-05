@@ -3822,12 +3822,27 @@ def test_ai_mr_review_is_reached_only_through_gitlab_api() -> None:
         assert not any(name.split(".")[0] == "ai_mr_review" for name in names)
 
 
-BARE_ENV_NAMES = ("PATH", "SYSTEMROOT", "LANG")
+BARE_ENV_NAMES = (
+    "PATH",
+    "SYSTEMROOT",
+    "LANG",
+    "TMP",
+    "TEMP",
+    "TMPDIR",
+    "COVERAGE_PROCESS_START",
+    "COVERAGE_FILE",
+    "COVERAGE_SUBPROCESS_SOURCE",
+)
 
 
 def _bare_env() -> dict[str, str]:
     """The script's subprocess environment: what Python needs to start, nothing a
-    CI job holds, so a run under a scheduled pipeline reaches no credential."""
+    CI job holds, so a run under a scheduled pipeline reaches no credential.
+
+    The three ``COVERAGE_*`` names are the ones ``coverage_all.py`` hands every
+    test run so a subprocess is measured too; without them these runs of the
+    script would count for nothing in its coverage floor. None is a credential.
+    """
     return {name: os.environ[name] for name in BARE_ENV_NAMES if name in os.environ}
 
 
