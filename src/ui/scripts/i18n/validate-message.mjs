@@ -21,6 +21,10 @@
  * `#` inside a plural branch is a use of that plural's own variable, so `one {# file}` and
  * `one {{count} file}` have the same shape. Plural branch keys may differ between languages
  * (French `one` covers 0 and 1, Arabic has six categories), so only `other` is required.
+ *
+ * `validateMessage` takes the translation as ICU text (a catalog file); `validateMessageAst`
+ * takes it already parsed (a catalog a build step produced as an AST, such as the pseudo-locale
+ * from `formatjs compile --ast`). Both judge the same shape with the same code.
  */
 import { TYPE, parse } from '@formatjs/icu-messageformat-parser';
 
@@ -90,6 +94,9 @@ const recordArgument = (shape, name, kind) => {
  */
 const collectShape = (elements, shape) => {
   for (const element of elements) {
+    if (typeof element !== 'object' || element === null || typeof element.type !== 'number') {
+      throw new TypeError(`${JSON.stringify(element)} is not a message element`);
+    }
     switch (element.type) {
       case TYPE.literal:
       case TYPE.pound:
@@ -113,42 +120,41 @@ const collectShape = (elements, shape) => {
   return shape;
 };
 
+/** @returns {MessageShape} */
+const emptyShape = () => ({ args: new Map(), tags: new Set() });
+
 /** @param {string} message */
-const shapeOf = (message) => collectShape(parseMessage(message), { args: new Map(), tags: new Set() });
+const shapeOf = (message) => collectShape(parseMessage(message), emptyShape());
 
 /** @param {Iterable<string>} names */
 const list = (names) => Array.from(names).sort().join(', ');
 
 /**
- * Judge one translated message against its English source.
+ * The English source's shape, or the one error that stops the comparison.
  *
- * @param {string} id the message id, used in every error so a caller can print them as they are
- * @param {string} sourceMessage the English `defaultMessage` from `en.json`
- * @param {string} translatedMessage the candidate translation
- * @returns {{ ok: boolean, errors: string[] }} `ok` is true only when `errors` is empty
+ * @param {string} id
+ * @param {unknown} sourceMessage
+ * @returns {{ shape: MessageShape } | { error: string }}
  */
-export const validateMessage = (id, sourceMessage, translatedMessage) => {
+const sourceShape = (id, sourceMessage) => {
+  if (typeof sourceMessage !== 'string') return { error: `${id}: the English source is not a string` };
+  try {
+    return { shape: shapeOf(sourceMessage) };
+  } catch (error) {
+    return { error: `${id}: the English source does not parse as ICU: ${describeParseError(error)}` };
+  }
+};
+
+/**
+ * Compare two shapes: same argument names, same kind per shared argument, same tags.
+ *
+ * @param {string} id
+ * @param {MessageShape} source
+ * @param {MessageShape} translated
+ * @returns {{ ok: boolean, errors: string[] }}
+ */
+const compareShapes = (id, source, translated) => {
   const errors = [];
-  if (typeof sourceMessage !== 'string') {
-    return { ok: false, errors: [`${id}: the English source is not a string`] };
-  }
-  if (typeof translatedMessage !== 'string') {
-    return { ok: false, errors: [`${id}: the translation is not a string`] };
-  }
-
-  let source;
-  try {
-    source = shapeOf(sourceMessage);
-  } catch (error) {
-    return { ok: false, errors: [`${id}: the English source does not parse as ICU: ${describeParseError(error)}`] };
-  }
-  let translated;
-  try {
-    translated = shapeOf(translatedMessage);
-  } catch (error) {
-    return { ok: false, errors: [`${id}: the translation does not parse as ICU: ${describeParseError(error)}`] };
-  }
-
   const missingArgs = [...source.args.keys()].filter((name) => !translated.args.has(name));
   const extraArgs = [...translated.args.keys()].filter((name) => !source.args.has(name));
   if (missingArgs.length > 0) errors.push(`${id}: the translation is missing argument(s) {${list(missingArgs)}}`);
@@ -166,4 +172,52 @@ export const validateMessage = (id, sourceMessage, translatedMessage) => {
   if (extraTags.length > 0) errors.push(`${id}: the translation has rich-text tag(s) <${list(extraTags)}> that the English does not`);
 
   return { ok: errors.length === 0, errors };
+};
+
+/**
+ * Judge one translated message against its English source.
+ *
+ * @param {string} id the message id, used in every error so a caller can print them as they are
+ * @param {string} sourceMessage the English `defaultMessage` from `en.json`
+ * @param {string} translatedMessage the candidate translation
+ * @returns {{ ok: boolean, errors: string[] }} `ok` is true only when `errors` is empty
+ */
+export const validateMessage = (id, sourceMessage, translatedMessage) => {
+  const source = sourceShape(id, sourceMessage);
+  if ('error' in source) return { ok: false, errors: [source.error] };
+  if (typeof translatedMessage !== 'string') {
+    return { ok: false, errors: [`${id}: the translation is not a string`] };
+  }
+  let translated;
+  try {
+    translated = shapeOf(translatedMessage);
+  } catch (error) {
+    return { ok: false, errors: [`${id}: the translation does not parse as ICU: ${describeParseError(error)}`] };
+  }
+  return compareShapes(id, source.shape, translated);
+};
+
+/**
+ * Judge one translated message that is already parsed against its English source. The same
+ * parity as `validateMessage`, for a catalog a build step produced as an AST rather than as
+ * ICU text; the AST itself is what will be served, so it is judged as it is.
+ *
+ * @param {string} id the message id, used in every error
+ * @param {string} sourceMessage the English `defaultMessage` from `en.json`
+ * @param {import('@formatjs/icu-messageformat-parser').MessageFormatElement[]} translatedAst the candidate, parsed
+ * @returns {{ ok: boolean, errors: string[] }} `ok` is true only when `errors` is empty
+ */
+export const validateMessageAst = (id, sourceMessage, translatedAst) => {
+  const source = sourceShape(id, sourceMessage);
+  if ('error' in source) return { ok: false, errors: [source.error] };
+  if (!Array.isArray(translatedAst)) {
+    return { ok: false, errors: [`${id}: the translation is not a parsed message (an array of elements)`] };
+  }
+  let translated;
+  try {
+    translated = collectShape(translatedAst, emptyShape());
+  } catch (error) {
+    return { ok: false, errors: [`${id}: the translation is not a well-formed message AST: ${describeParseError(error)}`] };
+  }
+  return compareShapes(id, source.shape, translated);
 };

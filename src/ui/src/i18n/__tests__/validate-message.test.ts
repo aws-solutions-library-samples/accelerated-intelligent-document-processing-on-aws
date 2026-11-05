@@ -5,9 +5,9 @@
  * `make check-ui-i18n-catalog` and the later catalog review all call this one function, so
  * each thing it claims to catch is driven here and the error is checked to name the id.
  */
-import { TYPE } from '@formatjs/icu-messageformat-parser';
+import { TYPE, type MessageFormatElement } from '@formatjs/icu-messageformat-parser';
 import { describe, expect, it } from 'vitest';
-import { parseMessage, validateMessage } from '../../../scripts/i18n/validate-message.mjs';
+import { parseMessage, validateMessage, validateMessageAst } from '../../../scripts/i18n/validate-message.mjs';
 
 const PLURAL_EN = '{count, plural, one {# document} other {# documents}}';
 
@@ -115,6 +115,51 @@ describe('validateMessage', () => {
     expect(validateMessage('x.type', 'Hello', 42 as unknown as string).errors).toEqual(['x.type: the translation is not a string']);
     expect(validateMessage('x.type', undefined as unknown as string, 'Bonjour').errors).toEqual([
       'x.type: the English source is not a string',
+    ]);
+  });
+});
+
+describe('validateMessageAst', () => {
+  it('gives the same verdict as validateMessage for the parsed form of the same translation', () => {
+    const cases: [string, string][] = [
+      ['Hello {name}', 'Bonjour {name}'],
+      [PLURAL_EN, '{count, plural, one {# document} other {# documents}}'],
+      ['Open <link>the guide</link>', 'Ouvrir <link>le guide</link>'],
+      ['Hello {first} {last}', 'Bonjour {first}'],
+      ['Hello {name}', 'Bonjour {nom}'],
+      [PLURAL_EN, '{count} documents'],
+      ['Read <b>this</b> and <link>that</link>', 'Lisez <i>ceci</i> et <link>cela</link>'],
+      ['{n, selectordinal, one {#st} two {#nd} few {#rd} other {#th}}', '{n, plural, one {#er} other {#e}}'],
+    ];
+    for (const [source, translated] of cases) {
+      expect(validateMessageAst('x.same', source, parseMessage(translated))).toEqual(validateMessage('x.same', source, translated));
+    }
+  });
+
+  it('accepts the pseudo-locale shape: padded, accented text around the same arguments', () => {
+    // What `formatjs compile --ast --pseudo-locale en-XA` produces for "Language, currently {language}".
+    const pseudo: MessageFormatElement[] = [
+      { type: TYPE.literal, value: '[' },
+      { type: TYPE.literal, value: 'Ŀȧȧƞɠŭŭȧȧɠḗḗ, ƈŭŭřřḗḗƞŧŀẏ ' },
+      { type: TYPE.argument, value: 'language' },
+      { type: TYPE.literal, value: ']' },
+    ];
+    expect(validateMessageAst('x.pseudo', 'Language, currently {language}', pseudo)).toEqual({ ok: true, errors: [] });
+    expect(validateMessageAst('x.pseudo', 'Language, currently {locale}', pseudo).errors).toEqual([
+      'x.pseudo: the translation is missing argument(s) {locale}',
+      'x.pseudo: the translation has argument(s) {language} that the English does not',
+    ]);
+  });
+
+  it('rejects a malformed English source, a non-array, and an array that is not made of message elements', () => {
+    expect(validateMessageAst('x.source', 'Hello {name', parseMessage('Bonjour {name}')).errors[0]).toContain(
+      'x.source: the English source does not parse as ICU',
+    );
+    expect(validateMessageAst('x.array', 'Hello', 'Bonjour' as unknown as MessageFormatElement[]).errors).toEqual([
+      'x.array: the translation is not a parsed message (an array of elements)',
+    ]);
+    expect(validateMessageAst('x.elements', 'Hello', ['Bonjour'] as unknown as MessageFormatElement[]).errors).toEqual([
+      'x.elements: the translation is not a well-formed message AST: "Bonjour" is not a message element',
     ]);
   });
 });

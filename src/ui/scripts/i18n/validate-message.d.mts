@@ -15,3 +15,6 @@ export interface MessageVerdict {
 
 /** Judge one translated message against its English source: ICU syntax, argument and tag parity. */
 export declare const validateMessage: (id: string, sourceMessage: string, translatedMessage: string) => MessageVerdict;
+
+/** The same parity for a translation that is already parsed (a catalog a build step produced as an AST). */
+export declare const validateMessageAst: (id: string, sourceMessage: string, translatedAst: MessageFormatElement[]) => MessageVerdict;
