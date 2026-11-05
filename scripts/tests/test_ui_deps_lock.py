@@ -3,7 +3,7 @@
 
 """Pin the guard that stops two UI make targets corrupting src/ui/node_modules.
 
-Ten `make` targets run a node tool out of `src/ui/node_modules`, and seven of them
+Eleven `make` targets run a node tool out of `src/ui/node_modules`, and seven of them
 reinstall it with `npm ci` first — which deletes the tree before rebuilding it, by
 design. Two of those targets at once in ONE checkout therefore corrupt each other,
 and the loser reports a missing or half-deleted module from whatever package the
@@ -56,10 +56,12 @@ LOCK_VARIABLE = "$(UI_DEPS_LOCK)"
 #: gates from #1447, the fixer beside them, ``codegen`` — which runs no
 #: ``npm ci`` of its own and so was never in the issue's table, but reads the tree
 #: a concurrent install would be deleting and is exposed to exactly the half of the
-#: hazard that produced the missing-eslint-formatter failure — and the three i18n
+#: hazard that produced the missing-eslint-formatter failure — and the four i18n
 #: targets of #1770: the extractor installs and runs ``formatjs``, the check-only
 #: catalog gate runs the installed ``formatjs`` and ``node`` the way ``codegen``
-#: does, and the string-debt ratchet runs the installed ``eslint`` the same way.
+#: does, the string-debt ratchet runs the installed ``eslint`` the same way, and
+#: the advisory coverage report runs ``node`` over a worker that imports the
+#: installed ``@formatjs/icu-messageformat-parser``.
 UI_TARGETS = (
     "ui-lint",
     "ui-lint-fix",
@@ -67,6 +69,7 @@ UI_TARGETS = (
     "ui-build-only",
     "ui-test",
     "ui-i18n-extract",
+    "ui-i18n-coverage",
     "codegen",
     "codegen-check",
     "check-ui-i18n-catalog",

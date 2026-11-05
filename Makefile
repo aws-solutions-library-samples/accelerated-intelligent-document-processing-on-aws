@@ -1512,6 +1512,22 @@ ui-i18n-extract: ## Re-extract the UI's English message catalog into src/ui/src/
 	$(UI_DEPS_LOCK) '$(NPM_CI) && npm run i18n:extract'
 	@echo -e "$(GREEN)✅ src/ui/src/i18n/en.json re-extracted. Commit it if it changed.$(NC)"
 
+# ADVISORY BY DESIGN (decision D17 of #1770): this target never fails, so it is
+# not a prerequisite of `lint` or `fastlint`, is not in the `lint-cicd` recipe, and
+# its name matches none of the check shapes test_ci_gate_parity.py classifies by.
+# A missing or stale translation is an English fallback on screen, not a broken
+# build; this report makes it visible without turning every English-only string
+# into a red gate. Invalid entries are enforced by `check-ui-i18n-catalog` and the
+# UI build, and only listed here. Flags go through UI_I18N_COVERAGE_ARGS, e.g.
+# `make ui-i18n-coverage UI_I18N_COVERAGE_ARGS=--json` (nothing else is printed,
+# so the output is the JSON) or `UI_I18N_COVERAGE_ARGS="--locale fr-CA"`.
+UI_I18N_COVERAGE_ARGS ?=
+ui-i18n-coverage: ## Report fr-CA translation coverage: missing, stale (English changed since translation) and invalid entries per locale catalog; advisory, never fails (issue #1770)
+	@# It runs node out of src/ui/node_modules, so it takes the same lock as the UI
+	@# targets (issue #1447). Off CI without node_modules it prints a SKIP (not a
+	@# report); in CI that is an error. Exit 2 only when no report could be made.
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_coverage.py $(UI_I18N_COVERAGE_ARGS)'
+
 ##@ Code Generation
 codegen: ## Regenerate GraphQL types and operations
 	@$(UI_DEPS_LOCK) 'npm run codegen'
