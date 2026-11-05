@@ -176,6 +176,17 @@ https://github.com/user-attachments/assets/a1e9ce1a-1b2e-4e98-a387-d2e48d7e557d
 
 **Related Documentation**: [RBAC Documentation](./rbac.md)
 
+### Tenant Isolation in a Shared Deployment
+One deployment can serve several tenants and keep each tenant's documents visible only to that tenant's users. This demo covers the `TenantIsolationMode`, `TenantGrantSource` and `RefreshTokenValidityHours` stack parameters, declares a tenant on the Prefix Mappings page, maps its folder and creates a user scoped to it. It then shows the safeguards: overlapping tenants, cross-tenant mappings and user scopes that span tenants are refused when saved, and strict mode refuses an upload outside every tenant before it is sent. It closes with the `idp-cli tenancy` commands (`put`, `list`, `audit`, `generate-policies`, `verify`) and the tenant's own view, where a user sees only their tenant's documents and is refused a direct link to another tenant's.
+
+**Duration**: ~4.5 minutes
+
+https://github.com/user-attachments/assets/27e12b5d-0595-4c24-a4f3-ab5eaff6d6f7
+
+
+
+**Related Documentation**: [Multi-Tenant Isolation](./multi-tenancy.md)
+
 ---
 
 ## Configuration & Management
