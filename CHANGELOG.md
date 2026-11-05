@@ -31,6 +31,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **The Upload panel now explains a strict tenant isolation refusal.** Under `TenantIsolationMode=Strict`, choosing a folder outside every tenant's prefixes, or one whose tenant does not own the selected profile, disabled the Upload button without saying why, because the panel showed a refusal only when a prefix mapping had matched. It now shows "This upload would be refused" with the reason the API returns. See [Multi-Tenant Isolation](docs/multi-tenancy.md#strict-mode).
+
 - **The Prefix Mappings page has its own help panel.** The right-side (i) panel on Configuration → Prefix Mappings showed the document-details help, because the page had no entry of its own. It now explains prefix mappings, tenant declarations, **Granted by** values and the isolation mode, with links to [Configuration Profiles](docs/configuration-profiles.md#prefix-mappings-assigning-a-profile-by-where-a-document-lands) and [Multi-tenancy](docs/multi-tenancy.md). User Management's panel links to the tenancy guide too, and a test now resolves every docs-site link in the web UI against the published pages and their headings.
 
 - **A federated user stored as Admin whose claim now maps to an ordinary role is named in the logs.** Under `TenantGrantSource=IdpClaim` such a user is granted no tenant and is denied, because a stored role is not resynced and an Admin record is never granted one. The sign-in now logs a warning naming the user, and [Multi-tenancy](docs/multi-tenancy.md#who-grants-a-tenant) gives the remedy: delete the user so the next sign-in recreates the record from the claim.
