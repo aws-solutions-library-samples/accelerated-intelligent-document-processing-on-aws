@@ -35,6 +35,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **`idp-cli list-versions` and the SDK's `batch.list_versions` list a document's versions.** Both failed against every stack with `Error: 'TrackingTable'`, because the stack's tracking table was looked up under a key the SDK's stack lookup never records. They now find the table, and on a stack without one they raise an `IDPResourceNotFoundError` that names the missing `TrackingTable` resource and the stack. On such a stack, every command that reads the stack's resources also logs a warning that names the missing table. Downloading a version with `download-results --run-id` was not affected. See [Document Versions](docs/document-versions.md#cli).
+
 - **The MR UX test keeps its section and video when the model's report steps off its schema.** A flow labelled with an outcome outside the schema used to cost the whole section and its video; it is now kept as unrecognised, with the label in its summary. A finding written as `where` and `what`, and a `not_covered` entry given as a string, used to be dropped silently and are now kept.
 
 - **A federated user stored as Admin whose claim now maps to an ordinary role is named in the logs.** Under `TenantGrantSource=IdpClaim` such a user is granted no tenant and is denied, because a stored role is not resynced and an Admin record is never granted one. The sign-in now logs a warning naming the user, and [Multi-tenancy](docs/multi-tenancy.md#who-grants-a-tenant) gives the remedy: delete the user so the next sign-in recreates the record from the claim.
