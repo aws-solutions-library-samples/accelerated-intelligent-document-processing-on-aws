@@ -19,7 +19,7 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
-- **The nightly first-time-user story digest posts to the nightly Slack channel.** With no `UX_TEST_STORIES_SLACK_WEBHOOK_URL` set, the scheduled digest posts its one-line summary through `SLACK_WEBHOOK_URL`, the workflow webhook the integration build already posts to, with a status that names the run: `🧭 UX STORIES · ✅ CLEAN`, `❌ REGRESSIONS`, `⚠️ DEGRADED` or `⏭️ NOT RUN`. A webhook of its own still comes first. See [first-time-user stories](.claude/skills/ux-test-stories.md#on-merge-requests-and-at-night).
+- **The nightly first-time-user story digest's Slack status names the run.** It reads `🧭 UX STORIES · ✅ CLEAN`, `❌ REGRESSIONS`, `⚠️ DEGRADED` or `⏭️ NOT RUN`, and the digest still posts only through `UX_TEST_STORIES_SLACK_WEBHOOK_URL`, a Workflow Builder webhook of its own. See [first-time-user stories](.claude/skills/ux-test-stories.md#on-merge-requests-and-at-night).
 
 - **A stack holds at most 65 tenants, down from 75**, because each tenant can now carry up to three **Granted by** values and the declarations share one 400 KB DynamoDB item. A deployment already above 65 keeps its tenants and can still edit and delete them; only adding a tenant is refused until it is back under the cap. See [Multi-tenancy](docs/multi-tenancy.md).
 
