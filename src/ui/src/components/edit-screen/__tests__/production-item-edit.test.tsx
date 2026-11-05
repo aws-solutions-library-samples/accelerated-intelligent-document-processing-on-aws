@@ -51,6 +51,7 @@ let editor: {
   controllerRef?: { current: unknown };
   body?: unknown;
   defaultFilter?: string;
+  focusRequest?: unknown;
 } | null = null;
 const controller = { save: vi.fn(), discard: vi.fn(), isDirty: vi.fn() };
 
@@ -132,7 +133,14 @@ vi.mock('../../review-queues/review-api', async (importOriginal) => ({
   releaseItem: (...a: unknown[]) => releaseItem(...a),
   takeOverItem: (...a: unknown[]) => takeOverItem(...a),
 }));
-vi.mock('../../review-queues/ReviewTaskContext', () => ({ default: () => null }));
+/** The props the Review Reason panel was last rendered with. */
+let contextProps: { onReasonClick?: (r: { sectionId: string; field?: string | null }) => void } | null = null;
+vi.mock('../../review-queues/ReviewTaskContext', () => ({
+  default: (props: typeof contextProps) => {
+    contextProps = props;
+    return null;
+  },
+}));
 vi.mock('../../../hooks/use-user-role', () => ({ default: () => role }));
 vi.mock('../../../hooks/use-review-work', () => ({ useOptionalReviewWork: () => null }));
 vi.mock('../../../contexts/app', () => ({ default: () => ({ setErrorMessage, setSuccessMessage }) }));
@@ -324,6 +332,11 @@ describe('an Admin on an item assigned to someone else', () => {
     renderScreen();
     expect(readOnly()).toBe(true);
     expect(document.body.textContent).toContain(`Assigned to ${ANN}. Take over to edit it and process its changes.`);
+    // The reason and the action that unlocks it are one notice.
+    const notice = createWrapper(document.body)
+      .findAllAlerts()
+      .find((a) => a.getElement().textContent?.includes('Take over to edit it'))!;
+    expect(notice.findActionSlot()!.findButton()!.getElement().textContent).toBe('Take over');
     expect(button('Process Changes').isDisabled()).toBe(true);
     expect(buttons()).not.toContain('Skip');
   });
@@ -388,6 +401,13 @@ describe('the actions', () => {
     expect(editor!.body).toBeUndefined();
     await act(async () => control.findSegments()[1].click());
     expect(editor!.body).toBeTruthy();
+  });
+
+  it('move the editor to a review reason’s field when its chip or Next alert is chosen', async () => {
+    server.detail = mine();
+    renderScreen();
+    await act(async () => contextProps!.onReasonClick!({ sectionId: '2', field: 'LineItems[1].Amount' }));
+    expect(editor!.focusRequest).toMatchObject({ sectionId: '2', fieldPath: 'LineItems[1].Amount' });
   });
 
   it('open the editor on the confidence alerts when the item has review reasons', () => {
@@ -571,6 +591,11 @@ describe('the actions', () => {
     expect(readOnly()).toBe(true);
     expect(buttons()).toContain('Claim');
     expect(document.body.textContent).not.toContain('Editing or completing assigns it to you');
+    // The read-only notice says why, and offers Claim beside it.
+    const notice = createWrapper(document.body)
+      .findAllAlerts()
+      .find((a) => a.getElement().textContent?.includes('View only. Claim this item to work on it'))!;
+    expect(notice.findActionSlot()!.findButton()!.getElement().textContent).toBe('Claim');
   });
 
   it('let a Reviewer claim an unassigned item of any queue, with no Admin assignment', async () => {

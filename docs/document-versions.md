@@ -32,7 +32,8 @@ so on.
 Each version records:
 
 - **When** it completed, and which **Configuration Profile** and **revision** processed it
-- Its section/page structure and metering (cost) snapshot
+- Its section/page structure and its own metering (cost): the usage of that run
+  only, so the version of a reprocess shows what the reprocess cost
 - Per-section quality data — the low-confidence field alerts and any processing
   issues detected for that run — so a historical view shows the same
   **Low Confidence Fields** count and section **Status** the document showed

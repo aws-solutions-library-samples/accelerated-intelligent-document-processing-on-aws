@@ -120,11 +120,16 @@ const UserManagementLayout = (): React.JSX.Element => {
   const personaOptions = [
     { label: 'Admin', value: 'Admin', description: 'Full access to all operations including user management' },
     { label: 'Author', value: 'Author', description: 'Read + write access to documents, configuration, tests, discovery' },
-    { label: 'Reviewer', value: 'Reviewer', description: 'HITL review operations with filtered document visibility' },
+    {
+      label: 'Reviewer',
+      value: 'Reviewer',
+      description: 'Works Production review queues, with filtered document visibility. No Test Studio access',
+    },
     {
       label: 'Annotator',
       value: 'Annotator',
-      description: 'Works the HITL items an Admin assigns them — sees only Home (Inbox, Tasks, Queues)',
+      description:
+        'Labels the Test Studio sets assigned to them and works the Production queues they are eligible for — sees only Home (Inbox, Tasks, Queues)',
     },
     { label: 'Viewer', value: 'Viewer', description: 'Read-only access to documents, configuration, and agent chat' },
   ];

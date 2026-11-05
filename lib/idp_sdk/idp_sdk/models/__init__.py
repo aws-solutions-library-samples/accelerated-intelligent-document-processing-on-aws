@@ -93,6 +93,7 @@ from .stack import (
     StackStableStateResult,
 )
 from .tenancy import (
+    TenantAccessPoint,
     TenantApplyResult,
     TenantAuditFinding,
     TenantAuditResult,
@@ -100,6 +101,7 @@ from .tenancy import (
     TenantListResult,
     TenantPlanAction,
     TenantPlanItem,
+    TenantPolicyDeployResult,
     TenantPolicyResult,
     TenantUserGrant,
     TenantVerifyCheck,
@@ -221,6 +223,8 @@ __all__ = [
     "TenantListResult",
     "TenantPlanAction",
     "TenantPlanItem",
+    "TenantAccessPoint",
+    "TenantPolicyDeployResult",
     "TenantPolicyResult",
     "TenantVerifyCheck",
     "TenantVerifyOutcome",

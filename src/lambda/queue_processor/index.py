@@ -23,6 +23,7 @@ from idp_common.utils.execution_names import (  # noqa: F401 — re-exported
 )
 from idp_common.utils.execution_names import execution_arn_for as _execution_arn_for
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
+from idp_common.utils.metering import cumulative_metering
 from idp_common.utils.transient_errors import is_transient_error
 
 patch_all()
@@ -1458,6 +1459,15 @@ def start_workflow(
                 f"Downstream steps will resolve it themselves.",
                 exc_info=True,
             )
+
+    # Each run reports only its own usage (see docs/reporting-database.md). A
+    # resubmitted document (processChanges, review finalize, the SDK rerun,
+    # trigger_reprocessing) arrives carrying the usage of its earlier runs; move
+    # it into the baseline here, at the only document run start, so the stages
+    # accumulate this run's usage alone in ``metering``. The tracking row still
+    # stores baseline + own; reporting and the run record get ``metering`` only.
+    document.metering_baseline = cumulative_metering(document)
+    document.metering = {}
 
     # Compress document for Step Functions to handle large documents
     working_bucket = os.environ.get("WORKING_BUCKET")

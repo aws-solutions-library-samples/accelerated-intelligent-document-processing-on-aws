@@ -16,6 +16,7 @@ from click.testing import CliRunner
 from idp_cli.cli import cli
 from idp_sdk import (
     IDPValidationError,
+    TenantAccessPoint,
     TenantApplyResult,
     TenantAuditFinding,
     TenantAuditResult,
@@ -23,6 +24,7 @@ from idp_sdk import (
     TenantListResult,
     TenantPlanAction,
     TenantPlanItem,
+    TenantPolicyDeployResult,
     TenantPolicyResult,
     TenantVerifyCheck,
     TenantVerifyOutcome,
@@ -276,3 +278,72 @@ def test_set_user_tenant_refusal_exits_1(runner, client):
     assert result.exit_code == 1
     assert "TenantGrantSource is Api" in result.stderr
     assert result.stdout == ""
+
+
+def _deployed():
+    return TenantPolicyDeployResult(
+        stack_name="S-tenant-access-points",
+        operation="created",
+        access_points=[
+            TenantAccessPoint(
+                tenant_id="acme", direction="upload", arn="arn:in", alias="in-s3alias"
+            )
+        ],
+        warnings=["a warning"],
+    )
+
+
+@pytest.mark.unit
+def test_generate_policies_deploy_deploys_and_lists_the_access_points(
+    runner, client, tmp_path
+):
+    principals = tmp_path / "p.yaml"
+    principals.write_text("acme:\n  uploaders: [arn:aws:iam::111122223333:role/u]\n")
+    client.tenancy.deploy_policies.return_value = _deployed()
+    result = _invoke(
+        runner, "generate-policies", "--principals", str(principals), "--deploy"
+    )
+    assert result.exit_code == 0
+    assert client.tenancy.deploy_policies.call_args.kwargs == {
+        "access_point_stack": None
+    }
+    assert "in-s3alias" in result.stdout
+    assert "S-tenant-access-points: created" in result.stderr
+    # With --output '-' (the default) nothing extra is generated or printed.
+    client.tenancy.generate_policies.assert_not_called()
+
+
+@pytest.mark.unit
+def test_generate_policies_deploy_json_is_the_only_stdout(runner, client, tmp_path):
+    principals = tmp_path / "p.yaml"
+    principals.write_text("acme:\n  uploaders: [arn:aws:iam::111122223333:role/u]\n")
+    client.tenancy.deploy_policies.return_value = _deployed()
+    result = _invoke(
+        runner,
+        "generate-policies",
+        "--principals",
+        str(principals),
+        "--deploy",
+        "--access-point-stack",
+        "custom",
+        "--json",
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["access_points"][0]["alias"] == "in-s3alias"
+    assert client.tenancy.deploy_policies.call_args.kwargs == {
+        "access_point_stack": "custom"
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("flag", [["--access-point-stack", "x"], ["--json"]])
+def test_deploy_only_options_are_refused_without_deploy(runner, client, tmp_path, flag):
+    principals = tmp_path / "p.yaml"
+    principals.write_text("acme:\n  uploaders: [arn:aws:iam::111122223333:role/u]\n")
+    result = _invoke(
+        runner, "generate-policies", "--principals", str(principals), *flag
+    )
+    assert result.exit_code == 1
+    assert "only with --deploy" in result.stderr
+    client.tenancy.deploy_policies.assert_not_called()

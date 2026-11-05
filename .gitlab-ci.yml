@@ -591,7 +591,7 @@ integration_tests:
   # It also removes the concurrent-deploy load that exhausted account quotas.
   #
   # What it costs: a change that breaks the deploy, or any of the twelve suite steps
-  # or five variant probes the deploy runs, can now MERGE and stay undetected until
+  # or variant probes the deploy runs, can now MERGE and stay undetected until
   # the next nightly run (the next weekly run, for a variant probe) — by which time
   # other merges may sit on top of it, so the failure does not name the commit
   # that caused it. There is no required
@@ -2063,11 +2063,12 @@ nightly_notification:
 # UX_TEST_AWS_ACCOUNT_ID, from the environment ux-review they declare as
 # ai_ux_test_stories does, and post nothing. On the schedule the digest reads
 # earlier nights' digests with GITLAB_REVIEW_TOKEN, read-only, and posts to Slack
-# with UX_TEST_STORIES_SLACK_WEBHOOK_URL. The digest alone declares the
-# environment ux-stories-digest, so that webhook is set at that environment
-# scope and reaches no other job; UX_TEST_STORIES and UX_TEST_STORIES_RUN stay at
-# All scope, because GitLab can leave a scoped variable undefined while it
-# evaluates rules.
+# with UX_TEST_STORIES_SLACK_WEBHOOK_URL, and never with SLACK_WEBHOOK_URL, which
+# every job receives. The digest alone declares the environment
+# ux-stories-digest, so that webhook is set at that environment scope and
+# reaches no other job; UX_TEST_STORIES and UX_TEST_STORIES_RUN stay at All
+# scope, because GitLab can leave a scoped variable undefined while it evaluates
+# rules.
 # ---------------------------------------------------------------------------
 ai_ux_test_stories_nightly:
   stage: ux_nightly
@@ -2194,9 +2195,9 @@ ai_ux_test_stories_digest:
     - rm -rf "${UX_ARTIFACTS%%/*}" && mkdir -p "$UX_ARTIFACTS"
   script:
     # The shards merged; on the schedule, compared with the earlier scheduled
-    # nights' digests, read with GITLAB_REVIEW_TOKEN by GET requests alone, and,
-    # with UX_TEST_STORIES_SLACK_WEBHOOK_URL set, the one-line summary posted to
-    # Slack. digest.md says when no earlier night was read.
+    # nights' digests, read with GITLAB_REVIEW_TOKEN by GET requests alone, and
+    # the one-line summary posted to Slack, with UX_TEST_STORIES_SLACK_WEBHOOK_URL
+    # set. digest.md says when no earlier night was read.
     - python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" --digest ux-test-stories --out "$UX_ARTIFACTS"
   artifacts:
     when: always

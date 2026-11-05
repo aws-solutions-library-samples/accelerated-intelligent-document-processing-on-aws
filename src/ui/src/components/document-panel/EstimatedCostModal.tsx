@@ -7,6 +7,7 @@
 import React, { useMemo } from 'react';
 import { Box, Button, Modal } from '@cloudscape-design/components';
 
+import { REPORT_MODAL_SIZE } from '../common/ReportModal';
 import usePricing from '../../hooks/use-pricing';
 import MeteringTable from './MeteringTable';
 import type { PricingData } from './MeteringTable';
@@ -43,7 +44,7 @@ const EstimatedCostModal = ({ meteringData, pageCount, onDismiss }: EstimatedCos
   return (
     <Modal
       visible
-      size="large"
+      size={REPORT_MODAL_SIZE}
       onDismiss={onDismiss}
       header={`Estimated Cost (per page: $${costPerPage.toFixed(4)})`}
       footer={

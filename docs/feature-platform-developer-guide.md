@@ -354,8 +354,10 @@ export) so compressed documents resolve.
 Three things to know:
 
 - **Load, don't build.** Constructing a `Document` from scratch drops
-  `metering`, `errors`, `hitl_metadata`, and `processing_issues`. Always
-  load → mutate → return.
+  `metering`, `metering_baseline`, `errors`, `hitl_metadata`, and
+  `processing_issues`. Always load → mutate → return. `metering` is this run's
+  usage and `metering_baseline` the earlier runs'; see
+  [Pipeline hooks](feature-platform.md#pipeline-hooks).
 - **Omitting `updatedDocument` changes nothing.** The document passes through
   byte-identical, so read-only hooks need no changes.
 - **`postExtraction` is section-scoped** (it runs inside the section Map), so

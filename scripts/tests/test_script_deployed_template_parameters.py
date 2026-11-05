@@ -213,6 +213,14 @@ RUNTIME_TEMPLATE_DEPLOYERS = [
         (),
         id="verify_tenant_isolation→generated-access-points",
     ),
+    pytest.param(
+        "lib/idp_sdk/idp_sdk/operations/tenancy.py",
+        # Target: the same generated access point template, deployed by
+        # `client.tenancy.deploy_policies` (`idp-cli tenancy generate-policies
+        # --deploy`). It declares no Parameters, and the call refuses one that does.
+        (),
+        id="tenancy.deploy_policies→generated-access-points",
+    ),
 ]
 
 

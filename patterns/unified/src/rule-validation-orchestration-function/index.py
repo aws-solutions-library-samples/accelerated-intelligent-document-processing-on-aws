@@ -197,11 +197,14 @@ def handler(event, context):
                 import boto3
                 logger.info(f"Saving rule validation results to {reporting_bucket} via {save_reporting_function}")
                 lambda_client = boto3.client('lambda')
+                # Earlier runs' usage is never reported (see workflow_tracker).
+                reporting_payload = updated_document.to_dict()
+                reporting_payload.pop('metering_baseline', None)
                 lambda_response = lambda_client.invoke(
                     FunctionName=save_reporting_function,
                     InvocationType='RequestResponse',
                     Payload=json.dumps({
-                        'document': updated_document.to_dict(),
+                        'document': reporting_payload,
                         'reporting_bucket': reporting_bucket,
                         'data_to_save': ['rule_validation_results']
                     })

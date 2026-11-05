@@ -8,9 +8,11 @@ Discovers and retrieves CloudFormation stack resources needed for CLI operations
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, Mapping, Optional
 
 import boto3
+
+from idp_sdk.exceptions import IDPResourceNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +124,13 @@ class StackInfo:
             raise
 
     def _get_table_name(self, logical_id: str) -> str:
-        """Get DynamoDB table name from stack resources"""
+        """
+        Get DynamoDB table name from stack resources
+
+        Returns ``""`` rather than raising when the table is absent or the
+        resources cannot be listed, and logs a warning naming the logical id
+        either way, so that operations which never touch the table still work.
+        """
         try:
             paginator = self.cfn.get_paginator("list_stack_resources")
 
@@ -131,6 +139,10 @@ class StackInfo:
                     if resource.get("LogicalResourceId") == logical_id:
                         return resource.get("PhysicalResourceId", "")
 
+            logger.warning(
+                f"{logical_id} not found in the resources of stack "
+                f"'{self.stack_name}'; operations that need it will fail"
+            )
             return ""
         except Exception as e:
             logger.warning(f"Could not get table name for {logical_id}: {e}")
@@ -254,3 +266,36 @@ def get_stack_resources(
     """
     stack_info = StackInfo(stack_name, region)
     return stack_info.get_resources()
+
+
+def tracking_table_name(resources: Mapping[str, str], stack_name: str) -> str:
+    """
+    Name of a stack's document tracking table, read from its resource map
+
+    The tracking table is a stack resource rather than a stack output.
+    ``StackInfo.get_resources`` resolves it by its ``TrackingTable`` logical id
+    and records it as ``DocumentsTable``, so a caller that already holds that
+    map gets the name without another AWS call. ``get_resources`` maps a table
+    it cannot find to ``""`` instead of raising, so that operations which never
+    touch the table still work; this is where that absence becomes an error for
+    the operations that do.
+
+    Args:
+        resources: The mapping returned by ``StackInfo.get_resources``
+        stack_name: Name of the stack the mapping describes
+
+    Returns:
+        The tracking table's physical name
+
+    Raises:
+        IDPResourceNotFoundError: If the mapping holds no tracking table name,
+            because the stack has no ``TrackingTable`` resource or its
+            resources could not be listed
+    """
+    name = resources.get("DocumentsTable")
+    if not name:
+        raise IDPResourceNotFoundError(
+            f"TrackingTable not found in stack '{stack_name}': the stack has no "
+            "TrackingTable resource, or its resources could not be listed"
+        )
+    return name

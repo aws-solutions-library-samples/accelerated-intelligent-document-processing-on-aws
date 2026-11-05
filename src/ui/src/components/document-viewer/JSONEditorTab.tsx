@@ -19,6 +19,8 @@ import {
 } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
+import { valueSourceLabel } from '../common/labels';
+
 interface JSONEditorTabProps {
   predictionData: Record<string, unknown> | null;
   baselineData: Record<string, unknown> | null;
@@ -29,6 +31,8 @@ interface JSONEditorTabProps {
   onShowBaselineChange?: (checked: boolean) => void;
   isBaselineAvailable: boolean;
   loadingEvaluation: boolean;
+  /** The values panel title (prediction wording unless the values are ground truth). */
+  predictionTitle?: string;
 }
 
 const logger = new ConsoleLogger('JSONEditorTab');
@@ -56,6 +60,7 @@ const JSONEditorTab = ({
   onShowBaselineChange,
   isBaselineAvailable,
   loadingEvaluation,
+  predictionTitle = valueSourceLabel(null).panelTitle,
 }: JSONEditorTabProps): React.JSX.Element => {
   const [predictionError, setPredictionError] = useState<string | null>(null);
   const [baselineError, setBaselineError] = useState<string | null>(null);
@@ -321,7 +326,7 @@ const JSONEditorTab = ({
                   </SpaceBetween>
                 }
               >
-                Predicted Results
+                {predictionTitle}
                 {copySuccess === 'Prediction' && (
                   <Box variant="span" color="text-status-success" margin={{ left: 's' }}>
                     ✓ Copied

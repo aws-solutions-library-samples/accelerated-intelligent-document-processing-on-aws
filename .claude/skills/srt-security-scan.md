@@ -124,7 +124,8 @@ are required; `rule_id`, `line_start`, `line_end`, `expiration` are optional
 > `scripts/security/tests/test_dep_audit.py::TestAshConfig` enforces this.
 
 Keep the dependency entries in `.ash/.ash.yaml` in sync with
-`scripts/security/dep_audit_allowlist.json` (a test checks for stale twins).
+`scripts/security/dep_audit_allowlist.json`: a new allowlist entry needs its ASH
+twin, and a dropped one takes its twin with it. A test checks both directions.
 
 ⚠️ **`pip install automated-security-helper` does NOT install ASH.** That PyPI
 name is an unrelated placeholder ("test-package-placeholder", single release

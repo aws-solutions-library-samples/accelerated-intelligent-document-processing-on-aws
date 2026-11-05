@@ -8,6 +8,7 @@ import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { ButtonDropdownProps, SelectProps, TableProps } from '@cloudscape-design/components';
 import { Badge, Box, ButtonDropdown, Link, Pagination, Select, SpaceBetween, Table, TextFilter } from '@cloudscape-design/components';
 
+import { distinguishingNames } from '../common/distinguishing-names';
 import { paginationLabels } from '../common/labels';
 import TruncatedText from '../common/TruncatedText';
 import { NoDataState, TableHeader, TableNoMatchState, getFilterCounterText } from '../common/table';
@@ -44,17 +45,23 @@ const SOURCE_OPTIONS: SelectProps.Option[] = [
 const age = (iso: string | null): React.ReactNode =>
   iso ? <span title={formatDateTime(iso)}>{formatRelativeTime(iso)}</span> : <Box color="text-status-inactive">—</Box>;
 
-const BASE_COLUMNS: TableProps.ColumnDefinition<WorkItem>[] = [
+/** Characters of the document name shown before its middle is cut. */
+const DOCUMENT_NAME_CHARS = 40;
+
+/** The base columns; `displayName` is the row's distinguishing document name. */
+const baseColumns = (displayName: (item: WorkItem) => string): TableProps.ColumnDefinition<WorkItem>[] => [
   {
     id: 'document',
     header: 'Document',
     minWidth: 240,
     cell: (item) => (
       <Link href={item.href} ariaLabel={`Open ${item.objectKey}`}>
-        <TruncatedText maxChars={32}>{item.name}</TruncatedText>
+        <TruncatedText maxChars={DOCUMENT_NAME_CHARS} ellipsis="middle" title={item.objectKey}>
+          {displayName(item)}
+        </TruncatedText>
       </Link>
     ),
-    sortingField: 'name',
+    sortingComparator: (a, b) => displayName(a).localeCompare(displayName(b)),
     isRowHeader: true,
   },
   {
@@ -151,6 +158,7 @@ const WorkItemsTable = ({
 }: WorkItemsTableProps): React.JSX.Element => {
   const [source, setSource] = useState<SelectProps.Option>(ALL_SOURCES);
   const [state, setState] = useState<SelectProps.Option>(ALL_STATES);
+  const displayNames = useMemo(() => distinguishingNames(items.map((i) => i.objectKey)), [items]);
   const visible = useMemo(
     () => items.filter((i) => (!source.value || i.source === (source.value as WorkSource)) && matchesState(i, state.value ?? '')),
     [items, source, state],
@@ -190,12 +198,17 @@ const WorkItemsTable = ({
     sorting: {},
   });
 
+  const columnsShown = useMemo(() => {
+    const all = baseColumns((item) => displayNames.get(item.objectKey) ?? item.name);
+    return columns ? columns.flatMap((id) => all.filter((c) => c.id === id)) : all;
+  }, [displayNames, columns]);
+
   return (
     <Table
       {...collectionProps}
       items={shown}
       columnDefinitions={[
-        ...(columns ? columns.flatMap((id) => BASE_COLUMNS.filter((c) => c.id === id)) : BASE_COLUMNS),
+        ...columnsShown,
         ...extraColumns,
         ...(onRowAction
           ? [

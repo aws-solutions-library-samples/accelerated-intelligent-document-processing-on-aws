@@ -12,7 +12,7 @@ and for the two review kinds:
 - the review writes run before the decrement, and the decrement runs exactly once
   even when those writes raise;
 - reporting receives the finalize run's own usage plus the review payload, while the
-  tracking row keeps the merged document.
+  tracked document carries phase 1 as its metering baseline.
 
 ``idp_common`` is stubbed, as in the other suites in this directory; the review
 tracker and store are MagicMocks, so these tests pin the handler's wiring rather
@@ -341,11 +341,14 @@ def test_run_record_and_metrics_failures_do_not_fail_the_event(
 def test_a_finalize_run_reports_its_own_usage_with_the_review_payload(
     index_module, stubs, monkeypatch
 ):
-    """Reporting gets the finalize run's document; tracking keeps the merged one."""
+    """Reporting gets the finalize run's document; the tracked one carries phase 1
+    as its baseline, which the DynamoDB writer adds to the row's Metering."""
     m = index_module
     ctx = _review_ctx("finalize", "complete")
     processed = MagicMock(metering={"phase2": 1}, sections=[])
-    tracked = MagicMock(metering={"phase1": 1, "phase2": 1}, sections=[])
+    tracked = MagicMock(
+        metering={"phase2": 1}, metering_baseline={"phase1": 1}, sections=[]
+    )
     reporting = MagicMock(metering={"phase2": 1}, sections=[])
     reporting.rule_validation_result = None
     reporting.to_dict.return_value = {"id": "claim.pdf", "usage": "finalize-only"}
@@ -375,6 +378,9 @@ def test_a_finalize_run_reports_its_own_usage_with_the_review_payload(
     stubs.tracker.reporting_info.return_value.model_dump.assert_called_once_with(
         mode="json"
     )
-    # The returned document carries the merged metering the review writes read.
+    # The returned document carries the finalize run's own usage (the run
+    # record) and phase 1 as its baseline (the cumulative the review writes
+    # read through cumulative_metering).
     assert result is stored
-    assert result.metering == {"phase1": 1, "phase2": 1}
+    assert result.metering == {"phase2": 1}
+    assert result.metering_baseline == {"phase1": 1}

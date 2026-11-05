@@ -15,9 +15,11 @@ interface DocumentPageHeaderProps {
   objectKey: string;
   /** The page's action bar. */
   actions?: React.ReactNode;
+  /** After the status: e.g. the open test-set version's `vN → vM` badge. */
+  badge?: React.ReactNode;
 }
 
-const DocumentPageHeader = ({ title, status, objectKey, actions }: DocumentPageHeaderProps): React.JSX.Element => (
+const DocumentPageHeader = ({ title, status, objectKey, actions, badge }: DocumentPageHeaderProps): React.JSX.Element => (
   <Header variant="h1" description={<span title={objectKey}>{objectKey}</span>} actions={actions}>
     {title}
     {status && (
@@ -29,6 +31,7 @@ const DocumentPageHeader = ({ title, status, objectKey, actions }: DocumentPageH
         </Box>
       </>
     )}
+    {badge && <> {badge}</>}
   </Header>
 );
 

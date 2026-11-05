@@ -12,6 +12,7 @@ The Utils module provides common utility functions used across the IDP pipeline.
 | `build_s3_uri(bucket, key)` | Construct an `s3://bucket/key` URI from components |
 | `parse_s3_uri(s3_uri)` | Parse an S3 URI into `(bucket, key)` tuple |
 | `merge_metering_data(existing, new)` | Merge token usage / metering dictionaries (sums numeric values) |
+| `cumulative_metering(doc)` | A document's cumulative usage: `doc.metering_baseline` (earlier runs) plus `doc.metering` (this run's own), on deep copies. Accepts any object with a `metering` attribute; a missing baseline counts as empty |
 | `get_bedrock_region()` | Get the AWS region for Bedrock API calls |
 | `extract_structured_data_from_text(text)` | Extract JSON or YAML structured data from LLM response text |
 | `sanitize_event_for_logging(event)` | Deep-copy an event with denylisted keys redacted and long content-field strings truncated, for safe `logger` output. ⚠️ **Has vendored copies — see below** |
@@ -44,6 +45,18 @@ combined = merge_metering_data(
     new={"inputTokens": 200, "outputTokens": 75, "requests": 1}
 )
 # Returns: {"inputTokens": 300, "outputTokens": 125, "requests": 2}
+```
+
+Both metering helpers live in the stdlib-only `idp_common/utils/metering.py` and are
+re-exported from `idp_common.utils`. A document's `metering` holds only the current
+run's usage; `queue_processor.start_workflow` moves the usage a resubmitted document
+arrives with into `metering_baseline`. The tracking-table `Metering` attribute stores
+the sum, and reporting and the run record read `metering` alone:
+
+```python
+from idp_common.utils import cumulative_metering
+
+total = cumulative_metering(document)  # baseline + own; neither input is modified
 ```
 
 ### Transient-error classification (`transient_errors`)

@@ -268,18 +268,30 @@ class TestAshConfig:
             )
 
     def test_dependency_suppressions_match_the_gating_allowlist(self):
-        """The ASH entries mirror dep_audit_allowlist.json. If a dependency is
-        upgraded and dropped there, this catches the stale ASH twin."""
+        """The ASH entries mirror dep_audit_allowlist.json in both directions. A
+        dependency upgraded and dropped there leaves a stale ASH twin, and an
+        advisory triaged there with no ASH twin comes back untriaged on the next
+        out-of-band ASH scan.
+
+        An allowlisted id of any scheme, ``PYSEC-*`` included, is looked for among
+        every ASH rule id, so its twin always satisfies the check. Only stale twins
+        are limited to ``GHSA-*`` and ``CVE-*`` ids, which keeps the scanners' own
+        rule ids out of them, so a stale twin of another scheme is not caught."""
         gating = {e["id"] for e in dep_audit.load_allowlist().values()}
-        ash_ids = {
-            s["rule_id"]
+        rule_ids = {
+            s.get("rule_id", "")
             for s in self._config()["global_settings"]["suppressions"]
-            if s.get("rule_id", "").startswith(("GHSA-", "CVE-"))
         }
+        ash_ids = {r for r in rule_ids if r.startswith(("GHSA-", "CVE-"))}
         stale = ash_ids - gating
         assert not stale, (
             f"advisories suppressed for ASH but no longer in "
             f"dep_audit_allowlist.json: {sorted(stale)}"
+        )
+        missing = gating - rule_ids
+        assert not missing, (
+            f"advisories triaged in dep_audit_allowlist.json with no twin in "
+            f".ash/.ash.yaml: {sorted(missing)}"
         )
 
 

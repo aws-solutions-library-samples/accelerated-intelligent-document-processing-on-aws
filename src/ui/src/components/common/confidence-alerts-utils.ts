@@ -44,13 +44,6 @@ interface DocumentSection {
   Id?: string;
 }
 
-interface FieldHighlightInfo {
-  shouldHighlight: boolean;
-  confidence?: number;
-  confidenceThreshold?: number;
-  alert?: ConfidenceThresholdAlert;
-}
-
 interface FieldConfidenceInfo {
   hasConfidenceInfo: boolean;
   /**
@@ -367,36 +360,6 @@ export const getSectionConfidenceAlerts = (
     confidence: alert.confidence,
     confidenceThreshold: alert.confidenceThreshold,
   }));
-};
-
-/**
- * Check if a field should be highlighted due to low confidence
- * @param {string} fieldName - Name of the field
- * @param {number} fieldConfidence - Confidence value for the field
- * @param {Array} confidenceThresholdAlerts - Array of confidence threshold alerts
- * @returns {Object} Object with highlight flag and threshold info
- */
-export const getFieldHighlightInfo = (
-  fieldName: string,
-  fieldConfidence: number | undefined,
-  confidenceThresholdAlerts: ConfidenceThresholdAlert[] | null,
-): FieldHighlightInfo => {
-  if (!confidenceThresholdAlerts || !Array.isArray(confidenceThresholdAlerts) || !fieldName) {
-    return { shouldHighlight: false };
-  }
-
-  const alertMatch = confidenceThresholdAlerts.find((alert) => alert.attributeName === fieldName);
-
-  if (alertMatch) {
-    return {
-      shouldHighlight: true,
-      confidence: alertMatch.confidence,
-      confidenceThreshold: alertMatch.confidenceThreshold,
-      alert: alertMatch,
-    };
-  }
-
-  return { shouldHighlight: false };
 };
 
 /**
