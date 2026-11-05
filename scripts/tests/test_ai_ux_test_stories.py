@@ -3852,14 +3852,29 @@ def test_the_bare_python_runs_inherit_no_ci_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The digest run below posts to Slack from a scheduled pipeline whenever its
-    environment holds a webhook, so it must not inherit the job's."""
-    monkeypatch.setenv("CI_PIPELINE_SOURCE", "schedule")
-    monkeypatch.setenv("SLACK_WEBHOOK_URL", SHARED_WEBHOOK)
-    monkeypatch.setenv("UX_TEST_STORIES_SLACK_WEBHOOK_URL", WEBHOOK)
-    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", CREDENTIAL)
-    env = _bare_env()
-    assert set(env) <= set(BARE_ENV_NAMES)
-    assert "PATH" in env
+    environment holds a webhook, so the subprocess must not inherit the job's."""
+    planted = {
+        "CI_PIPELINE_SOURCE": "schedule",
+        "SLACK_WEBHOOK_URL": SHARED_WEBHOOK,
+        "UX_TEST_STORIES_SLACK_WEBHOOK_URL": WEBHOOK,
+        "GITLAB_REVIEW_TOKEN": CREDENTIAL,
+    }
+    for name, value in planted.items():
+        monkeypatch.setenv(name, value)
+    seen: list[dict[str, str] | None] = []
+    real_run = subprocess.run
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("env"))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    code, _, out = _heavy_imports("--help")
+    assert code == 0, out
+    (env,) = seen
+    assert env is not None, "the subprocess would inherit the whole environment"
+    assert not set(planted) & set(env), sorted(set(planted) & set(env))
+    assert all(value not in env.values() for value in planted.values())
 
 
 @pytest.mark.unit
