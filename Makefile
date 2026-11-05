@@ -200,8 +200,8 @@ setup-venv: lock-constraints ## Create .venv and install all packages into it, c
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, UI message catalog, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, UI message catalog and string debt, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint without UI checks
 
 # Pin the linter, for the same reason spelled out at CFN_LINT_VERSION below: an
 # UNPINNED tool on a blocking gate is the one realistic way this red-lines the
@@ -291,6 +291,12 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 	@# needs them, and in CI their absence is an error rather than a skip.
 	@if ! make check-ui-i18n-catalog; then \
 		echo -e "$(RED)ERROR: UI message catalog check failed (see issue #1770)$(NC)"; \
+		exit 1; \
+	fi
+	@# Same node_modules, same CI rule: the string-debt ratchet counts the UI's
+	@# hardcoded user-facing strings per file and fails when a file gains one.
+	@if ! make check-ui-string-debt; then \
+		echo -e "$(RED)ERROR: UI string-debt ratchet failed: a file gained a hardcoded user-facing string (see issue #1770)$(NC)"; \
 		exit 1; \
 	fi
 
@@ -435,6 +441,16 @@ check-ui-i18n-catalog: ## Fail if src/ui/src/i18n/en.json is stale against the U
 	@# takes the same lock as the UI targets (issue #1447).
 	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/check_ui_i18n_catalog.py' || \
 		(echo -e "$(RED)ERROR: UI message catalog check failed (see issue #1770)$(NC)" && exit 1)
+
+check-ui-string-debt: ## Ratchet the UI's hardcoded user-facing strings: fail if a file gains one, an unlisted file has any, or the baseline is stale (issue #1770)
+	@# src/ui/eslint.i18n.config.js is the counting rule (eslint-plugin-i18next, kept
+	@# out of the UI's lint script); scripts/ui_string_debt.json pins the count per
+	@# file and may only shrink — `python3 scripts/check_ui_string_debt.py --write`
+	@# re-records it after a file is converted. Off CI without src/ui/node_modules it
+	@# prints a SKIP (not a pass); in CI that is an error. It runs eslint out of
+	@# src/ui/node_modules, so it takes the same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/check_ui_string_debt.py' || \
+		(echo -e "$(RED)ERROR: UI string-debt ratchet failed (see issue #1770)$(NC)" && exit 1)
 
 check-account-ids: ## Fail if a private AWS account id is committed in a tracked file's contents (issue #1067)
 	@# The PreToolUse hook scripts/hooks/check_commit_text.py inspects the COMMAND
@@ -1338,9 +1354,9 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 # contention — it reports a missing or half-deleted module from whatever package
 # the other lane was unpacking (issue #1447).
 #
-# `make lint-cicd` performs four of them itself (ui-lint, check-ui-i18n-catalog,
-# ui-build-only, codegen-check), so lint-cicd PLUS ANY ONE UI TARGET is enough to
-# collide. The realistic composition is "lint in one lane, UI tests in another",
+# `make lint-cicd` performs five of them itself (ui-lint, check-ui-i18n-catalog,
+# check-ui-string-debt, ui-build-only, codegen-check), so lint-cicd PLUS ANY ONE UI
+# TARGET is enough to collide. The realistic composition is "lint in one lane, UI tests in another",
 # which looks like two unrelated things and is not.
 #
 # $(UI_DEPS_LOCK) is why that is now safe rather than merely documented: it holds

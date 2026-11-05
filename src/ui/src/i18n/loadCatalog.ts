@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 import type { MessageFormatElement } from '@formatjs/icu-messageformat-parser';
 // A Vite virtual module served by scripts/i18n/vite-plugin-catalogs.mjs (typed in
-// ./virtual-catalogs.d.ts), so the ESLint node resolver cannot see it.
-// eslint-disable-next-line import-x/no-unresolved
+// ./virtual-catalogs.d.ts).
 import { loaders } from 'virtual:i18n-catalogs';
 import { DEFAULT_LOCALE, type Locale } from './locales';
 

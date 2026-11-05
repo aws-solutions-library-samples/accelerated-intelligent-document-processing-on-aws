@@ -7,8 +7,7 @@
  * offers only `ENABLED_LOCALES`.
  */
 // A Vite virtual module served by scripts/i18n/vite-plugin-catalogs.mjs (typed in
-// ./virtual-catalogs.d.ts), so the ESLint node resolver cannot see it.
-// eslint-disable-next-line import-x/no-unresolved
+// ./virtual-catalogs.d.ts).
 import { availableLocales } from 'virtual:i18n-catalogs';
 
 /** Every locale the UI has code for. `en-XA` is the pseudo-locale that reveals clipped layouts. */
