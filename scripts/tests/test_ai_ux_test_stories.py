@@ -3229,6 +3229,8 @@ def test_the_digest_posts_to_its_own_webhook_and_never_the_integration_builds(
 def test_an_unusable_webhook_posts_nothing_and_is_named(
     harness: StoryHarness, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """A value that is not an https URL is reported by the variable's name and
+    posts nothing, and the integration build's webhook is not tried instead."""
     _shard_runs(harness)
     harness.environ.update(
         _scheduled(
