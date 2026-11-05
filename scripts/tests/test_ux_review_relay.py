@@ -725,7 +725,7 @@ def test_the_refusal_log_is_created_private_and_never_over_anything(
 ) -> None:
     path = tmp_path / review_relay.REFUSAL_LOG
     log = review_relay.RefusalLog(path, clock=lambda: 86400.0)
-    log.record(tool="click", refused="commit_point", label="Delete\n‮\tnow  " * 40)
+    log.record(tool="click", refused="commit_point", label="Delete\n\u202e\tnow  " * 40)
     log.record(tool="click", refused="invalid", label=None)
     log.close()
     log.record(tool="click", refused="commit_point", label="after close")
@@ -733,7 +733,7 @@ def test_the_refusal_log_is_created_private_and_never_over_anything(
     first, second = records(path)
     assert first["t"] == "1970-01-02T00:00:00Z"
     assert len(first["label"]) <= review_relay.LABEL_CHARS
-    assert "\n" not in first["label"] and "‮" not in first["label"]
+    assert "\n" not in first["label"] and "\u202e" not in first["label"]
     assert second == {
         "t": "1970-01-02T00:00:00Z",
         "tool": "click",
