@@ -1789,6 +1789,8 @@ _CONFIG = "components/configuration-layout/ConfigurationLayout.tsx"
 _DETAIL_ACTIONS = "components/document-actions/use-document-actions.tsx"
 _EDIT_TEXT = "components/document-actions/EditPageTextDialog.tsx"
 _FRAME = "components/edit-screen/EditScreen.tsx"
+#: The edit screen names Process Changes with one shared constant (common/labels.ts).
+_PROCESS_CHANGES = "PROCESS_CHANGES_LABEL"
 _INBOX = "components/inbox/InboxMessagesTable.tsx"
 _MAPPINGS = "components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx"
 _TENANTS = "components/config-prefix-mappings/TenantsSection.tsx"
@@ -1802,7 +1804,6 @@ _REVISIONS = "components/configuration-layout/ConfigRevisionHistoryPanel.tsx"
 _SLOTS = "components/edit-screen/test-set-editor-slots.tsx"
 _SUPERVISOR = "components/review-queues/SupervisorModals.tsx"
 _TABLE = "components/document-list/documents-table-config.tsx"
-_TEST_SET_MODEL = "components/edit-screen/test-set-item-edit-model.tsx"
 _UPLOAD = "components/upload-document/UploadDocumentPanel.tsx"
 _WIZARD = "components/test-studio/CreateTestSetWizard.tsx"
 
@@ -1856,7 +1857,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_QUEUE, "Claim (2)", source="counted('Claim'"),
         Shipped(_QUEUE, "Claim", source="text: 'Claim'"),
         Shipped(_FRAME, "Claim"),
-        Shipped(_FRAME, "Process Changes"),
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
         Shipped(_FRAME, "Save"),
         Shipped(
             _PRODUCTION_MODEL,
@@ -1875,8 +1876,12 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/test-studio/TestSetDetail.tsx", "Delete draft labels"),
     ),
     "ClearReadInboxMessages": (Shipped(_INBOX, "Clear read", inside_dialog=True),),
-    "CompleteReviewItem": (Shipped(_FRAME, "Process Changes"),),
-    "CompleteSectionReview": (Shipped(_FRAME, "Process Changes"),),
+    "CompleteReviewItem": (
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+    ),
+    "CompleteSectionReview": (
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+    ),
     "CopyToBaseline": (
         Shipped(_DETAIL_ACTIONS, "Use As Evaluation Baseline"),
         Shipped(_FRAME, "Use As Evaluation Baseline"),
@@ -1997,9 +2002,16 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "MoveReviewItem": (
         Shipped(_SUPERVISOR, "Move", source='label="Move"', inside_dialog=True),
     ),
+    # Draft-first: Process Changes opens the version, confirmed in its dialog while no
+    # draft version is open, and at once when one is.
     "OpenTestSetAnnotationDraft": (
-        Shipped(_TEST_SET_MODEL, "Start editing"),
-        Shipped(_FRAME, "Process Changes"),
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+        Shipped(
+            "components/common/ProcessChangesConfirmModal.tsx",
+            "Process Changes",
+            source=_PROCESS_CHANGES,
+            inside_dialog=True,
+        ),
     ),
     "PauseCircuitBreaker": (
         Shipped(_BREAKER, "Pause processing"),
@@ -2074,10 +2086,12 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
     ),
     "SaveSectionReviewEdits": (Shipped(_FRAME, "Save"),),
-    "SaveTestSetDocumentSection": (Shipped(_FRAME, "Process Changes"),),
+    "SaveTestSetDocumentSection": (
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+    ),
     "SaveTestSetDocumentSectionDraft": (
         Shipped(_FRAME, "Save"),
-        Shipped(_FRAME, "Process Changes"),
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
     ),
     "SendAgentChatMessage": (
         Shipped(

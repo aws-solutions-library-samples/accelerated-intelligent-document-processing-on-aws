@@ -43,7 +43,13 @@ export interface InboxContextValue {
   changeToken: number;
   /** Waits for an in-flight poll, then polls again. */
   refresh: () => Promise<void>;
-  syncUnreadCount: (n: number) => void;
+  /**
+   * Call before a list read that reports the unread count. The returned function
+   * applies that count and returns true, or applies nothing and returns false when
+   * one of the user's own mark, delete or clear actions started since: the read is
+   * then stale and would put the old count back on the bell and navigation badges.
+   */
+  beginUnreadSync: () => (n: number | null) => boolean;
   markMessages: (msgs: readonly InboxMessage[], read: boolean, o?: InboxMutationOptions) => Promise<InboxMutationResult>;
   markAllRead: (o?: InboxMutationOptions) => Promise<InboxMutationResult>;
   deleteMessages: (msgs: readonly InboxMessage[]) => Promise<InboxMutationResult>;
@@ -134,8 +140,13 @@ export const InboxProvider = ({ children, enabled = true }: InboxProviderProps):
     await poll();
   }, [poll]);
 
-  const syncUnreadCount = useCallback((n: number) => {
-    setState((prev) => (prev.unreadCount === n ? prev : { ...prev, unreadCount: n }));
+  const beginUnreadSync = useCallback((): ((n: number | null) => boolean) => {
+    const epoch = mutationEpochRef.current;
+    return (n: number | null): boolean => {
+      if (epoch !== mutationEpochRef.current) return false;
+      if (n != null) setState((prev) => (prev.unreadCount === n ? prev : { ...prev, unreadCount: n }));
+      return true;
+    };
   }, []);
 
   const runMutation = useCallback(
@@ -255,13 +266,13 @@ export const InboxProvider = ({ children, enabled = true }: InboxProviderProps):
       pollError: state.pollError,
       changeToken: state.changeToken,
       refresh,
-      syncUnreadCount,
+      beginUnreadSync,
       markMessages,
       markAllRead,
       deleteMessages,
       clearRead,
     }),
-    [state, refresh, syncUnreadCount, markMessages, markAllRead, deleteMessages, clearRead],
+    [state, refresh, beginUnreadSync, markMessages, markAllRead, deleteMessages, clearRead],
   );
 
   return <InboxContext.Provider value={value}>{children}</InboxContext.Provider>;

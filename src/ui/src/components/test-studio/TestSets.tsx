@@ -32,7 +32,9 @@ import GenerateSyntheticDataModal from './GenerateSyntheticDataModal';
 import CreateTestSetWizard from './CreateTestSetWizard';
 import AddDocumentsModals, { type AddDocumentsMode } from './AddDocumentsModals';
 import { LabelAccuracyLegend, renderLabelAccuracy } from './TestSetDetail';
-import { testSetDetailHref, testSetAnnotateHref } from '../../routes/constants';
+import { testSetDetailHref, testSetAnnotateHref, testSetReviewedHref } from '../../routes/constants';
+import { EDIT_GROUND_TRUTH_LABEL } from '../common/labels';
+import ReviewEffortModal from './ReviewEffortModal';
 
 const client = generateClient();
 
@@ -124,6 +126,8 @@ const TestSets = (): React.JSX.Element => {
   const { available: generatorAvailable, getJobStatus, listActiveJobs } = useSyntheticDataGenerator();
   const [genJobs, setGenJobs] = useState<Record<string, { name: string; status: string; message: string; testSetId?: string }>>({});
   const [addDocsMode, setAddDocsMode] = useState<AddDocumentsMode | null>(null);
+  // Edit ground truth: the set whose review is being sized, as on the test set's page.
+  const [effortSetId, setEffortSetId] = useState<string | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editDescription, setEditDescription] = useState('');
   const [editDocumentClassType, setEditDocumentClassType] = useState(DOCUMENT_CLASS_TYPE_OPTIONS[0]);
@@ -716,7 +720,7 @@ const TestSets = (): React.JSX.Element => {
               <ButtonDropdown
                 disabled={selectedItems.length === 0 || loading}
                 items={[
-                  { id: 'annotate', text: 'Edit ground truth', disabled: selectedItems.length !== 1 || !selectedItems[0]?.fileCount },
+                  { id: 'annotate', text: EDIT_GROUND_TRUTH_LABEL, disabled: selectedItems.length !== 1 || !selectedItems[0]?.fileCount },
                   { id: 'browse', text: 'Browse documents', disabled: selectedItems.length !== 1 },
                   {
                     // Exactly COMPLETED here, deliberately not `!isInFlux`: this
@@ -738,7 +742,7 @@ const TestSets = (): React.JSX.Element => {
                 onItemClick={({ detail }) => {
                   const selected = selectedItems[0];
                   if (detail.id === 'annotate' && selected) {
-                    window.location.hash = testSetAnnotateHref(selected.id).slice(1);
+                    setEffortSetId(selected.id);
                   } else if (detail.id === 'browse' && selected) {
                     window.location.hash = testSetDetailHref(selected.id).slice(1);
                   } else if (detail.id === 'docs-processed') {
@@ -828,6 +832,23 @@ const TestSets = (): React.JSX.Element => {
             ...prev,
             [jobId]: { name: label, status: 'GENERATING', message: 'Starting generation', testSetId },
           }));
+        }}
+      />
+
+      {/* Edit ground truth sizes the review first, the same as on the test set's page. */}
+      <ReviewEffortModal
+        visible={effortSetId !== null}
+        testSetId={effortSetId ?? ''}
+        onDismiss={() => setEffortSetId(null)}
+        onContinue={() => {
+          const id = effortSetId ?? '';
+          setEffortSetId(null);
+          window.location.hash = testSetAnnotateHref(id).slice(1);
+        }}
+        onReviewDocuments={() => {
+          const id = effortSetId ?? '';
+          setEffortSetId(null);
+          window.location.hash = testSetReviewedHref(id).slice(1);
         }}
       />
 

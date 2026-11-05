@@ -136,6 +136,15 @@ This table is partitioned by date (YYYY-MM-DD format).
 
 The `metering` table captures detailed usage metrics and cost information for each document processing operation:
 
+**Rows are per run.** Each processing run of a document writes the usage of that run
+only. A run that resubmits a stored document (**Process Changes**, finishing or
+skipping a review, `idp-cli rerun-inference` or the SDK rerun) reports the stages it ran
+and none of the earlier runs' usage, so summing a document's rows over all runs gives
+its total usage without counting any run twice. The document's tracking record (the
+**Estimated Cost** in the Web UI) keeps the cumulative total of every run. Documents
+reprocessed before this behaviour was introduced keep the figures they were saved
+with: their rows are not rewritten.
+
 | Column | Type | Description |
 |--------|------|-------------|
 | document_id | string | Unique identifier for the document |

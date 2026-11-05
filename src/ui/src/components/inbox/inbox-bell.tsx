@@ -7,6 +7,7 @@
 import type { ButtonDropdownProps, TopNavigationProps } from '@cloudscape-design/components';
 
 import useInbox from '../../hooks/use-inbox';
+import { UNREAD_LABEL } from '../common/labels';
 import { formatRelativeTime } from '../../utils/date-time';
 import { inboxHref, isInternalRoute } from '../../routes/constants';
 import { severityIcon, severityLabel } from './severity';
@@ -27,7 +28,9 @@ export const useInboxBellUtility = (): TopNavigationProps.MenuDropdownUtility =>
     ? recent.map((m) => ({
         id: `${MSG_PREFIX}${m.id}`,
         text: m.title,
-        secondaryText: [severityLabel(m.severity), formatRelativeTime(m.createdAt), m.read ? null : 'Unread'].filter(Boolean).join(' · '),
+        secondaryText: [severityLabel(m.severity), formatRelativeTime(m.createdAt), m.read ? null : UNREAD_LABEL]
+          .filter(Boolean)
+          .join(' · '),
         iconName: severityIcon(m.severity),
         href: isInternalRoute(m.link) ? `#${m.link}` : inboxHref(),
       }))

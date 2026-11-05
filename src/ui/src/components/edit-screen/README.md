@@ -10,14 +10,14 @@ renders.
 
 ## The pieces
 
-| Piece               | File                                                   | What it does                                                                                                                                                                                                                                                                                                                               |
-| ------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Piece               | File                                                   | What it does                                                                                                                                                                                                                                                                                                                                  |
+| ------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | The page            | [`EditPage.tsx`](EditPage.tsx)                         | Renders an `EditModel`: the layout and breadcrumbs, the load and error states, the bar, the shared editor, the Edit \| View switch, History, Skip's reason, Cancel, Refresh, the Process Changes confirmation, Edit Page Grouping and the exit. It has no mode or role branching, which `__tests__/edit-page.no-mode-branching.test.ts` pins. |
-| The model           | [`edit-model.ts`](edit-model.ts)                       | The types: the document header, the notices, the bar, the editor, the board, Skip, Process Changes, Claim, the baseline, the failure surface and the navigation.                                                                                                                                                                           |
-| The editor session  | [`use-editor-session.ts`](use-editor-session.ts)       | What the page and a model both need to know about the open editor: its controller, unsaved and saving state, the open section and its working copy, the view, and the running action (`run`).                                                                                                                                              |
-| The bar and reports | [`EditScreen.tsx`](EditScreen.tsx)                     | The bar's layout and labels, mapped onto the shared `ActionBar` (`../common/ActionBar.tsx`, also the document page's bar); the title (`../common/DocumentPageHeader.tsx`); the Processing Report and Summary dialogs (`../common/ReportModal.tsx`).                                                                                        |
-| Unsaved edits       | [`use-discard-confirm.tsx`](use-discard-confirm.tsx)   | The "discard your unsaved changes?" question that Cancel (`use-edit-cancel.tsx`) and Refresh ask before losing edits.                                                                                                                                                                                                                      |
-| The editor          | [`SectionEditor.tsx`](SectionEditor.tsx)               | The field editing and change tracking, the same in every mode.                                                                                                                                                                                                                                                                             |
+| The model           | [`edit-model.ts`](edit-model.ts)                       | The types: the document header, the notices, the bar, the editor, the board, Skip, Process Changes, Claim, the baseline, the failure surface and the navigation.                                                                                                                                                                              |
+| The editor session  | [`use-editor-session.ts`](use-editor-session.ts)       | What the page and a model both need to know about the open editor: its controller, unsaved and saving state, the open section and its working copy, the view, and the running action (`run`).                                                                                                                                                 |
+| The bar and reports | [`EditScreen.tsx`](EditScreen.tsx)                     | The bar's layout and labels, mapped onto the shared `ActionBar` (`../common/ActionBar.tsx`, also the document page's bar); the title (`../common/DocumentPageHeader.tsx`); the Processing Report and Summary dialogs (`../common/ReportModal.tsx`).                                                                                           |
+| Unsaved edits       | [`use-discard-confirm.tsx`](use-discard-confirm.tsx)   | The "discard your unsaved changes?" question that Cancel (`use-edit-cancel.tsx`) and Refresh ask before losing edits.                                                                                                                                                                                                                         |
+| The editor          | [`SectionEditor.tsx`](SectionEditor.tsx)               | The field editing and change tracking, the same in every mode.                                                                                                                                                                                                                                                                                |
 | The board           | [`use-page-class-board.tsx`](use-page-class-board.tsx) | Edit Page Grouping as a dialog over the model's `EditBoard`, with the save error shown inside it.                                                                                                                                                                                                                                             |
 
 ## One adapter and one model per mode
@@ -66,6 +66,27 @@ The board opens from **Edit Page Grouping** on the Document Editor panel (Sectio
 `regroup` prop, which EditPage builds from the bar's `showRegroup` and
 `regroupDisabledReason`), beside the panel's **Show Evaluation**, **Section** and **Show
 Fields** controls; it is not in the bar's More Actions.
+
+## Read-only, the version badge, field focus and Process Changes
+
+- **Read-only.** A model sets `EditEditor.readOnlyReason` (and so `readOnly`) whenever
+  the fields can't be edited. The page shows the reason as its first notice, with Claim
+  when the bar offers it, or the model's `readOnlyAction` (Production: Take over). The
+  Edit | View labels don't change.
+- **The version badge.** `EditDocumentHeader.badge` is shown after the status. The Test
+  Studio model sets it to `v{base} → v{draft}` while a draft version of the set is open,
+  with the hover "Corrections go into version v{draft}; v{base} is preserved."
+- **Field focus.** A review reason's chip, Next alert and a `?field=` link all go
+  through the session's `focusField(sectionId, fieldPath)`, which issues a
+  `FieldFocusRequest` (`field-focus.ts`); a new nonce repeats the same field.
+  `SectionEditor` opens the section, expands the groups above the field, scrolls it into
+  view and focuses its input.
+- **Process Changes.** `EditProcess.confirm` says what to ask first:
+  `{ kind: 'reprocess', bdaMode }` for a direct edit (Confirm Reprocessing), and
+  `{ kind: 'version' }` for a Test Studio item when no draft version of the set is open,
+  shown by `ProcessChangesConfirmModal` with `variant="version"`. Omitted, it runs at once:
+  a Production item, or a Test Studio item whose draft version is already open. Test
+  Studio editing is draft-first: Save stores a draft and opens no version.
 
 ## The breadcrumbs
 

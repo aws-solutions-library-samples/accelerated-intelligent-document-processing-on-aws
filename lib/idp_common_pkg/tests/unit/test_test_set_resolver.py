@@ -4338,19 +4338,14 @@ class TestTestSetResolver:
         assert "reextractTestSetDocument" in allowed
         assert "getDraftLabelJob" in allowed
 
-    def test_the_resolvers_scope_check_is_the_shared_rule_with_its_profile_resolver(
-        self,
-    ):
+    def test_the_resolvers_scope_check_is_the_shared_rule(self):
         """`_assert_set_access` is what every branch calls: it must be the shared rule
-        (`assert_can_access_test_set`) given this resolver's profile resolution, or a
-        Reviewer would be decided by a different rule here than in getFileContents."""
+        (`assert_can_access_test_set`) as is, or a caller would be decided by a
+        different rule here than in getFileContents."""
         source = pathlib.Path(test_set_index.__file__).read_text(encoding="utf-8")
         body = source[source.index("def _assert_set_access(") :]
         body = body[: body.index("\ndef ")]
-        assert (
-            "assert_can_access_test_set(event, test_set_id, set_profile=_scope_profile)"
-            in body
-        )
+        assert "assert_can_access_test_set(event, test_set_id)" in body
 
     def test_every_annotator_field_asserts_per_set_scope(self):
         """Group membership alone would expose other teams' sets.
@@ -10878,7 +10873,7 @@ class TestSectionDrafts:
 
     @pytest.mark.parametrize("group", ["Reviewer", "Viewer"])
     def test_other_roles_are_refused_by_group(self, drafts_env, group):
-        with pytest.raises(Exception, match="Unauthorized"):
+        with pytest.raises(PermissionError, match="Unauthorized"):
             test_set_index.handler(_draft_event([group], "x@example.com"), None)
 
     def test_a_stale_base_revision_is_refused(self, drafts_env):
@@ -13001,7 +12996,7 @@ class TestFailedJobIsNotADraftingRun:
     """#1757: a labeling job ends FAILED only when it labeled nothing, so its run
     drafted none of the set's labels. Counting it as a drafting run let one failed
     re-extract under another profile make the set read as mixed, which leaves it
-    with no single profile and so out of every scoped Reviewer's reach."""
+    with no single profile."""
 
     @staticmethod
     def _seed(table, jobs, runs):
@@ -13067,29 +13062,31 @@ class TestFailedJobIsNotADraftingRun:
             "ts1", self._meta(table), "prof-A"
         ) == ("fpA", "drafting-run")
 
-    @pytest.mark.parametrize(
-        "scope, admitted", [(["prof-A"], True), (["prof-B"], False)]
-    )
-    def test_a_scoped_reviewer_of_the_drafting_profile_is_admitted(
-        self, labeling_env, scope, admitted
+    @pytest.mark.parametrize("scope", [None, ["prof-A"]], ids=["unscoped", "in-scope"])
+    def test_a_reviewer_is_refused_whatever_their_profile_scope(
+        self, labeling_env, scope, caplog
     ):
-        """The lockout itself, through the resolver's own access check. The second
-        case is the non-vacuity check: the scope really is enforced."""
+        """Test-set work belongs to Annotators: a Reviewer-only caller is refused
+        through the resolver's own access check, even with the set's drafting profile
+        (or every profile) in scope, and the refusal is a `PermissionError`."""
+        from idp_common.testset_scope import TestSetAccessDenied
+
         table, _ = labeling_env
         self._seed_failed_reextract(table)
         event = _caller("rev@example.com", "Reviewer")
 
-        with patch(
-            "idp_common.config_scope.resolve_allowed_config_versions",
-            return_value=scope,
+        with (
+            patch(
+                "idp_common.config_scope.resolve_allowed_config_versions",
+                return_value=scope,
+            ),
+            caplog.at_level("WARNING"),
         ):
-            if admitted:
+            with pytest.raises(TestSetAccessDenied) as refused:
                 test_set_index._assert_set_access(event, "ts1")
-            else:
-                from idp_common.testset_scope import TestSetAccessDenied
-
-                with pytest.raises(TestSetAccessDenied):
-                    test_set_index._assert_set_access(event, "ts1")
+        assert isinstance(refused.value, PermissionError)
+        assert "Forbidden" in caplog.text
+        assert "ScopeProfile" not in self._meta(table)
 
     def test_the_review_run_is_unchanged(self, labeling_env):
         """#1737 already passed over a FAILED job when choosing a document's review
@@ -13133,52 +13130,3 @@ class TestFailedJobIsNotADraftingRun:
             None,
             "mixed",
         )
-
-    @pytest.mark.parametrize("how", ["run-failed", "document-failed"])
-    def test_a_reviewer_refused_while_the_job_ran_is_admitted_once_it_fails(
-        self, labeling_env, how
-    ):
-        """The profile is recorded on first use (`_scope_profile`). Read while the
-        re-extract was in flight it is mixed, so the job failing has to drop it, or
-        the Reviewer stays locked out of a set whose profile is single again."""
-        from idp_common.testset_scope import TestSetAccessDenied
-
-        table, _ = labeling_env
-        self._seed(
-            table,
-            [
-                ("runA", "COMPLETED", {}),
-                ("runF", "RUNNING", {"objectKeys": ["a.pdf"]}),
-            ],
-            {
-                "runA": {"ConfigVersion": "prof-A"},
-                "runF": {
-                    "ConfigVersion": "prof-B",
-                    "TestSetId": "ts1",
-                    "Files": ["a.pdf"],
-                    "Status": "FAILED" if how == "run-failed" else "RUNNING",
-                },
-            },
-        )
-        if how == "document-failed":
-            table.put_item(
-                Item={"PK": "doc#runF/a.pdf", "SK": "none", "ObjectStatus": "FAILED"}
-            )
-        event = _caller("rev@example.com", "Reviewer")
-        key = {"PK": "testset#ts1", "SK": "labeljob#runF"}
-
-        with patch(
-            "idp_common.config_scope.resolve_allowed_config_versions",
-            return_value=["prof-A"],
-        ):
-            with pytest.raises(TestSetAccessDenied):
-                test_set_index._assert_set_access(event, "ts1")
-            # Non-vacuity: the mixed answer really was recorded.
-            assert self._meta(table)[test_set_index.SCOPE_PROFILE_ATTRIBUTE] == ""
-
-            failed = test_set_index._harvest_label_job(
-                table.get_item(Key=key)["Item"], deadline=None
-            )
-            assert failed["status"] == "FAILED"
-
-            test_set_index._assert_set_access(event, "ts1")

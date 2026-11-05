@@ -30,6 +30,7 @@ from idp_common.models import (
     coerce_revision,
 )
 from idp_common.review_queues.statuses import LEGACY_PENDING
+from idp_common.utils import cumulative_metering
 
 logger = logging.getLogger(__name__)
 
@@ -777,11 +778,15 @@ class DocumentDynamoDBService:
                 expression_names["#Sections"] = "Sections"
                 expression_values[":Sections"] = sections_data
 
-        # Add metering data if available
-        if document.metering:
+        # Add metering data if available. The row stores the document's
+        # cumulative usage: earlier runs' baseline plus this run's own
+        # (``Document.metering`` holds only the run's own usage, see
+        # queue_processor.start_workflow).
+        cumulative = cumulative_metering(document)
+        if cumulative:
             set_expressions.append("#Metering = :Metering")
             expression_names["#Metering"] = "Metering"
-            expression_values[":Metering"] = json.dumps(document.metering, default=str)
+            expression_values[":Metering"] = json.dumps(cumulative, default=str)
 
         # Add evaluation status & report if available
         if document.evaluation_status:
@@ -2114,6 +2119,8 @@ class DocumentDynamoDBService:
             item["ConfigMappingPrefix"] = document.config_mapping_prefix
         if document.num_pages > 0:
             item["PageCount"] = document.num_pages
+        # The run record keeps this run's own usage only, not the cumulative
+        # total the document row stores.
         if document.metering:
             item["Metering"] = json.dumps(document.metering, default=str)
         if document.summary_report_uri:

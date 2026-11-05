@@ -1765,7 +1765,6 @@ export type MutationUploadSampleDocumentArgs = {
 };
 
 export type MyReviewQueues = {
-  enabledProfiles: Array<Scalars['String']['output']>;
   items: ReviewItemPage;
   myClaimCount: Scalars['Int']['output'];
   queues: Array<ReviewQueueSummary>;

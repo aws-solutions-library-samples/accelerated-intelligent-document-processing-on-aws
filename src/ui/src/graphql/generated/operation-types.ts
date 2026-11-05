@@ -1765,7 +1765,6 @@ export type MutationUploadSampleDocumentArgs = {
 };
 
 export type MyReviewQueues = {
-  enabledProfiles: Array<Scalars['String']['output']>;
   items: ReviewItemPage;
   myClaimCount: Scalars['Int']['output'];
   queues: Array<ReviewQueueSummary>;
@@ -4029,7 +4028,7 @@ export type GetMyReviewQueuesQueryVariables = Exact<{
 }>;
 
 
-export type GetMyReviewQueuesQuery = { getMyReviewQueues?: { myClaimCount: number, enabledProfiles: Array<string>, queues: Array<{ profile: string, name: string, displayName: string, description?: string | null, priority: number, depth: number, unclaimed: number, claimed: number, claimedByMe: number, oldestEnqueuedAt?: string | null, isDefaultQueue: boolean, enabled?: boolean | null, claimCap: number, checklist: Array<string>, definedInConfig: boolean }>, items: { nextToken?: string | null, items: Array<{ objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }> } } | null };
+export type GetMyReviewQueuesQuery = { getMyReviewQueues?: { myClaimCount: number, queues: Array<{ profile: string, name: string, displayName: string, description?: string | null, priority: number, depth: number, unclaimed: number, claimed: number, claimedByMe: number, oldestEnqueuedAt?: string | null, isDefaultQueue: boolean, enabled?: boolean | null, claimCap: number, checklist: Array<string>, definedInConfig: boolean }>, items: { nextToken?: string | null, items: Array<{ objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }> } } | null };
 
 export type GetPricingQueryVariables = Exact<{ [key: string]: never; }>;
 

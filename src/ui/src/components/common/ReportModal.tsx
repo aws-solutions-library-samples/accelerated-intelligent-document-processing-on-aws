@@ -16,8 +16,15 @@ interface ReportModalProps {
   size?: ModalProps.Size;
 }
 
+/**
+ * The one width of the dialogs the Reports menus open: Summary, Processing Report,
+ * Rule Validation Summary, Estimated Cost and the editor's History. A report that
+ * needs more room (Evaluation Report) passes its own size.
+ */
+export const REPORT_MODAL_SIZE: ModalProps.Size = 'x-large';
+
 /** A report opened from the bar: Summary, Processing Report, Evaluation Report. */
-export const ReportModal = ({ header, onDismiss, children, size = 'large' }: ReportModalProps): React.JSX.Element => (
+export const ReportModal = ({ header, onDismiss, children, size = REPORT_MODAL_SIZE }: ReportModalProps): React.JSX.Element => (
   <Modal
     visible
     size={size}

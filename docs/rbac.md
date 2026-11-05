@@ -26,9 +26,9 @@ Each role is a Cognito User Pool group (the `AWS::Cognito::UserPoolGroup` resour
 |------|--------------|-------------|
 | **Admin** | `Admin` | Full access to all operations including user management and pricing |
 | **Author** | `Author` | Read + write access to documents, configuration, tests, discovery |
-| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility. A Reviewer-only console (Home: Inbox, Tasks, Queues; Deployment Info). Works every Production review queue (Home: Tasks, Queues): claims, saves, finishes and skips its items, as an Annotator does, with no Admin assignment needed; and works every Test Studio queue whose test set's configuration profile is in their `allowedConfigVersions` |
+| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility. A Reviewer-only console (Home: Inbox, Tasks, Queues; Deployment Info). Works every Production review queue (Home: Tasks, Queues), within their `allowedConfigVersions`: claims, saves, finishes and skips its items, as an Annotator does, with no Admin assignment needed. Works Production review queues only: Test Studio queues, labelling and test-set file reads are for Admins, Authors and Annotators |
 | **Viewer** | `Viewer` | Read-only access to documents, configuration, agent chat |
-| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues; Deployment Info). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
+| **Annotator** | `Annotator` | Works the review queues that list it in **Eligible Annotators**, Production and Test Studio, claiming their items or taking those an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues; Deployment Info). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
 
 ### Multi-Group Support
 
@@ -60,21 +60,20 @@ owner's decision, not an annotator's.
 
 **Two-layer enforcement.** Group membership only reaches the operation; every one
 of the above additionally asserts the target test set is in the caller's
-`allowedTestSets`, or, for a Reviewer, that the set's configuration profile is in
-their `allowedConfigVersions`. The check is centralized in
+`allowedTestSets`. The check is centralized in
 `idp_common/testset_scope.py::assert_can_access_test_set` and **fails closed** — an
-unreadable users record, a missing attribute, or an empty list all deny an Annotator,
-and a Reviewer whose scope or set profile cannot be read is denied. A set's profile is
-resolved once by the Test Studio resolver (declared, bound, or from its drafting run),
-recorded on the set as `ScopeProfile` so every check reads the same value, and
-resolved again after a new drafting run; a set with no single profile is admitted only
-to Reviewers with no profile restriction. Reaching a
+unreadable users record, a missing attribute, or an empty list all deny an Annotator.
+Admins and Authors own the test sets and are not test-set scoped; any other caller,
+a Reviewer included, is refused. Reaching a
 test-set operation is never the same as being allowed to see a given set.
 
 For the HITL operations the scope is resolved from the document rather than an
 argument: a review document carries the `TestSetId` it came from, and an Annotator
 attempting a document with no `TestSetId` (i.e. ordinary production review work) is
-refused outright.
+refused outright. The reverse holds for a Reviewer who is not also an Admin, Author or
+Annotator: `claimReview`, `releaseReview`, `skipAllSectionsReview`,
+`saveSectionReviewEdits`, `completeSectionReview`, `processChanges` and
+`updateDocumentSections` refuse them a document that carries a `TestSetId`.
 
 **Where membership and scope come from.** The `Annotator` group itself can be
 assigned in User Management or from an external IdP group claim, by setting
@@ -99,10 +98,10 @@ assigned them (`reassignReviewItem` refuses a Reviewer). A Reviewer has the same
 Production review-queue operations as an Annotator (`getMyReviewQueues`,
 `listReviewQueueItems`, `listMyReviewWork`, `getReviewItem`, `claimReviewItem`,
 `claimNextReviewItem`, `releaseReviewItem`, `saveReviewDraft`, `completeReviewItem`,
-`rejectReviewItem`), within their `allowedConfigVersions`, and the Test Studio
-operations an Annotator has, for every test set whose configuration profile their
-`allowedConfigVersions` admits (every set when they have none), without being listed
-on its queue (`testset_scope.reviewer_may_access_test_set`).
+`rejectReviewItem`), within their `allowedConfigVersions`. A Reviewer works
+Production review queues only: Test Studio queues, labelling and test-set file reads
+are for Admins, Authors and Annotators, so a Reviewer who labels test sets also needs
+the Annotator role.
 
 - **What an Annotator can call.**
   - Their queues: `getMyReviewQueues`, `listReviewQueueItems`, `claimReviewItem`,
@@ -165,10 +164,10 @@ on its queue (`testset_scope.reviewer_may_access_test_set`).
   a convenience, not the boundary: every queue operation applies the caller's
   `allowedConfigVersions` to each item. **Review Studio › Review Management** is
   Admin-only.
-- **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
+- **Legacy HITL.** The Reviewer role works its operations (`claimReview`,
   `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`,
-  `saveSectionReviewEdits`) are unchanged; `saveSectionReviewEdits` is not open to
-  Annotators. `claimReview` and `releaseReview` refuse a finished review
+  `saveSectionReviewEdits`) on production documents only; `saveSectionReviewEdits` is
+  not open to Annotators. `claimReview` and `releaseReview` refuse a finished review
   (`REVIEW_FINISHED`) for every role, `claimReview` also refuses a document no
   review was raised on (`NO_REVIEW_PENDING`) for every role, and
   `skipAllSectionsReview` refuses a caller
@@ -233,6 +232,7 @@ AGENT CHAT & CODE EXPLORER
 TEST STUDIO
   View/run test sets               ✅      ✅       ❌        ❌
   Create/delete test sets          ✅      ✅       ❌        ❌
+  Work Test Studio queues          ✅      ✅       ❌        ❌
 
 CUSTOM MODEL FINE-TUNING
   List/view fine-tuning jobs       ✅      ✅       ❌        ❌
@@ -500,7 +500,7 @@ number with no indication. Narrow the date range if a scoped count looks wrong.
 | **Config Profile Access** (server-side) | `getConfigVersion` Lambda resolver rejects requests for out-of-scope profiles |
 | **Revision Operations** (server-side) | All five `*ConfigProfileRevision*` operations reject out-of-scope profiles before doing any work |
 | **Revision Bodies in S3** (server-side) | A revision's configuration is stored as an object in the Configuration bucket, so the object-read path applies the same profile check to the **key**: `getFileContents` / `getFilePresignedUrl` match the profile in a `config_revisions/<profile>/` key against `allowedConfigVersions` before reading anything. Without it the revision operations above could be bypassed by asking for the body directly, and the Configuration bucket is no longer readable with the browser's own credentials either |
-| **Test-Set Objects in S3** (server-side) | The same path applies `allowedTestSets` to every Test Set bucket key (`<test_set_id>/…` — source documents, ground truth, published baseline snapshots), so a scoped Annotator cannot read another test set's documents or labels through it |
+| **Test-Set Objects in S3** (server-side) | The same path applies `allowedTestSets` to every Test Set bucket key (`<test_set_id>/…` — source documents, ground truth, published baseline snapshots), so a scoped Annotator cannot read another test set's documents or labels through it, and a Reviewer or Viewer reads none of them |
 | **Document Objects in S3** (server-side) | `document_scope` finds the document that owns an Input- or Output-bucket key — walking the key's `/` boundaries longest-first against the tracking table — and matches its `ConfigVersion` against `allowedConfigVersions` on all three object-read operations (`getFileContents`, `getFilePresignedUrl`, `getFilePresignedUrls`), before any S3 call. Fails closed twice over: a key no tracked document owns is refused, and so is a document carrying no `ConfigVersion`. The refusal text is the same non-disclosing 403 the key check uses, and on the batch operation a single refusal fails the whole request, so it cannot be used to probe which documents are in scope key by key |
 | **Version Dropdowns** (UI) | `useConfigurationVersions` hook filters versions client-side for immediate UX |
 | **Default Version Selection** (UI) | Version pickers and the View/Edit Configuration page select the active profile when it is in scope, otherwise the first scoped one. A scoped user is never sent to `default` unless their scope admits it |
@@ -886,7 +886,7 @@ enforcement itself is Layer 2.
 | `createFinetuningJob`, `deleteFinetuningJob` | Admin, Author |
 | `processChanges` (a caller who is not an Admin must own the document's open review, the review must not be finished, the document must not be processing, and the document must be inside the caller's configuration-profile scope — the same checks as `saveSectionReviewEdits`, plus the document-status and scope checks) | Admin, Reviewer |
 | `skipAllSectionsReview` | Admin, Reviewer |
-| `completeSectionReview`, `claimReview`, `releaseReview` | Admin, Reviewer, Annotator (an Annotator only for a test-set document assigned to them) |
+| `completeSectionReview`, `claimReview`, `releaseReview` | Admin, Reviewer, Annotator (an Annotator only for a test-set document assigned to them; a Reviewer only for a production document) |
 | `saveTestSetDocumentSection`, `saveTestSetDocumentSectionDraft`, `skipTestSetDocument`, `updateTestSetDocumentSections` | Admin, Author, Annotator (an Annotator only for a document assigned to them; an Author drafts authored ground truth only) |
 | `saveSectionReviewEdits` (saves a section's corrections without completing the review; a Reviewer must be the document's review owner) | Admin, Reviewer |
 | `sendAgentChatMessage` | Admin, Author, Viewer (Reviewer excluded; also IAM for backend) |

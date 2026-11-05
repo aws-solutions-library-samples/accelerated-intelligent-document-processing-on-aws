@@ -28,6 +28,7 @@ import { isBdaModeConfig } from '../../utils/processing-mode';
 import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/copy-to-baseline';
 import { getConfigClassOptions } from '../common/config-class-options';
 import { saveDocumentGroupingOrThrow } from '../common/document-grouping';
+import { PROCESS_CHANGES_LABEL } from '../common/labels';
 import { inReviewQueueEditReason, isInReviewQueue, normalizeHitlStatus } from '../common/review-status';
 import type { GroupedSection } from '../common/section-grouping';
 import { HOME_CRUMB, editActiveHref, editTrail } from '../review-queues/breadcrumbs';
@@ -48,9 +49,8 @@ import type { RawDocument } from './use-edit-mode';
 import type { EditorSession } from './use-editor-session';
 import useSectionEvaluation from './use-section-evaluation';
 
-export const PROCESS_ROLE_REASON = 'Process Changes needs the Admin or Reviewer role.';
-export const PROCESS_OWNER_REASON =
-  "Process Changes needs an Admin, or the reviewer who holds this document's open review. Start the review first.";
+export const PROCESS_ROLE_REASON = `${PROCESS_CHANGES_LABEL} needs the Admin or Reviewer role.`;
+export const PROCESS_OWNER_REASON = `${PROCESS_CHANGES_LABEL} needs an Admin, or the reviewer who holds this document's open review. Start the review first.`;
 export { BDA_REGROUP_REASON };
 export const EDIT_ROLE_REASON = "Editing needs the Admin or Author role, or a Reviewer who holds this document's review.";
 /** updateDocumentSections is Admin, Reviewer and Annotator; an Annotator regroups only test-set documents. */
@@ -170,6 +170,16 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
   // Why they are unavailable, for the menus (an item that does not apply stays, disabled).
   const unfinishedReason = inReview ? IN_REVIEW_SHORT_REASON : !isEditableStatus(status) ? PROCESSING_REASON : undefined;
   const readOnly = readOnlyReason !== undefined;
+  // The same reason, said in full for the page's read-only notice.
+  let readOnlyNotice: string | undefined;
+  if (inReview)
+    readOnlyNotice =
+      lock === 'mirror-lag'
+        ? 'View only. This document is marked as in a review queue, but its review item is missing or has finished. Reload in a moment.'
+        : 'This document is in a review queue. Edits are made in the queue.';
+  else if (readOnlyReason === PROCESSING_REASON)
+    readOnlyNotice = 'View only. This document is still processing; its results can be edited once processing finishes.';
+  else if (readOnlyReason === EDIT_ROLE_REASON) readOnlyNotice = `View only. ${EDIT_ROLE_REASON}`;
   // In review, the editing actions stay on the bar, disabled with the in-review reason.
   const showEditing = !readOnly || inReview;
   const { dirty, saving } = session;
@@ -209,23 +219,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
         },
         offerReport: true,
       },
-      notices: [
-        inReview && {
-          id: 'in-review',
-          type: 'info',
-          content:
-            lock === 'mirror-lag'
-              ? 'View only. This document is marked as in a review queue, but its review item is missing or has finished. Reload in a moment.'
-              : 'This document is in a review queue. Edits are made in the queue.',
-        },
-        !inReview &&
-          readOnlyReason === PROCESSING_REASON && {
-            id: 'processing',
-            type: 'info',
-            content: 'View only. This document is still processing; its results can be edited once processing finishes.',
-          },
-        !inReview && readOnlyReason === EDIT_ROLE_REASON && { id: 'role', type: 'info', content: `View only. ${EDIT_ROLE_REASON}` },
-      ],
+      notices: [],
       bar: {
         showSave: showEditing,
         saveDisabledReason: readOnlyReason ?? (!dirty ? 'No changes to save' : saving ? 'Saving your changes…' : undefined),
@@ -252,6 +246,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
         sections: adapter.sections,
         pages: adapter.pages,
         readOnly,
+        readOnlyReason: readOnlyNotice,
         loadSection: adapter.loadSection,
         saveSection: onSave,
         initialSectionId,
@@ -271,7 +266,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
             Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted field values are <b>kept</b> and the document
             is <b>not</b> reprocessed, so they may no longer match their pages. To have the pipeline redo them, open the document
             page&apos;s <b>More Actions › Edit Page Grouping</b> and choose <b>Save and Re-extract</b>: this screen&apos;s{' '}
-            <b>Process Changes</b> re-runs evaluation and summarization only.
+            <b>{PROCESS_CHANGES_LABEL}</b> re-runs evaluation and summarization only.
           </>
         ),
         save: async (next) => {
@@ -286,7 +281,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
         baseline: evaluation.baseline,
       },
       process: {
-        confirm: { bdaMode },
+        confirm: { kind: 'reprocess', bdaMode },
         run: async () => {
           await adapter.processChanges();
           return { to: leaveTo, message: `Processing the changes to ${name}: evaluation and summarization are re-running.` };

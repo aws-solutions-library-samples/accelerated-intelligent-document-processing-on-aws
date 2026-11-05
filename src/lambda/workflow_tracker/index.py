@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import copy
 import json
 import logging
 import os
@@ -314,8 +315,9 @@ def update_document_completion(
     if workflow_status == "TIMED_OUT":
         _record_workflow_timeout(object_key)
 
-    # A finalize run reports only its own usage (the tracking row carries the
-    # phase-1 metering merged in), so reporting never counts phase 1 twice.
+    # Every run reports only its own usage (``metering``). The earlier runs'
+    # usage travels in ``metering_baseline`` (moved there at run start, and for a
+    # finalize run the phase-1 usage too); only the tracking row stores the sum.
     tracked_document = document
     if reporting_document is not None:
         document = reporting_document
@@ -358,12 +360,16 @@ def update_document_completion(
                 logger.info(
                     f"Saving reporting data ({', '.join(data_to_save)}) to {REPORTING_BUCKET} by calling Lambda {SAVE_REPORTING_FUNCTION_NAME}"
                 )
+                # The baseline is never reported: reporting counts each run's
+                # own usage once.
+                reporting_payload = document.to_dict()
+                reporting_payload.pop("metering_baseline", None)
                 lambda_response = lambda_client.invoke(
                     FunctionName=SAVE_REPORTING_FUNCTION_NAME,
                     InvocationType="RequestResponse",
                     Payload=json.dumps(
                         {
-                            "document": document.to_dict(),
+                            "document": reporting_payload,
                             "reporting_bucket": REPORTING_BUCKET,
                             "data_to_save": data_to_save,
                             **({"review": review_payload} if review_payload else {}),
@@ -389,9 +395,14 @@ def update_document_completion(
                 "No reporting data available to save (no metering data or sections with extraction results)"
             )
 
-    if review_ctx is not None and updated_doc is not None:
-        # Keep the in-memory document the review writes read (metering merged).
-        updated_doc.metering = tracked_document.metering
+    if updated_doc is not None:
+        # The row read back holds the cumulative total in ``metering``. Restore
+        # the split so the run record (own usage) and the review hold snapshot
+        # (``cumulative_metering``) each read the right figure.
+        updated_doc.metering = copy.deepcopy(tracked_document.metering)
+        updated_doc.metering_baseline = copy.deepcopy(
+            getattr(tracked_document, "metering_baseline", {}) or {}
+        )
     return updated_doc
 
 

@@ -12,8 +12,13 @@ raises one when its confidence is below its own threshold
 BDA mode adds a ``blueprint_confidence`` reason when the matched blueprint's
 confidence is under ``hitl.confidence_threshold``, or when the blueprint matched
 but its confidence is unscored (``Section.blueprint_unscored``), at every
-threshold, as legacy HITL marks it; that reason carries a score of 0.0. No
-result is read from S3.
+threshold, as legacy HITL marks it; that reason carries a score of 0.0. With
+``hitl.route_missing_required_fields`` on (the default), each of a section's
+``missing_required_fields`` (a field its class schema requires that extraction
+left absent, #1527) becomes a ``missing_required`` reason with a score of 0.0 and
+the field's threshold, or ``hitl.confidence_threshold`` when it has none. These
+reasons drive the review queues only: legacy HITL still triggers on confidence
+alerts alone. No result is read from S3.
 
 This module must not import ``idp_common.assessment`` (or anything heavy): the
 Pipeline ProcessResults Lambda installs only the ``review_queues`` extra.
@@ -54,6 +59,13 @@ def _class_schema(config: Any, doc_class: Optional[str]) -> Optional[Mapping[str
     return find_class_schema(doc_class, getattr(config, "classes", None))
 
 
+def _route_missing_required(config: Any) -> bool:
+    """``config.hitl.route_missing_required_fields``; on when unset."""
+    hitl = getattr(config, "hitl", None) if config is not None else None
+    value = getattr(hitl, "route_missing_required_fields", None)
+    return True if value is None else bool(value)
+
+
 def _hitl_threshold(config: Any) -> float:
     """``config.hitl.confidence_threshold``, or the default when it is unset."""
     hitl = getattr(config, "hitl", None) if config is not None else None
@@ -73,6 +85,8 @@ def build_reasons(
     ``hitl.confidence_threshold`` for the blueprint confidence.
     """
     reasons: list[ReviewReason] = []
+    route_missing = _route_missing_required(config)
+    default_threshold = _hitl_threshold(config)
     for section in list(getattr(document, "sections", None) or []):
         section_id = str(section.section_id)
         schema = _class_schema(config, getattr(section, "classification", None))
@@ -96,6 +110,28 @@ def build_reasons(
                     threshold=threshold,
                 )
             )
+        if route_missing:
+            for missing in getattr(section, "missing_required_fields", None) or []:
+                if not isinstance(missing, Mapping):
+                    continue
+                path = missing.get("attribute_name") or missing.get("attributeName")
+                if not path:
+                    continue
+                threshold = _num(
+                    missing.get(
+                        "confidence_threshold", missing.get("confidenceThreshold")
+                    )
+                )
+                reasons.append(
+                    ReviewReason(
+                        kind="missing_required",
+                        section_id=section_id,
+                        field=path,
+                        label=field_label(schema, path),
+                        score=0.0,
+                        threshold=default_threshold if threshold is None else threshold,
+                    )
+                )
         if mode == "bda":
             confidence = _num(getattr(section, "confidence", None))
             threshold = _hitl_threshold(config)

@@ -302,6 +302,38 @@ def test_rule_validation_root_cause_is_bounded(monkeypatch, rv_service):
     assert issue.root_cause.startswith("80 errors:")
 
 
+def _rv_lambda_metering(component, context, start_time):
+    return {f"{component}/lambda/requests": {"requests": 1}}
+
+
+@pytest.mark.unit
+def test_rule_validation_skip_returns_only_its_own_metering(monkeypatch, rv_service):
+    """The skip branch returns this invocation's usage, not the incoming metering.
+
+    The per-section results are merged onto the document metering downstream, so
+    carrying the incoming metering out of a skipped section would count it again
+    for every section (the shape of #1665 in extraction).
+    """
+    monkeypatch.setattr(
+        rule_validation_index, "calculate_lambda_metering", _rv_lambda_metering
+    )
+    document = _document(Status.RULE_VALIDATION)
+    document.metering = {"Extraction/bedrock/model-a": {"inputTokens": 9000}}
+    document.rule_validation_result = RuleValidationResult(
+        request_id="internal-doc-id", section_results=[{"section_id": "2"}]
+    )
+
+    result = rule_validation_index.handler(
+        {"document": document.to_dict(), "section_id": "2"}, _Context()
+    )
+
+    returned = Document.load_document(result["document"], "", None)
+    assert result["section_id"] == "2"
+    assert returned.metering == {"RuleValidation/lambda/requests": {"requests": 1}}
+    # The skip branch ran: no section was validated or written.
+    rv_service.update_document_section.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # 2. processresults_function: the collate step
 # ---------------------------------------------------------------------------

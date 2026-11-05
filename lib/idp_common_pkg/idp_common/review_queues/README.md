@@ -107,7 +107,11 @@ In queue mode:
   serialization and in the tracking table (`BlueprintUnscored`, written only when
   true), so a reprocess that reloads the document is held again. A section whose segment matched no blueprint is
   unscored too but is not flagged, so it is not held, as legacy HITL does not mark
-  it. So routing agrees exactly with the alerts users
+  it. With `hitl.route_missing_required_fields` on (the default; on when unset), each
+  of a section's `missing_required_fields` is a `missing_required` reason named by
+  its path, with a score of 0.0 and the entry's threshold, otherwise
+  `hitl.confidence_threshold`, so it sorts ahead of the confidence alerts. Legacy
+  HITL (`legacy_section_triggers`, `bda_segment_triggers`) does not read it. So routing agrees exactly with the alerts users
   see, and it reads nothing from S3. A malformed alert is skipped. A section's
   `missing_required_fields` are not reasons and nothing here reads them; they are
   the input for routing on missing data, which does not exist yet. The module must
@@ -229,8 +233,14 @@ document, so it finishes with the new grouping.
   `list_my_work`, `claim_next`). A listing that leaves items out still pages
   forward, so a page can be short; `claim_next` reads past the items it leaves out,
   up to `CLAIM_NEXT_MAX_PAGES` pages of a queue. `QueueDirectory.in_scope` is for a
-  queue reference, which has no profile, never for an item. A queue's counts
-  (depth, unclaimed) are the queue's, not filtered by scope.
+  queue reference, which has no profile, never for an item. `get_my_queues` applies
+  the same decision to every count: for a scoped caller, a queue's depth, unclaimed
+  and claimed counts, its oldest enqueue time, and the caller's own `claimedByMe` and
+  `myClaimCount` cover only the items the caller's scope admits (one projected
+  QueueIndex pass per queue, `ReviewStore.queue_scope_rows`). Admins and unscoped
+  callers see the whole queue through the cheap counts. The claim cap
+  (`max_claims_per_reviewer`) still counts all of the caller's claims, in scope or
+  not.
 - Admins also have `renewReviewLease`, which the web UI doesn't use.
 - **Test Studio** queues are the test sets. `testset_docs.TestSetDocStore` holds
   each document's summary and assignment (`assignTestSetDocuments`,
@@ -325,7 +335,12 @@ A disposition writes `FINALIZING` with a finalize token `rvw-<32 hex>` derived f
 the document, cycle and attempt, then sends one message to the DocumentQueue. The
 queue processor names the finalize execution after the token, so a re-sent message
 collapses into `ExecutionAlreadyExists`. The finalize run starts from a fresh
-metering record. If the message is lost or the run fails, the sweeper resends the
+metering record: when an item is activated, the tracker stores the document's
+cumulative usage up to phase 1 (`cumulative_metering`) on the item as
+`phase1_metering_json`, and the finalize run carries it as its `metering_baseline`.
+The tracking row then holds phase 1 plus the finalize run, while reporting, the
+`DocumentEstimatedCost` metric and the finalize run's version record get the
+finalize run's own usage only. If the message is lost or the run fails, the sweeper resends the
 same token, then retries with a new token up to 3 attempts before
 `FINALIZE_FAILED`.
 

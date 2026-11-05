@@ -100,7 +100,11 @@ interface Props {
   onDismiss: () => void;
   /** Called with the chosen strategy and the estimate it was based on. */
   onContinue: (strategy: ReviewStrategy, estimate: ReviewEffortEstimate | null) => void;
+  /** A fully labelled set: open its queue with the reviewed documents shown, to correct one. */
+  onReviewDocuments: () => void;
 }
+
+export const REVIEW_DOCUMENTS_LABEL = "Review the set's documents";
 
 const DEFAULT_TARGET = 99;
 
@@ -149,7 +153,7 @@ const CONFIDENCE_COPY: Record<string, { type: 'info' | 'warning' | 'success'; he
   },
 };
 
-const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onContinue }: Props): React.JSX.Element => {
+const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onContinue, onReviewDocuments }: Props): React.JSX.Element => {
   const [strategy, setStrategy] = useState<ReviewStrategy>('worst-first');
   const [target, setTarget] = useState(DEFAULT_TARGET);
   const [estimate, setEstimate] = useState<ReviewEffortEstimate | null>(null);
@@ -276,9 +280,17 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
             <Button variant="link" onClick={onDismiss}>
               Cancel
             </Button>
-            <Button variant="primary" onClick={() => onContinue(strategy, estimate)} disabled={isLoading || setIsFullyLabelled}>
-              Continue to annotation
-            </Button>
+            {/* A fully labelled set has no review to size, but its labels can still be
+                corrected: the way on is to its documents, not a disabled Continue. */}
+            {setIsFullyLabelled ? (
+              <Button variant="primary" onClick={onReviewDocuments} disabled={isLoading}>
+                {REVIEW_DOCUMENTS_LABEL}
+              </Button>
+            ) : (
+              <Button variant="primary" onClick={() => onContinue(strategy, estimate)} disabled={isLoading}>
+                Continue to annotation
+              </Button>
+            )}
           </SpaceBetween>
         </Box>
       }
@@ -295,7 +307,8 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
           {setIsFullyLabelled && !isLoading && !error && (
             <Alert type="success" header="Nothing to review">
               Every document in this set already carries ground truth, so there are no draft labels to check. Run a test to score a
-              configuration against it, or add documents and generate draft labels for those.
+              configuration against it, or add documents and generate draft labels for those. Labels can still be corrected one document at
+              a time: choose {REVIEW_DOCUMENTS_LABEL} and open a document&apos;s Edit.
             </Alert>
           )}
           {nothingToReview && sampleWasPartial && !isLoading && !error && (
