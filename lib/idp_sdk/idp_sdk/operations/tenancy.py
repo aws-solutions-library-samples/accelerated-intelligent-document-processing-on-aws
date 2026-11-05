@@ -12,14 +12,17 @@ things.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from idp_sdk.exceptions import (
     IDPConfigurationError,
     IDPResourceNotFoundError,
+    IDPStackError,
     IDPValidationError,
 )
 from idp_sdk.models.tenancy import (
+    TenantAccessPoint,
     TenantApplyResult,
     TenantAuditFinding,
     TenantAuditResult,
@@ -27,12 +30,43 @@ from idp_sdk.models.tenancy import (
     TenantListResult,
     TenantPlanAction,
     TenantPlanItem,
+    TenantPolicyDeployResult,
     TenantPolicyResult,
     TenantUserGrant,
     TenantVerifyResult,
 )
 
 logger = logging.getLogger(__name__)
+
+# CloudFormation's limit on an inline TemplateBody.
+TEMPLATE_BODY_LIMIT = 51_200
+_ACCESS_POINT_OUTPUT = re.compile(r"^Tenant (\S+) (upload|read) access point( alias)?$")
+
+
+def access_points_from_outputs(
+    outputs: Sequence[Mapping[str, Any]],
+) -> List[TenantAccessPoint]:
+    """The per-tenant access points an access point stack's outputs describe.
+
+    Matched on the descriptions ``generate_policies`` writes, so an output the
+    template does not produce is ignored rather than misread.
+    """
+    found: Dict[tuple, Dict[str, str]] = {}
+    for output in outputs:
+        match = _ACCESS_POINT_OUTPUT.match(str(output.get("Description") or ""))
+        if not match:
+            continue
+        tenant, direction, alias = match.groups()
+        entry = found.setdefault((tenant, direction), {})
+        entry["alias" if alias else "arn"] = str(output.get("OutputValue") or "")
+    return [
+        TenantAccessPoint(
+            tenant_id=tenant, direction=direction, arn=v["arn"], alias=v.get("alias")
+        )
+        for (tenant, direction), v in sorted(found.items())
+        if v.get("arn")
+    ]
+
 
 ISOLATION_PARAMETER = "TenantIsolationMode"
 UNKNOWN_MODE = "Unknown"
@@ -506,6 +540,104 @@ class TenancyOperation:
             access_points=names,
             warnings=warnings,
         )
+
+    def deploy_policies(
+        self,
+        principals: Mapping[str, Any],
+        stack_name: Optional[str] = None,
+        *,
+        access_point_stack: Optional[str] = None,
+    ) -> TenantPolicyDeployResult:
+        """Generate the per-tenant access point template and deploy it.
+
+        Creates the access point stack, or updates it when it exists, and waits for
+        it to finish. The access points are their own stack, never part of the IDP
+        stack, so they can be reviewed, redeployed and removed independently.
+        ``access_point_stack`` defaults to ``<stack>-tenant-access-points``.
+        """
+        from botocore.exceptions import ClientError, WaiterError
+
+        name = self._client._require_stack(stack_name)
+        generated = self.generate_policies(principals, stack_name=name)
+        body = generated.template
+        if len(body.encode("utf-8")) > TEMPLATE_BODY_LIMIT:
+            raise IDPValidationError(
+                f"The generated template is {len(body.encode('utf-8'))} bytes, over "
+                f"CloudFormation's {TEMPLATE_BODY_LIMIT}-byte inline limit. Write it "
+                f"with generate-policies --output, upload it to S3 and deploy it from "
+                f"there."
+            )
+        target = access_point_stack or f"{name}-tenant-access-points"
+        cfn = self._boto("cloudformation")
+        # The stack is deployed with no parameters, which is right only while the
+        # generated template declares none; validate_template is the runtime check.
+        try:
+            declared = cfn.validate_template(TemplateBody=body).get("Parameters") or []
+        except ClientError as e:
+            raise IDPValidationError(f"The generated template is invalid: {e}") from e
+        if declared:
+            raise IDPValidationError(
+                "The generated template declares parameters "
+                f"{[p.get('ParameterKey') for p in declared]}, but it is deployed "
+                "with none."
+            )
+        try:
+            cfn.describe_stacks(StackName=target)
+            exists = True
+        except ClientError as e:
+            if "does not exist" not in str(e):
+                raise IDPStackError(f"Could not read stack '{target}': {e}") from e
+            exists = False
+
+        try:
+            if exists:
+                cfn.update_stack(StackName=target, TemplateBody=body)
+                operation, waiter = "updated", "stack_update_complete"
+            else:
+                cfn.create_stack(
+                    StackName=target,
+                    TemplateBody=body,
+                    Tags=[{"Key": "idp:tenant-access-points-for", "Value": name}],
+                )
+                operation, waiter = "created", "stack_create_complete"
+        except ClientError as e:
+            if exists and "No updates are to be performed" in str(e):
+                operation, waiter = "unchanged", None
+            else:
+                raise IDPStackError(f"Could not deploy stack '{target}': {e}") from e
+
+        if waiter:
+            try:
+                cfn.get_waiter(waiter).wait(
+                    StackName=target, WaiterConfig={"Delay": 10, "MaxAttempts": 90}
+                )
+            except WaiterError as e:
+                raise IDPStackError(
+                    f"Stack '{target}' did not finish: {self._stack_failure(cfn, target) or e}"
+                ) from e
+
+        outputs = cfn.describe_stacks(StackName=target)["Stacks"][0].get("Outputs", [])
+        return TenantPolicyDeployResult(
+            stack_name=target,
+            operation=operation,
+            access_points=access_points_from_outputs(outputs),
+            warnings=generated.warnings,
+        )
+
+    @staticmethod
+    def _stack_failure(cfn, stack: str) -> str:
+        """The first failure CloudFormation recorded for ``stack``, or ``""``."""
+        try:
+            events = cfn.describe_stack_events(StackName=stack)["StackEvents"]
+        except Exception:  # noqa: BLE001 - best effort, only enriches the error
+            return ""
+        for event in events:
+            if event.get("ResourceStatus", "").endswith("FAILED"):
+                return (
+                    f"{event.get('LogicalResourceId')}: "
+                    f"{event.get('ResourceStatusReason', event['ResourceStatus'])}"
+                )
+        return ""
 
     # ----- audit ---------------------------------------------------------------
 

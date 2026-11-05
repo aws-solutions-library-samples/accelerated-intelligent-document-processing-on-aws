@@ -108,6 +108,29 @@ class TenantPolicyResult(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+class TenantAccessPoint(BaseModel):
+    """One deployed per-tenant access point, as the access point stack reports it."""
+
+    tenant_id: str
+    direction: str = Field(
+        description="'upload' (Input bucket) or 'read' (Output bucket)"
+    )
+    arn: str = Field(description="Access point ARN, for IAM policies")
+    alias: Optional[str] = Field(
+        default=None,
+        description="Access point alias, usable wherever a bucket name is (s3://<alias>/key)",
+    )
+
+
+class TenantPolicyDeployResult(BaseModel):
+    """The result of deploying the generated access point template."""
+
+    stack_name: str = Field(description="The access point CloudFormation stack")
+    operation: str = Field(description="'created', 'updated' or 'unchanged'")
+    access_points: List[TenantAccessPoint] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
 class TenantAuditFinding(BaseModel):
     """One thing the audit found that weakens tenant isolation."""
 
