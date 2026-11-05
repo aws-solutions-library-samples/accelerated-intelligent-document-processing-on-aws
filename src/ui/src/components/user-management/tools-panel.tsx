@@ -19,6 +19,11 @@ const ToolsPanel = (): React.JSX.Element => (
               Role-Based Access Control (RBAC)
             </a>
           </li>
+          <li>
+            <a href={`${DOCS_BASE_URL}/multi-tenancy/#who-grants-a-tenant`} target="_blank" rel="noopener noreferrer">
+              Multi-tenancy: who grants a tenant
+            </a>
+          </li>
         </ul>
       </div>
     }
@@ -31,6 +36,9 @@ const ToolsPanel = (): React.JSX.Element => (
         <li>Assign roles such as Admin, Reviewer, or Viewer to control access levels</li>
         <li>Enable or disable user accounts</li>
         <li>Role assignments control access to features like configuration editing, document review, and user management</li>
+        <li>
+          Set each user&apos;s configuration-profile scope, which confines them to one tenant&apos;s documents once tenants are declared
+        </li>
       </ul>
     </div>
   </HelpPanel>
