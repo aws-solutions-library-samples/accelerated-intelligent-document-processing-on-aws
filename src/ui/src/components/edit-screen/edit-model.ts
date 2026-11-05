@@ -47,6 +47,8 @@ export interface EditDocumentHeader {
   summary?: { reportUri?: string; unavailableReason?: string };
   /** Offer Processing Report. */
   offerReport: boolean;
+  /** After the status: a badge with hover text (Test Studio: the open version's `vN → vM`). */
+  badge?: { text: string; hover: string };
 }
 
 /** The bar's buttons and menu items (EditActionsProps' show/disabled fields), owned by the model. */
@@ -73,7 +75,15 @@ export interface EditEditor {
   sections: ReviewSectionRef[];
   pages: ReviewPage[];
   pagesLoading?: boolean;
+  /** Fields are read-only. True whenever `readOnlyReason` is set. */
   readOnly: boolean;
+  /**
+   * Why the fields are read-only, shown as the page's first notice. With `claim` (and the
+   * bar's Claim shown) the notice offers Claim; `readOnlyAction` is any other unlock
+   * action the mode offers (Production: Take over).
+   */
+  readOnlyReason?: string;
+  readOnlyAction?: React.ReactNode;
   loadSection: (sectionId: string) => Promise<LoadedSection>;
   saveSection: (sectionId: string, data: Record<string, unknown>) => Promise<void | Record<string, unknown>>;
   onSaved?: (sectionId: string) => void;
@@ -126,9 +136,16 @@ export interface EditSkip {
   run: (reason: string, note?: string) => Promise<EditExit>;
 }
 
+/**
+ * What Process Changes asks first, after saving the open section's edits: the reprocessing
+ * it triggers (direct edit), or the new test-set version it opens (Test Studio, no draft
+ * version open yet).
+ */
+export type EditProcessConfirm = { kind: 'reprocess'; bdaMode: boolean } | { kind: 'version' };
+
 export interface EditProcess {
-  /** Ask first (direct edit), after saving the open section's edits. */
-  confirm?: { bdaMode: boolean };
+  /** Ask first; omitted = run at once. */
+  confirm?: EditProcessConfirm;
   run: () => Promise<EditExit | null>;
 }
 

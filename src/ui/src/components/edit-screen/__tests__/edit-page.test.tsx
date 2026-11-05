@@ -146,7 +146,7 @@ describe('the edit page', () => {
     const leave = { to: '/documents/in%2Fa.pdf', message: 'Processing.' };
     const run = vi.fn().mockResolvedValue(leave);
     controller.isDirty.mockReturnValue(true);
-    renderPage(ready({ process: { confirm: { bdaMode: false }, run } }));
+    renderPage(ready({ process: { confirm: { kind: 'reprocess', bdaMode: false }, run } }));
     button('Process Changes').click();
     await waitFor(() => expect(controller.save).toHaveBeenCalledTimes(1));
     expect(run).not.toHaveBeenCalled();
@@ -168,6 +168,28 @@ describe('the edit page', () => {
     );
     await waitFor(() => expect(exit).toHaveBeenCalledWith(leave));
     expect(controller.save.mock.invocationCallOrder[0]).toBeLessThan(run.mock.invocationCallOrder[0]);
+  });
+
+  it('with a version confirmation, asks to open the next version, then runs', async () => {
+    const leave = { to: '/q', message: 'Done.' };
+    const run = vi.fn().mockResolvedValue(leave);
+    renderPage(ready({ process: { confirm: { kind: 'version' }, run } }));
+    button('Process Changes').click();
+    await waitFor(() => expect(createWrapper(document.body).findModal()).not.toBeNull());
+    const modal = createWrapper(document.body).findModal()!;
+    expect(run).not.toHaveBeenCalled();
+    expect(modal.findHeader().getElement().textContent).toBe('Open a new version and save ground truth');
+    expect(modal.findContent().getElement().textContent).toContain('opens the next version of this test set');
+    // Not the reprocessing copy.
+    expect(modal.findContent().getElement().textContent).not.toContain('evaluation and summarization');
+    await act(async () =>
+      modal
+        .findFooter()!
+        .findAllButtons()
+        .find((b) => b.getElement().textContent === 'Process Changes')!
+        .click(),
+    );
+    await waitFor(() => expect(exit).toHaveBeenCalledWith(leave));
   });
 
   it('without a confirmation, runs and leaves with the work item settled', async () => {
@@ -285,6 +307,41 @@ describe('the edit page', () => {
     renderPage(ready({ bar: { showClaim: true, offerHistory: true }, claim }));
     button('Claim').click();
     await waitFor(() => expect(setSuccessMessage).toHaveBeenCalledWith('Claimed a.pdf. It is in Home › Tasks.'));
+  });
+
+  it('shows the read-only reason first, with Claim when the model offers it, and keeps the fields read-only', async () => {
+    const claim = vi.fn().mockResolvedValue('Claimed a.pdf.');
+    const model = ready({
+      notices: [{ id: 'other', type: 'info', content: 'Another notice.' }],
+      bar: { showClaim: true, offerHistory: true },
+      claim,
+    });
+    if (model.state.kind === 'ready' && model.state.editor)
+      model.state.editor.readOnlyReason = 'View only. Claim this document to work on it.';
+    renderPage(model);
+    const alert = createWrapper(document.body).findAlert()!;
+    const parts = [...alert.getElement().querySelectorAll('[data-notice]')].map((n) => n.getAttribute('data-notice'));
+    expect(parts).toEqual(['read-only', 'other']);
+    expect(alert.getElement().textContent).toContain('View only. Claim this document to work on it.');
+    // The fields are read-only whenever a reason is given.
+    expect(editorProps).toMatchObject({ isReadOnly: true });
+    // The Edit | View labels are unchanged.
+    const control = createWrapper(document.body).findHeader()!.findActions()!.findSegmentedControl()!;
+    expect(control.findSegments().map((x) => x.getElement().textContent)).toEqual(['Edit', 'View']);
+    await act(async () => alert.findActionSlot()!.findButton()!.click());
+    await waitFor(() => expect(setSuccessMessage).toHaveBeenCalledWith('Claimed a.pdf.'));
+  });
+
+  it('offers the model’s own unlock action in the read-only notice when there is no Claim', () => {
+    const model = ready();
+    if (model.state.kind === 'ready' && model.state.editor) {
+      model.state.editor.readOnlyReason = 'Assigned to ann@example.com. Take over to edit it.';
+      model.state.editor.readOnlyAction = <button data-testid="take-over">Take over</button>;
+    }
+    renderPage(model);
+    const alert = createWrapper(document.body).findAlert()!;
+    expect(alert.getElement().textContent).toContain('Assigned to ann@example.com. Take over to edit it.');
+    expect(alert.findActionSlot()!.getElement().querySelector('[data-testid="take-over"]')).not.toBeNull();
   });
 
   it('shows the empty text when there are no sections, and the source in View', async () => {

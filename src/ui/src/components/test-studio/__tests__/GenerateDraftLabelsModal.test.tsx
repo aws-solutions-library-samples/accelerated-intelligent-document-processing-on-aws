@@ -69,6 +69,13 @@ describe('GenerateDraftLabelsModal', () => {
     mockPages();
   });
 
+  it('says the generated labels are written to the ground truth at once, and what stays preserved', async () => {
+    renderModal();
+    await waitFor(() => expect(screen.getByText(/ts1 · 100 document\(s\)/)).toBeInTheDocument());
+    expect(screen.getByText(/Generated labels are written to this set.s ground truth immediately/)).toBeInTheDocument();
+    expect(screen.getByText(/current labels are preserved in the set.s published version/)).toBeInTheDocument();
+  });
+
   it('reports the set size, not the page size', async () => {
     renderModal();
     // The bug this replaced: a 100-document set described as 50.

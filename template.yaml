@@ -14433,7 +14433,10 @@ Resources:
   ReviewerGroup:
     Type: AWS::Cognito::UserPoolGroup
     Properties:
-      Description: Document Reviewers for HITL
+      Description: >-
+        Document Reviewers: work the production HITL review queues their
+        configuration profile scope admits. Test Studio queues and labelling
+        are for Admins, Authors and Annotators.
       GroupName: Reviewer
       Precedence: 2
       UserPoolId: !Ref UserPool
@@ -14442,9 +14445,10 @@ Resources:
     Type: AWS::Cognito::UserPoolGroup
     Properties:
       Description: >-
-        Ground-truth Annotators for Test Studio. Least-privilege: scoped by the
+        Ground-truth Annotators for Test Studio, who also work the production
+        review queues that list them as eligible. Least-privilege: scoped by the
         user's allowedTestSets to the test set(s) they were onboarded for, and
-        can only read and annotate those documents — not list other test sets,
+        can only read and annotate those documents - not list other test sets,
         run configurations, or publish versions.
       GroupName: Annotator
       Precedence: 3

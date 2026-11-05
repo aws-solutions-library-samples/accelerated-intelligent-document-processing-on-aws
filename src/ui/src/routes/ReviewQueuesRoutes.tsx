@@ -113,10 +113,11 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
     <Routes>
       {/* Inbox notification links open these, so both paths must keep working. */}
       <Route path="items/:objectKey" element={<ReviewItemRedirect />} />
+      {/* Test Studio items and queues: Admins, Authors and Annotators. A Reviewer works Production queues only. */}
       <Route
         path="test-sets/:testSetId/items/:objectKey"
         element={
-          <RequireRole roles={['Admin', 'Annotator', 'Author', 'Reviewer']}>
+          <RequireRole roles={['Admin', 'Annotator', 'Author']}>
             <TestSetItemPage />
           </RequireRole>
         }
@@ -141,7 +142,7 @@ const ReviewQueuesRoutes = (): React.JSX.Element => (
       <Route
         path="test-sets/:testSetId"
         element={
-          <RequireRole roles={['Admin', 'Annotator', 'Author', 'Reviewer']}>
+          <RequireRole roles={['Admin', 'Annotator', 'Author']}>
             <TestSetQueuePage />
           </RequireRole>
         }

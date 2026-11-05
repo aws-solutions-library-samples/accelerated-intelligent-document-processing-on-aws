@@ -51,7 +51,15 @@ vi.mock('../use-edit-exit', () => ({ default: () => exit, useLeavePath: () => (q
 vi.mock('../../../contexts/app', () => ({ default: () => ({ setErrorMessage: vi.fn(), setSuccessMessage: vi.fn() }) }));
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: {} }) }));
 vi.mock('../../../hooks/use-review-work', () => ({ useOptionalReviewWork: () => null }));
-const role = { isAdmin: false, isAuthor: false, isReviewer: false, isAnnotator: true, canAnnotate: true, loading: false };
+const role = {
+  isAdmin: false,
+  isAuthor: false,
+  isReviewer: false,
+  isAnnotator: true,
+  canAnnotate: true,
+  canWorkTestSetQueues: true,
+  loading: false,
+};
 vi.mock('../../../hooks/use-user-role', () => ({ default: () => role }));
 vi.mock('../../review-queues/ReviewQueuesLayout', () => ({ default: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 
@@ -61,7 +69,15 @@ import { chooseMenuItem } from './edit-bar';
 beforeEach(() => {
   skip.mockReset().mockResolvedValue(undefined);
   exit.mockReset();
-  Object.assign(role, { isAdmin: false, isAuthor: false, isReviewer: false, isAnnotator: true, canAnnotate: true, loading: false });
+  Object.assign(role, {
+    isAdmin: false,
+    isAuthor: false,
+    isReviewer: false,
+    isAnnotator: true,
+    canAnnotate: true,
+    canWorkTestSetQueues: true,
+    loading: false,
+  });
   document.body.innerHTML = '';
 });
 
@@ -105,7 +121,7 @@ describe('Skip on a Test Studio document', () => {
   });
 
   it('tells a Reviewer-only caller it is not available for their account', () => {
-    Object.assign(role, { isAnnotator: false, isReviewer: true, canAnnotate: false });
+    Object.assign(role, { isAnnotator: false, isReviewer: true, canAnnotate: false, canWorkTestSetQueues: false });
     render(
       <MemoryRouter>
         <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />

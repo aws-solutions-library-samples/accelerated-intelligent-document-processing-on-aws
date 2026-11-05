@@ -118,3 +118,140 @@ storyboards:
     last_recorded:
       date: '2026-09-18'
       version: 0.6.9.dev2
+
+  - id: tenant-isolation-shared-deployment
+    title: Tenant isolation in a shared deployment
+    source: 'CHANGELOG [Unreleased] Added — Tenant isolation for shared deployments; Tenants granted by the identity provider or an entitlement system; docs/multi-tenancy.md'
+    audience: Admins and platform teams serving several business units or customers from one stack
+    hook: >-
+      One deployment can serve several tenants and keep each tenant's documents
+      visible only to that tenant's users. We set up a tenant, map its folder, give
+      it a user, and watch the safeguards refuse every way of crossing the boundary.
+    persona: Admin
+    duration_target: '5:30'
+    fixtures:
+      - Stack deployed with TenantIsolationMode=Strict and TenantGrantSource=Manual.
+      - Tenants acme (clients/acme/, acme-*) and globex (clients/globex/, globex-*)
+        declared, each with a prefix mapping to its own profile and one Viewer user
+        whose first sign-in is complete.
+      - A processed copy of samples/lending_package.pdf under each of clients/acme/
+        and clients/globex/.
+      - A Configuration Profile initech-invoices, copied from acme-invoices with
+        idp-cli config-upload, so the new tenant has a profile to map to.
+      - Terminal pages (local HTML) holding the real output of the stack-parameter
+        query and of idp-cli tenancy put, list, audit, generate-policies and verify,
+        captured before recording. generate-policies uses a principals file naming
+        roles in the documentation account 111122223333.
+    chapters:
+      - label: The deployment parameters
+        say: >-
+          Tenant isolation is controlled by three deployment parameters. Tenant Isolation
+          Mode is Off by default, and Strict makes isolation fail closed. Tenant Grant
+          Source decides who sets a user's tenant: an Admin, the identity provider's
+          claim, or an entitlement system through the API. And Refresh Token Validity
+          Hours bounds how long a web session can keep a tenant that was taken away.
+        do:
+          - Terminal page — describe-stacks table, then smooth-scroll through the three
+            parameter definitions from template.yaml.
+      - label: Tenants
+        say: >-
+          Tenants are declared on the Prefix Mappings page. Each one owns a set of
+          Input bucket folders, and the Configuration Profiles whose names match its
+          pattern. This deployment already serves Acme and Globex, with strict
+          isolation on.
+        do:
+          - Configuration › Prefix Mappings (fresh load); hold on the Tenants table and
+            the Strict alert.
+      - label: Declare a tenant
+        say: >-
+          A folder can belong to only one tenant, so a new tenant that reaches inside
+          Acme's folder is refused, and the message names the folder it collides with.
+          Instead we add Initech. It owns the clients initech folder, and every profile
+          whose name starts with initech dash belongs to it.
+        do:
+          - Create tenant → ID overlap, prefix clients/acme/eu/, pattern overlap-* →
+            Save tenant → refusal shown.
+          - Same dialog → ID initech, prefix clients/initech/, pattern initech-*,
+            description "Initech business unit" → Save tenant → three tenants listed.
+      - label: Map the tenant's folder
+        say: >-
+          Prefix mappings respect the same boundary. Sending a folder inside Acme to a
+          Globex profile is refused when it is saved. A mapping for Initech's own folder
+          is accepted, so the folder a document arrives in decides both how it is
+          processed and who can see it.
+        do:
+          - Create mapping → folder clients/acme/eu → profile globex-invoices → Save →
+            refusal shown.
+          - Same dialog → folder clients/initech → profile initech-invoices → Save →
+            mapping listed. (The dialog's Cancel sits beside Save; pick Save by label.)
+      - label: Give the tenant a user
+        say: >-
+          In strict mode a user with no scope sees nothing, so a new Initech Viewer gets
+          a configuration profile scope. Adding a Globex profile as well would let one
+          person read across two tenants, so that scope is refused. Confined to Initech,
+          the user is created alongside the existing Acme and Globex users.
+        do:
+          - User Management → Create User → email, role Viewer, scope initech-invoices
+            and globex-invoices → Create User → refusal shown.
+          - Remove globex-invoices → Create User → success; hold on the users table.
+      - label: Strict mode checks every upload
+        say: >-
+          Strict mode also checks uploads. A folder outside every tenant is refused,
+          and the panel says so before anything is sent. A document that asks for
+          another tenant's profile is processed under its own tenant's profile instead.
+        do:
+          - Upload Documents → choose samples/lending_package.pdf → prefix inbox/2026 →
+            refusal alert, Upload disabled.
+          - Prefix clients/acme/2026, profile globex-invoices → "Your profile selection
+            will be ignored" notice.
+      - label: The same from the command line
+        say: >-
+          Everything we did in the console has a command line equivalent. Tenancy put
+          declares a tenant, list shows the tenants with the isolation mode, and audit
+          reports anything that weakens isolation. Here, there is nothing to report.
+        do:
+          - Terminal page — idp-cli tenancy put, list, audit.
+      - label: Per-tenant access points
+        say: >-
+          Generate policies writes a template of S3 access points, one per tenant and
+          bucket, that let each tenant's uploaders write only under its own folders,
+          and its consumers read only its own results.
+        do:
+          - Terminal page — generate-policies output, then smooth-scroll through Acme's
+            Input access point policy.
+      - label: A live cross-tenant check
+        say: >-
+          Verify proves the boundary on the running deployment. It signs in as throwaway
+          users of two tenants, checks that each one reads only its own documents, and
+          that strict mode refuses the uploads it should, then removes what it made.
+        do:
+          - Terminal page — tenancy verify, every check PASS.
+      - label: The tenant's own view
+        say: >-
+          Finally, we sign in as Acme's user. They see Acme's document and nothing of
+          Globex's, the assistants that read across documents are not offered, and a
+          direct link to another tenant's document is refused.
+        do:
+          - App tab → user menu → Sign out → sign in as the acme user → Document List
+            shows only clients/acme/... → open the clients/globex/test/lending.pdf
+            link directly → "Couldn't open this document".
+    closing: >-
+      Declare tenants, audit, then switch to strict mode, and one deployment keeps each
+      tenant's documents to its own users. The Multi-Tenant Isolation guide has the
+      details.
+    takeaways:
+      - A tenant is a set of Input folders plus a profile name pattern
+      - Overlapping tenants, cross-tenant mappings and spanning scopes are refused when saved
+      - Strict mode fails closed — unscoped users see nothing, out-of-tenant uploads are refused
+      - Admins stay cross-tenant, so keep that group small
+      - idp-cli tenancy audit, generate-policies and verify cover the rollout
+    not_shown:
+      - TenantGrantSource IdpClaim and Api (described in the parameters chapter only;
+        this stack uses Manual and has no external identity provider).
+      - Deploying the generated access point template, and the s3:CreateAccessPoint
+        prerequisite (an account-level control; see the guide).
+      - Creating the initech-invoices Configuration Profile (a fixture).
+      - The Test Studio and PII anonymizer exceptions to the ingest rule.
+    docs: docs/multi-tenancy.md
+    category: Role-Based Access Control (RBAC)
+    last_recorded: {date: 2026-11-05, version: 0.6.13}

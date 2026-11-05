@@ -1,14 +1,23 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 //
-// The "Confirm Reprocessing" dialog before processChanges: what reprocessing will do.
-// Shared by the edit page's Process Changes on a direct edit and the document page's
-// Edit Page Grouping › Save and Re-extract, which lists the sections it re-extracts.
+// The confirmation before Process Changes. The 'reprocess' variant ("Confirm
+// Reprocessing") says what reprocessing will do: shared by the edit page's Process Changes
+// on a direct edit and the document page's Edit Page Grouping › Save and Re-extract, which
+// lists the sections it re-extracts. The 'version' variant is Test Studio's Process Changes
+// while no draft version of the set is open: it opens one and writes reviewed ground truth.
 import React from 'react';
 import { Alert, Box, Button, Modal, SpaceBetween } from '@cloudscape-design/components';
 
+import { PROCESS_CHANGES_LABEL } from './labels';
+
+export const VERSION_CONFIRM_HEADER = 'Open a new version and save ground truth';
+export const VERSION_CONFIRM_BODY = `${PROCESS_CHANGES_LABEL} opens the next version of this test set (the current version stays as it is) and writes your labels as reviewed ground truth.`;
+
 interface ProcessChangesConfirmModalProps {
   visible: boolean;
+  /** What is confirmed: reprocessing the document (default), or opening the test set's next version. */
+  variant?: 'reprocess' | 'version';
   /** Save and Re-extract: the sections saved, then extracted again. */
   reextractSections?: { sectionId: string; documentClass?: string | null; pageIds: number[] }[];
   /** BDA mode, whose processing is skipped rather than the Pipeline mode steps. */
@@ -20,6 +29,7 @@ interface ProcessChangesConfirmModalProps {
 
 const ProcessChangesConfirmModal = ({
   visible,
+  variant = 'reprocess',
   reextractSections,
   bdaMode = false,
   busy = false,
@@ -36,15 +46,17 @@ const ProcessChangesConfirmModal = ({
             Cancel
           </Button>
           <Button variant="primary" loading={busy} onClick={onConfirm}>
-            Confirm & Process
+            {variant === 'version' ? PROCESS_CHANGES_LABEL : 'Confirm & Process'}
           </Button>
         </SpaceBetween>
       </Box>
     }
-    header="Confirm Reprocessing"
+    header={variant === 'version' ? VERSION_CONFIRM_HEADER : 'Confirm Reprocessing'}
   >
     <SpaceBetween size="s">
-      {reextractSections ? (
+      {variant === 'version' ? (
+        <Box>{VERSION_CONFIRM_BODY}</Box>
+      ) : reextractSections ? (
         <>
           <Box>You are about to save the new page grouping, then extract these sections again:</Box>
           <ul>

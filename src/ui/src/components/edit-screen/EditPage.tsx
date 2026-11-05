@@ -9,6 +9,7 @@
 // model, so this file holds no mode-specific code (pinned by
 // edit-page.no-mode-branching.test.ts).
 import React, { useState } from 'react';
+import { Button } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
 import LoadState from '../common/LoadState';
@@ -194,8 +195,23 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
 
   const { header, bar, editor, history } = r;
   const sourceView = header.source && session.view === 'source' ? <FileViewer {...header.source} /> : undefined;
+  // Why the fields can't be edited comes first, with the action that unlocks them.
+  const readOnlyAction =
+    bar.showClaim && r.claim ? (
+      <Button loading={session.busy === 'claim'} disabled={session.busy !== null} onClick={() => void handleAction('claim')}>
+        Claim
+      </Button>
+    ) : (
+      editor?.readOnlyAction
+    );
   const notices = (
-    <EditorNotices notices={[!!error && { id: 'error', type: 'error', content: error, onDismiss: () => setError(null) }, ...r.notices]} />
+    <EditorNotices
+      notices={[
+        !!error && { id: 'error', type: 'error', content: error, onDismiss: () => setError(null) },
+        !!editor?.readOnlyReason && { id: 'read-only', type: 'info', content: editor.readOnlyReason, action: readOnlyAction },
+        ...r.notices,
+      ]}
+    />
   );
 
   return page(
@@ -203,6 +219,7 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
       title={header.title}
       status={header.status}
       objectKey={header.objectKey}
+      badge={header.badge}
       reportSectionData={header.offerReport ? session.sectionData : undefined}
       summaryReportUri={header.summary?.reportUri}
       summaryUnavailableReason={header.summary?.unavailableReason}
@@ -229,10 +246,11 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
           )}
           {cancelDialog}
           {discard.dialog}
-          {r.process.confirm && (
+          {r.process.confirm && confirmProcess && (
             <ProcessChangesConfirmModal
-              visible={confirmProcess}
-              bdaMode={r.process.confirm.bdaMode}
+              visible
+              variant={r.process.confirm.kind === 'version' ? 'version' : 'reprocess'}
+              bdaMode={r.process.confirm.kind === 'reprocess' ? r.process.confirm.bdaMode : undefined}
               busy={session.busy === 'process'}
               onConfirm={() => void runProcess()}
               onCancel={() => setConfirmProcess(false)}
@@ -265,7 +283,7 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
             sections={editor.sections}
             pages={editor.pages}
             pagesLoading={editor.pagesLoading}
-            isReadOnly={editor.readOnly}
+            isReadOnly={editor.readOnly || !!editor.readOnlyReason}
             loadSection={editor.loadSection}
             onSave={editor.saveSection}
             onSaved={editor.onSaved}
@@ -273,6 +291,7 @@ const EditPage = ({ model, session: given }: EditPageProps): React.JSX.Element =
             reloadToken={(editor.reloadToken ?? 0) + refreshToken}
             initialSectionId={keepSectionId ?? editor.initialSectionId}
             focusFieldPath={editor.focusFieldPath}
+            focusRequest={session.focusRequest}
             buildFieldLink={editor.buildFieldLink}
             autosaveMs={editor.autosaveMs}
             confirmSectionSwitch={editor.confirmSectionSwitch}

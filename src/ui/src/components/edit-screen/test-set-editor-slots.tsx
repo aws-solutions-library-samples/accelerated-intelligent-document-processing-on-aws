@@ -92,6 +92,8 @@ export interface TestSetEditorSlots {
   onLoaded: (sectionId: string) => void;
   classOptions: ConfigClassOption[];
   classConfig: ReturnType<typeof resolveClassConfigVersion>;
+  /** The configuration the set was labelled with (null until read, or unreadable for this role). */
+  mergedConfig: ReturnType<typeof useConfiguration>['mergedConfig'];
   headerExtras: EditorSlot;
   classSlot: EditorSlot;
   emptyFieldsSlot: EditorSlot;
@@ -503,6 +505,7 @@ export const useTestSetEditorSlots = ({
     onLoaded: (sectionId: string) => setReextractNote((note) => (note && note.sectionId !== sectionId ? null : note)),
     classOptions,
     classConfig,
+    mergedConfig,
     headerExtras,
     classSlot,
     emptyFieldsSlot,

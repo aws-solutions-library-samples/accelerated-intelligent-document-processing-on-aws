@@ -1933,8 +1933,9 @@ tokens** to the request.
 ## 5. HITL (Human Review)
 
 Fields whose confidence falls below a threshold can be routed to human review.
-A field extraction found no value for raises no confidence alert and does not route
-to review; see
+A field extraction found no value for raises no confidence alert. With review queues,
+a *required* field with no value still sends its document to the Default queue while
+`hitl.route_missing_required_fields` is on (the default); see
 [Absent values and missing required fields](#absent-values-and-missing-required-fields).
 HITL is configured under the top-level `hitl` block in v0.6:
 
@@ -1942,6 +1943,7 @@ HITL is configured under the top-level `hitl` block in v0.6:
 hitl:
   enabled: true
   confidence_threshold: 0.85   # fields below this are flagged for review
+  route_missing_required_fields: true   # review queues: a required field with no value also holds the document
   notifications:
     retention_days: 30         # 1-365: days an Inbox message is kept
     max_per_user: 50           # 1-200: Inbox messages kept per user
@@ -2038,8 +2040,13 @@ Each entry has the same shape as a confidence alert (`attributeName`, `confidenc
 carries the total as `MissingRequiredFieldCount`, and the Web UI shows it beside the
 confidence alerts: in Document Details, as a **Missing Required Fields** column in
 the sections table (hover the count for the field names), and as an optional column
-in the document list. Missing required fields are informational. Nothing routes on
-them.
+in the document list. In review-queue mode, with HITL enabled, the Default queue on
+and `hitl.route_missing_required_fields` on (the default), each missing required
+field is also a review reason, **Missing required: <field>**, so the document is
+held in the Default queue. Turn the setting off (**Configuration** ›
+**Human-in-the-Loop (HITL) Review** › **Review missing required fields**) to keep
+missing required fields informational. Legacy HITL, used while the Default queue is
+off, does not trigger on them.
 
 In the document list, the **Missing Required Fields** column and the **Processing
 Issues** column show a dash, not a 0, for a row that does not carry the count: a

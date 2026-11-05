@@ -15,7 +15,16 @@ import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const role = { isAdmin: true, isAnnotator: false, isAuthor: false, isReviewer: false, canAnnotate: true, canWrite: true, loading: false };
+const role = {
+  isAdmin: true,
+  isAnnotator: false,
+  isAuthor: false,
+  isReviewer: false,
+  canAnnotate: true,
+  canWorkTestSetQueues: true,
+  canWrite: true,
+  loading: false,
+};
 vi.mock('../../hooks/use-user-role', () => ({ default: () => role }));
 vi.mock('../../contexts/app', () => ({
   default: () => ({
@@ -88,6 +97,7 @@ beforeEach(() => {
   testSetName.value = undefined;
   role.isAdmin = true;
   role.isAnnotator = false;
+  role.canWorkTestSetQueues = true;
 });
 
 describe('a Test Studio item’s breadcrumbs', () => {
@@ -111,6 +121,7 @@ describe('a Test Studio item’s breadcrumbs', () => {
     testSetName.value = undefined;
     role.isAdmin = false;
     role.isAnnotator = true;
+    role.canWorkTestSetQueues = true;
     renderAt(TEST_ITEM);
     expect(crumbs().map((c) => c.text)).toEqual(['Home', 'Tasks', 'a.pdf']);
   });

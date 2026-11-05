@@ -674,6 +674,14 @@ acts on the set as a whole, while **Add documents**, **Generate draft labels**,
 **Edit ground truth**, **Clear draft labels** and **Remove** sit above the document list and
 act on its documents. See [Publishing a version](#publishing-a-version).
 
+**Edit ground truth** means the same here and in the **Test Sets** list's **Actions**: it
+opens the review-effort dialog (**Set up team annotation**), which sizes the review and
+continues to the set's queue with **Continue to annotation**. For a set whose documents
+are all labelled there is no review to size, so the primary button is **Review the set's
+documents**, which opens the set's queue with its reviewed documents shown; the
+**Nothing to review** alert says that labels can still be corrected one document at a
+time, from a document's **Edit**.
+
 A document's Test Studio item is the same edit page as a production review item:
 
 - **Edit | View** switches between the ground-truth editor and the original PDF or
@@ -914,6 +922,10 @@ offers one page at a time rather than jumping to an arbitrary page, because the
 underlying listing is token-based and page N's position is only known once N-1
 has been read.
 
+The dialog also says where the labels go: generated labels are written to the set's
+ground truth immediately, as draft labels to review, and its current labels are
+preserved in the set's published version.
+
 Creating a test set normally requires ground truth up front, which is the
 expensive part. Draft labeling inverts that: upload documents **only**, run the
 active configuration over them to produce machine-generated ground-truth
@@ -988,8 +1000,11 @@ reviewed, publish a version to freeze it as a benchmark.
 the value the model produced, so once you have replaced that value it says nothing
 about what is on screen. An edited field shows *"Edited — the model's confidence no
 longer applies"* in place of the percentage, and its provenance label changes from
-*Predicted:* to *Your value:*. Suppression is per field: correcting one field does
-not hide the confidence of the others.
+*Ground truth:* to *Your value:*. A test-set document's values are labelled *Ground
+truth:* whatever their source (draft, reviewed, synthetic or uploaded), and the JSON
+tab's panel is titled **Ground truth**; *Predicted:* labels model output on a
+production document only. Suppression is per field: correcting one field does not
+hide the confidence of the others.
 
 **Leaving the editor with unsaved edits prompts first.** This covers in-app
 navigation as well as closing the tab — clicking a nav link with corrections
@@ -1154,7 +1169,7 @@ test set(s), then share the queue link
 (`#/review-queues/test-sets/<test-set-id>`; an older
 `#/test-studio/sets/<test-set-id>/annotate` link opens it too). You can copy that link from the
 **Copy queue link** button on the queue itself, or open the queue for any set via
-**Actions → Edit ground truth**.
+**Actions → Edit ground truth**, which goes there through the review-effort dialog.
 
 An annotator must be assigned at least one test set — an account with none is
 denied every set by the scope check, so the create form refuses to submit without
@@ -1200,13 +1215,35 @@ every field to reach them: **Edit | View**, **Reports** (**History**, **Processi
 Report**), **Skip**, **Cancel**, **Save** and **Process Changes**, or the view switch,
 **Reports** and **Claim** for an Annotator viewing an unassigned document. **Edit Page
 Grouping** is on the **Document Editor** panel, beside its **Section** and **Show Fields**
-dropdowns. **Save** keeps the open section's changes as a
-draft, which is not reviewed: you, a later session or the next assignee after a
-**Skip** open the document with it, and switching sections with unsaved changes asks
-first. **Process Changes** saves the open section's changes, applies every section's
-draft (the rest as they are) and re-runs evaluation and summarization on the
-document's review copy (OCR, classification and extraction are not repeated). Authored ground truth has no review copy, so for it **Process Changes**
-only marks the labels reviewed. The title is the document's name with its status (**To review**,
+dropdowns. Editing is draft-first: the fields are editable as soon as you may work the
+document, with no step to start. **Save** keeps the open section's changes as a
+draft, which is not reviewed and opens no version (*Saved your changes to {name} as a
+draft. Process Changes writes them as reviewed ground truth.*): you, a later session or
+the next assignee after a **Skip** open the document with it, and switching sections
+with unsaved changes asks first. **Process Changes** saves the open section's changes,
+applies every section's draft (the rest as they are) and re-runs evaluation and
+summarization on the document's review copy (OCR, classification and extraction are not
+repeated). Authored ground truth has no review copy, so for it **Process Changes** only
+marks the labels reviewed. When no draft version of the set is open, **Process Changes**
+first asks **Open a new version and save ground truth**: it opens the next version of
+the set, the current version stays as it is, and your labels are written as reviewed
+ground truth; **Cancel** leaves everything unchanged. While a draft version is open it
+runs at once, and the header shows a `v{base} → v{draft}` badge (*Corrections go into
+version v{draft}; v{base} is preserved.*); the queue page shows the same badge. Without
+an open version a banner explains the steps: *Save keeps a draft. Process Changes opens
+the next version of this set (the current version stays as it is) and writes these
+labels as reviewed ground truth. Publish version on the test set freezes it.*
+
+When you can't edit a document, the fields are shown read-only and one notice at the
+top says why: it is assigned to someone else (*View only. This document is assigned to
+{name}.*), nobody holds it (*View only. Claim this document to work on it; it is then
+assigned to you and shows in Home › Tasks.*, with **Claim** in the notice), it isn't
+assigned to you, or your role can't edit these labels. **Edit** and **View** keep their
+labels. A document with confidence alerts opens on the **Confidence alerts only**
+filter, with a notice such as *3 fields are below the confidence threshold.* and **Next
+alert**, which steps through the open section's alert fields.
+
+The title is the document's name with its status (**To review**,
 **Reviewed** or **Skipped**), and the **Document Editor** panel has a **Section**
 dropdown at its top left. The notices share one alert.
 
@@ -1223,13 +1260,10 @@ packets ranks fewer documents at a time than a set of single-section ones.
 `allowedTestSets` is a separate axis from `allowedConfigVersions` (which restricts
 *which config versions'* documents a user sees). A user can carry both.
 
-A **Reviewer** works Test Studio queues without `allowedTestSets` and without being
-listed on a queue: they see, claim and label the documents of every test set whose
-configuration profile is in their `allowedConfigVersions`, or every test set when they
-have no such restriction. A set drafted under several profiles has no single profile
-and is shown only to Reviewers with no restriction. A labeling or re-extract job that
-failed drafted nothing, so it does not count toward a set's profiles. Reviewers claim their own
-documents; Admins assign documents to Annotators only.
+A **Reviewer** works Production review queues only. Test Studio queues, labelling and
+test-set file reads are for Admins, Authors and Annotators: a Reviewer who labels test
+sets also needs the Annotator role, with the sets in their `allowedTestSets`. Admins
+assign documents to Annotators only.
 
 ### Working the queue collaboratively
 
@@ -1457,19 +1491,22 @@ without opening each tab in turn.
 ### Annotating creates a new version of the set
 
 Correcting ground truth changes what every previously-scored run was measured against, so
-starting an annotation session is an explicit step: **Start annotating** opens a *version
-transition*, shown in the header as e.g. `v1 → v2`.
+writing reviewed ground truth opens a *version transition*, shown in the header as e.g.
+`v1 → v2`. Editing doesn't need one: **Save** keeps a draft, which changes no ground
+truth. The first **Process Changes** on a set with no open transition asks **Open a new
+version and save ground truth**, and confirming it opens the transition and writes the
+labels.
 
-Agreeing to it is what names the version you are moving away from. The labels themselves
+Opening it is what names the version you are moving away from. The labels themselves
 were already copied to `{testSetId}/versions/{n}/baseline/` when that version was
 published, so `v1` keeps meaning the bytes it meant when a run scored against it, and
-starting a session does not disturb them. A set that arrived with its own ground truth and
+opening the transition does not disturb them. A set that arrived with its own ground truth and
 was never published gets that state published first as `v1` — without it, the labels a set
 was uploaded with are exactly the ones overwritten with no record of what they were.
 
-Until the transition is open the editor is read-only. You can read every document and its
-labels; you cannot change them. That ordering is the point: editing first and versioning
-afterwards would record what the labels *became*, not what they were.
+That ordering is the point: drafts stay out of the ground truth, and the version opens
+before any reviewed label is written, so it records what the labels *were*, not only
+what they became.
 
 **Copy queue link** includes the transition (`?v=2`). A link from a transition that has
 since been published still works — the set is still annotatable — but the workspace says

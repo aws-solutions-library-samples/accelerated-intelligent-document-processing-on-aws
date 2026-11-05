@@ -53,8 +53,8 @@ import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import Navigation from '../genaiidp-layout/navigation';
-import { appLayoutLabels } from '../common/labels';
-import { TEST_STUDIO_PATH, testSetAnnotateHref } from '../../routes/constants';
+import { EDIT_GROUND_TRUTH_LABEL, LABEL_SOURCE_BADGES, appLayoutLabels } from '../common/labels';
+import { TEST_STUDIO_PATH, testSetAnnotateHref, testSetReviewedHref } from '../../routes/constants';
 import TestDocThumbnail from './TestDocThumbnail';
 import ReviewEffortModal from './ReviewEffortModal';
 import GenerateDraftLabelsModal from './GenerateDraftLabelsModal';
@@ -99,17 +99,6 @@ export interface TestSetDocumentItem {
   alertCount?: number | null;
   fieldCount?: number | null;
 }
-
-/**
- * Shared label-provenance vocabulary. Machine-drafted labels must never render
- * like human-verified ones, so every surface that shows labels uses this map.
- */
-export const LABEL_SOURCE_BADGES: Record<string, { color: 'blue' | 'green' | 'grey' | 'severity-neutral'; text: string }> = {
-  'draft-machine': { color: 'blue', text: 'Draft (machine)' },
-  'reviewed-human': { color: 'green', text: 'Reviewed' },
-  synthetic: { color: 'grey', text: 'Synthetic' },
-  uploaded: { color: 'grey', text: 'Uploaded' },
-};
 
 export const renderLabelSource = (labelSource?: string | null): React.JSX.Element => {
   if (!labelSource) return <Badge color="severity-neutral">Unlabeled</Badge>;
@@ -1188,7 +1177,7 @@ const TestSetDetail = (): React.JSX.Element => {
                           the queue, so "how much to review" is decided before
                           committing a team. */}
                       <Button onClick={() => setShowEffortModal(true)} iconName="user-profile">
-                        Edit ground truth
+                        {EDIT_GROUND_TRUTH_LABEL}
                       </Button>
                       {/* Needed because the harvest only replaces a draft when the
                           new run produces a section for it: a run that splits
@@ -1413,6 +1402,10 @@ const TestSetDetail = (): React.JSX.Element => {
               onContinue={() => {
                 setShowEffortModal(false);
                 navigate(testSetAnnotateHref(testSetId ?? '').replace(/^#/, ''));
+              }}
+              onReviewDocuments={() => {
+                setShowEffortModal(false);
+                navigate(testSetReviewedHref(testSetId ?? '').replace(/^#/, ''));
               }}
             />
 

@@ -421,16 +421,24 @@ const UploadDocumentPanel = (): React.JSX.Element => {
       );
     }
 
-    // Everything below this point describes a mapping, so there has to be one.
-    if (!assignment.mappingPrefix) return null;
-
+    // Also checked BEFORE `mappingPrefix`, for the same reason. Strict tenant
+    // isolation refuses a destination outside every tenant, or one whose tenant
+    // does not own the resolved profile, and that refusal matched no mapping, so
+    // it too carries `mappingPrefix: null`. `uploadWouldBeRefused` disables the
+    // button on `rejected`, so returning before this line left the form with a
+    // disabled button and no reason. Only a `reject` mapping has a profile to
+    // choose, so only that one gets the "Choose that profile" advice.
     if (assignment.rejected) {
       return (
         <Alert type="error" header="This upload would be refused">
-          {assignment.reason} Choose that profile, or upload somewhere else.
+          {assignment.reason}
+          {assignment.mappingPrefix ? ' Choose that profile, or upload somewhere else.' : ''}
         </Alert>
       );
     }
+
+    // Everything below this point describes a mapping, so there has to be one.
+    if (!assignment.mappingPrefix) return null;
     if (assignment.conflict) {
       const mappingWins = assignment.source === 'prefix-mapping';
       return (

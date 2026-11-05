@@ -511,8 +511,10 @@ class Section:
     ``attribute_name``, ``confidence``, ``confidence_threshold`` (the last two
     ``None`` when the field has no confidence leaf). Built by
     ``idp_common.assessment.presence.collect_missing_required_fields``; summed
-    into ``Document.missing_required_field_count``. Informational only — nothing
-    routes on it yet."""
+    into ``Document.missing_required_field_count``. In review-queue mode, with
+    ``hitl.route_missing_required_fields`` on, each entry is a ``missing_required``
+    review reason (``review_queues.reasons.build_reasons``); legacy HITL does not
+    trigger on it."""
     processing_issues: List["ProcessingIssue"] = field(default_factory=list)
     """Structured issues detected for this section (assessment incomplete,
     recovered-with-retries, extraction incomplete, …). Rolled up to
@@ -790,6 +792,11 @@ class Document:
 
     # Processing metadata
     metering: Dict[str, Any] = field(default_factory=dict)
+    # Usage of earlier runs of this document, moved here at run start so that
+    # ``metering`` holds only the current run's own usage. The tracking-table
+    # ``Metering`` attribute stores baseline + own (``cumulative_metering``);
+    # reporting and the per-run record get ``metering`` only.
+    metering_baseline: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     trace_id: Optional[str] = None
     config_version: Optional[str] = None  # Configuration Profile to process under
@@ -997,6 +1004,11 @@ class Document:
             # We don't include evaluation_result or summarization_result in the dict since they're objects
         }
 
+        # Earlier runs' usage. Omitted when empty so payloads of documents that
+        # were never reprocessed are unchanged.
+        if self.metering_baseline:
+            result["metering_baseline"] = self.metering_baseline
+
         # Required fields left absent (#1527). Omitted at 0, like the issue
         # count below, so payloads of documents without any are unchanged.
         if self.missing_required_field_count:
@@ -1165,6 +1177,7 @@ class Document:
             evaluation_results_uri=data.get("evaluation_results_uri"),
             summary_report_uri=data.get("summary_report_uri"),
             metering=data.get("metering", {}),
+            metering_baseline=data.get("metering_baseline", {}) or {},
             # `or {}` so an absent key and an explicit null both read back as the
             # empty dict the field defaults to.
             metadata=data.get("metadata") or {},
