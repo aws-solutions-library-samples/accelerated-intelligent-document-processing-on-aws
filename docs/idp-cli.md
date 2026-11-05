@@ -3043,7 +3043,7 @@ optional `--region`.
 | `set-user-tenant --email ADDR [--tenant ID] [--json]` | Grant one existing user one tenant, or none when `--tenant` is omitted. Only when the stack's `TenantGrantSource` is `Api`; an Admin is refused. See [Who grants a tenant](multi-tenancy.md#who-grants-a-tenant) |
 | `delete --tenant-id ID [--yes]` | Remove one declaration. Mappings, profiles and documents are untouched |
 | `apply --file tenants.yaml [--prune] [--yes] [--json]` | Make the declarations match a file. Prints the plan and writes nothing unless `--yes` is given; `--prune` also deletes tenants the file does not declare. The whole plan is validated before anything is written |
-| `generate-policies --principals principals.yaml [--output FILE]` | Write a CloudFormation template creating one Input-bucket and one Output-bucket S3 Access Point per tenant, confined to that tenant's prefixes |
+| `generate-policies --principals principals.yaml [--output FILE] [--deploy [--access-point-stack NAME] [--json]]` | Write a CloudFormation template creating one Input-bucket and one Output-bucket S3 Access Point per tenant, confined to that tenant's prefixes. `--deploy` also deploys it as its own stack (default `<stack>-tenant-access-points`, created or updated) and prints each tenant's access point alias and ARN; see [the procedure](multi-tenancy.md#generate-and-deploy-the-access-points-step-by-step) |
 | `audit [--principals principals.yaml] [--sample N] [--json]` | Read-only report; exits 1 when there are findings |
 | `verify --document FILE [--tenant A --tenant B] [--timeout S] [--email-domain D] [--json]` | Live cross-tenant check; exits 0 pass, 1 fail, 2 error, 3 skipped |
 

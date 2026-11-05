@@ -372,12 +372,16 @@ def build_template(
                 ),
             },
         }
+        purpose = "upload" if ap["direction"] == DIRECTION_IN else "read"
         outputs[f"{lid}Arn"] = {
-            "Description": (
-                f"Tenant {ap['tenantId']} {'upload' if ap['direction'] == DIRECTION_IN else 'read'} "
-                f"access point"
-            ),
+            "Description": f"Tenant {ap['tenantId']} {purpose} access point",
             "Value": {"Fn::GetAtt": [lid, "Arn"]},
+        }
+        # The alias stands in for a bucket name (`s3://<alias>/<key>`), which is how
+        # a tenant's uploader or consumer addresses its access point with the CLI.
+        outputs[f"{lid}Alias"] = {
+            "Description": f"Tenant {ap['tenantId']} {purpose} access point alias",
+            "Value": {"Fn::GetAtt": [lid, "Alias"]},
         }
     template: Dict[str, Any] = {
         "AWSTemplateFormatVersion": "2010-09-09",
