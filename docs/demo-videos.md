@@ -16,7 +16,7 @@ This page contains all demonstration videos for the GenAI Intelligent Document P
 - [Web User Interface](#web-user-interface)
 - [Command Line Interface (CLI)](#command-line-interface-cli)
 - [AI Agents & Analytics](#ai-agents--analytics)
-- [Role-Based Access Control (RBAC)](#role-based-access-control-rbac)
+- [Access Control & Tenant Isolation](#access-control--tenant-isolation)
 - [Configuration & Management](#configuration--management)
 - [Evaluation & Testing](#evaluation--testing)
 - [Rule Validation](#rule-validation)
@@ -167,7 +167,7 @@ https://github.com/user-attachments/assets/78764207-0fcf-4523-ad12-f428581a685f
 
 ---
 
-## Role-Based Access Control (RBAC)
+## Access Control & Tenant Isolation
 
 ### RBAC Demo
 Role-based access control for managing user permissions and access to document processing features, configurations, and review workflows.
@@ -181,7 +181,9 @@ One deployment can serve several tenants and keep each tenant's documents visibl
 
 **Duration**: ~4.5 minutes
 
-<!-- DEMO VIDEO PLACEHOLDER: replace this line with the GitHub asset URL for the tenant isolation demo -->
+https://github.com/user-attachments/assets/27e12b5d-0595-4c24-a4f3-ab5eaff6d6f7
+
+
 
 **Related Documentation**: [Multi-Tenant Isolation](./multi-tenancy.md)
 

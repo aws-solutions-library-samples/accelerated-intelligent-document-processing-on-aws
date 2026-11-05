@@ -1187,3 +1187,181 @@ def test_audit_does_not_report_a_hand_set_scope_under_manual(tenancy):
     )
     kinds = {f.kind for f in tenancy.audit().findings}
     assert "non-tenant-scope" not in kinds
+
+
+# ---------------------------------------------------------------------------
+# Deploying the access-point template
+# ---------------------------------------------------------------------------
+
+
+class _FakeCfn:
+    """The few CloudFormation calls deploy_policies makes, recorded."""
+
+    def __init__(self, exists=False, update_error=None, outputs=None, fail=False):
+        self.exists, self.update_error, self.fail = exists, update_error, fail
+        self.outputs = outputs or []
+        self.declared: List[dict] = []
+        self.calls: List[tuple] = []
+
+    def validate_template(self, TemplateBody):
+        self.calls.append(("validate_template", None))
+        return {"Parameters": self.declared}
+
+    def describe_stacks(self, StackName):
+        from botocore.exceptions import ClientError
+
+        self.calls.append(("describe_stacks", StackName))
+        if not self.exists:
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "ValidationError",
+                        "Message": f"Stack with id {StackName} does not exist",
+                    }
+                },
+                "DescribeStacks",
+            )
+        return {"Stacks": [{"Outputs": self.outputs}]}
+
+    def create_stack(self, **kwargs):
+        self.calls.append(("create_stack", kwargs))
+        self.exists = True
+
+    def update_stack(self, **kwargs):
+        self.calls.append(("update_stack", kwargs))
+        if self.update_error:
+            from botocore.exceptions import ClientError
+
+            raise ClientError(
+                {"Error": {"Code": "ValidationError", "Message": self.update_error}},
+                "UpdateStack",
+            )
+
+    def get_waiter(self, name):
+        fake = self
+
+        class _Waiter:
+            def wait(self, **kwargs):
+                fake.calls.append(("wait", name))
+                if fake.fail:
+                    from botocore.exceptions import WaiterError
+
+                    raise WaiterError(name, "failed", {})
+
+        return _Waiter()
+
+    def describe_stack_events(self, StackName):
+        return {
+            "StackEvents": [
+                {
+                    "ResourceStatus": "CREATE_FAILED",
+                    "LogicalResourceId": "TenantacmeIn",
+                    "ResourceStatusReason": "Access Denied",
+                }
+            ]
+        }
+
+
+def _ap_outputs():
+    return [
+        {"Description": "Tenant acme upload access point", "OutputValue": "arn:in"},
+        {
+            "Description": "Tenant acme upload access point alias",
+            "OutputValue": "in-s3alias",
+        },
+        {"Description": "Tenant acme read access point", "OutputValue": "arn:out"},
+        {"Description": "Something else", "OutputValue": "ignored"},
+    ]
+
+
+def _with_cfn(tenancy, monkeypatch, fake):
+    real_boto = tenancy._boto
+    monkeypatch.setattr(
+        tenancy,
+        "_boto",
+        lambda svc: fake if svc == "cloudformation" else real_boto(svc),
+    )
+
+
+@pytest.mark.unit
+def test_the_template_outputs_each_access_point_alias(tenancy):
+    tenancy.apply([ACME, GLOBEX], dry_run=False)
+    outputs = yaml.safe_load(tenancy.generate_policies(_principals()).template)[
+        "Outputs"
+    ]
+    aliases = {k: v for k, v in outputs.items() if k.endswith("Alias")}
+    # acme in+out, globex in only: one alias per access point.
+    assert len(aliases) == 3
+    for key, value in aliases.items():
+        assert value["Value"]["Fn::GetAtt"][1] == "Alias"
+        assert value["Description"].endswith(" access point alias")
+
+
+@pytest.mark.unit
+def test_access_points_are_read_back_from_the_outputs():
+    from idp_sdk.operations.tenancy import access_points_from_outputs
+
+    found = access_points_from_outputs(_ap_outputs())
+    assert [(a.tenant_id, a.direction, a.arn, a.alias) for a in found] == [
+        ("acme", "read", "arn:out", None),
+        ("acme", "upload", "arn:in", "in-s3alias"),
+    ]
+
+
+@pytest.mark.unit
+def test_deploy_creates_the_access_point_stack(tenancy, monkeypatch):
+    tenancy.apply([ACME, GLOBEX], dry_run=False)
+    fake = _FakeCfn(outputs=_ap_outputs())
+    _with_cfn(tenancy, monkeypatch, fake)
+    result = tenancy.deploy_policies(_principals())
+    assert result.stack_name == f"{STACK}-tenant-access-points"
+    assert result.operation == "created"
+    (create,) = [c[1] for c in fake.calls if c[0] == "create_stack"]
+    assert create["StackName"] == f"{STACK}-tenant-access-points"
+    # What is deployed is exactly what generate-policies prints.
+    assert create["TemplateBody"] == tenancy.generate_policies(_principals()).template
+    assert ("wait", "stack_create_complete") in fake.calls
+    assert {a.alias for a in result.access_points} == {"in-s3alias", None}
+
+
+@pytest.mark.unit
+def test_deploy_updates_an_existing_stack_and_names_it(tenancy, monkeypatch):
+    tenancy.apply([ACME, GLOBEX], dry_run=False)
+    fake = _FakeCfn(exists=True, outputs=_ap_outputs())
+    _with_cfn(tenancy, monkeypatch, fake)
+    result = tenancy.deploy_policies(_principals(), access_point_stack="custom-ap")
+    assert result.operation == "updated"
+    assert [c[1]["StackName"] for c in fake.calls if c[0] == "update_stack"] == [
+        "custom-ap"
+    ]
+    assert ("wait", "stack_update_complete") in fake.calls
+
+
+@pytest.mark.unit
+def test_deploy_reports_an_unchanged_stack_without_waiting(tenancy, monkeypatch):
+    tenancy.apply([ACME, GLOBEX], dry_run=False)
+    fake = _FakeCfn(exists=True, update_error="No updates are to be performed.")
+    _with_cfn(tenancy, monkeypatch, fake)
+    assert tenancy.deploy_policies(_principals()).operation == "unchanged"
+    assert not [c for c in fake.calls if c[0] == "wait"]
+
+
+@pytest.mark.unit
+def test_a_failed_deploy_names_the_failed_resource(tenancy, monkeypatch):
+    from idp_sdk import IDPStackError
+
+    tenancy.apply([ACME, GLOBEX], dry_run=False)
+    _with_cfn(tenancy, monkeypatch, _FakeCfn(fail=True))
+    with pytest.raises(IDPStackError, match="TenantacmeIn: Access Denied"):
+        tenancy.deploy_policies(_principals())
+
+
+@pytest.mark.unit
+def test_deploy_refuses_a_template_that_declares_parameters(tenancy, monkeypatch):
+    tenancy.apply([ACME, GLOBEX], dry_run=False)
+    fake = _FakeCfn()
+    fake.declared = [{"ParameterKey": "Unexpected"}]
+    _with_cfn(tenancy, monkeypatch, fake)
+    with pytest.raises(IDPValidationError, match="Unexpected"):
+        tenancy.deploy_policies(_principals())
+    assert not [c for c in fake.calls if c[0] == "create_stack"]
