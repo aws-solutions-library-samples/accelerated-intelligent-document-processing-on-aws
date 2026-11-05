@@ -1,8 +1,11 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { I18nProvider } from '@cloudscape-design/components/i18n';
 import { IntlProvider, ReactIntlErrorCode, type IntlConfig } from 'react-intl';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { applyAmplifyLanguage, registerAmplifyVocabularies } from './amplify';
+import { useCloudscapeMessages } from './cloudscape';
 import { DEFAULT_LOCALE, ENABLED_LOCALES, LOCALE_STORAGE_KEY, isEnabledLocale, type Locale } from './locales';
 import { readResolvedLocale } from './resolveLocale';
 
@@ -50,12 +53,22 @@ export interface LocaleProviderProps {
 
 /**
  * Owns the UI locale: resolves it once from storage and the browser (never the URL), exposes
- * it with a validated `setLocale`, keeps `<html lang>` in step, and mounts react-intl's
- * `IntlProvider`. `textComponent` is left at its default (`React.Fragment`) so English output
- * is byte-identical to the pre-i18n markup.
+ * it with a validated `setLocale`, keeps `<html lang>` in step, points Amplify UI at it, and
+ * mounts react-intl's `IntlProvider` and Cloudscape's `I18nProvider`. `textComponent` is
+ * left at its default (`React.Fragment`) and Cloudscape gets no messages under `en`, so
+ * English output is byte-identical to the pre-i18n markup.
  */
 export const LocaleProvider = ({ children, enabledLocales = ENABLED_LOCALES }: LocaleProviderProps): React.JSX.Element => {
-  const [locale, setLocaleState] = useState<Locale>(() => readResolvedLocale(enabledLocales));
+  const [locale, setLocaleState] = useState<Locale>(() => {
+    const resolved = readResolvedLocale(enabledLocales);
+    // Amplify UI reads `I18n` while it renders, so its language is set here, before the
+    // first child renders, not in an effect (which would run after the sign-in form has
+    // already rendered once in the browser's language).
+    registerAmplifyVocabularies();
+    applyAmplifyLanguage(resolved);
+    return resolved;
+  });
+  const cloudscapeMessages = useCloudscapeMessages(locale);
 
   useEffect(() => {
     document.documentElement.lang = locale;
@@ -69,6 +82,7 @@ export const LocaleProvider = ({ children, enabledLocales = ENABLED_LOCALES }: L
       } catch {
         // Storage disabled or full: the choice still applies to this page.
       }
+      applyAmplifyLanguage(next);
       setLocaleState(next);
     },
     [enabledLocales],
@@ -76,10 +90,14 @@ export const LocaleProvider = ({ children, enabledLocales = ENABLED_LOCALES }: L
 
   const value = useMemo<LocaleContextValue>(() => ({ locale, setLocale, enabledLocales }), [locale, setLocale, enabledLocales]);
 
+  // Cloudscape's provider reads `<html lang>` when `locale` is omitted; it is passed
+  // explicitly so the two can never disagree.
   return (
     <LocaleContext.Provider value={value}>
       <IntlProvider locale={locale} defaultLocale={DEFAULT_LOCALE} messages={EMPTY_MESSAGES} onError={onIntlError}>
-        {children}
+        <I18nProvider locale={locale} messages={cloudscapeMessages}>
+          {children}
+        </I18nProvider>
       </IntlProvider>
     </LocaleContext.Provider>
   );
