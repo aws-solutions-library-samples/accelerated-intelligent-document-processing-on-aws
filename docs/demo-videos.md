@@ -181,7 +181,9 @@ One deployment can serve several tenants and keep each tenant's documents visibl
 
 **Duration**: ~4.5 minutes
 
-<!-- DEMO VIDEO PLACEHOLDER: replace this line with the GitHub asset URL for the tenant isolation demo -->
+https://github.com/user-attachments/assets/27e12b5d-0595-4c24-a4f3-ab5eaff6d6f7
+
+
 
 **Related Documentation**: [Multi-Tenant Isolation](./multi-tenancy.md)
 
