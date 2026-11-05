@@ -16,18 +16,28 @@ for its own gate, with the real cause further up the log. Both went red only bec
 the next command happened to fail as well; one that succeeds in the wrong directory
 leaves the job green.
 
-``(cd src/ui && npm ci ...)`` has neither problem. The subshell's status is the
-failing command's, the subshell is the whole command so errexit fires on it, and its
-directory change ends with it.
+``(cd src/ui && npm ci ...)`` has neither problem **when the chain is the last
+command inside the parentheses**. The subshell's status is then the failing
+command's, the subshell is the whole line so errexit fires on it, and its directory
+change ends with it. A subshell is a shell of its own, though, with errexit still
+on: ``(cd src/ui && npm ci && cd ../..; make foo)`` hides the failure exactly as
+the original lines did, because ``make foo`` runs in ``src/ui`` and only its status
+leaves the subshell.
 
-**The shape refused** is a ``cd`` or ``pushd`` run in the job's own shell — not
-inside a subshell or a command substitution — whose arguments are followed by
-``&&``, when the job runs anything after that list. ``cd <dir> && cmd`` is
+**The shape refused** is a ``cd`` or ``pushd`` whose arguments are followed by
+``&&``, when the same shell runs anything after that list. ``cd <dir> && cmd`` is
 included, because there the failure ignored is the ``cd``'s own. The same list as
-the job's *last* command is not refused: its status is then the script's, and the
-job fails on the real cause. :func:`test_the_rule_agrees_with_bash` measures both halves under
-bash, with the wrapper the GitLab runner puts round a job's script, rather than
-asserting them.
+a shell's *last* command is not refused: its status is then the shell's, and the
+job fails on the real cause.
+
+The rule is applied to the job's own shell and, separately, to the body of every
+subshell, ``$(...)``, backtick substitution and process substitution in it, where
+"anything after" means later in that body. Bash clears errexit inside a command
+substitution, so a failure there is not fatal in any shape; the chain is refused
+for the directory it hands to the commands after it.
+
+:func:`test_the_rule_agrees_with_bash` measures all of this under bash, with the
+wrapper the GitLab runner puts round a job's script, rather than asserting it.
 
 **What one shell is** differs by platform, and each is read as its runner runs it.
 On GitLab, ``before_script`` followed by ``script`` is one shell and ``after_script``
@@ -38,7 +48,8 @@ so a single-line step ending in a chain cannot hand a failure or a directory on.
 The script text is read by the small lexer below. It follows quoting, comments,
 heredoc bodies, ``$(...)``, backticks, ``$((...))``, ``${...}``, subshells and
 ``case`` patterns, and it raises on text it cannot balance rather than guessing: a
-script this module cannot read fails here instead of passing.
+script this module cannot read fails here instead of passing. A heredoc body is
+treated as data, so a substitution inside an unquoted heredoc is not examined.
 """
 
 from __future__ import annotations
@@ -116,12 +127,15 @@ class Lexer:
 
     A subshell, command substitution, arithmetic or parameter expansion is read to
     its end and kept as part of one word, so nothing inside it can look like a
-    command of the outer shell. Heredoc bodies and comments produce no tokens.
+    command of the outer shell. Each subshell and substitution body read on the way,
+    at any depth, is kept in ``bodies`` so that it can be checked as the shell it
+    is. Heredoc bodies and comments produce no tokens.
     """
 
     def __init__(self, text: str) -> None:
         self.text = text
         self.pos = 0
+        self.bodies: list[list[Token]] = []
 
     def fail(self, problem: str) -> ValueError:
         start = max(self.pos - 40, 0)
@@ -217,12 +231,15 @@ class Lexer:
         return tokens
 
     def skip_quoted(self) -> None:
-        quote = self.text[self.pos]
+        start = self.pos
+        quote = self.text[start]
         self.pos += 1
         while self.pos < len(self.text):
             char = self.text[self.pos]
             if char == quote:
                 self.pos += 1
+                if quote == "`":
+                    self.read_body(self.text[start + 1 : self.pos - 1])
                 return
             if quote == "'":
                 self.pos += 1
@@ -242,9 +259,14 @@ class Lexer:
             self.skip_arithmetic()
         elif self.text[self.pos] == "(":
             self.pos += 1
-            self.read(nested=True)
+            self.bodies.append(self.read(nested=True))
         else:
             self.skip_braces()
+
+    def read_body(self, text: str) -> None:
+        inner = Lexer(re.sub(r"\\([\\$`])", r"\1", text))
+        self.bodies.append(inner.read())
+        self.bodies.extend(inner.bodies)
 
     def skip_arithmetic(self) -> None:
         depth = 0
@@ -329,23 +351,46 @@ def directory_chains(tokens: list[Token]) -> list[tuple[int, int]]:
     return spans
 
 
-def chains_followed_by_more(commands: list[str]) -> list[str]:
-    """Each ``cd`` chain in one shell's ``commands`` that a later command runs after.
+class Level(NamedTuple):
+    tokens: list[Token]
+    later: bool
+    nested: bool
 
-    ``commands`` is everything one shell runs, in order. Raises ``ValueError`` on
-    text the lexer cannot read.
+
+def shell_levels(commands: list[str]) -> list[Level]:
+    """Every token list one shell's ``commands`` run, the shell's own and each
+    subshell or substitution body inside them.
+
+    ``later`` is whether a later command of the same shell follows the list, which
+    only the shell's own commands can have: a body ends where its parentheses do.
+    Raises ``ValueError`` on text the lexer cannot read.
     """
-    lexed = [Lexer(command).read() for command in commands]
+    lexers = [Lexer(command) for command in commands]
+    outer = [lexer.read() for lexer in lexers]
+    levels: list[Level] = []
+    for position, tokens in enumerate(outer):
+        later = any(t.kind == "word" for rest in outer[position + 1 :] for t in rest)
+        levels.append(Level(tokens, later, False))
+        levels.extend(Level(body, False, True) for body in lexers[position].bodies)
+    return levels
+
+
+def chains_followed_by_more(commands: list[str]) -> list[str]:
+    """Each ``cd`` chain in one shell's ``commands`` that a later command of the
+    same shell, or of the same subshell, runs after."""
     found: list[str] = []
-    for position, tokens in enumerate(lexed):
-        later = any(t.kind == "word" for rest in lexed[position + 1 :] for t in rest)
+    for level in shell_levels(commands):
+        tokens = level.tokens
         for first, last in directory_chains(tokens):
             after = tokens[last + 1 :]
-            if later or any(
+            if level.later or any(
                 t.kind == "word" and t.text not in _CLOSING_WORDS for t in after
             ):
+                chain = " ".join(
+                    t.text for t in tokens[first : last + 1] if t.text != "\n"
+                )
                 found.append(
-                    " ".join(t.text for t in tokens[first : last + 1] if t.text != "\n")
+                    f"`{chain}` inside a subshell" if level.nested else f"`{chain}`"
                 )
     return found
 
@@ -418,27 +463,40 @@ def test_no_ci_shell_runs_anything_after_a_cd_chain() -> None:
     )
     offenders: list[str] = []
     unreadable: list[str] = []
+    nested_chains = 0
     for path, by_label in shells.items():
         for label, commands in by_label.items():
             try:
                 chains = chains_followed_by_more(commands)
+                levels = shell_levels(commands)
             except ValueError as error:
                 unreadable.append(f"{path}: {label}: {error}")
                 continue
-            offenders.extend(f"{path}: {label}: `{chain}`" for chain in chains)
+            offenders.extend(f"{path}: {label}: {chain}" for chain in chains)
+            nested_chains += sum(
+                len(directory_chains(level.tokens)) for level in levels if level.nested
+            )
     assert not unreadable, (
         "this module's lexer could not read these scripts, so it cannot say whether "
         "they hold a cd chain. Fix the lexer for the construct named; do not narrow "
         "what is read:\n  " + "\n  ".join(unreadable)
+    )
+    assert nested_chains, (
+        "no cd chain inside a subshell was read from any CI configuration, although "
+        f"the UI installs in {GITLAB.name} are written as one. The check of subshell "
+        "bodies is reading nothing."
     )
     assert not offenders, (
         "these CI scripts change directory in an `&&` chain that something later in "
         "the same shell runs after. errexit ignores a failure anywhere but the last "
         "command of such a list, so a failure there is not reported, and the next "
         "command runs in the wrong directory:\n  " + "\n  ".join(offenders) + "\n\n"
-        "Run the chain in a subshell, `(cd <dir> && ...)`: its status is the failing "
-        "command's, errexit fires on it, and its directory change ends with it. A "
-        "GitHub step can use `working-directory:` instead."
+        "Run the chain in a subshell as its LAST command, `(cd <dir> && ...)` with "
+        "nothing after it inside the parentheses: the subshell's status is then the "
+        "failing command's, errexit fires on it, and its directory change ends with "
+        "it. A subshell is a shell of its own, so `(cd <dir> && a && cd ..; b)` has "
+        "the same defect and is refused here too. A GitHub step can use "
+        "`working-directory:` instead."
     )
 
 
@@ -537,8 +595,17 @@ AGREEMENT_CASES = [
     ("gitlab", ["case x in x) cd sub && false && cd .. ;; esac", "echo AFTER"], True),
     ("gitlab", ["pushd sub && false && popd", "echo AFTER"], True),
     ("gitlab", ["cd sub || exit 1", "false", "echo AFTER"], False),
+    ("gitlab", ["(cd sub && false && cd ..)", "echo AFTER"], False),
+    ("gitlab", ["(cd sub && false && cd ..; echo AFTER)"], True),
+    ("gitlab", ["(cd sub && false && cd ..\necho AFTER)", "echo NEXT"], True),
+    ("gitlab", ["( (cd sub && false && cd ..; echo AFTER) )"], True),
+    ("gitlab", ['echo "$(cd sub && false && cd ..; echo AFTER)"'], True),
+    ("gitlab", ['echo "`cd sub && false && cd ..; echo AFTER`"'], True),
+    ("gitlab", ["V=$(cd sub && false)", "echo AFTER"], False),
+    ("gitlab", ["V=$(cd sub && false && echo x)", "echo AFTER"], False),
     ("github", ["cd sub && false && echo vitest"], False),
     ("github", ["cd sub && false && cd ..\necho AFTER"], True),
+    ("github", ["(cd sub && false && cd ..; echo AFTER)"], True),
 ]
 
 
@@ -611,6 +678,16 @@ def test_the_rule_agrees_with_bash(
         ("cd sub 2>/dev/null && npm ci\nmake lint", True),
         ("f() {\n  cd sub && npm ci\n}\nf", True),
         ("cd sub || exit 1\nnpm ci\nmake lint", False),
+        ("(cd sub && npm ci && cd ..; make foo)", True),
+        ("(cd sub && npm ci && cd ..\nmake foo)\nmake lint", True),
+        ("(cd sub && npm ci)\nmake lint", False),
+        ("(cd sub && npm ci && make build)\nmake lint", False),
+        ("if [ -f x ]; then (cd sub && npm ci); fi\nmake lint", False),
+        ("V=$(cd sub && pwd; ls)\nmake lint", True),
+        ("V=`cd sub && pwd; ls`\nmake lint", True),
+        ('echo "$(cd sub && ls; pwd)"', True),
+        ('echo "${X:-$(cd sub && ls; pwd)}"', True),
+        ("diff <(cd sub && ls; pwd) out", True),
         ("cd sub\nnpm ci", False),
         ("if true; then\n  cd sub && npm ci\nfi", False),
     ],
@@ -628,6 +705,7 @@ def test_the_lexer_reads_what_the_shell_runs(script: str, refused: bool) -> None
         "echo 'unclosed",
         'echo "unclosed',
         "echo `unclosed",
+        "echo `(unclosed`",
         "echo )",
         "(echo unclosed",
         "echo $(unclosed",
