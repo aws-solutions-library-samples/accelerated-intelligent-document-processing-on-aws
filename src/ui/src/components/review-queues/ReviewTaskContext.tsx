@@ -14,7 +14,7 @@ import { Alert, Badge, Box, Button, Container, Header, Popover, SpaceBetween } f
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { NEXT_ALERT_LABEL } from '../common/labels';
-import { reasonText } from './review-api';
+import { MISSING_REQUIRED_KIND, reasonText } from './review-api';
 
 export const TOP_REASONS = 5;
 
@@ -73,9 +73,13 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
                 <SpaceBetween size="xxs">
                   <Box>Section {reason.sectionId}</Box>
                   {reason.field && <Box>Field: {reason.field}</Box>}
-                  <Box>
-                    Confidence {reason.score.toFixed(2)}, threshold {reason.threshold.toFixed(2)}
-                  </Box>
+                  {reason.kind === MISSING_REQUIRED_KIND ? (
+                    <Box>No extracted value; the class schema requires this field.</Box>
+                  ) : (
+                    <Box>
+                      Confidence {reason.score.toFixed(2)}, threshold {reason.threshold.toFixed(2)}
+                    </Box>
+                  )}
                 </SpaceBetween>
               }
             >

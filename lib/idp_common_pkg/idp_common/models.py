@@ -511,8 +511,10 @@ class Section:
     ``attribute_name``, ``confidence``, ``confidence_threshold`` (the last two
     ``None`` when the field has no confidence leaf). Built by
     ``idp_common.assessment.presence.collect_missing_required_fields``; summed
-    into ``Document.missing_required_field_count``. Informational only — nothing
-    routes on it yet."""
+    into ``Document.missing_required_field_count``. In review-queue mode, with
+    ``hitl.route_missing_required_fields`` on, each entry is a ``missing_required``
+    review reason (``review_queues.reasons.build_reasons``); legacy HITL does not
+    trigger on it."""
     processing_issues: List["ProcessingIssue"] = field(default_factory=list)
     """Structured issues detected for this section (assessment incomplete,
     recovered-with-retries, extraction incomplete, …). Rolled up to

@@ -1609,7 +1609,9 @@ key-value entry whose `value` is absent. `ExtractionService._save_results` build
 `separate` Assessment step rebuilds it with scores. Because `ConfidenceAlertCount`,
 `review_queues.routing.legacy_section_triggers` and the `low_confidence` review
 reasons all read `confidence_threshold_alerts`, none of them sees an absent value.
-Nothing routes on `missing_required_fields`.
+Legacy HITL does not route on `missing_required_fields`; review-queue routing does,
+as `missing_required` reasons, while `hitl.route_missing_required_fields` is on (see
+`review_queues/README.md`).
 
 One path judges list rows it cannot place. On the agentic sharded path, when the
 integrated retry did not rebuild the alert surface, each alert's row index counts

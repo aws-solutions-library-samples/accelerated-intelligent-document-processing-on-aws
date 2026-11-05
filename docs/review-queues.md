@@ -41,7 +41,8 @@ Queues are **system-wide**, and they are managed only by Admins in
 **Review Studio › Review Management**; they aren't part of any Configuration Profile.
 Production documents go to the **Default** queue. A document is routed there when
 HITL is enabled in its configuration (`hitl.enabled`), the Default queue is enabled,
-and the document raised confidence alerts. Queues have no confidence threshold of
+and the document raised confidence alerts or left a required field without a value.
+Queues have no confidence threshold of
 their own: the alerts use each field's own threshold, otherwise
 `hitl.confidence_threshold`. The Default queue is enabled on a new stack. While HITL
 is off in a document's configuration, or the Default queue is off, documents keep
@@ -56,8 +57,10 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
    - a section raised a confidence alert: a field's confidence is under its own
      threshold (`x-aws-idp-confidence-threshold` in the class schema), or under
      `hitl.confidence_threshold` when it has none. Only a field with an extracted
-     value can raise one; a field with no value does not, and a missing required
-     field is counted but not routed (see
+     value can raise one; a field with no value does not
+   - a field the class schema marks `required` has no extracted value, while
+     `hitl.route_missing_required_fields` is on (the default). Its review reason
+     reads **Missing required: <field>** (see
      [Absent values and missing required fields](./extraction-and-confidence.md#absent-values-and-missing-required-fields))
    - in BDA mode, the matched blueprint's confidence is under
      `hitl.confidence_threshold`, or BDA matched a blueprint but returned no

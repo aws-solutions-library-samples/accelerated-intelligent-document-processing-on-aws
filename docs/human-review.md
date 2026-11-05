@@ -165,9 +165,10 @@ A document is held for review when all of these are true:
 - The document raised a confidence alert: a field's confidence is under its own
   threshold (`x-aws-idp-confidence-threshold` in the class schema), or under
   `hitl.confidence_threshold` when it has none; or, in BDA mode, the matched
-  blueprint's confidence is under `hitl.confidence_threshold` or unusable. A field
-  with no extracted value raises no confidence alert, so it does not hold a document;
-  see
+  blueprint's confidence is under `hitl.confidence_threshold` or unusable; or a field
+  the class schema marks `required` has no extracted value, while
+  `hitl.route_missing_required_fields` is on (the default). Any other field with no
+  extracted value raises no confidence alert, so it does not hold a document; see
   [Absent values and missing required fields](extraction-and-confidence.md#absent-values-and-missing-required-fields)
 
 Each alert becomes a **review reason** on the item. A document with no alerts isn't
@@ -286,6 +287,7 @@ someone to work them and the Default queue enabled:
    hitl:
      enabled: true
      confidence_threshold: 0.8
+     route_missing_required_fields: true   # a required field with no value is reviewed too
    ```
 
    Set it in the configuration passed as `CustomConfigPath` (or

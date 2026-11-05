@@ -89,4 +89,18 @@ describe('ReviewTaskContext reasons', () => {
     renderPanel(3, 3);
     expect(screen.queryByRole('button', { name: 'Next alert' })).toBeNull();
   });
+
+  it('names a missing required field as such, and its chip moves to the field', async () => {
+    const onReasonClick = vi.fn();
+    const missing = { kind: 'missing_required', sectionId: '2', field: 'employer_name', label: 'Employer name', score: 0, threshold: 0.8 };
+    const withMissing = {
+      item: { reasons: [missing, reason(0)], reasonCount: 2, escalated: false },
+      checklist: [],
+    } as unknown as ReviewItemDetail;
+    render(<ReviewTaskContext detail={withMissing} onReasonClick={onReasonClick} />);
+    const chip = screen.getByRole('button', { name: 'Missing required: Employer name' });
+    expect(screen.queryByText(/0\.00 < 0\.80/)).toBeNull();
+    await userEvent.click(chip);
+    expect(onReasonClick).toHaveBeenCalledWith(expect.objectContaining({ sectionId: '2', field: 'employer_name' }));
+  });
 });

@@ -120,6 +120,9 @@ extraction:
 hitl:
   enabled: false
   confidence_threshold: "0.8"
+  # With HITL enabled and the Default review queue on, a required field with no
+  # extracted value also sends its document to review (legacy HITL is unaffected).
+  route_missing_required_fields: true
   # Inbox messages (idp_common.notifications). Read from the ACTIVE configuration
   # profile and cached for about 60 seconds; a change applies to messages written after it.
   notifications:

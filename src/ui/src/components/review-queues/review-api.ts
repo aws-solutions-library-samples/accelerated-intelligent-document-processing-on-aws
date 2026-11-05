@@ -136,7 +136,13 @@ export const removeItem = async (item: ItemRef, note?: string): Promise<ReviewIt
   return required(r.data?.removeReviewItem, 'removeReviewItem');
 };
 
-/** "Low confidence: Employer name 0.62 < 0.80" — one reason's chip text. */
+/** The `kind` of a reason for a required field that has no extracted value. */
+export const MISSING_REQUIRED_KIND = 'missing_required';
+
+/**
+ * One reason's chip text: "Low confidence: Employer name 0.62 < 0.80", or
+ * "Missing required: Employer name" for a required field with no value.
+ */
 export const reasonText = (reason: {
   kind: string;
   label?: string | null;
@@ -144,8 +150,9 @@ export const reasonText = (reason: {
   score: number;
   threshold: number;
 }): string => {
-  const what = reason.kind === 'blueprint_confidence' ? 'Blueprint confidence' : 'Low confidence';
   const name = reason.label || reason.field;
+  if (reason.kind === MISSING_REQUIRED_KIND) return `Missing required${name ? `: ${name}` : ''}`;
+  const what = reason.kind === 'blueprint_confidence' ? 'Blueprint confidence' : 'Low confidence';
   return `${what}: ${name ? `${name} ` : ''}${reason.score.toFixed(2)} < ${reason.threshold.toFixed(2)}`;
 };
 

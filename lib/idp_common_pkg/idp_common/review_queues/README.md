@@ -107,7 +107,11 @@ In queue mode:
   serialization and in the tracking table (`BlueprintUnscored`, written only when
   true), so a reprocess that reloads the document is held again. A section whose segment matched no blueprint is
   unscored too but is not flagged, so it is not held, as legacy HITL does not mark
-  it. So routing agrees exactly with the alerts users
+  it. With `hitl.route_missing_required_fields` on (the default; on when unset), each
+  of a section's `missing_required_fields` is a `missing_required` reason named by
+  its path, with a score of 0.0 and the entry's threshold, otherwise
+  `hitl.confidence_threshold`, so it sorts ahead of the confidence alerts. Legacy
+  HITL (`legacy_section_triggers`, `bda_segment_triggers`) does not read it. So routing agrees exactly with the alerts users
   see, and it reads nothing from S3. A malformed alert is skipped. A section's
   `missing_required_fields` are not reasons and nothing here reads them; they are
   the input for routing on missing data, which does not exist yet. The module must
