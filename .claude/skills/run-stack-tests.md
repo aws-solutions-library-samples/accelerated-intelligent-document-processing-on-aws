@@ -101,10 +101,10 @@ its verdict is the weekly probe's verdict.
   and tears the stack down, exactly as the weekly run does.
 - Either way it creates and removes two throwaway Configuration Profiles, two tenants
   over `tenancy-verify/a/` and `tenancy-verify/b/`, throwaway Cognito users, two IAM
-  roles `tiv-uploader-<tenant>-<hex>` (no permissions boundary) and an access point
+  roles `idp-tiv-uploader-<tenant>-<hex>` (no permissions boundary) and an access point
   stack `<stack>-tiv-ap-<hex>`, all in a `finally`. A run killed before that
   `finally` can leave the two roles behind: no CI reaper removes them, so list
-  `tiv-uploader-*` roles after an interrupted run.
+  `idp-tiv-uploader-*` roles after an interrupted run.
 - It passes only when the harness exits 0, prints a complete `<passed>/<total> PASS`
   tally, and reports at least one `verify:` row (the cross-tenant read refusals).
   The tally is printed as `tenancy_checks` on success; on failure the first failing

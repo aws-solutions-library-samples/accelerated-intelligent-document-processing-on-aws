@@ -1761,24 +1761,27 @@ launched last in the stagger, plus — unlike the structural probes — real doc
 processing (`samples/lending_package.pdf`, uploaded once per tenant and once per
 strict-ingest case, though a refused case is not processed) and its own side
 resources: throwaway Configuration Profiles, tenants and Cognito users, two IAM
-roles `tiv-uploader-<tenant>-<hex>` created **without** a permissions boundary,
+roles `idp-tiv-uploader-<tenant>-<hex>` created **without** a permissions boundary,
 and one CloudFormation stack `<stack>-tiv-ap-<hex>`. The harness removes all of
 them in a `finally`. If the build is killed before that runs, the access point
 stack is an `idp-` stack and is reaped by `cleanup_stale_idp_stacks`; the two
 roles are not reaped by anything.
 
 ⚠️ The harness calls IAM, STS, CloudFormation, S3 and Cognito directly with the
-build's own credentials, not through the deploy service role, so it needs
-`iam:CreateRole`, `iam:PutRolePolicy` and `iam:DeleteRole` without a boundary
-condition, `sts:AssumeRole` on the roles it creates, and `cloudformation:CreateStack`
-on an `idp-` stack that creates S3 access points. Which role the build runs as is
-not readable from this tree: `codepipeline-s3.yml` either creates its own
-`CodeBuildRole`, whose policies in that template grant no IAM writes at all, or
-takes `CodeBuildRoleArn`, such as `sdlc-iam-role.yml`'s `BuilderRole`
-(`PowerUserAccess` plus `LimitedIAMAccess`, which covers all of the above). The
-existing probes' own IAM setup already calls `iam:CreatePolicy`, which only the
-second shape grants, so that is the likely one, but it is unverified; the first
-weekly run is the check, and a refusal surfaces as an `ERROR` row naming the call.
+build's own credentials, not through the deploy service role. It needs
+`iam:CreateRole`, `iam:PutRolePolicy` and `iam:DeleteRole` on the two roles it
+creates, `sts:AssumeRole` on them, and `cloudformation:CreateStack` on an `idp-`
+stack that creates S3 access points. The roles are named under `idp-` so that the
+IAM writes are covered whichever role the build runs as: `codepipeline-s3.yml`'s own
+`CodeBuildRole` grants `iam:*` on `role/idp-*`, and an external `CodeBuildRoleArn`
+such as `sdlc-iam-role.yml`'s `BuilderRole` (`PowerUserAccess` plus
+`LimitedIAMAccess`) covers them too. **`sts:AssumeRole` is not covered under the
+first shape:** `CodeBuildRole` scopes it to `role/*-failure-agent` on purpose,
+because the CI account is shared between pipelines. Under that shape the harness's
+access-point checks report an `ERROR` row naming the refused assume, and the probe
+fails until the role is granted `sts:AssumeRole` on `role/idp-tiv-uploader-*`,
+which is a decision about the shared CI role, not a code change. Which shape the
+CI account runs is not readable from this tree; the first weekly run shows it.
 
 #### ZAP DAST probe (dynamic security testing)
 

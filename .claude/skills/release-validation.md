@@ -176,7 +176,7 @@ make stacktest-seller                                    # REGION deliberately U
   write its `<passed>/<total>` into the record, and treat a row count that moved from
   PREV as a finding to explain, as for the RBAC check count. It creates two IAM roles
   and an access point stack of its own and removes them; after an interrupted run,
-  check for leftover `tiv-uploader-*` roles.
+  check for leftover `idp-tiv-uploader-*` roles.
 - **Seller: `REGION` is still left unset, but no longer to dodge a bug.** `stacktest.sh`
   now forwards `--region` to `dynamic_activation_test.py`, with a comment naming the
   hazard, so the three refusal assertions can no longer pass **vacuously** on API
