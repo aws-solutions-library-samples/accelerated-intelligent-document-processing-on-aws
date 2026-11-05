@@ -21,10 +21,12 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "950c1e7b71d86a47a51311aca7bf768a08b02433695c79b704b606b031012d45",
   "highWaterMark": {
-    "files": 256,
-    "findings": 6410
+    "files": 257,
+    "findings": 6436
   },
-  "newDebtReasons": [],
+  "newDebtReasons": [
+    "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)"
+  ],
   "stringDebt": {
     "src/ui/src/api/presign-batch.ts": 1,
     "src/ui/src/api/rest-client.ts": 1,
@@ -77,6 +79,7 @@
     "src/ui/src/components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx": 83,
     "src/ui/src/components/config-prefix-mappings/TenantsSection.tsx": 60,
     "src/ui/src/components/config-prefix-mappings/breadcrumbs.tsx": 4,
+    "src/ui/src/components/config-prefix-mappings/tools-panel.tsx": 24,
     "src/ui/src/components/configuration-layout/ConfigBuilder.tsx": 46,
     "src/ui/src/components/configuration-layout/ConfigRevisionHistoryPanel.tsx": 53,
     "src/ui/src/components/configuration-layout/ConfigurationComparison.tsx": 18,
@@ -252,7 +255,7 @@
     "src/ui/src/components/upload-document/breadcrumbs.tsx": 4,
     "src/ui/src/components/upload-document/tools-panel.tsx": 10,
     "src/ui/src/components/user-management/UserManagementLayout.tsx": 97,
-    "src/ui/src/components/user-management/tools-panel.tsx": 9,
+    "src/ui/src/components/user-management/tools-panel.tsx": 11,
     "src/ui/src/components/welcome/WelcomeContent.tsx": 20,
     "src/ui/src/contexts/guidedTour.tsx": 42,
     "src/ui/src/contexts/inbox.tsx": 10,
