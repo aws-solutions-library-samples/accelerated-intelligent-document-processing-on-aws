@@ -3,12 +3,12 @@
 
 """Pin the guard that stops two UI make targets corrupting src/ui/node_modules.
 
-Seven `make` targets run a node tool out of `src/ui/node_modules`, and six of them
+Nine `make` targets run a node tool out of `src/ui/node_modules`, and seven of them
 reinstall it with `npm ci` first — which deletes the tree before rebuilding it, by
 design. Two of those targets at once in ONE checkout therefore corrupt each other,
 and the loser reports a missing or half-deleted module from whatever package the
 other lane was unpacking rather than anything resembling contention. `make
-lint-cicd` performs three of them itself, so lint-cicd plus any one UI target is
+lint-cicd` performs four of them itself, so lint-cicd plus any one UI target is
 enough (issue #1447).
 
 `scripts/ui_deps_lock.sh` makes that impossible rather than documented. These tests
@@ -53,23 +53,33 @@ LOCK_MARKER = "ui_deps_lock.sh"
 LOCK_VARIABLE = "$(UI_DEPS_LOCK)"
 
 #: Every target that runs a node tool out of ``src/ui/node_modules``. The five
-#: gates from #1447, the fixer beside them, and ``codegen`` — which runs no
+#: gates from #1447, the fixer beside them, ``codegen`` — which runs no
 #: ``npm ci`` of its own and so was never in the issue's table, but reads the tree
 #: a concurrent install would be deleting and is exposed to exactly the half of the
-#: hazard that produced the missing-eslint-formatter failure.
+#: hazard that produced the missing-eslint-formatter failure — and the two i18n
+#: catalog targets of #1770: the extractor installs and runs ``formatjs``, and the
+#: check-only gate runs the installed ``formatjs`` and ``node`` the way ``codegen``
+#: does.
 UI_TARGETS = (
     "ui-lint",
     "ui-lint-fix",
     "ui-build",
     "ui-build-only",
     "ui-test",
+    "ui-i18n-extract",
     "codegen",
     "codegen-check",
+    "check-ui-i18n-catalog",
 )
 
-#: The three ``lint-cicd`` performs itself, which is why one other UI target in a
+#: The four ``lint-cicd`` performs itself, which is why one other UI target in a
 #: second lane is sufficient to collide.
-TARGETS_LINT_CICD_PERFORMS = ("ui-lint", "ui-build-only", "codegen-check")
+TARGETS_LINT_CICD_PERFORMS = (
+    "ui-lint",
+    "check-ui-i18n-catalog",
+    "ui-build-only",
+    "codegen-check",
+)
 
 pytestmark = pytest.mark.unit
 

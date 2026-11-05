@@ -57,7 +57,7 @@ help: ## Show this help message
 	@echo ""
 	@awk 'BEGIN {FS = ":.*##"; section=""} \
 		/^##@/ { section=substr($$0, 5); next } \
-		/^[a-zA-Z_-]+:.*?## / { \
+		/^[a-zA-Z0-9_-]+:.*?## / { \
 			if (section != "" && section != last_section) { \
 				printf "\n  \033[1m%s\033[0m\n", section; \
 				last_section = section \
@@ -200,8 +200,8 @@ setup-venv: lock-constraints ## Create .venv and install all packages into it, c
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, UI message catalog, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint without UI checks
 
 # Pin the linter, for the same reason spelled out at CFN_LINT_VERSION below: an
 # UNPINNED tool on a blocking gate is the one realistic way this red-lines the
@@ -285,6 +285,12 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 	@# cache, since iteration latency is what it was added for.
 	@if ! make ui-lint UI_LINT_NO_SKIP=1; then \
 		echo -e "$(RED)ERROR: UI lint failed$(NC)"; \
+		exit 1; \
+	fi
+	@# After ui-lint, which installed src/ui/node_modules: the extraction it replays
+	@# needs them, and in CI their absence is an error rather than a skip.
+	@if ! make check-ui-i18n-catalog; then \
+		echo -e "$(RED)ERROR: UI message catalog check failed (see issue #1770)$(NC)"; \
 		exit 1; \
 	fi
 
@@ -421,6 +427,14 @@ check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file
 	@# quietly accumulate more. Regenerate with --write after fixing findings.
 	@$(PYTHON) scripts/check_lint_debt.py || \
 		(echo -e "$(RED)ERROR: ruff exclusion baseline is out of date (see issue #975)$(NC)" && exit 1)
+
+check-ui-i18n-catalog: ## Fail if src/ui/src/i18n/en.json is stale against the UI's messages, or a translation catalog would fail the UI build (issue #1770)
+	@# Check-only: re-extracts into a temp file and diffs; `make ui-i18n-extract` is
+	@# the writer. Off CI without src/ui/node_modules it prints a SKIP (not a pass);
+	@# in CI that is an error. It runs a node tool out of src/ui/node_modules, so it
+	@# takes the same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/check_ui_i18n_catalog.py' || \
+		(echo -e "$(RED)ERROR: UI message catalog check failed (see issue #1770)$(NC)" && exit 1)
 
 check-account-ids: ## Fail if a private AWS account id is committed in a tracked file's contents (issue #1067)
 	@# The PreToolUse hook scripts/hooks/check_commit_text.py inspects the COMMAND
@@ -1317,17 +1331,17 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 
 ##@ UI Development
 
-# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND SIX OF THEM
+# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND SEVEN OF THEM
 # WIPE IT. `npm ci` deletes node_modules before rebuilding it, by design. Each of
 # those targets then runs a node tool out of that same tree. So two UI targets at
 # once in ONE checkout corrupt each other, and the loser does not report
 # contention — it reports a missing or half-deleted module from whatever package
 # the other lane was unpacking (issue #1447).
 #
-# `make lint-cicd` performs three of them itself (ui-lint, ui-build-only,
-# codegen-check), so lint-cicd PLUS ANY ONE UI TARGET is enough to collide. The
-# realistic composition is "lint in one lane, UI tests in another", which looks
-# like two unrelated things and is not.
+# `make lint-cicd` performs four of them itself (ui-lint, check-ui-i18n-catalog,
+# ui-build-only, codegen-check), so lint-cicd PLUS ANY ONE UI TARGET is enough to
+# collide. The realistic composition is "lint in one lane, UI tests in another",
+# which looks like two unrelated things and is not.
 #
 # $(UI_DEPS_LOCK) is why that is now safe rather than merely documented: it holds
 # an exclusive lock for the whole command, so a second UI target waits instead of
@@ -1474,6 +1488,13 @@ ui-build-only: ## Vite production build ONLY (no lint/typecheck) — for CI, whe
 ui-test: ## Run UI unit tests (Vitest, jsdom — no browser required)
 	@echo "Running UI unit tests..."
 	$(UI_DEPS_LOCK) '$(NPM_CI) && npx vitest run'
+
+# THE WRITER for `make check-ui-i18n-catalog`, which is check-only by design (the
+# `codegen-check` auto-update is the shape CONTRIBUTING documents as a wart).
+ui-i18n-extract: ## Re-extract the UI's English message catalog into src/ui/src/i18n/en.json (then commit it)
+	@echo "Extracting UI messages into src/ui/src/i18n/en.json..."
+	$(UI_DEPS_LOCK) '$(NPM_CI) && npm run i18n:extract'
+	@echo -e "$(GREEN)✅ src/ui/src/i18n/en.json re-extracted. Commit it if it changed.$(NC)"
 
 ##@ Code Generation
 codegen: ## Regenerate GraphQL types and operations

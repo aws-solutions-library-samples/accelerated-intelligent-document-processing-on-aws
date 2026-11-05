@@ -1,0 +1,10 @@
+{
+  "i18n.switcher.ariaLabel": {
+    "defaultMessage": "Language, currently {language}",
+    "description": "Screen-reader label of the language menu button. {language} is the current language by its own name, e.g. \"English\"."
+  },
+  "i18n.switcher.label": {
+    "defaultMessage": "Language",
+    "description": "Tooltip of the language menu button in the top navigation. The button itself shows the current language by its own name (English, Français (Canada))."
+  }
+}

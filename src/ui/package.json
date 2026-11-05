@@ -72,7 +72,8 @@
     "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
     "codegen": "graphql-codegen -c codegen.config.mjs && npm run generate-operations",
-    "generate-operations": "tsx scripts/generate-amplify-operations.ts"
+    "generate-operations": "tsx scripts/generate-amplify-operations.ts",
+    "i18n:extract": "formatjs extract 'src/**/*.{ts,tsx}' --ignore 'src/**/*.test.{ts,tsx}' --ignore 'src/**/__tests__/**' --ignore 'src/graphql/**' --ignore 'src/**/*.d.ts' --ignore 'src/test-utils/**' --id-interpolation-pattern '[sha512:contenthash:base64:6]' --throws --out-file src/i18n/en.json"
   },
   "browserslist": {
     "production": [

@@ -6,6 +6,7 @@ import { IntlProvider, ReactIntlErrorCode, type IntlConfig } from 'react-intl';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { applyAmplifyLanguage, registerAmplifyVocabularies } from './amplify';
 import { useCloudscapeMessages } from './cloudscape';
+import { EMPTY_CATALOG, loadCatalog, type CatalogMessages } from './loadCatalog';
 import { DEFAULT_LOCALE, ENABLED_LOCALES, LOCALE_STORAGE_KEY, isEnabledLocale, type Locale } from './locales';
 import { readResolvedLocale } from './resolveLocale';
 
@@ -20,12 +21,48 @@ export interface LocaleContextValue {
 
 const LocaleContext = createContext<LocaleContextValue | null>(null);
 
+/** Locales whose catalog failed to load, so the failure is reported once. */
+const failedCatalogs = new Set<string>();
+
+interface LoadedCatalog {
+  locale: Locale;
+  messages: CatalogMessages;
+}
+
 /**
- * No catalog yet: English stays inline in each message's `defaultMessage`, so every lookup
- * misses and react-intl renders that default. A later commit in this PR adds the per-locale
- * catalog loader; until then this frozen object is the message table for every locale.
+ * The compiled message catalog for `locale`, loaded lazily so each locale ships as its own
+ * chunk. Under `en` nothing is loaded and the table is `EMPTY_CATALOG`: every lookup misses
+ * and react-intl renders the inline English `defaultMessage`, exactly as before catalogs
+ * existed. For any other locale the children render at once with that same English while the
+ * catalog loads, a catalog that arrives after the locale changed again is ignored, and a load
+ * that fails is logged once per locale and leaves English in place: a missing catalog costs
+ * translations, never the screen.
  */
-const EMPTY_MESSAGES: Record<string, string> = Object.freeze({});
+const useCatalogMessages = (locale: Locale): CatalogMessages => {
+  const [loaded, setLoaded] = useState<LoadedCatalog | null>(null);
+
+  useEffect(() => {
+    if (locale === DEFAULT_LOCALE) return undefined;
+    let current = true;
+    loadCatalog(locale).then(
+      (messages) => {
+        if (current) setLoaded({ locale, messages });
+      },
+      (error: unknown) => {
+        if (failedCatalogs.has(locale)) return;
+        failedCatalogs.add(locale);
+        logger.warn(`Message catalog for ${locale} did not load; English stays`, error);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [locale]);
+
+  // The state remembers which locale it holds, so the render right after a switch already
+  // returns the right table: `en` never sees another locale's messages.
+  return loaded !== null && loaded.locale === locale ? loaded.messages : EMPTY_CATALOG;
+};
 
 /** Errors already logged, by code and message, so a defect that re-renders costs one line. */
 const reported = new Set<string>();
@@ -54,9 +91,10 @@ export interface LocaleProviderProps {
 /**
  * Owns the UI locale: resolves it once from storage and the browser (never the URL), exposes
  * it with a validated `setLocale`, keeps `<html lang>` in step, points Amplify UI at it, and
- * mounts react-intl's `IntlProvider` and Cloudscape's `I18nProvider`. `textComponent` is
- * left at its default (`React.Fragment`) and Cloudscape gets no messages under `en`, so
- * English output is byte-identical to the pre-i18n markup.
+ * mounts react-intl's `IntlProvider` (with the locale's compiled catalog) and Cloudscape's
+ * `I18nProvider`. `textComponent` is left at its default (`React.Fragment`), and under `en`
+ * neither provider gets any messages, so English output is byte-identical to the pre-i18n
+ * markup.
  */
 export const LocaleProvider = ({ children, enabledLocales = ENABLED_LOCALES }: LocaleProviderProps): React.JSX.Element => {
   const [locale, setLocaleState] = useState<Locale>(() => {
@@ -68,6 +106,7 @@ export const LocaleProvider = ({ children, enabledLocales = ENABLED_LOCALES }: L
     applyAmplifyLanguage(resolved);
     return resolved;
   });
+  const messages = useCatalogMessages(locale);
   const cloudscapeMessages = useCloudscapeMessages(locale);
 
   useEffect(() => {
@@ -94,7 +133,7 @@ export const LocaleProvider = ({ children, enabledLocales = ENABLED_LOCALES }: L
   // explicitly so the two can never disagree.
   return (
     <LocaleContext.Provider value={value}>
-      <IntlProvider locale={locale} defaultLocale={DEFAULT_LOCALE} messages={EMPTY_MESSAGES} onError={onIntlError}>
+      <IntlProvider locale={locale} defaultLocale={DEFAULT_LOCALE} messages={messages} onError={onIntlError}>
         <I18nProvider locale={locale} messages={cloudscapeMessages}>
           {children}
         </I18nProvider>

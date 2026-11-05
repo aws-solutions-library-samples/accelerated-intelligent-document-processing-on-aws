@@ -6,6 +6,10 @@
  * the enabled list, `<html lang>` is set only from it, and the language switcher
  * offers only `ENABLED_LOCALES`.
  */
+// A Vite virtual module served by scripts/i18n/vite-plugin-catalogs.mjs (typed in
+// ./virtual-catalogs.d.ts), so the ESLint node resolver cannot see it.
+// eslint-disable-next-line import-x/no-unresolved
+import { availableLocales } from 'virtual:i18n-catalogs';
 
 /** Every locale the UI has code for. `en-XA` is the pseudo-locale that reveals clipped layouts. */
 export const KNOWN_LOCALES = ['en', 'fr-CA', 'en-XA'] as const;
@@ -15,11 +19,13 @@ export type Locale = (typeof KNOWN_LOCALES)[number];
 export const DEFAULT_LOCALE: Locale = 'en';
 
 /**
- * Locales a user can get today. Only `en` for now: a later commit in this PR derives
- * this list from the catalogs the build exposes, `fr-CA` joins once its reviewed
- * catalog ships, and `en-XA` is present only on pseudo-locale builds.
+ * Locales a user can get: the known locales whose catalog file (`src/i18n/<locale>.json`)
+ * the build found, in `KNOWN_LOCALES` order. `en` is always there because `en.json`,
+ * the extracted English source catalog, is committed. `fr-CA` joins the moment its
+ * reviewed catalog lands, and `en-XA` only on builds that write the pseudo-locale
+ * catalog. A catalog file nobody declared in `KNOWN_LOCALES` enables nothing.
  */
-export const ENABLED_LOCALES: readonly Locale[] = ['en'];
+export const ENABLED_LOCALES: readonly Locale[] = KNOWN_LOCALES.filter((locale) => availableLocales.includes(locale));
 
 /** localStorage key: the user's explicit locale choice, always an exact `ENABLED_LOCALES` member. */
 export const LOCALE_STORAGE_KEY = 'idp-locale';
