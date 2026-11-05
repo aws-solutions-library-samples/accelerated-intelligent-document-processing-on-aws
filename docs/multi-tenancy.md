@@ -18,7 +18,7 @@ This walkthrough sets up a tenant, its prefix mapping and a user, shows the
 safeguards and the strict-mode upload checks, and runs the `idp-cli tenancy`
 commands (about 4.5 minutes):
 
-<!-- DEMO VIDEO PLACEHOLDER: replace this line with the GitHub asset URL for the tenant isolation demo -->
+https://github.com/user-attachments/assets/27e12b5d-0595-4c24-a4f3-ab5eaff6d6f7
 
 ## How isolation works
 
