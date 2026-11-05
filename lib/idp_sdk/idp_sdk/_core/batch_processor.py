@@ -18,7 +18,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from idp_sdk._core.manifest_parser import parse_manifest
-from idp_sdk._core.stack_info import StackInfo
+from idp_sdk._core.stack_info import StackInfo, tracking_table_name
 
 logger = logging.getLogger(__name__)
 
@@ -1037,10 +1037,16 @@ class BatchProcessor:
         Returns:
             List of run records (RunId, CompletionTime, ConfigVersion,
             FileCount, ManifestUri, ...).
+
+        Raises:
+            IDPResourceNotFoundError: If the stack's tracking table cannot be
+                resolved
         """
         from boto3.dynamodb.conditions import Key
 
-        table = self.dynamodb.Table(self.resources["TrackingTable"])
+        table = self.dynamodb.Table(
+            tracking_table_name(self.resources, self.stack_name)
+        )
         runs: List[Dict] = []
         kwargs: Dict = {
             "KeyConditionExpression": Key("PK").eq(f"doc#{document_id}")

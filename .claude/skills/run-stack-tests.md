@@ -9,8 +9,8 @@ on-demand `make stacktest-*` targets because standing up ~6 stacks at once in on
 pipeline burst the account-wide AWS control planes (CloudWatch Logs
 create-consistency, CodeBuild role-trust propagation, IAM CreatePolicy rate
 limit) and caused flaky failures unrelated to the code under test. In CI the
-deploy-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE, Jobs API)
-run only on the **weekly variant-probe schedule** (a GitLab project setting; they
+deploy-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE, Jobs API,
+tenant isolation) run only on the **weekly variant-probe schedule** (a GitLab project setting; they
 run only while it is active), never on the nightly;
 `stacktest-rbac` is `make api-test`, which every integration run already executes
 as a step of the primary suite, and the other `stacktest-*` targets run only by
@@ -30,6 +30,7 @@ hand; see
 | `make stacktest-waf` | WAF IP-allow-list WebACL association | stack or self-deploy |
 | `make stacktest-hosting-private` | PRIVATE (VPC) API hosting | **VPC** + stack/self-deploy |
 | `make stacktest-jobsapi` | Jobs REST API (`EnableJobsApi`) | **VPC** + stack/self-deploy |
+| `make stacktest-tenancy` | Tenant isolation: deploys `TenantIsolationMode=Strict` and runs the `verify-tenant-isolation` harness (cross-tenant read and upload refusals, strict-mode ingest refusals, generated access points). Processes a real document per tenant | Strict stack or self-deploy; credentials that can create IAM roles and a CloudFormation stack |
 | `make stacktest-seller` | Seller Entitlement Service e2e (deploys + tears down its own stack) | seller-account creds; **no** listing needed |
 | `make stacktest-benchmark` | Release-vs-release benchmark audit (alias) | see run-benchmarks |
 | `make stacktest-upgrade` | In-place upgrade test pointer | see test-upgrade |
@@ -85,6 +86,31 @@ outcome, not just the findings:
   `zap-rules.conf` and flip the `# TODO promote` gate in `validate_zap_dast`.
 - To tune what's reported: edit `scripts/sdlc/zap-rules.conf` (IGNORE known-noise
   plugin ids, or WARN/FAIL to change severity).
+
+## Tenant isolation (`tenancy`)
+
+`make stacktest-tenancy` runs `scripts/security/live_checks/verify_tenant_isolation.py`
+— the same harness as `make verify-tenant-isolation` — through the probe runner, so
+its verdict is the weekly probe's verdict.
+
+- **Against an existing stack** (`STACK_NAME=…`), that stack must already be deployed
+  with `TenantIsolationMode=Strict`; the harness refuses any other mode with exit 2
+  and creates nothing. Prefer `make verify-tenant-isolation STACK_NAME=…` there
+  if you want its confirmation prompt; the probe form passes `--yes`.
+- **Self-deploy** (`TEMPLATE_URL=…`) deploys a fresh Strict stack, runs the harness
+  and tears the stack down, exactly as the weekly run does.
+- Either way it creates and removes two throwaway Configuration Profiles, two tenants
+  over `tenancy-verify/a/` and `tenancy-verify/b/`, throwaway Cognito users, two IAM
+  roles `idp-tiv-uploader-<tenant>-<hex>` (no permissions boundary) and an access point
+  stack `<stack>-tiv-ap-<hex>`, all in a `finally`. A run killed before that
+  `finally` can leave the two roles behind: no CI reaper removes them, so list
+  `idp-tiv-uploader-*` roles after an interrupted run.
+- It passes only when the harness exits 0, prints a complete `<passed>/<total> PASS`
+  tally, and reports at least one `verify:` row (the cross-tenant read refusals).
+  The tally is printed as `tenancy_checks` on success; on failure the first failing
+  rows are in the error.
+- Pass `REGION=` when the stack is not in `us-east-1`; the runner reads
+  `AWS_DEFAULT_REGION`, while `make verify-tenant-isolation` defaults to `us-west-2`.
 
 ## VPC tests (`hosting-private`, `jobsapi`) — auto-discover a VPC, then CONFIRM
 

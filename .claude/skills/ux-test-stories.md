@@ -486,9 +486,9 @@ of its earlier story jobs whether they posted or not, and past that one reply po
 `make ai-ux-test-stories-local MR=<iid>`. The `ai_ux_test_stories_nightly`
 shards run the nightly set against `idp-ux-nightly` after the deploy, and
 `ai_ux_test_stories_digest` writes a digest and, in the scheduled pipeline, compares the
-night with the scheduled nights before it and posts a one-line summary to Slack: to
-`UX_TEST_STORIES_SLACK_WEBHOOK_URL` when it is set, and otherwise to the nightly
-channel's `SLACK_WEBHOOK_URL`, as `🧭 UX STORIES · …`. A bad result counts as a regression when a
+night with the scheduled nights before it and posts a one-line summary to Slack, as
+`🧭 UX STORIES · …`, when `UX_TEST_STORIES_SLACK_WEBHOOK_URL` is set: a Workflow
+Builder webhook of its own, never the integration build's `SLACK_WEBHOOK_URL`. A bad result counts as a regression when a
 second attempt confirms it; one whose confirming re-run did not fit in the night's
 budget or time is listed too, marked unconfirmed in the digest and on Slack, and the
 record's `reruns_not_run` names it. `UX_TEST_STORIES` set to `mr` or
