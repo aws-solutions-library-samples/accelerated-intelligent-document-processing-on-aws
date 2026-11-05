@@ -19,7 +19,7 @@ all eight have a row in the record — including any that could not run, with th
 |---|---|---|
 | A | Offline gates — SRT, `make test`, lint, typecheck, dep-audit, build, **coverage** | the tree is self-consistent and packages cleanly |
 | B | Security — SRT + RBAC static + RBAC dynamic + ZAP, curated | authorization and the deployed API surface |
-| C | Deploy variants — hosting global/private, WAF, Jobs API, seller | the template deploys in each shipped configuration |
+| C | Deploy variants — hosting global/private, WAF, Jobs API, tenant isolation, seller | the template deploys in each shipped configuration, and `TenantIsolationMode=Strict` keeps tenants apart |
 | D | Template transforms — `--headless`, `--govcloud` | the *transformed* templates deploy and process a document |
 | E | In-place upgrade `PREV → VERSION` | the customer upgrade path, and what it changed in extracted values |
 | F | Benchmarks — release A/B, then the guidance refresh | whether this release regressed, and what a customer should configure |
@@ -162,6 +162,7 @@ make stacktest-hosting-global  TEMPLATE_URL=$URL REGION=<region> ADMIN_EMAIL=<em
 make stacktest-waf             TEMPLATE_URL=$URL REGION=<region> ADMIN_EMAIL=<email>
 make stacktest-hosting-private TEMPLATE_URL=$URL REGION=<region> ADMIN_EMAIL=<email> VPC_ID=… SUBNET_IDS=… LAMBDA_SG_ID=… APIGW_VPCE_ID=…
 make stacktest-jobsapi         TEMPLATE_URL=$URL REGION=<region> ADMIN_EMAIL=<email> VPC_ID=… SUBNET_IDS=… LAMBDA_SG_ID=… APIGW_VPCE_ID=…
+make stacktest-tenancy         TEMPLATE_URL=$URL REGION=<region> ADMIN_EMAIL=<email>
 make stacktest-seller                                    # REGION deliberately UNSET — see below
 ```
 
@@ -170,6 +171,12 @@ make stacktest-seller                                    # REGION deliberately U
   `execute-api` interface endpoint. Discover it with the `describe-*` calls in
   `run-stack-tests.md` and **state in the record which VPC was used** (redacted).
   Only if that VPC is missing do you stop and ask; never create one unasked.
+- **Tenant isolation records its tally.** `stacktest-tenancy` deploys a
+  `TenantIsolationMode=Strict` stack and runs the `verify-tenant-isolation` harness;
+  write its `<passed>/<total>` into the record, and treat a row count that moved from
+  PREV as a finding to explain, as for the RBAC check count. It creates two IAM roles
+  and an access point stack of its own and removes them; after an interrupted run,
+  check for leftover `idp-tiv-uploader-*` roles.
 - **Seller: `REGION` is still left unset, but no longer to dodge a bug.** `stacktest.sh`
   now forwards `--region` to `dynamic_activation_test.py`, with a comment naming the
   hazard, so the three refusal assertions can no longer pass **vacuously** on API

@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import subprocess
@@ -8322,6 +8323,117 @@ def validate_zap_dast(stack_name):
             pass
 
 
+# The live tenant-isolation harness the `tenancy` probe runs, and the document it
+# pushes through the stack. Both are the ones `make verify-tenant-isolation` uses,
+# so the probe and the manual check cannot drift apart.
+_REPO_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
+)
+TENANT_ISOLATION_HARNESS = os.path.join(
+    _REPO_ROOT, "scripts", "security", "live_checks", "verify_tenant_isolation.py"
+)
+TENANT_ISOLATION_DOCUMENT = os.path.join(_REPO_ROOT, "samples", "lending_package.pdf")
+# The harness bounds each of its own waits (document processing, the access point
+# stack's create and delete) at ten minutes; this is the outer backstop.
+TENANT_ISOLATION_TIMEOUT_SECONDS = 60 * 60
+
+# The harness prints one row per check as "<OUTCOME>  <check> — <detail>" and ends
+# with "<passed>/<total> PASS". The outcomes are idp_sdk's TenantVerifyOutcome values
+# (SKIP among them, which the harness counts as not passing).
+_TENANCY_TALLY_RE = re.compile(r"^(\d+)/(\d+) PASS\s*$", re.MULTILINE)
+TENANCY_ROW_OUTCOMES = ("PASS", "FAIL", "SKIP", "ERROR")
+_TENANCY_ROW_RE = re.compile(
+    rf"^({'|'.join(TENANCY_ROW_OUTCOMES)}) +(\S.*)$", re.MULTILINE
+)
+
+
+def _parse_tenancy_rows(stdout):
+    """(tally, rows) from the harness output: tally is (passed, total) or None."""
+    tallies = _TENANCY_TALLY_RE.findall(stdout or "")
+    tally = (int(tallies[-1][0]), int(tallies[-1][1])) if tallies else None
+    rows = [
+        (m.group(1), m.group(2).strip()) for m in _TENANCY_ROW_RE.finditer(stdout or "")
+    ]
+    return tally, rows
+
+
+def validate_tenant_isolation(stack_name):
+    """Run the live tenant-isolation harness against a TenantIsolationMode=Strict stack.
+
+    This is scripts/security/live_checks/verify_tenant_isolation.py, unchanged and
+    run as a subprocess, so a probe verdict means the same as a manual
+    `make verify-tenant-isolation` against the same stack. It declares two
+    throwaway tenants, asserts each one's users read their own document and are
+    refused the other's, asserts the strict-mode ingest refusals, deploys the
+    generated per-tenant access point template and asserts cross-tenant uploads are
+    refused, and removes everything it created in a finally.
+
+    Passes only when all of these hold, because each one alone has a vacuous form:
+      * the harness exited 0 (it exits 0 only when every row is PASS),
+      * it printed its final "<passed>/<total> PASS" tally with passed == total > 0
+        (an exit 0 with no tally means it never reached the end), and
+      * at least one row came from `client.tenancy.verify` — the cross-tenant
+        read refusals the probe exists for — so a run whose verify step returned
+        no checks cannot pass on the other rows alone.
+    """
+    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    cmd = " ".join(
+        shlex.quote(part)
+        for part in (
+            sys.executable,
+            TENANT_ISOLATION_HARNESS,
+            "--stack-name",
+            stack_name,
+            "--region",
+            region,
+            "--document",
+            TENANT_ISOLATION_DOCUMENT,
+            "--yes",
+        )
+    )
+    run = run_command(cmd, check=False, timeout=TENANT_ISOLATION_TIMEOUT_SECONDS)
+    tally, rows = _parse_tenancy_rows(getattr(run, "stdout", "") or "")
+    not_passed = [f"{outcome} {check}" for outcome, check in rows if outcome != "PASS"]
+    verify_rows = [check for _, check in rows if check.startswith("verify: ")]
+    result = {
+        "tenancy_checks": f"{tally[0]}/{tally[1]}" if tally else "no tally",
+        "tenancy_failed_checks": not_passed,
+    }
+
+    if run.returncode != 0:
+        detail = "; ".join(not_passed[:5]) or (run.stderr or "").strip()[-300:]
+        result.update(
+            success=False,
+            error=(
+                f"tenant-isolation harness exited {run.returncode} "
+                f"({result['tenancy_checks']}): {detail or 'no output'}"
+            ),
+        )
+        return result
+    if tally is None or tally[1] == 0 or tally[0] != tally[1]:
+        result.update(
+            success=False,
+            error=(
+                "tenant-isolation harness exited 0 without a complete PASS tally "
+                f"({result['tenancy_checks']}), so it did not demonstrably run"
+            ),
+        )
+        return result
+    if not verify_rows:
+        result.update(
+            success=False,
+            error=(
+                "tenant-isolation harness reported no `verify:` rows, so no "
+                "cross-tenant read refusal was asserted"
+            ),
+        )
+        return result
+
+    print(f"✅ Tenant isolation holds on {stack_name}: {result['tenancy_checks']} PASS")
+    result["success"] = True
+    return result
+
+
 def _capture_cf_events(result, *stack_names):
     """Snapshot CF failure events from candidate stacks before teardown.
 
@@ -8429,7 +8541,7 @@ DEFAULT_PROBE_MAX_CONCURRENCY = 8
 # deploy). Spreads the concurrent CreateLogGroup/CreateProject/CreatePolicy burst
 # that drives the AWS control-plane races (_TRANSIENT_DEPLOY_RACES + IAM rate
 # limit) so the same resource types across stacks don't overlap their create
-# windows. 120s × up to 5 probes = at most ~8min added to the LAST probe's start
+# windows. 120s per launch index, so the LAST probe starts (probes - 1) × 120s late
 # — negligible against a ~30-min deploy, and it prevents the burst rather than
 # recovering from it. Only applies when probes actually run (the weekly
 # variant-probe schedule, or IDP_RUN_PROBES=true). 0 disables.
@@ -8523,6 +8635,22 @@ PROBE_VARIANTS = [
         stack_suffix="zapdast",
         deploy_params={},
         validate_fn=validate_zap_dast,
+        requires_vpc=False,
+    ),
+    # Tenant isolation (TenantIsolationMode=Strict, no VPC). Runs the live
+    # tenant-isolation harness (validate_tenant_isolation): two throwaway tenants,
+    # cross-tenant read and upload refusals, the strict-mode ingest refusals and the
+    # generated per-tenant access points. Its own stack, because Strict changes the
+    # Input/Output bucket policies and refuses uploads outside every tenant's
+    # prefixes, which the primary suite's default-mode stack must not see. Unlike
+    # the structural probes above it processes a real document per tenant, and it
+    # creates two IAM roles and one CloudFormation stack of its own, all removed in
+    # the harness's finally.
+    Probe(
+        name="Tenant isolation (Strict, no VPC)",
+        stack_suffix="tenancy",
+        deploy_params={"TenantIsolationMode": "Strict"},
+        validate_fn=validate_tenant_isolation,
         requires_vpc=False,
     ),
     # --- Adding a future variant: one row + a validator ----------------------
@@ -9628,8 +9756,9 @@ def main():
     # Every CI stack (primary + all probes) uses the sentinel admin email that
     # makes the template SUPPRESS the Cognito invite email. No CI test signs in
     # via the emailed temp password (Step 12 RBAC creates its own users), and
-    # each stack's admin invite burns Cognito's low daily email quota — 6
-    # stacks/run (primary + 5 probes) exhausts it and rolls back the deploy.
+    # each stack's admin invite burns Cognito's low daily email quota — the
+    # primary plus every probe stack on a weekly run exhausts it and rolls back
+    # the deploy.
     # Must match the SuppressAdminInvite condition in template.yaml.
     admin_email = SUPPRESS_INVITE_ADMIN_EMAIL
     stack_name = generate_stack_name()
@@ -9736,7 +9865,7 @@ def main():
         # (IDP_PROBE_MAX_CONCURRENCY).
         #
         # DEFAULT OFF, and on in CI only for the WEEKLY variant-probe schedule.
-        # Standing up the primary + 5 probe stacks at once bursts the
+        # Standing up the primary and every probe stack at once bursts the
         # account-wide control planes (CWL log-group create consistency,
         # CodeBuild role-trust propagation, IAM CreatePolicy rate limit) — a
         # recurring source of flaky failures unrelated to the code under test.
