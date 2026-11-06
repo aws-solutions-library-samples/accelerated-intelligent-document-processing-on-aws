@@ -317,32 +317,59 @@ class PublishOperation:
                             )
 
             terraform_info: dict = {}
+            terraform_variants: dict = {}
             if terraform:
-                try:
-                    terraform_info = self.publish_terraform(
-                        source_dir=source_dir,
-                        bucket=bucket_full,
-                        prefix=prefix,
-                        region=region,
-                        version=version,
-                        public=public,
-                    )
-                except (IDPConfigurationError, IDPStackError) as e:
-                    return PublishResult(
-                        success=False,
-                        template_path=template_path,
-                        template_url=template_url,
-                        bucket=bucket_full,
-                        prefix=prefix,
-                        version=version,
-                        error=f"Terraform module publish failed: {e}",
-                    )
+                # The standard module, then one per variant this run published.
+                # A variant whose template this run did not upload is refused
+                # rather than read: the key may hold an older publish's template.
+                produced = {
+                    "headless": headless_template_url,
+                    "govcloud": govcloud_template_url,
+                }
+                wanted = [None] + [
+                    v
+                    for v, on in (("headless", headless), ("govcloud", govcloud))
+                    if on
+                ]
+                for variant in wanted:
+                    label = f"{variant} " if variant else ""
+                    try:
+                        if variant and not produced[variant]:
+                            raise IDPStackError(
+                                f"the {variant} template was not published"
+                            )
+                        info = self.publish_terraform(
+                            source_dir=source_dir,
+                            bucket=bucket_full,
+                            prefix=prefix,
+                            region=region,
+                            version=version,
+                            public=public,
+                            variant=variant,
+                        )
+                    except (IDPConfigurationError, IDPStackError) as e:
+                        return PublishResult(
+                            success=False,
+                            template_path=template_path,
+                            template_url=template_url,
+                            headless_template_url=headless_template_url,
+                            govcloud_template_url=govcloud_template_url,
+                            bucket=bucket_full,
+                            prefix=prefix,
+                            version=version,
+                            error=f"Terraform {label}module publish failed: {e}",
+                        )
+                    if variant:
+                        terraform_variants[variant] = info
+                    else:
+                        terraform_info = info
 
             return PublishResult(
                 success=True,
                 terraform_module_url=terraform_info.get("moduleUrl"),
                 terraform_module_sha256=terraform_info.get("sha256"),
                 terraform_pointer_url=terraform_info.get("pointerUrl"),
+                terraform_variant_modules=terraform_variants,
                 template_path=template_path,
                 template_url=template_url,
                 headless_template_path=headless_template_path,
@@ -367,18 +394,24 @@ class PublishOperation:
         *,
         public: bool = False,
         template_key: Optional[str] = None,
+        variant: Optional[str] = None,
     ) -> dict:
         """Translate a published main template to a Terraform module and upload it.
 
         The main template is read back from ``s3://<bucket>/<template_key>``
-        (default ``<prefix>/idp-main.yaml``, where :meth:`build` puts it), and
-        translated online: nested templates are fetched by their ``TemplateURL``.
-        The module tree is zipped deterministically and uploaded to the same
-        bucket and prefix as the templates::
+        (default ``<prefix>/idp-main.yaml``, or ``<prefix>/idp-<variant>.yaml``
+        for a variant, where :meth:`build` puts them), and translated online:
+        nested templates are fetched by their ``TemplateURL``. The module tree is
+        zipped deterministically and uploaded to the same bucket and prefix as
+        the templates::
 
             <prefix>/<version>/terraform/idp-terraform-<version>.zip
             <prefix>/<version>/terraform/idp-terraform-<version>.zip.sha256
             <prefix>/terraform/idp-terraform-latest.json
+
+        A variant (``headless`` or ``govcloud``) is named in all three keys:
+        ``idp-terraform-<variant>-<version>.zip`` and
+        ``idp-terraform-<variant>-latest.json``.
 
         Args:
             source_dir: Source checkout holding ``terraform/translator``.
@@ -388,6 +421,8 @@ class PublishOperation:
             version: Published version (labels the deployment, names the zip).
             public: Apply ``public-read`` to the uploaded objects.
             template_key: Key of the published main template.
+            variant: ``None`` for the standard template, or ``headless`` /
+                ``govcloud``.
 
         Returns:
             ``{"moduleUrl", "sha256", "pointerUrl", "version"}``; ``moduleUrl``
@@ -399,13 +434,16 @@ class PublishOperation:
         """
         from idp_sdk._core import terraform_deploy as tf
 
+        tf.check_variant(variant)
         if not version:
             raise IDPConfigurationError("a version is required to publish a module")
         source_dir = os.path.abspath(source_dir)
         work = os.path.join(source_dir, ".aws-sam", "terraform")
+        if variant:
+            work = os.path.join(work, variant)
         os.makedirs(work, exist_ok=True)
-        key = template_key or f"{prefix}/idp-main.yaml"
-        local_template = os.path.join(work, "idp-main.yaml")
+        key = template_key or tf.variant_template_key(prefix, variant)
+        local_template = os.path.join(work, os.path.basename(key))
         s3 = boto3.client("s3", region_name=region)
         try:
             s3.download_file(bucket, key, local_template)
@@ -425,6 +463,7 @@ class PublishOperation:
                 region=region,
                 version=version,
                 public=public,
+                variant=variant,
             )
         except Exception as e:
             raise IDPStackError(f"Terraform module upload failed: {e}") from e
@@ -590,6 +629,7 @@ class PublishOperation:
         stack_name: str = "IDP",
         terraform_module_url: Optional[str] = None,
         terraform_pointer_url: Optional[str] = None,
+        terraform_variant_modules: Optional[dict] = None,
     ) -> None:
         """Print deployment URLs and 1-click launch links.
 
@@ -601,6 +641,8 @@ class PublishOperation:
             stack_name: Default stack name for launch URL.
             terraform_module_url: Terraform module zip URL (optional).
             terraform_pointer_url: Terraform latest-pointer URL (optional).
+            terraform_variant_modules: Variant name -> ``{"moduleUrl",
+                "pointerUrl", ...}`` for the variant modules (optional).
         """
         if "us-gov" in region:
             domain = "amazonaws-us-gov.com"
@@ -637,6 +679,12 @@ class PublishOperation:
             if terraform_pointer_url:
                 print("  Latest pointer:")
                 print(f"  {terraform_pointer_url}")
+        for variant, info in sorted((terraform_variant_modules or {}).items()):
+            print(f"\n🧱 Terraform {variant} module source:")
+            print(f"  {info.get('moduleUrl')}")
+            if info.get("pointerUrl"):
+                print("  Latest pointer:")
+                print(f"  {info['pointerUrl']}")
 
         if govcloud_template_url:
             encoded_gc = quote(govcloud_template_url, safe=":/?#[]@!$&'()*+,;=")

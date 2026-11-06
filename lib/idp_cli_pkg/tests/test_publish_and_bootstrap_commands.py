@@ -237,6 +237,7 @@ class TestPublishResultHandling:
             govcloud_template_url="https://s3/idp-govcloud.yaml",
             terraform_module_url=None,
             terraform_pointer_url=None,
+            terraform_variant_modules={},
         )
 
     def test_a_missing_template_url_becomes_an_empty_string_not_none(

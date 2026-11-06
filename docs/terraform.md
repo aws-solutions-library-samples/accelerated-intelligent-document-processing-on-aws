@@ -85,6 +85,14 @@ For a release version `<version>`, the files are:
 | `<prefix>/<version>/terraform/idp-terraform-<version>.zip.sha256` | the SHA-256 checksum of the archive |
 | `<prefix>/terraform/idp-terraform-latest.json` | `{"version", "moduleUrl", "sha256"}` for the newest published module |
 
+The headless and GovCloud template variants, when a publish produces them, are
+published as modules of their own beside the standard one, with the variant in each
+name: `<prefix>/<version>/terraform/idp-terraform-<variant>-<version>.zip`, its
+`.zip.sha256`, and `<prefix>/terraform/idp-terraform-<variant>-latest.json`, where
+`<variant>` is `headless` or `govcloud`. The headless module has no web UI, Cognito,
+agents or knowledge base, and so no `admin_email` variable; the GovCloud module keeps
+the UI, has no CloudFront resources, and serves the UI through API Gateway.
+
 The module source URL is the HTTPS S3 URL of the zip, for example
 `https://s3.us-west-2.amazonaws.com/<bucket>/<prefix>/<version>/terraform/idp-terraform-<version>.zip`.
 Terraform accepts an HTTPS URL ending in `.zip` as a module source, downloads it at
@@ -235,6 +243,7 @@ a `main.tf` with the `aws` and `awscc` providers configured for the Region and a
 | `--admin-email` | the administrator's email address, which becomes `admin_email` |
 | `--parameters "K=V,K2=V2"` | settings by their CloudFormation parameter names, as on the CloudFormation path; an unknown name is an error |
 | `--terraform-module-url URL` | the module source URL; by default the CLI uses the latest published module for the Region, chosen the same way the CloudFormation deploy chooses its default template |
+| `--headless` / `--govcloud` | use the latest headless or GovCloud module instead of the standard one; they cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless` |
 | `--terraform-dir DIR` | the directory to write, instead of `./idp-terraform/<stack-name>` |
 | `--terraform-bin` | `terraform` or `tofu` |
 | `--wait` | accepted as on the CloudFormation path |
@@ -412,8 +421,10 @@ CloudFormation deployment of the same version, but these things differ:
 
 - The feature-platform extensions (see [Feature Platform](./feature-platform.md)) still
   install as their own CloudFormation stacks, beside the Terraform deployment.
-- The `--headless` and `--govcloud` template variants are not yet published as
-  Terraform modules. Only the standard template is.
+- A headless or GovCloud module is published only by a publish that also produced
+  that template variant (`idp-cli publish --terraform --headless --govcloud`). If
+  `idp-terraform-<variant>-latest.json` is not present in your Region's bucket, that
+  variant has not been published there as a module.
 - `aws cloudformation list-stack-resources --stack-name <name>` shows only the label's
   one resource. The translation to the deployment's real resources is done by the
   SDK's hook, not by AWS, so the AWS CLI, the CloudFormation console's Resources tab
