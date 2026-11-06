@@ -179,9 +179,10 @@ gh pr create --repo <repo> --base develop --head fix/<slug> \
   --title "fix(<area>): <what it fixes>" --body "..."
 ```
 
-**`--base develop` is not optional.** The default branch is `main`, so an omitted base
-targets `main`, and a wrong base is the first thing any review of this repository
-flags.
+**Pass `--base develop` explicitly.** `develop` is the repository's default branch, so
+an omitted base targets it, but an explicit base does not depend on a repository
+setting that can change. A wrong base is the first thing any review of
+this repository flags.
 
 Then **verify the PR's head is your commit** before waiting on anything:
 

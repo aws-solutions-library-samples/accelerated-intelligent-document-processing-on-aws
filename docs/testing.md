@@ -315,8 +315,8 @@ running basedpyright, not by inspecting the JSON.
 
 Parity means both CIs *run* a gate. Whether a red gate can *stop* a merge is a
 repository setting, and today it does not: **neither `develop` nor `main` has any
-branch protection** — and `main` is the default branch and the one releases are cut
-from — so every gate in this table is advisory. A pull request can be merged with
+branch protection** — and `main` is the branch releases are cut from — so every
+gate in this table is advisory. A pull request can be merged with
 all checks red, and because the gate workflows are `pull_request`-only, a direct
 push to either branch runs none of them.
 

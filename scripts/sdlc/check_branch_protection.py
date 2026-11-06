@@ -234,10 +234,10 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 DEFAULT_REPO = (
     "aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws"
 )
-# `develop` is what pull requests target, so it is the default here. It is NOT the
-# repository's default branch — `main` is, and `main` is where releases are cut
-# from — so answering the question for this repository takes two runs. Both are
-# unprotected today; see the module docstring.
+# `develop` is what pull requests target, and the repository's default branch, so
+# it is the default here. Releases are cut from `main`, which matters as much, so
+# answering the question for this repository takes two runs. Both are unprotected
+# today; see the module docstring.
 DEFAULT_BRANCH = "develop"
 SHARED_BRANCHES = ("develop", "main")
 
