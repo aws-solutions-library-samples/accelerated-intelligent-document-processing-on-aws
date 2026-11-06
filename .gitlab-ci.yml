@@ -20,7 +20,7 @@ default:
 
 # Pipeline structure (see scripts/sdlc/docs/CI_TEST_COVERAGE.md for the full
 # trigger matrix):
-#   - fast_checks: the whole no-AWS gate, as SEVEN parallel jobs on every push and
+#   - fast_checks: the whole no-AWS gate, as EIGHT parallel jobs on every push and
 #     every MR. Nothing in this stage depends on anything else in it, so they all
 #     carry `needs: []` and the stage costs its SLOWEST member rather than their
 #     sum.
@@ -491,6 +491,48 @@ ui_tests:
     # diagnostic in the log at all, which is the worst shape a CI failure can have.
     # It silences console output from tests only; failure output is unaffected.
     - (cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent)
+
+# The Terraform offline gate: translate template.yaml with terraform/translator,
+# then `init -backend=false` and `validate` the generated module with every pinned
+# Terraform and OpenTofu release. It deploys nothing and needs no AWS credentials;
+# it does need network access, for the binaries (verified against the published
+# SHA256SUMS and the hashes committed in scripts/terraform_binaries.lock.json) and
+# the providers. See scripts/terraform_check.py for what it does and does not prove.
+#
+# Its own job, mirroring GitHub's `terraform_checks`, so that a release host or
+# registry outage reds this job alone. No Node and no UI dependencies: the
+# translator needs only aws-sam-translator and PyYAML, both in the lock.
+terraform_checks:
+  <<: *fast_check_job
+  tags:
+    - size:large
+
+  variables:
+    # Keep in step with TERRAFORM_*_VERSION / OPENTOFU_*_VERSION in the Makefile;
+    # scripts/tests/test_ci_gate_parity.py fails if this, GitHub's
+    # developer-tests.yml and the Makefile disagree.
+    TERRAFORM_CHECK_BINARIES: "terraform@1.7.5 terraform@1.17.1 tofu@1.7.10 tofu@1.13.9"
+    TERRAFORM_CHECK_CACHE: "$CI_PROJECT_DIR/.cache/idp-terraform-check"
+
+  # Verified binaries plus the provider plugin cache (~430 MB compressed). Keyed on
+  # the file that pins both and on the vendored awscc schema whose version the gate
+  # pins that provider to, so a pin change starts a clean cache. Both runner
+  # architectures can share an entry: binaries and providers are stored per
+  # platform inside it.
+  cache:
+    key:
+      prefix: terraform-check
+      files:
+        - scripts/terraform_binaries.lock.json
+        - terraform/translator/schemas/awscc.json
+    paths:
+      - .cache/idp-terraform-check/
+
+  before_script:
+    - *python_setup
+
+  script:
+    - make terraform-check
 
 deployment_validation:
   stage: deployment_validation

@@ -111,6 +111,12 @@ SHARED_GATES = [
     "scripts/sdlc/validate_service_role_permissions.py",
     "make srt-scan",
     "scripts/security/dep_audit.py",
+    # Offline Terraform translation of template.yaml, then `init -backend=false` and
+    # `validate` under each pinned Terraform/OpenTofu. Invoked directly, not through
+    # `lint-cicd`: it downloads binaries and providers, so it is its own job on both
+    # sides. Its version pins are asserted by
+    # test_terraform_check_binaries_are_pinned_consistently.
+    "make terraform-check",
 ]
 
 #: ``Makefile`` section headings every one of whose targets is scanned, because the
@@ -991,6 +997,85 @@ def test_cfn_lint_is_pinned_consistently() -> None:
             f"CFN_LINT_VERSION). CI would then run a different linter than "
             f"`make cfn-lint` does locally."
         )
+
+
+#: The four ``Makefile`` pins ``TERRAFORM_CHECK_BINARIES`` is composed from.
+TERRAFORM_CHECK_PINS = {
+    "TERRAFORM_FLOOR_VERSION": "terraform",
+    "TERRAFORM_LATEST_VERSION": "terraform",
+    "OPENTOFU_FLOOR_VERSION": "tofu",
+    "OPENTOFU_LATEST_VERSION": "tofu",
+}
+
+#: Platforms the two CIs' runners use: GitHub's ``ubuntu-latest`` and GitLab's
+#: arm64 pool. A pin with no committed hash for one of them fails only in that CI.
+TERRAFORM_CHECK_CI_PLATFORMS = ("linux_amd64", "linux_arm64")
+
+
+def _terraform_check_binaries_in_ci() -> list[tuple[str, str]]:
+    """``(label, value)`` of ``TERRAFORM_CHECK_BINARIES`` in each CI's job."""
+    gitlab = yaml.safe_load(GITLAB.read_text())
+    github = yaml.safe_load(GITHUB_TESTS.read_text())
+    found = [
+        (f"{GITLAB.name}:{name}", body["variables"]["TERRAFORM_CHECK_BINARIES"])
+        for name, body in gitlab.items()
+        if isinstance(body, dict)
+        and "TERRAFORM_CHECK_BINARIES" in (body.get("variables") or {})
+    ]
+    found += [
+        (f"{GITHUB_TESTS.name}:{name}", body["env"]["TERRAFORM_CHECK_BINARIES"])
+        for name, body in (github.get("jobs") or {}).items()
+        if "TERRAFORM_CHECK_BINARIES" in (body.get("env") or {})
+    ]
+    return found
+
+
+@pytest.mark.unit
+def test_terraform_check_binaries_are_pinned_consistently() -> None:
+    """Both CIs validate with exactly the binaries the ``Makefile`` pins.
+
+    The pins are exact for the reason ``CFN_LINT_VERSION`` is: a new release can
+    change the verdict with no code change. Each CI passes the list explicitly, so
+    a ``Makefile`` bump that misses one of them would leave that CI on the old
+    releases while local runs moved, which is the drift this module exists to find.
+    Every pinned binary must also have a committed archive hash for both CI
+    platforms, or the installer refuses it in one CI only.
+    """
+    pins = {name: _declared_version(name) for name in TERRAFORM_CHECK_PINS}
+    expected = " ".join(
+        f"{tool}@{pins[name]}" for name, tool in TERRAFORM_CHECK_PINS.items()
+    )
+    declared = re.search(
+        r"^TERRAFORM_CHECK_BINARIES\s*\??=\s*(.*)$", MAKEFILE.read_text(), re.MULTILINE
+    )
+    assert declared, "TERRAFORM_CHECK_BINARIES is no longer declared in the Makefile"
+    composed = declared.group(1)
+    for name in TERRAFORM_CHECK_PINS:
+        assert f"$({name})" in composed, (
+            f"TERRAFORM_CHECK_BINARIES no longer includes $({name})"
+        )
+
+    found = _terraform_check_binaries_in_ci()
+    labels = {label.split(":", 1)[0] for label, _ in found}
+    assert labels == {GITLAB.name, GITHUB_TESTS.name}, (
+        f"TERRAFORM_CHECK_BINARIES must be set in a job on both sides; found {found}"
+    )
+    for label, value in found:
+        assert value.split() == expected.split(), (
+            f"{label} passes TERRAFORM_CHECK_BINARIES={value!r}, but the Makefile "
+            f"pins {expected!r}. Keep the two CI configs in step with it."
+        )
+
+    lock = json.loads(
+        (REPO_ROOT / "scripts" / "terraform_binaries.lock.json").read_text()
+    )["binaries"]
+    for spec in expected.split():
+        for platform in TERRAFORM_CHECK_CI_PLATFORMS:
+            assert platform in lock.get(spec, {}), (
+                f"{spec} has no committed hash for {platform} in "
+                f"scripts/terraform_binaries.lock.json; run "
+                f"`python3 scripts/terraform_check.py --update-lock {spec}`."
+            )
 
 
 def _lint_debt_module():

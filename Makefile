@@ -718,6 +718,35 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings c
 cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) in full
 	@$(MAKE) --no-print-directory cfn-lint CFN_LINT_SHOW_WARNINGS=1
 
+# Terraform offline gate: translate template.yaml with terraform/translator, then
+# `init -backend=false` and `validate` the generated module under each binary in
+# TERRAFORM_CHECK_BINARIES. It proves the generated HCL loads and type-checks
+# against the provider schemas; it plans and deploys nothing, so AWS-side
+# rejections are out of its reach. See scripts/terraform_check.py.
+#
+# Pinned for the reason CFN_LINT_VERSION is. The floor is the oldest release the
+# generated versions.tf admits (`required_version = ">= 1.7.0"`), the other is the
+# latest stable when last bumped; both CI configs pass the same four versions and
+# scripts/tests/test_ci_gate_parity.py fails if any of them drift. A new version
+# also needs its archive hashes in scripts/terraform_binaries.lock.json:
+#   python3 scripts/terraform_check.py --update-lock terraform@<v>
+TERRAFORM_FLOOR_VERSION := 1.7.5
+TERRAFORM_LATEST_VERSION := 1.17.1
+OPENTOFU_FLOOR_VERSION := 1.7.10
+OPENTOFU_LATEST_VERSION := 1.13.9
+TERRAFORM_CHECK_BINARIES ?= terraform@$(TERRAFORM_FLOOR_VERSION) terraform@$(TERRAFORM_LATEST_VERSION) tofu@$(OPENTOFU_FLOOR_VERSION) tofu@$(OPENTOFU_LATEST_VERSION)
+# Provider versions are pinned in scripts/terraform_binaries.lock.json, beside the
+# binaries' hashes, so both CI caches can key on one file.
+# Verified binaries and the provider plugin cache. Outside the checkout by default
+# (the plugin cache is ~2 GB, which would otherwise sit inside every scanner's walk);
+# CI points it at a cached directory.
+TERRAFORM_CHECK_CACHE ?= $(HOME)/.cache/idp-terraform-check
+
+terraform-check: ## Translate template.yaml to Terraform offline, then init + validate it with each pinned Terraform/OpenTofu (needs network for binaries and providers)
+	@$(PYTHON) scripts/terraform_check.py \
+		--binaries "$(TERRAFORM_CHECK_BINARIES)" \
+		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
+
 # Deliberately NOT part of `lint`, `fastlint` or `lint-cicd`, and deliberately NOT
 # in test_ci_gate_parity.py's SHARED_GATES. It needs network access and a token
 # with administration:read, and on this repository it reports "not protected" on
@@ -866,6 +895,9 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running feature platform tests..."
 	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
+	@echo "Running Terraform translator and bridge tests..."
+	cd terraform/translator && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
+	cd terraform/bridge && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
 	cd feature-platform/feature-template/feature-api && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
 	@# These three ran in NO CI gate until #974. `make test` picked them up via
@@ -1225,7 +1257,7 @@ ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make ux-test STACK_NAME=<stack-name> [REGION=... GROUP=...])
 endif
 	@echo "Creating a throwaway UX-test session for $(STACK_NAME)..."
-	@$(PYTHON) scripts/ux_test_session.py setup $(STACK_NAME) \
+	@$(RUN_FIRST_PARTY) scripts/ux_test_session.py setup $(STACK_NAME) \
 	    --group $(if $(GROUP),$(GROUP),Admin) \
 	    $(if $(REGION),--region $(REGION),)
 	@echo -e "$(YELLOW)Now drive the flows in scripts/ux_flows.yaml — see .claude/skills/ux-test.md$(NC)"

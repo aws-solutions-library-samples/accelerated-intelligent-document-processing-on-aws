@@ -141,7 +141,7 @@ class TestDeployTerraform:
     @pytest.mark.parametrize(
         "extra,flag",
         [
-            (["--headless"], "--headless"),
+            (["--custom-config", "./c.yaml"], "--custom-config"),
             (["--template-url", "https://x/t.yaml"], "--template-url"),
             (["--tags", "a=b"], "--tags"),
             (["--max-concurrent", "5"], "--max-concurrent"),
@@ -187,6 +187,81 @@ class TestDeployTerraform:
             )
         assert result.exit_code == 1
         assert "was not found on PATH" in result.output
+
+
+class TestDeployTerraformVariants:
+    POINTER = (
+        "https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/"
+        "artifacts/genai-idp/terraform/idp-terraform-{}-latest.json"
+    )
+
+    @pytest.mark.parametrize("variant", ["headless", "govcloud"])
+    def test_a_variant_selects_its_own_pointer(self, runner, variant):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    f"--{variant}",
+                    "--stack-name",
+                    "tfidp",
+                    "--admin-email",
+                    "a@example.com",
+                    "--region",
+                    "us-west-2",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        kwargs = client.stack.deploy_terraform.call_args.kwargs
+        assert kwargs["pointer_url"] == self.POINTER.format(variant)
+        assert kwargs["module_url"] is None
+        # Headless has no Cognito, so no AdminEmail; GovCloud keeps the UI.
+        expected_email = None if variant == "headless" else "a@example.com"
+        assert kwargs["admin_email"] == expected_email
+        client.stack.deploy.assert_not_called()
+
+    def test_headless_and_govcloud_together_are_refused(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--headless",
+                    "--govcloud",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+        client.stack.deploy_terraform.assert_not_called()
+
+    def test_a_variant_with_an_explicit_module_url_is_refused(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--govcloud",
+                    "--terraform-module-url",
+                    "https://s3.us-west-2.amazonaws.com/b/m.zip",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "--terraform-module-url" in result.output
+        client.stack.deploy_terraform.assert_not_called()
 
 
 class TestDeleteTerraform:
@@ -279,6 +354,7 @@ class TestPublishTerraform:
         assert result.exit_code == 0, result.output
         assert client.publish.build.call_args.kwargs["terraform"] is True
         printed = client.publish.print_deployment_urls.call_args.kwargs
+        assert printed["terraform_variant_modules"] == {}
         assert printed["terraform_module_url"].endswith("idp-terraform-1.zip")
         assert printed["terraform_pointer_url"].endswith("idp-terraform-latest.json")
 
