@@ -821,6 +821,10 @@ def retained_report(state: Dict[str, Any], removed: Iterable[str]) -> Dict[str, 
     for res in _state_resources(state):
         if res.get("address") not in wanted:
             continue
+        if str(res.get("type", "")).startswith(("aws_s3_bucket_", "time_static")):
+            # A retained bucket's settings (encryption, versioning, ...) are
+            # separate Terraform resources kept with it; report the bucket once.
+            continue
         vals = res.get("values") or {}
         physical = next((vals[a] for a in _PHYSICAL_ATTRS if vals.get(a)), None)
         report[_category(res.get("type", ""))].append(

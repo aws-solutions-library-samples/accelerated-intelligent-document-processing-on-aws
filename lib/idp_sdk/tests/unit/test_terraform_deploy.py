@@ -1063,3 +1063,38 @@ class TestFetch:
     def test_a_non_https_url_is_refused(self):
         with pytest.raises(IDPConfigurationError, match="HTTPS"):
             tf.fetch_url("http://example.com/m.zip")
+
+
+def test_a_retained_buckets_settings_are_reported_with_the_bucket_not_as_other():
+    state = {
+        "values": {
+            "root_module": {
+                "child_modules": [
+                    {
+                        "address": "module.idp",
+                        "resources": [
+                            {
+                                "address": "module.idp.aws_s3_bucket.b",
+                                "type": "aws_s3_bucket",
+                                "values": {"bucket": "stk-b-1"},
+                            },
+                            {
+                                "address": "module.idp.aws_s3_bucket_versioning.b_versioning",
+                                "type": "aws_s3_bucket_versioning",
+                                "values": {"bucket": "stk-b-1"},
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+    report = tf.retained_report(
+        state,
+        [
+            "module.idp.aws_s3_bucket.b",
+            "module.idp.aws_s3_bucket_versioning.b_versioning",
+        ],
+    )
+    assert [r["physical_id"] for r in report["s3_buckets"]] == ["stk-b-1"]
+    assert report["other"] == []
