@@ -1676,15 +1676,15 @@ Configuration management features:
 - **Web UI Configuration**: Update configurations through the web interface without stack redeployment
 - **Configuration Library**: Organized preset configurations for different document types
 - **Runtime Updates**: Changes take effect immediately without code deployment
-- **Version Control**: Configuration versioning for rollback capabilities
+- **Revision History**: Every save of a configuration profile cuts a numbered [revision](./configuration-profiles.md#revision-history) you can compare and restore
 
 ### Best Practices for Configuration Management
 
 1. **Use Configuration Library**: Leverage pre-built configurations for common use cases
 2. **Test Configuration Changes**: Thoroughly validate changes before production deployment
 3. **Monitor Performance**: Track metrics after configuration updates
-4. **Version Control**: Maintain configuration versions for rollback capabilities
-5. **Environment-Specific Configs**: Use different configurations for development and production
+4. **Use Revision History for Rollback**: Restore an earlier revision of a profile rather than keeping a separately named copy per iteration
+5. **Environment-Specific Configs**: Use separate configuration profiles for development and production
 6. **OCR Backend Selection**: Choose appropriate OCR backend based on document types and requirements
 
 ## Testing and Validation

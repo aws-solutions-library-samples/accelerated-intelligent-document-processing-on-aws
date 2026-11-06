@@ -68,7 +68,7 @@ Concierge support for customization, deployment, and integration of production u
 - **Cost Optimization**: Pay-per-use pricing model with built-in controls
 - **Comprehensive Monitoring**: Rich CloudWatch dashboard with detailed metrics and logs
 - **Web User Interface**: Modern UI for inspecting document workflow status and results
-- **Configuration Versioning**: Support for multiple configuration versions with version-specific processing and test comparison
+- **Configuration Profiles**: Multiple named configuration profiles with per-profile processing, a revision history for each, and test comparison across profiles and revisions (see [configuration-profiles.md](./docs/configuration-profiles.md))
 - **Document Versioning**: Every processing run of a document is retained as an immutable version — view, compare, download, and manage prior outputs (see [document-versions.md](./docs/document-versions.md))
 - **Human-in-the-Loop (HITL)**: Built-in review system for human validation workflows
 - **AI-Powered Evaluation**: Framework to assess accuracy against baseline data

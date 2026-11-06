@@ -11,13 +11,14 @@ On Create or Update:
   3. Downloads the bundled config preset (config-preset/pii-preprocessing.yaml,
      uploaded by the publisher under <FEATURE_ARTIFACT_PREFIX>/<FEATURE_VERSION>),
      INJECTS the preprocessing hook into its `preprocessing` section, and
-     invokes the host's `applyFeatureConfigPreset` resolver — creating a
-     NON-ACTIVE config version `pii-anonymizer-v<FEATURE_VERSION>` for an admin
-     to activate. (The hook travels inside the preset, not via a separate
-     registerFeatureHooks call, so activating that version brings the redaction
+     invokes the host's `applyFeatureConfigPreset` resolver — writing the
+     NON-ACTIVE configuration profile `pii-anonymizer` (each release is a new
+     revision of it) for an admin to activate. (The hook travels inside the
+     preset, not via a separate registerFeatureHooks call, so activating that
+     profile brings the redaction
      settings and hook together.) This standalone preset is a quick-start
      reference; the feature UI's Config Pairing wizard is the primary path for
-     wiring redaction onto an admin's existing working config version.
+     wiring redaction onto an admin's existing working configuration profile.
 
 On Delete:
   1. Deletes the copied UI bundle.
@@ -272,7 +273,7 @@ def _apply_config_preset() -> None:
 
     The publisher uploads the preset at the same relative path it has in the
     feature project (feature.yaml -> configPreset.path), under this version's
-    key prefix. The host writes it as a NON-ACTIVE config version — an admin
+    key prefix. The host writes it as a NON-ACTIVE configuration profile — an admin
     activates it from the Configuration UI; installing never silently changes
     the active configuration.
 

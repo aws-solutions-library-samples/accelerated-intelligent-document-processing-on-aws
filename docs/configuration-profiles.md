@@ -122,7 +122,7 @@ Configuration profiles fall into two categories, indicated by a **Type** badge i
 
 > **Tip:** To customize a managed configuration, click **Create profile** in the Configuration Profiles table and copy the managed profile into a new one. The original managed profile remains untouched and will continue to be updated with solution upgrades. If you have already made edits in the editor against the managed profile, use **Actions → Save current edits as new profile…** instead so those edits come along.
 
-For full details on managed configuration deployment and the config library, see [Configuration — Managed Configuration Versions](configuration.md#managed-configuration-versions).
+For full details on managed configuration deployment and the config library, see [Configuration — Managed Configuration Profiles](configuration.md#managed-configuration-profiles).
 
 ### Use Cases
 

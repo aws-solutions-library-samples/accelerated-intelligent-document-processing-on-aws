@@ -2033,7 +2033,7 @@ def _process_impl(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to use for processing (e.g., v1, v2); --config-version is the former name and still works",
+    help="Configuration profile to use for processing (e.g., default, lending); --config-version is the former name and still works",
 )
 @click.option(
     "--config-revision",
@@ -2276,7 +2276,7 @@ def reprocess(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to use for processing (e.g., v1, v2); --config-version is the former name and still works",
+    help="Configuration profile to use for processing (e.g., default, lending); --config-version is the former name and still works",
 )
 @click.option(
     "--config-revision",
@@ -5316,7 +5316,7 @@ def config_validate(
     "--config-version",
     "config_version",
     required=True,
-    help="Configuration profile to update (e.g., v1, v2). If the profile doesn't exist, it will be created. --config-version is the former name and still works.",
+    help="Configuration profile to update (e.g., default, lending). If the profile doesn't exist, it will be created. --config-version is the former name and still works.",
 )
 @click.option(
     "--version-description",
@@ -5466,7 +5466,7 @@ def config_upload(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile. --config-version is the former name and still works.",
+    help="Configuration profile to download (e.g., default, lending). If not specified, downloads the active profile. --config-version is the former name and still works.",
 )
 @click.option(
     "--config-revision",

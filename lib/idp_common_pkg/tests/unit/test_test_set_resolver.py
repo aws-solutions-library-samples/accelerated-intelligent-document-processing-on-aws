@@ -795,11 +795,11 @@ class TestTestSetResolver:
 
     @patch.dict(os.environ, _GET_TEST_SETS_ENV)
     def test_get_test_sets_passes_through_declared_config_version(self):
-        """A test set may DECLARE the config version Test Studio preselects.
+        """A test set may DECLARE the configuration profile Test Studio preselects.
 
         Needed by extension-deployed test sets: the Feature Platform names their
-        config presets `<featureId>-v<version>`, which can never equal the test
-        set id, so the id-matching convention cannot reach them.
+        preset profiles after the feature id, which need not equal any test set
+        id, so the id-matching convention cannot reach them.
         """
         with patch.object(test_set_index, "find_matching_files") as mock_find_files:
             mock_find_files.return_value = []

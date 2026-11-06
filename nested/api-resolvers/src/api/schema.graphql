@@ -1088,15 +1088,15 @@ type TestSet @aws_cognito_user_pools @aws_iam {
   summaryStatus: String
   # How long an annotation claim lasts before it returns to the queue.
   claimLeaseMinutes: Int
-  # Configuration version Test Studio should preselect when this test set is
+  # Configuration profile Test Studio should preselect when this test set is
   # chosen for a run. Optional: when absent, the UI falls back to matching a
-  # config version whose name equals the test set id (the convention the
-  # stack-managed benchmark sets rely on), then to the active version.
+  # profile whose name equals the test set id (the convention the stack-managed
+  # benchmark sets rely on), then to the active profile.
   #
   # Lets a test set DECLARE its configuration instead of depending on a name
-  # coincidence — needed by extension-deployed test sets, whose config presets
-  # are named `<featureId>-v<version>` by the Feature Platform and so can never
-  # match their own test set id.
+  # coincidence — needed by extension-deployed test sets, whose preset profiles
+  # the Feature Platform names after the feature id, which need not match any
+  # of their test set ids.
   configVersion: String
 }
 
@@ -1633,7 +1633,7 @@ input ReextractTestSetDocumentInput {
   # run is given the document's whole grouping, and only this section's label is
   # replaced. Omit to re-extract the whole document, as before.
   sectionId: String
-  # Defaults to the config version the set was last labeled with.
+  # Defaults to the configuration profile the set was last labeled with.
   configVersion: String
 }
 
@@ -2594,17 +2594,19 @@ type Mutation {
   unregisterFeatureHooks(featureId: String!): Boolean! @aws_iam
 
   """Features with a manifest `configPreset`: write the bundled preset to
-  the host's ConfigurationTable as a new, NON-ACTIVE config version named
-  `<featureId>-v<version>`. Installation never changes the active config —
-  an admin reviews and activates the preset from the Configuration UI.
-  Idempotent: re-applying the same featureId+version overwrites the row,
-  so CloudFormation stack Updates are safe. IAM-authenticated; called by
+  the host's ConfigurationTable as the NON-ACTIVE configuration profile
+  named `<featureId>`; each install or upgrade records a new revision of it.
+  Installation never changes the active config — an admin reviews and
+  activates the preset from the Configuration UI. Idempotent: re-applying an
+  unchanged preset records no revision, so CloudFormation stack Updates are
+  safe. IAM-authenticated; called by
   the feature stack's ui-deployer custom resource."""
   applyFeatureConfigPreset(input: ApplyFeatureConfigPresetInput!): FeatureConfigPresetResult! @aws_iam
 
-  """Delete all of a feature's preset config versions on uninstall. A
-  version that is currently ACTIVE is preserved (never yank the running
-  config); it is skipped with a warning and the call still succeeds."""
+  """Delete a feature's preset configuration profile (and any legacy
+  `<featureId>-v*` profiles), with their revision history, on uninstall. If
+  one of them is the ACTIVE profile, `default` is activated first, so the
+  pipeline never keeps running hooks that point at deleted Lambdas."""
   removeFeatureConfigPreset(featureId: String!): Boolean! @aws_iam
 
   """Admin-only: initiate a subscription for a feature. Returns a
@@ -3350,7 +3352,7 @@ document (JSON-encoded); metadata fields (IsActive, Managed, …) are
 stripped server-side."""
 input ApplyFeatureConfigPresetInput {
   featureId: String!
-  version: String!       # feature version, e.g. "0.1.0" → config version "<featureId>-v0.1.0"
+  version: String!       # feature version, e.g. "0.1.0" — recorded on the revision; the profile is named <featureId>
   config: AWSJSON!
   description: String
 }

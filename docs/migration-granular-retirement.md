@@ -93,7 +93,7 @@ See [Large-Document Guidance](extraction-and-confidence.md#8-large-document-guid
 
 ## Configuration format is unchanged (stays v0.6)
 
-This retirement does **not** introduce a new config version. Configurations
+This retirement does **not** introduce a new configuration format version. Configurations
 remain **v0.6**: confidence lives under `extraction.confidence.*`, geometry under
 `extraction.geometry.*`, and HITL under the top-level `hitl.*`. Pre-v0.6 configs
 are still migrated automatically on read.

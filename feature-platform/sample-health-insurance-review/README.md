@@ -30,7 +30,7 @@ Adds a **Claims Review** page with two tabs:
   deterministic claim status, Pass/Fail/Not-Found counts, and a per-rule
   drill-down.
 - **Rules Discovery** — upload a payer policy PDF; the host's Rules Discovery
-  pipeline extracts validation rules into a config version, which the tab
+  pipeline extracts validation rules into a configuration profile, which the tab
   renders as a browsable rule set.
 
 ```mermaid
@@ -73,7 +73,7 @@ summary's `overall_statistics.recommendation_counts`:
 [`config_library/unified/rule-validation/config.yaml`](../../config_library/unified/rule-validation/config.yaml)
 — the canonical, maintained copy. If you update the rule-validation preset
 there, refresh this snapshot and bump the feature version. At install the
-ui-deployer applies it as a **non-active** config version
+ui-deployer applies it as a **non-active** configuration profile
 (`sample-health-insurance-review` — one profile per feature, a revision per release)
 for an admin to activate.
 
@@ -85,16 +85,17 @@ This feature depends on these host-side contracts (shipped in
 - `applyFeatureConfigPreset` / `removeFeatureConfigPreset` mutations.
 - The pipeline-hooks dispatcher
   (`patterns/unified/src/pipeline_hooks_function/`), which invokes hooks listed
-  under `rule_validation.postHook` in the **active** config version.
+  under `rule_validation.postHook` in the configuration profile the document is
+  processed under (the **active** one unless another was chosen at upload).
 
 Note: the feature does **not** call `registerFeatureHooks`. That mutation writes
-the hook into whatever version is active at install (typically `default`), so
-activating this feature's preset version would orphan the hook. Instead the
+the hook into whatever profile is active at install (typically `default`), so
+activating this feature's preset profile would orphan the hook. Instead the
 ui-deployer injects the `postRuleValidation` hook directly into the preset's
 `rule_validation.postHook` before `applyFeatureConfigPreset`, so the hook
-travels with the version the admin activates. (`unregisterFeatureHooks` is still
+travels with the profile the admin activates. (`unregisterFeatureHooks` is still
 called on uninstall, as best-effort cleanup of any hook a prior feature build
-left in the active version.)
+left in the active profile.)
 
 It also imports three host exports: `<MainStackName>-OutputBucketName`,
 `-WorkingBucketName`, and `-DiscoveryBucketName`.
