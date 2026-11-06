@@ -149,7 +149,7 @@ This analysis produces structured configuration templates that can be used to co
 - Shared across both BDA and Pipeline processing modes
 
 **BDA Blueprint Automation (BDA mode only):**
-- **Sync BDA/IDP Resolver** (`nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py`): Synchronizes blueprints between a configuration version and a BDA project. It backs the `syncBdaIdp` operation, so it runs **only when a user asks for it** from the Configuration page — nothing triggers it on a configuration change. Supports `bda_to_idp`, `idp_to_bda`, `bidirectional` (the default) and `cleanup_orphaned` directions, and enforces Admin/Author plus config-version scope server-side
+- **Sync BDA/IDP Resolver** (`nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py`): Synchronizes blueprints between a configuration profile and a BDA project. It backs the `syncBdaIdp` operation, so it runs **only when a user asks for it** from the Configuration page — nothing triggers it on a configuration change. Supports `bda_to_idp`, `idp_to_bda`, `bidirectional` (the default) and `cleanup_orphaned` directions, and enforces Admin/Author plus configuration-profile scope server-side
 - **Blueprint Optimization Function** (`src/lambda/blueprint_optimization/index.py`): Iteratively refines a discovered class's BDA blueprint against a supplied ground-truth file. Invoked asynchronously by the discovery processor, and only when `use_bda` and `enable_blueprint_optimization` are both set, a ground-truth file was provided, and the document is a PDF
 - **BDA Blueprint Service** (`lib/idp_common_pkg/idp_common/bda/bda_blueprint_service.py`): Blueprint lifecycle management, schema conversion, and project synchronization
 - **Schema Converter** (`lib/idp_common_pkg/idp_common/bda/schema_converter.py`): Transforms discovery results to BDA-compatible schemas
@@ -363,7 +363,7 @@ from idp_common.discovery.classes_discovery import ClassesDiscovery
 discovery = ClassesDiscovery(
     input_bucket="my-bucket",
     input_prefix="lending_package.pdf",
-    version="my-config-version"
+    version="my-config-profile"
 )
 
 # Auto-detect section boundaries
@@ -504,7 +504,7 @@ discovery = MultiDocumentDiscovery(
 # Local pipeline
 result = discovery.run_local_pipeline(
     document_dir="/path/to/documents/",
-    config_version="v1",  # Optional: save to DynamoDB config
+    config_version="v1",  # Optional: configuration profile to save into
 )
 
 # Or S3 pipeline
@@ -980,7 +980,7 @@ write:
 - **Job details page** (single-document discovery): *"This sample appears to
   contain N 'X' records"* with an **Enable several records per section** action.
   Clicking it sets `x-aws-idp-multi-instance: true` on that class in the job's
-  configuration version (clearing any `x-aws-idp-instance-array` designation) and
+  configuration profile (clearing any `x-aws-idp-instance-array` designation) and
   reminds you that committed evaluation baselines for the class then need
   `scripts/migrate_multi_instance_baselines.py`. If the class already has the flag
   (a re-run keeps it), the panel says so instead.
@@ -1973,7 +1973,7 @@ Causes:
 
 Solutions:
 - Verify BDA permissions in IAM role
-- Check the BDA project ARN on the configuration version. It is not a stack
+- Check the BDA project ARN on the configuration profile. It is not a stack
   parameter: it is stored on the configuration record in the Configuration
   table, as the BdaProjectArn attribute alongside BdaSyncStatus and
   BdaLastSyncedAt. Read it in the UI under Configuration -> View/Edit Config,

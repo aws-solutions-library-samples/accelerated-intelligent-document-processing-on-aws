@@ -14,11 +14,11 @@ On Create or Update:
   3. Downloads the bundled config preset (config-preset/claims-config.yaml,
      uploaded by the publisher under <FEATURE_ARTIFACT_PREFIX>/<FEATURE_VERSION>),
      INJECTS the postRuleValidation hook into its rule_validation.postHook, and
-     invokes the host's `applyFeatureConfigPreset` resolver — creating a
-     NON-ACTIVE config version
-     `sample-health-insurance-review-v<FEATURE_VERSION>` for an admin to activate.
-     (The hook travels inside the preset, not via a separate registerFeatureHooks
-     call, so activating that version brings the rules and hook together.)
+     invokes the host's `applyFeatureConfigPreset` resolver — writing the
+     NON-ACTIVE configuration profile `sample-health-insurance-review` (each
+     release is a new revision of it) for an admin to activate. (The hook
+     travels inside the preset, not via a separate registerFeatureHooks call,
+     so activating that profile brings the rules and hook together.)
 
 On Delete:
   1. Deletes the copied UI bundle.

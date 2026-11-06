@@ -34,7 +34,7 @@ one section per document. This extension's preset does not set that key, so its
 configuration takes the host `default` profile's section splitting each time the
 extension is installed or upgraded, which is `llm_determined` unless it has been
 changed. To compare ConfBench with RealKIE-FCC-Verified, run both test sets on
-one configuration version. Within ConfBench, Test Studio preselects this
+one configuration profile. Within ConfBench, Test Studio preselects this
 extension's configuration for every tier, including the undegraded
 `confbench-clean`.
 
@@ -74,7 +74,7 @@ idp-feature-cli deploy --from-code ./feature-platform/confbench-testset \
 ```
 
 **Installing downloads nothing.** It creates the ingest machinery, the feature
-UI, and a configuration version — typically under a minute. The dataset moves
+UI, and a configuration profile — typically under a minute. The dataset moves
 only when you start a job.
 
 ## Choosing what to ingest
@@ -143,15 +143,16 @@ different document populations is not an apples-to-apples comparison.
 1. Wait for the ingest job to reach **Completed** (progress updates live; the job
    continues if you navigate away).
 2. Open **Test Studio → Run Test Set** and select the ConfBench test set.
-3. **Configuration version** is preselected to `confbench-testset-v<version>` —
-   the Invoice extraction schema this extension installed. Override it to
+3. **Configuration Profile** is preselected to `confbench-testset` — the
+   Invoice extraction schema this extension installed. Override it to
    evaluate a different configuration against the same documents.
 
 Each ConfBench test set records that configuration on its own test-set record
 (the `configVersion` field), which is how Test Studio knows to preselect it. The
-stack-managed benchmark sets instead rely on their config version being *named*
-after the test set id; that convention can't reach extension presets, since the
-Feature Platform names them `<featureId>-v<version>`.
+stack-managed benchmark sets instead rely on their configuration profile being
+*named* after the test set id; that convention can't reach extension presets,
+since the Feature Platform names each one after its feature id, which no ConfBench
+test set id (`confbench-clean`, …) equals.
 
 ## How the ingest works
 

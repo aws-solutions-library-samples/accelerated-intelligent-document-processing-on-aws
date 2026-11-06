@@ -533,8 +533,9 @@ onto BDA's own output boundaries — so that a `postOcr` hook could run against 
 OCR output — needs a semantics decision per point and remains open under
 [#982](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/982).
 
-**Inert by default** — hooks are stored inline in the active configuration
-version. With none registered the dispatcher returns after a single DynamoDB
+**Inert by default** — hooks are stored inline in each configuration profile,
+and the dispatcher reads them from the profile the document is processed under
+(the active profile unless another was chosen at upload). With none registered the dispatcher returns after a single DynamoDB
 read and the pipeline is unchanged.
 
 **`preprocessing` / `postprocessing` shape** — each is a standalone top-level
@@ -572,7 +573,7 @@ Because each is a *single* hook, only one feature can own it — the host refuse
 a registration that would overwrite another feature's hook, rather than silently
 disabling it.
 
-**`postHook` entry shape** (per step, in the active config version):
+**`postHook` entry shape** (per step, inline in a configuration profile):
 
 ```yaml
 extraction:
@@ -696,7 +697,7 @@ fails the workflow):
 |---|---|
 | `id` / `input_key` / `input_bucket` / `output_bucket` are immutable | The tracking-table row and output S3 prefixes are keyed off them. A hook that needs a *different* document should spawn one and `halt`. |
 | `sections` in a compressed reference must be a list of section-id strings | The workflow's `ProcessSections` Map iterates it directly, so a malformed value would fail the whole execution. |
-| `config_version` is preserved | It resolves hooks for the rest of the pipeline; a changed value is restored (the content change is still honored). |
+| `config_version` (the document's configuration profile) is preserved | It resolves hooks for the rest of the pipeline; a changed value is restored (the content change is still honored). |
 | A compressed reference's `s3_uri` must be under `compressed_documents/` in the stack's working bucket | Downstream, `Document.decompress()` parses the URI but *discards its bucket*, reading the key against the consumer's own working bucket — so an unconstrained URI is a key-injection vector, not just a cross-bucket read. |
 | Inline documents are capped at 5 MB | Bounded by Lambda's own 6 MB synchronous response limit. Return a compressed reference instead. |
 
@@ -756,7 +757,7 @@ fails closed with `AccessDenied`.
 
 Features register hooks at install time via the `registerFeatureHooks`
 mutation (declared in the manifest's `pipelineHooks` field); admins can also
-edit a config version's `postHook` lists directly. See the
+edit a configuration profile's `postHook` lists directly. See the
 [Developer Guide → Pipeline hooks](feature-platform-developer-guide.md#optional-pipeline-hooks).
 
 ## Config presets
@@ -785,7 +786,7 @@ UI and hooks. See the
 
 > **Extensions that write the ConfigurationTable directly** (rather than calling
 > `applyFeatureConfigPreset`) did not get this fix, and a Delete handler that
-> removes only the version being uninstalled leaves every earlier release's profile
+> removes only the current release's profile leaves every earlier release's profile
 > orphaned — undeletable from the Web UI if it was written `Managed`. Such an
 > extension should write `Config#<featureId>` (no version suffix) and, on Delete,
 > remove that profile **and** any legacy `<featureId>-v*` rows — preferably by

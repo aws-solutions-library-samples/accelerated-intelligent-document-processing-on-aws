@@ -391,8 +391,8 @@ pipelineHooks:
 **3. Register at install (primary path).** The feature stack resolves those
 logical names to ARNs and calls the host's `registerFeatureHooks` mutation on
 Create (and clears them on Delete) — the same custom-resource pattern as
-`registerFeature`. The host writes them into the active config version's
-`<step>.postHook` lists. Each entry is
+`registerFeature`. The host writes them into the active configuration
+profile's `<step>.postHook` lists. Each entry is
 `{ featureId, arn, order (default 100), onError (default continue), enabled, args }`;
 `onError` is `continue` | `skip-remaining` | `fail`. `fail` aborts the document
 at **every hook point the active processing mode reaches** (see "Gating with
@@ -522,7 +522,7 @@ disabling it.
 
 **Escape hatch (no feature install).** For custom business logic outside the
 feature-install flow, an admin can add `postHook` entries — or fill in the
-`preprocessing` / `postprocessing` sections — in a config version directly (same
+`preprocessing` / `postprocessing` sections — in a configuration profile directly (same
 shapes as above).
 The hook Lambda still needs the `idp:feature-id` tag or a `GENAIIDP-*` name to
 clear the dispatcher's IAM check. This is handy for one-off integrations, but
@@ -532,19 +532,20 @@ added/removed with the stack.
 **Verifying a hook actually fired.** Asserting on your feature's own output
 cannot distinguish "the hook ran and decided nothing" from "the hook was never
 invoked" — from the feature's data store the two look identical. The dispatcher
-reports both the count and the config version it resolved, so check those
+reports both the count and the configuration profile it resolved, so check those
 instead:
 
 ```python
 # From the workflow execution history, at the hook state's exit:
 payload = output["HookResults"]["postRuleValidation"]["Payload"]
 assert payload.get("invoked", 0) > 0, "the dispatcher never invoked the hook"
-assert payload["configVersion"] == expected_version
+assert payload["configVersion"] == expected_profile
 ```
 
 `invoked: 0` with a `configVersion` you did not expect means the hooks are
-registered in a different config version than the one the document resolved —
-activate the right version, or pin it per document via `config_version`.
+registered in a different configuration profile than the one the document
+resolved — activate the right profile, or choose it per document via
+`config_version`.
 
 See [Feature Platform → Pipeline hooks](feature-platform.md#pipeline-hooks) for
 the full contract.

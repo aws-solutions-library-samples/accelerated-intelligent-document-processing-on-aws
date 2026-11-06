@@ -403,7 +403,8 @@ timestamp.
 **Columns:** `document_id`, `context`, `service_api`, `unit`, `value`,
 `number_of_pages`, `unit_cost`, `estimated_cost`, `timestamp` (completion
 time — same as partition), `initial_event_time` (original queue time,
-preserved for consumers who need queue-time semantics), `config_version`.
+preserved for consumers who need queue-time semantics), `config_version`
+(the configuration profile the document was processed under).
 
 **Semantic note for consumers of raw `metering`:** `WHERE date = 'X'`
 means "docs completed on X", NOT "docs queued on X". Filter on

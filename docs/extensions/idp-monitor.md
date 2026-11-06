@@ -7,7 +7,7 @@ title: "IDP Monitor"
 
 ## What it does
 
-Once an IDP Accelerator pipeline is in production, the questions change. Is throughput keeping up? Which document type is failing, and why? What did yesterday cost, and which configuration version or model drove it? Which documents came back with low confidence and are waiting for human review? Answering these from raw CloudWatch logs, Step Functions histories and reporting tables is slow, and it gets slower as volume grows. IDP Monitor puts the answers on one screen — ask a question in plain language and get an instant answer with the relevant widgets, or browse the dashboard directly.
+Once an IDP Accelerator pipeline is in production, the questions change. Is throughput keeping up? Which document type is failing, and why? What did yesterday cost, and which configuration profile or model drove it? Which documents came back with low confidence and are waiting for human review? Answering these from raw CloudWatch logs, Step Functions histories and reporting tables is slow, and it gets slower as volume grows. IDP Monitor puts the answers on one screen — ask a question in plain language and get an instant answer with the relevant widgets, or browse the dashboard directly.
 
 
 
@@ -50,12 +50,12 @@ IDP Monitor ships with a library of widgets you can turn on and arrange per dash
 - **Human-in-the-Loop** — the size and age of the human review queue
 - **Workflows** — workflow concurrency and capacity utilization
 - **Document Distribution** — classification distribution, including documents that mix several types
-- **Configuration Context** — which pipeline configuration versions produced the documents in the window, so you can correlate a change in behaviour with a configuration deployment
+- **Configuration Context** — which configuration profiles produced the documents in the window, so you can correlate a change in behaviour with a configuration change
 
 **Cost widgets**
 
 - **Cost Trends** — spend over time
-- **Cost Distribution** — by document type and by configuration version
+- **Cost Distribution** — by document type and by configuration profile
 - **Pipeline Stage Cost** — cost broken down by pipeline stage (OCR, classification, extraction, assessment, and so on)
 - **Service Cost** — what the pipeline's own Lambda functions and control-plane agents cost, separately from per-document inference
 - **High-Cost Documents** — a ranked list you can open document by document

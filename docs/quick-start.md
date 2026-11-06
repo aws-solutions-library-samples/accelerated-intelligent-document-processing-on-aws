@@ -20,11 +20,11 @@ A conversational agent:
 1. **Understands your document type** from a natural-language description (asking
    brief clarifying questions when needed).
 2. **Reuses an existing template** when one fits — it searches the document
-   classes already in your configuration versions and adapts a close match rather
+   classes already in your configuration profiles and adapts a close match rather
    than starting from scratch.
 3. **Authors an extraction schema** and shows you the fields in readable form for
    review; you refine it in chat until it's right.
-4. **Creates and activates a configuration version**, so you can upload a document
+4. **Creates and activates a configuration profile**, so you can upload a document
    and start processing immediately — no trip to the Configuration page required.
 
 For the **highest-fidelity** result, you can attach your own example documents in
@@ -84,7 +84,7 @@ in two places:
    background, and the agent summarizes the discovered document types when they're
    ready. A schema inferred from a real document is higher-fidelity than a
    prompt-only draft.
-5. **Activate.** When you approve, the agent creates a configuration version and
+5. **Activate.** When you approve, the agent creates a configuration profile and
    **activates** it, then confirms it's ready. Upload a document from **Upload
    Document** and it's processed with your new configuration.
 
@@ -104,9 +104,9 @@ already has a tuned configuration).
 
 `idp-cli bootstrap` is the scriptable, headless equivalent. It authors a
 document-class schema from your prompt (reusing a catalog match when one fits),
-creates a configuration version, and — when the optional document generator is
+creates a configuration profile, and — when the optional document generator is
 available — generates a small labeled synthetic **test set** attached to that
-version.
+profile.
 
 ```bash
 idp-cli bootstrap \
@@ -114,7 +114,7 @@ idp-cli bootstrap \
     --stack-name my-idp-stack
 ```
 
-On success it prints the created config version, the resolution tier
+On success it prints the created configuration profile, the resolution tier
 (`catalog_adapt` when it adapted a template, `pure_llm` when authored from
 scratch), any catalog match, and — if the generator is installed — the test set id
 and document count.
@@ -145,7 +145,7 @@ idp-cli bootstrap --prompt "Bank statements with account holder and transactions
 | `--region` | AWS region (optional). |
 
 > **Note:** Unlike the web UI, `idp-cli bootstrap` does not activate the created
-> version. Activate it from **Configuration › View/Edit Configuration** in the UI,
+> profile. Activate it from **Configuration › View/Edit Configuration** in the UI,
 > or with the SDK, when you're ready to process documents with it.
 
 ---
@@ -176,20 +176,20 @@ minutes per document at the default quality threshold, more at higher thresholds
 
 ## How schema resolution works
 
-1. **Catalog match.** Your existing configuration versions' document classes are
+1. **Catalog match.** Your existing configuration profiles' document classes are
    indexed and an LLM picks the single best match for your description (only when
    its confidence clears a threshold). A match seeds the authored schema; no match
    just means authoring from scratch.
 2. **Authoring.** The schema is authored from your prompt (plus any `--field-hint`
    fields and the seed), producing a JSON-Schema document class in the standard
    IDP format.
-3. **Config version.** The new class is merged into the target version (creating it
+3. **Configuration profile.** The new class is merged into the target profile (creating it
    if needed; default name `bootstrap-<class>`), replacing any class with the same
-   id. In the UI, the agent then activates the version.
+   id. In the UI, the agent then activates the profile.
 4. **(Optional) Test set.** If the generator is available, N documents are
    generated, their field names validated against the schema (extras pruned), and
    the packet is registered as a [test set](creating-custom-test-sets.md) named for
-   the config version.
+   the configuration profile.
 
 ---
 
