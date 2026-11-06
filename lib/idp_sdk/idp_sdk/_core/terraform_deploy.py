@@ -46,6 +46,9 @@ logger = logging.getLogger(__name__)
 
 MANIFEST_NAME = "idp-terraform.json"
 POINTER_NAME = "idp-terraform-latest.json"
+# Template variants ``publish --headless`` / ``--govcloud`` produce, each
+# published as its own module beside the standard one.
+VARIANTS = ("headless", "govcloud")
 ROOT_MARKER = "# Managed by idp-cli (idp-cli deploy --terraform)."
 MODULE_PREFIX = "module.idp."
 # Directories never shipped in the module zip: provider caches and build scratch.
@@ -66,12 +69,34 @@ _S3_VHOST_STYLE = re.compile(
 # ---------------------------------------------------------------------------
 
 
-def module_zip_key(prefix: str, version: str) -> str:
-    return f"{prefix}/{version}/terraform/idp-terraform-{version}.zip"
+def check_variant(variant: Optional[str]) -> Optional[str]:
+    """``None`` (the standard template) or one of :data:`VARIANTS`."""
+    if variant is not None and variant not in VARIANTS:
+        raise IDPConfigurationError(
+            f"unknown Terraform module variant {variant!r}; expected one of "
+            + ", ".join(VARIANTS)
+        )
+    return variant
 
 
-def pointer_key(prefix: str) -> str:
-    return f"{prefix}/terraform/{POINTER_NAME}"
+def _stem(variant: Optional[str]) -> str:
+    """``idp-terraform`` or ``idp-terraform-<variant>``."""
+    check_variant(variant)
+    return f"idp-terraform-{variant}" if variant else "idp-terraform"
+
+
+def module_zip_key(prefix: str, version: str, variant: Optional[str] = None) -> str:
+    return f"{prefix}/{version}/terraform/{_stem(variant)}-{version}.zip"
+
+
+def pointer_key(prefix: str, variant: Optional[str] = None) -> str:
+    return f"{prefix}/terraform/{_stem(variant)}-latest.json"
+
+
+def variant_template_key(prefix: str, variant: Optional[str] = None) -> str:
+    """Where ``publish`` puts the main template of a variant."""
+    check_variant(variant)
+    return f"{prefix}/idp-{variant or 'main'}.yaml"
 
 
 def s3_https_url(region: str, bucket: str, key: str) -> str:
@@ -100,17 +125,18 @@ def sha256_file_body(sha256: str, zip_name: str) -> str:
     return f"{sha256}  {zip_name}\n"
 
 
-def default_pointer_url(template_url: str) -> str:
+def default_pointer_url(template_url: str, variant: Optional[str] = None) -> str:
     """The pointer URL beside a default template URL.
 
     The CloudFormation deploy defaults to ``<bucket>/<prefix>/idp-main.yaml`` for
     the region; the Terraform module's pointer is
-    ``<bucket>/<prefix>/terraform/idp-terraform-latest.json``.
+    ``<bucket>/<prefix>/terraform/idp-terraform-latest.json``, and a variant's is
+    ``<bucket>/<prefix>/terraform/idp-terraform-<variant>-latest.json``.
     """
     base, sep, _ = template_url.rpartition("/")
     if not sep:
         raise IDPConfigurationError(f"cannot derive a pointer URL from {template_url}")
-    return f"{base}/terraform/{POINTER_NAME}"
+    return f"{base}/terraform/{_stem(variant)}-latest.json"
 
 
 def terraform_module_source(url: str) -> str:
@@ -274,14 +300,16 @@ def upload_module(
     region: str,
     version: str,
     public: bool = False,
+    variant: Optional[str] = None,
 ) -> Dict[str, str]:
-    """Zip and upload the module, its checksum and the latest pointer.
+    """Zip and upload the module, its checksum and the latest pointer, under
+    the variant's names when ``variant`` is given.
 
     Returns ``{"moduleUrl", "sha256", "pointerUrl", "version"}``.
     """
     data = deterministic_module_zip(module_dir)
     digest = hashlib.sha256(data).hexdigest()
-    zip_key = module_zip_key(prefix, version)
+    zip_key = module_zip_key(prefix, version, variant)
     zip_name = zip_key.rsplit("/", 1)[1]
     module_url = s3_https_url(region, bucket, zip_key)
     _put(s3, bucket, zip_key, data, "application/zip", public)
@@ -293,7 +321,7 @@ def upload_module(
         "text/plain",
         public,
     )
-    ptr_key = pointer_key(prefix)
+    ptr_key = pointer_key(prefix, variant)
     _put(
         s3,
         bucket,
@@ -570,7 +598,12 @@ def write_root_config(
     values["stack_name"] = stack_name
     if admin_email:
         admin = (manifest.get("parameters") or {}).get("AdminEmail")
-        values[admin["variable"] if admin else "admin_email"] = admin_email
+        if admin:
+            values[admin["variable"]] = admin_email
+        else:
+            # The headless module has no Cognito and so no AdminEmail, as with
+            # the headless CloudFormation template.
+            logger.warning("Ignoring the admin email: this module has no AdminEmail")
     missing = missing_required(values, manifest)
     if missing:
         hint = " (--admin-email)" if missing == ["AdminEmail"] else ""

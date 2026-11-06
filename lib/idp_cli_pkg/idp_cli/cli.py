@@ -411,10 +411,15 @@ def _deploy_terraform(
     terraform_dir: Optional[str],
     terraform_bin: str,
     unsupported: List[str],
+    headless: bool = False,
+    govcloud: bool = False,
 ) -> None:
     """`idp-cli deploy --terraform`. The work is in the SDK's
     `client.stack.deploy_terraform`; this resolves the default module the way
-    the CloudFormation deploy resolves its default template, and prints."""
+    the CloudFormation deploy resolves its default template, and prints.
+
+    `--headless` / `--govcloud` select that variant's latest module (its own
+    pointer, `idp-terraform-<variant>-latest.json`) instead of the standard one."""
     from idp_sdk import default_terraform_pointer_url
 
     if unsupported:
@@ -425,6 +430,25 @@ def _deploy_terraform(
             "--parameters.[/red]"
         )
         sys.exit(1)
+    if headless and govcloud:
+        console.print(
+            "[red]✗ Error: --headless and --govcloud are mutually exclusive. "
+            "Each selects its own Terraform module.[/red]"
+        )
+        sys.exit(1)
+    variant = "headless" if headless else "govcloud" if govcloud else None
+    if variant and module_url:
+        console.print(
+            f"[red]✗ Error: --{variant} selects the latest {variant} module, and "
+            "--terraform-module-url names a module itself; pass one of them.[/red]"
+        )
+        sys.exit(1)
+    if headless and admin_email:
+        console.print(
+            "[yellow]--admin-email is ignored with --headless "
+            "(no Cognito in the headless module)[/yellow]"
+        )
+        admin_email = None
     try:
         region = _resolve_region(region)
         pointer_url = None
@@ -436,9 +460,10 @@ def _deploy_terraform(
                     f"Supported regions: {supported}. Pass --terraform-module-url "
                     "explicitly for other regions."
                 )
-            pointer_url = default_terraform_pointer_url(TEMPLATE_URLS[region])
+            pointer_url = default_terraform_pointer_url(TEMPLATE_URLS[region], variant)
+            kind = f"{variant} " if variant else ""
             console.print(
-                f"[bold]Using the latest Terraform module for {region}[/bold]"
+                f"[bold]Using the latest {kind}Terraform module for {region}[/bold]"
             )
         additional = parse_parameters(
             parameters,
@@ -732,7 +757,10 @@ def cli():
 @click.option(
     "--headless",
     is_flag=True,
-    help="Deploy headless (no UI/AppSync/Cognito/WAF) — for API-only or GovCloud deployments",
+    help=(
+        "Deploy headless (no UI/AppSync/Cognito/WAF) — for API-only or GovCloud "
+        "deployments. With --terraform, deploys the headless Terraform module"
+    ),
 )
 @click.option(
     "--govcloud",
@@ -740,7 +768,8 @@ def cli():
     help=(
         "Deploy the GovCloud template variant: removes all AWS::CloudFront::* "
         "resources (unavailable in GovCloud) and forces API Gateway Web UI "
-        "hosting, keeping the full UI. Mutually exclusive with --headless."
+        "hosting, keeping the full UI. Mutually exclusive with --headless. "
+        "With --terraform, deploys the GovCloud Terraform module."
     ),
 )
 @click.option(
@@ -874,8 +903,6 @@ def deploy(
             "--from-code": from_code,
             "--template-url": template_url,
             "--template-file": template_file,
-            "--headless": headless,
-            "--govcloud": govcloud,
             "--custom-config": custom_config,
             "--tags": tags,
             "--role-arn": role_arn,
@@ -892,6 +919,8 @@ def deploy(
             terraform_dir=terraform_dir,
             terraform_bin=terraform_bin,
             unsupported=[k for k, v in ignored.items() if v],
+            headless=headless,
+            govcloud=govcloud,
         )
         return
     try:
@@ -7572,6 +7601,7 @@ def publish(
             govcloud_template_url=result.govcloud_template_url,
             terraform_module_url=result.terraform_module_url,
             terraform_pointer_url=result.terraform_pointer_url,
+            terraform_variant_modules=result.terraform_variant_modules,
         )
         console.print()
         console.print("[bold green]✅ Publish complete![/bold green]")

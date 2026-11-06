@@ -173,6 +173,68 @@ def _tree(root: Path) -> None:
     (root / "modules" / "pattern" / ".build" / "scratch").write_text("y")
 
 
+class TestVariantNames:
+    @pytest.mark.parametrize("variant", ["headless", "govcloud"])
+    def test_variant_keys(self, variant):
+        assert tf.module_zip_key("idp", "0.6.13", variant) == (
+            f"idp/0.6.13/terraform/idp-terraform-{variant}-0.6.13.zip"
+        )
+        assert tf.pointer_key("idp", variant) == (
+            f"idp/terraform/idp-terraform-{variant}-latest.json"
+        )
+        assert tf.variant_template_key("idp", variant) == f"idp/idp-{variant}.yaml"
+
+    def test_the_standard_names_are_unchanged(self):
+        assert tf.module_zip_key("idp", "1") == "idp/1/terraform/idp-terraform-1.zip"
+        assert tf.pointer_key("idp") == "idp/terraform/idp-terraform-latest.json"
+        assert tf.variant_template_key("idp") == "idp/idp-main.yaml"
+
+    @pytest.mark.parametrize("variant", [None, "headless", "govcloud"])
+    def test_default_pointer_selects_the_variant(self, variant):
+        template = (
+            "https://s3.us-east-1.amazonaws.com/rel/artifacts/genai-idp/idp-main.yaml"
+        )
+        stem = f"idp-terraform-{variant}" if variant else "idp-terraform"
+        assert default_terraform_pointer_url(template, variant) == (
+            f"https://s3.us-east-1.amazonaws.com/rel/artifacts/genai-idp/terraform/"
+            f"{stem}-latest.json"
+        )
+
+    def test_upload_uses_the_variant_names(self, tmp_path):
+        _tree(tmp_path)
+        s3 = MagicMock()
+        info = tf.upload_module(
+            s3,
+            module_dir=tmp_path,
+            bucket=BUCKET,
+            prefix="p",
+            region=REGION,
+            version="2",
+            variant="headless",
+        )
+        keys = sorted(c.kwargs["Key"] for c in s3.put_object.call_args_list)
+        assert keys == [
+            "p/2/terraform/idp-terraform-headless-2.zip",
+            "p/2/terraform/idp-terraform-headless-2.zip.sha256",
+            "p/terraform/idp-terraform-headless-latest.json",
+        ]
+        assert info["moduleUrl"].endswith("idp-terraform-headless-2.zip")
+
+    def test_unknown_variant_is_refused(self):
+        with pytest.raises(IDPConfigurationError, match="unknown Terraform"):
+            tf.pointer_key("idp", "minimal")
+
+    def test_admin_email_is_ignored_by_a_module_without_admin_email(self, tmp_path):
+        manifest = {
+            "parameters": {
+                k: v for k, v in MANIFEST["parameters"].items() if k != "AdminEmail"
+            }
+        }
+        values = _write(tmp_path, manifest=manifest)
+        assert "admin_email" not in values
+        assert "admin_email" not in (tmp_path / "main.tf").read_text()
+
+
 class TestZip:
     def test_same_files_give_the_same_bytes_whatever_the_mtime_or_order(self, tmp_path):
         a, b = tmp_path / "a", tmp_path / "b"
@@ -724,7 +786,158 @@ class TestPublishOperation:
             "region": REGION,
             "version": "1",
             "public": False,
+            "variant": None,
         }
+        assert result.terraform_variant_modules == {}
+
+    def _variant_build(self, monkeypatch, tmp_path, fake_publish, **flags):
+        from idp_sdk.models.publish import TemplateTransformResult
+        from idp_sdk.operations import publish as pub
+
+        def transformed(self, source_template, output_path=None, **kw):
+            return TemplateTransformResult(
+                success=True, input_path=source_template, output_path=output_path
+            )
+
+        monkeypatch.setattr(pub.PublishOperation, "publish_terraform", fake_publish)
+        monkeypatch.setattr(
+            pub.PublishOperation, "transform_template_headless", transformed
+        )
+        monkeypatch.setattr(
+            pub.PublishOperation, "transform_template_govcloud", transformed
+        )
+        monkeypatch.setattr(pub.boto3, "client", lambda *a, **k: MagicMock())
+        monkeypatch.setattr(
+            "idp_sdk._core.publish.IDPPublisher", lambda verbose=False: MagicMock()
+        )
+        (tmp_path / "VERSION").write_text("1\n")
+        return IDPClient(region=REGION).publish.build(
+            source_dir=str(tmp_path),
+            bucket="b",
+            prefix="p",
+            terraform=True,
+            no_validate=True,
+            **flags,
+        )
+
+    def test_each_requested_variant_gets_its_own_module(self, monkeypatch, tmp_path):
+        seen = []
+
+        def fake_publish(self, **kw):
+            seen.append(kw["variant"])
+            stem = (
+                f"idp-terraform-{kw['variant']}" if kw["variant"] else "idp-terraform"
+            )
+            return {
+                "moduleUrl": f"https://s3.us-west-2.amazonaws.com/b/{stem}-1.zip",
+                "sha256": "ab",
+                "pointerUrl": f"https://s3.us-west-2.amazonaws.com/b/{stem}-latest.json",
+                "version": "1",
+            }
+
+        result = self._variant_build(
+            monkeypatch, tmp_path, fake_publish, headless=True, govcloud=True
+        )
+        assert result.success, result.error
+        assert seen == [None, "headless", "govcloud"]
+        assert result.terraform_module_url.endswith("/idp-terraform-1.zip")
+        assert set(result.terraform_variant_modules) == {"headless", "govcloud"}
+        assert result.terraform_variant_modules["govcloud"]["pointerUrl"].endswith(
+            "idp-terraform-govcloud-latest.json"
+        )
+
+    def test_without_terraform_variant_flags_only_the_standard_module(
+        self, monkeypatch, tmp_path
+    ):
+        seen = []
+
+        def fake_publish(self, **kw):
+            seen.append(kw["variant"])
+            return {"moduleUrl": "u", "sha256": "s", "pointerUrl": "p"}
+
+        result = self._variant_build(monkeypatch, tmp_path, fake_publish, headless=True)
+        assert result.success
+        assert seen == [None, "headless"]
+
+    def test_a_variant_failure_fails_the_publish_naming_the_variant(
+        self, monkeypatch, tmp_path
+    ):
+        def fake_publish(self, **kw):
+            if kw["variant"] == "govcloud":
+                raise IDPStackError("Terraform translation failed: CloudFront")
+            return {"moduleUrl": "u", "sha256": "s", "pointerUrl": "p"}
+
+        result = self._variant_build(
+            monkeypatch, tmp_path, fake_publish, headless=True, govcloud=True
+        )
+        assert not result.success
+        assert "Terraform govcloud module publish failed" in (result.error or "")
+
+    def test_a_variant_template_this_run_did_not_publish_is_not_read(
+        self, monkeypatch, tmp_path
+    ):
+        from idp_sdk.models.publish import TemplateTransformResult
+        from idp_sdk.operations import publish as pub
+
+        seen = []
+
+        def fake_publish(self, **kw):
+            seen.append(kw["variant"])
+            return {"moduleUrl": "u", "sha256": "s", "pointerUrl": "p"}
+
+        def failed(self, source_template, output_path=None, **kw):
+            return TemplateTransformResult(
+                success=False, input_path=source_template, error="x"
+            )
+
+        monkeypatch.setattr(pub.PublishOperation, "transform_template_headless", failed)
+        monkeypatch.setattr(pub.PublishOperation, "publish_terraform", fake_publish)
+        monkeypatch.setattr(pub.boto3, "client", lambda *a, **k: MagicMock())
+        monkeypatch.setattr(
+            "idp_sdk._core.publish.IDPPublisher", lambda verbose=False: MagicMock()
+        )
+        (tmp_path / "VERSION").write_text("1\n")
+        result = IDPClient(region=REGION).publish.build(
+            source_dir=str(tmp_path),
+            bucket="b",
+            prefix="p",
+            terraform=True,
+            headless=True,
+            no_validate=True,
+        )
+        assert not result.success
+        assert "headless" in (result.error or "")
+        assert seen == [None]
+
+    def test_publish_terraform_reads_the_variant_template(self, monkeypatch, tmp_path):
+        from idp_sdk.operations import publish as pub
+
+        s3 = MagicMock()
+        monkeypatch.setattr(pub.boto3, "client", lambda *a, **k: s3)
+        translated = []
+        monkeypatch.setattr(
+            tf,
+            "translate_published_template",
+            lambda src, tpl, work, ver: translated.append((tpl, work)) or Path(work),
+        )
+        uploaded = {}
+        monkeypatch.setattr(
+            tf, "upload_module", lambda s3c, **kw: uploaded.update(kw) or {"ok": 1}
+        )
+        IDPClient(region=REGION).publish.publish_terraform(
+            str(tmp_path), "b-us-west-2", "p", REGION, "1", variant="govcloud"
+        )
+        args = s3.download_file.call_args.args
+        assert args[:2] == ("b-us-west-2", "p/idp-govcloud.yaml")
+        work = tmp_path / ".aws-sam" / "terraform" / "govcloud"
+        assert translated == [(str(work / "idp-govcloud.yaml"), str(work))]
+        assert uploaded["variant"] == "govcloud"
+
+    def test_publish_terraform_refuses_an_unknown_variant(self, tmp_path):
+        with pytest.raises(IDPConfigurationError, match="unknown Terraform"):
+            IDPClient(region=REGION).publish.publish_terraform(
+                str(tmp_path), "b", "p", REGION, "1", variant="minimal"
+            )
 
     def test_a_translation_failure_fails_the_publish(self, monkeypatch, tmp_path):
         from idp_sdk.operations import publish as pub
