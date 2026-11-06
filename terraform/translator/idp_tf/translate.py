@@ -796,20 +796,7 @@ class Translator:
                     lines.append(f"default = {hcl.string(str(d))}")
             if spec.get("NoEcho"):
                 lines.append("sensitive = true")
-            allowed = spec.get("AllowedValues")
-            if allowed:
-                vals = hcl.lst([hcl.string(str(a)) for a in allowed])
-                name = self.param_vars[p]
-                lines.append(
-                    hcl.block(
-                        "validation",
-                        [
-                            f"condition = contains({vals}, tostring(var.{name}))",
-                            f'error_message = "{name} must be one of the '
-                            'allowed values."',
-                        ],
-                    ).rstrip()
-                )
+            lines.extend(self._validations(p, spec, ptype))
             out.append(hcl.block(f'variable "{self.param_vars[p]}"', lines))
             if p in self.cond_params:
                 vtype = lines[0]
@@ -826,6 +813,79 @@ class Translator:
                     )
                 )
         return "\n".join(out)
+
+    def _validations(self, p: str, spec: dict[str, Any], ptype: str) -> list[str]:
+        """CloudFormation's parameter constraints as Terraform validations, so a
+        value CloudFormation would refuse at submit time is refused at plan."""
+        name = self.param_vars[p]
+        ref = f"var.{name}"
+        hint = spec.get("ConstraintDescription")
+        out: list[tuple[str, str]] = []
+        allowed = spec.get("AllowedValues")
+        if allowed:
+            vals = hcl.lst([hcl.string(str(a)) for a in allowed])
+            out.append(
+                (
+                    f"contains({vals}, tostring({ref}))",
+                    f"{name} must be one of {allowed}.",
+                )
+            )
+        pattern = spec.get("AllowedPattern")
+        if pattern and not ptype.startswith("List<") and ptype != "CommaDelimitedList":
+            if re.search(r"\(\?[=!<]", pattern):
+                # Lookaround is Java regex that Terraform's RE2 cannot express.
+                self.report.warn(
+                    f"parameter {p}: AllowedPattern uses lookaround; not enforced"
+                )
+            else:
+                anchored = hcl.string(f"^(?:{pattern})$")
+                out.append(
+                    (
+                        f"can(regex({anchored}, tostring({ref})))",
+                        f"{name} must match {pattern}.",
+                    )
+                )
+        if ptype == "Number":
+            if "MinValue" in spec:
+                out.append(
+                    (
+                        f"{ref} >= {spec['MinValue']}",
+                        f"{name} must be at least {spec['MinValue']}.",
+                    )
+                )
+            if "MaxValue" in spec:
+                out.append(
+                    (
+                        f"{ref} <= {spec['MaxValue']}",
+                        f"{name} must be at most {spec['MaxValue']}.",
+                    )
+                )
+        lines = []
+        for condition, message in out:
+            text = f"{message} {hint}" if hint else message
+            lines.append(
+                hcl.block(
+                    "validation",
+                    [f"condition = {condition}", f"error_message = {hcl.string(text)}"],
+                ).rstrip()
+            )
+        return lines
+
+    def label_parameters(self) -> list[tuple[str, str, str]]:
+        """(CloudFormation name, HCL value as text, description) per parameter
+        the label stack shows. NoEcho parameters are left out."""
+        out = []
+        for p, spec in self.params.items():
+            if spec.get("NoEcho"):
+                continue
+            ptype = str(spec.get("Type", "String"))
+            ref = f"var.{self.param_vars[p]}"
+            if ptype.startswith("List<") or ptype == "CommaDelimitedList":
+                value = f'join(",", {ref})'
+            else:
+                value = f"tostring({ref})"
+            out.append((p, value, str(spec.get("Description", ""))))
+        return out
 
     def _locals(self) -> str:
         lines = []

@@ -4,8 +4,8 @@
 """Address a Terraform deployment through the CloudFormation APIs.
 
 A Terraform deployment of the accelerator creates a CloudFormation *label
-stack* named like the deployment. It manages no resources, its description ends
-in ``(Terraform)``, it carries the deployment's outputs, and its
+stack* named like the deployment. It manages no resources, its description
+contains ``(Terraform)``, it carries the deployment's outputs, and its
 ``TerraformResourceDirectory`` output names an S3 object holding a
 CloudFormation-shaped directory of every resource: logical id, type and
 physical id, per module, with nested modules standing in for nested stacks.
@@ -67,7 +67,9 @@ def _raw_clients(region: str) -> tuple[Any, Any]:
 
 
 def is_terraform_stack(description: str | None) -> bool:
-    return bool(description) and str(description).rstrip().endswith(TERRAFORM_SUFFIX)
+    """The label stack's description carries the template's description, then
+    ``(Terraform)``, then a read-only notice."""
+    return bool(description) and TERRAFORM_SUFFIX in str(description)
 
 
 def _register_nested(region: str, node: dict[str, Any]) -> None:

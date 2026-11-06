@@ -129,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
             if not args.version:
                 ap.error("--label-template needs --version")
             desc = load_template(args.label_template)["Description"]
-            files["label.tf"] = label_tf(desc, args.version)
+            files["label.tf"] = label_tf(desc, args.version, tr.label_parameters())
         write_module(tr, args.out, files)
     except TranslationError as exc:
         print(f"translation failed: {exc}", file=sys.stderr)

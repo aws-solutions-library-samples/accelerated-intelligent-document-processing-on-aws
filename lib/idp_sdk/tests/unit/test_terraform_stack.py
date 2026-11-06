@@ -174,3 +174,12 @@ def test_deploy_and_delete_refuse_a_terraform_labelled_stack(monkeypatch, action
             )
         else:
             deployer.delete_stack(stack_name=ROOT)
+
+
+@pytest.mark.unit
+def test_terraform_marker_followed_by_the_read_only_notice():
+    assert ts.is_terraform_stack(
+        "AWS GenAI IDP Accelerator (SO9027) (v0.6.13) (Terraform) - READ-ONLY label "
+        "for a Terraform deployment. Updated only by Terraform; do not update this "
+        "stack in CloudFormation."
+    )

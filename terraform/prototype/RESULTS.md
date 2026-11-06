@@ -220,6 +220,56 @@ the `UpdateSettings` custom resource at deploy time, so it carries
 `ignore_changes = [value]`. It is declared in `LIFECYCLE_OVERRIDES` with that
 reason, and the translator fails if the resource ever disappears.
 
+## The label stack
+
+Every Terraform deployment creates one CloudFormation stack, named exactly like
+the deployment (`stack_name`). It is a label, not a deployment: it manages no
+resources, and everything in it is read-only and written only by Terraform.
+
+- **Name.** It is the deployment's name, so `idp-cli --stack-name <name>` and
+  the deployment's own lookups by `STACK_NAME` find it. A suffixed name would
+  break both.
+- **Description.** The main template's description, which carries the tracking
+  marker and the version (for example
+  `AWS GenAI IDP Accelerator (uksb-r8evguc4p9) (SO9027) (v0.6.13)`), then
+  `(Terraform)`, then a read-only notice: `- READ-ONLY label for a Terraform
+  deployment. Updated only by Terraform; do not update this stack in
+  CloudFormation.` A query matching on the tracking tokens finds both kinds of
+  deployment. `(Terraform)` tells them apart.
+- **Tags.** `ManagedBy=Terraform`, `ReadOnly=true`, and a `Purpose` tag saying
+  to update it only with `terraform apply`.
+- **Resource.** One `AWS::CloudFormation::WaitConditionHandle`, which creates
+  nothing and costs nothing. Its metadata carries `Version`, `Iac: terraform`
+  and a `Purpose` sentence.
+- **Parameters: the deployment's settings, read-only.** Each template parameter
+  appears under its CloudFormation name (`AdminEmail`, `LogLevel`, ...) with the
+  value Terraform applied. The console's Parameters tab and the SDK read them
+  as they would for a CloudFormation stack.
+  - Each description starts with **READ-ONLY**, and the console groups them
+    under "READ-ONLY: deployment settings owned by Terraform".
+  - They are read-only by construction, not only by convention: each
+    parameter's `AllowedValues` is exactly its current value. A CloudFormation
+    update that tries another value is refused, with a message saying to change
+    it in Terraform.
+  - `NoEcho` parameters (today `BedrockHubRoleExternalId`) are left out.
+- **Outputs.** The main template's outputs, plus `TerraformResourceDirectory`,
+  which names the S3 object holding the resource directory, and
+  `TerraformResourceDirectoryVersion`, a hash of its content.
+- **Turning it off.** `enable_cfn_stack_label = false` skips the stack, for
+  example where the deploying role may not use CloudFormation. `idp-cli` cannot
+  address the deployment then.
+
+Settings are set and changed in Terraform: in the root configuration that calls
+the generated module, then `terraform plan` and `terraform apply`. Each
+variable carries the CloudFormation parameter's description, default, and
+constraints as `validation` blocks, so a value CloudFormation would refuse is
+refused at plan time:
+
+- `AllowedValues`;
+- `AllowedPattern`, anchored and checked with Terraform's regular expressions;
+- `MinValue` and `MaxValue`;
+- `ConstraintDescription`, used in the error message.
+
 ## `idp-cli` and the SDK against a Terraform deployment
 
 No call site changed. The label stack is named exactly like the deployment and

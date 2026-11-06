@@ -158,7 +158,18 @@ resource "aws_lambda_function" "cfn_bridge" {{
 """
 
 
-def label_tf(description: str, version: str) -> str:
+READ_ONLY_NOTE = (
+    "READ-ONLY. Set by Terraform, shown here for visibility only. Changing it "
+    "on this stack has no effect on the deployment: change it in the Terraform "
+    "configuration and run terraform apply."
+)
+
+
+def label_tf(
+    description: str,
+    version: str,
+    parameters: list[tuple[str, str, str]] | None = None,
+) -> str:
     """CloudFormation stack that labels this Terraform deployment.
 
     It manages no resources. It exists so a Terraform deployment and its
@@ -167,10 +178,30 @@ def label_tf(description: str, version: str) -> str:
     plus the location of the resource directory, so ``idp-cli --stack-name``
     and the SDK work against a Terraform deployment unchanged.
     """
-    desc = f"{description} (Terraform)"
+    # The tracking marker stays first and intact; the notice follows it.
+    desc = (
+        f"{description} (Terraform) - READ-ONLY label for a Terraform deployment. "
+        "Updated only by Terraform; do not update this stack in CloudFormation."
+    )
     purpose = (
         "Label only: cross-references a Terraform deployment of the GenAI IDP "
-        "Accelerator and its published version. Manages no resources."
+        "Accelerator and its published version. Manages no resources. Its "
+        "parameters show the deployment's settings and are read-only: Terraform "
+        "owns them, and each allows only its current value, so an update to this "
+        "stack cannot change them."
+    )
+    parameters = parameters or []
+    values = hcl.obj(
+        # coalesce() refuses all-empty arguments, and "" is a common value here.
+        [(name, f'{value} == null ? "" : {value}') for name, value, _ in parameters],
+        quote_keys=True,
+    )
+    descriptions = hcl.obj(
+        [
+            (name, hcl.string(f"{READ_ONLY_NOTE} {text}".strip()[:3900]))
+            for name, _, text in parameters
+        ],
+        quote_keys=True,
     )
     return f"""variable "enable_cfn_stack_label" {{
   type        = bool
@@ -180,9 +211,11 @@ def label_tf(description: str, version: str) -> str:
     Terraform deployment and its published version so it can be
     cross-referenced in CloudFormation. The stack manages no resources (it holds
     one AWS::CloudFormation::WaitConditionHandle, which creates nothing) and
-    costs nothing. It also carries the deployment's outputs and the location of
-    its resource directory, which is how idp-cli and the SDK find a Terraform
-    deployment's resources by --stack-name. Set to false to skip it, for
+    costs nothing. It also carries the deployment's outputs, its settings as
+    READ-ONLY parameters (each allows only its current value, so they cannot be
+    changed through CloudFormation; NoEcho settings are left out), and the
+    location of its resource directory, which is how idp-cli and the SDK find a
+    Terraform deployment's resources by --stack-name. Set to false to skip it, for
     example where the deploying role may not use CloudFormation; idp-cli then
     cannot address this deployment.
   EOT
@@ -196,6 +229,11 @@ resource "aws_s3_object" "cfn_resource_directory" {{
 }}
 
 locals {{
+  # The deployment's effective settings, by CloudFormation parameter name, so
+  # the label stack shows them as a CloudFormation stack would. NoEcho
+  # parameters are not included.
+  cfn_label_parameter_values = {values}
+  cfn_label_parameter_descriptions = {descriptions}
   cfn_resource_directory_root = {{
     version   = 1
     stackName = var.{STACK_NAME_VAR}
@@ -222,9 +260,48 @@ locals {{
 resource "aws_cloudformation_stack" "tf_label" {{
   count = var.enable_cfn_stack_label ? 1 : 0
   name  = var.{STACK_NAME_VAR}
-  template_body = jsonencode({{
+  # Read-only by construction: each parameter allows only the value Terraform
+  # set, so an update made through CloudFormation with another value is refused.
+  parameters = local.cfn_label_parameter_values
+  tags = {{
+    ManagedBy = "Terraform"
+    ReadOnly  = "true"
+    # Tag values allow letters, digits, spaces and + - = . _ : / @ only.
+    Purpose = "Read-only label for a Terraform deployment - update it only with terraform apply"
+  }}
+  # The template is passed by URL: with the parameters and outputs it is larger
+  # than the 51,200 bytes CloudFormation accepts inline. The key carries a hash
+  # of the content, so a change is a new URL and Terraform updates the stack.
+  template_url = "https://${{aws_s3_bucket.cfn_bridge.id}}.s3.${{local.pseudo.region}}.${{local.pseudo.dns_suffix}}/${{aws_s3_object.cfn_label_template.key}}"
+}}
+
+resource "aws_s3_object" "cfn_label_template" {{
+  bucket       = aws_s3_bucket.cfn_bridge.id
+  key          = "terraform/label-template-${{md5(local.cfn_label_template)}}.json"
+  content      = local.cfn_label_template
+  content_type = "application/json"
+}}
+
+locals {{
+  cfn_label_template = jsonencode({{
     AWSTemplateFormatVersion = "2010-09-09"
     Description              = {hcl.string(desc)}
+    Metadata = {{
+      "AWS::CloudFormation::Interface" = {{
+        ParameterGroups = [{{
+          Label      = {{ default = "READ-ONLY: deployment settings owned by Terraform. Change them in Terraform, not here." }}
+          Parameters = keys(local.cfn_label_parameter_values)
+        }}]
+      }}
+    }}
+    Parameters = {{
+      for k, v in local.cfn_label_parameter_values : k => {{
+        Type                  = "String"
+        Description           = local.cfn_label_parameter_descriptions[k]
+        AllowedValues         = [v]
+        ConstraintDescription = "is read-only on this label stack. Terraform owns this value: change it in the Terraform configuration and run terraform apply."
+      }}
+    }}
     Resources = {{
       TerraformDeploymentLabel = {{
         Type = "AWS::CloudFormation::WaitConditionHandle"
