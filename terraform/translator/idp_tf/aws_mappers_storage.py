@@ -422,7 +422,31 @@ BUCKET_POLICY = SpecMapper(
     spec={"Bucket": ("attr", "bucket"), "PolicyDocument": ("json", "policy")},
 )
 
-LAMBDA_PERMISSION = SpecMapper(
+
+class LambdaPermissionMapper(SpecMapper):
+    """Lambda stores an account principal as ``arn:<partition>:iam::<id>:root``
+    and the provider compares literally, forcing a replacement every plan, so
+    an account id is written in the stored form (an equivalent principal)."""
+
+    def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
+        principal = plan.props.get("Principal")
+        if principal == {"Ref": "AWS::AccountId"} or (
+            isinstance(principal, str) and principal.isdigit() and len(principal) == 12
+        ):
+            account = "${AWS::AccountId}" if isinstance(principal, dict) else principal
+            original = plan.props
+            plan.props = dict(
+                original,
+                Principal={"Fn::Sub": f"arn:${{AWS::Partition}}:iam::{account}:root"},
+            )
+            try:
+                return super().emit(tr, plan, res)
+            finally:
+                plan.props = original
+        return super().emit(tr, plan, res)
+
+
+LAMBDA_PERMISSION = LambdaPermissionMapper(
     tf_type="aws_lambda_permission",
     ref_attr="id",
     attrs={},
@@ -459,7 +483,71 @@ EVENT_SOURCE_MAPPING = SpecMapper(
     },
 )
 
+DASHBOARD = SpecMapper(
+    tf_type="aws_cloudwatch_dashboard",
+    ref_attr="dashboard_name",
+    attrs={},
+    required_name=("DashboardName", "dashboard_name", 255),
+    spec={
+        "DashboardName": ("attr", "dashboard_name"),
+        # Compared as JSON by the provider; awscc compares the text.
+        "DashboardBody": ("attr", "dashboard_body"),
+    },
+)
+
+
+class CognitoUserMapper:
+    tf_type = "aws_cognito_user"
+    ref_attr = "username"
+
+    def getatt(self, attr: str) -> Any:
+        raise TranslationError(f"UserPoolUser has no attribute {attr}")
+
+    def plan(self, tr: Translator, plan: Plan) -> None:
+        return None
+
+    def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
+        props = dict(plan.props)
+        lines = [
+            f"user_pool_id = {tr.expr(props.pop('UserPoolId'))}",
+            f"username = {tr.expr(props.pop('Username'))}",
+        ]
+        attrs = props.pop("UserAttributes", [])
+        if attrs:
+            if is_intrinsic(attrs):
+                raise TranslationError(
+                    f"{plan.logical_id}: UserAttributes literal only"
+                )
+            items = [(a["Name"], tr.expr(a["Value"])) for a in attrs]
+            lines.append("attributes = " + hcl.obj(items, quote_keys=True))
+        spec: Spec = {
+            "DesiredDeliveryMediums": ("attr", "desired_delivery_mediums"),
+            "MessageAction": ("attr", "message_action"),
+            "ForceAliasCreation": ("attr", "force_alias_creation"),
+            "ClientMetadata": ("map", "client_metadata"),
+        }
+        lines += render_spec(tr, spec, props, plan.logical_id)
+        head, tail = tr.meta_lines(plan, res)
+        return hcl.block(
+            f'resource "aws_cognito_user" "{plan.name}"', head + lines + tail
+        )
+
+
+USER_IN_GROUP = SpecMapper(
+    tf_type="aws_cognito_user_in_group",
+    ref_attr="id",
+    attrs={},
+    spec={
+        "UserPoolId": ("attr", "user_pool_id"),
+        "GroupName": ("attr", "group_name"),
+        "Username": ("attr", "username"),
+    },
+)
+
 STORAGE_MAPPERS: dict[str, Any] = {
+    "AWS::CloudWatch::Dashboard": DASHBOARD,
+    "AWS::Cognito::UserPoolUser": CognitoUserMapper(),
+    "AWS::Cognito::UserPoolUserToGroupAttachment": USER_IN_GROUP,
     "AWS::S3::Bucket": S3BucketMapper(),
     "AWS::S3::BucketPolicy": BUCKET_POLICY,
     "AWS::DynamoDB::Table": DynamoDbTableMapper(),

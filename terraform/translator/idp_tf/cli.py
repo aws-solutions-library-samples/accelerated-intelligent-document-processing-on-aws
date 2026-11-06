@@ -9,10 +9,11 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from .assets import deterministic_zip
 from .awscc_schema import AwsccSchema
 from .expand import expand, load_template
 from .static_files import VERSIONS_TF, bridge_tf, label_tf
-from .translate import TranslationError, Translator, report_json
+from .translate import LIFECYCLE_OVERRIDES, TranslationError, Translator, report_json
 
 BRIDGE_SRC = Path(__file__).resolve().parents[2] / "bridge" / "index.py"
 S3_URL = re.compile(r"https://s3[.-]([a-z0-9-]+)\.amazonaws\.com[^/]*/([^/]+)/(.+)$")
@@ -45,13 +46,26 @@ def write_module(tr: Translator, out: Path, files: dict[str, str]) -> None:
     out.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
         (out / name).write_text(text)
-    if tr.custom_tokens or tr.needs_cfnresponse:
+    if tr.custom_tokens:
+        # Source alongside for reading; the function deploys the zip.
         (out / "bridge").mkdir(exist_ok=True)
         shutil.copy(BRIDGE_SRC, out / "bridge" / "index.py")
-        shutil.copy(BRIDGE_SRC.with_name("cfnresponse.py"), out / "bridge")
+        tr.assets["zips/cfn_bridge.zip"] = deterministic_zip(
+            {"index.py": BRIDGE_SRC.read_bytes()}
+        )
+    for rel, data in tr.assets.items():
+        (out / rel).parent.mkdir(parents=True, exist_ok=True)
+        (out / rel).write_bytes(data)
     (out / "translation-report.json").write_text(report_json(tr))
     for name, child in tr.children.items():
         write_module(child, out / "modules" / name, child.render())
+
+
+def resource_keys(tr: Translator) -> set[tuple[str, str]]:
+    keys = {(p.cfn_type, p.logical_id) for p in tr.plans.values()}
+    for child in tr.children.values():
+        keys |= resource_keys(child)
+    return keys
 
 
 def collect_errors(tr: Translator) -> list[str]:
@@ -105,6 +119,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(e)
             print(f"{len(errors)} failure(s); {tr.report.resource_kinds}")
             return 1 if errors else 0
+        stale = set(LIFECYCLE_OVERRIDES) - resource_keys(tr)
+        if stale:
+            raise TranslationError(
+                f"LIFECYCLE_OVERRIDES names resources the template no longer has: "
+                f"{sorted(stale)}"
+            )
         if args.label_template:
             if not args.version:
                 ap.error("--label-template needs --version")

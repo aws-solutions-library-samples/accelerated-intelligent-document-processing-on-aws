@@ -152,7 +152,18 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 prev.get("ResourceProperties", {})
             )
         if request_type == "Delete" and not state:
-            logger.info("%s: nothing recorded, so nothing to delete", logical_id)
+            # The record of this resource is gone (the bridge bucket was emptied
+            # by hand). Still give the handler its Delete, since most handlers
+            # clean up by their properties rather than by physical id, but do
+            # not let a failure here block terraform destroy.
+            cfn_event["PhysicalResourceId"] = f"{stack}-{logical_id}"
+            try:
+                response = _call(cfn_event, token, context)
+                logger.info(
+                    "%s: unrecorded Delete -> %s", logical_id, response.get("Status")
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("%s: unrecorded Delete failed; continuing", logical_id)
             return {"PhysicalResourceId": "", "Data": {}}
 
     response = _call(cfn_event, token, context)

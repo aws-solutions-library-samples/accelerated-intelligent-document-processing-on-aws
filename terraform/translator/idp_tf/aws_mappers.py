@@ -7,7 +7,6 @@ property fails the translation instead of being dropped.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -211,10 +210,20 @@ class IamRoleMapper:
         return pol
 
     def plan(self, tr: Translator, plan: Plan) -> None:
-        for i, _ in enumerate(self._policies(plan)):
-            plan.extra_deps.append(f"aws_iam_role_policy.{plan.name}_{i}")
+        # Dependants wait for the role, its policies, and IAM propagation: a
+        # service validating the role at create time (Step Functions checks
+        # its log destination, Lambda its event source) otherwise sees a role
+        # without permissions. CloudFormation absorbs this with internal retries.
+        plan.extra_deps.append(f"time_sleep.{plan.name}_iam")
+
+    def _policy_addresses(self, plan: Plan) -> list[str]:
+        out = [
+            f"aws_iam_role_policy.{plan.name}_{i}"
+            for i, _ in enumerate(self._policies(plan))
+        ]
         if "ManagedPolicyArns" in plan.props:
-            plan.extra_deps.append(f"aws_iam_role_policy_attachment.{plan.name}")
+            out.append(f"aws_iam_role_policy_attachment.{plan.name}")
+        return out
 
     def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
         props = {
@@ -259,6 +268,18 @@ class IamRoleMapper:
                     ],
                 )
             )
+        sleep_deps = [f"aws_iam_role.{plan.name}"] + self._policy_addresses(plan)
+        out.append(
+            hcl.block(
+                f'resource "time_sleep" "{plan.name}_iam"',
+                (
+                    [f"count = {tr.cond_ref(plan.condition)} ? 1 : 0"]
+                    if plan.condition
+                    else []
+                )
+                + ['create_duration = "10s"', "depends_on = " + hcl.lst(sleep_deps)],
+            )
+        )
         if "ManagedPolicyArns" in plan.props:
             arns = tr.expr(plan.props["ManagedPolicyArns"])
             each = f"{{ for i, a in {arns} : tostring(i) => a }}"
@@ -297,42 +318,28 @@ class LambdaMapper(SpecMapper):
             raise TranslationError(f"{plan.logical_id}: ZipFile for runtime {runtime}")
         zip_name = f"{plan.name}_zipfile"
         source = code["ZipFile"]
-        sources = [
-            hcl.block(
-                "source",
-                [f"content = {tr.expr(source)}", f'filename = "{fname}"'],
-            ).rstrip()
-        ]
+        if not isinstance(source, str):
+            raise TranslationError(f"{plan.logical_id}: ZipFile must be literal text")
+        files = {fname: source.encode()}
         # CloudFormation makes `cfnresponse` importable by inline Python code;
         # package the stand-in so the same source runs under Terraform.
-        if fname == "index.py" and "cfnresponse" in json.dumps(source):
-            sources.append(
-                hcl.block(
-                    "source",
-                    [
-                        'content = file("${path.module}/bridge/cfnresponse.py")',
-                        'filename = "cfnresponse.py"',
-                    ],
-                ).rstrip()
-            )
-            tr.needs_cfnresponse = True
-        data = hcl.block(
-            f'data "archive_file" "{zip_name}"',
-            ['type = "zip"']
-            + sources
-            + [f'output_path = "${{path.module}}/.build/{zip_name}.zip"'],
-        )
+        if fname == "index.py" and "cfnresponse" in source:
+            from pathlib import Path
+
+            stand_in = Path(__file__).resolve().parents[2] / "bridge" / "cfnresponse.py"
+            files["cfnresponse.py"] = stand_in.read_bytes()
+        from .assets import deterministic_zip
+
+        tr.assets[f"zips/{zip_name}.zip"] = deterministic_zip(files)
         plan.props = {k: v for k, v in plan.props.items() if k != "Code"}
         try:
             body = super().emit(tr, plan, res)
         finally:
             plan.props = dict(plan.props, Code=code)
-        extra = (
-            f"  filename = data.archive_file.{zip_name}.output_path\n"
-            f"  source_code_hash = data.archive_file.{zip_name}.output_base64sha256\n"
-        )
+        path = f'"${{path.module}}/zips/{zip_name}.zip"'
+        extra = f"  filename = {path}\n  source_code_hash = filebase64sha256({path})\n"
         head, rest = body.split("\n", 1)
-        return data + "\n" + head + "\n" + extra + rest
+        return head + "\n" + extra + rest
 
 
 LAMBDA = LambdaMapper(
@@ -1058,6 +1065,20 @@ class CloudFrontMapper(SpecMapper):
 
     def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
         cfg = plan.props.get("DistributionConfig", {})
+        cert = cfg.get("ViewerCertificate") if isinstance(cfg, dict) else None
+        if isinstance(cert, dict) and cert.get("CloudFrontDefaultCertificate") in (
+            True,
+            "true",
+        ):
+            # With the default certificate CloudFront applies TLSv1 whatever is
+            # asked for, so the setting reads as a change on every plan.
+            cfg = dict(
+                cfg,
+                ViewerCertificate={
+                    k: v for k, v in cert.items() if k != "MinimumProtocolVersion"
+                },
+            )
+            plan.props = dict(plan.props, DistributionConfig=cfg)
         origins = cfg.get("Origins") if isinstance(cfg, dict) else None
         if isinstance(origins, list):
             fixed = []
@@ -1212,5 +1233,8 @@ HYBRID_TYPES = frozenset(
         "AWS::DynamoDB::Table",
         "AWS::Lambda::Permission",
         "AWS::Lambda::EventSourceMapping",
+        "AWS::CloudWatch::Dashboard",
+        "AWS::Cognito::UserPoolUser",
+        "AWS::Cognito::UserPoolUserToGroupAttachment",
     }
 )

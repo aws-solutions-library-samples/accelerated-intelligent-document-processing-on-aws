@@ -16,9 +16,9 @@ VERSIONS_TF = """terraform {
       source  = "hashicorp/awscc"
       version = ">= 1.50"
     }
-    archive = {
-      source  = "hashicorp/archive"
-      version = ">= 2.4"
+    time = {
+      source  = "hashicorp/time"
+      version = ">= 0.9"
     }
   }
 }
@@ -124,15 +124,16 @@ resource "aws_iam_role_policy" "cfn_bridge" {{
   }})
 }}
 
+# IAM is eventually consistent: Lambda refuses a permission naming a role it
+# cannot see yet ("The provided principal was invalid").
+resource "time_sleep" "cfn_bridge_iam" {{
+  create_duration = "15s"
+  depends_on      = [aws_iam_role.cfn_bridge, aws_iam_role_policy.cfn_bridge]
+}}
+
 resource "aws_cloudwatch_log_group" "cfn_bridge" {{
   name_prefix       = "/${{var.{STACK_NAME_VAR}}}/lambda/CfnBridge-"
   retention_in_days = 30
-}}
-
-data "archive_file" "cfn_bridge" {{
-  type        = "zip"
-  source_file = "${{path.module}}/bridge/index.py"
-  output_path = "${{path.module}}/.build/cfn_bridge.zip"
 }}
 
 resource "aws_lambda_function" "cfn_bridge" {{
@@ -143,8 +144,8 @@ resource "aws_lambda_function" "cfn_bridge" {{
   architectures    = ["arm64"]
   timeout          = 900
   memory_size      = 256
-  filename         = data.archive_file.cfn_bridge.output_path
-  source_code_hash = data.archive_file.cfn_bridge.output_base64sha256
+  filename         = "${{path.module}}/zips/cfn_bridge.zip"
+  source_code_hash = filebase64sha256("${{path.module}}/zips/cfn_bridge.zip")
   environment {{
     variables = {{ BRIDGE_BUCKET = aws_s3_bucket.cfn_bridge.id }}
   }}
@@ -209,8 +210,10 @@ locals {{
       TerraformResourceDirectory = {{
         Value = "s3://${{aws_s3_bucket.cfn_bridge.id}}/${{aws_s3_object.cfn_resource_directory.key}}"
       }}
+      # A hash of the directory content: known at plan time and stable,
+      # unlike the object's ETag.
       TerraformResourceDirectoryVersion = {{
-        Value = aws_s3_object.cfn_resource_directory.etag
+        Value = md5(aws_s3_object.cfn_resource_directory.content)
       }}
     }},
   )

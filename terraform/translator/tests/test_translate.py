@@ -222,8 +222,13 @@ def test_iam_role_splits_policies_and_dependents_wait_for_them(schema):
     assert 'resource "aws_iam_role_policy" "r_0"' in out
     assert 'resource "aws_iam_role_policy_attachment" "r"' in out
     fn = out[out.index('resource "aws_lambda_function"') :]
-    assert "aws_iam_role_policy.r_0" in fn
-    assert "aws_iam_role_policy_attachment.r" in fn
+    # Dependants wait on the role's propagation wait, which itself waits on
+    # every policy and attachment of the role.
+    assert "time_sleep.r_iam" in fn
+    sleep = out[out.index('resource "time_sleep" "r_iam"') :]
+    sleep = sleep[: sleep.index("\n}")]
+    assert "aws_iam_role_policy.r_0" in sleep
+    assert "aws_iam_role_policy_attachment.r" in sleep
     # A function name is required by the provider and absent here.
     assert "function_name = " in fn
 
@@ -261,21 +266,32 @@ def test_nested_if_block_becomes_mutually_exclusive_dynamic_blocks(schema):
     assert "for_each = (!local.c_a && local.c_b) ? [1] : []" in out
 
 
-def test_inline_zipfile_becomes_archive_file(schema):
+def test_inline_zipfile_becomes_a_deterministic_zip_shipped_in_the_module(schema):
+    import io
+    import zipfile
+
     t = {"Resources": {"F": lambda_fn(Runtime="python3.12", Code={"ZipFile": "x=1"})}}
-    out = render(t, schema)["main.tf"]
-    assert 'data "archive_file" "f_zipfile"' in out
-    assert 'filename = "index.py"' in out
-    assert "filename = data.archive_file.f_zipfile.output_path" in out
+    tr = Translator(t, schema)
+    out = tr.render()["main.tf"]
+    assert 'filename = "${path.module}/zips/f_zipfile.zip"' in out
+    assert 'filebase64sha256("${path.module}/zips/f_zipfile.zip")' in out
+    first = tr.assets["zips/f_zipfile.zip"]
+    again = Translator(t, schema)
+    again.render()
+    assert again.assets["zips/f_zipfile.zip"] == first  # byte-identical
+    assert zipfile.ZipFile(io.BytesIO(first)).read("index.py") == b"x=1"
 
 
 def test_inline_code_importing_cfnresponse_gets_the_stand_in(schema):
+    import io
+    import zipfile
+
     code = {"ZipFile": "import cfnresponse\ndef handler(e, c): pass"}
     t = {"Resources": {"F": lambda_fn(Runtime="python3.12", Code=code)}}
     tr = Translator(t, schema)
-    out = tr.render()["main.tf"]
-    assert 'filename = "cfnresponse.py"' in out
-    assert tr.needs_cfnresponse
+    tr.render()
+    names = zipfile.ZipFile(io.BytesIO(tr.assets["zips/f_zipfile.zip"])).namelist()
+    assert sorted(names) == ["cfnresponse.py", "index.py"]
 
 
 def test_json_text_literal_is_minified_in_source_order(schema):

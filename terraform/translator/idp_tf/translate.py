@@ -65,6 +65,23 @@ CUSTOM_TYPES = ("Custom::", "AWS::CloudFormation::CustomResource")
 AWSCC_PROPERTY_FIXUPS: dict[tuple[str, str], str] = {
     # The template gives the role ARN; Glue returns the role name.
     ("AWS::Glue::Crawler", "Role"): "role_name",
+    # The same URL can appear twice (once through ${AWS::Region}, once
+    # literally); Cognito keeps one.
+    ("AWS::Cognito::UserPoolClient", "CallbackURLs"): "distinct",
+    ("AWS::Cognito::UserPoolClient", "LogoutURLs"): "distinct",
+    # API Gateway drops an empty response template.
+    ("AWS::ApiGateway::Method", "Integration"): "drop_empty_templates",
+}
+
+# Resources a second writer owns at deploy time, so Terraform must not treat the
+# difference as drift. Keyed by (type, logical id); each needs its reason, and a
+# key that no longer names a resource in the template fails the translation.
+LIFECYCLE_OVERRIDES: dict[tuple[str, str], tuple[list[str], str]] = {
+    ("AWS::SSM::Parameter", "SettingsParameter"): (
+        ["value"],
+        "UpdateSettingsFunction (custom resource UpdateSettings) merges the "
+        "deployment's settings into this parameter at deploy time",
+    ),
 }
 
 AWSCC_REF_ATTR: dict[str, str] = {
@@ -242,6 +259,8 @@ class Translator:
         for plan in self.plans.values():
             if plan.kind == "aws":
                 self.mappers[plan.cfn_type].plan(self, plan)
+        # Assets (zips) the module ships, written by the CLI: relative path -> bytes.
+        self.assets: dict[str, bytes] = {}
 
     def _collect_cond_params(self, node: Any) -> None:
         if isinstance(node, dict):
@@ -589,10 +608,25 @@ class Translator:
                     f"awscc attribute in {plan.tf_type}"
                 )
             tf_name, child = found
-            if AWSCC_PROPERTY_FIXUPS.get((plan.cfn_type, k)) == "role_name":
+            fixup = AWSCC_PROPERTY_FIXUPS.get((plan.cfn_type, k))
+            if fixup == "role_name":
                 x = self._role_name(x)
-            lines.append(f"{tf_name} = {self.expr(x, child)}")
+            if fixup == "drop_empty_templates":
+                x = _drop_empty_templates(x)
+            rendered = self.expr(x, child)
+            if fixup == "distinct":
+                rendered = f"try(distinct({rendered}), {rendered})"
+            lines.append(f"{tf_name} = {rendered}")
         head, tail = self.meta_lines(plan, res)
+        override = LIFECYCLE_OVERRIDES.get((plan.cfn_type, plan.logical_id))
+        if override:
+            attrs, reason = override
+            tail = tail + [
+                f"# {reason}",
+                hcl.block(
+                    "lifecycle", [f"ignore_changes = [{', '.join(attrs)}]"]
+                ).rstrip(),
+            ]
         return hcl.block(
             f'resource "{plan.tf_type}" "{plan.name}"', head + lines + tail
         )
@@ -621,6 +655,7 @@ class Translator:
         token_expr = self.expr(token)
         deps_line = f"aws_lambda_permission.{plan.name}_bridge"
         head, tail = self.meta_lines(plan, res, [deps_line])
+        _, perm_tail = self.meta_lines(plan, res, ["time_sleep.cfn_bridge_iam"])
         # The handler grants the bridge permission to invoke it, rather than the
         # bridge's own policy listing every handler: that would make the bridge
         # depend on every handler, and some handlers depend on custom resources.
@@ -632,7 +667,8 @@ class Translator:
                 'action = "lambda:InvokeFunction"',
                 f"function_name = {token_expr}",
                 "principal = aws_iam_role.cfn_bridge.arn",
-            ],
+            ]
+            + perm_tail,
         )
         lines = [
             "function_name = aws_lambda_function.cfn_bridge.function_name",
@@ -917,6 +953,26 @@ class Translator:
                 "value = local.cfn_resource_directory_self",
             ],
         )
+
+
+def _drop_empty_templates(integration: Any) -> Any:
+    if not isinstance(integration, dict):
+        return integration
+    out = dict(integration)
+    responses = out.get("IntegrationResponses")
+    if isinstance(responses, list):
+        fixed = []
+        for r in responses:
+            if isinstance(r, dict) and isinstance(r.get("ResponseTemplates"), dict):
+                templates = {k: v for k, v in r["ResponseTemplates"].items() if v != ""}
+                r = (
+                    dict(r, ResponseTemplates=templates)
+                    if templates
+                    else {k: v for k, v in r.items() if k != "ResponseTemplates"}
+                )
+            fixed.append(r)
+        out["IntegrationResponses"] = fixed
+    return out
 
 
 def report_json(tr: Translator) -> str:
