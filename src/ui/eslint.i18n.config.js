@@ -18,8 +18,8 @@
 // properties (column headers, option labels, notification text) and plain `.ts`
 // strings (labels, breadcrumbs, notifications).
 //
-// The lists run in EXCLUDE mode only. Measured on this tree (pr1-investigation.md
-// §G): the plugin skips a scope when ANY ancestor was skipped, so an `include` list
+// The lists run in EXCLUDE mode only. Measured on this tree when this configuration was
+// written: the plugin skips a scope when ANY ancestor was skipped, so an `include` list
 // for attributes, properties or callees hides every descendant of a container it
 // does not name (an `i18nStrings` block inside `secondaryContent={...}`, text inside
 // a render prop, `steps[].title`, a `.map()` rendering). Therefore each list may hold
