@@ -1946,6 +1946,7 @@ class TestTheCommandSurface:
             "terraform_module_url",
             "terraform_dir",
             "terraform_bin",
+            "terraform_allow_replace_retained",
         }
 
     def test_only_stack_name_is_required(self):

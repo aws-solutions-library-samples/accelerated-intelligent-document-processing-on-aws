@@ -59,6 +59,67 @@ except (ImportError, ModuleNotFoundError):
     # fall back to lazy class so the module can at least be imported
     IDPPublisher = _LazyIDPPublisher  # type: ignore
 
+#: Skips the Terraform module a direct run otherwise publishes after the
+#: CloudFormation artifacts. `idp-cli deploy --from-code` passes it, because a
+#: CloudFormation deployment has no use for the module.
+NO_TERRAFORM_FLAG = "--no-terraform"
+
+
+def _publish_terraform_module(publisher, console) -> int:
+    """Publish the Terraform module beside the artifacts ``publisher`` uploaded.
+
+    The CloudFormation artifacts are already published when this runs, so a
+    failure here says so: they are usable as they are, and only the module is
+    missing.
+    """
+    from idp_sdk import IDPClient
+
+    try:
+        info = IDPClient(region=publisher.region).publish.publish_terraform(
+            source_dir=_project_root,
+            bucket=publisher.bucket,
+            prefix=publisher.prefix,
+            region=publisher.region,
+            version=publisher.version,
+            public=publisher.public,
+        )
+    except Exception as exc:  # noqa: BLE001 - reported, then a non-zero exit
+        console.print(
+            f"[bold red]Publishing the Terraform module failed: {exc}[/bold red]"
+        )
+        console.print(
+            "[yellow]The CloudFormation artifacts were published to "
+            f"s3://{publisher.bucket}/{publisher.prefix} and are usable as they are; "
+            "only the Terraform module is missing. Re-run with "
+            f"{NO_TERRAFORM_FLAG} to skip the Terraform step.[/yellow]"
+        )
+        return 1
+    console.print(f"[green]🧱 Terraform module: {info['moduleUrl']}[/green]")
+    console.print(
+        f"[dim]   sha256 {info['sha256']}; pointer {info['pointerUrl']}[/dim]"
+    )
+    return 0
+
+
+def run_publish(argv, publisher_cls, console=None) -> int:
+    """Publish the CloudFormation artifacts, then the Terraform module.
+
+    Every release publishes the module, generated from the templates just
+    published, to the same bucket and prefix (see docs/terraform.md), unless
+    ``--no-terraform`` is given. `idp-cli publish` does not run this script and
+    publishes the module only when asked (``--terraform``).
+    """
+    from rich.console import Console
+
+    publish_terraform = NO_TERRAFORM_FLAG not in argv
+    args = [a for a in argv if a != NO_TERRAFORM_FLAG]
+    publisher = publisher_cls()
+    publisher.run(args)
+    if not publish_terraform:
+        return 0
+    return _publish_terraform_module(publisher, console or Console())
+
+
 if __name__ == "__main__":
     # Resolve the real class for direct execution
     try:
@@ -106,33 +167,4 @@ if __name__ == "__main__":
         publisher.print_usage()
         sys.exit(1)
 
-    # Every release also publishes the Terraform module, generated from the
-    # templates just published, to the same bucket and prefix (see
-    # docs/terraform.md). --no-terraform skips it.
-    # Only a direct run (the release path) defaults it on: `idp-cli publish`
-    # runs this script as a subprocess and publishes the module itself when
-    # asked to (--terraform).
-    args = [a for a in sys.argv[1:] if a != "--no-terraform"]
-    publish_terraform = len(args) == len(sys.argv) - 1 and not os.environ.get(
-        "IDP_SDK_PUBLISH_SUBPROCESS"
-    )
-
-    publisher = _RealPublisher()
-    publisher.run(args)
-
-    if publish_terraform:
-        from idp_sdk import IDPClient
-
-        info = IDPClient(region=publisher.region).publish.publish_terraform(
-            source_dir=_project_root,
-            bucket=publisher.bucket,
-            prefix=publisher.prefix,
-            region=publisher.region,
-            version=publisher.version,
-            public=publisher.public,
-        )
-        out = Console()
-        out.print(f"[green]🧱 Terraform module: {info['moduleUrl']}[/green]")
-        out.print(
-            f"[dim]   sha256 {info['sha256']}; pointer {info['pointerUrl']}[/dim]"
-        )
+    sys.exit(run_publish(sys.argv[1:], _RealPublisher))

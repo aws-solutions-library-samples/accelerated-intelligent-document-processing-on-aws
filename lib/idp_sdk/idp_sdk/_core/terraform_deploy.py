@@ -12,8 +12,10 @@ deterministically and uploads it beside the templates::
     <prefix>/<version>/terraform/idp-terraform-<version>.zip.sha256
     <prefix>/terraform/idp-terraform-latest.json   {"version", "moduleUrl", "sha256"}
 
-``idp-cli deploy --terraform`` writes a root configuration that calls that module
-and runs ``init`` and ``apply``; ``idp-cli delete --terraform`` empties the
+``idp-cli deploy --terraform`` writes a root configuration that calls that module,
+runs ``init`` (with ``-upgrade`` only when the module source changed), saves a
+plan, refuses it if it would delete a resource CloudFormation retains (unless
+told otherwise), and applies exactly that plan; ``idp-cli delete --terraform`` empties the
 deployment's buckets, removes the resources CloudFormation would have retained
 from the state, and runs ``destroy``. The module's ``idp-terraform.json`` (written
 by the translator, at the root of the zip) supplies the CloudFormation-parameter
@@ -460,6 +462,30 @@ def missing_required(values: Dict[str, Any], manifest: Dict[str, Any]) -> List[s
 
 # The deployment's parameter values by CloudFormation name, beside tfvars.
 PARAMETERS_FILE = "idp-cli-parameters.json"
+# The module source the directory was last initialised with (see needs_upgrade).
+MODULE_SOURCE_FILE = ".idp-cli-module-source"
+# The saved plan `deploy --terraform` checks and then applies; removed afterwards,
+# because a plan file holds the variable values, NoEcho ones included.
+PLAN_FILE = "idp-cli.tfplan"
+
+
+def write_private(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` readable by its owner only, from the start.
+
+    Creating the file with the default mode and narrowing it afterwards leaves
+    a window in which another user can open it; a file that already exists
+    with a wider mode is narrowed before anything is written to it.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fd = -1
+            fh.write(text)
+    finally:
+        if fd != -1:
+            os.close(fd)
 
 
 def variable_specs(manifest: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -640,24 +666,80 @@ def write_root_config(
             "required parameter(s) have no value: " + ", ".join(missing) + hint
         )
     main_tf.write_text(render_main_tf(region, module_url, values, specs))
-    tfvars.write_text(render_tfvars(values))
+    # The values can include NoEcho parameters.
+    write_private(tfvars, render_tfvars(values))
     by_variable = {
         spec["variable"]: name
         for name, spec in (manifest.get("parameters") or {}).items()
     }
-    remembered = directory / PARAMETERS_FILE
-    remembered.write_text(
+    write_private(
+        directory / PARAMETERS_FILE,
         json.dumps(
             {by_variable[k]: v for k, v in values.items() if k in by_variable},
             indent=2,
             sort_keys=True,
         )
-        + "\n"
+        + "\n",
     )
-    # The values can include NoEcho parameters.
-    os.chmod(tfvars, 0o600)
-    os.chmod(remembered, 0o600)
     return values
+
+
+# ---------------------------------------------------------------------------
+# Init and the plan guard (deploy)
+# ---------------------------------------------------------------------------
+
+
+def needs_upgrade(directory: Path, module_url: str) -> bool:
+    """Whether ``init`` should run with ``-upgrade``.
+
+    Only when the module source differs from the one the directory was last
+    initialised with (or none is recorded): a new module can raise a provider
+    floor, which the existing lock file would refuse. Otherwise the providers
+    stay at the versions in ``.terraform.lock.hcl`` rather than floating to the
+    newest release inside the module's range on every deploy.
+    """
+    recorded = directory / MODULE_SOURCE_FILE
+    if not recorded.is_file():
+        return True
+    return recorded.read_text().strip() != terraform_module_source(module_url)
+
+
+def record_module_source(directory: Path, module_url: str) -> None:
+    (directory / MODULE_SOURCE_FILE).write_text(
+        terraform_module_source(module_url) + "\n"
+    )
+
+
+def retained_deletions(plan: Dict[str, Any], retained: Iterable[str]) -> List[str]:
+    """Planned deletions (replacements included) of retained resources.
+
+    ``plan`` is ``terraform show -json <planfile>`` output; ``retained`` are the
+    module-relative addresses from ``idp-terraform.json``. Each entry is a plan
+    address, with `` (replace)`` when the resource is deleted to be recreated.
+    """
+    wanted = {MODULE_PREFIX + a for a in retained}
+    out = []
+    for change in plan.get("resource_changes") or []:
+        actions = (change.get("change") or {}).get("actions") or []
+        address = change.get("address") or ""
+        if "delete" not in actions or strip_instance_keys(address) not in wanted:
+            continue
+        out.append(address + (" (replace)" if "create" in actions else ""))
+    return sorted(out)
+
+
+ALLOW_REPLACE_RETAINED_FLAG = "--terraform-allow-replace-retained"
+
+
+def refuse_retained_deletions(blocked: List[str], directory: Path) -> None:
+    raise IDPStackError(
+        f"The plan would delete {len(blocked)} resource(s) that CloudFormation "
+        "retains (DeletionPolicy Retain), which can lose their data:\n"
+        + "\n".join(f"  - {a}" for a in blocked)
+        + f"\nNothing was applied. Review the change with `terraform plan` in "
+        f"{directory}. To apply it anyway, re-run with "
+        f"{ALLOW_REPLACE_RETAINED_FLAG} (SDK: allow_replace_retained=True)."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -828,13 +910,20 @@ class TerraformRunner:
             )
         return proc.stdout or ""
 
-    def init(self) -> None:
-        # -upgrade: a newer module can raise a provider floor (the vendored
-        # awscc schema moves), which the existing lock file would refuse.
-        self.run("init", "-input=false", "-upgrade")
+    def init(self, upgrade: bool = False) -> None:
+        # -upgrade only when asked (see needs_upgrade): a newer module can raise
+        # a provider floor, which the existing lock file would refuse.
+        self.run("init", "-input=false", *(["-upgrade"] if upgrade else []))
 
-    def apply(self) -> None:
-        self.run("apply", "-auto-approve", "-input=false")
+    def plan(self, plan_file: str) -> None:
+        self.run("plan", "-input=false", f"-out={plan_file}")
+
+    def show_plan(self, plan_file: str) -> Dict[str, Any]:
+        return json.loads(self.capture("show", "-json", plan_file))
+
+    def apply_plan(self, plan_file: str) -> None:
+        # A saved plan applies without a prompt, and exactly as it was checked.
+        self.run("apply", "-input=false", plan_file)
 
     def destroy(self) -> None:
         self.run("destroy", "-auto-approve", "-input=false")

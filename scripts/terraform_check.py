@@ -7,15 +7,20 @@
 This is the gate behind ``make terraform-check``. It answers one question: does
 the module tree the translator in ``terraform/translator`` generates from the
 **source** templates load and type-check under each pinned Terraform and OpenTofu
-release? It does so in three steps:
+release, for every template variant the product publishes? It does so in three
+steps:
 
-1. Translate ``template.yaml`` (and its nested templates, read from source) into a
-   temporary directory with ``idp_tf.cli --offline``. No AWS call is made.
+1. Translate each entry of the translator's ``TEMPLATE_VARIANTS`` (the standard
+   ``template.yaml``, and its ``headless`` and ``govcloud`` transforms, each with
+   its nested templates read from source) into a temporary directory with
+   ``idp_tf.cli --offline [--variant ...]``. No AWS call is made. A variant
+   translating cleanly is not the same as it validating: a mapper that plans a
+   dependency on a resource its emitter then omits only shows up here.
 2. For each binary in ``--binaries`` (``terraform@1.7.5``, ``tofu@1.7.10``, ...),
    install it into a cache directory, verifying the archive against BOTH the
    release's published ``SHA256SUMS`` file and the hash committed in
    ``scripts/terraform_binaries.lock.json``.
-3. Copy the module into a fresh directory per binary and run
+3. Copy each variant's module into a fresh directory per binary and run
    ``init -backend=false`` then ``validate -json``. Errors fail the gate;
    warnings are counted and printed but do not.
 
@@ -41,9 +46,11 @@ so ``validate`` checks the output against the same schema that produced it.
 archive is accepted only when its SHA256 equals the entry for it in the published
 ``SHA256SUMS`` *and* the entry committed in the lock file. The second check is what
 makes this more than a corruption check: a release host that served a different
-archive together with a matching ``SHA256SUMS`` would still be refused. A binary
-reused from the cache is re-hashed against the digest recorded when it was
-installed. Nothing is piped to a shell. ``--update-lock`` is the maintainer step
+archive together with a matching ``SHA256SUMS`` would still be refused. The
+archive is kept in the cache, and a binary reused from it is accepted only when
+the cached archive still hashes to the committed lock entry and the binary is
+byte-identical to that archive's member, so a cache entry cannot vouch for
+itself. Nothing is piped to a shell. ``--update-lock`` is the maintainer step
 that records hashes for a new version; it reads them from ``SHA256SUMS``, so a
 version bump should be reviewed against the vendor's signed release.
 """
@@ -164,19 +171,39 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _cached_binary_is_verified(
+    exe: Path, archive: Path, member: str, expected: str
+) -> bool:
+    """The cached archive matches the committed lock, and ``exe`` is its member.
+
+    Checked against the lock rather than a digest written into the cache, which
+    anything able to replace the binary could also have rewritten.
+    """
+    if not (exe.is_file() and archive.is_file()):
+        return False
+    data = archive.read_bytes()
+    if _sha256(data) != expected:
+        return False
+    with zipfile.ZipFile(archive) as zf:
+        payload = zf.read(member)
+    return _sha256(exe.read_bytes()) == _sha256(payload)
+
+
 def install(binary: Binary, cache: Path, plat: str) -> Path:
     """Return the path of a verified ``binary``, installing it into ``cache``."""
     target_dir = cache / "bin" / binary.tool / binary.version / plat
     exe = target_dir / binary.tool
-    digest_file = target_dir / f"{binary.tool}.sha256"
-    if exe.is_file() and digest_file.is_file():
-        if _sha256(exe.read_bytes()) == digest_file.read_text().strip():
-            return exe
-        print(f"  cached {binary} does not match its recorded digest; reinstalling")
-
     expected = locked_sha(binary, plat)
     base, archive_name, _ = TOOLS[binary.tool]
     archive_name = archive_name.format(v=binary.version, p=plat)
+    cached_archive = target_dir / archive_name
+    if _cached_binary_is_verified(exe, cached_archive, binary.tool, expected):
+        return exe
+    if exe.is_file():
+        print(
+            f"  cached {binary} cannot be verified against the committed lock; "
+            "reinstalling"
+        )
     published = published_sums(binary).get(archive_name)
     if published != expected:
         raise GateError(
@@ -204,7 +231,9 @@ def install(binary: Binary, cache: Path, plat: str) -> Path:
         staged_exe.write_bytes(payload)
         staged_exe.chmod(0o755)
         os.replace(staged_exe, exe)
-        digest_file.write_text(_sha256(payload) + "\n")
+        # Kept so a later run can re-verify the binary against the lock.
+        os.replace(archive, cached_archive)
+        (target_dir / f"{binary.tool}.sha256").unlink(missing_ok=True)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return exe
@@ -256,7 +285,40 @@ def override_tf(providers: dict[str, str]) -> str:
 TRANSLATOR_IMPORTS = ("samtranslator", "yaml")
 
 
-def translate(out: Path) -> None:
+def template_variants() -> list[tuple[str, str | None]]:
+    """``TEMPLATE_VARIANTS`` from the translator, the list its own tests run.
+
+    Read from the source rather than restated, so a variant added there is
+    validated here without an edit.
+    """
+    if str(TRANSLATOR_DIR) not in sys.path:
+        sys.path.insert(0, str(TRANSLATOR_DIR))
+    from idp_tf.cli import TEMPLATE_VARIANTS  # noqa: PLC0415 - after the path
+
+    return [tuple(v) for v in TEMPLATE_VARIANTS]
+
+
+def variant_label(template: str, variant: str | None) -> str:
+    return f"{template}[{variant or 'standard'}]"
+
+
+def first_party_env() -> dict[str, str]:
+    """Environment for the translator: every ``lib/*`` root on ``PYTHONPATH``.
+
+    A variant is produced by the SDK's template transformer, so ``idp_sdk`` must
+    import from this checkout rather than whichever copy ``site-packages`` names.
+    """
+    roots = sorted(str(p.parent) for p in (REPO_ROOT / "lib").glob("*/pyproject.toml"))
+    current = os.environ.get("PYTHONPATH", "")
+    return {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(roots + ([current] if current else [])),
+    }
+
+
+def translate(
+    out: Path, template: str = "template.yaml", variant: str | None = None
+) -> None:
     missing = [m for m in TRANSLATOR_IMPORTS if importlib.util.find_spec(m) is None]
     if missing:
         raise GateError(
@@ -267,22 +329,32 @@ def translate(out: Path) -> None:
         sys.executable,
         "-m",
         "idp_tf.cli",
-        str(REPO_ROOT / "template.yaml"),
+        str(REPO_ROOT / template),
         "--offline",
         "--out",
         str(out),
         "--label-template",
-        str(REPO_ROOT / "template.yaml"),
+        str(REPO_ROOT / template),
         "--version",
         "0.0.0-offline",
     ]
+    if variant:
+        command += ["--variant", variant]
     result = subprocess.run(  # nosec B603 - fixed argv, no shell
-        command, cwd=TRANSLATOR_DIR, capture_output=True, text=True, check=False
+        command,
+        cwd=TRANSLATOR_DIR,
+        env=first_party_env(),
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode != 0:
         sys.stdout.write(result.stdout)
         sys.stderr.write(result.stderr)
-        raise GateError(f"translation failed (exit {result.returncode})")
+        raise GateError(
+            f"translation of {variant_label(template, variant)} failed "
+            f"(exit {result.returncode})"
+        )
     last = result.stdout.strip().splitlines()[-1:] or [""]
     print(f"  {last[0]}")
 
@@ -300,6 +372,7 @@ def _format_diagnostic(diag: dict) -> str:
 @dataclass
 class Result:
     binary: Binary
+    variant: str
     ok: bool
     install_s: float = 0.0
     init_s: float = 0.0
@@ -315,14 +388,15 @@ def check_one(
     cache: Path,
     plat: str,
     providers: dict[str, str],
+    variant: str = "template.yaml[standard]",
 ) -> Result:
-    print(f"\n== {binary}")
-    result = Result(binary, ok=False)
+    print(f"\n== {binary}: {variant}")
+    result = Result(binary, variant, ok=False)
     started = time.monotonic()
     exe = install(binary, cache, plat)
     result.install_s = time.monotonic() - started
 
-    workdir = work / str(binary).replace("@", "-")
+    workdir = work / f"{binary}-{module.name}".replace("@", "-")
     shutil.copytree(module, workdir)
     (workdir / OVERRIDE_FILE).write_text(override_tf(providers))
     plugin_cache = cache / "plugins"
@@ -426,27 +500,43 @@ def run(args: argparse.Namespace) -> int:
     print(f"  providers: {', '.join(f'{k}={v}' for k, v in sorted(providers.items()))}")
     print(f"  cache: {cache}")
 
+    variants = template_variants()
+    print(f"  variants: {', '.join(variant_label(t, v) for t, v in variants)}")
+
     results: list[Result] = []
     with tempfile.TemporaryDirectory(prefix="idp-terraform-check-") as tmp:
-        module = Path(tmp) / "module"
-        started = time.monotonic()
-        translate(module)
-        print(f"  translated in {time.monotonic() - started:.1f}s")
+        modules: list[tuple[str, Path]] = []
+        for template, variant in variants:
+            label = variant_label(template, variant)
+            module = Path(tmp) / f"module-{Path(template).stem}-{variant or 'standard'}"
+            started = time.monotonic()
+            translate(module, template, variant)
+            print(f"  translated {label} in {time.monotonic() - started:.1f}s")
+            modules.append((label, module))
         for binary in binaries:
-            results.append(check_one(binary, module, Path(tmp), cache, plat, providers))
+            for label, module in modules:
+                results.append(
+                    check_one(binary, module, Path(tmp), cache, plat, providers, label)
+                )
 
-    print("\nbinary              install   init  validate  errors  warnings  result")
+    print(
+        "\nbinary             variant                     install   init  validate"
+        "  errors  warnings  result"
+    )
     for r in results:
         print(
-            f"{str(r.binary):<18} {r.install_s:7.1f}s {r.init_s:5.1f}s "
-            f"{r.validate_s:8.1f}s {r.errors:7d} {r.warnings:9d}  "
+            f"{str(r.binary):<18} {r.variant:<26} {r.install_s:7.1f}s "
+            f"{r.init_s:5.1f}s {r.validate_s:8.1f}s {r.errors:7d} {r.warnings:9d}  "
             f"{'ok' if r.ok else 'FAILED'}"
         )
-    failed = [str(r.binary) for r in results if not r.ok]
+    failed = [f"{r.binary} on {r.variant}" for r in results if not r.ok]
     if failed:
         print(f"\nterraform-check FAILED for {', '.join(failed)}")
         return 1
-    print("\nterraform-check: every binary initialised and validated the module")
+    print(
+        "\nterraform-check: every binary initialised and validated every variant's "
+        "module"
+    )
     return 0
 
 

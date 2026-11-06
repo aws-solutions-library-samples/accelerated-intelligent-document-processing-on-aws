@@ -106,6 +106,86 @@ def test_a_tampered_cached_binary_is_reinstalled(monkeypatch, tmp_path) -> None:
 
 
 @pytest.mark.unit
+def test_a_cache_entry_cannot_vouch_for_itself(monkeypatch, tmp_path) -> None:
+    """A replaced binary with a matching digest file beside it is still refused.
+
+    The cache used to hold the binary's own digest, so anything able to swap the
+    binary could rewrite the digest too. Verification is against the committed
+    lock now, through the archive kept beside the binary.
+    """
+    binary, plat, fetched = _fake_release(monkeypatch, tmp_path)
+    exe = tc.install(binary, tmp_path / "cache", plat)
+    exe.write_bytes(b"something else")
+    (exe.parent / "terraform.sha256").write_text(
+        hashlib.sha256(b"something else").hexdigest() + "\n"
+    )
+    count = len(fetched)
+    tc.install(binary, tmp_path / "cache", plat)
+    assert exe.read_bytes() == b"#!/bin/sh\necho fake\n"
+    assert len(fetched) > count
+
+
+@pytest.mark.unit
+def test_a_cached_archive_that_no_longer_matches_the_lock_is_refetched(
+    monkeypatch, tmp_path
+) -> None:
+    binary, plat, fetched = _fake_release(monkeypatch, tmp_path)
+    exe = tc.install(binary, tmp_path / "cache", plat)
+    archive = exe.parent / f"terraform_9.9.9_{plat}.zip"
+    assert archive.is_file(), "the verified archive is not kept in the cache"
+    archive.write_bytes(_zip_with("terraform", b"#!/bin/sh\necho fake\n") + b"x")
+    count = len(fetched)
+    tc.install(binary, tmp_path / "cache", plat)
+    assert len(fetched) > count
+
+
+@pytest.mark.unit
+def test_every_template_variant_is_translated_and_validated(
+    monkeypatch, tmp_path
+) -> None:
+    """The gate validates headless and govcloud too, not only the standard module.
+
+    A govcloud translation once carried a ``depends_on`` naming a resource its
+    emitter never wrote. It translated cleanly and only ``validate`` saw it.
+    """
+    translated: list[tuple[str, str | None]] = []
+    checked: list[tuple[str, str]] = []
+
+    def fake_translate(out, template="template.yaml", variant=None):
+        out.mkdir(parents=True)
+        translated.append((template, variant))
+
+    def fake_check(binary, module, work, cache, plat, providers, variant):
+        checked.append((str(binary), variant))
+        return tc.Result(binary, variant, ok=True)
+
+    monkeypatch.setattr(tc, "translate", fake_translate)
+    monkeypatch.setattr(tc, "check_one", fake_check)
+    monkeypatch.setattr(tc, "current_platform", lambda: "linux_amd64")
+    args = tc.argparse.Namespace(
+        binaries="terraform@1.7.5 tofu@1.7.10",
+        providers="",
+        cache_dir=str(tmp_path / "cache"),
+    )
+    assert tc.run(args) == 0
+    variants = tc.template_variants()
+    assert {v for _, v in variants} >= {None, "headless", "govcloud"}
+    assert translated == variants
+    labels = [tc.variant_label(t, v) for t, v in variants]
+    assert checked == [
+        (b, label) for b in ("terraform@1.7.5", "tofu@1.7.10") for label in labels
+    ]
+
+
+@pytest.mark.unit
+def test_the_translator_subprocess_imports_first_party_code_from_this_checkout() -> (
+    None
+):
+    roots = tc.first_party_env()["PYTHONPATH"].split(tc.os.pathsep)
+    assert str(REPO_ROOT / "lib" / "idp_sdk") in roots
+
+
+@pytest.mark.unit
 def test_published_sums_disagreeing_with_the_lock_are_refused(
     monkeypatch, tmp_path
 ) -> None:

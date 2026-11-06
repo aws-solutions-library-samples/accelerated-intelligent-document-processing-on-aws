@@ -343,7 +343,7 @@ parameters, in both mappings.
 | Build time inside the bridge | 1m51s | same |
 | `terraform destroy` | clean | failed: ECR repository not emptied |
 | OpenTofu 1.13.9 plan against the Terraform-written state | no changes | not run |
-| `validate` on Terraform 1.7.5 / 1.13.4 and OpenTofu 1.7.10 / 1.13.9 | passes | passes |
+| `validate` on Terraform 1.7.5 / 1.13.4 and OpenTofu 1.7.10 / 1.13.9, the releases the gate pinned at the time | passes | passes |
 
 Changing `LogRetentionDays` updated five log groups in place. Changing `BuildHash`
 re-ran the image build through the bridge's update path, as CloudFormation's custom
@@ -375,11 +375,34 @@ Deploying found one defect in the templates themselves: `UserSyncFunction` had n
 to create its DynamoDB stream event source mapping. The statement is now in
 `template.yaml`.
 
+### OpenTofu: main template and all five nested stacks
+
+Run in a development account with the same templates and parameters as the Terraform
+run above, with OpenTofu instead of Terraform from an empty state.
+
+| Check | Result |
+|---|---|
+| `tofu apply` from empty state | succeeded: 1,584 resources |
+| `tofu plan` immediately after | no changes |
+| Delete (`idp-cli delete --terraform --terraform-bin tofu`) | succeeded |
+
+The resource count differs from the Terraform run's because the templates changed
+between the two runs.
+
+### Offline, on every pull request
+
+`make terraform-check` translates the standard template and its `headless` and
+`govcloud` variants (the translator's `TEMPLATE_VARIANTS`) and runs `init` and
+`validate` on each under every Terraform and OpenTofu release it pins
+(`TERRAFORM_CHECK_BINARIES` in the `Makefile`: the oldest release `versions.tf` admits
+and a recent one, of each). It plans and applies nothing.
+
 ### Not yet covered
 
 - Neither CI runs a live Terraform tier.
-- A full-stack apply with OpenTofu.
-- The `--headless` and `--govcloud` variants, and the feature-platform extensions,
-  which install as their own CloudFormation stacks.
+- An apply of the `--headless` and `--govcloud` modules; they are validated offline
+  only. The feature-platform extensions install as their own CloudFormation stacks.
+- An apply with a deploying role scoped to a role-name prefix and a required
+  permissions boundary, rather than an administrator role.
 - Moving DynamoDB tables from `hash_key`/`range_key` to `key_schema`, which needs a
   higher `aws` provider floor.

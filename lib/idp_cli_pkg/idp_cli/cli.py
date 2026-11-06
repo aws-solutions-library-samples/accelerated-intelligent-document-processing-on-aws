@@ -413,6 +413,7 @@ def _deploy_terraform(
     unsupported: List[str],
     headless: bool = False,
     govcloud: bool = False,
+    allow_replace_retained: bool = False,
 ) -> None:
     """`idp-cli deploy --terraform`. The work is in the SDK's
     `client.stack.deploy_terraform`; this resolves the default module the way
@@ -481,6 +482,7 @@ def _deploy_terraform(
             pointer_url=pointer_url,
             terraform_dir=terraform_dir,
             terraform_bin=terraform_bin,
+            allow_replace_retained=allow_replace_retained,
         )
         console.print(f"\n[green]✓ Terraform {result.operation} complete![/green]\n")
         outputs = result.outputs
@@ -833,6 +835,15 @@ def cli():
     show_default=True,
     help="Terraform binary: terraform, tofu, or a path (used with --terraform)",
 )
+@click.option(
+    "--terraform-allow-replace-retained",
+    is_flag=True,
+    help=(
+        "Apply even if the plan deletes or replaces a resource CloudFormation "
+        "would retain (a bucket or table, for example), losing its data. Without "
+        "it such a plan is refused and nothing is applied (used with --terraform)"
+    ),
+)
 def deploy(
     stack_name: str,
     admin_email: Optional[str],
@@ -861,6 +872,7 @@ def deploy(
     terraform_module_url: Optional[str],
     terraform_dir: Optional[str],
     terraform_bin: str,
+    terraform_allow_replace_retained: bool,
 ):
     """
     Deploy or update IDP stack from command line
@@ -921,6 +933,7 @@ def deploy(
             unsupported=[k for k, v in ignored.items() if v],
             headless=headless,
             govcloud=govcloud,
+            allow_replace_retained=terraform_allow_replace_retained,
         )
         return
     try:

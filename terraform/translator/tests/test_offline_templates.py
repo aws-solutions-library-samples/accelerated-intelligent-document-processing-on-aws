@@ -6,7 +6,12 @@ not handle fails here, on the pull request that introduces it.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -67,3 +72,274 @@ def test_every_directory_reader_is_in_the_standard_template():
         types_by_lid[lid] = res["Type"]
     for lid in TERRAFORM_DIRECTORY_READERS:
         assert types_by_lid.get(lid) == "AWS::Lambda::Function", lid
+
+
+# ------------------------------------------------------------------ helpers
+RESOURCE_BLOCK = re.compile(r'^(resource|data) "([a-z0-9_]+)" "([a-z0-9_]+)" \{', re.M)
+MODULE_BLOCK = re.compile(r'^module "([a-z0-9_]+)" \{', re.M)
+DEPENDS_ON = re.compile(r"^\s*depends_on = \[(.*?)\]", re.M | re.S)
+
+
+def _translate(out: Path, variant: str | None = None) -> Path:
+    args = [
+        str(REPO / "template.yaml"),
+        "--offline",
+        "--out",
+        str(out),
+        "--label-template",
+        str(REPO / "template.yaml"),
+        "--version",
+        "0.0.0",
+    ]
+    if variant:
+        args += ["--variant", variant]
+    assert main(args) == 0
+    return out
+
+
+def _modules(root: Path) -> list[Path]:
+    """The root module and every nested module directory under it."""
+    return [root, *sorted(p for p in (root / "modules").glob("*") if p.is_dir())]
+
+
+def _module_text(module: Path) -> str:
+    return "\n".join(p.read_text() for p in sorted(module.glob("*.tf")))
+
+
+@pytest.fixture(scope="module")
+def standard_module(tmp_path_factory) -> Path:
+    return _translate(tmp_path_factory.mktemp("std") / "m")
+
+
+# ----------------------------------------------- dangling dependency (govcloud)
+def _cached_terraform() -> tuple[Path, Path] | None:
+    """A terraform binary and provider cache left by ``make terraform-check``."""
+    cache = Path(
+        os.environ.get("TERRAFORM_CHECK_CACHE", "~/.cache/idp-terraform-check")
+    ).expanduser()
+    found = sorted(cache.glob("bin/terraform/*/*/terraform"))
+    plugins = cache / "plugins"
+    if not found or not (plugins / "registry.terraform.io").is_dir():
+        return None
+    return found[-1], plugins
+
+
+@pytest.mark.parametrize("variant", [v for t, v in TEMPLATE_VARIANTS])
+def test_every_depends_on_names_a_declared_resource(variant, tmp_path):
+    """A planned dependency must name something the module actually declares.
+
+    The GovCloud transform sets ``WebUIBucket.WebsiteConfiguration`` to
+    ``AWS::NoValue``. The bucket mapper's emitter wrote nothing for it while its
+    planner still added a dependency on the website configuration, so every
+    dependant of the bucket named an undeclared resource. The translation
+    succeeded; only ``terraform validate`` refused the module.
+    """
+    root = _translate(tmp_path / "m", variant)
+    dangling = []
+    for module in _modules(root):
+        text = _module_text(module)
+        declared = {f"{t}.{n}" for kind, t, n in RESOURCE_BLOCK.findall(text)}
+        declared |= {
+            f"data.{t}.{n}"
+            for kind, t, n in RESOURCE_BLOCK.findall(text)
+            if kind == "data"
+        }
+        declared |= {f"module.{n}" for n in MODULE_BLOCK.findall(text)}
+        for body in DEPENDS_ON.findall(text):
+            for ref in re.findall(r"[a-z][a-z0-9_.]*", body):
+                if ref not in declared:
+                    dangling.append(f"{module.relative_to(root)}: {ref}")
+    assert not dangling, sorted(set(dangling))[:20]
+
+
+def test_the_govcloud_module_validates_when_terraform_is_cached(tmp_path):
+    """Runs ``terraform validate`` offline on the GovCloud module.
+
+    Uses the binary and provider cache ``make terraform-check`` leaves behind;
+    with none present this is skipped, and ``make terraform-check`` (which
+    validates every variant on every pinned binary) remains the gate.
+    """
+    cached = _cached_terraform()
+    if cached is None:
+        pytest.skip(
+            "no cached terraform binary and providers; run `make terraform-check`"
+        )
+    exe, plugins = cached
+    root = _translate(tmp_path / "m", "govcloud")
+    gate = _load_gate()
+    (root / gate.OVERRIDE_FILE).write_text(gate.override_tf(gate.gate_providers([])))
+    env = {**os.environ, "TF_IN_AUTOMATION": "1", "CHECKPOINT_DISABLE": "1"}
+    env.pop("TF_CLI_ARGS", None)
+    init = subprocess.run(  # nosec B603 - fixed argv, no shell
+        [
+            str(exe),
+            "init",
+            "-backend=false",
+            "-input=false",
+            "-no-color",
+            f"-plugin-dir={plugins}",
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if init.returncode != 0:
+        pytest.skip(f"offline init failed (provider cache incomplete?): {init.stderr}")
+    validate = subprocess.run(  # nosec B603 - fixed argv, no shell
+        [str(exe), "validate", "-json", "-no-color"],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    report = json.loads(validate.stdout)
+    errors = [d for d in report["diagnostics"] if d["severity"] == "error"]
+    assert report["valid"] and not errors, errors[:5]
+
+
+def _load_gate():
+    import importlib.util
+
+    script = REPO / "scripts" / "terraform_check.py"
+    spec = importlib.util.spec_from_file_location("_terraform_check_gate", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+# ------------------------------------------------------------------ IAM roles
+ROLE_BLOCK = re.compile(
+    r'^resource "aws_iam_role" "([a-z0-9_]+)" \{\n(.*?)\n\}\n', re.M | re.S
+)
+DEFAULT_NAME = re.compile(
+    r'^\s*name = "\$\{substr\("(?P<pair>[^"]+)", 0, (?P<n>\d+)\)\}-'
+    r'\$\{substr\(md5\("(?P=pair)"\), 0, 8\)\}"$',
+    re.M,
+)
+NESTED_STACK_NAME = re.compile(
+    r'module "([a-z0-9_]+)" \{.*?\n\s*stack_name = "([^"]+)"', re.S
+)
+
+
+def _module_stack_names(root: Path, stack: str) -> dict[Path, str]:
+    """``{module dir: its var.stack_name}`` for a root deployed as ``stack``."""
+    names = {root: stack}
+    pending = [root]
+    while pending:
+        module = pending.pop()
+        for child, expr in NESTED_STACK_NAME.findall((module / "main.tf").read_text()):
+            child_dir = module / "modules" / child
+            if child_dir.is_dir() or (root / "modules" / child).is_dir():
+                child_dir = (
+                    child_dir if child_dir.is_dir() else root / "modules" / child
+                )
+                names[child_dir] = expr.replace("${var.stack_name}", names[module])
+                pending.append(child_dir)
+    return names
+
+
+RETAINED_NAME = re.compile(
+    r'^\s*name = "\$\{substr\("(?P<pair>[^"]+)", 0, (?P<n>\d+)\)\}-'
+    r'\$\{substr\(md5\("(?P=pair)"\), 0, 8\)\}-'
+    r'\$\{time_static\.[a-z0-9_]+(?:\[0\])?\.unix\}"$',
+    re.M,
+)
+
+
+def _evaluate_name(body: str, stack: str) -> str | None:
+    m = RETAINED_NAME.search(body)
+    if m:
+        pair = m["pair"].replace("${var.stack_name}", stack)
+        digest = hashlib.md5(pair.encode()).hexdigest()[:8]  # nosec B324 - mirrors HCL md5()
+        return f"{pair[: int(m['n'])]}-{digest}-1767225600"  # a 10-digit unix time
+    m = DEFAULT_NAME.search(body)
+    if m:
+        pair = m["pair"].replace("${var.stack_name}", stack)
+        digest = hashlib.md5(pair.encode()).hexdigest()[:8]  # nosec B324 - mirrors HCL md5()
+        return f"{pair[: int(m['n'])]}-{digest}"
+    m = re.search(r'^\s*name = "([^"$]*\$\{var\.stack_name\}[^"]*)"$', body, re.M)
+    if m and "${" not in m[1].replace("${var.stack_name}", ""):
+        return m[1].replace("${var.stack_name}", stack)
+    return None
+
+
+def test_every_role_is_named_after_the_stack_and_takes_the_boundary(standard_module):
+    """A deploying role scoped to ``role/<stack prefix>*`` can manage every role.
+
+    Left unnamed, the provider names a role ``terraform-<timestamp>``, which such
+    a role may neither create nor pass. Each role must also carry the
+    permissions boundary when ``PermissionsBoundaryArn`` is set, the bridge role
+    the translator adds included.
+    """
+    stack = "idp-longest-stack-nam25"  # the variable's length limit is 25
+    assert len(stack) <= 25
+    names: dict[str, str] = {}
+    problems = []
+    for module, module_stack in _module_stack_names(standard_module, stack).items():
+        text = _module_text(module)
+        for label, body in ROLE_BLOCK.findall(text):
+            where = f"{module.relative_to(standard_module)}:{label}"
+            name = _evaluate_name(body, module_stack)
+            if name is None:
+                problems.append(f"{where}: name is not derived from the stack name")
+                continue
+            if not name.startswith(stack):
+                problems.append(f"{where}: {name} does not start with {stack}")
+            if len(name) > 64:
+                problems.append(f"{where}: {name} is longer than IAM's 64")
+            if name in names:
+                problems.append(f"{where}: {name} is also {names[name]}")
+            names[name] = where
+            if not re.search(
+                r"^\s*permissions_boundary = .*var\.permissions_boundary_arn",
+                body,
+                re.M,
+            ):
+                problems.append(f"{where}: no permissions_boundary")
+            if "create_before_destroy = true" not in body:
+                problems.append(f"{where}: a rename would delete before creating")
+    assert names, "no aws_iam_role found"
+    assert not problems, problems[:20]
+
+
+def test_translation_is_deterministic(standard_module, tmp_path):
+    """Translating twice gives identical files, so a re-plan after the role
+    rename is empty: nothing in a name depends on when it was generated."""
+    again = _translate(tmp_path / "again")
+    first = {
+        p.relative_to(standard_module): p.read_bytes()
+        for p in standard_module.rglob("*")
+        if p.is_file()
+    }
+    second = {
+        p.relative_to(again): p.read_bytes() for p in again.rglob("*") if p.is_file()
+    }
+    assert first.keys() == second.keys()
+    differing = [str(k) for k in first if first[k] != second[k]]
+    assert not differing, differing
+
+
+def test_a_retained_role_keeps_its_name_and_cannot_collide_on_redeploy(
+    standard_module,
+):
+    """A delete keeps a retained role, so its name carries a creation-time
+    suffix (as a retained table's does) and later name changes are ignored
+    rather than replacing a resource CloudFormation keeps."""
+    meta = json.loads((standard_module / "idp-terraform.json").read_text())
+    retained = [a for a in meta["retainedAddresses"] if ".aws_iam_role." in a]
+    assert retained, "the template no longer retains a role; drop this test"
+    for address in retained:
+        *path, _, label = address.split(".")
+        # module.<a>.module.<b>.aws_iam_role.<label> -> modules/<a>/modules/<b>
+        module = standard_module
+        for name in path[1::2]:
+            module = module / "modules" / name
+        bodies = dict(ROLE_BLOCK.findall(_module_text(module)))
+        body = bodies[label]
+        assert RETAINED_NAME.search(body), (address, body)
+        assert "ignore_changes = [name]" in body, address
