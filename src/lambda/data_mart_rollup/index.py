@@ -3186,6 +3186,11 @@ def _enumerate_stack_tree(root_stack_name: str) -> List[str]:
     whose ``PhysicalResourceId`` is the child's ARN. Extract the child
     stack name from the ARN, recurse.
     """
+    # Under Terraform the stack is a label; the hook answers resource lookups
+    # from the deployment's resource directory. No-op under CloudFormation.
+    from idp_common.utils.terraform_stack import install_if_terraform
+
+    install_if_terraform()
     cfn = boto3.client("cloudformation")
     result: List[str] = [root_stack_name]
     to_visit = [root_stack_name]

@@ -73,6 +73,18 @@ AWSCC_PROPERTY_FIXUPS: dict[tuple[str, str], str] = {
     ("AWS::ApiGateway::Method", "Integration"): "drop_empty_templates",
 }
 
+# Functions that walk the stack tree at run time. Under Terraform they get the
+# resource directory's location (IDP_TF_RESOURCE_DIRECTORY) and read access to
+# it, so idp_common's hook answers their CloudFormation lookups. Logical id ->
+# what walks. A name that is not in the main template fails the translation.
+TERRAFORM_DIRECTORY_READERS: dict[str, str] = {
+    "DataMartRollupFunction": "data_mart_rollup enumerates the stack tree",
+    "AgentProcessorFunction": "the error-analyzer agent lists stack resources",
+    "AgentChatProcessorFunction": "the error-analyzer agent lists stack resources",
+}
+DIRECTORY_PSEUDO = "IDP::TerraformResourceDirectory"
+DIRECTORY_KEY = "terraform/cfn-resource-directory.json"
+
 # Resources a second writer owns at deploy time, so Terraform must not treat the
 # difference as drift. Keyed by (type, logical id); each needs its reason, and a
 # key that no longer names a resource in the template fails the translation.
@@ -199,6 +211,8 @@ class Translator:
         # source inside a module that has depends_on is deferred to apply, which
         # would make every condition reading it unknown at plan time.
         self.is_root = True
+        # Off for unit tests on fragments; the CLI turns it on for a real tree.
+        self.directory_readers = False
         # True while writing the resource directory, which keeps CloudFormation's
         # Ref semantics exactly.
         self._directory_mode = False
@@ -324,6 +338,8 @@ class Translator:
         }
         if name in pseudo:
             return pseudo[name]
+        if name == DIRECTORY_PSEUDO:
+            return f'"s3://${{aws_s3_bucket.cfn_bridge.id}}/{DIRECTORY_KEY}"'
         if name == "AWS::StackId":
             return (
                 '"arn:${local.pseudo.partition}:cloudformation:'
@@ -737,9 +753,64 @@ class Translator:
         head, tail = self.meta_lines(plan, res)
         return hcl.block(f'module "{plan.name}"', head + lines + tail)
 
+    def _inject_directory_readers(self) -> list[str]:
+        """Give each TERRAFORM_DIRECTORY_READERS function the directory URL and
+        read access to it. Root module only; returns the extra resources."""
+        missing = sorted(set(TERRAFORM_DIRECTORY_READERS) - set(self.plans))
+        if missing:
+            raise TranslationError(
+                f"TERRAFORM_DIRECTORY_READERS names functions the template no longer "
+                f"has: {missing}"
+            )
+        extra = []
+        for lid in TERRAFORM_DIRECTORY_READERS:
+            plan = self.plans[lid]
+            env = dict(plan.props.get("Environment") or {})
+            variables = env.get("Variables") or {}
+            if is_intrinsic(variables):
+                raise TranslationError(f"{lid}: Environment.Variables must be literal")
+            env["Variables"] = dict(
+                variables, IDP_TF_RESOURCE_DIRECTORY={"Ref": DIRECTORY_PSEUDO}
+            )
+            plan.props = dict(plan.props, Environment=env)
+            role = plan.props.get("Role")
+            if not (isinstance(role, dict) and set(role) == {"Fn::GetAtt"}):
+                raise TranslationError(f"{lid}: Role must be GetAtt <role>.Arn")
+            arg = role["Fn::GetAtt"]
+            role_lid = arg.split(".")[0] if isinstance(arg, str) else arg[0]
+            role_plan = self.plans[role_lid]
+            count = (
+                [f"count = {self.cond_ref(role_plan.condition)} ? 1 : 0"]
+                if role_plan.condition
+                else []
+            )
+            idx = "[0]" if role_plan.condition else ""
+            extra.append(
+                hcl.block(
+                    f'resource "aws_iam_role_policy" "{role_plan.name}_tf_directory"',
+                    count
+                    + [
+                        f"# {TERRAFORM_DIRECTORY_READERS[lid]}",
+                        f"role = {role_plan.address}{idx}.name",
+                        'name = "terraform-resource-directory-read"',
+                        "policy = jsonencode({\n"
+                        '  Version = "2012-10-17"\n'
+                        "  Statement = [{\n"
+                        '    Effect = "Allow"\n'
+                        '    Action = "s3:GetObject"\n'
+                        f'    Resource = "${{aws_s3_bucket.cfn_bridge.arn}}/{DIRECTORY_KEY}"\n'
+                        "  }]\n"
+                        "})",
+                    ],
+                )
+            )
+        return extra
+
     def render(self) -> dict[str, str]:
         self.custom_tokens: list[str] = []
         resources: list[str] = []
+        if self.is_root and self.directory_readers:
+            resources.extend(self._inject_directory_readers())
         for lid, res in self.t.get("Resources", {}).items():
             plan = self.plans.get(lid)
             if plan is None:

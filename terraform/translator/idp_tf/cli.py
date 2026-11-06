@@ -170,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
             survey=args.survey,
             nested_loader=loader,
         )
+        tr.directory_readers = args.label_template is not None
         files = tr.render()
         if args.survey:
             # Children are rendered here so their emit-time failures count too.
