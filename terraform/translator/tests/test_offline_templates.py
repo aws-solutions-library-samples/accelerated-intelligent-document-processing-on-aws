@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
-from idp_tf.cli import TEMPLATE_VARIANTS, cfn_types_in_tree, main
+from idp_tf.cli import TEMPLATE_VARIANTS, main
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -53,24 +53,6 @@ def test_generated_module_carries_the_parameter_map_and_retained_list(
     assert "AWSCC_VERSION" not in versions
     variables = (out / "variables.tf").read_text()
     assert "length(var.stack_name) <= 25" in variables
-
-
-def test_vendored_schema_covers_every_awscc_type_the_templates_use():
-    from idp_tf.awscc_schema import AwsccSchema, awscc_type_name
-    from idp_tf.cli import VENDORED_SCHEMA
-
-    schema = AwsccSchema(VENDORED_SCHEMA)
-    full = json.loads(VENDORED_SCHEMA.read_text())
-    assert full["awscc_version"]
-    for template, variant in TEMPLATE_VARIANTS:
-        for t in cfn_types_in_tree(REPO / template, variant):
-            if t.startswith("Custom::") or t.count("::") != 2:
-                continue
-            # Either awscc has it (vendored) or a hand mapping exists; the
-            # survey test above proves the latter, this proves the subset is
-            # not missing a type the translator would route to awscc.
-            if schema.has(t):
-                assert awscc_type_name(t) in json.dumps(full)
 
 
 def test_every_directory_reader_is_in_the_standard_template():

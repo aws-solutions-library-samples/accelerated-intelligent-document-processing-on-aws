@@ -269,6 +269,20 @@ class IamRoleMapper:
                 )
             )
         sleep_deps = [f"aws_iam_role.{plan.name}"] + self._policy_addresses(plan)
+        idx = "[0]" if plan.condition else ""
+        inline = [
+            f"aws_iam_role_policy.{plan.name}_{i}"
+            for i, p in enumerate(self._policies(plan))
+            if not (isinstance(p, dict) and set(p) == {"Fn::If"})
+        ]
+        # Re-wait when a grant changes on an upgrade, not only on create.
+        trigger = (
+            "triggers = { policies = sha1(jsonencode(["
+            + ", ".join(f"{a}{idx}.policy" for a in inline)
+            + "])) }"
+            if inline
+            else None
+        )
         out.append(
             hcl.block(
                 f'resource "time_sleep" "{plan.name}_iam"',
@@ -277,7 +291,9 @@ class IamRoleMapper:
                     if plan.condition
                     else []
                 )
-                + ['create_duration = "10s"', "depends_on = " + hcl.lst(sleep_deps)],
+                + ['create_duration = "10s"']
+                + ([trigger] if trigger else [])
+                + ["depends_on = " + hcl.lst(sleep_deps)],
             )
         )
         if "ManagedPolicyArns" in plan.props:
@@ -304,6 +320,25 @@ class LambdaMapper(SpecMapper):
     uses (``index.py`` / ``index.js``)."""
 
     def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
+        # CloudFormation tags every function aws:cloudformation:stack-name, and
+        # run-time code finds the deployment's functions by it. That key is
+        # reserved, so a Terraform deployment uses idp:stack-name, with the same
+        # values (see data_mart_rollup).
+        tags = plan.props.get("Tags")
+        if tags is None or isinstance(tags, list):
+            original = plan.props
+            plan.props = dict(
+                original,
+                Tags=list(tags or [])
+                + [{"Key": "idp:stack-name", "Value": {"Ref": "AWS::StackName"}}],
+            )
+            try:
+                return self._emit(tr, plan, res)
+            finally:
+                plan.props = original
+        return self._emit(tr, plan, res)
+
+    def _emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
         code = plan.props.get("Code", {})
         if not (isinstance(code, dict) and "ZipFile" in code):
             return super().emit(tr, plan, res)

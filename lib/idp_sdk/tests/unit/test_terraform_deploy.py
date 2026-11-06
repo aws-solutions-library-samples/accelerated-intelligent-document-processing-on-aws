@@ -468,6 +468,34 @@ class TestRootConfig:
             "subnet_ids": ["s-1"],
         }
 
+    def test_a_renamed_variable_keeps_its_value(self, tmp_path):
+        """Values are remembered by CloudFormation name, so a module that
+        renames the variable still receives the earlier value."""
+        _write(tmp_path, parameters={"MaxConcurrentWorkflows": "7"})
+        assert (
+            json.loads((tmp_path / tf.PARAMETERS_FILE).read_text())[
+                "MaxConcurrentWorkflows"
+            ]
+            == 7
+        )
+        renamed = json.loads(json.dumps(MANIFEST))
+        renamed["parameters"]["MaxConcurrentWorkflows"]["variable"] = "max_workflows"
+        values = _write(tmp_path, admin_email=None, manifest=renamed)
+        assert values["max_workflows"] == 7
+        assert "max_concurrent_workflows" not in values
+        assert (tmp_path / tf.PARAMETERS_FILE).stat().st_mode & 0o077 == 0
+
+    def test_a_parameter_the_new_module_lacks_is_dropped_with_a_warning(
+        self, tmp_path, caplog
+    ):
+        _write(tmp_path, parameters={"MaxConcurrentWorkflows": "7"})
+        smaller = json.loads(json.dumps(MANIFEST))
+        del smaller["parameters"]["MaxConcurrentWorkflows"]
+        with caplog.at_level("WARNING"):
+            values = _write(tmp_path, admin_email=None, manifest=smaller)
+        assert "max_concurrent_workflows" not in values
+        assert "MaxConcurrentWorkflows" in caplog.text
+
     def test_a_required_name_missing_is_refused(self, tmp_path):
         with pytest.raises(IDPConfigurationError, match="AdminEmail"):
             _write(tmp_path, admin_email=None)
@@ -645,7 +673,7 @@ class TestDeployOperation:
         )
         assert fetched[-1] == MODULE_URL
         assert calls.cmds == [
-            ["init", "-input=false"],
+            ["init", "-input=false", "-upgrade"],
             ["apply", "-auto-approve", "-input=false"],
         ]
         assert result.success and result.operation == "CREATE"
@@ -724,7 +752,7 @@ class TestDeleteOperation:
         client = IDPClient(stack_name="tfidp", region=REGION)
         result = client.stack.delete_terraform(terraform_dir=str(tmp_path))
         assert calls.cmds == [
-            ["init", "-input=false"],
+            ["init", "-input=false", "-upgrade"],
             ["show", "-json"],
             ["state", "list"],
             [

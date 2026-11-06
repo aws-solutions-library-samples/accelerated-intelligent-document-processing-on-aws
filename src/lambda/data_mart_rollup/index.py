@@ -49,6 +49,17 @@ QUERY_OUTPUT_LOCATION = os.environ.get("ATHENA_QUERY_OUTPUT_LOCATION", "")
 REPORTING_BUCKET = os.environ.get("REPORTING_BUCKET", "")
 STACK_NAME = os.environ.get("STACK_NAME", "")
 
+# The tag naming the stack that owns a resource. CloudFormation applies
+# aws:cloudformation:stack-name itself; that key is reserved, so a Terraform
+# deployment (which sets IDP_TF_RESOURCE_DIRECTORY on this function) tags its
+# functions idp:stack-name instead, with the same values: the root stack name,
+# or <root>-<LogicalId> for a nested module.
+_STACK_NAME_TAG = (
+    "idp:stack-name"
+    if os.environ.get("IDP_TF_RESOURCE_DIRECTORY")
+    else "aws:cloudformation:stack-name"
+)
+
 # The STACK_NAME guard runs on first USE of the marker path
 # (``_require_stack_name`` below), NOT at import time. An import-time
 # raise broke unit tests that load this module via
@@ -3095,7 +3106,7 @@ def _cached_data_plane_arns() -> List[str]:
     if _data_plane_arn_cache is None:
         _data_plane_arn_cache = _get_resources_by_tag(
             {
-                "aws:cloudformation:stack-name": _cached_stack_tree(),
+                _STACK_NAME_TAG: _cached_stack_tree(),
                 "idp:plane": ["data"],
             }
         )
@@ -3125,7 +3136,7 @@ def _discover_control_plane_lambdas() -> List[str]:
 
     stack_tree = _cached_stack_tree()
 
-    all_idp = _get_resources_by_tag({"aws:cloudformation:stack-name": stack_tree})
+    all_idp = _get_resources_by_tag({_STACK_NAME_TAG: stack_tree})
     # Scope the data-plane query to the SAME tree — a shared account with
     # multiple IDP stacks would otherwise cross-contaminate.
     data_plane = set(_cached_data_plane_arns())

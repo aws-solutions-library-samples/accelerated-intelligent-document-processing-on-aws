@@ -26,8 +26,10 @@ The Terraform module is generated from the accelerator's CloudFormation template
 the same templates the [Deployment Guide](./deployment.md) deploys. A translator in
 this repository reads the published main template and its nested templates and writes
 a Terraform module tree: a root module, plus one child module for each nested stack.
-It is regenerated with every release, so a module and the CloudFormation templates of
-the same version deploy the same resources with the same settings.
+A release publish (`publish.py`) generates it from the templates it has just
+published and uploads it beside them, unless run with `--no-terraform`, so a module
+and the CloudFormation templates of the same version deploy the same resources with
+the same settings. `idp-cli publish` does the same when given `--terraform`.
 
 The generated module uses three providers:
 
@@ -105,8 +107,11 @@ module has been published there yet; you can build and publish one yourself with
 
 A plain HTTPS module source is fetched without AWS credentials, so it works only for
 an object that is publicly readable. For a module you published to a private bucket,
-prefix the URL with `s3::` (`s3::https://s3.<region>.amazonaws.com/<bucket>/<key>`),
-which makes Terraform fetch it with your AWS credentials.
+prefix the URL with `s3::` and use the dash form of the S3 host
+(`s3::https://s3-<region>.amazonaws.com/<bucket>/<key>`), which makes Terraform fetch
+it with your AWS credentials. Terraform's S3 getter reads the dotted form
+(`s3.<region>.amazonaws.com`) as a bucket named `s3`; `idp-cli deploy --terraform`
+writes the dash form for you.
 
 ### Verifying the archive
 
@@ -430,12 +435,14 @@ CloudFormation deployment of the same version, but these things differ:
   SDK's hook, not by AWS, so the AWS CLI, the CloudFormation console's Resources tab
   and any tool that does not import `idp_sdk` see only the label. Use `terraform state
   list`, or the resource directory named by `TerraformResourceDirectory`.
-- Two runtime features look resources up through CloudFormation from inside the
-  deployment: the error-analyzer agent and the reporting data-mart rollup function. In
-  a Terraform deployment the module gives those functions the resource directory's
-  location (`IDP_TF_RESOURCE_DIRECTORY`) and read access to that one object, and
-  `idp_common` answers their lookups from it, so they work as in a CloudFormation
-  deployment. A CloudFormation deployment never sets that variable and is unaffected.
+- The reporting data-mart rollup function looks the deployment's stacks up through
+  CloudFormation from inside the deployment, and finds its functions by a stack-name
+  tag. In a Terraform deployment the module gives that function the resource
+  directory's location (`IDP_TF_RESOURCE_DIRECTORY`) and read access to that one
+  object, `idp_common` answers its stack lookups from it, and every function carries
+  an `idp:stack-name` tag in place of CloudFormation's reserved
+  `aws:cloudformation:stack-name`. A CloudFormation deployment never sets that
+  variable and is unaffected.
 - Physical names differ. CloudFormation generates names like
   `<stack>-<LogicalId>-<random>`; the module generates `<stack>-<LogicalId>-<hash>`
   for most resources, and Cloud Control generates its own names for `awscc` resources

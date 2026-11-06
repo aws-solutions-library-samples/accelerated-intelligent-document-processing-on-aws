@@ -266,15 +266,18 @@ translation is wrong or incomplete. Each entry is keyed narrowly and carries its
   resource rewrites at deploy time. The translator fails if an entry names a resource
   the template no longer has, so an override cannot outlive what it described.
 - **`TERRAFORM_DIRECTORY_READERS`**, keyed by function logical ID. These functions walk
-  the stack tree at run time through CloudFormation: `DataMartRollupFunction`, and the
-  two agent functions in which the error-analyzer agent runs. In the root module each
-  gets `IDP_TF_RESOURCE_DIRECTORY` (the S3 URL of the resource directory) and an
-  inline policy allowing `s3:GetObject` on that one object.
+  the stack tree at run time through CloudFormation; today that is
+  `DataMartRollupFunction` alone. In the root module each gets
+  `IDP_TF_RESOURCE_DIRECTORY` (the S3 URL of the resource directory) and an inline
+  policy allowing `s3:GetObject` on that one object.
   `idp_common.utils.terraform_stack.install_if_terraform()` installs the lookup hook
-  only when that variable is set, so CloudFormation deployments are unaffected. A
-  variant that removes a reader (headless removes the agents) skips it, and
-  `tests/test_offline_templates.py` fails if a reader is not a function in the standard
-  template.
+  only when that variable is set, so CloudFormation deployments are unaffected. The
+  rollup also finds the deployment's functions by tag, and CloudFormation's
+  `aws:cloudformation:stack-name` is reserved, so the translator tags every function
+  `idp:stack-name` with its module's `stack_name` (`<root>-<LogicalId>` for a nested
+  module, the same name the resource directory gives the nested stack). A variant that
+  removes a reader skips it, and `tests/test_offline_templates.py` fails if a reader
+  is not a function in the standard template.
 
 ## Testing live
 

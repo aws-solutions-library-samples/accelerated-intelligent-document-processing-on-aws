@@ -332,9 +332,28 @@ class DynamoDbTableMapper:
         where = plan.logical_id
         lines = []
         name = props.pop("TableName", None)
-        lines.append(
-            f"name = {tr.expr(name) if name is not None else default_name(where, 255)}"
-        )
+        suffix_blocks: list[str] = []
+        if name is not None:
+            lines.append(f"name = {tr.expr(name)}")
+        elif plan.logical_id in tr.retained:
+            # A delete keeps this table, and CloudFormation would give the next
+            # deployment of the same name a new random name. A deterministic
+            # name would collide with the kept table on redeploy, so add a
+            # suffix fixed when the table is first created.
+            stamp = f"{plan.name}_name_suffix"
+            count = (
+                [f"count = {tr.cond_ref(plan.condition)} ? 1 : 0"]
+                if plan.condition
+                else []
+            )
+            suffix_blocks.append(hcl.block(f'resource "time_static" "{stamp}"', count))
+            idx = "[0]" if plan.condition else ""
+            lines.append(
+                f'name = "${{substr("${{var.{STACK_NAME_VAR}}}-{where}", 0, 240)}}-'
+                f'${{time_static.{stamp}{idx}.unix}}"'
+            )
+        else:
+            lines.append(f"name = {default_name(where, 255)}")
         lines += self._keys(tr, props.pop("KeySchema"), where)
         for a in props.pop("AttributeDefinitions", []):
             lines.append(
@@ -410,9 +429,10 @@ class DynamoDbTableMapper:
             lines.append(f"tags = {_tags(tr, props.pop('Tags'))}")
         lines += render_spec(tr, self.spec, props, where)
         head, tail = tr.meta_lines(plan, res)
-        return hcl.block(
+        table = hcl.block(
             f'resource "aws_dynamodb_table" "{plan.name}"', head + lines + tail
         )
+        return "\n".join(suffix_blocks + [table])
 
 
 BUCKET_POLICY = SpecMapper(

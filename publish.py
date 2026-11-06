@@ -106,5 +106,33 @@ if __name__ == "__main__":
         publisher.print_usage()
         sys.exit(1)
 
+    # Every release also publishes the Terraform module, generated from the
+    # templates just published, to the same bucket and prefix (see
+    # docs/terraform.md). --no-terraform skips it.
+    # Only a direct run (the release path) defaults it on: `idp-cli publish`
+    # runs this script as a subprocess and publishes the module itself when
+    # asked to (--terraform).
+    args = [a for a in sys.argv[1:] if a != "--no-terraform"]
+    publish_terraform = len(args) == len(sys.argv) - 1 and not os.environ.get(
+        "IDP_SDK_PUBLISH_SUBPROCESS"
+    )
+
     publisher = _RealPublisher()
-    publisher.run(sys.argv[1:])
+    publisher.run(args)
+
+    if publish_terraform:
+        from idp_sdk import IDPClient
+
+        info = IDPClient(region=publisher.region).publish.publish_terraform(
+            source_dir=_project_root,
+            bucket=publisher.bucket,
+            prefix=publisher.prefix,
+            region=publisher.region,
+            version=publisher.version,
+            public=publisher.public,
+        )
+        out = Console()
+        out.print(f"[green]🧱 Terraform module: {info['moduleUrl']}[/green]")
+        out.print(
+            f"[dim]   sha256 {info['sha256']}; pointer {info['pointerUrl']}[/dim]"
+        )

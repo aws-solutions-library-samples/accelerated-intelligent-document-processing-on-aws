@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import threading
+import time
 from typing import Any
 
 import botocore.session
@@ -93,10 +94,18 @@ def _register_nested(region: str, node: dict[str, Any]) -> None:
         _register_nested(region, child)
 
 
+# A warm Lambda container would otherwise serve the directory it first read
+# for its whole life, across applies that change the deployment.
+CACHE_SECONDS = 300
+_loaded_at: dict[tuple[str, str], float] = {}
+
+
 def _load_root(region: str, stack_name: str) -> dict[str, Any] | None:
     key = (region, stack_name)
     with _lock:
-        if key in _roots:
+        loaded = _loaded_at.get(key)
+        fresh = loaded is None or time.monotonic() - loaded < CACHE_SECONDS
+        if key in _roots and fresh:
             return _roots[key]
     cfn, s3 = _raw_clients(region)
     env_url = os.environ.get(DIRECTORY_ENV)
@@ -110,6 +119,7 @@ def _load_root(region: str, stack_name: str) -> dict[str, Any] | None:
         )
         with _lock:
             _roots[key] = directory
+            _loaded_at[key] = time.monotonic()
             _register_nested(region, directory)
         return directory
     try:
@@ -129,6 +139,7 @@ def _load_root(region: str, stack_name: str) -> dict[str, Any] | None:
             logger.debug("Serving %s from its Terraform resource directory", stack_name)
     with _lock:
         _roots[key] = directory
+        _loaded_at[key] = time.monotonic()
         if directory is not None:
             _register_nested(region, directory)
     return directory
@@ -226,7 +237,14 @@ def _before_call(model: Any, context: dict[str, Any], **_):
     try:
         parsed = _serve(model.name, params, region)
     except Exception:  # noqa: BLE001 - never break a real CloudFormation call
-        logger.debug("Terraform directory lookup failed", exc_info=True)
+        # Inside a Terraform deployment a failure here sends the call to
+        # CloudFormation, which knows only the label stack and so answers with
+        # an almost empty, confidently wrong result; say so loudly.
+        log = logger.warning if os.environ.get(DIRECTORY_ENV) else logger.debug
+        log(
+            "Terraform directory lookup failed; falling back to CloudFormation",
+            exc_info=True,
+        )
         return None
     if parsed is None:
         return None
@@ -268,3 +286,4 @@ def reset_cache() -> None:
     with _lock:
         _roots.clear()
         _nested.clear()
+        _loaded_at.clear()
