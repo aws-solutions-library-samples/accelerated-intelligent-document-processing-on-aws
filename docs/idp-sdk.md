@@ -1159,6 +1159,15 @@ result = client.stack.delete(
 print(f"Status: {result.status}")
 ```
 
+### stack.deploy_terraform() / stack.delete_terraform()
+
+Deploy or destroy the accelerator with Terraform or OpenTofu, from a module published by `publish.build(terraform=True)`. These are what `idp-cli deploy --terraform` and `idp-cli delete --terraform` call; see [Terraform deployments](./idp-cli.md#terraform-deployments) for the behaviour.
+
+- `deploy_terraform(stack_name=None, admin_email=None, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform")` returns a `StackDeploymentResult` (`status="APPLY_COMPLETE"`, the label stack's outputs). With no `module_url`, `pointer_url` names an `idp-terraform-latest.json`; `default_terraform_pointer_url(template_url)` derives it from a default template URL.
+- `delete_terraform(stack_name=None, *, terraform_dir=None, terraform_bin="terraform")` returns a `StackDeletionResult` whose `retained_resources` lists the resources left in place, categorized as `dynamodb_tables`, `log_groups`, `s3_buckets` and `other`.
+
+Both raise `IDPConfigurationError` when the binary is missing or the inputs are invalid, and `IDPStackError` when a Terraform command fails.
+
 ### stack.get_resources()
 
 Get stack resource information.
@@ -1344,6 +1353,7 @@ This is the programmatic equivalent of `idp-cli publish` — see [Headless Deplo
 - `no_validate` (bool, optional): If `True`, skip CloudFormation template validation. Default: `False`.
 - `verbose` (bool, optional): If `True`, enable verbose build output. Default: `False`.
 - `lint` (bool, optional): If `True`, enable ruff linting and cfn-lint. Default: `True`.
+- `terraform` (bool, optional): If `True`, also translate the published main template into a Terraform module and upload it (`publish.publish_terraform()`). Default: `False`.
 
 **Returns:** `PublishResult` with:
 - `success` (bool)
@@ -1354,6 +1364,7 @@ This is the programmatic equivalent of `idp-cli publish` — see [Headless Deplo
 - `bucket` (str, optional): S3 bucket used (region-suffixed)
 - `prefix` (str, optional): S3 prefix used
 - `version` (str, optional): Version string from the project's `VERSION` file
+- `terraform_module_url`, `terraform_module_sha256`, `terraform_pointer_url` (str, optional): The Terraform module zip's HTTPS URL, its SHA-256, and the latest-pointer URL (only when `terraform=True`)
 - `error` (str, optional): Error message if the build failed
 
 **Raises:**

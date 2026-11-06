@@ -3,6 +3,8 @@
 
 """Stack operations for IDP SDK."""
 
+import json
+import logging
 from typing import Dict, List, Optional
 
 from idp_sdk.exceptions import IDPConfigurationError, IDPStackError
@@ -19,6 +21,8 @@ from idp_sdk.models import (
     StackResources,
     StackStableStateResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class StackOperation:
@@ -243,6 +247,181 @@ class StackOperation:
 
         except Exception as e:
             raise IDPStackError(f"Deletion failed: {e}") from e
+
+    def deploy_terraform(
+        self,
+        stack_name: Optional[str] = None,
+        admin_email: Optional[str] = None,
+        parameters: Optional[Dict[str, str]] = None,
+        *,
+        module_url: Optional[str] = None,
+        pointer_url: Optional[str] = None,
+        terraform_dir: Optional[str] = None,
+        terraform_bin: str = "terraform",
+    ) -> StackDeploymentResult:
+        """Deploy or update the accelerator with Terraform (or OpenTofu).
+
+        Writes a root configuration into ``terraform_dir`` (default
+        ``./idp-terraform/<stack_name>``) — ``main.tf`` calling the published
+        module as ``module "idp"`` with the aws and awscc providers in the
+        client's region, and ``terraform.tfvars`` — then runs ``init`` and
+        ``apply -auto-approve``, streaming their output to stderr. State is
+        local in that directory unless a backend is configured in another file
+        there. Always waits.
+
+        Args:
+            stack_name: Deployment name (the label stack's name, at most 25
+                characters).
+            admin_email: Admin user email; required on the first deploy.
+            parameters: CloudFormation parameter names and values, mapped to
+                module variables through the module's ``idp-terraform.json``.
+                Unknown names are refused.
+            module_url: Module zip URL. Without it, ``pointer_url`` is read.
+            pointer_url: URL of an ``idp-terraform-latest.json`` pointer.
+            terraform_dir: Root configuration directory.
+            terraform_bin: ``terraform``, ``tofu`` or a path to either.
+
+        Returns:
+            StackDeploymentResult with operation ``APPLY`` and the label stack's
+            outputs.
+
+        Raises:
+            IDPConfigurationError: Binary missing, bad parameters, a foreign
+                ``main.tf``, or a CloudFormation stack of that name.
+            IDPStackError: ``init`` or ``apply`` failed.
+        """
+        from pathlib import Path
+
+        from idp_sdk._core import terraform_deploy as tf
+        from idp_sdk._core.stack import StackDeployer
+        from idp_sdk._core.terraform_stack import is_terraform_stack
+
+        name = self._client._require_stack(stack_name)
+        region = self._client._region
+        if not region:
+            raise IDPConfigurationError("a region is required for a Terraform deploy")
+        directory = Path(terraform_dir or Path("idp-terraform") / name).resolve()
+        runner = tf.TerraformRunner(terraform_bin, directory)
+
+        deployer = StackDeployer(region=region)
+        stack = self._describe_stack(deployer, name)
+        if stack is not None and not is_terraform_stack(stack.get("Description")):
+            raise IDPConfigurationError(
+                f"{name} is a CloudFormation stack. A Terraform deployment creates "
+                "a label stack of its own name, so it needs a name no stack uses; "
+                "deploy it with `idp-cli deploy` (without --terraform) instead."
+            )
+
+        sha = None
+        if not module_url:
+            if not pointer_url:
+                raise IDPConfigurationError(
+                    "no Terraform module URL: pass module_url or pointer_url"
+                )
+            pointer = json.loads(tf.fetch_url(pointer_url))
+            module_url, sha = tf.resolve_pointer(pointer)
+        manifest = tf.load_module_manifest(module_url, sha)
+        tf.write_root_config(
+            directory,
+            region=region,
+            module_url=module_url,
+            stack_name=name,
+            admin_email=admin_email,
+            parameters=parameters or {},
+            manifest=manifest,
+        )
+        operation = "UPDATE" if (directory / "terraform.tfstate").exists() else "CREATE"
+        runner.init()
+        runner.apply()
+
+        outputs: Dict[str, str] = {}
+        stack = self._describe_stack(deployer, name)
+        if stack is not None:
+            outputs = deployer._get_stack_outputs(stack)
+        return StackDeploymentResult(
+            success=True,
+            operation=operation,
+            status="APPLY_COMPLETE",
+            stack_name=name,
+            stack_id=(stack or {}).get("StackId"),
+            outputs=outputs,
+        )
+
+    def delete_terraform(
+        self,
+        stack_name: Optional[str] = None,
+        *,
+        terraform_dir: Optional[str] = None,
+        terraform_bin: str = "terraform",
+    ) -> StackDeletionResult:
+        """Destroy a Terraform deployment, keeping what CloudFormation retains.
+
+        In ``terraform_dir`` (default ``./idp-terraform/<stack_name>``): runs
+        ``init``; empties the deployment's S3 buckets that will be destroyed,
+        with the helper the CloudFormation delete uses; removes every address in
+        the module's ``retainedAddresses`` (as ``module.idp.<address>``) from
+        the state, skipping any not in it; then runs ``destroy -auto-approve``.
+
+        Returns:
+            StackDeletionResult whose ``retained_resources`` lists what was left,
+            in the shape of the CloudFormation path's retained-resource report.
+
+        Raises:
+            IDPConfigurationError: Binary or directory missing.
+            IDPStackError: A Terraform command failed.
+        """
+        from pathlib import Path
+
+        from idp_sdk._core import terraform_deploy as tf
+        from idp_sdk._core.stack import StackDeployer
+
+        name = self._client._require_stack(stack_name)
+        directory = Path(terraform_dir or Path("idp-terraform") / name).resolve()
+        if not directory.is_dir() or not any(directory.glob("*.tf")):
+            raise IDPConfigurationError(
+                f"no Terraform configuration in {directory}; pass the directory "
+                "the deployment was applied from with --terraform-dir"
+            )
+        runner = tf.TerraformRunner(terraform_bin, directory)
+        tfvars = directory / "terraform.tfvars"
+        if tfvars.is_file() and tf.ROOT_MARKER in tfvars.read_text():
+            recorded = tf.parse_tfvars(tfvars.read_text()).get("stack_name")
+            if recorded and recorded != name:
+                raise IDPConfigurationError(
+                    f"{directory} holds the deployment {recorded!r}, not {name!r}"
+                )
+
+        runner.init()
+        manifest = tf.read_manifest_from_dir(directory)
+        state = runner.show_state()
+        remove, absent = tf.retained_state_addresses(
+            manifest.get("retainedAddresses") or [], runner.state_list()
+        )
+        for addr in absent:
+            logger.info("Retained address not in state, skipped: %s", addr)
+
+        buckets = tf.state_buckets(state, exclude=remove)
+        if buckets:
+            StackDeployer(region=self._client._region)._empty_buckets(buckets)
+        retained = tf.retained_report(state, remove)
+        runner.state_rm(remove)
+        runner.destroy()
+        return StackDeletionResult(
+            success=True,
+            status="DESTROY_COMPLETE",
+            stack_name=name,
+            retained_resources=retained,
+        )
+
+    @staticmethod
+    def _describe_stack(deployer, name: str) -> Optional[dict]:
+        try:
+            stacks = deployer.cfn.describe_stacks(StackName=name).get("Stacks") or []
+        except deployer.cfn.exceptions.ClientError as e:
+            if "does not exist" in str(e):
+                return None
+            raise
+        return stacks[0] if stacks else None
 
     def get_resources(
         self, stack_name: Optional[str] = None, **kwargs
