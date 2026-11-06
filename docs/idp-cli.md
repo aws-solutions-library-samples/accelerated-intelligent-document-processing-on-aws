@@ -374,6 +374,10 @@ idp-cli deploy [OPTIONS]
 - `--build-max-workers`: Maximum concurrent build workers (used with `--from-code`)
 - `--clean-build`: Force full rebuild by deleting checksum files (used with `--from-code`)
 - `--no-validate-template`: Skip CloudFormation template validation
+- `--terraform` (experimental): Deploy with Terraform instead of CloudFormation. See [Terraform deployments](#terraform-deployments) below and the [Terraform Deployment](./terraform.md) guide.
+- `--terraform-module-url`: Terraform module source URL (used with `--terraform`; default: the latest published module for the region)
+- `--terraform-dir`: Directory for the generated root configuration and local state (used with `--terraform`; default: `./idp-terraform/<stack-name>`)
+- `--terraform-bin`: `terraform` or `tofu` (used with `--terraform`)
 
 **Note:** `--from-code`, `--template-url`, and `--template-file` are mutually exclusive. Use `--from-code` for development/testing from local source, `--template-url` for production deployments from a pre-published template, and `--template-file` to deploy a locally-built template.
 
@@ -532,6 +536,30 @@ idp-cli deploy \
     --wait
 ```
 
+#### Terraform deployments
+
+`idp-cli deploy --terraform` deploys the experimental Terraform module instead of a
+CloudFormation stack:
+
+```bash
+idp-cli deploy --terraform \
+    --stack-name idp-tf \
+    --admin-email user@example.com \
+    --parameters "MaxConcurrentWorkflows=50" \
+    [--terraform-module-url URL] [--terraform-dir DIR] [--terraform-bin terraform|tofu] [--wait]
+```
+
+It writes `main.tf` (the `aws` and `awscc` providers in the region and a
+`module "idp"` block) and `terraform.tfvars` into the directory, then runs `init` and
+`apply` there. `--parameters` takes CloudFormation parameter names, mapped to the
+module's variables through the module's `idp-terraform.json`; an unknown name is an
+error. State is local in the directory unless you put a backend block there first, so
+keep the directory. The CLI never overwrites a `main.tf` it did not write. Without
+`--terraform`, `deploy` refuses a Terraform deployment, because its CloudFormation
+stack of the same name is only a read-only label. See
+[Terraform Deployment](./terraform.md) for parameters, the label stack, upgrading and
+current limitations.
+
 ---
 
 ### `publish`
@@ -553,6 +581,7 @@ idp-cli publish [OPTIONS]
 - `--headless`: Also generate a **headless (no-UI) template variant**. For commercial regions this produces `idp-main.yaml` **and** `idp-headless.yaml`; for GovCloud (`us-gov-*`) the headless template is additionally updated with GovCloud configuration defaults (ARN partition, GovCloud Bedrock models, `lending-package-sample-govcloud` preset).
 - `--govcloud`: Also generate the **GovCloud template variant** — the full Web UI with every `AWS::CloudFront::*` resource removed and API Gateway UI hosting forced. Writes `.aws-sam/idp-govcloud.yaml` beside `idp-main.yaml` and uploads it as `idp-govcloud.yaml`. The transform is linted against a GovCloud region, so an unsupported resource type that survived it fails the publish with the `cfn-lint` finding rather than at deploy time. Deploy the result with `idp-cli deploy --template-file .aws-sam/idp-govcloud.yaml`, or build and deploy in one step with `idp-cli deploy --from-code . --govcloud`.
 - `--public`: Make S3 artifacts publicly readable (for shared deployments)
+- `--terraform` (experimental): After the CloudFormation publish, also generate the Terraform module from the published main template and upload it beside the templates: `<prefix>/<version>/terraform/idp-terraform-<version>.zip`, its `.zip.sha256` checksum, and `<prefix>/terraform/idp-terraform-latest.json` (`{"version", "moduleUrl", "sha256"}`). The command prints the module source URL, an HTTPS S3 URL ending `.zip` that Terraform accepts as a module `source`. See [Terraform Deployment](./terraform.md#getting-the-module).
 - `--max-workers`: Maximum concurrent build workers (default: auto-detect)
 - `--clean-build`: Force full rebuild by deleting all checksum files
 - `--no-validate`: Skip CloudFormation template validation
@@ -586,6 +615,9 @@ idp-cli publish --source-dir . --region us-east-1 --clean-build --verbose
 
 # Make artifacts publicly readable (shared template)
 idp-cli publish --source-dir . --region us-east-1 --public
+
+# Also generate and upload the Terraform module (experimental)
+idp-cli publish --source-dir . --region us-east-1 --terraform
 ```
 
 **Output:**
@@ -632,6 +664,8 @@ idp-cli delete [OPTIONS]
 - `--force-delete-all`: Force delete ALL remaining resources after CloudFormation deletion (S3 buckets, CloudWatch logs, DynamoDB tables)
 - `--wait`: Wait for deletion to complete (default: no-wait)
 - `--region`: AWS region (optional)
+- `--terraform` (experimental): Delete a Terraform deployment made with `deploy --terraform`, from its `--terraform-dir`. See [Deleting a Terraform deployment](#deleting-a-terraform-deployment) below.
+- `--terraform-dir`: The directory `deploy --terraform` wrote (used with `--terraform`)
 
 **S3 Bucket Behavior:**
 - **LoggingBucket**: `DeletionPolicy: Retain` - Always kept (unless using `--force-delete-all`)
@@ -696,6 +730,9 @@ idp-cli delete --stack-name test-stack --force-delete-all --force
 
 # Wait for the deletion to reach DELETE_COMPLETE before returning
 idp-cli delete --stack-name test-stack --force --wait
+
+# Delete a Terraform deployment (experimental)
+idp-cli delete --terraform --stack-name idp-tf --force
 ```
 
 Deletion does **not** wait by default: without `--wait` the command initiates the
@@ -846,6 +883,17 @@ Proceeding with stack deletion...
 ```
 
 **Note:** CREATE operations cannot be cancelled directly - they must complete or roll back naturally. UPDATE operations can be cancelled immediately.
+
+#### Deleting a Terraform deployment
+
+`idp-cli delete --terraform --stack-name S [--terraform-dir DIR] [--force]` empties
+the deployment's buckets the way the CloudFormation path does, then runs
+`terraform state rm` on every resource whose CloudFormation `DeletionPolicy` keeps it
+(the module's `retainedAddresses`), and then `terraform destroy`. The retained
+resources are therefore left in place, as a CloudFormation delete leaves them, and the
+command reports which ones were left. Without `--terraform`, `delete` refuses a
+Terraform deployment and names the Terraform command to run. See
+[Terraform Deployment](./terraform.md#deleting).
 
 ---
 
