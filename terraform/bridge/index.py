@@ -44,7 +44,7 @@ s3 = boto3.client(
     endpoint_url=f"https://s3.{REGION}.{_SUFFIX}",
     config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
 )
-lam = boto3.client("lambda")
+lam = boto3.client("lambda", region_name=REGION)
 
 
 def _stringify(value: Any) -> Any:
