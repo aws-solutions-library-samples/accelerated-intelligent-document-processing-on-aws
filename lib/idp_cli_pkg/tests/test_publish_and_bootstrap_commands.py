@@ -103,6 +103,7 @@ class TestPublishOptionTranslation:
             "no_validate": False,
             "verbose": False,
             "lint": True,
+            "terraform": False,
         }
 
     def test_every_flag_reaches_the_build_call(self, runner, tmp_path):
@@ -130,6 +131,7 @@ class TestPublishOptionTranslation:
                     "--no-validate",
                     "--verbose",
                     "--no-lint",
+                    "--terraform",
                 ],
             )
 
@@ -148,6 +150,7 @@ class TestPublishOptionTranslation:
             "no_validate": True,
             "verbose": True,
             "lint": False,
+            "terraform": True,
         }
 
     def test_headless_and_govcloud_together_are_accepted(self, runner, tmp_path):
@@ -232,6 +235,8 @@ class TestPublishResultHandling:
             region="us-east-1",
             headless_template_url="https://s3/idp-headless.yaml",
             govcloud_template_url="https://s3/idp-govcloud.yaml",
+            terraform_module_url=None,
+            terraform_pointer_url=None,
         )
 
     def test_a_missing_template_url_becomes_an_empty_string_not_none(

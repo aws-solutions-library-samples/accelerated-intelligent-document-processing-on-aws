@@ -96,6 +96,7 @@ class PublishOperation:
         no_validate: bool = False,
         verbose: bool = False,
         lint: bool = True,
+        terraform: bool = False,
     ) -> PublishResult:
         """Build and publish IDP CloudFormation artifacts to S3.
 
@@ -119,6 +120,8 @@ class PublishOperation:
             no_validate: If True, skip CloudFormation template validation.
             verbose: If True, enable verbose build output.
             lint: If True, enable ruff linting and cfn-lint. Default: True.
+            terraform: If True, also translate the published main template to a
+                Terraform module and upload it (see :meth:`publish_terraform`).
 
         Returns:
             PublishResult with template paths, URLs, and status.
@@ -313,8 +316,33 @@ class PublishOperation:
                                 error=f"Headless template validation failed: {e}",
                             )
 
+            terraform_info: dict = {}
+            if terraform:
+                try:
+                    terraform_info = self.publish_terraform(
+                        source_dir=source_dir,
+                        bucket=bucket_full,
+                        prefix=prefix,
+                        region=region,
+                        version=version,
+                        public=public,
+                    )
+                except (IDPConfigurationError, IDPStackError) as e:
+                    return PublishResult(
+                        success=False,
+                        template_path=template_path,
+                        template_url=template_url,
+                        bucket=bucket_full,
+                        prefix=prefix,
+                        version=version,
+                        error=f"Terraform module publish failed: {e}",
+                    )
+
             return PublishResult(
                 success=True,
+                terraform_module_url=terraform_info.get("moduleUrl"),
+                terraform_module_sha256=terraform_info.get("sha256"),
+                terraform_pointer_url=terraform_info.get("pointerUrl"),
                 template_path=template_path,
                 template_url=template_url,
                 headless_template_path=headless_template_path,
@@ -328,6 +356,78 @@ class PublishOperation:
 
         except Exception as e:
             raise IDPStackError(f"Publish failed: {e}") from e
+
+    def publish_terraform(
+        self,
+        source_dir: str,
+        bucket: str,
+        prefix: str,
+        region: str,
+        version: str,
+        *,
+        public: bool = False,
+        template_key: Optional[str] = None,
+    ) -> dict:
+        """Translate a published main template to a Terraform module and upload it.
+
+        The main template is read back from ``s3://<bucket>/<template_key>``
+        (default ``<prefix>/idp-main.yaml``, where :meth:`build` puts it), and
+        translated online: nested templates are fetched by their ``TemplateURL``.
+        The module tree is zipped deterministically and uploaded to the same
+        bucket and prefix as the templates::
+
+            <prefix>/<version>/terraform/idp-terraform-<version>.zip
+            <prefix>/<version>/terraform/idp-terraform-<version>.zip.sha256
+            <prefix>/terraform/idp-terraform-latest.json
+
+        Args:
+            source_dir: Source checkout holding ``terraform/translator``.
+            bucket: Full artifact bucket name (with the region suffix).
+            prefix: S3 key prefix the templates were published under.
+            region: Region of the bucket.
+            version: Published version (labels the deployment, names the zip).
+            public: Apply ``public-read`` to the uploaded objects.
+            template_key: Key of the published main template.
+
+        Returns:
+            ``{"moduleUrl", "sha256", "pointerUrl", "version"}``; ``moduleUrl``
+            is an HTTPS S3 URL ending ``.zip``, usable as a module source.
+
+        Raises:
+            IDPConfigurationError: The translator is not in ``source_dir``.
+            IDPStackError: Translation or upload failed.
+        """
+        from idp_sdk._core import terraform_deploy as tf
+
+        if not version:
+            raise IDPConfigurationError("a version is required to publish a module")
+        source_dir = os.path.abspath(source_dir)
+        work = os.path.join(source_dir, ".aws-sam", "terraform")
+        os.makedirs(work, exist_ok=True)
+        key = template_key or f"{prefix}/idp-main.yaml"
+        local_template = os.path.join(work, "idp-main.yaml")
+        s3 = boto3.client("s3", region_name=region)
+        try:
+            s3.download_file(bucket, key, local_template)
+        except Exception as e:
+            raise IDPStackError(
+                f"cannot read the published template s3://{bucket}/{key}: {e}"
+            ) from e
+        module_dir = tf.translate_published_template(
+            source_dir, local_template, work, version
+        )
+        try:
+            return tf.upload_module(
+                s3,
+                module_dir=module_dir,
+                bucket=bucket,
+                prefix=prefix,
+                region=region,
+                version=version,
+                public=public,
+            )
+        except Exception as e:
+            raise IDPStackError(f"Terraform module upload failed: {e}") from e
 
     def transform_template_headless(
         self,
@@ -488,6 +588,8 @@ class PublishOperation:
         headless_template_url: Optional[str] = None,
         govcloud_template_url: Optional[str] = None,
         stack_name: str = "IDP",
+        terraform_module_url: Optional[str] = None,
+        terraform_pointer_url: Optional[str] = None,
     ) -> None:
         """Print deployment URLs and 1-click launch links.
 
@@ -497,6 +599,8 @@ class PublishOperation:
             headless_template_url: S3 URL of the headless template (optional).
             govcloud_template_url: S3 URL of the GovCloud template (optional).
             stack_name: Default stack name for launch URL.
+            terraform_module_url: Terraform module zip URL (optional).
+            terraform_pointer_url: Terraform latest-pointer URL (optional).
         """
         if "us-gov" in region:
             domain = "amazonaws-us-gov.com"
@@ -526,6 +630,13 @@ class PublishOperation:
             print(f"  {headless_template_url}")
             print("\n🚀 Headless 1-Click Launch:")
             print(f"  {headless_launch_url}")
+
+        if terraform_module_url:
+            print("\n🧱 Terraform module source:")
+            print(f"  {terraform_module_url}")
+            if terraform_pointer_url:
+                print("  Latest pointer:")
+                print(f"  {terraform_pointer_url}")
 
         if govcloud_template_url:
             encoded_gc = quote(govcloud_template_url, safe=":/?#[]@!$&'()*+,;=")

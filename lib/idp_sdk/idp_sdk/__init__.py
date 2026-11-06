@@ -24,6 +24,9 @@ Example:
 """
 
 from ._core import terraform_stack as _terraform_stack
+from ._core.terraform_deploy import (
+    default_pointer_url as default_terraform_pointer_url,
+)
 from .client import IDPClient
 from .exceptions import (
     IDPConfigurationError,
@@ -162,6 +165,8 @@ __all__ = [
     "IDPValidationError",
     "IDPResourceNotFoundError",
     "IDPTimeoutError",
+    # Terraform: the latest-module pointer beside a template URL
+    "default_terraform_pointer_url",
     # Enums
     "StackState",
     "DocumentState",

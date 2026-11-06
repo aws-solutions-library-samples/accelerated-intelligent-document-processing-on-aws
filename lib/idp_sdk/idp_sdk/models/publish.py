@@ -41,6 +41,17 @@ class PublishResult(BaseModel):
     version: Optional[str] = Field(
         default=None, description="Version string from VERSION file"
     )
+    terraform_module_url: Optional[str] = Field(
+        default=None,
+        description="HTTPS S3 URL of the Terraform module zip (if --terraform)",
+    )
+    terraform_module_sha256: Optional[str] = Field(
+        default=None, description="SHA-256 of the Terraform module zip"
+    )
+    terraform_pointer_url: Optional[str] = Field(
+        default=None,
+        description="HTTPS S3 URL of idp-terraform-latest.json (if --terraform)",
+    )
     error: Optional[str] = Field(
         default=None, description="Error message if publish failed"
     )

@@ -387,6 +387,155 @@ TEMPLATE_URLS = {
 }
 
 
+def _resolve_region(region: Optional[str]) -> str:
+    if region:
+        return region
+    import boto3
+
+    found = boto3.session.Session().region_name  # type: ignore
+    if not found:
+        raise ValueError(
+            "Region could not be determined. Please specify --region or "
+            "configure AWS_DEFAULT_REGION"
+        )
+    return found
+
+
+def _deploy_terraform(
+    *,
+    stack_name: str,
+    admin_email: Optional[str],
+    parameters: Optional[str],
+    region: Optional[str],
+    module_url: Optional[str],
+    terraform_dir: Optional[str],
+    terraform_bin: str,
+    unsupported: List[str],
+) -> None:
+    """`idp-cli deploy --terraform`. The work is in the SDK's
+    `client.stack.deploy_terraform`; this resolves the default module the way
+    the CloudFormation deploy resolves its default template, and prints."""
+    from idp_sdk import default_terraform_pointer_url
+
+    if unsupported:
+        console.print(
+            "[red]✗ Error: "
+            + ", ".join(unsupported)
+            + " cannot be used with --terraform. Pass stack parameters with "
+            "--parameters.[/red]"
+        )
+        sys.exit(1)
+    try:
+        region = _resolve_region(region)
+        pointer_url = None
+        if not module_url:
+            if region not in TEMPLATE_URLS:
+                supported = ", ".join(TEMPLATE_URLS)
+                raise ValueError(
+                    f"Region '{region}' has no published Terraform module. "
+                    f"Supported regions: {supported}. Pass --terraform-module-url "
+                    "explicitly for other regions."
+                )
+            pointer_url = default_terraform_pointer_url(TEMPLATE_URLS[region])
+            console.print(
+                f"[bold]Using the latest Terraform module for {region}[/bold]"
+            )
+        additional = parse_parameters(
+            parameters,
+            on_warning=lambda message: console.print(f"[yellow]⚠ {message}[/yellow]"),
+        )
+        client = IDPClient(stack_name=stack_name, region=region)
+        console.print(
+            f"[bold blue]Deploying {stack_name} with {terraform_bin}[/bold blue]"
+        )
+        result = client.stack.deploy_terraform(
+            stack_name=stack_name,
+            admin_email=admin_email,
+            parameters=additional,
+            module_url=module_url,
+            pointer_url=pointer_url,
+            terraform_dir=terraform_dir,
+            terraform_bin=terraform_bin,
+        )
+        console.print(f"\n[green]✓ Terraform {result.operation} complete![/green]\n")
+        outputs = result.outputs
+        if outputs:
+            console.print("[bold]Important Outputs:[/bold]")
+            console.print(
+                f"  Application URL: [cyan]{outputs.get('ApplicationWebURL', 'N/A')}[/cyan]"
+            )
+            console.print(f"  Input Bucket: {outputs.get('S3InputBucketName', 'N/A')}")
+            console.print(
+                f"  Output Bucket: {outputs.get('S3OutputBucketName', 'N/A')}"
+            )
+            console.print()
+    except Exception as e:
+        logger.error(f"Error deploying with Terraform: {e}", exc_info=True)
+        console.print(f"[red]✗ Error: {e}[/red]")
+        sys.exit(1)
+
+
+def _print_retained(retained: Optional[Dict[str, Any]]) -> None:
+    labels = {
+        "s3_buckets": "S3 Buckets",
+        "dynamodb_tables": "DynamoDB Tables",
+        "log_groups": "CloudWatch Log Groups",
+        "other": "Other",
+    }
+    entries = {k: (retained or {}).get(k) or [] for k in labels}
+    if not any(entries.values()):
+        console.print("No resources were retained.")
+        return
+    console.print("[bold]Retained resources (kept, as CloudFormation would):[/bold]")
+    for key, label in labels.items():
+        if entries[key]:
+            console.print(f"  • {label}: {len(entries[key])}")
+            for r in entries[key]:
+                console.print(f"    - {r.get('physical_id') or r.get('logical_id')}")
+    console.print("Delete them manually if no longer needed.")
+
+
+def _delete_terraform(
+    *,
+    stack_name: str,
+    region: Optional[str],
+    terraform_dir: Optional[str],
+    terraform_bin: str,
+    force: bool,
+) -> None:
+    """`idp-cli delete --terraform`; the work is `client.stack.delete_terraform`."""
+    try:
+        region = _resolve_region(region)
+        console.print("[bold red]⚠️  WARNING: Terraform Deployment Deletion[/bold red]")
+        console.print("━" * 60)
+        console.print(f"Deployment: [cyan]{stack_name}[/cyan]")
+        console.print(f"Region: {region}")
+        console.print(
+            "Every bucket that will be destroyed is emptied first, then `destroy` runs."
+        )
+        console.print("[bold red]This action cannot be undone.[/bold red]")
+        console.print("━" * 60)
+        if not force and not click.confirm(
+            "Are you sure you want to delete this deployment?", default=False
+        ):
+            console.print("[yellow]Deletion cancelled[/yellow]")
+            return
+        client = IDPClient(stack_name=stack_name, region=region)
+        result = client.stack.delete_terraform(
+            stack_name=stack_name,
+            terraform_dir=terraform_dir,
+            terraform_bin=terraform_bin,
+        )
+        console.print("\n[green]✓ Deployment destroyed![/green]")
+        console.print(f"Deployment: {stack_name}")
+        console.print()
+        _print_retained(result.retained_resources)
+    except Exception as e:
+        logger.error(f"Error deleting with Terraform: {e}", exc_info=True)
+        console.print(f"[red]✗ Error: {e}[/red]")
+        sys.exit(1)
+
+
 def _default_email_mutable_for_new_federated_stack(
     additional_params: Dict[str, str], *, stack_exists: bool, headless: bool
 ) -> Optional[str]:
@@ -625,6 +774,36 @@ def cli():
     is_flag=True,
     help="Skip CloudFormation template validation (used with --from-code)",
 )
+@click.option(
+    "--terraform",
+    is_flag=True,
+    help=(
+        "Deploy with Terraform instead of CloudFormation: write a root "
+        "configuration that calls the published module, then run init and apply"
+    ),
+)
+@click.option(
+    "--terraform-module-url",
+    default=None,
+    help=(
+        "Terraform module zip URL (used with --terraform; default: the latest "
+        "module published for the region)"
+    ),
+)
+@click.option(
+    "--terraform-dir",
+    default=None,
+    help=(
+        "Root configuration and local state directory (used with --terraform; "
+        "default: ./idp-terraform/<stack-name>)"
+    ),
+)
+@click.option(
+    "--terraform-bin",
+    default="terraform",
+    show_default=True,
+    help="Terraform binary: terraform, tofu, or a path (used with --terraform)",
+)
 def deploy(
     stack_name: str,
     admin_email: Optional[str],
@@ -649,6 +828,10 @@ def deploy(
     build_max_workers: Optional[int],
     clean_build: bool,
     no_validate_template: bool,
+    terraform: bool,
+    terraform_module_url: Optional[str],
+    terraform_dir: Optional[str],
+    terraform_bin: str,
 ):
     """
     Deploy or update IDP stack from command line
@@ -682,7 +865,35 @@ def deploy(
       idp-cli deploy --stack-name my-idp \\
           --admin-email user@example.com \\
           --parameters "DataRetentionInDays=90,ErrorThreshold=5"
+
+      # Deploy with Terraform (root configuration in ./idp-terraform/my-idp)
+      idp-cli deploy --terraform --stack-name my-idp --admin-email user@example.com
     """
+    if terraform:
+        ignored = {
+            "--from-code": from_code,
+            "--template-url": template_url,
+            "--template-file": template_file,
+            "--headless": headless,
+            "--govcloud": govcloud,
+            "--custom-config": custom_config,
+            "--tags": tags,
+            "--role-arn": role_arn,
+            "--no-rollback": no_rollback,
+            "--log-level": log_level,
+            "--max-concurrent": max_concurrent != 100,
+        }
+        _deploy_terraform(
+            stack_name=stack_name,
+            admin_email=admin_email,
+            parameters=parameters,
+            region=region,
+            module_url=terraform_module_url,
+            terraform_dir=terraform_dir,
+            terraform_bin=terraform_bin,
+            unsupported=[k for k, v in ignored.items() if v],
+        )
+        return
     try:
         # Validate mutually exclusive options
         exclusive_count = sum(1 for x in [from_code, template_url, template_file] if x)
@@ -1122,6 +1333,28 @@ def deploy(
     help="Wait for deletion to complete (same as deploy)",
 )
 @click.option("--region", help="AWS region (optional)")
+@click.option(
+    "--terraform",
+    is_flag=True,
+    help=(
+        "Destroy a Terraform deployment: empty its buckets, keep the resources "
+        "CloudFormation retains, then run destroy"
+    ),
+)
+@click.option(
+    "--terraform-dir",
+    default=None,
+    help=(
+        "Directory the deployment was applied from (used with --terraform; "
+        "default: ./idp-terraform/<stack-name>)"
+    ),
+)
+@click.option(
+    "--terraform-bin",
+    default="terraform",
+    show_default=True,
+    help="Terraform binary: terraform, tofu, or a path (used with --terraform)",
+)
 def delete(
     stack_name: str,
     force: bool,
@@ -1129,6 +1362,9 @@ def delete(
     force_delete_all: bool,
     wait: bool,
     region: Optional[str],
+    terraform: bool,
+    terraform_dir: Optional[str],
+    terraform_bin: str,
 ):
     """
     Delete an IDP CloudFormation stack
@@ -1155,7 +1391,25 @@ def delete(
 
       # Wait for deletion to complete
       idp-cli delete --stack-name test-stack --force --wait
+
+      # Destroy a Terraform deployment applied from ./idp-terraform/test-stack
+      idp-cli delete --terraform --stack-name test-stack --force
     """
+    if terraform:
+        if force_delete_all:
+            console.print(
+                "[red]✗ Error: --force-delete-all does not apply with --terraform; "
+                "retained resources are removed from the state and kept.[/red]"
+            )
+            sys.exit(1)
+        _delete_terraform(
+            stack_name=stack_name,
+            region=region,
+            terraform_dir=terraform_dir,
+            terraform_bin=terraform_bin,
+            force=force,
+        )
+        return
     try:
         client = IDPClient(stack_name=stack_name, region=region)
 
@@ -7234,6 +7488,14 @@ def multi_discover(
     default=True,
     help="Enable/disable ruff linting and cfn-lint (default: enabled)",
 )
+@click.option(
+    "--terraform",
+    is_flag=True,
+    help=(
+        "Also translate the published main template to a Terraform module and "
+        "upload it beside the templates"
+    ),
+)
 def publish(
     source_dir: str,
     bucket_basename: Optional[str],
@@ -7247,6 +7509,7 @@ def publish(
     no_validate: bool,
     verbose: bool,
     lint: bool,
+    terraform: bool,
 ):
     """
     Build, package, and publish IDP CloudFormation artifacts to S3
@@ -7274,6 +7537,9 @@ def publish(
 
       # Skip validation
       idp-cli publish --source-dir . --region us-east-1 --no-validate
+
+      # Also publish the Terraform module
+      idp-cli publish --source-dir . --region us-east-1 --terraform
     """
     try:
         client = IDPClient(region=region)
@@ -7290,6 +7556,7 @@ def publish(
             no_validate=no_validate,
             verbose=verbose,
             lint=lint,
+            terraform=terraform,
         )
 
         if not result.success:
@@ -7303,6 +7570,8 @@ def publish(
             region=region,
             headless_template_url=result.headless_template_url,
             govcloud_template_url=result.govcloud_template_url,
+            terraform_module_url=result.terraform_module_url,
+            terraform_pointer_url=result.terraform_pointer_url,
         )
         console.print()
         console.print("[bold green]✅ Publish complete![/bold green]")
