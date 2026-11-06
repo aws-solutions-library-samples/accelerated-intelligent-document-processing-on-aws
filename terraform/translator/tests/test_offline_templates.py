@@ -15,14 +15,19 @@ from idp_tf.cli import TEMPLATE_VARIANTS, cfn_types_in_tree, main
 REPO = Path(__file__).resolve().parents[3]
 
 
-@pytest.mark.parametrize("template", TEMPLATE_VARIANTS)
-def test_template_translates_offline_with_no_failures(template, tmp_path, capsys):
-    rc = main([str(REPO / template), "--offline", "--survey", "--out", str(tmp_path)])
+@pytest.mark.parametrize(("template", "variant"), TEMPLATE_VARIANTS)
+def test_template_translates_offline_with_no_failures(
+    template, variant, tmp_path, capsys
+):
+    args = [str(REPO / template), "--offline", "--survey", "--out", str(tmp_path)]
+    if variant:
+        args += ["--variant", variant]
+    rc = main(args)
     out = capsys.readouterr().out
     assert rc == 0, out
 
 
-@pytest.mark.parametrize("template", TEMPLATE_VARIANTS)
+@pytest.mark.parametrize("template", ["template.yaml"])
 def test_generated_module_carries_the_parameter_map_and_retained_list(
     template, tmp_path
 ):
@@ -57,8 +62,8 @@ def test_vendored_schema_covers_every_awscc_type_the_templates_use():
     schema = AwsccSchema(VENDORED_SCHEMA)
     full = json.loads(VENDORED_SCHEMA.read_text())
     assert full["awscc_version"]
-    for template in TEMPLATE_VARIANTS:
-        for t in cfn_types_in_tree(REPO / template):
+    for template, variant in TEMPLATE_VARIANTS:
+        for t in cfn_types_in_tree(REPO / template, variant):
             if t.startswith("Custom::") or t.count("::") != 2:
                 continue
             # Either awscc has it (vendored) or a hand mapping exists; the
@@ -66,3 +71,17 @@ def test_vendored_schema_covers_every_awscc_type_the_templates_use():
             # not missing a type the translator would route to awscc.
             if schema.has(t):
                 assert awscc_type_name(t) in json.dumps(full)
+
+
+def test_every_directory_reader_is_in_the_standard_template():
+    """TERRAFORM_DIRECTORY_READERS names real functions; a rename fails here."""
+    from idp_tf.translate import TERRAFORM_DIRECTORY_READERS
+
+    types_by_lid = {}
+    from idp_tf.expand import expand, load_template, offline_placeholders
+
+    template = expand(offline_placeholders(load_template(REPO / "template.yaml")))
+    for lid, res in template["Resources"].items():
+        types_by_lid[lid] = res["Type"]
+    for lid in TERRAFORM_DIRECTORY_READERS:
+        assert types_by_lid.get(lid) == "AWS::Lambda::Function", lid

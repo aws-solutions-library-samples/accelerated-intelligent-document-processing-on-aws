@@ -40,8 +40,8 @@ def main() -> int:
     key = next(k for k in full["provider_schemas"] if k.endswith("/awscc"))
     resources = full["provider_schemas"][key]["resource_schemas"]
     wanted = set()
-    for template in TEMPLATE_VARIANTS:
-        for cfn_type in cfn_types_in_tree(REPO / template):
+    for template, variant in TEMPLATE_VARIANTS:
+        for cfn_type in cfn_types_in_tree(REPO / template, variant):
             if cfn_type.count("::") != 2 or cfn_type.startswith("Custom::"):
                 continue
             name = awscc_type_name(cfn_type)

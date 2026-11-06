@@ -113,6 +113,25 @@ AWSCC_REF_ATTR: dict[str, str] = {
 }
 
 
+# Mixed-case acronyms in parameter names, written as one word before the
+# snake_case conversion: otherwise IPv4 reads as I-Pv4 (`i_pv4`) and IdPOIDC as
+# Id-POIDC. Applied to variable names only; resource addresses keep hcl.snake.
+_ACRONYMS = (
+    ("IPv4", "Ipv4"),
+    ("IPv6", "Ipv6"),
+    ("IdP", "Idp"),
+    ("XRay", "Xray"),
+    ("MLflow", "Mlflow"),
+    ("CloudFront", "Cloudfront"),
+)
+
+
+def variable_name(parameter: str) -> str:
+    for acronym, word in _ACRONYMS:
+        parameter = parameter.replace(acronym, word)
+    return hcl.snake(parameter)
+
+
 class TranslationError(Exception):
     pass
 
@@ -186,7 +205,7 @@ class Translator:
         self.params: dict[str, dict[str, Any]] = template.get("Parameters", {})
         self.param_vars: dict[str, str] = {}
         for p in self.params:
-            v = hcl.snake(p)
+            v = variable_name(p)
             if v == STACK_NAME_VAR:
                 v = "param_" + v
             self.param_vars[p] = v
@@ -756,15 +775,13 @@ class Translator:
     def _inject_directory_readers(self) -> list[str]:
         """Give each TERRAFORM_DIRECTORY_READERS function the directory URL and
         read access to it. Root module only; returns the extra resources."""
-        missing = sorted(set(TERRAFORM_DIRECTORY_READERS) - set(self.plans))
-        if missing:
-            raise TranslationError(
-                f"TERRAFORM_DIRECTORY_READERS names functions the template no longer "
-                f"has: {missing}"
-            )
+        # A variant (headless) may remove a reader; the standard template must
+        # have them all, which tests/test_offline_templates.py asserts.
         extra = []
         for lid in TERRAFORM_DIRECTORY_READERS:
-            plan = self.plans[lid]
+            plan = self.plans.get(lid)
+            if plan is None:
+                continue
             env = dict(plan.props.get("Environment") or {})
             variables = env.get("Variables") or {}
             if is_intrinsic(variables):

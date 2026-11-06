@@ -18,15 +18,53 @@ from .translate import LIFECYCLE_OVERRIDES, TranslationError, Translator, report
 
 BRIDGE_SRC = Path(__file__).resolve().parents[2] / "bridge" / "index.py"
 VENDORED_SCHEMA = Path(__file__).resolve().parents[1] / "schemas" / "awscc.json"
-# Main templates the translator must handle, relative to the repository root.
-TEMPLATE_VARIANTS = ("template.yaml",)
+# (main template relative to the repository root, variant) pairs the translator
+# must handle. A variant is produced by the SDK's own template transformer, the
+# same one `idp-cli publish --headless/--govcloud` uses.
+TEMPLATE_VARIANTS = (
+    ("template.yaml", None),
+    ("template.yaml", "headless"),
+    ("template.yaml", "govcloud"),
+)
 
 
-def cfn_types_in_tree(template: Path) -> set[str]:
+def apply_variant(template: Path, variant: str | None, workdir: Path) -> Path:
+    """Write the variant of a main template into workdir and return its path."""
+    if variant is None:
+        return template
+    from idp_sdk._core.template_transform import (  # noqa: PLC0415 - optional
+        GovCloudTemplateTransformer,
+        HeadlessTemplateTransformer,
+    )
+
+    import yaml
+
+    # The transformers read packaged templates, which use long-form intrinsics;
+    # a source template uses short tags (!Ref, !Equals), so write it long-form.
+    long_form = workdir / "template-long-form.yaml"
+    long_form.write_text(yaml.safe_dump(load_template(template), sort_keys=False))
+    out = workdir / f"template-{variant}.yaml"
+    if variant == "headless":
+        ok = HeadlessTemplateTransformer().transform(str(long_form), str(out))
+    elif variant == "govcloud":
+        ok = GovCloudTemplateTransformer().transform(str(long_form), str(out))
+    else:
+        raise TranslationError(f"unknown variant {variant!r}")
+    if not ok:
+        raise TranslationError(f"the {variant} transform failed for {template}")
+    return out
+
+
+def cfn_types_in_tree(template: Path, variant: str | None = None) -> set[str]:
     """Every resource type in a template and its nested templates (offline)."""
-    loader = local_loader(template.resolve().parent)
+    import tempfile
+
+    root = template.resolve().parent
+    loader = local_loader(root)
     types: set[str] = set()
-    pending = [expand(offline_placeholders(load_template(template)))]
+    with tempfile.TemporaryDirectory() as tmp:
+        source = apply_variant(template, variant, Path(tmp))
+        pending = [expand(offline_placeholders(load_template(source)))]
     while pending:
         t = pending.pop()
         for res in t.get("Resources", {}).values():
@@ -147,13 +185,29 @@ def main(argv: list[str] | None = None) -> int:
         "local code paths become placeholders and nested stacks resolve locally",
     )
     ap.add_argument(
+        "--variant",
+        choices=["headless", "govcloud"],
+        help="translate this variant of the main template (offline mode only); "
+        "it is produced by the SDK's template transformer",
+    )
+    ap.add_argument(
         "--survey",
         action="store_true",
         help="collect every failure and print them instead of stopping",
     )
     args = ap.parse_args(argv)
 
-    source = load_template(args.template)
+    import tempfile
+
+    variant_dir = tempfile.TemporaryDirectory()
+    template_path = args.template
+    if args.variant:
+        if not args.offline:
+            ap.error("--variant needs --offline; publish produces the variants itself")
+        template_path = apply_variant(
+            args.template, args.variant, Path(variant_dir.name)
+        )
+    source = load_template(template_path)
     if args.offline:
         source = offline_placeholders(source)
         loader = local_loader(args.template.resolve().parent)

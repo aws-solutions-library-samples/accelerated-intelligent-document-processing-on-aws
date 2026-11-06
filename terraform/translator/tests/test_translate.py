@@ -324,3 +324,11 @@ def test_survey_mode_collects_every_failure(schema):
     tr = Translator(t, schema, survey=True)
     tr.render()
     assert len(tr.errors) == 2
+
+
+def test_variable_names_keep_mixed_case_acronyms_whole():
+    from idp_tf.translate import variable_name
+
+    assert variable_name("WAFAllowedIPv4Ranges") == "waf_allowed_ipv4_ranges"
+    assert variable_name("ExternalIdPOIDCClientId") == "external_idp_oidc_client_id"
+    assert variable_name("AdminEmail") == "admin_email"
