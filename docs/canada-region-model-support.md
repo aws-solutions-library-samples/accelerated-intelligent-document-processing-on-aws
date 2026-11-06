@@ -53,7 +53,7 @@ accepts from ca-central-1 (verified 2026-10-12).
 Three shipped defaults name models that cannot be called from ca-central-1. On
 stack create and update, the custom resource rewrites them in the ConfigSchema,
 the shipped default configuration and the managed configurations through a
-one-way Canada table (`CA_MODEL_MAPPINGS`). Configuration versions you saved
+one-way Canada table (`CA_MODEL_MAPPINGS`). Configuration profiles you saved
 yourself are not rewritten, the same as in EU regions.
 
 | Setting | Shipped default | In a Canada stack | Why |

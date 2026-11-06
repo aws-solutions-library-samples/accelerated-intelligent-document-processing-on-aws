@@ -349,8 +349,8 @@ machine transition yourself. A hook returns its changes under the
 `updatedDocument` key (`idp_common.hooks.UPDATED_DOCUMENT_KEY`), and a
 `preprocessing` hook may additionally return `halt=True` to stop the document
 before any work is spent on it. Every hook point is inert unless enabled in the
-active configuration version, which means a hook can be turned on, retargeted, or
-switched off by activating a different configuration — no redeployment.
+active configuration profile, which means a hook can be turned on, retargeted, or
+switched off by activating a different profile — no redeployment.
 
 Reach for a pipeline hook when the document itself needs to change: redacting PII
 before extraction, calling a third-party enrichment service, or gating documents

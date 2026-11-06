@@ -1,7 +1,7 @@
 # PII Anonymization — minimal quick-start config preset.  [EXPERIMENTAL FEATURE]
 #
-# Installed by the ui-deployer as a NON-ACTIVE config version
-# `pii-anonymizer-v<version>`. The `preprocessing` section is a SINGLE flat hook:
+# Installed by the ui-deployer as the NON-ACTIVE configuration profile
+# `pii-anonymizer` (each release is a new revision of it). The `preprocessing` section is a SINGLE flat hook:
 # arn/args/onError live directly on it (no nested list). The ui-deployer fills in
 # the hook ARN at install time (unknown until the feature stack deploys).
 #

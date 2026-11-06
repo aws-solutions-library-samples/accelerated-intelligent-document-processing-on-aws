@@ -80,8 +80,8 @@ authenticates. See [`docs/migration-appsync-to-rest.md`](../../docs/migration-ap
 
 ## Hook registration is checked against the processing mode
 
-`registerFeatureHooks` writes a feature's hooks inline into the **active** config
-version, and three of the seven hook points — `postOcr`, `postClassification`,
+`registerFeatureHooks` writes a feature's hooks inline into the **active** configuration
+profile, and three of the seven hook points — `postOcr`, `postClassification`,
 `postExtraction` — exist only on the Pipeline branch of the unified state machine.
 So a registration at one of them while the active configuration sets
 `use_bda: true` produces a hook that is never invoked.
@@ -98,7 +98,7 @@ state machine definition by `scripts/generate_hook_point_reachability.py`.
 `applyFeatureConfigPreset` applies the same rule, because a feature can ship its
 hook **inside its config preset** rather than calling `registerFeatureHooks` — and
 both bundled extensions do exactly that, so the hook travels with the classes it
-belongs to and activating the version brings both. It judges the preset merged over
+belongs to and activating the profile brings both. It judges the preset merged over
 the host default, and the preset is the delta: a preset that says nothing about
 hooks is unaffected by a hook already stored in `Config#default`. The shared
 implementation is `idp_common.config.hook_reachability.reject_inert_gating_hooks`,

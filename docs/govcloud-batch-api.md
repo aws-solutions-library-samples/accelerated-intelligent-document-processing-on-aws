@@ -64,15 +64,15 @@ curl -X POST ${API_GATEWAY_ENDPOINT}/jobs \
 | Field | Required | Description |
 |---|---|---|
 | `fileName` | yes | Name of the ZIP to upload (must end in `.zip`). |
-| `configurationVersion` | no | Configuration version to use for processing this job (e.g. `"v2"`, `"lending-v2"`). Validated as ≤128 characters matching `^[a-zA-Z0-9._-]+$`; an invalid value returns `422`. When omitted, the job uses the stack's active/default configuration (unchanged behavior). The version must already exist in the configuration table — an unknown version falls back to pipeline mode downstream. |
+| `configurationVersion` | no | [Configuration profile](configuration-profiles.md) to use for processing this job (e.g. `"default"`, `"lending"`). Validated as ≤128 characters matching `^[a-zA-Z0-9._-]+$`; an invalid value returns `422`. When omitted, the job uses the stack's active/default configuration (unchanged behavior). The profile must already exist — an unknown profile name falls back to pipeline mode downstream. |
 
-Example pinning a specific configuration version:
+Example selecting a specific configuration profile:
 
 ```bash
 curl -X POST ${API_GATEWAY_ENDPOINT}/jobs \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"fileName": "documents.zip", "configurationVersion": "lending-v2"}'
+  -d '{"fileName": "documents.zip", "configurationVersion": "lending"}'
 ```
 
 **Response:**
@@ -127,7 +127,7 @@ curl ${API_GATEWAY_ENDPOINT}/jobs/{job_id} \
 {
   "jobId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "status": "IN_PROGRESS",
-  "configurationVersion": "lending-v2",
+  "configurationVersion": "lending",
   "timestamps": {
     "createdAt": "2026-01-23T10:00:00Z",
     "updatedAt": "2026-01-23T10:05:00Z"

@@ -46,7 +46,7 @@ The `document_evaluations` table contains document-level evaluation metrics:
 | false_alarm_rate | double | False alarm rate (0-1) |
 | false_discovery_rate | double | False discovery rate (0-1) |
 | execution_time | double | Time taken to evaluate (seconds) |
-| config_version | string | Configuration version used for processing |
+| config_version | string | Configuration profile used for processing |
 
 This table is partitioned by date (YYYY-MM-DD format).
 
@@ -66,7 +66,7 @@ The `section_evaluations` table contains section-level evaluation metrics:
 | false_alarm_rate | double | Section false alarm rate (0-1) |
 | false_discovery_rate | double | Section false discovery rate (0-1) |
 | evaluation_date | timestamp | When the evaluation was performed |
-| config_version | string | Configuration version used for processing |
+| config_version | string | Configuration profile used for processing |
 
 This table is partitioned by date (YYYY-MM-DD format).
 
@@ -89,7 +89,7 @@ The `attribute_evaluations` table contains attribute-level evaluation metrics:
 | confidence | string | Confidence score from extraction |
 | confidence_threshold | string | Confidence threshold used |
 | evaluation_date | timestamp | When the evaluation was performed |
-| config_version | string | Configuration version used for processing |
+| config_version | string | Configuration profile used for processing |
 
 This table is partitioned by date (YYYY-MM-DD format).
 
@@ -157,7 +157,7 @@ with: their rows are not rewritten.
 | estimated_cost | double | Calculated total cost in USD (value × unit_cost) |
 | timestamp | timestamp | Document COMPLETION time — when the workflow ended and the row was written. Same value as the partition. |
 | initial_event_time | timestamp | Original queue time — when the document was first enqueued. Preserved for consumers who need queue-time semantics. |
-| config_version | string | Configuration version used for processing |
+| config_version | string | Configuration profile used for processing |
 
 **Partitioned by `date` + `hour`** (both string; `YYYY-MM-DD` and `HH`).
 Partition values reflect **completion time** (write time), not queue
@@ -349,7 +349,7 @@ Document sections are stored in dynamically created tables based on the section 
 | section_classification | string | Type/class of the section |
 | section_confidence | double | Confidence score for the section classification |
 | timestamp | timestamp | When the document was processed |
-| config_version | string | Configuration version used for processing |
+| config_version | string | Configuration profile used for processing |
 
 **Dynamic Data Columns:**
 The remaining columns are dynamically inferred from the JSON extraction results and vary by section type. Common patterns include:
@@ -705,7 +705,7 @@ GROUP BY
 ORDER BY 
   total_cost DESC;
 
--- Cost analysis by configuration version
+-- Cost analysis by configuration profile
 SELECT 
   config_version,
   COUNT(DISTINCT document_id) as document_count,
@@ -721,9 +721,9 @@ ORDER BY
   total_cost DESC;
 ```
 
-**Configuration version analysis:**
+**Configuration profile analysis:**
 ```sql
--- Compare accuracy across configuration versions
+-- Compare accuracy across configuration profiles
 SELECT 
   config_version,
   AVG(accuracy) as avg_accuracy,
@@ -738,7 +738,7 @@ GROUP BY
 ORDER BY 
   avg_f1_score DESC;
 
--- Filter documents by configuration version
+-- Filter documents by configuration profile
 SELECT 
   document_id,
   section_classification,
@@ -746,11 +746,11 @@ SELECT
 FROM 
   document_sections_w2
 WHERE 
-  config_version = 'v2.1'
+  config_version = 'Production'
   AND date >= '2024-01-01'
 LIMIT 100;
 
--- Cost vs quality by configuration version
+-- Cost vs quality by configuration profile
 SELECT 
   m.config_version,
   AVG(e.weighted_overall_score) as avg_quality,

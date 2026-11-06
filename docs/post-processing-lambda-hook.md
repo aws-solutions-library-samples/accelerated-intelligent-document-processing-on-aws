@@ -16,8 +16,8 @@ processed. Both are supported; they solve different problems.
 
 | | **EventBridge hook** (this page) | **`postprocessing` pipeline hook** |
 |---|---|---|
-| Configured by | Stack deployer, via the `PostProcessingLambdaHookFunctionArn` CloudFormation parameter | Admin, per **configuration version** (View/Edit Configuration UI, under **Postprocessing**) |
-| Changing the target | Requires a stack update | Activate a different config version, or edit the section |
+| Configured by | Stack deployer, via the `PostProcessingLambdaHookFunctionArn` CloudFormation parameter | Admin, per **configuration profile** (View/Edit Configuration UI, under **Postprocessing**) |
+| Changing the target | Requires a stack update | Process under (or activate) a different profile, or edit the section |
 | When it runs | **After** the workflow execution finishes, out-of-band | **Inside** the workflow, after evaluation and before the terminal state |
 | Invocation | Asynchronous (`Event`) — fire-and-forget | Synchronous (`RequestResponse`) via the pipeline-hooks dispatcher |
 | Can modify the document | **No** — it gets a snapshot; nothing reads its return value | **Yes** — return `updatedDocument`; it becomes the workflow output and is persisted |

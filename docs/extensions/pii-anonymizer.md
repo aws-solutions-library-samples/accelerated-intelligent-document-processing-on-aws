@@ -38,20 +38,20 @@ for how it is kept in sync with upstream.
 - **De-identified datasets as a deliverable** — safe for analytics, ML training,
   or third-party sharing.
 - **Dual-track access** — process both an original and a redacted copy and scope
-  each to different users via the existing config-version RBAC.
+  each to different users via the existing configuration-profile RBAC.
 - **Structure-preserving synthetic redaction** keeps downstream extraction
   accuracy intact (unlike a plain blackout).
 
 ## How it works
 
-1. A document is uploaded under a config version that carries a `preprocessing`
+1. A document is uploaded under a configuration profile that carries a `preprocessing`
    hook (created by the **Config Pairing** wizard).
 2. The preprocessing hook runs first. It detects and redacts PII, then writes a
    **de-identified copy** into the Input bucket **beside the original with a
    `(REDACTED)` marker** in its name (e.g. `report(REDACTED).pdf`), tagged with S3
-   metadata pointing at a **companion** config version.
+   metadata pointing at a **companion** configuration profile.
 3. That upload re-triggers processing: the redacted copy is processed under the
-   companion version (which has no preprocessing hook, so it is not redacted
+   companion profile (which has no preprocessing hook, so it is not redacted
    again — a `(REDACTED)`-marker guard prevents any loop).
 4. Depending on the **mode**, the original is either deleted or also processed.
 
@@ -75,7 +75,7 @@ audio is out of scope in v1.
 - **De-identified extraction** — redact-and-stop so extraction runs only on
   synthetic data; the real document is not retained by the pipeline.
 - **Two-tier review** — redact-and-continue, granting a small privileged group
-  the original's config version and everyone else only the redacted companion.
+  the original's configuration profile and everyone else only the redacted companion.
 - **Safe data products** — export the redacted copies and (optionally) the
   extraction results as a shareable, de-identified dataset.
 
@@ -84,17 +84,17 @@ audio is out of scope in v1.
 Install the feature from **Extensions → Browse catalog**, then open its page. The
 **Config Pairing** tab is the primary way to turn redaction on:
 
-1. Pick one of your **existing** config versions as the base (your real
+1. Pick one of your **existing** configuration profiles as the base (your real
    extraction settings are preserved).
 2. Choose a mode, a PII-detection model (Claude Haiku is the default — dense
    forms like W2s need a large output budget; Nova Lite is cheaper but can
    truncate and fail closed), a redaction style, and whether to store the PII
    mapping (see below).
-3. Click **Create config pair**. The wizard creates two **non-active** versions:
-   - `<base>__pii_stop` or `<base>__pii_go` — the *initiating* version, carrying
+3. Click **Create config pair**. The wizard creates two **non-active** profiles:
+   - `<base>__pii_stop` or `<base>__pii_go` — the *initiating* profile, carrying
      the generic preprocessing hook with its args.
    - `<base>__pii_target` — the *companion*, which processes the redacted copy.
-4. Click **Activate** to make the initiating version active.
+4. Click **Activate** to make the initiating profile active.
 
 The preprocessing step is **generic** — a Lambda ARN plus key/value args — so the
 `preprocessing` section in **View/Edit Configuration** works for any preprocessing
@@ -103,20 +103,20 @@ store_mapping) live in that hook's `args`.
 
 ## RBAC — how access works
 
-Access follows the accelerator's existing **config-version scoping**
-(`allowedConfigVersions` per user, on the Configuration page):
+Access follows the accelerator's existing **configuration-profile scoping**
+(`allowedConfigVersions` per user, assigned in User Management):
 
 - **Two-tier documents** — in *redact copy and continue* mode, the original is
-  processed under the initiating version and the redacted copy under
-  `<base>__pii_target`. Grant privileged reviewers the initiating version and
-  everyone else `<base>__pii_target`. Users only see documents whose config
-  version is in their allowed set.
+  processed under the initiating profile and the redacted copy under
+  `<base>__pii_target`. Grant privileged reviewers the initiating profile and
+  everyone else `<base>__pii_target`. Users only see documents whose
+  configuration profile is in their allowed set.
 - **PII mapping (re-identification key)** — when synthetic redaction is used you
   can optionally store the original→synthetic value map. **It contains real PII.**
   It lives in a feature-owned, KMS-encrypted DynamoDB table — deliberately *not*
   in any host bucket, so the host's generic file-contents API can never serve it —
   and the only read path is the feature API's `GET /report/{docId}/mapping`
-  route. That route applies the same config-version scoping as every other
+  route. That route applies the same configuration-profile scoping as every other
   consumer: a caller **restricted** to a set of Configuration Profiles gets the
   mapping only if the **original** document's profile is in that set, an Admin always
   passes, and — deliberately — so does a caller carrying **no** restriction at all,
@@ -134,7 +134,7 @@ Access follows the accelerator's existing **config-version scoping**
 ## Redaction Report
 
 The **Redaction Report** tab shows a metadata-only audit (no PII by default):
-per-document PII count, mode, companion version, redacted-copy location, and
+per-document PII count, mode, companion profile, redacted-copy location, and
 timestamp. When a mapping was stored, a **View mapping** action opens the
 original→synthetic table — subject to the RBAC gate above.
 

@@ -2,7 +2,7 @@
 # install in the host UI catalog. This is the "advanced" sample feature — it
 # exercises every part of the Feature Platform contract that the minimal
 # docs-by-status sample does not: a bundled config preset (applied at install
-# as a non-active config version), a postRuleValidation pipeline hook, host
+# as a non-active configuration profile), a postRuleValidation pipeline hook, host
 # GraphQL calls from the feature UI (Rules Discovery), and a multi-route
 # feature API backed by the feature's own DynamoDB table.
 featureId: sample-health-insurance-review
@@ -35,8 +35,8 @@ ui:
 # Bundled config preset — uploaded by the publisher next to the feature's
 # artifacts; the feature stack's ui-deployer downloads it at install time and
 # calls the host's applyFeatureConfigPreset mutation. The preset becomes a
-# NON-ACTIVE config version (`sample-health-insurance-review-v<version>`) that an admin
-# activates from the Configuration UI.
+# NON-ACTIVE configuration profile (`sample-health-insurance-review`; each release
+# is a new revision of it) that an admin activates from the Configuration UI.
 configPreset:
   path: config-preset/claims-config.yaml
 # Pipeline hook: the host's Step Functions workflow invokes this feature's

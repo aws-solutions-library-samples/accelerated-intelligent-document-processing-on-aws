@@ -1337,7 +1337,7 @@ Four things worth knowing:
   may want a capable multimodal model looking at a whole packet, while
   classifying a clean segment is often a much easier problem a cheaper model
   answers just as well. A custom or fine-tuned classification model
-  (`CustomClassificationModelARN`, or *Create configuration version* on a
+  (`CustomClassificationModelARN`, or *Create Config Profile* on a
   fine-tuning job) is written to section classification.
 - **The halves are metered separately**, as `Splitting/...` and
   `SectionClassification/...` in the cost table and the reporting database,

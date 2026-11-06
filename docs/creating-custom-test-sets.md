@@ -148,9 +148,9 @@ and comparing test executions) is how you use the set whichever way you built it
 The goal of this initial run is to produce predictions that are as accurate as possible, minimizing the amount of manual editing you'll need to do later. Use the best available model for both classification and extraction.
 
 1. Go to **Configuration** in the web UI
-2. Create a new configuration version (or edit an existing one)
+2. Create a new configuration profile with **Create profile** (or edit an existing one)
 3. Set both the **classification model** and **extraction model** to a high-accuracy model (e.g., Claude Opus)
-4. Save the configuration version
+4. Save the configuration profile
 
 > **Tip**: You can always create a cheaper configuration later for production use. The expensive model is only used here to bootstrap high-quality ground truth.
 
@@ -161,7 +161,7 @@ For details on configuration management, see [Configuration](./configuration.md)
 If you don't already have document classes defined for your document type, use Discovery to bootstrap the schema automatically.
 
 1. Go to **Discovery** in the web UI
-2. Select your high-accuracy configuration version
+2. Select your high-accuracy configuration profile
 3. Upload a representative sample document
 4. Run discovery — it will analyze the document and populate document classes and attributes
 
@@ -174,7 +174,7 @@ For details on discovery modes and options, see [Discovery](./discovery.md).
 Now process a set of sample documents that will become your test set.
 
 1. Go to **Upload Documents** in the web UI
-2. Select your high-accuracy configuration version
+2. Select your high-accuracy configuration profile
 3. Upload your sample documents
 4. Wait for all documents to finish processing
 
@@ -254,7 +254,7 @@ With your test set created, you can now run test executions to compare different
 
 1. Go to **Test Studio** → **Test Executions** tab
 2. Select your test set
-3. Choose the high-accuracy configuration version you used to create the ground truth
+3. Choose the high-accuracy configuration profile you used to create the ground truth
 4. Run the test
 
 This establishes your baseline — it should show near-perfect accuracy since the ground truth was generated from these same model predictions.
@@ -263,7 +263,7 @@ This establishes your baseline — it should show near-perfect accuracy since th
 
 Create and test alternative configurations to find the best cost/accuracy balance:
 
-1. Create a new configuration version with a cheaper model (e.g., Nova Lite)
+1. Create a new configuration profile with a cheaper model (e.g., Nova Lite)
 2. Run a test execution against the same test set using the new configuration
 3. Use the **comparison view** to analyze the results side-by-side
 

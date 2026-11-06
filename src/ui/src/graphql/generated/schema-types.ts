@@ -903,11 +903,12 @@ export type Mutation = {
   addTestSetFromUpload?: Maybe<TestSetUploadResponse>;
   /**
    * Features with a manifest `configPreset`: write the bundled preset to
-   * the host's ConfigurationTable as a new, NON-ACTIVE config version named
-   * `<featureId>-v<version>`. Installation never changes the active config —
-   * an admin reviews and activates the preset from the Configuration UI.
-   * Idempotent: re-applying the same featureId+version overwrites the row,
-   * so CloudFormation stack Updates are safe. IAM-authenticated; called by
+   * the host's ConfigurationTable as the NON-ACTIVE configuration profile
+   * named `<featureId>`; each install or upgrade records a new revision of it.
+   * Installation never changes the active config — an admin reviews and
+   * activates the preset from the Configuration UI. Idempotent: re-applying an
+   * unchanged preset records no revision, so CloudFormation stack Updates are
+   * safe. IAM-authenticated; called by
    * the feature stack's ui-deployer custom resource.
    */
   applyFeatureConfigPreset: FeatureConfigPresetResult;
@@ -978,9 +979,10 @@ export type Mutation = {
   releaseReviewItem?: Maybe<ReviewItem>;
   removeDocumentsFromTestSet?: Maybe<TestSet>;
   /**
-   * Delete all of a feature's preset config versions on uninstall. A
-   * version that is currently ACTIVE is preserved (never yank the running
-   * config); it is skipped with a warning and the call still succeeds.
+   * Delete a feature's preset configuration profile (and any legacy
+   * `<featureId>-v*` profiles), with their revision history, on uninstall. If
+   * one of them is the ACTIVE profile, `default` is activated first, so the
+   * pipeline never keeps running hooks that point at deleted Lambdas.
    */
   removeFeatureConfigPreset: Scalars['Boolean']['output'];
   removeReviewItem?: Maybe<ReviewItem>;
