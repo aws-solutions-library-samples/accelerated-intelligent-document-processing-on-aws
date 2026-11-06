@@ -79,9 +79,9 @@ def _cfn_via_sdk(args, region):
     import jmespath
 
     try:
-        from idp_sdk._core import terraform_stack
-
-        terraform_stack.install()
+        # Importing the SDK attaches its Terraform-deployment hook to every
+        # CloudFormation client created afterwards.
+        import idp_sdk  # noqa: F401
     except ImportError:
         pass
     op = _CFN_VIA_SDK[args[1]]
