@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import sys
@@ -11,11 +12,32 @@ from typing import Any, Callable
 
 from .assets import deterministic_zip
 from .awscc_schema import AwsccSchema
-from .expand import expand, load_template
+from .expand import expand, load_template, offline_placeholders
 from .static_files import VERSIONS_TF, bridge_tf, label_tf
 from .translate import LIFECYCLE_OVERRIDES, TranslationError, Translator, report_json
 
 BRIDGE_SRC = Path(__file__).resolve().parents[2] / "bridge" / "index.py"
+VENDORED_SCHEMA = Path(__file__).resolve().parents[1] / "schemas" / "awscc.json"
+# Main templates the translator must handle, relative to the repository root.
+TEMPLATE_VARIANTS = ("template.yaml",)
+
+
+def cfn_types_in_tree(template: Path) -> set[str]:
+    """Every resource type in a template and its nested templates (offline)."""
+    loader = local_loader(template.resolve().parent)
+    types: set[str] = set()
+    pending = [expand(offline_placeholders(load_template(template)))]
+    while pending:
+        t = pending.pop()
+        for res in t.get("Resources", {}).values():
+            types.add(res["Type"])
+            if res["Type"] == "AWS::CloudFormation::Stack":
+                url = (res.get("Properties") or {}).get("TemplateURL")
+                if isinstance(url, str):
+                    pending.append(loader(url))
+    return types
+
+
 S3_URL = re.compile(r"https://s3[.-]([a-z0-9-]+)\.amazonaws\.com[^/]*/([^/]+)/(.+)$")
 
 
@@ -39,8 +61,29 @@ def s3_loader(cache: Path) -> Callable[[str], dict[str, Any]]:
     return load
 
 
+def local_loader(root: Path) -> Callable[[str], dict[str, Any]]:
+    """Resolve a nested stack's local TemplateURL to its source template.
+
+    In the source templates a nested stack is
+    ``./<dir>/.aws-sam/packaged.yaml``; its source is ``<dir>/template.yaml``.
+    """
+
+    def load(url: str) -> dict[str, Any]:
+        rel = url.removeprefix("./")
+        if not rel.endswith("/.aws-sam/packaged.yaml"):
+            raise TranslationError(f"cannot resolve nested TemplateURL {url} offline")
+        source = root / rel.removesuffix("/.aws-sam/packaged.yaml") / "template.yaml"
+        if not source.exists():
+            raise TranslationError(f"nested template {source} not found")
+        return expand(offline_placeholders(load_template(source)))
+
+    return load
+
+
 def write_module(tr: Translator, out: Path, files: dict[str, str]) -> None:
-    files["versions.tf"] = VERSIONS_TF
+    files["versions.tf"] = VERSIONS_TF.replace(
+        "AWSCC_VERSION", tr.schema.version or "1.0.0"
+    )
     if tr.custom_tokens:
         files["bridge.tf"] = bridge_tf()
     out.mkdir(parents=True, exist_ok=True)
@@ -79,7 +122,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="idp-tf")
     ap.add_argument("template", type=Path, help="packaged CloudFormation template")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--awscc-schema", type=Path, required=True)
+    ap.add_argument(
+        "--awscc-schema",
+        type=Path,
+        default=VENDORED_SCHEMA,
+        help="awscc provider schema (default: the vendored subset)",
+    )
     ap.add_argument("--mode", choices=["hybrid", "awscc"], default="hybrid")
     ap.add_argument(
         "--label-template",
@@ -93,14 +141,27 @@ def main(argv: list[str] | None = None) -> int:
         help="fetch nested templates by TemplateURL from S3 into this directory",
     )
     ap.add_argument(
+        "--offline",
+        action="store_true",
+        help="translate source templates from the checkout (the per-PR gate): "
+        "local code paths become placeholders and nested stacks resolve locally",
+    )
+    ap.add_argument(
         "--survey",
         action="store_true",
         help="collect every failure and print them instead of stopping",
     )
     args = ap.parse_args(argv)
 
-    expanded = expand(load_template(args.template))
-    loader = s3_loader(args.nested_cache) if args.nested_cache else None
+    source = load_template(args.template)
+    if args.offline:
+        source = offline_placeholders(source)
+        loader = local_loader(args.template.resolve().parent)
+    elif args.nested_cache:
+        loader = s3_loader(args.nested_cache)
+    else:
+        loader = None
+    expanded = expand(source)
     try:
         tr = Translator(
             expanded,
@@ -131,6 +192,20 @@ def main(argv: list[str] | None = None) -> int:
             desc = load_template(args.label_template)["Description"]
             files["label.tf"] = label_tf(desc, args.version, tr.label_parameters())
         write_module(tr, args.out, files)
+        # Read by idp-cli: how CloudFormation parameter names map to variables,
+        # and which resources a delete keeps (CloudFormation DeletionPolicy).
+        (args.out / "idp-terraform.json").write_text(
+            json.dumps(
+                {
+                    "formatVersion": 1,
+                    "version": args.version,
+                    "parameters": tr.parameter_map(),
+                    "retainedAddresses": tr.retained_addresses(),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
     except TranslationError as exc:
         print(f"translation failed: {exc}", file=sys.stderr)
         return 1

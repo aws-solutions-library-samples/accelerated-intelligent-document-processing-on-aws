@@ -10,15 +10,17 @@ VERSIONS_TF = """terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 6.0"
+      version = ">= 6.0, < 7.0"
     }
     awscc = {
-      source  = "hashicorp/awscc"
-      version = ">= 1.50"
+      source = "hashicorp/awscc"
+      # The translator reads this provider's schema (vendored, see
+      # terraform/translator/schemas/awscc.json), so the floor is that version.
+      version = ">= AWSCC_VERSION, < 2.0.0"
     }
     time = {
       source  = "hashicorp/time"
-      version = ">= 0.9"
+      version = ">= 0.9, < 1.0"
     }
   }
 }

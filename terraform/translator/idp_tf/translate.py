@@ -181,6 +181,7 @@ class Translator:
         self.conditions: dict[str, Any] = template.get("Conditions", {})
         self.mappings: dict[str, Any] = template.get("Mappings", {})
         self.report = Report()
+        self.retained: list[str] = []
         # In survey mode every failure is collected instead of raised, so one
         # run lists everything a template needs.
         self.survey = survey
@@ -231,8 +232,10 @@ class Translator:
                 mapper = self.mappers.get(rtype)
                 if mapper is None:
                     msg = (
-                        f"{lid}: {rtype} has no awscc resource and no "
-                        "hashicorp/aws mapping"
+                        f"{lid}: {rtype} has no hashicorp/aws mapping and is not in "
+                        "the vendored awscc schema. Add a mapping in aws_mappers, or "
+                        "run terraform/translator/scripts/refresh_awscc_schema.py "
+                        "if awscc supports it"
                     )
                     if not self.survey:
                         raise TranslationError(msg)
@@ -252,10 +255,10 @@ class Translator:
             )
             policy = res.get("DeletionPolicy")
             if policy and policy.lower() != "delete":
-                self.report.warn(
-                    f"{lid}: DeletionPolicy {policy} has no Terraform equivalent; "
-                    "terraform destroy deletes it"
-                )
+                # Terraform has no DeletionPolicy. `idp-cli delete --terraform`
+                # removes these from state before destroying, so they are left
+                # in place as CloudFormation leaves them.
+                self.retained.append(lid)
         for plan in self.plans.values():
             if plan.kind == "aws":
                 self.mappers[plan.cfn_type].plan(self, plan)
@@ -769,9 +772,39 @@ class Translator:
                 f'variable "{STACK_NAME_VAR}"',
                 [
                     "type = string",
-                    'description = "Name used where CloudFormation would use '
-                    'the stack name."',
-                ],
+                    'description = "Name of this deployment. It is the name of the '
+                    "CloudFormation label stack, the value of every AWS::StackName "
+                    "in the templates, and the prefix of generated resource names; "
+                    'nested modules use <stack_name>-<LogicalId>."',
+                ]
+                + (
+                    [
+                        hcl.block(
+                            "validation",
+                            [
+                                # The main template's IsStacknameLengthOK refuses
+                                # more than 25; caught here at plan instead of
+                                # part-way through an apply.
+                                f"condition = length(var.{STACK_NAME_VAR}) <= 25",
+                                'error_message = "stack_name must be at most 25 '
+                                'characters."',
+                            ],
+                        ).rstrip(),
+                        hcl.block(
+                            "validation",
+                            [
+                                "condition = can(regex("
+                                '"^[A-Za-z][A-Za-z0-9-]*$", '
+                                f"var.{STACK_NAME_VAR}))",
+                                'error_message = "stack_name must start with a '
+                                "letter and contain only letters, digits and "
+                                'hyphens (a CloudFormation stack name)."',
+                            ],
+                        ).rstrip(),
+                    ]
+                    if self.is_root
+                    else []
+                ),
             )
         ]
         for p, spec in self.params.items():
@@ -870,6 +903,34 @@ class Translator:
                 ).rstrip()
             )
         return lines
+
+    def retained_addresses(self) -> list[str]:
+        """Terraform addresses (without instance keys) of every resource whose
+        CloudFormation DeletionPolicy keeps it, with the resources it became."""
+        out = []
+        for lid in self.retained:
+            plan = self.plans.get(lid)
+            if plan is None:
+                continue
+            if not plan.virtual:
+                out.append(plan.address)
+            out.extend(a for a in plan.extra_deps if not a.startswith("time_sleep."))
+        for name, child in self.children.items():
+            out.extend(f"module.{name}.{a}" for a in child.retained_addresses())
+        return sorted(set(out))
+
+    def parameter_map(self) -> dict[str, dict[str, Any]]:
+        """CloudFormation parameter name -> Terraform variable and type, for
+        tools that take CloudFormation-style parameters (idp-cli deploy)."""
+        return {
+            p: {
+                "variable": self.param_vars[p],
+                "type": str(spec.get("Type", "String")),
+                "required": "Default" not in spec,
+                "sensitive": bool(spec.get("NoEcho")),
+            }
+            for p, spec in self.params.items()
+        }
 
     def label_parameters(self) -> list[tuple[str, str, str]]:
         """(CloudFormation name, HCL value as text, description) per parameter

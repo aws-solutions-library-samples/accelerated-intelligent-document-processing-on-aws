@@ -65,6 +65,30 @@ def _sam_shape_fixups(template: dict[str, Any]) -> dict[str, Any]:
     return template
 
 
+OFFLINE_BUCKET = "offline-placeholder"
+
+
+def offline_placeholders(template: dict[str, Any]) -> dict[str, Any]:
+    """Point local code paths at a placeholder S3 location.
+
+    The per-pull-request gate translates the source templates, before
+    ``publish.py`` has packaged them, so ``CodeUri``, ``DefinitionUri`` and a
+    local ``Code`` path are paths in the checkout. SAM refuses those; the
+    generated module only needs a well-formed S3 location to validate.
+    """
+    out = copy.deepcopy(template)
+    for res in out.get("Resources", {}).values():
+        props = res.get("Properties") or {}
+        rtype = res.get("Type", "")
+        for key in ("CodeUri", "ContentUri", "DefinitionUri"):
+            v = props.get(key)
+            if isinstance(v, str) and not v.startswith("s3://"):
+                props[key] = f"s3://{OFFLINE_BUCKET}/{v.strip('./')}"
+        if rtype == "AWS::Lambda::Function" and isinstance(props.get("Code"), str):
+            props["Code"] = {"S3Bucket": OFFLINE_BUCKET, "S3Key": props["Code"]}
+    return out
+
+
 def load_template(path: Path) -> dict[str, Any]:
     template = yaml_parse(path.read_text())
     return _normalise(template)
