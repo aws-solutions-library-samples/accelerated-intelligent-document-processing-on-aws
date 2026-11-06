@@ -26,6 +26,9 @@ if TYPE_CHECKING:
     from .translate import Plan, Translator
 
 
+GENERATED_NAME_LIFECYCLE = "lifecycle {{\n  ignore_changes = [{attrs}]\n}}"
+
+
 def _kms_arn(tr: Translator, v: Any) -> str:
     """A key reference as an ARN: the provider takes only ARNs here."""
     if isinstance(v, dict) and set(v) == {"Ref"}:
@@ -210,6 +213,7 @@ class S3BucketMapper:
         if acl != "Private":
             raise TranslationError(f"{plan.logical_id}: AccessControl {acl!r}")
         lines = []
+        generated_name = False
         if "BucketName" in props:
             lines.append(f"bucket = {tr.expr(props.pop('BucketName'))}")
         else:
@@ -217,6 +221,7 @@ class S3BucketMapper:
             # CloudFormation does, after the stack-name prefix.
             prefix = f"${{var.{STACK_NAME_VAR}}}-{plan.logical_id}"
             lines.append(f'bucket_prefix = lower(substr("{prefix}", 0, 36))')
+            generated_name = True
         if "Tags" in props:
             from .aws_mappers import _tags
 
@@ -225,6 +230,10 @@ class S3BucketMapper:
         if props:
             raise TranslationError(f"{plan.logical_id}: unmapped {set(props)}")
         head, tail = tr.meta_lines(plan, res)
+        if generated_name:
+            # As for tables: keep the name a bucket was created with if a later
+            # version derives the prefix differently, rather than replacing it.
+            tail = tail + [GENERATED_NAME_LIFECYCLE.format(attrs="bucket_prefix")]
         out = [
             hcl.block(f'resource "aws_s3_bucket" "{plan.name}"', head + lines + tail)
         ]
@@ -429,6 +438,11 @@ class DynamoDbTableMapper:
             lines.append(f"tags = {_tags(tr, props.pop('Tags'))}")
         lines += render_spec(tr, self.spec, props, where)
         head, tail = tr.meta_lines(plan, res)
+        if name is None:
+            # The translator chose this name, and a later version may choose it
+            # differently. A table's name forces replacement, which would delete
+            # an existing deployment's data, so keep the name it was created with.
+            tail = tail + [GENERATED_NAME_LIFECYCLE.format(attrs="name")]
         table = hcl.block(
             f'resource "aws_dynamodb_table" "{plan.name}"', head + lines + tail
         )
