@@ -205,6 +205,22 @@ RUNTIME_TEMPLATE_DEPLOYERS = [
         ("MainStackName", "FeatureBucket"),
         id="feature_cli.deploy_cmd→published-extension",
     ),
+    pytest.param(
+        "scripts/security/live_checks/verify_tenant_isolation.py",
+        # Target: the access point template `client.tenancy.generate_policies`
+        # builds for the run. It declares no Parameters, so the stack is created
+        # with none.
+        (),
+        id="verify_tenant_isolation→generated-access-points",
+    ),
+    pytest.param(
+        "lib/idp_sdk/idp_sdk/operations/tenancy.py",
+        # Target: the same generated access point template, deployed by
+        # `client.tenancy.deploy_policies` (`idp-cli tenancy generate-policies
+        # --deploy`). It declares no Parameters, and the call refuses one that does.
+        (),
+        id="tenancy.deploy_policies→generated-access-points",
+    ),
 ]
 
 

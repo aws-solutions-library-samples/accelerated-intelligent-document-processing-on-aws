@@ -42,10 +42,10 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 TESTSET_BUCKET = os.environ["TESTSET_BUCKET"]
 JOB_TABLE = os.environ["JOB_TABLE"]
 HOST_TRACKING_TABLE = os.environ["HOST_TRACKING_TABLE"]
-# Config version the ui-deployer created from this extension's bundled preset
-# (`<featureId>-v<version>`), recorded on each test-set row so Test Studio
-# preselects it. Empty on an older host that has no configVersion support —
-# harmless, the UI just falls back to the active version.
+# Configuration profile the ui-deployer created from this extension's bundled
+# preset (named after the feature id), recorded on each test-set row so Test
+# Studio preselects it. Empty on an older host that has no configVersion
+# support — harmless, the UI just falls back to the active profile.
 CONFIG_VERSION_NAME = os.environ.get("CONFIG_VERSION_NAME", "")
 
 _s3_endpoint_url = os.environ.get("S3_ENDPOINT_URL") or None
@@ -226,10 +226,11 @@ def _register_test_set(
         names["#fileCount"] = "fileCount"
         values[":fileCount"] = file_count
         sets.append("#fileCount = :fileCount")
-    # Declare the configuration version Test Studio should preselect for this
-    # test set. Without it the UI falls back to matching a config version whose
-    # name equals the test set id — which never matches here, because the
-    # Feature Platform names extension presets `<featureId>-v<version>`.
+    # Declare the configuration profile Test Studio should preselect for this
+    # test set. Without it the UI falls back to matching a profile whose name
+    # equals the test set id — which never matches here, because the Feature
+    # Platform names an extension's preset profile after the feature id, not
+    # after any of its test sets.
     #
     # if_not_exists: an admin who repoints a ConfBench test set at their own
     # tuned configuration keeps that choice across re-ingests.

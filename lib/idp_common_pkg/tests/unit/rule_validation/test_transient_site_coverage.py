@@ -52,7 +52,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import importlib.util
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -73,6 +72,7 @@ from idp_common.rule_validation.orchestrator import RuleValidationOrchestratorSe
 from idp_common.rule_validation.policy_classification import PolicyClassificationService
 from idp_common.rule_validation.service import RuleValidationService
 from idp_common.utils.transient_errors import TransientError
+from tests.unit._handler_loading import load_with_xray_stubbed
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 PATTERN_SRC = REPO_ROOT / "patterns" / "unified" / "src"
@@ -176,22 +176,7 @@ def _load_handler(module_name: str, relative_path: str) -> ModuleType:
     — which is the point of the gate, since a ``setdefault`` in a test harness
     undoes the environment stripping for everything the harness imports.
     """
-    recorder = MagicMock()
-    recorder.capture.return_value = lambda fn: fn
-    xray_core = MagicMock()
-    xray_core.patch_all = lambda: None
-    xray_core.xray_recorder = recorder
-    with patch.dict(
-        "sys.modules",
-        {"aws_xray_sdk": MagicMock(), "aws_xray_sdk.core": xray_core},
-    ):
-        spec = importlib.util.spec_from_file_location(
-            module_name, str(PATTERN_SRC / relative_path)
-        )
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    return module
+    return load_with_xray_stubbed(module_name, str(PATTERN_SRC / relative_path))
 
 
 section_handler = _load_handler("rv_section_index", "rule-validation-function/index.py")

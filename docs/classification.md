@@ -171,6 +171,13 @@ classification* as `SectionClassification/…`. The combined strategy stays unde
   model's output limit, on a call the selected strategy makes. Each is named by
   its path, for example `classification.split_then_classify.section_classification.llm.model`.
 
+A model that does not accept images is not refused at save time, because no
+list of which models accept images is kept. Bedrock refuses the request instead,
+and the error then names the call's `modality.images` setting, how many images
+were sent and the model. An error about a request being too long, or about its
+images being too large or too many, carries no such sentence: that model accepts
+images, and the remedy is a smaller window or smaller page images.
+
 ## Classification in BDA mode and pipeline mode
 
 `use_bda` chooses which of the two runs. They classify in entirely different
@@ -709,10 +716,29 @@ from the **earlier** window, which is the one that had their preceding context.
 Windows are merged by projecting each window's segments onto per-page verdicts
 and re-running the same fold page-level classification uses, so a windowed packet
 and a page-level document cannot disagree about how verdicts become segments.
-A single window (the common case) uses the model's segments directly.
+A single window (the common case) uses the model's segments directly, unless
+they overlap: when a call returns segments that share pages (a 1–5 segment
+followed by a 2–2 segment, say), each page is kept in the segment the model
+reported **first** — the same rule a windowed packet applies — and a warning names
+the pages. Every page therefore belongs to exactly one section. The later segment
+still starts a new document at the first page it keeps, so two documents of the
+same class that the model let share a page are not joined into one.
 
 One window failing does not discard the others, so a transient throttle on a long
 packet costs that window's boundaries rather than the whole document's.
+
+`window_pages` is a page count, so a window can still be too large for the model
+once its page images are attached: a full window of full-resolution scans can
+exceed a smaller model's input, and the Converse API also limits how many images
+one message may carry, so with images on a large `window_pages` can be refused for
+its image count however few tokens it holds. A window the model refuses as too
+long, or as carrying too many images, is split in two and both halves
+are retried, down to single pages, with the overlap repeated at the junction and
+merged by the same earlier-window rule. Retrying is bounded: the calls made for
+split windows stop at twice the packet's page count, and anything left is reported
+as not classified. Every half that fits is a separate billed call, so if this
+appears in the logs routinely, lower `window_pages` or set `image.target_width` /
+`target_height`. With `window_pages: 0` the window is not split.
 
 **How to pick the two numbers.**
 
@@ -1038,17 +1064,20 @@ processing issue on the section that holds the page, which is where the Sections
 panel renders it and where `ProcessingIssueCount` on the document counts it. The
 severity says how much attention the case deserves:
 
-> **Scope: the combined strategy at page granularity only.** These issues are recorded from
-> the page-level path. Packet granularity and split-then-classify make one decision per
-> segment rather than per page and record none of them; at packet granularity a
-> page the model places in no segment is appended to no section at all, so it
-> produces neither data nor a record. Extending this to the segment-level paths is
-> tracked as follow-up work.
+> **Scope: the combined strategy at page granularity, and section classification under
+> split-then-classify.** On the page-level path every case below is recorded. Under
+> split-then-classify, the section classification step records two of them on the
+> section: `classification_failed` when its call fails (or returns no class with
+> `enforceValidClasses` off), and `classification_invalid_class_fallback` when the
+> fallback class replaced an out-of-vocabulary answer. Packet granularity with the
+> combined strategy records none of them: at packet granularity a page the model
+> places in no segment is appended to no section at all, so it produces neither data
+> nor a record. Extending that path is tracked as follow-up work.
 
 | Issue code | Severity | What happened | What to do |
 |---|---|---|---|
-| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class and nothing was extracted from it. **Produced only by `classify_page_sagemaker`**, so it cannot occur in a stack this solution deploys: no template here creates a SageMaker endpoint or UDOP model. You reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the Bedrock backend an exception propagates instead and fails the document, where the error appears in the execution history rather than as an issue | Check the ClassificationFunction log group for the page. If you supplied the endpoint yourself, check its health, model access and quota — otherwise this code indicates a classifier wired up outside the solution's own templates |
-| `classification_page_no_content` | warning | The page had neither usable OCR text nor a loadable page image, so there was nothing to classify. Note this needs *both* to be absent — a blank page normally still has an image, so it does not land here | Check the OCR step for those pages unless they are genuinely empty |
+| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class and nothing was extracted from it. On the Bedrock backend it is produced in one case: the page's text or image could not be read from S3, or a page artifact is missing, so nothing was sent — the root cause names the read that failed, and the document also fails. Otherwise it comes from `classify_page_sagemaker`, which a stack this solution deploys does not use: no template here creates a SageMaker endpoint or UDOP model, and you reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the page-level path, a Bedrock model call that errors propagates instead and fails the document, where the error appears in the execution history rather than as an issue. Under split-then-classify, a section classification call that errors is caught per segment: the section is labelled `unclassified`, carries this issue with the call's error as its root cause, and the error is also in the document's errors | For a read failure, check the page's artifacts in the working bucket and reprocess. For a split-then-classify section, check the section classification model call in the ClassificationFunction log group (throttling, model access, quota) and reprocess. Otherwise check the ClassificationFunction log group for the page and, if you supplied the endpoint yourself, its health, model access and quota |
+| `classification_page_no_content` | warning | The page had nothing to classify: no usable OCR text (text that is only whitespace counts as none), and no page image either because none could be loaded or because `modality.images` is off. With images on, a blank page normally still has an image and does not land here; with text-only modality, every page without OCR text does (separator sheets, signature pages, image-only scans). Such an empty page is labelled `unclassified` and the rest of the document is classified and completes normally. A page whose text or image could not be read, or whose page artifact is missing, still fails the document, and the message names the read that failed | Check the OCR step for those pages unless they are genuinely empty. If image-only pages are expected, turn `modality.images` on so they can be classified |
 | `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `fallback_class` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
 
 One issue per section per cause, listing the page IDs, so a long run of
@@ -1308,7 +1337,7 @@ Four things worth knowing:
   may want a capable multimodal model looking at a whole packet, while
   classifying a clean segment is often a much easier problem a cheaper model
   answers just as well. A custom or fine-tuned classification model
-  (`CustomClassificationModelARN`, or *Create configuration version* on a
+  (`CustomClassificationModelARN`, or *Create Config Profile* on a
   fine-tuning job) is written to section classification.
 - **The halves are metered separately**, as `Splitting/...` and
   `SectionClassification/...` in the cost table and the reporting database,
@@ -1322,9 +1351,15 @@ Four things worth knowing:
   `document_shape.sectionSplitting: disabled` the whole document is one segment, and
   under `page` every page is one, so no splitting call is made.
 
-A segment whose section classification call fails keeps **no class** and is
-reported in the document's errors. Its boundaries are still good, and an
-invented class would propagate into extraction as though it had been decided.
+A segment whose section classification call fails is labelled `unclassified`:
+its section and its pages all read `unclassified`, the failure is in the
+document's errors, and the section carries a `classification_failed` processing
+issue in the Sections panel. Its boundaries are still good, and a real class
+guessed in its place would propagate into extraction as though it had been
+decided. A segment whose answer was outside the vocabulary after every retry gets
+the configured `fallback_class` instead, as on the page-level path, and its section
+carries a `classification_invalid_class_fallback` warning. Extraction treats `unclassified` as classification having determined no
+class, rather than as a class missing from the configuration.
 
 `splitting.method` and `section_classification.method` ship with one value,
 `llm`. A boundary-detection model, embeddings-based classification and external

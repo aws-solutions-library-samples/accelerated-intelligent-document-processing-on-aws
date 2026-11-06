@@ -17,6 +17,7 @@ from idp_common.config.class_names import is_valid_class_name, sanitize_class_na
 from idp_common.config.class_settings import carry_forward_authored_settings
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
+from idp_common.config.revisions import RevisionNotRecordedError
 from idp_common.config.schema_constants import X_AWS_IDP_MULTI_INSTANCE
 from idp_common.utils.s3util import S3Util
 
@@ -463,6 +464,10 @@ class ClassesDiscovery:
                 ),
             }
 
+        except RevisionNotRecordedError:
+            # A refused profile save (#1778) is not a document-processing failure;
+            # keep its type and message for the job status.
+            raise
         except Exception as e:
             logger.error(
                 f"Error processing document {input_prefix}: {e}", exc_info=True
@@ -560,6 +565,8 @@ class ClassesDiscovery:
                 ),
             }
 
+        except RevisionNotRecordedError:
+            raise
         except Exception as e:
             logger.error(
                 f"Error processing document with ground truth {input_prefix}: {e}",

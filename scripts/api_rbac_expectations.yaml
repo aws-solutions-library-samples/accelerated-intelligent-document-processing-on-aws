@@ -53,7 +53,13 @@
 #                  of scope. Static scan requires 'allowedConfigVersions' (or
 #                  allowed_config_versions) to appear in enforced_in.
 #   scope_filtered: true -> op returns lists row-filtered by the caller's
-#                  allowedConfigVersions / reviewer status instead of 403.
+#                  allowedConfigVersions / reviewer status instead of 403. Static
+#                  scan (S4-per-item) also requires the code this op reaches,
+#                  following calls into idp_common, to call a recognised per-item
+#                  scope predicate inside an iteration over its results (see
+#                  SCOPE_ITEM_PREDICATES in scan_api_rbac.py). scope_enforced_in
+#                  does not change where that search starts: it starts at the
+#                  op's own dispatch.
 #   scope_enforced_in: OPTIONAL function name, for a scope_checked/scope_filtered
 #                  op whose module has no dispatch S4 can find on the op's name.
 #                  S4 reads only the code THIS op can reach — its dispatch branch
@@ -144,6 +150,8 @@ operations:
   getDocument:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    scope_enforced_in: _get_document
     enforced_in: *ddb
     args: { ObjectKey: "__nonexistent__.pdf" }
   listDocuments:
@@ -171,6 +179,8 @@ operations:
   listDocumentsDateHour:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    scope_enforced_in: _refuse_scoped_date_partition_read
     enforced_in: *ddb
     args: {}
     note: >-
@@ -183,6 +193,8 @@ operations:
   listDocumentsDateShard:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    scope_enforced_in: _refuse_scoped_date_partition_read
     enforced_in: *ddb
     args: {}
     note: >-
@@ -349,6 +361,8 @@ operations:
   listDocumentVersions:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    scope_enforced_in: handler
     enforced_in: nested/api-resolvers/src/lambda/document_versions_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf" }
     note: >-
@@ -368,11 +382,15 @@ operations:
   getDocumentVersion:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    scope_enforced_in: handler
     enforced_in: nested/api-resolvers/src/lambda/document_versions_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf", runId: "__x__" }
   compareDocumentVersions:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    scope_enforced_in: handler
     enforced_in: nested/api-resolvers/src/lambda/document_versions_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf", runIdA: "__a__", runIdB: "__b__" }
 
@@ -382,6 +400,7 @@ operations:
   deleteDocument:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/delete_document_resolver/index.py
     args: { objectKeys: ["__nope__"] }
   reprocessDocument:
@@ -393,11 +412,13 @@ operations:
   abortWorkflow:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/abort_workflow_resolver/index.py
     args: { objectKeys: ["__nope__"] }
   copyToBaseline:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/copy_to_baseline_resolver/index.py
     # schema: copyToBaseline(objectKey: String!) — single key, not a list
     args: { objectKey: "__nope__" }
@@ -452,9 +473,10 @@ operations:
     enforced_in: *cfg
     args: {}
   getConfigVersion:
-    # Annotator and Reviewer included deliberately: the annotate view needs the class
-    # list to correct a misclassified section, and that correction's write side
-    # (reextractTestSetDocument) already accepts both. A caller with no group in
+    # Annotator and Reviewer included deliberately: the annotate and review editors
+    # need the class list to correct a misclassified section (an Annotator's write
+    # side is reextractTestSetDocument; a Reviewer's is the Production editor's
+    # processChanges / updateDocumentSections). A caller with no group in
     # {Admin, Author, Viewer} receives ONLY the class names and descriptions — the
     # resolver reduces the payload via _class_vocabulary_only, so prompts, model ids
     # and every other setting stay out of reach of the lowest-privilege role. The
@@ -549,6 +571,32 @@ operations:
     kind: mutation
     enforced_in: *cfg
     args: { prefix: "__nope__/" }
+  # Tenant declarations. Admin-only on the same grounds as mapping CRUD: a
+  # declaration decides which prefixes and profiles a scoped user can be confined
+  # to, and saving one re-judges every existing mapping against it.
+  listTenants:
+    groups: [Admin]
+    kind: read
+    enforced_in: *cfg
+    args: {}
+    note: >
+      Not scope-filtered, and Admin-only for that reason: the tenant set is the
+      deployment's isolation policy, and its prefixes and patterns would tell a
+      scoped user where every other tenant's documents land.
+  putTenant:
+    groups: [Admin]
+    kind: mutation
+    enforced_in: *cfg
+    # `profilePattern: "nope"` has no separator-and-`*` tail, so an allowed caller
+    # is refused by validation after the group check and nothing is written; every
+    # other value here is valid, and a valid set would declare a real tenant on
+    # the stack under test.
+    args: { tenantId: "nope", prefixes: ["__nope__/"], profilePattern: "nope" }
+  deleteTenant:
+    groups: [Admin]
+    kind: mutation
+    enforced_in: *cfg
+    args: { tenantId: "nope" }
   resolveConfigPrefixMapping:
     # Admin+Author, NOT Viewer. The dry run exists to serve the upload form, and
     # Author is the lowest role that can upload at all -- a Viewer has no Upload
@@ -561,10 +609,10 @@ operations:
     groups: [Admin, Author]
     kind: read
     # scope_FILTERED, not scope_checked: this operation returns 200 with every
-    # naming field nulled for an out-of-scope destination, and never 403s. The two
-    # flags are indistinguishable to scan_api_rbac's S4 check (it tests
-    # `scope_checked or scope_filtered`) and to the dynamic driver, so nothing would
-    # have caught the wrong one -- but they feed different published figures, so
+    # naming field nulled for an out-of-scope destination, and never 403s. The
+    # dynamic driver cannot tell the two flags apart, and scan_api_rbac's S4 adds
+    # only a per-item filter requirement for scope_filtered, which a refusing op
+    # with a loop could also meet -- but they feed different published figures, so
     # declaring the refusing kind here moved one operation from the filtering tally
     # to the verifying one and published both wrong. No figure is restated here on
     # purpose: test_api_policy_counts_in_docs.py reads these declarations back and
@@ -687,33 +735,47 @@ operations:
     groups: [Admin, Author]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_runner/index.py
+    # A run's documents are stamped with its profile and so become visible to
+    # everyone scoped to it, so the profile the run starts under (named, or the
+    # active one) is held to the caller's allowedConfigVersions. Named because
+    # startTestRun is the handler's default branch, with no `if` on its name.
+    scope_checked: true
+    scope_enforced_in: _require_profile_in_scope
     # schema: startTestRun(input: TestRunInput!) — wrapped input object
     args: { input: {} }
   sendTestRunToReview:
     groups: [Admin, Author]
     kind: mutation
     # Shares TestRunnerFunction with startTestRun; the resolver branches on
-    # fieldName after the Admin/Author group check.
+    # fieldName after the Admin/Author group check. Queueing a run's documents for
+    # review acts on documents stamped with the run's profile, so that profile is
+    # held to the caller's allowedConfigVersions, as when the run was started.
     enforced_in: nested/api-resolvers/src/lambda/test_runner/index.py
+    scope_checked: true
+    scope_enforced_in: _require_profile_in_scope
     args: { testRunId: "__nope__" }
   getTestRun:
     groups: [Admin, Author]
     kind: read
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_results_resolver/index.py
     args: { testRunId: "__x__" }
   getTestRuns:
     groups: [Admin, Author]
     kind: read
+    scope_filtered: true
     enforced_in: nested/api-resolvers/src/lambda/test_results_resolver/index.py
     args: {}
   getTestRunStatus:
     groups: [Admin, Author]
     kind: read
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_results_resolver/index.py
     args: { testRunId: "__x__" }
   compareTestRuns:
     groups: [Admin, Author]
     kind: read
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_results_resolver/index.py
     args: { testRunIds: ["__x__"] }
   deleteTests:
@@ -742,12 +804,12 @@ operations:
   getTestSetDocuments:
     # Annotator reads its scoped queue's documents; the resolver additionally
     # enforces allowedTestSets per set.
-    groups: [Admin, Author, Annotator, Reviewer]
+    groups: [Admin, Author, Annotator]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   getAnnotationQueue:
-    groups: [Admin, Author, Annotator, Reviewer]
+    groups: [Admin, Author, Annotator]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
@@ -766,7 +828,7 @@ operations:
     note: >-
       Clears test-set document assignments and notifies the former assignee. Admin only.
   skipTestSetDocument:
-    groups: [Admin, Author, Annotator, Reviewer]
+    groups: [Admin, Author, Annotator]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", reason: "Other (see note)" }
@@ -774,21 +836,21 @@ operations:
       Hands a test-set document back to its queue, with a reason from the set's skip list: the assignment ends and the document is unassigned again, not completed. Annotators must hold the set in allowedTestSets and be the document's assignee (NOT_ASSIGNED otherwise).
 
   claimTestSetDocument:
-    groups: [Annotator, Reviewer]
+    groups: [Annotator]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__" }
     note: >-
-      An Annotator listed on the set's queue, or a Reviewer whose allowedConfigVersions admit the set's profile (listed or not), assigns one of its unassigned, unreviewed documents to themselves. Admins assign test-set documents (assignTestSetDocuments) rather than claim them, so the gateway refuses a caller outside the Annotator and Reviewer groups; a user in both Admin and Annotator is admitted. An Annotator not listed on the queue is refused NOT_ELIGIBLE, and a held or reviewed document is refused (ALREADY_CLAIMED, ALREADY_REVIEWED).
+      An Annotator listed on the set's queue assigns one of its unassigned, unreviewed documents to themselves. Admins assign test-set documents (assignTestSetDocuments) rather than claim them, and Reviewers work Production review queues only, so the gateway refuses a caller outside the Annotator group; a user in both Admin and Annotator is admitted. An Annotator not listed on the queue is refused NOT_ELIGIBLE, and a held or reviewed document is refused (ALREADY_CLAIMED, ALREADY_REVIEWED).
   saveTestSetDocumentSection:
-    groups: [Admin, Author, Annotator, Reviewer]
+    groups: [Admin, Author, Annotator]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", sectionId: "1" }
     note: >-
       Saves or confirms one section's labels of a test-set document without a review copy. Annotators must hold the set in allowedTestSets and be the document's assignee (NOT_ASSIGNED otherwise); the label is stamped reviewed-human with the token's identity.
   saveTestSetDocumentSectionDraft:
-    groups: [Admin, Author, Annotator, Reviewer]
+    groups: [Admin, Author, Annotator]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", sectionId: "1", data: "{}" }
@@ -802,14 +864,14 @@ operations:
     note: >-
       Sets a test set's queue settings (description, priority, reminder time limit, eligible Annotators, checklist). Admin only.
   listTestSetQueues:
-    groups: [Admin, Annotator, Reviewer]
+    groups: [Admin, Annotator]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: {}
     note: >-
       Lists test sets as Test Studio queues with their stored counts, from DynamoDB metadata only: every set for an Admin, only the sets whose queue lists the caller for an Annotator.
   listMyTestSetTasks:
-    groups: [Admin, Author, Annotator, Reviewer]
+    groups: [Admin, Author, Annotator]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: {}
@@ -827,14 +889,14 @@ operations:
     # "Could not re-extract this document" — observed on a dev stack. Per-set scope
     # is asserted in the handler, so group membership alone does not expose another
     # set's jobs.
-    groups: [Admin, Author, Annotator, Reviewer]
+    groups: [Admin, Author, Annotator]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", jobId: "__nope__" }
   estimateReviewEffort:
     # Annotator reads it for their own queue's "what review is buying" panel; the
     # resolver additionally enforces allowedTestSets per set.
-    groups: [Admin, Author, Annotator, Reviewer]
+    groups: [Admin, Author, Annotator]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
@@ -857,7 +919,7 @@ operations:
     # set. Note this is the one annotation operation with a side effect on the *set*
     # rather than on a document: it snapshots the baselines being annotated away from,
     # which is what makes the version number refer to bytes.
-    groups: [Admin, Author, Annotator, Reviewer]
+    groups: [Admin, Author, Annotator]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { input: { testSetId: "nonexistent-test-set" } }
@@ -868,7 +930,7 @@ operations:
     # often needed in practice. The resolver additionally enforces allowedTestSets per set,
     # and writes only the grouping and class: field values, labelSource and edit
     # history are preserved.
-    groups: [Admin, Author, Annotator, Reviewer]
+    groups: [Admin, Author, Annotator]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__", sections: [] } }
@@ -876,7 +938,7 @@ operations:
   reextractTestSetDocument:
     # Annotator corrects a misclassified document in their own set; the resolver
     # additionally enforces allowedTestSets per set.
-    groups: [Admin, Author, Annotator, Reviewer]
+    groups: [Admin, Author, Annotator]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__" } }
@@ -1015,6 +1077,7 @@ operations:
     # requires the document's test set to be in their allowedTestSets.
     groups: [Admin, Reviewer, Annotator]
     kind: mutation
+    scope_checked: true
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__", sectionId: "1" }
     # This operation is the handler's FALL-THROUGH path — claimReview, releaseReview
@@ -1039,6 +1102,11 @@ operations:
     # requires the document's test set to be in their allowedTestSets.
     groups: [Admin, Reviewer, Annotator]
     kind: mutation
+    scope_checked: true
+    # The configuration-scope check runs in the handler before any branch, and
+    # before the queue-managed guard, whose distinct refusal would otherwise tell an
+    # out-of-scope caller something about the document; so the handler is the entry.
+    scope_enforced_in: handler
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__" }
     object_scoped_roles: [Annotator]
@@ -1055,6 +1123,11 @@ operations:
     # requires the document's test set to be in their allowedTestSets.
     groups: [Admin, Reviewer, Annotator]
     kind: mutation
+    scope_checked: true
+    # The configuration-scope check runs in the handler before any branch, and
+    # before the queue-managed guard, whose distinct refusal would otherwise tell an
+    # out-of-scope caller something about the document; so the handler is the entry.
+    scope_enforced_in: handler
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__" }
     object_scoped_roles: [Annotator]
@@ -1067,6 +1140,11 @@ operations:
   skipAllSectionsReview:
     groups: [Admin, Reviewer]
     kind: mutation
+    scope_checked: true
+    # The configuration-scope check runs in the handler before any branch, and
+    # before the queue-managed guard, whose distinct refusal would otherwise tell an
+    # out-of-scope caller something about the document; so the handler is the entry.
+    scope_enforced_in: handler
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__", reason: "Other (see note)" }
     note: >-
@@ -1079,6 +1157,11 @@ operations:
   saveSectionReviewEdits:
     groups: [Admin, Reviewer]
     kind: mutation
+    scope_checked: true
+    # The configuration-scope check runs in the handler before any branch, and
+    # before the queue-managed guard, whose distinct refusal would otherwise tell an
+    # out-of-scope caller something about the document; so the handler is the entry.
+    scope_enforced_in: handler
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__", sectionId: "1", editedData: "{}" }
     note: >-
@@ -1319,9 +1402,9 @@ operations:
   # Queues are system-wide, so one queue holds items of several configuration
   # profiles. An Admin and a Reviewer work every Production queue; an Annotator
   # works the queues that list them; each claims items or is assigned them (owner
-  # key from verified claims). On Test Studio queues an Annotator works the sets in
-  # their allowedTestSets, a Reviewer every set whose profile their
-  # allowedConfigVersions admits (testset_scope).
+  # key from verified claims). Test Studio queues are Annotator work: an Annotator
+  # works the sets in their allowedTestSets (testset_scope); a Reviewer works
+  # Production queues only.
   # Profile scope (allowedConfigVersions) is applied to each item by its own
   # profile, in the listings as in the per-item operations, and an item with no
   # profile is admitted to no scoped caller. Every other operation is Admin only. The mutation args name an item nobody has, so
@@ -1525,6 +1608,15 @@ operations:
     enforced_in: src/lambda/user_management/index.py
     # schema: deleteUser(userId: ID!) — keyed by userId, not email
     args: { userId: "__nope__" }
+  setUserTenant:
+    groups: [Admin]
+    kind: mutation
+    enforced_in: src/lambda/user_management/index.py
+    # Writes another user's configuration scope, so Admin-only, and only on a stack
+    # whose TenantGrantSource is Api. The probe address has no user, so an allowed
+    # caller is refused (by the mode check, or as user-not-found) and nothing is
+    # written.
+    args: { email: "__no@no.invalid" }
   listUsers:
     groups: [Admin]
     kind: read

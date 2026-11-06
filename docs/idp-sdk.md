@@ -138,6 +138,7 @@ client.search.query(...)
 # Configuration operations
 client.config.create(...)
 client.config.validate(...)
+client.config.migrate(...)
 client.config.upload(...)
 client.config.download(...)
 client.config.list()
@@ -1480,13 +1481,15 @@ Operations for managing IDP configurations.
 Generate an IDP configuration template.
 
 **Parameters:**
-- `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or comma-separated (default: `"min"`)
+- `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or one or more section names, comma-separated or as a list (default: `"min"`). A single section name is read the same way as a list, and blank segments are dropped. `"min"` switches summarization and evaluation off and leaves confidence scoring (`extraction.confidence`) on. No template carries a `classes` section: the system defaults have no document classes, and an empty list uploaded over a profile would replace its classes with none. `"all"` is every section except `hitl`, `chat` and `rule_validation`. Uploaded, the template is merged over the stack's preset or the profile's current configuration, so every setting it writes is reset to its default there (`summarization` and `evaluation` switch back on where a preset turned them off; prompts left out keep their own values); the three are left out so the reset does not also switch human review, the chat companion or rule validation on or off. Name them to include them
 - `pattern` (str, optional): Pattern to use — `"pattern-1"` or `"pattern-2"` (default: `"pattern-2"`)
 - `output` (str, optional): Output file path
-- `include_prompts` (bool, optional): Include prompt templates (default: False)
+- `include_prompts` (bool, optional): Include prompt templates (default: False). When False, the long `system_prompt`, `task_prompt` and `user_prompt` values are left out of the template, so they take whatever value the configuration is merged over
 - `include_comments` (bool, optional): Include explanatory comments (default: True)
 
 **Returns:** `ConfigCreateResult` with `yaml_content` and `output_path`
+
+**Raises:** `IDPValidationError` when `features` names no section, an unknown feature set or section, or a feature set combined with section names, or only `classes` (empty in the system defaults, so there is nothing to write), and when `pattern` is not a known pattern. The message lists the valid sections. `config.parse_features(features)` returns how a value is read (a feature-set name, or a list of section names) without generating anything.
 
 ```python
 result = client.config.create(
@@ -1510,7 +1513,14 @@ Validate a configuration file against system defaults.
 - `show_merged` (bool, optional): Include merged configuration in result (default: False)
 - `strict` (bool, optional): Report deprecated/unknown fields as errors (default: False)
 
-**Returns:** `ConfigValidationResult` with `valid`, `validation_available`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+**Returns:** `ConfigValidationResult` with `valid`, `validation_available`, `document_loaded`, `class_count`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+
+`document_loaded` is False when the file could not be read or is not valid YAML; the
+one error then starts `Failed to load file:` or `YAML syntax error:`, which have
+different remedies. `class_count` is the number of document classes the file itself
+defines, not counting the system defaults, and is None when the file did not load or
+its top level is not a mapping. `idp-cli config-validate` reports from these fields
+rather than reading the file itself.
 
 `validation_available` is False when this installation could not run the checks at
 all — `idp_common`, which does the checking, is not importable — and the missing
@@ -1536,21 +1546,47 @@ for warning in result.warnings:
     print(f"Warning: {warning}")
 ```
 
+### config.migrate()
+
+Convert a configuration file to the current configuration format, the way the loader
+converts it on every read (for example, the pre-0.9 flat classification keys). Nothing
+is validated; call `config.validate()` for that. `idp-cli config-validate
+--emit-migrated <path>` is this method.
+
+**Parameters:**
+- `config_file` (str, required): Path to the configuration file
+- `output` (str, optional): Path to write the migrated YAML to
+
+**Returns:** `ConfigMigrateResult` with `yaml_content` (headed by a comment naming the
+format version and the source file), `config_format_version` and `output_path`
+
+**Raises:** `IDPValidationError` when the file is not valid YAML or cannot be read,
+with the same two messages `config.validate()` reports, or when its top level is not a
+mapping
+
+```python
+result = client.config.migrate(
+    config_file="./old-config.yaml",
+    output="./config-current.yaml",
+)
+print(result.config_format_version)
+```
+
 ### config.upload()
 
 Upload configuration to a deployed stack.
 
 **Parameters:**
 - `config_file` (str, required): Path to the YAML or JSON configuration file
-- `config_profile` (alias: `config_version`) (str, required): Configuration profile to upload to (e.g., `"default"`, `"v1"`, `"production"`). If the profile doesn't exist, it will be created automatically.
+- `config_profile` (alias: `config_version`) (str, required): Configuration profile to upload to (e.g., `"default"`, `"lending"`, `"production"`). If the profile doesn't exist, it will be created automatically.
 - `stack_name` (str, optional): Stack name override
 - `validate` (bool, optional): Validate configuration before uploading (default: `True`)
 - `pattern` (str, optional): Pattern to validate against (default: `"pattern-2"`)
-- `description` (str, optional): Description for the configuration version
+- `description` (str, optional): Description for the configuration profile (overwritten by every save)
 - `created_by` (str, optional): Recorded as the revision's author and shown as **By** in the revision history. The Web UI derives this from the caller's Cognito identity; an SDK caller has none, so it defaults to `system` — set it to something that identifies your automation if you want its saves attributable.
 - `revision_notes` (str, optional): What this upload changed, recorded on the revision and shown as **Notes** in the revision history. Distinct from `description`, which belongs to the profile and is overwritten by every save.
 
-**Returns:** `ConfigUploadResult` with `success`, `version`, `version_created`, `revision`, and `error`
+**Returns:** `ConfigUploadResult` with `success`, `version` (the profile name), `version_created` (whether the profile was newly created), `revision`, and `error`
 
 `revision` is the revision number this upload produced — pass it as
 `config_revision=` to pin processing to exactly what was just uploaded. It is
@@ -1559,7 +1595,7 @@ no new revision, so `revision` is then the one already current, which is still
 the right value to pin.
 
 ```python
-# Upload to the default version
+# Upload to the default profile
 result = client.config.upload(
     config_file="./my-config.yaml",
     config_profile="default",
@@ -1569,24 +1605,25 @@ result = client.config.upload(
 if result.success:
     print("Configuration uploaded")
 
-# Create a new named version
+# Upload to a named profile, creating it if it does not exist
 result = client.config.upload(
     config_file="./my-config.yaml",
-    config_profile="v2",
-    description="Updated extraction rules"
+    config_profile="lending",
+    description="Lending package configuration",
+    revision_notes="Updated extraction rules",
 )
 
 if result.success:
     if result.version_created:
-        print(f"New version created: {result.version}")
+        print(f"New profile created: {result.version} (r{result.revision})")
     else:
-        print(f"Version updated: {result.version}")
+        print(f"Profile updated: {result.version} (r{result.revision})")
 
 # Score exactly what was uploaded, rather than "whatever that profile holds now"
 result = client.config.upload(
     config_file="./attempt.yaml",
     config_profile="tuning-run-42",
-    description="raised topK to 20",
+    revision_notes="raised topK to 20",
 )
 client.batch.process(
     directory="./docs/",
@@ -1604,7 +1641,7 @@ Download configuration from a deployed stack.
 - `output` (str, optional): Output file path
 - `format` (str, optional): Format type — `"full"` or `"minimal"` (default: `"full"`)
 - `pattern` (str, optional): Pattern override (auto-detected if not provided)
-- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to download (default: active version)
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to download (default: active profile)
 - `config_revision` (int, optional): Download an exact **revision** of that profile instead of its current configuration
 
 **Returns:** `ConfigDownloadResult` with `config`, `yaml_content`, `output_path`, and `revision`
@@ -1636,12 +1673,12 @@ earlier = client.config.download(config_profile="lending", config_revision=7)
 
 ### config.list()
 
-List all configuration versions in a deployed stack.
+List all configuration profiles in a deployed stack.
 
 **Parameters:**
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `ConfigListResult` with `versions` (list of `ConfigVersionInfo`) and `count`
+**Returns:** `ConfigListResult` with `versions` (list of `ConfigVersionInfo`, one per profile) and `count`
 
 **ConfigVersionInfo fields:** `version_name`, `is_active`, `created_at`, `updated_at`, `description`, `latest_revision`, `published_revision`
 
@@ -1653,10 +1690,10 @@ flight. Both are `None` for a profile with no history.
 result = client.config.list()
 
 print(f"Found {result.count} profiles:")
-for version in result.versions:
-    status = " (ACTIVE)" if version.is_active else ""
-    at = f" @r{version.published_revision}" if version.published_revision else ""
-    print(f"  - {version.version_name}{status}{at}")
+for profile in result.versions:
+    status = " (ACTIVE)" if profile.is_active else ""
+    at = f" @r{profile.published_revision}" if profile.published_revision else ""
+    print(f"  - {profile.version_name}{status}{at}")
 ```
 
 ### config.revisions()
@@ -1713,7 +1750,7 @@ deployment.
 
 ### config.activate()
 
-Activate a configuration version. If the configuration uses BDA (`use_bda=True`), a BDA blueprint sync is performed before activation.
+Activate a configuration profile. If the configuration uses BDA (`use_bda=True`), a BDA blueprint sync is performed before activation.
 
 **Parameters:**
 - `config_profile` (alias: `config_version`) (str, required): Configuration profile to activate
@@ -1728,10 +1765,10 @@ whatever happened to the classes, so an aborted activation is the outcome most l
 have left one, and `bda_synced` is `False` on every failing path.
 
 ```python
-result = client.config.activate("v2")
+result = client.config.activate("lending")
 
 if result.success:
-    print(f"Activated version: {result.activated_version}")
+    print(f"Activated profile: {result.activated_version}")
     if result.bda_synced:
         print(f"BDA synced: {result.bda_classes_synced} classes")
 else:
@@ -1744,7 +1781,7 @@ for arn in result.bda_orphaned_blueprint_arns:
 
 ### config.delete()
 
-Delete a configuration version.
+Delete a configuration profile, together with its revision history.
 
 **Parameters:**
 - `config_profile` (alias: `config_version`) (str, required): Configuration profile to delete
@@ -1753,15 +1790,15 @@ Delete a configuration version.
 **Returns:** `ConfigDeleteResult` with `success`, `deleted_version`, and `error`
 
 ```python
-result = client.config.delete("old-version")
+result = client.config.delete("old-profile")
 
 if result.success:
-    print(f"Deleted version: {result.deleted_version}")
+    print(f"Deleted profile: {result.deleted_version}")
 else:
     print(f"Failed to delete: {result.error}")
 ```
 
-**Note:** Cannot delete `"default"` or currently active versions.
+**Note:** Cannot delete the `"default"` profile or the currently active profile.
 
 ### config.sync_bda()
 
@@ -1770,7 +1807,7 @@ Synchronize IDP document class schemas with BDA (Bedrock Data Automation) bluepr
 **Parameters:**
 - `direction` (str, optional): Sync direction — `"bidirectional"` (default), `"bda_to_idp"`, or `"idp_to_bda"`
 - `mode` (str, optional): Sync mode — `"replace"` (default, full alignment) or `"merge"` (additive)
-- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to sync (default: active version)
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to sync (default: active profile)
 - `stack_name` (str, optional): Stack name override
 
 **Returns:** `ConfigSyncBdaResult` with `success`, `direction`, `mode`, `classes_synced`, `classes_failed`, `processed_classes`, `orphaned_blueprint_arns`, and `error`
@@ -1933,7 +1970,7 @@ batch_result = client.discovery.run(
 for r in batch_result.results:
     print(f"{r.document_class} (pages {r.page_range}): {r.status}")
 
-# Save to specific config version
+# Save to a specific configuration profile
 result = client.discovery.run(
     "./form.pdf",
     config_profile="v2"
@@ -2014,8 +2051,8 @@ Discover document classes from a collection of documents using embedding-based c
 **Parameters:**
 - `document_dir` (str, optional): Directory path containing documents to analyze (recursive scan)
 - `document_paths` (list[str], optional): List of individual document file paths
-- `embedding_model_id` (str, optional): Bedrock embedding model ID (default: `us.cohere.embed-v4:0`)
-- `analysis_model_id` (str, optional): Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`)
+- `embedding_model_id` (str, optional): Bedrock embedding model ID (default: `us.cohere.embed-v4:0`; `eu.cohere.embed-v4:0` in EU Regions, `global.cohere.embed-v4:0` in Canada)
+- `analysis_model_id` (str, optional): Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`; `eu.anthropic.claude-sonnet-4-6` in EU Regions)
 - `output_dir` (str, optional): Directory to write individual JSON schema files per discovered class
 - `save_to_config` (bool, optional): Save discovered schemas to the stack's configuration (default: False)
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to save schemas to (required with `save_to_config`)
@@ -2103,6 +2140,35 @@ result = client.discovery.run_batch(
 ```
 
 ---
+
+## Tenancy Operations
+
+Tenant declarations and isolation checks — the operations behind `idp-cli tenancy`.
+See [Multi-Tenant Isolation](multi-tenancy.md) for the model.
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `tenancy.isolation_mode()` | `str` | The stack's `TenantIsolationMode` (`Off`, `Strict`, or `Unknown` when the stack predates the parameter) |
+| `tenancy.grant_source()` | `str` | The stack's `TenantGrantSource` (`Manual`, `IdpClaim` or `Api`; `Manual` when the stack predates the parameter) |
+| `tenancy.list()` | `TenantListResult` | Declared tenants, the isolation mode and the grant source |
+| `tenancy.put(tenant_id, prefixes, profile_pattern, *, description=None, granted_by=None)` | `TenantInfo` | Create or replace one tenant; raises `IDPValidationError` on the same refusals as the API. `granted_by` lists the claim or entitlement values that grant it |
+| `tenancy.set_user_tenant(email, tenant_id)` | `TenantUserGrant` | Grant one existing user one tenant, or none with `tenant_id=None`. Only under `TenantGrantSource=Api`; raises `IDPValidationError` (wrong source, undeclared tenant, an Admin) or `IDPResourceNotFoundError` (no such user) |
+| `tenancy.delete(tenant_id)` | `bool` | Remove one tenant; whether it existed |
+| `tenancy.apply(declarations, *, prune=False, dry_run=True)` | `TenantApplyResult` | Plan, and with `dry_run=False` write, the changes that make the stack match `declarations` |
+| `tenancy.generate_policies(principals)` | `TenantPolicyResult` | A CloudFormation template of per-tenant S3 access points, plus warnings |
+| `tenancy.deploy_policies(principals, *, access_point_stack=None)` | `TenantPolicyDeployResult` | Generates that template and deploys it as its own stack (default `<stack>-tenant-access-points`), creating or updating it and waiting; returns each tenant's access point ARN and alias as `TenantAccessPoint` items, and `operation` `created`, `updated` or `unchanged` |
+| `tenancy.audit(*, principals=None, document_sample=500)` | `TenantAuditResult` | Read-only findings that weaken isolation |
+| `tenancy.verify(document, document_name="tenancy-verify.pdf", *, tenant_ids=None, timeout_seconds=240, email_domain=None)` | `TenantVerifyResult` | Live cross-tenant check with throwaway users; every row is `PASS`, `FAIL`, `SKIP` or `ERROR` |
+
+```python
+from idp_sdk import IDPClient
+
+client = IDPClient(stack_name="my-idp-stack")
+client.tenancy.put("acme", ["clients/acme/"], "acme-*", description="ACME Corp")
+report = client.tenancy.audit()
+for finding in report.findings:
+    print(finding.kind, finding.subject, finding.detail)
+```
 
 ## Manifest Operations
 
@@ -2325,6 +2391,7 @@ from idp_sdk import (
 
     # Config models
     ConfigCreateResult,
+    ConfigMigrateResult,
     ConfigValidationResult,
     ConfigUploadResult,
     ConfigDownloadResult,

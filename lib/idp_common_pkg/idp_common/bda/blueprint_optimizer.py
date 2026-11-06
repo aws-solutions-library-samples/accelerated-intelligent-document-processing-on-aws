@@ -198,7 +198,7 @@ class BlueprintOptimizer:
             document_key: S3 key for the discovery PDF document.
             ground_truth_key: S3 key for the ground truth JSON file.
             bucket: S3 bucket containing both objects.
-            version: Configuration version name (e.g. 'default').
+            version: Configuration profile name (e.g. 'default').
             status_callback: Optional callback invoked with progress
                 messages. Ignored when ``None``.
 
@@ -331,7 +331,7 @@ class BlueprintOptimizer:
 
         Args:
             class_schema: IDP class JSON Schema for the discovered class.
-            version: Configuration version name (e.g. 'default').
+            version: Configuration profile name (e.g. 'default').
 
         Returns:
             The ARN of the existing or newly created BDA blueprint.
@@ -671,7 +671,7 @@ class BlueprintOptimizer:
             original_class_schema: The original IDP class schema,
                 used to preserve ``$id`` and
                 ``x-aws-idp-document-type``.
-            version: Configuration version name (e.g. 'default').
+            version: Configuration profile name (e.g. 'default').
 
         Returns:
             The updated IDP class schema with preserved identity

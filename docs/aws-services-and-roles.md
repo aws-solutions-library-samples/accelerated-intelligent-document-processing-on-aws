@@ -276,6 +276,27 @@ The solution creates various IAM roles to run different components of the system
   * `cloudwatch:PutMetricData`
   * KMS use of the customer-managed key that encrypts the table
 
+* **Configuration Resolver Role**, tenant additions: `dynamodb:Scan` on the UsersTable (the table only, not its indexes), so that saving a [tenant](./multi-tenancy.md) can refuse one that would leave a stored user scope crossing a tenant boundary.
+* **Test Runner Role**, tenant additions: `dynamodb:Query` and `dynamodb:GetItem` on the UsersTable and its indexes, to check the caller's configuration scope before a test run starts.
+* **PII Anonymizer Feature API Role**: `ssm:GetParameter` on the single parameter `/<StackName>/tenant-isolation-mode`, which carries the stack's `TenantIsolationMode`.
+
+* **API Dispatcher, Document Versions, Delete Document, Abort Workflow, Copy-to-Baseline and Test Results resolver roles**, scope additions: `dynamodb:Query` and `dynamodb:GetItem` on the UsersTable and its indexes, to resolve the caller's configuration scope before acting on one document or test run.
+
+* **User Management Role** (API resolver Lambda for `createUser`, `updateUser`, `deleteUser`, `listUsers` and `setUserTenant`):
+  * `dynamodb` CRUD on the UsersTable
+  * `dynamodb:GetItem` on the ConfigurationTable, restricted by a `dynamodb:LeadingKeys` condition to the single key `TenantIndex#__index` (reads the [tenant declarations](./multi-tenancy.md) so that a user's configuration scope cannot be set across tenants)
+  * `cognito-idp:AdminCreateUser`, `AdminDeleteUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup`, `AdminListGroupsForUser`, `ListUsers`, `ListUsersInGroup` on the stack's user pool
+  * `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the stack's customer-managed key
+
+* **User Sync Role** (`UserSyncFunction`, which consumes the UsersTable's DynamoDB stream and mirrors user rows into Cognito):
+  * read access to the UsersTable stream, added by the SAM `DynamoDB` event source
+  * `cognito-idp:AdminCreateUser`, `AdminDeleteUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup` on the stack's user pool
+  * `kms:Decrypt` on the stack's customer-managed key, which encrypts the UsersTable and so its stream
+
+* **External IdP Group Mapping Role** (the Cognito pre-token trigger, deployed only when federation with group mapping is configured):
+  * `cognito-idp:AdminGetUser`, `AdminListGroupsForUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup` on the stack's user pool (a separate policy, to avoid a circular dependency on the pool)
+  * Only when `TenantGrantSource=IdpClaim`, to write the tenant the claim grants: `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `DeleteItem` on the UsersTable and `dynamodb:Query` on its `EmailIndex`; `dynamodb:GetItem` on the ConfigurationTable restricted by `dynamodb:LeadingKeys` to `TenantIndex#__index`; and `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the stack's customer-managed key. Under any other grant source the trigger holds no data-plane grant
+
 * **Cognito Authentication Role** (the Identity Pool's authenticated role, assumed by the browser):
   * `lambda:InvokeFunction` on the chat streaming function — the browser SigV4-signs its Function URL directly (a Function URL invocation needs `InvokeFunction`, *not* `InvokeFunctionUrl`). The REST API itself is reached with the Cognito **ID token**, not IAM, so no `execute-api:Invoke` grant is required.
   * **No S3 and no KMS.** This role grants **nothing** on the Input and Output buckets, and **no** `s3:GetObject`, `s3:GetObjectVersion` or `s3:ListBucket` on any bucket in the deployment ([issue #1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033)). ⚠️ A single `authenticated` role is attached with **no `RoleMappings`**, so every signed-in user holds exactly this role regardless of Cognito group — including a user in no group, which self-signup produces — with no resolver in the path to apply a group check, a per-document check or a per-user scope check. That is why the document read path runs through `getFileContents` / `getFilePresignedUrl` / `getFilePresignedUrls` instead: the browser asks the backend for a presigned URL and the resolver applies the dispatcher's group floor, a bucket allow-list, the per-user key scope on the Configuration and Test Set buckets, and the owning document's `ConfigVersion` against the caller's `allowedConfigVersions` on the Input and Output ones. The KMS grant went with the S3 one — a presigned URL minted by the resolver is decrypted under the resolver's role, which holds its own grant on the key. See [RBAC](./rbac.md) for what the per-document check does and does not close.
@@ -299,7 +320,7 @@ The solution creates various IAM roles to run different components of the system
   * `s3vectors:CreateIndex`, `s3vectors:DeleteIndex` on `bucket/*/index/<index name>` (the index name is exact)
   * `s3vectors:ListIndexes`, and `s3vectors:DeleteIndex` on any index, on the stack's own vector bucket only, named exactly — deleting the stack deletes every index in that bucket before the bucket, because S3 Vectors will not delete a bucket that still holds an index. Not granted when `pS3VectorBucketName` names the bucket
   * `bedrock:CreateKnowledgeBase`, `bedrock:DeleteKnowledgeBase`, `bedrock:GetKnowledgeBase`, `bedrock:UpdateKnowledgeBase`, `bedrock:ListKnowledgeBases`
-  * `iam:PassRole` (to hand the Knowledge Base Service Role to Bedrock)
+  * `iam:PassRole` on the Knowledge Base Service Role only, with an `iam:PassedToService` condition naming Bedrock (granted in a separate policy, because naming that role in this one would be a circular dependency)
 
 #### Monitoring & Evaluation Roles
 * **CloudWatch Dashboard Role**:
@@ -388,6 +409,12 @@ The solution creates various IAM roles to run different components of the system
   * `kms:Decrypt`, `kms:GenerateDataKey` on the stack's customer-managed key, conditioned on `kms:ViaService: s3.<region>.<url-suffix>`. ⚠️ **Required, not optional:** the input bucket is SSE-KMS, so without this every scan returns `ACCESS_DENIED` and — failing closed — every document is refused.
   * No wildcard resource in any statement, asserted by `scripts/tests/test_malware_scanning_template.py`.
   * Accepts `PermissionsBoundaryArn` and attaches it when set.
+
+* **AgentCore Gateway Manager Role** (optional MCP integration, `EnableMCP: true`) — the custom-resource function that creates, updates and deletes the gateway:
+  * `bedrock-agentcore:*` — gateway and gateway target lifecycle (list, get, create, update, delete). `Resource: "*"`: the gateway id is assigned by the service.
+  * `logs:DeleteDeliverySource`, `logs:DeleteDeliveryDestination` on `Resource: "*"`, and `logs:DeleteLogGroup` on `/aws/vendedlogs/bedrock-agentcore/gateway/APPLICATION_LOGS/*` only — on delete, removes the log group and delivery resources that gateways created by earlier versions have. Nothing in the function creates them.
+  * `iam:GetRole`, `iam:PassRole` on the gateway execution role only — no IAM write.
+  * `kms:Encrypt`, `Decrypt`, `ReEncrypt*`, `GenerateDataKey*`, `DescribeKey` on the stack's customer-managed key.
 
 * **AgentCore Gateway Execution Role** (optional MCP integration, `EnableMCP: true`):
   * `lambda:InvokeFunction` (MCP handler)

@@ -30,6 +30,7 @@ from idp_common.models import (
     coerce_revision,
 )
 from idp_common.review_queues.statuses import LEGACY_PENDING
+from idp_common.utils import cumulative_metering
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +222,17 @@ def serialize_page_classification_signals(page: Any) -> Dict[str, Any]:
 _MAX_STORED_ALERTS_PER_SECTION = 50
 _MAX_STORED_ALERTS_PER_DOCUMENT = 1000
 
+# Missing required fields (#1527) are stored inline beside the alerts, so they are
+# bounded the same way for the same reason: one entry per required cell of a
+# long table can reach the item ceiling on its own. The full list is recomputable
+# from the section's inference_result and class schema. The document budget is
+# smaller than the alerts' because the two share the item: at roughly 70 bytes
+# plus the path per entry, a full alert list is already about a third of the
+# 409,600-byte ceiling, and an equal second budget would leave little for pages,
+# processing issues and metering.
+_MAX_STORED_MISSING_REQUIRED_PER_SECTION = 50
+_MAX_STORED_MISSING_REQUIRED_PER_DOCUMENT = 300
+
 
 def _worst_first_subset(
     alerts: List[Dict[str, Any]], limit: int
@@ -265,6 +277,27 @@ def allocate_alert_budget(
         section.section_id: len(section.confidence_threshold_alerts or [])
         for section in sections or []
     }
+    return _fair_share(demand, total)
+
+
+def allocate_missing_required_budget(
+    sections: List[Section], total: int = _MAX_STORED_MISSING_REQUIRED_PER_DOCUMENT
+) -> Dict[str, int]:
+    """``allocate_alert_budget`` for ``missing_required_fields``.
+
+    A separate budget because the two lists share one item but answer different
+    questions; a document with many missing required fields must not crowd out
+    its confidence alerts, nor the reverse.
+    """
+    demand = {
+        section.section_id: len(section.missing_required_fields or [])
+        for section in sections or []
+    }
+    return _fair_share(demand, total)
+
+
+def _fair_share(demand: Dict[str, int], total: int) -> Dict[str, int]:
+    """Split ``total`` across ``demand``, smallest demand first (see above)."""
     if sum(demand.values()) <= total:
         return demand
 
@@ -347,6 +380,57 @@ def set_section_alerts(
             len(stored),
             total,
         )
+
+
+def set_section_missing_required_fields(
+    section_data: Dict[str, Any], section: Section, limit: Optional[int] = None
+) -> None:
+    """Write a section's missing required fields into its item map (#1527).
+
+    Same camelCase shape as ``ConfidenceThresholdAlerts`` (``attributeName``,
+    ``confidence``, ``confidenceThreshold``) and the same bounding as
+    ``set_section_alerts``: ``MissingRequiredFields`` holds what fits, in schema
+    order, and ``MissingRequiredFieldsTotal`` appears only when something was
+    dropped. Omitted entirely when there is nothing to report, so a section with
+    no required fields missing is byte-identical to what older code wrote.
+    """
+    entries = list(section.missing_required_fields or [])
+    if not entries:
+        return
+    cap = _MAX_STORED_MISSING_REQUIRED_PER_SECTION
+    if limit is not None:
+        cap = min(cap, max(limit, 0))
+    stored = [
+        convert_floats_to_decimal(
+            {
+                "attributeName": entry.get("attribute_name"),
+                "confidence": entry.get("confidence"),
+                "confidenceThreshold": entry.get("confidence_threshold"),
+            }
+        )
+        for entry in entries[:cap]
+        if isinstance(entry, dict)
+    ]
+    section_data["MissingRequiredFields"] = stored
+    if len(stored) < len(entries):
+        section_data["MissingRequiredFieldsTotal"] = len(entries)
+
+
+def _read_alert_shaped_list(raw: Any) -> List[Dict[str, Any]]:
+    """Stored ``attributeName``/``confidence``/``confidenceThreshold`` maps back
+    to the in-memory snake_case shape."""
+    entries: List[Dict[str, Any]] = []
+    for entry in raw or []:
+        if not isinstance(entry, dict):
+            continue
+        entries.append(
+            {
+                "attribute_name": entry.get("attributeName"),
+                "confidence": entry.get("confidence"),
+                "confidence_threshold": entry.get("confidenceThreshold"),
+            }
+        )
+    return entries
 
 
 def serialize_processing_issues(section: Section) -> List[Dict[str, Any]]:
@@ -619,6 +703,7 @@ class DocumentDynamoDBService:
             # Every section's alerts land in this one item, so the cap has to be
             # spent across the document rather than per section (#821).
             alert_budget = allocate_alert_budget(document.sections)
+            missing_budget = allocate_missing_required_budget(document.sections)
             sections_data = []
             for section in document.sections:
                 # Convert page IDs to integers for DynamoDB
@@ -650,6 +735,11 @@ class DocumentDynamoDBService:
                 # so it spends the document-wide budget.
                 set_section_alerts(
                     section_data, section, limit=alert_budget.get(section.section_id)
+                )
+                set_section_missing_required_fields(
+                    section_data,
+                    section,
+                    limit=missing_budget.get(section.section_id),
                 )
 
                 # Persist structured processing issues (self-healing observability).
@@ -688,11 +778,15 @@ class DocumentDynamoDBService:
                 expression_names["#Sections"] = "Sections"
                 expression_values[":Sections"] = sections_data
 
-        # Add metering data if available
-        if document.metering:
+        # Add metering data if available. The row stores the document's
+        # cumulative usage: earlier runs' baseline plus this run's own
+        # (``Document.metering`` holds only the run's own usage, see
+        # queue_processor.start_workflow).
+        cumulative = cumulative_metering(document)
+        if cumulative:
             set_expressions.append("#Metering = :Metering")
             expression_names["#Metering"] = "Metering"
-            expression_values[":Metering"] = json.dumps(document.metering, default=str)
+            expression_values[":Metering"] = json.dumps(cumulative, default=str)
 
         # Add evaluation status & report if available
         if document.evaluation_status:
@@ -857,6 +951,17 @@ class DocumentDynamoDBService:
         # Gated on the same condition as `#Sections` for the same reason: this
         # writer only claims what the object it was handed can support.
         if document.sections:
+            # Required fields left absent (#1527). Gated with the sections for
+            # the reason given above: a bare document object knows nothing about
+            # this count, so writing its 0 would erase a measured one.
+            set_expressions.append(
+                "#MissingRequiredFieldCount = :MissingRequiredFieldCount"
+            )
+            expression_names["#MissingRequiredFieldCount"] = "MissingRequiredFieldCount"
+            expression_values[":MissingRequiredFieldCount"] = (
+                document.missing_required_field_count
+            )
+
             issue_count = document.processing_issue_count
             set_expressions.append("#ProcessingIssueCount = :ProcessingIssueCount")
             expression_names["#ProcessingIssueCount"] = "ProcessingIssueCount"
@@ -865,11 +970,8 @@ class DocumentDynamoDBService:
             # HasProcessingIssues currently has NO reader: it is not a GSI key, not
             # projected, not queried, absent from the UI and absent from every Glue
             # and Athena schema. ProcessingIssueCount, written above, is what the
-            # document list reads — on `list_documents_range_resolver` only. The fast
-            # `list_documents_gsi_resolver` path cannot see it either: the attribute
-            # is not in that GSI's INCLUDE projection and resolves to None there (its
-            # own note at the mapping site explains why the projection cannot be
-            # amended in place), so the badge on that path comes from the sections.
+            # document list reads — from the item on `list_documents_range_resolver`
+            # and from TypeDateIndexV2's projection on `list_documents_gsi_resolver`.
             # This is written in the shape a
             # sparse index attribute would need — SET only when there are issues,
             # mirroring HITLPendingReview — so it is ready to back one, but do not
@@ -1053,6 +1155,9 @@ class DocumentDynamoDBService:
                         page_ids=page_ids,
                         extraction_result_uri=section_data.get("OutputJSONUri"),
                         confidence_threshold_alerts=confidence_threshold_alerts,
+                        missing_required_fields=_read_alert_shaped_list(
+                            section_data.get("MissingRequiredFields")
+                        ),
                         processing_issues=processing_issues,
                         instance_count=int(section_data.get("InstanceCount") or 0),
                         blueprint_unscored=bool(
@@ -1076,6 +1181,13 @@ class DocumentDynamoDBService:
         doc.malware_scan_reasons = list(item.get("MalwareScanReasons") or [])
         doc.malware_scan_time = item.get("MalwareScanTime")
         doc.malware_scan_version_id = item.get("MalwareScanVersionId")
+
+        # Read back so a load->write round trip (process changes, an SDK rerun)
+        # does not stamp the measured count back to 0 before the workflow's
+        # result step recomputes it.
+        doc.missing_required_field_count = int(
+            item.get("MissingRequiredFieldCount") or 0
+        )
 
         # Convert Review Status fields
         doc.hitl_status = item.get("HITLStatus")
@@ -1710,7 +1822,7 @@ class DocumentDynamoDBService:
     def update_document_section(
         self,
         document_id: str,
-        section_index: int,
+        section_index: Optional[int],
         section: Section,
     ) -> Dict[str, Any]:
         """
@@ -1721,13 +1833,30 @@ class DocumentDynamoDBService:
         ~100KB to ~5KB per update and avoids read-modify-write race conditions
         during parallel Map operations.
 
+        ``section_index`` is the section's position in the **full** document the
+        caller's map iterates, and it is written unconditionally, exactly as given:
+        that list is the authority during the map, because a postClassification
+        hook may have added, removed or reordered sections that the stored item
+        does not yet reflect.
+
+        ``section_index=None`` is for a caller that cannot know that position — the
+        assessment step, whose incoming document is the extraction step's
+        single-section document, so every section sits at index 0 in it (#1690).
+        The stored ``Sections`` are then read and the section is written at the
+        slot carrying its ``Id`` (see ``_stored_section_index`` for which copy),
+        conditional on that slot still carrying it. If none does, or the slot keeps
+        changing under sibling writes, nothing is written and ``{}`` is returned
+        rather than overwriting another section.
+
         Args:
             document_id: The ObjectKey of the document to update
-            section_index: The index position of the section in the Sections array
+            section_index: The section's position in the full document, or
+                ``None`` to place it by ``Id`` in the stored ``Sections``
             section: The Section object with updated data
 
         Returns:
-            Dictionary with the updated document attributes
+            Dictionary with the updated document attributes, or ``{}`` when
+            ``section_index`` is ``None`` and no stored slot carries the ``Id``
 
         Raises:
             DynamoDBError: If the DynamoDB operation fails
@@ -1767,6 +1896,8 @@ class DocumentDynamoDBService:
         # document-wide total — the per-section cap inside the serializer is what
         # bounds this path (#821).
         set_section_alerts(section_data, section)
+        # Whole-map replace, so this must be written here too or it is erased.
+        set_section_missing_required_fields(section_data, section)
 
         # Persist structured processing issues. This write REPLACES the whole
         # section map (`SET #Sections[i] = :section`), so omitting them here does
@@ -1803,6 +1934,9 @@ class DocumentDynamoDBService:
             if section.exclusion_reason:
                 section_data["ExclusionReason"] = section.exclusion_reason
 
+        if section_index is None:
+            return self._write_section_by_id(key, document_id, section_data)
+
         # Use SET Sections[index] = :value for atomic section update
         update_expression = f"SET #Sections[{section_index}] = :section"
         expression_names = {"#Sections": "Sections"}
@@ -1820,6 +1954,91 @@ class DocumentDynamoDBService:
             f"Updated section {section_index} ({section.section_id}) for document: {document_id}"
         )
         return response.get("Attributes", {})
+
+    def _write_section_by_id(
+        self, key: Dict[str, Any], document_id: str, section_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Write ``section_data`` at the stored slot carrying its ``Id``, or nowhere.
+
+        The write is conditional on the chosen slot still carrying the ``Id``: a
+        sibling Map iteration may write that slot between the read and this write
+        (after a hook reshaped the list), and an unconditional write would then
+        overwrite another section. A refused write is resolved once more from a
+        fresh read; a second refusal gives up rather than guess.
+        """
+        section_id = section_data["Id"]
+        for _attempt in range(2):
+            slot = self._stored_section_index(
+                key, section_id, section_data.get("OutputJSONUri") or ""
+            )
+            if slot is None:
+                logger.warning(
+                    f"Not writing section {section_id} of {document_id}: no stored "
+                    "section carries that Id, and the caller supplied no position, "
+                    "so any slot chosen would be another section's"
+                )
+                return {}
+            try:
+                response = self.client.update_item(
+                    key=key,
+                    update_expression=f"SET #Sections[{slot}] = :section",
+                    expression_attribute_names={"#Sections": "Sections", "#Id": "Id"},
+                    expression_attribute_values={
+                        ":section": section_data,
+                        ":section_id": section_id,
+                    },
+                    return_values="ALL_NEW",
+                    condition_expression=f"#Sections[{slot}].#Id = :section_id",
+                )
+            except DynamoDBError as e:
+                if e.error_code != CONDITIONAL_CHECK_FAILED:
+                    raise
+                logger.info(
+                    f"Sections[{slot}] of {document_id} changed before section "
+                    f"{section_id} was written there; resolving its slot again"
+                )
+                continue
+            logger.info(
+                f"Updated section {slot} ({section_id}) for document: {document_id}"
+            )
+            return response.get("Attributes", {})
+        logger.warning(
+            f"Not writing section {section_id} of {document_id}: its slot kept "
+            "changing under concurrent writes"
+        )
+        return {}
+
+    def _stored_section_index(
+        self, key: Dict[str, Any], section_id: str, output_uri: str
+    ) -> Optional[int]:
+        """The stored slot for ``section_id``: the copy extraction wrote, if any.
+
+        After a postClassification hook reshapes the section list, the stored list
+        can hold the same ``Id`` twice for a while: classification's stale copy and
+        the one extraction wrote at the section's map index. Neither position rule
+        picks the fresh one in every reshape (first is wrong after an insert, last
+        after a removal), but the extraction result URI does, because the stale
+        copy predates the extraction. On a reprocess both copies may carry the
+        previous run's URI, and the first Id match is taken.
+        """
+        item = self.client.get_item(
+            key,
+            consistent_read=True,
+            projection_expression="#Sections",
+            expression_attribute_names={"#Sections": "Sections"},
+        )
+        matches = [
+            (index, stored)
+            for index, stored in enumerate((item or {}).get("Sections") or [])
+            if isinstance(stored, Mapping) and stored.get("Id") == section_id
+        ]
+        if not matches:
+            return None
+        if output_uri:
+            for index, stored in matches:
+                if stored.get("OutputJSONUri") == output_uri:
+                    return index
+        return matches[0][0]
 
     # ------------------------------------------------------------------ #
     # Document runs (versions)
@@ -1900,6 +2119,8 @@ class DocumentDynamoDBService:
             item["ConfigMappingPrefix"] = document.config_mapping_prefix
         if document.num_pages > 0:
             item["PageCount"] = document.num_pages
+        # The run record keeps this run's own usage only, not the cumulative
+        # total the document row stores.
         if document.metering:
             item["Metering"] = json.dumps(document.metering, default=str)
         if document.summary_report_uri:
@@ -1916,6 +2137,7 @@ class DocumentDynamoDBService:
             # Same document-wide alert budget as the live item writer, so a run
             # snapshot is bounded identically (#821).
             alert_budget = allocate_alert_budget(document.sections)
+            missing_budget = allocate_missing_required_budget(document.sections)
             sections_data = []
             for section in document.sections:
                 page_ids = []
@@ -1940,6 +2162,11 @@ class DocumentDynamoDBService:
                     section_data["Confidence"] = Decimal(str(float(section.confidence)))
                 set_section_alerts(
                     section_data, section, limit=alert_budget.get(section.section_id)
+                )
+                set_section_missing_required_fields(
+                    section_data,
+                    section,
+                    limit=missing_budget.get(section.section_id),
                 )
                 if section.processing_issues:
                     section_data["ProcessingIssues"] = serialize_processing_issues(

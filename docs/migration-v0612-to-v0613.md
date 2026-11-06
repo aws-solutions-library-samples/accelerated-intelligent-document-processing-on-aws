@@ -213,6 +213,8 @@ a class cannot be decided. Extraction reads it from there too.
   only proof. Saving the profile — a save from the editor, *Save As Version*, or
   `idp-cli config-upload` — stores it converted and ends the condition. Nothing
   is wrong with a profile in that state; it resolves correctly every time.
+  Releases after v0.6.13 never write a profile with revision history on read;
+  see [Settings filled in from `default` are recorded as a revision](configuration-profiles.md#settings-filled-in-from-default-are-recorded-as-a-revision).
 - **Not as part of the upgrade.** Deploying v0.6.13 rewrites the stack-managed
   `default` profile and the presets the stack ships, and does not visit profiles
   you created. So a deployment that has been through several releases normally

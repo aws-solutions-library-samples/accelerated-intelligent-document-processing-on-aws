@@ -328,6 +328,7 @@ export type ConfigProfileRevisionResponse = {
 
 export type ConfigProfileRevisionsResponse = {
   error?: Maybe<ConfigurationError>;
+  profileMatchesPublished?: Maybe<Scalars['Boolean']['output']>;
   revisions?: Maybe<Array<Maybe<ConfigProfileRevision>>>;
   success: Scalars['Boolean']['output'];
 };
@@ -506,6 +507,7 @@ export type Document = DynamoDbBase & {
   HITLTriggered?: Maybe<Scalars['Boolean']['output']>;
   InitialEventTime?: Maybe<Scalars['AWSDateTime']['output']>;
   Metering?: Maybe<Scalars['AWSJSON']['output']>;
+  MissingRequiredFieldCount?: Maybe<Scalars['Int']['output']>;
   ObjectKey?: Maybe<Scalars['ID']['output']>;
   ObjectStatus?: Maybe<Scalars['String']['output']>;
   PK: Scalars['ID']['output'];
@@ -901,11 +903,12 @@ export type Mutation = {
   addTestSetFromUpload?: Maybe<TestSetUploadResponse>;
   /**
    * Features with a manifest `configPreset`: write the bundled preset to
-   * the host's ConfigurationTable as a new, NON-ACTIVE config version named
-   * `<featureId>-v<version>`. Installation never changes the active config —
-   * an admin reviews and activates the preset from the Configuration UI.
-   * Idempotent: re-applying the same featureId+version overwrites the row,
-   * so CloudFormation stack Updates are safe. IAM-authenticated; called by
+   * the host's ConfigurationTable as the NON-ACTIVE configuration profile
+   * named `<featureId>`; each install or upgrade records a new revision of it.
+   * Installation never changes the active config — an admin reviews and
+   * activates the preset from the Configuration UI. Idempotent: re-applying an
+   * unchanged preset records no revision, so CloudFormation stack Updates are
+   * safe. IAM-authenticated; called by
    * the feature stack's ui-deployer custom resource.
    */
   applyFeatureConfigPreset: FeatureConfigPresetResult;
@@ -936,6 +939,7 @@ export type Mutation = {
   deleteFinetuningJob?: Maybe<Scalars['Boolean']['output']>;
   deleteInboxMessages?: Maybe<InboxMutationResult>;
   deleteReviewQueue?: Maybe<Scalars['Boolean']['output']>;
+  deleteTenant?: Maybe<TenantMutationResponse>;
   deleteTestSets: Scalars['Boolean']['output'];
   deleteTests: Scalars['Boolean']['output'];
   deleteUser?: Maybe<Scalars['Boolean']['output']>;
@@ -953,6 +957,7 @@ export type Mutation = {
   publishCircuitBreakerStatus?: Maybe<CircuitBreakerStatus>;
   publishTestSetVersion?: Maybe<TestSetVersion>;
   putConfigPrefixMapping?: Maybe<ConfigPrefixMappingMutationResponse>;
+  putTenant?: Maybe<TenantMutationResponse>;
   reassignReviewItem?: Maybe<ReviewItem>;
   reextractTestSetDocument?: Maybe<DraftLabelJob>;
   /** Called by a feature stack's RegisterFeature custom resource once the stack has deployed. */
@@ -974,9 +979,10 @@ export type Mutation = {
   releaseReviewItem?: Maybe<ReviewItem>;
   removeDocumentsFromTestSet?: Maybe<TestSet>;
   /**
-   * Delete all of a feature's preset config versions on uninstall. A
-   * version that is currently ACTIVE is preserved (never yank the running
-   * config); it is skipped with a warning and the call still succeeds.
+   * Delete a feature's preset configuration profile (and any legacy
+   * `<featureId>-v*` profiles), with their revision history, on uninstall. If
+   * one of them is the ACTIVE profile, `default` is activated first, so the
+   * pipeline never keeps running hooks that point at deleted Lambdas.
    */
   removeFeatureConfigPreset: Scalars['Boolean']['output'];
   removeReviewItem?: Maybe<ReviewItem>;
@@ -995,6 +1001,7 @@ export type Mutation = {
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
   sendTestRunToReview?: Maybe<SendTestRunToReviewResult>;
   setActiveVersion?: Maybe<UpdateConfigurationResponse>;
+  setUserTenant?: Maybe<User>;
   skipAllSectionsReview?: Maybe<Document>;
   skipTestSetDocument?: Maybe<TestSetDocumentSkipResult>;
   startMultiDocDiscovery?: Maybe<MultiDocDiscoveryJob>;
@@ -1255,6 +1262,11 @@ export type MutationDeleteReviewQueueArgs = {
 };
 
 
+export type MutationDeleteTenantArgs = {
+  tenantId: Scalars['String']['input'];
+};
+
+
 export type MutationDeleteTestSetsArgs = {
   testSetIds: Array<Scalars['String']['input']>;
 };
@@ -1346,6 +1358,15 @@ export type MutationPutConfigPrefixMappingArgs = {
   enabled?: InputMaybe<Scalars['Boolean']['input']>;
   metadataPrecedence?: InputMaybe<Scalars['String']['input']>;
   prefix: Scalars['String']['input'];
+};
+
+
+export type MutationPutTenantArgs = {
+  description?: InputMaybe<Scalars['String']['input']>;
+  grantedBy?: InputMaybe<Array<Scalars['String']['input']>>;
+  prefixes: Array<Scalars['String']['input']>;
+  profilePattern: Scalars['String']['input'];
+  tenantId: Scalars['String']['input'];
 };
 
 
@@ -1502,6 +1523,12 @@ export type MutationSendTestRunToReviewArgs = {
 
 export type MutationSetActiveVersionArgs = {
   versionName: Scalars['String']['input'];
+};
+
+
+export type MutationSetUserTenantArgs = {
+  email: Scalars['String']['input'];
+  tenantId?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -1740,7 +1767,6 @@ export type MutationUploadSampleDocumentArgs = {
 };
 
 export type MyReviewQueues = {
-  enabledProfiles: Array<Scalars['String']['output']>;
   items: ReviewItemPage;
   myClaimCount: Scalars['Int']['output'];
   queues: Array<ReviewQueueSummary>;
@@ -1918,6 +1944,7 @@ export type Query = {
   listReviewQueueItems?: Maybe<ReviewItemPage>;
   listReviewQueues?: Maybe<Array<ReviewQueueDefinition>>;
   listSampleDocuments?: Maybe<SampleDocumentListResponse>;
+  listTenants?: Maybe<TenantsResponse>;
   listTestSetQueues?: Maybe<Array<TestSetQueueSummary>>;
   listUsers?: Maybe<UserList>;
   queryKnowledgeBase?: Maybe<Scalars['String']['output']>;
@@ -2242,6 +2269,7 @@ export type ReextractTestSetDocumentInput = {
   configVersion?: InputMaybe<Scalars['String']['input']>;
   documentClass?: InputMaybe<Scalars['String']['input']>;
   objectKey: Scalars['String']['input'];
+  sectionId?: InputMaybe<Scalars['String']['input']>;
   testSetId: Scalars['String']['input'];
 };
 
@@ -2393,6 +2421,7 @@ export type ReviewQueueDefinition = {
   rejectReasons: Array<Scalars['String']['output']>;
   skipReasons: Array<Scalars['String']['output']>;
   timeLimitMinutes: Scalars['Int']['output'];
+  version?: Maybe<Scalars['Int']['output']>;
 };
 
 export type ReviewQueueDefinitionInput = {
@@ -2406,6 +2435,7 @@ export type ReviewQueueDefinitionInput = {
   rejectReasons?: InputMaybe<Array<Scalars['String']['input']>>;
   skipReasons?: InputMaybe<Array<Scalars['String']['input']>>;
   timeLimitMinutes?: InputMaybe<Scalars['Int']['input']>;
+  version?: InputMaybe<Scalars['Int']['input']>;
 };
 
 export type ReviewQueueHealth = {
@@ -2498,6 +2528,7 @@ export type Section = {
   ExclusionReason?: Maybe<Scalars['String']['output']>;
   Id?: Maybe<Scalars['String']['output']>;
   InstanceCount?: Maybe<Scalars['Int']['output']>;
+  MissingRequiredFields?: Maybe<Array<Maybe<ConfidenceThresholdAlert>>>;
   OutputJSONUri?: Maybe<Scalars['String']['output']>;
   PageIds?: Maybe<Array<Maybe<Scalars['Int']['output']>>>;
   ProcessingIssues?: Maybe<Array<Maybe<ProcessingIssue>>>;
@@ -2588,6 +2619,33 @@ export type SyncBdaIdpResponse = {
   message?: Maybe<Scalars['String']['output']>;
   processedClasses?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   success: Scalars['Boolean']['output'];
+};
+
+export type Tenant = {
+  createdAt?: Maybe<Scalars['String']['output']>;
+  createdBy?: Maybe<Scalars['String']['output']>;
+  description?: Maybe<Scalars['String']['output']>;
+  grantedBy?: Maybe<Array<Scalars['String']['output']>>;
+  prefixes: Array<Scalars['String']['output']>;
+  profilePattern: Scalars['String']['output'];
+  tenantId: Scalars['String']['output'];
+  updatedAt?: Maybe<Scalars['String']['output']>;
+  updatedBy?: Maybe<Scalars['String']['output']>;
+};
+
+export type TenantMutationResponse = {
+  error?: Maybe<ConfigurationError>;
+  message?: Maybe<Scalars['String']['output']>;
+  success: Scalars['Boolean']['output'];
+  tenant?: Maybe<Tenant>;
+};
+
+export type TenantsResponse = {
+  error?: Maybe<ConfigurationError>;
+  grantSource?: Maybe<Scalars['String']['output']>;
+  isolationMode?: Maybe<Scalars['String']['output']>;
+  success: Scalars['Boolean']['output'];
+  tenants?: Maybe<Array<Maybe<Tenant>>>;
 };
 
 export type TestRun = {
@@ -2992,6 +3050,8 @@ export type User = {
   createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
   email: Scalars['String']['output'];
   persona: Scalars['String']['output'];
+  scopeSource?: Maybe<Scalars['String']['output']>;
+  scopeTenant?: Maybe<Scalars['String']['output']>;
   status?: Maybe<Scalars['String']['output']>;
   userId: Scalars['ID']['output'];
 };
@@ -3174,7 +3234,7 @@ export type CreateReviewQueueMutationVariables = Exact<{
 }>;
 
 
-export type CreateReviewQueueMutation = { createReviewQueue?: { id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null } | null };
+export type CreateReviewQueueMutation = { createReviewQueue?: { id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null, version?: number | null } | null };
 
 export type CreateUserMutationVariables = Exact<{
   email: Scalars['String']['input'];
@@ -3264,6 +3324,13 @@ export type DeleteReviewQueueMutationVariables = Exact<{
 
 
 export type DeleteReviewQueueMutation = { deleteReviewQueue?: boolean | null };
+
+export type DeleteTenantMutationVariables = Exact<{
+  tenantId: Scalars['String']['input'];
+}>;
+
+
+export type DeleteTenantMutation = { deleteTenant?: { success: boolean, message?: string | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type DeleteTestSetsMutationVariables = Exact<{
   testSetIds: Array<Scalars['String']['input']> | Scalars['String']['input'];
@@ -3381,6 +3448,17 @@ export type PutConfigPrefixMappingMutationVariables = Exact<{
 
 
 export type PutConfigPrefixMappingMutation = { putConfigPrefixMapping?: { success: boolean, message?: string | null, mapping?: { prefix: string, matchKind?: string | null, configProfile: string, configRevision?: number | null, metadataPrecedence?: string | null, enabled?: boolean | null, description?: string | null, createdAt?: string | null, createdBy?: string | null, updatedAt?: string | null, updatedBy?: string | null } | null, error?: { type?: string | null, message?: string | null } | null } | null };
+
+export type PutTenantMutationVariables = Exact<{
+  tenantId: Scalars['String']['input'];
+  prefixes: Array<Scalars['String']['input']> | Scalars['String']['input'];
+  profilePattern: Scalars['String']['input'];
+  description?: InputMaybe<Scalars['String']['input']>;
+  grantedBy?: InputMaybe<Array<Scalars['String']['input']> | Scalars['String']['input']>;
+}>;
+
+
+export type PutTenantMutation = { putTenant?: { success: boolean, message?: string | null, tenant?: { tenantId: string, prefixes: Array<string>, profilePattern: string, grantedBy?: Array<string> | null, description?: string | null, createdAt?: string | null, createdBy?: string | null, updatedAt?: string | null, updatedBy?: string | null } | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type ReassignReviewItemMutationVariables = Exact<{
   objectKey: Scalars['String']['input'];
@@ -3682,7 +3760,7 @@ export type UpdateReviewQueueMutationVariables = Exact<{
 }>;
 
 
-export type UpdateReviewQueueMutation = { updateReviewQueue?: { id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null } | null };
+export type UpdateReviewQueueMutation = { updateReviewQueue?: { id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null, version?: number | null } | null };
 
 export type UpdateTestSetMutationVariables = Exact<{
   input: UpdateTestSetInput;
@@ -3863,7 +3941,7 @@ export type GetDocumentQueryVariables = Exact<{
 }>;
 
 
-export type GetDocumentQuery = { getDocument?: { ObjectKey?: string | null, ObjectStatus?: string | null, InitialEventTime?: string | null, QueuedTime?: string | null, WorkflowStartTime?: string | null, CompletionTime?: string | null, WorkflowExecutionArn?: string | null, WorkflowStatus?: string | null, PageCount?: number | null, Metering?: string | null, EvaluationReportUri?: string | null, EvaluationStatus?: string | null, SummaryReportUri?: string | null, RuleValidationResultUri?: string | null, ExpiresAfter?: number | null, HITLStatus?: string | null, HITLTriggered?: boolean | null, HITLReviewURL?: string | null, HITLSectionsPending?: Array<string | null> | null, HITLSectionsCompleted?: Array<string | null> | null, HITLSectionsSkipped?: Array<string | null> | null, HITLReviewOwner?: string | null, HITLReviewOwnerEmail?: string | null, HITLReviewedBy?: string | null, HITLReviewedByEmail?: string | null, HITLReviewHistory?: string | null, ConfigVersion?: string | null, ConfigRevision?: number | null, HITLCompleted?: boolean | null, ProcessingIssueCount?: number | null, TraceId?: string | null, Sections?: Array<{ Id?: string | null, PageIds?: Array<number | null> | null, Class?: string | null, Confidence?: number | null, OutputJSONUri?: string | null, InstanceCount?: number | null, Excluded?: boolean | null, ExclusionReason?: string | null, ConfidenceThresholdAlerts?: Array<{ attributeName?: string | null, confidence?: number | null, confidenceThreshold?: number | null } | null> | null, ProcessingIssues?: Array<{ stage?: string | null, severity?: string | null, code?: string | null, message?: string | null, rootCause?: string | null } | null> | null } | null> | null, Pages?: Array<{ Id?: number | null, Class?: string | null, ClassConfidence?: number | null, ClassReason?: string | null, ImageUri?: string | null, TextUri?: string | null, TextConfidenceUri?: string | null, OcrPageDataUri?: string | null, ClassCandidates?: Array<{ Class?: string | null, Probability?: number | null } | null> | null } | null> | null } | null };
+export type GetDocumentQuery = { getDocument?: { ObjectKey?: string | null, ObjectStatus?: string | null, InitialEventTime?: string | null, QueuedTime?: string | null, WorkflowStartTime?: string | null, CompletionTime?: string | null, WorkflowExecutionArn?: string | null, WorkflowStatus?: string | null, PageCount?: number | null, Metering?: string | null, EvaluationReportUri?: string | null, EvaluationStatus?: string | null, SummaryReportUri?: string | null, RuleValidationResultUri?: string | null, ExpiresAfter?: number | null, HITLStatus?: string | null, HITLTriggered?: boolean | null, HITLReviewURL?: string | null, HITLSectionsPending?: Array<string | null> | null, HITLSectionsCompleted?: Array<string | null> | null, HITLSectionsSkipped?: Array<string | null> | null, HITLReviewOwner?: string | null, HITLReviewOwnerEmail?: string | null, HITLReviewedBy?: string | null, HITLReviewedByEmail?: string | null, HITLReviewHistory?: string | null, ConfigVersion?: string | null, ConfigRevision?: number | null, HITLCompleted?: boolean | null, ProcessingIssueCount?: number | null, MissingRequiredFieldCount?: number | null, TraceId?: string | null, Sections?: Array<{ Id?: string | null, PageIds?: Array<number | null> | null, Class?: string | null, Confidence?: number | null, OutputJSONUri?: string | null, InstanceCount?: number | null, Excluded?: boolean | null, ExclusionReason?: string | null, ConfidenceThresholdAlerts?: Array<{ attributeName?: string | null, confidence?: number | null, confidenceThreshold?: number | null } | null> | null, MissingRequiredFields?: Array<{ attributeName?: string | null, confidence?: number | null, confidenceThreshold?: number | null } | null> | null, ProcessingIssues?: Array<{ stage?: string | null, severity?: string | null, code?: string | null, message?: string | null, rootCause?: string | null } | null> | null } | null> | null, Pages?: Array<{ Id?: number | null, Class?: string | null, ClassConfidence?: number | null, ClassReason?: string | null, ImageUri?: string | null, TextUri?: string | null, TextConfidenceUri?: string | null, OcrPageDataUri?: string | null, ClassCandidates?: Array<{ Class?: string | null, Probability?: number | null } | null> | null } | null> | null } | null };
 
 export type GetDocumentCountQueryVariables = Exact<{
   startDateTime?: InputMaybe<Scalars['AWSDateTime']['input']>;
@@ -3880,7 +3958,7 @@ export type GetDocumentVersionQueryVariables = Exact<{
 }>;
 
 
-export type GetDocumentVersionQuery = { getDocumentVersion?: { RunId: string, ObjectKey?: string | null, CompletionTime?: string | null, QueuedTime?: string | null, WorkflowStartTime?: string | null, WorkflowExecutionArn?: string | null, ConfigVersion?: string | null, ConfigRevision?: number | null, PageCount?: number | null, FileCount?: number | null, ManifestUri?: string | null, SummaryReportUri?: string | null, EvaluationReportUri?: string | null, Metering?: string | null, Sections?: Array<{ Id?: string | null, PageIds?: Array<number | null> | null, Class?: string | null, Confidence?: number | null, OutputJSONUri?: string | null, InstanceCount?: number | null, Excluded?: boolean | null, ExclusionReason?: string | null, ConfidenceThresholdAlerts?: Array<{ attributeName?: string | null, confidence?: number | null, confidenceThreshold?: number | null } | null> | null, ProcessingIssues?: Array<{ stage?: string | null, severity?: string | null, code?: string | null, message?: string | null, rootCause?: string | null } | null> | null } | null> | null, Pages?: Array<{ Id?: number | null, Class?: string | null, ClassConfidence?: number | null, ClassReason?: string | null, ImageUri?: string | null, TextUri?: string | null, OcrPageDataUri?: string | null, ClassCandidates?: Array<{ Class?: string | null, Probability?: number | null } | null> | null } | null> | null, Files?: Array<{ Key?: string | null, VersionId?: string | null, Size?: number | null } | null> | null } | null };
+export type GetDocumentVersionQuery = { getDocumentVersion?: { RunId: string, ObjectKey?: string | null, CompletionTime?: string | null, QueuedTime?: string | null, WorkflowStartTime?: string | null, WorkflowExecutionArn?: string | null, ConfigVersion?: string | null, ConfigRevision?: number | null, PageCount?: number | null, FileCount?: number | null, ManifestUri?: string | null, SummaryReportUri?: string | null, EvaluationReportUri?: string | null, Metering?: string | null, Sections?: Array<{ Id?: string | null, PageIds?: Array<number | null> | null, Class?: string | null, Confidence?: number | null, OutputJSONUri?: string | null, InstanceCount?: number | null, Excluded?: boolean | null, ExclusionReason?: string | null, ConfidenceThresholdAlerts?: Array<{ attributeName?: string | null, confidence?: number | null, confidenceThreshold?: number | null } | null> | null, MissingRequiredFields?: Array<{ attributeName?: string | null, confidence?: number | null, confidenceThreshold?: number | null } | null> | null, ProcessingIssues?: Array<{ stage?: string | null, severity?: string | null, code?: string | null, message?: string | null, rootCause?: string | null } | null> | null } | null> | null, Pages?: Array<{ Id?: number | null, Class?: string | null, ClassConfidence?: number | null, ClassReason?: string | null, ImageUri?: string | null, TextUri?: string | null, OcrPageDataUri?: string | null, ClassCandidates?: Array<{ Class?: string | null, Probability?: number | null } | null> | null } | null> | null, Files?: Array<{ Key?: string | null, VersionId?: string | null, Size?: number | null } | null> | null } | null };
 
 export type GetDraftLabelJobQueryVariables = Exact<{
   testSetId: Scalars['String']['input'];
@@ -3952,7 +4030,7 @@ export type GetMyReviewQueuesQueryVariables = Exact<{
 }>;
 
 
-export type GetMyReviewQueuesQuery = { getMyReviewQueues?: { myClaimCount: number, enabledProfiles: Array<string>, queues: Array<{ profile: string, name: string, displayName: string, description?: string | null, priority: number, depth: number, unclaimed: number, claimed: number, claimedByMe: number, oldestEnqueuedAt?: string | null, isDefaultQueue: boolean, enabled?: boolean | null, claimCap: number, checklist: Array<string>, definedInConfig: boolean }>, items: { nextToken?: string | null, items: Array<{ objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }> } } | null };
+export type GetMyReviewQueuesQuery = { getMyReviewQueues?: { myClaimCount: number, queues: Array<{ profile: string, name: string, displayName: string, description?: string | null, priority: number, depth: number, unclaimed: number, claimed: number, claimedByMe: number, oldestEnqueuedAt?: string | null, isDefaultQueue: boolean, enabled?: boolean | null, claimCap: number, checklist: Array<string>, definedInConfig: boolean }>, items: { nextToken?: string | null, items: Array<{ objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }> } } | null };
 
 export type GetPricingQueryVariables = Exact<{ [key: string]: never; }>;
 
@@ -4078,7 +4156,7 @@ export type ListConfigProfileRevisionsQueryVariables = Exact<{
 }>;
 
 
-export type ListConfigProfileRevisionsQuery = { listConfigProfileRevisions?: { success: boolean, revisions?: Array<{ revision: number, createdAt?: string | null, createdBy?: string | null, label?: string | null, notes?: string | null, sizeBytes?: number | null, classFingerprint?: string | null, pinned?: boolean | null, published?: boolean | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
+export type ListConfigProfileRevisionsQuery = { listConfigProfileRevisions?: { success: boolean, profileMatchesPublished?: boolean | null, revisions?: Array<{ revision: number, createdAt?: string | null, createdBy?: string | null, label?: string | null, notes?: string | null, sizeBytes?: number | null, classFingerprint?: string | null, pinned?: boolean | null, published?: boolean | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type ListConfigurationLibraryQueryVariables = Exact<{
   pattern: Scalars['String']['input'];
@@ -4108,7 +4186,7 @@ export type ListDocumentsQueryVariables = Exact<{
 }>;
 
 
-export type ListDocumentsQuery = { listDocuments?: { nextToken?: string | null, Documents?: Array<{ PK: string, SK: string, ObjectKey?: string | null, ObjectStatus?: string | null, InitialEventTime?: string | null, CompletionTime?: string | null, ConfigVersion?: string | null, ConfigRevision?: number | null, EvaluationStatus?: string | null, HITLStatus?: string | null, HITLTriggered?: boolean | null, HITLCompleted?: boolean | null, HITLReviewOwner?: string | null, HITLReviewedBy?: string | null, PageCount?: number | null, ConfidenceAlertCount?: number | null, ProcessingIssueCount?: number | null } | null> | null } | null };
+export type ListDocumentsQuery = { listDocuments?: { nextToken?: string | null, Documents?: Array<{ PK: string, SK: string, ObjectKey?: string | null, ObjectStatus?: string | null, InitialEventTime?: string | null, CompletionTime?: string | null, ConfigVersion?: string | null, ConfigRevision?: number | null, EvaluationStatus?: string | null, HITLStatus?: string | null, HITLTriggered?: boolean | null, HITLCompleted?: boolean | null, HITLReviewOwner?: string | null, HITLReviewedBy?: string | null, PageCount?: number | null, ConfidenceAlertCount?: number | null, MissingRequiredFieldCount?: number | null, ProcessingIssueCount?: number | null } | null> | null } | null };
 
 export type ListDocumentsByDateRangeQueryVariables = Exact<{
   startDateTime: Scalars['AWSDateTime']['input'];
@@ -4118,7 +4196,7 @@ export type ListDocumentsByDateRangeQueryVariables = Exact<{
 }>;
 
 
-export type ListDocumentsByDateRangeQuery = { listDocumentsByDateRange?: { nextToken?: string | null, Documents?: Array<{ PK: string, SK: string, ObjectKey?: string | null, ObjectStatus?: string | null, InitialEventTime?: string | null, QueuedTime?: string | null, WorkflowStartTime?: string | null, CompletionTime?: string | null, WorkflowExecutionArn?: string | null, WorkflowStatus?: string | null, PageCount?: number | null, EvaluationReportUri?: string | null, EvaluationStatus?: string | null, SummaryReportUri?: string | null, RuleValidationResultUri?: string | null, ExpiresAfter?: number | null, HITLStatus?: string | null, HITLReviewURL?: string | null, HITLTriggered?: boolean | null, HITLCompleted?: boolean | null, HITLSectionsPending?: Array<string | null> | null, HITLSectionsCompleted?: Array<string | null> | null, HITLSectionsSkipped?: Array<string | null> | null, HITLReviewOwner?: string | null, HITLReviewOwnerEmail?: string | null, HITLReviewedBy?: string | null, HITLReviewedByEmail?: string | null, TraceId?: string | null, Sections?: Array<{ Id?: string | null, PageIds?: Array<number | null> | null, Class?: string | null, Confidence?: number | null, OutputJSONUri?: string | null, InstanceCount?: number | null, Excluded?: boolean | null, ExclusionReason?: string | null, ConfidenceThresholdAlerts?: Array<{ attributeName?: string | null, confidence?: number | null, confidenceThreshold?: number | null } | null> | null, ProcessingIssues?: Array<{ stage?: string | null, severity?: string | null, code?: string | null, message?: string | null, rootCause?: string | null } | null> | null } | null> | null, Pages?: Array<{ Id?: number | null, Class?: string | null, ClassConfidence?: number | null, ClassReason?: string | null, ImageUri?: string | null, TextUri?: string | null, TextConfidenceUri?: string | null, OcrPageDataUri?: string | null, ClassCandidates?: Array<{ Class?: string | null, Probability?: number | null } | null> | null } | null> | null } | null> | null } | null };
+export type ListDocumentsByDateRangeQuery = { listDocumentsByDateRange?: { nextToken?: string | null, Documents?: Array<{ PK: string, SK: string, ObjectKey?: string | null, ObjectStatus?: string | null, InitialEventTime?: string | null, QueuedTime?: string | null, WorkflowStartTime?: string | null, CompletionTime?: string | null, WorkflowExecutionArn?: string | null, WorkflowStatus?: string | null, PageCount?: number | null, EvaluationReportUri?: string | null, EvaluationStatus?: string | null, SummaryReportUri?: string | null, RuleValidationResultUri?: string | null, ExpiresAfter?: number | null, HITLStatus?: string | null, HITLReviewURL?: string | null, HITLTriggered?: boolean | null, HITLCompleted?: boolean | null, HITLSectionsPending?: Array<string | null> | null, HITLSectionsCompleted?: Array<string | null> | null, HITLSectionsSkipped?: Array<string | null> | null, HITLReviewOwner?: string | null, HITLReviewOwnerEmail?: string | null, HITLReviewedBy?: string | null, HITLReviewedByEmail?: string | null, TraceId?: string | null, Sections?: Array<{ Id?: string | null, PageIds?: Array<number | null> | null, Class?: string | null, Confidence?: number | null, OutputJSONUri?: string | null, InstanceCount?: number | null, Excluded?: boolean | null, ExclusionReason?: string | null, ConfidenceThresholdAlerts?: Array<{ attributeName?: string | null, confidence?: number | null, confidenceThreshold?: number | null } | null> | null, MissingRequiredFields?: Array<{ attributeName?: string | null, confidence?: number | null, confidenceThreshold?: number | null } | null> | null, ProcessingIssues?: Array<{ stage?: string | null, severity?: string | null, code?: string | null, message?: string | null, rootCause?: string | null } | null> | null } | null> | null, Pages?: Array<{ Id?: number | null, Class?: string | null, ClassConfidence?: number | null, ClassReason?: string | null, ImageUri?: string | null, TextUri?: string | null, TextConfidenceUri?: string | null, OcrPageDataUri?: string | null, ClassCandidates?: Array<{ Class?: string | null, Probability?: number | null } | null> | null } | null> | null } | null> | null } | null };
 
 export type ListDocumentsDateHourQueryVariables = Exact<{
   date?: InputMaybe<Scalars['AWSDate']['input']>;
@@ -4182,12 +4260,17 @@ export type ListReviewQueueItemsQuery = { listReviewQueueItems?: { nextToken?: s
 export type ListReviewQueuesQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type ListReviewQueuesQuery = { listReviewQueues?: Array<{ id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null }> | null };
+export type ListReviewQueuesQuery = { listReviewQueues?: Array<{ id: string, name: string, description?: string | null, priority: number, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, timeLimitMinutes: number, eligibleAnnotators: Array<string>, isDefaultQueue: boolean, enabled?: boolean | null, version?: number | null }> | null };
 
 export type ListSampleDocumentsQueryVariables = Exact<{ [key: string]: never; }>;
 
 
 export type ListSampleDocumentsQuery = { listSampleDocuments?: { success: boolean, error?: string | null, samples?: Array<{ id: string, name: string, description?: string | null, s3Key: string, kind: string, fileCount?: number | null, configId?: string | null } | null> | null } | null };
+
+export type ListTenantsQueryVariables = Exact<{ [key: string]: never; }>;
+
+
+export type ListTenantsQuery = { listTenants?: { success: boolean, isolationMode?: string | null, grantSource?: string | null, tenants?: Array<{ tenantId: string, prefixes: Array<string>, profilePattern: string, grantedBy?: Array<string> | null, description?: string | null, createdAt?: string | null, createdBy?: string | null, updatedAt?: string | null, updatedBy?: string | null } | null> | null, error?: { type?: string | null, message?: string | null } | null } | null };
 
 export type ListTestSetQueuesQueryVariables = Exact<{ [key: string]: never; }>;
 
@@ -4197,7 +4280,7 @@ export type ListTestSetQueuesQuery = { listTestSetQueues?: Array<{ id: string, n
 export type ListUsersQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type ListUsersQuery = { listUsers?: { users?: Array<{ userId: string, email: string, persona: string, status?: string | null, createdAt?: string | null, allowedConfigVersions?: Array<string | null> | null, allowedTestSets?: Array<string | null> | null } | null> | null } | null };
+export type ListUsersQuery = { listUsers?: { users?: Array<{ userId: string, email: string, persona: string, status?: string | null, createdAt?: string | null, allowedConfigVersions?: Array<string | null> | null, allowedTestSets?: Array<string | null> | null, scopeSource?: string | null, scopeTenant?: string | null } | null> | null } | null };
 
 export type QueryKnowledgeBaseQueryVariables = Exact<{
   input: Scalars['String']['input'];
@@ -4272,4 +4355,4 @@ export type OnDiscoveryJobStatusChangeSubscription = { onDiscoveryJobStatusChang
 export type OnUpdateDocumentSubscriptionVariables = Exact<{ [key: string]: never; }>;
 
 
-export type OnUpdateDocumentSubscription = { onUpdateDocument?: { ObjectKey?: string | null, ObjectStatus?: string | null, InitialEventTime?: string | null, QueuedTime?: string | null, WorkflowStartTime?: string | null, CompletionTime?: string | null, WorkflowExecutionArn?: string | null, WorkflowStatus?: string | null, PageCount?: number | null, Metering?: string | null, EvaluationReportUri?: string | null, EvaluationStatus?: string | null, SummaryReportUri?: string | null, RuleValidationResultUri?: string | null, ExpiresAfter?: number | null, HITLStatus?: string | null, HITLTriggered?: boolean | null, HITLReviewURL?: string | null, HITLSectionsPending?: Array<string | null> | null, HITLSectionsCompleted?: Array<string | null> | null, HITLSectionsSkipped?: Array<string | null> | null, HITLReviewOwner?: string | null, HITLReviewOwnerEmail?: string | null, HITLReviewedBy?: string | null, HITLReviewedByEmail?: string | null, HITLReviewHistory?: string | null, ConfigVersion?: string | null, HITLCompleted?: boolean | null, TraceId?: string | null, Sections?: Array<{ Id?: string | null, PageIds?: Array<number | null> | null, Class?: string | null, Confidence?: number | null, OutputJSONUri?: string | null, InstanceCount?: number | null, Excluded?: boolean | null, ExclusionReason?: string | null, ConfidenceThresholdAlerts?: Array<{ attributeName?: string | null, confidence?: number | null, confidenceThreshold?: number | null } | null> | null, ProcessingIssues?: Array<{ stage?: string | null, severity?: string | null, code?: string | null, message?: string | null, rootCause?: string | null } | null> | null } | null> | null, Pages?: Array<{ Id?: number | null, Class?: string | null, ClassConfidence?: number | null, ClassReason?: string | null, ImageUri?: string | null, TextUri?: string | null, TextConfidenceUri?: string | null, OcrPageDataUri?: string | null, ClassCandidates?: Array<{ Class?: string | null, Probability?: number | null } | null> | null } | null> | null } | null };
+export type OnUpdateDocumentSubscription = { onUpdateDocument?: { ObjectKey?: string | null, ObjectStatus?: string | null, InitialEventTime?: string | null, QueuedTime?: string | null, WorkflowStartTime?: string | null, CompletionTime?: string | null, WorkflowExecutionArn?: string | null, WorkflowStatus?: string | null, PageCount?: number | null, Metering?: string | null, EvaluationReportUri?: string | null, EvaluationStatus?: string | null, SummaryReportUri?: string | null, RuleValidationResultUri?: string | null, ExpiresAfter?: number | null, HITLStatus?: string | null, HITLTriggered?: boolean | null, HITLReviewURL?: string | null, HITLSectionsPending?: Array<string | null> | null, HITLSectionsCompleted?: Array<string | null> | null, HITLSectionsSkipped?: Array<string | null> | null, HITLReviewOwner?: string | null, HITLReviewOwnerEmail?: string | null, HITLReviewedBy?: string | null, HITLReviewedByEmail?: string | null, HITLReviewHistory?: string | null, ConfigVersion?: string | null, HITLCompleted?: boolean | null, TraceId?: string | null, Sections?: Array<{ Id?: string | null, PageIds?: Array<number | null> | null, Class?: string | null, Confidence?: number | null, OutputJSONUri?: string | null, InstanceCount?: number | null, Excluded?: boolean | null, ExclusionReason?: string | null, ConfidenceThresholdAlerts?: Array<{ attributeName?: string | null, confidence?: number | null, confidenceThreshold?: number | null } | null> | null, MissingRequiredFields?: Array<{ attributeName?: string | null, confidence?: number | null, confidenceThreshold?: number | null } | null> | null, ProcessingIssues?: Array<{ stage?: string | null, severity?: string | null, code?: string | null, message?: string | null, rootCause?: string | null } | null> | null } | null> | null, Pages?: Array<{ Id?: number | null, Class?: string | null, ClassConfidence?: number | null, ClassReason?: string | null, ImageUri?: string | null, TextUri?: string | null, TextConfidenceUri?: string | null, OcrPageDataUri?: string | null, ClassCandidates?: Array<{ Class?: string | null, Probability?: number | null } | null> | null } | null> | null } | null };

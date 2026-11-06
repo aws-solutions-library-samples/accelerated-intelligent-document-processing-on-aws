@@ -351,7 +351,13 @@ _DOCS_REF_RE = re.compile(r"[0-9a-f]{40}|worktree|worktree\+dirty")
 _HARNESS_RE = re.compile(r"[0-9a-f]{40}(?:\+dirty)?|unknown")
 _ARG_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,39}")
 _SCREEN_RE = re.compile(r"screens/[0-9]{3,6}\.jpg")
-_SIGN_IN_GROUPS: tuple[str, ...] = ("Admin", "Author", "Reviewer", "Viewer")
+_SIGN_IN_GROUPS: tuple[str, ...] = (
+    "Admin",
+    "Annotator",
+    "Author",
+    "Reviewer",
+    "Viewer",
+)
 _EXPECTATIONS: tuple[str, ...] = ("allowed", "refused", "not_offered")
 _KINDS: tuple[str, ...] = ("read", "commit_point")
 _REPORT_TOOLS: dict[str, str] = {"done": "report_done", "blocked": "report_blocked"}

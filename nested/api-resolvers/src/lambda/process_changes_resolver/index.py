@@ -83,6 +83,35 @@ _EDITABLE_STATUSES = {
 _SCOPE_EXEMPT_GROUPS = {"Admin", "Author"}
 _SCOPED_GROUP = "Annotator"
 
+# A Reviewer works production review only: test-set documents are worked by
+# Annotators. A caller holding Reviewer and none of these is refused a document that
+# carries a `TestSetId` (`_refuse_reviewer_on_test_set`).
+_REVIEWER_GROUP = "Reviewer"
+_TEST_SET_WORK_GROUPS = {"Admin", "Author", "Annotator"}
+_REVIEWER_TEST_SET_REFUSAL = "Unauthorized: test-set documents are worked by Annotators"
+
+
+def _is_reviewer_only(groups):
+    """Reviewer, and none of Admin, Author or Annotator."""
+    return _REVIEWER_GROUP in groups and not _TEST_SET_WORK_GROUPS.intersection(groups)
+
+
+def _refuse_reviewer_on_test_set(operation, groups, test_set_id):
+    """Refuse a Reviewer-only caller a document that belongs to a test set.
+
+    A decision about the OBJECT, so it raises `ResourceAccessDenied` (a
+    `PermissionError`, 403, ``authzControl: "resource"``), as this resolver's other
+    per-object refusals do.
+    """
+    if test_set_id and _is_reviewer_only(groups):
+        logger.warning(
+            "Forbidden: reviewer may not %s a test-set document; test-set documents "
+            "are worked by Annotators",
+            operation,
+        )
+        raise ResourceAccessDenied(_REVIEWER_TEST_SET_REFUSAL)
+
+
 # Built on first use, not at import. The scope check is the only thing in this module
 # that reads DynamoDB directly, and a resource built at import time binds before a
 # test's mock (or moto) is in place.
@@ -149,7 +178,9 @@ def _assert_annotator_scope(event, object_key):
     groups = (event.get("identity") or {}).get("claims", {}).get("cognito:groups") or []
     if isinstance(groups, str):
         groups = [groups]
-    if _SCOPED_GROUP not in groups or _SCOPE_EXEMPT_GROUPS.intersection(groups):
+    if _SCOPE_EXEMPT_GROUPS.intersection(groups):
+        return
+    if _SCOPED_GROUP not in groups and not _is_reviewer_only(groups):
         return
 
     from idp_common.testset_scope import (
@@ -172,6 +203,10 @@ def _assert_annotator_scope(event, object_key):
         ) from e
 
     test_set_id = (item.get("Item") or {}).get("TestSetId")
+    if _is_reviewer_only(groups):
+        # A Reviewer re-groups production documents only; same read, no second one.
+        _refuse_reviewer_on_test_set("re-group", groups, test_set_id)
+        return
     if not test_set_id:
         # A production document: an Annotator may re-group it only while holding its
         # review-queue item, within their profile scope (`_assert_holds_review_item`).
@@ -360,7 +395,7 @@ def _assert_caller_may_process(event, object_key, document):
             _tracking_table_resource()
             .get_item(
                 Key={"PK": f"doc#{object_key}", "SK": "none"},
-                ProjectionExpression="HITLStatus, HITLReviewOwner",
+                ProjectionExpression="HITLStatus, HITLReviewOwner, TestSetId",
             )
             .get("Item")
             or {}
@@ -372,6 +407,9 @@ def _assert_caller_may_process(event, object_key, document):
         raise ResourceAccessDenied(
             "Unauthorized: your ownership of this review could not be verified"
         ) from e
+
+    # A Reviewer processes production documents only, read off the same row.
+    _refuse_reviewer_on_test_set("process changes on", groups, row.get("TestSetId"))
 
     hitl_status = row.get("HITLStatus")
     view = normalize_hitl_status(hitl_status)

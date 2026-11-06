@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 import boto3
 
+from idp_common import document_scope
 from idp_common.docs_service import create_document_service
 from idp_common.models import Status
 from idp_common.review_queues.statuses import SKIP_ALL_REASONS, LegacyHitlStatus
@@ -33,6 +34,8 @@ OUTPUT_BUCKET = os.environ.get("OUTPUT_BUCKET", "")
 TEST_SET_BUCKET = os.environ.get("TEST_SET_BUCKET", "")
 #: Longest skip note kept, the review queues' note limit.
 MAX_SKIP_NOTE = 1000
+# Per-container cache of callers' configuration scopes (see config_scope).
+_user_scope_cache: dict = {}
 
 
 def handler(event, context):
@@ -62,7 +65,8 @@ def handler(event, context):
     # which AppSync silently ignores on a multi-auth API).
     #
     # Annotator group membership only reaches the operation; _assert_annotator_scope
-    # then narrows it to documents in the caller's allowedTestSets.
+    # then narrows it to documents in the caller's allowedTestSets, and keeps a
+    # Reviewer-only caller to production documents.
     if not ({"Admin", "Reviewer", "Annotator"}.intersection(user_groups)):
         logger.warning(
             f"Forbidden: caller {user_email} (groups={user_groups}) "
@@ -72,6 +76,12 @@ def handler(event, context):
             "Unauthorized: review operations require Admin, Reviewer or Annotator group"
         )
 
+    # Production HITL work is confined to the caller's configuration scope, the
+    # same axis every document read applies. Checked before anything else about
+    # the document is consulted, so an out-of-scope key learns nothing further.
+    if object_key:
+        _assert_configuration_scope(event, object_key, user_groups)
+
     # Documents in a review queue are worked only through the review-queue
     # operations (leases, dispositions), for every caller (D30).
     if object_key:
@@ -80,13 +90,13 @@ def handler(event, context):
     if field_name == "claimReview":
         if not object_key:
             raise ValueError("objectKey is required")
-        _assert_annotator_scope(event, object_key)
+        _assert_annotator_scope(event, user_groups, object_key, user_email)
         return claim_review(object_key, username, user_email)
 
     if field_name == "releaseReview":
         if not object_key:
             raise ValueError("objectKey is required")
-        _assert_annotator_scope(event, object_key)
+        _assert_annotator_scope(event, user_groups, object_key, user_email)
         return release_review(object_key, username, user_email, is_admin)
 
     if field_name == "skipAllSectionsReview":
@@ -108,6 +118,7 @@ def handler(event, context):
                 "reason is required and must be one of: " + ", ".join(SKIP_ALL_REASONS)
             )
         note = (arguments.get("note") or "").strip()[:MAX_SKIP_NOTE] or None
+        _assert_annotator_scope(event, user_groups, object_key, user_email)
         return skip_all_sections_review(
             object_key, username, user_email, reason, note, is_admin=is_admin
         )
@@ -126,6 +137,7 @@ def handler(event, context):
             raise ValueError("objectKey and sectionId are required")
         if not edited_data:
             raise ValueError("editedData is required")
+        _assert_annotator_scope(event, user_groups, object_key, user_email)
         return save_section_review_edits(
             object_key, section_id, edited_data, username, is_admin
         )
@@ -133,7 +145,7 @@ def handler(event, context):
     if not object_key or not section_id:
         raise ValueError("objectKey and sectionId are required")
 
-    _assert_annotator_scope(event, object_key)
+    _assert_annotator_scope(event, user_groups, object_key, user_email)
     _assert_test_set_assignee(event, object_key, user_email)
     result = complete_section_review(
         object_key, section_id, edited_data, username, user_email
@@ -200,24 +212,76 @@ def _assert_test_set_assignee(event, object_key, user_email):
         raise ValueError(str(e)) from None
 
 
-def _assert_annotator_scope(event, object_key):
-    """Verify a scoped Annotator may touch this document's test set.
+def _assert_configuration_scope(event, object_key, user_groups):
+    """Refuse a production document outside the caller's configuration scope.
 
-    A review document carries its originating ``TestSetId``, which is checked
-    against the caller's allowedTestSets. A document with no test set is production
-    HITL work and is refused.
+    A Reviewer scoped to one profile (under strict tenant isolation, to one tenant)
+    must not claim, edit, skip or complete another profile's review. Applies to
+    production documents only: a Test Studio document (one carrying a
+    ``TestSetId``) is governed by the Annotator's ``allowedTestSets`` scope in
+    :func:`_assert_annotator_scope`, unchanged here. Admins skip the lookup.
+
+    A key with no tracked document is refused for a scoped caller, with the same
+    message as an out-of-scope one.
+    """
+    if "Admin" in user_groups:
+        return
+    doc = (
+        dynamodb.Table(TRACKING_TABLE_NAME)
+        .get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
+        .get("Item")
+    )
+    if doc and doc.get("TestSetId"):
+        return
+    scope = document_scope.resolve_caller_scope(
+        document_scope.caller_claims(event),
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=dynamodb,
+        cache=_user_scope_cache,
+    )
+    version = document_scope.config_version_of_item(doc)
+    document_scope.assert_document_in_scope(
+        object_key, scope, config_version_of=lambda _key: version
+    )
+
+
+def _assert_annotator_scope(event, groups, object_key, email):
+    """Verify the caller may work this document, given its test set (if any).
+
+    The document's tracking item is read once, and only for a caller who is scoped:
+
+    * A scoped Annotator: a review document carries its originating ``TestSetId``,
+      which is checked against the caller's allowedTestSets. A document with no test
+      set is production HITL work and is refused.
+    * A Reviewer who is not also Admin, Author or Annotator works production review
+      only: a document with a ``TestSetId`` is refused. Test-set documents are
+      worked by Annotators.
 
     Only Admin and Author are exempt — the same set ``testset_scope`` treats as
     unscoped. Exempting Reviewer as well turned object scope *off* for anyone holding
-    both groups instead of intersecting the two, so the two enforcement layers
-    disagreed: the library refuses such a caller, this Lambda waved them through.
-    Since annotators are assigned by hand in Cognito (there is no external-IdP
-    mapping for the role), holding both is an easy mistake to make.
+    both Reviewer and Annotator instead of intersecting the two, so the two
+    enforcement layers disagreed: the library refuses such a caller, this Lambda
+    waved them through. Since annotators are assigned by hand in Cognito (there is no
+    external-IdP mapping for the role), holding both is an easy mistake to make.
     """
-    groups = (event.get("identity") or {}).get("claims", {}).get("cognito:groups") or []
-    if isinstance(groups, str):
-        groups = [groups]
-    if "Annotator" not in groups or {"Admin", "Author"}.intersection(groups):
+    if {"Admin", "Author"}.intersection(groups):
+        return
+    is_annotator = "Annotator" in groups
+    if not is_annotator and "Reviewer" not in groups:
+        return
+
+    test_set_id, _filename, _doc = _test_set_of(object_key)
+
+    if not is_annotator:
+        if test_set_id:
+            logger.warning(
+                "Forbidden: reviewer %s may not work test-set document %s",
+                email,
+                object_key,
+            )
+            raise PermissionError(
+                "Unauthorized: test-set documents are worked by Annotators"
+            )
         return
 
     from idp_common.testset_scope import (
@@ -225,11 +289,6 @@ def _assert_annotator_scope(event, object_key):
         assert_can_access_test_set,
     )
 
-    table = dynamodb.Table(TRACKING_TABLE_NAME)
-    doc = (
-        table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get("Item") or {}
-    )
-    test_set_id = doc.get("TestSetId")
     if not test_set_id:
         logger.warning(
             f"Forbidden: annotator attempted review of non-test-set document "

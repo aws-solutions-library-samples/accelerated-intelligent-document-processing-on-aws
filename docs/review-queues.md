@@ -41,7 +41,8 @@ Queues are **system-wide**, and they are managed only by Admins in
 **Review Studio › Review Management**; they aren't part of any Configuration Profile.
 Production documents go to the **Default** queue. A document is routed there when
 HITL is enabled in its configuration (`hitl.enabled`), the Default queue is enabled,
-and the document raised confidence alerts. Queues have no confidence threshold of
+and the document raised confidence alerts or left a required field without a value.
+Queues have no confidence threshold of
 their own: the alerts use each field's own threshold, otherwise
 `hitl.confidence_threshold`. The Default queue is enabled on a new stack. While HITL
 is off in a document's configuration, or the Default queue is off, documents keep
@@ -55,7 +56,12 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
    enabled, the document is held in the Default queue when either of these is true:
    - a section raised a confidence alert: a field's confidence is under its own
      threshold (`x-aws-idp-confidence-threshold` in the class schema), or under
-     `hitl.confidence_threshold` when it has none
+     `hitl.confidence_threshold` when it has none. Only a field with an extracted
+     value can raise one; a field with no value does not
+   - a field the class schema marks `required` has no extracted value, while
+     `hitl.route_missing_required_fields` is on (the default). Its review reason
+     reads **Missing required: <field>** (see
+     [Absent values and missing required fields](./extraction-and-confidence.md#absent-values-and-missing-required-fields))
    - in BDA mode, the matched blueprint's confidence is under
      `hitl.confidence_threshold`, or BDA matched a blueprint but returned no
      usable confidence for it: null, NaN, infinite, `true` or `false`, a string
@@ -91,13 +97,14 @@ An Annotator-only user, and a Reviewer with no Admin, Author or Viewer role, see
 notifications bell, lands on Home › Tasks, and opens a document through its edit page
 (`#/documents/<document>/edit`), from Tasks, Queues or an Inbox message. Every user has **Home › Inbox** and the bell; **Tasks** and
 **Queues** are there for Annotators and Reviewers. A Reviewer works every Production
-queue, and every Test Studio queue whose test set's configuration profile is in their
-profile scope, with no Admin assignment needed. **Reviewers find their work in Home ›
+queue, with no Admin assignment needed, and no Test Studio queue: Test Studio queues
+are worked by Annotators, Admins and Authors. **Reviewers find their work in Home ›
 Queues and Home › Tasks, not in the Document List**, which is no longer in their
 navigation.
 
 Every item is held to your configuration scope (`allowedConfigVersions`): an item whose
-profile is outside it is not listed in any queue or in Tasks, is skipped by **Claim
+profile is outside it is not listed in any queue or in Tasks, is not counted in a
+queue's item counts, oldest-item age or your claim count, is skipped by **Claim
 next**, and can't be opened, claimed, saved, skipped, finished or rejected — even one
 you already hold, if your scope has been narrowed since.
 
@@ -112,6 +119,10 @@ you already hold, if your scope has been narrowed since.
   assigned it: Production review items and Test Studio documents, each with its
   document, source, queue and age. Its badge counts both. You get an Inbox message
   when an Admin assigns you work.
+- In a queue's items and in Tasks, a document is named by the shortest end of its key
+  that tells it apart from the other rows, so two `invoice.pdf` files in different
+  folders show as `folder-a/invoice.pdf` and `folder-b/invoice.pdf`. A long name is
+  shortened in the middle, and the full key is shown on hover.
 - Select an item to open it in the **edit page**. Production items, Test
   Studio items and direct edits of a document all use the same edit page, whether
   you open them from Tasks, an Inbox message or Review Management. A Production item
@@ -152,10 +163,13 @@ you already hold, if your scope has been narrowed since.
     a Production draft, is kept.
   - **Production item**: **Review Reason**, above the editor, lists why it is in review,
     worst first. The five lowest-confidence alerts are shown; **+N more alerts**
-    lists the rest and **Show fewer** collapses them again. Hover a reason chip to
-    see the field, the score and the threshold. Your edits are saved as a draft as
+    lists the rest and **Show fewer** collapses them again. Each reason is its own
+    yellow chip. Hover a reason chip to see the field, the score and the threshold;
+    choose it (or press Enter on it) to move to that field.
+    **Next alert**, in the Review Reason header, steps through the reasons' fields
+    in turn. Your edits are saved as a draft as
     you type, or straight away with **Save**. **Process Changes** saves
-    your latest edits and applies your corrections. The editor opens with **Show
+    your latest edits and applies your corrections, with no confirmation. The editor opens with **Show
     Fields** set to **Confidence alerts only** when the item has review reasons. **Edit
     Page Grouping**, on the **Document Editor** panel, corrects
     how the document is split into sections as part of the review: the board shows every section of
@@ -168,15 +182,22 @@ you already hold, if your scope has been narrowed since.
     saves the open section, applies every section and reprocesses the document's
     review copy. Authored ground truth has no review copy, so for it **Process Changes** only
     marks the labels reviewed. You can also choose it without
-    changing anything, which confirms the labels as correct; it needs no **Start
-    editing** first. **Save** keeps the open section's changes as a draft, which
-    is not reviewed: any later session, and the next assignee after a **Skip**,
-    opens the document with it. **Process Changes** applies the drafts and marks the
+    changing anything, which confirms the labels as correct. Editing is
+    draft-first: the fields are editable with no step to start, and **Save** keeps
+    the open section's changes as a draft, which is not reviewed and opens no
+    version: any later session, and the next assignee after a **Skip**, opens the
+    document with it. **Process Changes** applies the drafts and marks the
     sections reviewed, and leaves once the server counts the document reviewed.
-    Switching sections with unsaved changes asks first.
+    When no draft version of the set is open, it first asks **Open a new version
+    and save ground truth**, because it opens the next version of the set (the
+    current one stays as it is); while one is open, the header shows a
+    `v{base} → v{draft}` badge and it runs at once. A document with confidence
+    alerts opens on them, and its notice offers **Next alert** to step through the
+    open section's alert fields. Switching sections with unsaved changes asks first.
     **Edit Page Grouping** opens the page-grouping board in a dialog, where each section's
     pages and class are changed; there is no separate class dropdown. After a class
-    change, the section offers **Re-extract**, so its fields match the new class. Versioning works exactly
+    change, the section offers **Re-extract**, so its fields match the new class; on a document with several sections it re-extracts
+    that section only and leaves the others as they are. Versioning works exactly
     as in Test Studio.
   - **Skip**, on either kind of item assigned to you, gives it back: it leaves your
     Tasks and goes back to its queue unassigned, where another Annotator can claim
@@ -227,6 +248,15 @@ their User Management record is created when they're first given a test set.
 Each row's actions menu offers **View** and **Settings**; a production queue also
 offers **Delete**. Each queue's page has a **Settings** button too.
 
+If another Admin saves a production queue's **Settings** while you have them open,
+your **Save** is refused rather than overwriting their change: the dialog says the
+queue was changed by someone else, and **Reload queue** fills it with the current
+settings so you can make your change again. Reloading replaces what you had entered.
+Through the API, send back the `version` that `listReviewQueues` returned with
+`updateReviewQueue`; a stale one is refused with `QUEUE_CHANGED`. An update that sends
+no `version` (an older client) replaces whatever is stored when it is made, and is
+refused only if another save lands while it is being written.
+
 **Production queues** are edited in **Settings** and deleted here. Queue
 Management has no **Create queue**: documents are routed to the Default queue, and
 any other queue that already exists stays listed and usable. Each queue has:
@@ -237,7 +267,7 @@ any other queue that already exists stays listed and usable. Each queue has:
 | Name, description | What Admins and Annotators see; the name defaults from the id | — |
 | Priority | Higher-priority queues are listed first, and **Next item** takes from them first (0–100). For information: kept for when there is more than one queue; with only the Default queue it changes nothing yet | `50` |
 | Time limit | Minutes after which an Annotator with an open assigned item gets a reminder (1–10080). For information: one reminder is sent, and the item stays assigned | `60` |
-| Eligible Annotators | The Annotators who work this queue: they see it, claim its items and can be assigned them. Reviewers work every Production queue without being listed, and claim their own items. Empty means no Annotators (Admins and Reviewers only) | empty |
+| Eligible Annotators | The Annotators who work this queue: they see it, claim its items and can be assigned them. Reviewers work every Production queue without being listed, and claim their own items. Empty means no Annotators (Admins and Reviewers only). Taking an Annotator off the list stops them seeing the queue and claiming from it; items they already hold stay assigned to them until they finish or release them, or you unassign them. A change can take up to 30 seconds to apply everywhere | empty |
 | Enabled | When off, no documents are added to the queue | on |
 
 A saved change shows at once on the queue's page, including its name in the title and the breadcrumb, and in Review Management.
@@ -255,11 +285,15 @@ moves them there.
 if it was off, turn it on in Review Management. Documents from profiles with HITL
 off are no longer queued.
 
-Deleting a queue that still holds items moves them to the Default queue first, and
+Deleting a queue that still holds items moves them to the Default queue, and
 the confirmation says how many will move:
 open and assigned items become unassigned there (an assignee is told), and items
 still waiting for their first run to finish are activated in Default. Deleting is
 refused while one of the queue's items is being finalized; try again a minute later.
+The queue is deleted before its items move, so a delete that is refused has moved
+nothing. If one stops part-way, the queue stays listed as no longer defined while
+it still holds open or assigned items, and deleting it again moves them; items
+still waiting for their first run are activated in Default either way.
 An **Escalation** queue that an earlier release created is an ordinary queue and can
 be deleted.
 

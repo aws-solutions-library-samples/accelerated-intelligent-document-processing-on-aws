@@ -21,6 +21,7 @@ from idp_common.bedrock.client import BedrockClient
 from idp_common.config import ConfigurationReader
 from idp_common.discovery.clustering_service import ClusteringService, ClusterResult
 from idp_common.discovery.discovery_agent import DiscoveryAgent
+from idp_common.discovery.regional_defaults import default_analysis_model_id
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -81,8 +82,10 @@ def handler(event, context):
 
     # Create and run discovery agent
     bedrock_client = BedrockClient(region=os.environ.get("AWS_REGION"))
-    analysis_model_id = config.get(
-        "analysis_model_id", "us.anthropic.claude-sonnet-4-6"
+    # _get_multi_doc_config returns {} when the config cannot be read, so the
+    # fallback must be callable from this Region, not the US default.
+    analysis_model_id = config.get("analysis_model_id") or default_analysis_model_id(
+        os.environ.get("AWS_REGION")
     )
     max_sample_size = int(config.get("max_sample_size", 5))
 

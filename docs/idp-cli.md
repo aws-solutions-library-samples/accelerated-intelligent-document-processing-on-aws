@@ -44,6 +44,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
   - [list-batches](#list-batches)
   - [stop-workflows](#stop-workflows)
   - [load-test](#load-test)
+  - [tenancy](#tenancy)
   - [discover](#discover)
   - [discover-multidoc](#discover-multidoc)
   - [remove-deleted-stack-resources](#remove-deleted-stack-resources)
@@ -79,6 +80,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
 ### Prerequisites
 
 - Python 3.12 or higher
+- [`uv`](https://docs.astral.sh/uv/) on `PATH`, which `make setup-venv` uses to read the dependency lock
 - AWS credentials configured (via AWS CLI or environment variables)
 - An active IDP Accelerator CloudFormation stack
 
@@ -305,9 +307,10 @@ For evaluation workflows with accuracy metrics, see the [Complete Evaluation Wor
 
 > **Comma-separated options:** every option documented below as comma-separated
 > (`--document-ids`, `--test-run-ids`, `--file-types`, `--check-stack-regions`,
-> `--features`, `--tags`) parses through one shared helper that **drops blank
-> segments**, so a trailing or doubled comma is
-> harmless — `--document-ids "a,b,"` names two documents, not three.
+> `--features`, `--tags`) **drops blank segments**, so a trailing or doubled comma
+> is harmless — `--document-ids "a,b,"` names two documents, not three. All but
+> `--features` parse through one shared helper; `--features` is parsed by the SDK's
+> `config.create`, by the same rule.
 >
 > For all of them **except `--tags`**, a value containing **no** non-blank segment is
 > **refused** with exit 1 rather than treated as one value that is the empty string.
@@ -920,7 +923,7 @@ idp-cli run-inference [OPTIONS]
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--number-of-files`: Limit number of files to process
 - `--config`: **Refused.** A configuration file is not applied to a batch submission, so passing one exits non-zero rather than running under the stack's existing configuration. Upload the file as a profile with [`config-upload`](#config-upload), then pass `--config-profile`.
-- `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., v1, v2)
+- `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., `default`, `lending`)
 - `--context`: Context description for test run (used with --test-set, e.g., "Model v2.1", "Production validation")
 - `--monitor`: Monitor progress until completion
 - `--refresh-interval`: Seconds between status checks (default: 5)
@@ -1004,15 +1007,15 @@ idp-cli process \
 idp-cli process \
     --stack-name my-stack \
     --dir ./documents/ \
-    --config-profile v2 \
+    --config-profile lending \
     --monitor
 
 # Process test set with configuration profile
 idp-cli process \
     --stack-name my-stack \
     --test-set fcc-example-test \
-    --config-profile v1 \
-    --context "Testing with config v1" \
+    --config-profile lending \
+    --context "Testing with the lending profile" \
     --monitor
 ```
 
@@ -2212,23 +2215,30 @@ not at one of them.
 
 ### Iterative Configuration Testing
 
-Test different extraction prompts or configurations:
+Test different extraction prompts or configurations without redeploying the stack.
+Upload each attempt to one profile — every upload cuts a new **revision** — and
+process under that revision
+([Iterating on one profile instead of many](#iterating-on-one-profile-instead-of-many)):
 
 ```bash
-# Test with configuration v1
-idp-cli deploy --stack-name my-stack --custom-config ./config-v1.yaml --wait
-idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id config-v1 --monitor
+# Attempt 1: upload, then process under the revision it printed (here r1)
+idp-cli config-upload --stack-name my-stack --config-file ./attempt-1.yaml \
+    --config-profile tuning --revision-notes "baseline prompts"
+idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id tuning-r1 \
+    --config-profile tuning --config-revision 1 --monitor
 
 # Download and analyze results
-idp-cli download-results --stack-name my-stack --batch-id config-v1 --output-dir ./results-v1/
+idp-cli download-results --stack-name my-stack --batch-id tuning-r1 --output-dir ./results-r1/
 
-# Test with configuration v2
-idp-cli deploy --stack-name my-stack --custom-config ./config-v2.yaml --wait
-idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id config-v2 --monitor
+# Attempt 2: upload the change to the same profile, then process under its revision (here r2)
+idp-cli config-upload --stack-name my-stack --config-file ./attempt-2.yaml \
+    --config-profile tuning --revision-notes "improved extraction prompt"
+idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id tuning-r2 \
+    --config-profile tuning --config-revision 2 --monitor
 
 # Compare in Athena
 # SELECT batch_id, AVG(overall_accuracy) FROM evaluation_results 
-# WHERE batch_id IN ('config-v1', 'config-v2') GROUP BY batch_id;
+# WHERE batch_id IN ('tuning-r1', 'tuning-r2') GROUP BY batch_id;
 ```
 
 ### Large-Scale Batch Processing
@@ -2481,12 +2491,14 @@ idp-cli config-create [OPTIONS]
 
 **Options:**
 - `--features`: Feature set (default: `min`)
-  - `min`: classification, extraction, classes only (simplest)
-  - `core`: min + ocr, assessment
-  - `all`: all sections with full defaults
-  - Or comma-separated list: `"classification,extraction,summarization"`
+  - `min`: classification and extraction only (simplest). It also writes `enabled: false` for summarization and evaluation, so those are switched off. It leaves **confidence scoring on**: confidence is configured under `extraction.confidence`, which comes with `extraction` at its default `mode: separate`. To turn it off, set `extraction.confidence.mode: off` in the generated file
+  - `core`: the sections of min plus ocr. Unlike min, it does not turn summarization or evaluation off. Confidence scoring is configured under `extraction.confidence`, so it comes with `extraction`
+  - `all`: every section at its default values, except `hitl`, `chat` and `rule_validation`. ⚠️ On upload the file is merged over the stack's preset or the profile's current configuration, so **every setting it writes is reset to its default there**: `summarization` and `evaluation` are written `enabled: true`, for example, and switch back on where a preset turned them off. Without `--include-prompts` the long prompt fields are not written, so those keep the deployment's own values. Edit the file before uploading, or ask for only the sections you mean to change. The three sections are left out so that the reset does not also switch human review, the chat companion or rule validation on or off. Name them explicitly to include them (`--features hitl`, or a comma-separated list of section names); a feature set cannot be combined with section names, so `all` plus one of them means listing every section
+  - Or one or more section names, comma-separated: `summarization`, or `"classification,extraction,summarization"`. A single name and a list are read the same way. A name that is not a section of the configuration is **refused** with exit 1 and the list of valid sections, rather than dropped, and a feature set cannot be combined with section names
+- No feature set writes a `classes` section. The system defaults define no document classes, and an empty `classes: []` uploaded over a profile would replace the profile's classes with none, so the key is left out and the profile keeps its own. `--features classes` on its own is refused for the same reason. Add your classes under a top-level `classes:` key
+- The header comment of the generated file states which sections it copies, which it switches off, which it leaves out, and whether confidence scoring is on
 - `--output`, `-o`: Output file path (default: stdout)
-- `--include-prompts`: Include full prompt templates (default: stripped for readability)
+- `--include-prompts`: Include full prompt templates. By default the long `system_prompt`, `task_prompt` and `user_prompt` values are left out of the file, so they take whatever value the configuration is merged over: the system defaults when validating or deploying, or the stack's default (or the profile's current) configuration when uploading
 - `--no-comments`: Omit explanatory header comments
 
 **Examples:**
@@ -2495,11 +2507,14 @@ idp-cli config-create [OPTIONS]
 # Generate minimal config to stdout
 idp-cli config-create
 
-# Generate full config with all sections
+# Generate a config with every section except hitl, chat and rule_validation
 idp-cli config-create --features all --output full-config.yaml
 
 # Custom section selection
 idp-cli config-create --features "classification,extraction,summarization" --output config.yaml
+
+# A single section
+idp-cli config-create --features summarization
 ```
 
 ---
@@ -2539,6 +2554,7 @@ idp-cli config-validate [OPTIONS]
 - `--config-file`, `-f` (required): Path to configuration file to validate
 - `--show-merged`: Show the full merged configuration
 - `--strict`: Fail validation if config contains unknown or deprecated fields
+- `--emit-migrated <path>`: Write the file converted to the current configuration format to `<path>`, headed by a comment naming the format version and the source file
 
 **Examples:**
 
@@ -2555,6 +2571,7 @@ idp-cli config-validate --config-file ./config.yaml --strict
 
 **Notes:**
 - The `config-upload` command runs validation by default before uploading to protect production stacks.
+- The command calls the SDK's `client.config.validate()` and, for `--emit-migrated`, `client.config.migrate()`, so the CLI and the SDK give the same verdict on a file. See [config.validate()](idp-sdk.md#configvalidate).
 - Model ID validation requires `config_library/pricing.yaml`. Ensure `idp-cli` is run from the repository root, or set the `IDP_PROJECT_ROOT` environment variable to the repo root for validation to work correctly.
 
 ---
@@ -2572,7 +2589,7 @@ idp-cli config-download [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--output`, `-o`: Output file path (default: stdout)
 - `--format`: Output format - `full` (default) or `minimal` (only differences from defaults)
-- `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile
+- `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., `default`, `lending`). If not specified, downloads the active profile
 - `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained, or if its body has expired under `DataRetentionInDays`, unless it is the profile's current published revision and the profile still provably holds that configuration, in which case it is rebuilt from the profile ([Retention](configuration-profiles.md#retention)), rather than silently returning the current configuration. The file is written in the current configuration format whichever release cut the revision, so it has the same shape as a download of the profile's current configuration ([Revision History](configuration-profiles.md#revision-history))
 - `--region`: AWS region (optional)
 
@@ -2583,7 +2600,7 @@ idp-cli config-download [OPTIONS]
 idp-cli config-download --stack-name my-stack --output config.yaml
 
 # Download a specific profile
-idp-cli config-download --stack-name my-stack --config-profile v2 --output config.yaml
+idp-cli config-download --stack-name my-stack --config-profile lending --output config.yaml
 
 # Download minimal config (only customizations)
 idp-cli config-download --stack-name my-stack --format minimal --output config.yaml
@@ -2622,7 +2639,7 @@ idp-cli config-upload [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--config-file`, `-f` (required): Path to configuration file (YAML or JSON)
 - `--validate/--no-validate`: Validate config before uploading (default: validate)
-- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `v1`, `v2`). If the profile doesn't exist, it will be created automatically. An **empty** value is refused with exit 1 and nothing is written; it used to land the configuration on a key no profile listing can see, reported as "Configuration is now active!" with exit 0
+- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `Production`). If the profile doesn't exist, it will be created automatically. An **empty** value is refused with exit 1 and nothing is written; it used to land the configuration on a key no profile listing can see, reported as "Configuration is now active!" with exit 0
 - `--version-description`: Description for the configuration **profile** (persisted on the profile and overwritten by every save)
 - `--revision-notes`: What this upload changed, recorded on the **revision** it cuts and shown as *Notes* in the revision history (e.g. `'raised topK to 20'`). Per-revision and immutable, unlike `--version-description`
 - `--region`: AWS region (optional)
@@ -2738,7 +2755,7 @@ revisions:
 ```bash
 # Upload attempt N and capture the revision it became
 rev=$(idp-cli config-upload --stack-name my-stack --config-file attempt.yaml \
-        --config-profile tuning-run-42 --version-description "raised topK to 20" \
+        --config-profile tuning-run-42 --revision-notes "raised topK to 20" \
       | sed -n 's/^Revision: r//p')
 
 # Score exactly that revision
@@ -3018,6 +3035,83 @@ idp-cli test-compare \
 
 ---
 
+### `tenancy`
+
+Manage tenant declarations and check tenant isolation on a deployed stack. A tenant
+is a set of Input-bucket prefixes plus a Configuration Profile pattern; see
+[Multi-Tenant Isolation](multi-tenancy.md) for what declaring one enforces and what
+`TenantIsolationMode=Strict` adds. Every subcommand takes `--stack-name` and an
+optional `--region`.
+
+| Subcommand | Purpose |
+|---|---|
+| `list [--json]` | Print the declared tenants |
+| `put --tenant-id ID --prefix P [--prefix P2 …] --profile-pattern PAT [--granted-by V …] [--description D]` | Create or replace one tenant. Refused when it overlaps another tenant or an existing prefix mapping would cross it — the same checks the web UI applies. `--granted-by` (repeatable, at most three) names the claim or entitlement values that grant the tenant; a value may grant only one tenant |
+| `set-user-tenant --email ADDR [--tenant ID] [--json]` | Grant one existing user one tenant, or none when `--tenant` is omitted. Only when the stack's `TenantGrantSource` is `Api`; an Admin is refused. See [Who grants a tenant](multi-tenancy.md#who-grants-a-tenant) |
+| `delete --tenant-id ID [--yes]` | Remove one declaration. Mappings, profiles and documents are untouched |
+| `apply --file tenants.yaml [--prune] [--yes] [--json]` | Make the declarations match a file. Prints the plan and writes nothing unless `--yes` is given; `--prune` also deletes tenants the file does not declare. The whole plan is validated before anything is written |
+| `generate-policies --principals principals.yaml [--output FILE] [--deploy [--access-point-stack NAME] [--json]]` | Write a CloudFormation template creating one Input-bucket and one Output-bucket S3 Access Point per tenant, confined to that tenant's prefixes. `--deploy` also deploys it as its own stack (default `<stack>-tenant-access-points`, created or updated) and prints each tenant's access point alias and ARN; see [the procedure](multi-tenancy.md#generate-and-deploy-the-access-points-step-by-step) |
+| `audit [--principals principals.yaml] [--sample N] [--json]` | Read-only report; exits 1 when there are findings |
+| `verify --document FILE [--tenant A --tenant B] [--timeout S] [--email-domain D] [--json]` | Live cross-tenant check; exits 0 pass, 1 fail, 2 error, 3 skipped |
+
+**`tenants.yaml`**:
+
+```yaml
+tenants:
+  - tenantId: acme
+    prefixes: [clients/acme/]
+    profilePattern: acme-*
+    grantedBy: [tenant.acme]   # optional; read when TenantGrantSource is IdpClaim
+    description: ACME Corp
+  - tenantId: globex
+    prefixes: [clients/globex/, feeds/globex/]
+    profilePattern: globex-*
+```
+
+**`principals.yaml`** names, per tenant, the IAM roles or users that write its
+documents and read its results. An account-root ARN is refused, because an access
+point cannot confine a whole account to one tenant:
+
+```yaml
+acme:
+  uploaders: [arn:aws:iam::123456789012:role/acme-uploader]
+  consumers: [arn:aws:iam::123456789012:role/acme-results-reader]
+  kmsKeyArn: arn:aws:kms:us-east-1:123456789012:key/EXAMPLE   # optional
+```
+
+In AWS GovCloud (US) the ARNs use the `aws-us-gov` partition (`arn:aws-us-gov:iam::…`).
+
+Output-bucket keys begin with the document's input key, so a tenant's output access
+point is confined to the same prefixes as its input one. The generated template
+creates only the access points. The stack's bucket policies delegate to access points
+in its own account when `TenantIsolationMode=Strict`. Each access point policy confines
+with explicit denies — no other principal may use it, and nothing outside the tenant's
+prefixes may be reached through it by any action — so the confinement holds whatever the
+roles' own policies allow. A role in the stack's account needs no S3 permission of its
+own; a role in another account needs an identity policy allowing its own access point.
+Every role needs use of the stack's KMS key. The command prints what is needed.
+
+**`audit`** reports the isolation mode, prefix mappings that cross a tenant boundary,
+tenant prefixes no mapping of the tenant's own covers, non-admin users with no scope
+or one spanning tenants, a sample of tracked documents whose key and profile belong
+to different tenants, and — with `--principals` — deployed access point policies that
+differ from what `generate-policies` would produce.
+
+**`verify`** creates a throwaway Admin and two throwaway Viewer users scoped to two
+tenants (through the API's own `createUser`, so the scope check runs), uploads the
+given document under each tenant's prefix, and checks that each user can list, read
+and download its own tenant's document and is refused the other's. On a Strict
+stack it also uploads a document outside every tenant, which must be refused at
+ingest, and one under the first tenant's prefix whose metadata names the second
+tenant's profile, which must be refused or processed under the first tenant's own
+profile, never the second's. It temporarily enables
+admin password authentication on the app client and restores the original setting,
+and it removes every user and object it created; a cleanup failure is reported as an
+error. Each tenant needs an enabled prefix mapping to one of its own profiles before
+it runs. The throwaway users' addresses use the stack's first `AllowedSignUpEmailDomain`
+when that parameter is set, because the API refuses to create a user outside it, and
+`example.com` otherwise; `--email-domain` overrides both.
+
 ### `discover`
 
 Discover document class schemas from sample documents using Amazon Bedrock.
@@ -3153,8 +3247,8 @@ idp-cli discover-multidoc [OPTIONS]
 |--------|-------------|
 | `--dir` | Directory containing documents to analyze (recursive scan) |
 | `-d, --document` | Individual document files (repeatable: `-d doc1.pdf -d doc2.png`) |
-| `--embedding-model` | Bedrock embedding model ID (default: `us.cohere.embed-v4:0`) |
-| `--analysis-model` | Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`) |
+| `--embedding-model` | Bedrock embedding model ID (default: `us.cohere.embed-v4:0`; `eu.cohere.embed-v4:0` in EU Regions, `global.cohere.embed-v4:0` in Canada) |
+| `--analysis-model` | Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`; `eu.anthropic.claude-sonnet-4-6` in EU Regions) |
 | `-o, --output` | Output directory for discovered JSON schemas |
 | `--stack-name` | CloudFormation stack name (required for `--save-to-config`) |
 | `--config-profile` (alias: `--config-version`) | Configuration profile to save schemas to |

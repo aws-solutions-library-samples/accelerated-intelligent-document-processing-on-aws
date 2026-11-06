@@ -108,7 +108,7 @@ The GenAI IDP Accelerator solution includes a built-in cost estimation feature i
 
 - Tracks and displays costs per service/API used during document processing
 - Breaks down costs by input tokens, output tokens, and page processing
-- Shows the total estimated cost for each document processed
+- Shows the total estimated cost for each document processed: the **Estimated Cost** of a reprocessed document is the sum of all its runs, each run counted once
 - Enables per-page cost analysis for detailed cost monitoring
 - Uses service pricing from the solution configuration, which can be modified to reflect any pricing variations or special agreements
 
@@ -159,13 +159,13 @@ your AWS bill, or a Cost and Usage Report, settle a large-request bill exactly.
 
 ### `DocumentEstimatedCost` — a CloudWatch metric you can alarm on
 
-The per-document cost above is also emitted to CloudWatch when a document's
+The cost of each processing run is also emitted to CloudWatch when the run's
 reporting data is written, in the namespace named after your stack, alongside a
 companion metric:
 
 | Metric | Unit | Meaning |
 |---|---|---|
-| `DocumentEstimatedCost` | None (USD) | One datapoint per completed document, carrying exactly the cost already written to that document's metering rows. Use `Sum` over a period for spend in that period, `Average` for cost per document, `Maximum` for the most expensive single document, `SampleCount` for documents completed |
+| `DocumentEstimatedCost` | None (USD) | One datapoint per completed run of a document, carrying exactly the cost written to that run's metering rows: a reprocess or a finished review emits the cost of the stages it ran, not the document's total. Use `Sum` over a period for spend in that period, `Average` for cost per run, `Maximum` for the most expensive single run, `SampleCount` for runs completed |
 | `UnpricedMeteringRows` | Count | How many of that document's metering rows had no price in `pricing.yaml`. **Read this alongside the cost.** A non-zero value means the cost figure is short by an unknown amount, which is what a model missing from the pricing table looks like |
 
 A document for which *no* row could be priced emits **no** cost datapoint rather

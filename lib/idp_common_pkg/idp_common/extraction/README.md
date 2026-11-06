@@ -580,15 +580,17 @@ than no repair.
 `extraction.prompt_cache: auto | off` (default `auto`). `off` removes every
 `<<CACHEPOINT>>` marker before Simple-mode content is built
 (`_build_prompt_content`) and, on the Advanced path, skips the trailing
-`cachePoint` block and the Strands `cache_prompt` / `cache_tools` flags, so no cache
-point reaches Bedrock. A cache write is 1.25× input price and pays back only on a
+`cachePoint` block, the system prompt's `cachePoint` block and the Strands
+`cache_tools` flag, so no cache point reaches Bedrock. A cache write is 1.25× input price and pays back only on a
 second same-prefix request inside the 5-minute TTL, so a low-volume deployment is
 better off with `off`.
 
 ⚠️ **Bedrock permits at most four `cache_control` blocks in one request, and the
 Advanced path already uses three of them.** It counts additively across the three
-places they can appear — one in `system` (Strands `cache_prompt`), one in
-`toolConfig` (`cache_tools`), and one per message block — so a fifth is rejected
+places they can appear — one in `system` (a `cachePoint` block that
+`_build_system_prompt_content` appends to the system prompt; strands 1.48
+deprecates its `cache_prompt` option for this), one in `toolConfig`
+(`cache_tools`), and one per message block — so a fifth is rejected
 outright with `ValidationException: A maximum of 4 blocks with cache_control may be
 provided. Found 5.`, which is not retried and fails the section keeping no rows.
 There is one message-level block, the trailing one `_prepare_prompt_content`
@@ -597,6 +599,18 @@ last one available**. This is also why `invoke_agent_with_retry` *resumes* a fai
 attempt's conversation rather than sending the prompt again: a second copy of the
 prompt is a fourth block and a third copy is a fifth
 ([#1296](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1296)).
+
+Because the system cache point now belongs to the agent's system prompt rather
+than to the model, strands' conversation-summarization call no longer carries one
+in `system`. That call sends strands' own fixed summarization prompt (about 925
+characters, roughly 230 tokens) through the same model, plus strands' placeholder
+`noop` tool whenever the conversation holds tool calls, so the prefix the old block
+covered was that prompt and the `noop` spec. For the Claude models this is below
+the minimum cacheable prefix `min_cacheable_prefix_tokens` reports (512 tokens at
+the smallest), so the block could not create a cache entry — an estimate from
+those minimums, not a measurement. For Nova, whose minimum that function does not
+record, it may have; summarization runs only when the conversation is compacted,
+and that cost is not measured.
 
 Each model has a **minimum cacheable prefix**, and below it a cache point silently
 does nothing. ⚠️ **The numbers are deliberately not repeated here** — ask
@@ -1521,6 +1535,14 @@ When `table_parsing.enabled: true`, the extraction agent gains a `parse_table` t
    - Tolerates empty lines (page breaks) within tables via configurable lookahead
    - Recovers from missing pipe characters in corrupted rows
    - Automatically merges table fragments with identical columns
+   - Recovers the column names when OCR emits a blank header row with the labels in
+     the rows below it (a wrapped label can span two rows), on a table split across
+     pages where each page starts the table again (blank header, separator, the
+     same labels): they become the header rather than data, and a
+     warning says how many rows were taken. A one-page table is left as it was,
+     because one page cannot tell a short all-text data row from a label row. The
+     check runs over the text `parse_table` is given, so on the sharded path a
+     shard holding a single page of the table is not recovered; the whole-section pre-flight parse sees every page
 3. **Provides quality metrics and warnings**:
    - `parse_success_rate`: Ratio of cleanly parsed rows
    - `avg_confidence`: OCR confidence scores (when available from Textract)
@@ -1785,7 +1807,10 @@ Step Functions Distributed Map — one implementation, no behaviour divergence.
   `merge_shard_results`. Because each shard persists its result idempotently to
   S3, SFN's **native per-iteration retry re-runs only the failed/incomplete
   shards** — completed shards load from S3, with no custom near-timeout/reentry
-  code and no 15-minute ceiling for the section as a whole.
+  code and no 15-minute ceiling for the section as a whole. The planning state
+  (`ExtractionService.plan_section_shards`) plans a section that already has an
+  `extraction_result_uri` as single-pass, so on a reprocess it reaches the
+  extraction step's skip branch instead of being sharded and extracted again.
 
 Select the backend with `extraction.agentic.runtime` (`in_process` default, or
 `step_functions`); the `EXTRACTION_RUNTIME` env var and an explicit `override`
@@ -1877,7 +1902,7 @@ hitl:
   For the *agentic* path, integrated confidence can be produced two ways. This knob
   is **not surfaced in the config UI** — it exists so operators can A/B the
   cost/latency-vs-calibration trade-off before we pick a default. Set it via
-  `idp-cli config-upload` on a throwaway config version; both values produce
+  `idp-cli config-upload` on a throwaway configuration profile; both values produce
   identical `explainability_info` downstream (only the inference mechanics differ):
 
   | value | how confidence is produced | inferences per turn/shard (happy path) |
@@ -2488,7 +2513,7 @@ signals make both loud without changing what is extracted:
   | Surface | Reader | Before | After |
   |---|---|---|---|
   | The section's status indicator | `getSectionIssueStatus` in `src/ui/src/components/common/processing-issues-utils.ts` | `success` / **OK** | `info` / **Info** |
-  | The document list's processing-issue count | `ProcessingIssueCount`, written with no severity filter in `dynamodb/service.py`, or summed from the sections on the GSI path | `0` | non-zero |
+  | The document list's processing-issue count | `ProcessingIssueCount`, written with no severity filter in `dynamodb/service.py` | `0` | non-zero |
 
   So on an OCR configuration that renders no exact-width tables, a document where
   nothing is wrong gets a non-zero issue count and a section labelled **Info**.

@@ -98,8 +98,9 @@ global_settings:
 
     # ---- grype / npm-audit: no inline suppression mechanism exists ----
     # These mirror scripts/security/dep_audit_allowlist.json, which is the gating
-    # source of truth for our own CI. Keep the two in sync; if an entry is dropped
-    # there because a dependency was upgraded, drop it here too.
+    # source of truth for our own CI. Keep the two in sync: an entry added there
+    # needs its twin here, and an entry dropped there because a dependency was
+    # upgraded is dropped here too. test_dep_audit.py checks both directions.
     #
     # NOTE: rule_id here assumes ASH reports the advisory id verbatim. If a re-scan
     # still shows these, check the id ASH actually emits and adjust — do not widen

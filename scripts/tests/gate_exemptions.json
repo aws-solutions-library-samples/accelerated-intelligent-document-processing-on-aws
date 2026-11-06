@@ -100,6 +100,20 @@
     "            'nobody is working on it', which is itself information."
   ],
   "exemptions": {
+    "scripts/tests/test_config_profile_writer_wiring.py::KNOWN_WRITERS": {
+      "kind": "fixture",
+      "memberKind": "a (template, logical id) pair naming a deployed Lambda measured to save a configuration profile",
+      "turnsOff": "nothing. It is a FLOOR under the derived set of profile-writing Lambdas, not the list the gate checks: the bucket and S3-grant assertions are parametrised over what config_profile_writers derives from source, and this constant only adds the requirement that the derivation still finds every Lambda measured to save a profile. A member being in it makes the gate stricter, never looser.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/tests/test_config_profile_writer_wiring.py",
+      "issues": [
+        1778
+      ],
+      "reason": "Discovered by name: KNOWN_ is in the discovery vocabulary, and the match is the mechanism working on a constant whose shape is a hand-written list beside a gate. Registered rather than renamed, because renaming to slip past discovery is what this registry exists to prevent. Why JUDGEMENT: membership is the claim 'this Lambda saves a profile at runtime', established by reading each handler and its idp_common call path when the gate was written (discovery, the Replace-mode clear, multi-document save, BDA optimization and sync, the configuration resolver and updater, the two chat processors and the agent processor via the Quick Start agent, the feature platform's config-preset installer, and the data generator's bootstrap); computing it would be the derivation itself, which is what the floor exists to check. The ratchet is that test_the_derivation_finds_every_measured_writer fails when a member is no longer derived -- whether because a resolution rule regressed (measured: disabling the registry-carrier rule shrank the derived set from 11 to 8 and this test went red) or because the Lambda vanished from its template -- so a dead member fails rather than lingering. The residual is the other direction: a new writer the derivation cannot see and nobody adds here is unchecked, which the derivation's documented blind spots (getattr, registries filled inside a function, third-party modules) describe. The universe is deployed Lambdas only, so a local writer (the CLI, the SDK, a notebook) is outside it entirely; the SDK and CLI writers are covered instead by lib/idp_sdk/tests/unit/test_discovery_operations.py and the CLI bootstrap test, which assert they resolve the bucket."
+    },
     ".ash/.ash.yaml::suppressions": {
       "kind": "exemption",
       "memberKind": "advisory id",
@@ -108,7 +122,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "The mirror of scripts/security/dep_audit_allowlist.json, and the only cross-referenced pair in the repo where both sides name each other. Enforcement is one-directional: test_dep_audit.py computes ash_ids - gating, so a stale ASH twin fails but a new allowlist entry with no ASH twin passes silently.",
+      "reason": "The mirror of scripts/security/dep_audit_allowlist.json, and the only cross-referenced pair in the repo where both sides name each other. Enforcement runs both ways: test_dep_audit.py fails on ash_ids - gating, a stale ASH twin, and on gating - ash_ids, an allowlist entry with no ASH twin.",
       "ratchetEvidence": "scripts/security/tests/test_dep_audit.py",
       "crossReferences": [
         "scripts/security/dep_audit_allowlist.json::dep_audit_allowlist.json"
@@ -1650,7 +1664,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Advisories triaged as unreachable, each with a justification. dep_audit.py fails the run on an entry that matched no finding, because a dead entry pre-approves its advisory id if it is ever reissued; scripts/security/tests/test_dep_audit.py asserts that, and also fails on an ASH entry in .ash/.ash.yaml with no allowlist twin.",
+      "reason": "Advisories triaged as unreachable, each with a justification. dep_audit.py fails the run on an entry that matched no finding, because a dead entry pre-approves its advisory id if it is ever reissued; scripts/security/tests/test_dep_audit.py asserts that, and also fails when an entry and its ASH twin in .ash/.ash.yaml do not match, in either direction.",
       "crossReferences": [
         ".ash/.ash.yaml::suppressions",
         "scripts/security/dep_audit.py::suppressed"
@@ -3249,6 +3263,20 @@
       "reason": "Each member carries its own reason in the dict: testset_labels.py is the one writer the scan exists to make the only one, and testset_summaries.py derives a document summary from labels rather than writing a label. Whether a match is a label write is a reading of what the line does, which the regex cannot compute. test_every_allowed_file_still_matches fails on a stale entry whose file no longer matches, so an entry cannot outlive its reason and pre-approve a future writer at that path.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_test_set_label_writers.py"
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_generated_template_validates.py::EXCLUDED_FROM_ALL": {
+      "kind": "exemption",
+      "memberKind": "the name of one top-level section of the system defaults that `FEATURE_SETS[\"all\"]` in idp_common/config/merge_utils.py does not include",
+      "turnsOff": "the equality between `FEATURE_SETS[\"all\"]` and the sections the system defaults carry, for the named section only. Every other assertion in the file still applies to it.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_generated_template_validates.py",
+      "issues": [
+        1691
+      ],
+      "reason": "Each member carries its own reason in the constant's value, because the three reasons differ: rule_validation and chat are on in the system defaults and off in some presets, and hitl is off in the system defaults and may have been turned on in a profile. They share one fact. `all` copies each section's default values, and config-upload merges the file over the stack's preset or the profile's current configuration, so adding a member to `all` would revert that section there. For these three the revert would switch a feature on or off, so `all` leaves them out and they keep the deployment's own setting unless named. That was a product decision (issue #1691), so it cannot be computed. The ratchet is test_all_accounts_for_every_section_the_defaults_carry. It requires every member to be a real section and not already in `all`, and it requires `all` plus the members to equal the section set derived from the defaults. A section that is in neither is therefore unaccounted for and fails, and a member that is added to `all`, or that the defaults drop, also fails."
     }
   }
 }

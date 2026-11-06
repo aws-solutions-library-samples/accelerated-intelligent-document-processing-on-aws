@@ -18,12 +18,13 @@ import React, { useCallback, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { Box, Button, Link } from '@cloudscape-design/components';
 
-import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { MY_QUEUES_PATH, parseEditOrigin, testSetAnnotateHref, testSetDetailHref, testSetQueuePath } from '../../routes/constants';
+import { getFieldsBelowThreshold, getHitlConfidenceThreshold } from '../common/confidence-alerts-utils';
+import { NEXT_ALERT_LABEL, PROCESS_CHANGES_LABEL } from '../common/labels';
 import { editActiveHref, editTrail } from '../review-queues/breadcrumbs';
 import { documentName } from '../review-queues/review-api';
 import { claimTestSetDocument } from '../review-queues/reviewer-assignment';
@@ -32,9 +33,10 @@ import {
   DRAFT_PROMPT_BODY,
   DRAFT_PROMPT_HEADER,
   annotationEditFlags,
-  draftOpenedMessage,
+  draftBadgeHover,
   groundTruthAlertSuffix,
   mayChangeClassFor,
+  versionBadgeText,
 } from '../test-studio/annotation-edit-flags';
 import type { EditAction } from './EditScreen';
 import type { EditModel, EditNavigation, ReviewActivity } from './edit-model';
@@ -57,13 +59,13 @@ export const testSetReviewHistory = (doc: {
     ? [{ at: doc.assignedAt, event: 'assigned', actor: null, details: JSON.stringify({ note: `Assigned to ${doc.assignedTo}` }) }]
     : [];
 
-/** The toast after Save: a draft, which Process Changes later applies. */
+/** The toast after Save: a draft, which Process Changes later writes as reviewed ground truth. */
 export const savedDraftMessage = (name: string): string =>
-  `Saved your changes to ${name}. They count as reviewed once you choose Process Changes.`;
+  `Saved your changes to ${name} as a draft. ${PROCESS_CHANGES_LABEL} writes them as reviewed ground truth.`;
 
 /** Process Changes applied everything, but the server does not yet count the document reviewed. */
 export const notReviewedMessage = (name: string): string =>
-  `Not every section of ${name} is marked reviewed yet. Check its sections and choose Process Changes again.`;
+  `Not every section of ${name} is marked reviewed yet. Check its sections and choose ${PROCESS_CHANGES_LABEL} again.`;
 
 /** The server's verdict after Process Changes: not reviewed yet, so the page stays. */
 class NotReviewedYet extends Error {}
@@ -83,23 +85,23 @@ const FAILED_ACTION: Record<EditAction, string> = {
 export const useTestSetItemEditModel = (testSetId: string, objectKey: string, session: EditorSession): EditModel => {
   const adapter = useTestSetItemEdit(testSetId, objectKey);
   const { doc, draft, queue, loading, loadError, reload } = adapter;
-  const { setErrorMessage, setSuccessMessage } = useAppContext();
   const { settings } = useSettingsContext();
-  const { isAdmin, isAuthor, isReviewer, isAnnotator, canAnnotate, loading: roleLoading } = useUserRole();
+  const { isAdmin, isAuthor, isReviewer, isAnnotator, canAnnotate, canWorkTestSetQueues, loading: roleLoading } = useUserRole();
   const leavePath = useLeavePath();
   const reviewWork = useOptionalReviewWork();
   const [searchParams] = useSearchParams();
   const location = useLocation();
   const focusField = searchParams.get('field');
   const initialSectionId = searchParams.get('section');
-  const [isOpeningDraft, setIsOpeningDraft] = useState(false);
+  // The open section's alert Next alert moves to next.
+  const [nextAlert, setNextAlert] = useState(0);
 
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
   const queuePath = testSetQueuePath(testSetId);
   const workItemId = testSetWorkItemId(testSetId, objectKey);
   const name = documentName(objectKey);
   const roles = { isAdmin, isAuthor, isReviewer, isAnnotator, canAnnotate };
-  const editFlags = doc ? annotationEditFlags(roles, doc, draft) : null;
+  const editFlags = doc ? annotationEditFlags(roles, doc) : null;
   const mayWork = !!doc && (doc.claimedByMe || isAdmin || isAuthor);
   const editorReadOnly = !editFlags || editFlags.isReadOnly || !mayWork;
   const mayChangeClass = !!editFlags && mayChangeClassFor(editFlags.canChangeClass && mayWork, editorReadOnly);
@@ -135,7 +137,7 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
 
   // The trail the user came by; without one, Review Management for an Admin, Tasks for an
   // Annotator, the set in Test Studio for an Author.
-  const origin = parseEditOrigin(location.search) ?? (isAdmin ? 'review' : isAnnotator || isReviewer ? 'tasks' : 'test-studio');
+  const origin = parseEditOrigin(location.search) ?? (isAdmin ? 'review' : canWorkTestSetQueues ? 'tasks' : 'test-studio');
   // The set is named once its queue has loaded, never by its id first.
   const setName = queue ? (queue.name ?? testSetId) : null;
   const navigation: EditNavigation = {
@@ -202,20 +204,51 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
   const reprocesses = !!doc.reviewObjectKey;
   const { dirty, saving } = session;
 
-  // The primary action needs no edit and no Start editing first: it opens the version
-  // transition itself. Only the role half of the editor's read-only state applies: a
+  // A document with confidence alerts opens on them, with a summary and Next alert, which
+  // steps through the open section's fields below the threshold.
+  const alertCount = doc.alertCount ?? 0;
+  const config = (slots.mergedConfig as Record<string, unknown> | null | undefined) ?? undefined;
+  const explainability = session.sectionData?.explainability_info;
+  const explained = (Array.isArray(explainability) ? explainability[0] : explainability) as Record<string, unknown> | undefined;
+  const alertFields =
+    alertCount > 0 && explained && session.selectedSectionId
+      ? getFieldsBelowThreshold(
+          explained,
+          getHitlConfidenceThreshold(config ?? null),
+          '',
+          (session.sectionData?.inference_result as Record<string, unknown> | undefined) ?? undefined,
+        )
+      : [];
+  const handleNextAlert = () => {
+    if (!session.selectedSectionId || alertFields.length === 0) return;
+    const at = nextAlert % alertFields.length;
+    session.focusField(session.selectedSectionId, alertFields[at].fieldPath);
+    setNextAlert(at + 1);
+  };
+
+  // The primary action needs no edit first: it opens the version transition itself,
+  // behind a confirmation when none is open yet. Only the role half of the editor's read-only state applies: a
   // review copy is completed by an Admin or an Annotator, authored ground truth by
   // whoever may save it.
   const roleCannotSave = editFlags.saveViaReview
-    ? !(editFlags.canSaveViaReview && (isAdmin || isAnnotator || isReviewer))
+    ? !(editFlags.canSaveViaReview && canWorkTestSetQueues)
     : !editFlags.canSaveDirectToBaseline;
   // A completed document still opens, so its labels can be read and corrected, but its
   // task is over: completing or skipping it again would end nothing. Skip now returns a
   // document to its queue; `skipped` marks one skipped before that, which still counts
   // as complete.
   const isComplete = doc.reviewed || !!doc.skipped;
-  // An Annotator or a Reviewer (not an Admin, who assigns from the queue) claims a document nobody holds.
-  const canClaim = (isAnnotator || isReviewer) && !isAdmin && !doc.assignedTo && !isComplete;
+  // An Annotator (not an Admin, who assigns from the queue) claims a document nobody holds.
+  const canClaim = canWorkTestSetQueues && !isAdmin && !doc.assignedTo && !isComplete;
+  // Why the fields can't be edited, shown first with Claim when it applies.
+  let readOnlyReason: string | undefined;
+  if (!mayWork)
+    readOnlyReason = doc.assignedTo
+      ? `View only. This document is assigned to ${doc.assignedTo}.`
+      : canClaim
+        ? 'View only. Claim this document to work on it; it is then assigned to you and shows in Home › Tasks.'
+        : 'View only. It is not assigned to you.';
+  else if (editorReadOnly) readOnlyReason = 'View only. Your role cannot edit these labels.';
   let skipReason: string | undefined;
   if (isComplete) skipReason = doc.reviewed ? 'This document is already reviewed' : 'This document was already skipped';
   else if (!mayWork) skipReason = doc.assignedTo ? `Assigned to ${doc.assignedTo}` : 'This document is not assigned to you';
@@ -229,18 +262,6 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
     else if (sections.length === 0) completeReason = 'This document has no sections; Skip completes it';
   }
 
-  const handleOpenDraft = async () => {
-    setIsOpeningDraft(true);
-    try {
-      const opened = await adapter.openDraft();
-      if (opened) setSuccessMessage(draftOpenedMessage(opened));
-    } catch (err) {
-      setErrorMessage(describeApiError(err, 'start annotating this set'));
-    } finally {
-      setIsOpeningDraft(false);
-    }
-  };
-
   return {
     navigation,
     state: {
@@ -252,30 +273,30 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
         // The source document is in the test-set bucket; without it there is nothing to show.
         source: testSetBucket ? { objectKey: doc.inputKey, bucket: testSetBucket } : null,
         offerReport: true,
+        // While a draft version is open: which version the corrections go into.
+        badge: draft ? { text: versionBadgeText(draft), hover: draftBadgeHover(draft) } : undefined,
       },
       // One alert for the screen's notices, so the space stays given over to annotation.
       notices: [
         !testSetBucket && { id: 'bucket', type: 'error', content: 'TestSetBucket is not configured in settings.' },
-        !mayWork && {
-          id: 'view-only',
+        // What each step writes, while no draft version is open and this user may edit.
+        !draft &&
+          !editorReadOnly && {
+            id: 'draft',
+            type: 'info',
+            content: (
+              <>
+                <b>{DRAFT_PROMPT_HEADER}.</b> {DRAFT_PROMPT_BODY}
+              </>
+            ),
+          },
+        alertCount > 0 && {
+          id: 'alerts',
           type: 'info',
-          content: doc.assignedTo
-            ? `View only. This document is assigned to ${doc.assignedTo}.`
-            : canClaim
-              ? 'View only. Claim this document to work on it; it is then assigned to you and shows in Home › Tasks.'
-              : 'View only. It is not assigned to you.',
-        },
-        !draft && {
-          id: 'draft',
-          type: 'info',
-          content: (
-            <>
-              <b>{DRAFT_PROMPT_HEADER}.</b> {DRAFT_PROMPT_BODY}
-            </>
-          ),
+          content: `${alertCount} ${alertCount === 1 ? 'field is' : 'fields are'} below the confidence threshold.`,
           action: (
-            <Button variant="primary" loading={isOpeningDraft} disabled={!canAnnotate} onClick={() => void handleOpenDraft()}>
-              Start editing
+            <Button onClick={handleNextAlert} disabled={alertFields.length === 0}>
+              {NEXT_ALERT_LABEL}
             </Button>
           ),
         },
@@ -289,7 +310,7 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
           !!doc.labelSource && {
             id: 'authored',
             type: 'info',
-            content: `Authored ground truth: check its labels, correct them if needed, then choose Process Changes.${groundTruthAlertSuffix(editFlags.canSaveDirectToBaseline, draft)}`,
+            content: `Authored ground truth: check its labels, correct them if needed, then choose ${PROCESS_CHANGES_LABEL}.${groundTruthAlertSuffix(editFlags.canSaveDirectToBaseline)}`,
           },
       ],
       bar: {
@@ -316,9 +337,11 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
             sections: slots.reviewSections,
             pages: slots.pages,
             pagesLoading: slots.pagesLoading,
-            /* Read-only until the version transition is open, by this document's save
-               path, and for anyone the document is not assigned to (bar Admin/Author). */
+            /* Read-only by this document's save path, and for anyone the document is not
+               assigned to (bar Admin/Author). Editable before a version is open: Save
+               keeps a draft, and Process Changes opens the version. */
             readOnly: editorReadOnly,
+            readOnlyReason,
             loadSection: (sectionId) => adapter.loadSection(sectionId, slots.loadSection),
             saveSection: adapter.saveDraft,
             onLoaded: slots.onLoaded,
@@ -326,6 +349,8 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
             reloadToken: slots.reloadToken + adapter.reloadToken,
             focusFieldPath: focusField,
             buildFieldLink,
+            mergedConfig: config,
+            defaultFilter: alertCount > 0 ? 'confidence-alerts' : 'none',
             slots: {
               headerExtras: slots.headerExtras,
               classSlot: slots.classSlot,
@@ -348,6 +373,8 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
         },
       },
       process: {
+        // Opening a version is a commitment: confirmed first while none is open.
+        confirm: draft ? undefined : { kind: 'version' },
         run: async () => {
           // The open section's unsaved edits are saved as a draft first, so they are applied.
           const editor = session.controllerRef.current;

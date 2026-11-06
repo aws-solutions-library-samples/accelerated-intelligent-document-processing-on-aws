@@ -3,6 +3,7 @@
 
 """Unit tests for the queue_sender Lambda function."""
 
+import dataclasses
 import json
 import os
 import sys
@@ -17,6 +18,8 @@ import pytest
 sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "../../../lib/idp_common_pkg")
 )
+from idp_common import testrun_status as real_testrun_status  # noqa: E402
+from idp_common.config import tenants as real_tenants  # noqa: E402
 from idp_common.job_completion import parse_job_document_id  # noqa: E402
 from idp_common.models import Status  # noqa: E402
 
@@ -46,6 +49,21 @@ sys.modules["idp_common.config.configuration_manager"] = MagicMock()
 # what it does with the answer, and what it emits — which is the half that suite
 # cannot see.
 sys.modules["idp_common.config.prefix_mappings"] = MagicMock()
+# The tenant RULE (`ingest_rejection_reason`) and the mode switch
+# (`is_strict_isolation`, read from TENANT_ISOLATION_MODE) are the real ones; only
+# the store is stubbed. The rule's own matrix is in
+# lib/idp_common_pkg/tests/unit/config/test_tenants.py. What is tested here is that
+# this Lambda consults it in strict mode, never reads anything in Off mode, and
+# fails closed when it cannot.
+mock_tenants_module = MagicMock()
+mock_tenants_module.is_strict_isolation = real_tenants.is_strict_isolation
+mock_tenants_module.ingest_rejection_reason = real_tenants.ingest_rejection_reason
+sys.modules["idp_common.config.tenants"] = mock_tenants_module
+
+# The run statuses that end a Test Studio run, kept REAL: which run records still
+# vouch for a document is the property the replay tests below pin, and a stubbed set
+# would let them pass against any value.
+sys.modules["idp_common.testrun_status"] = real_testrun_status
 
 mock_xray_core = MagicMock()
 # capture() is used as a decorator; make it a pass-through.
@@ -72,34 +90,26 @@ def mock_env():
         yield
 
 
+@dataclasses.dataclass(frozen=True)
 class FakeAssignment:
     """Stands in for idp_common's frozen ConfigAssignment.
 
     Written out rather than taken from a MagicMock because every flag on it is a
     branch in the handler, and a MagicMock attribute is *truthy* — which silently
-    sends every document down the `rejected` path.
+    sends every document down the `rejected` path. A frozen dataclass, like the
+    real one, because the strict-mode tenant check derives a refusal from it with
+    ``dataclasses.replace``.
     """
 
-    def __init__(
-        self,
-        profile="active",
-        revision=None,
-        source="active-profile",
-        mapping_prefix=None,
-        conflict=False,
-        rejected=False,
-        unresolvable=False,
-        reason="because",
-    ):
-        self.profile = profile
-        self.revision = revision
-        self.source = source
-        self.mapping_prefix = mapping_prefix
-        self.conflict = conflict
-        self.rejected = rejected
-        self.unresolvable = unresolvable
-        self.scope_denied = False
-        self.reason = reason
+    profile: object = "active"
+    revision: object = None
+    source: str = "active-profile"
+    mapping_prefix: object = None
+    conflict: bool = False
+    rejected: bool = False
+    unresolvable: bool = False
+    reason: str = "because"
+    scope_denied: bool = False
 
 
 @pytest.fixture(autouse=True)
@@ -2709,3 +2719,288 @@ class TestConfigPrefixMappings:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CONFIG_TABLE", None)
             assert index.resolve_configuration(document, "k") is None
+
+
+ACME = {"tenantId": "acme", "prefixes": ["clients/acme/"], "profilePattern": "acme-*"}
+GLOBEX = {
+    "tenantId": "globex",
+    "prefixes": ["clients/globex/"],
+    "profilePattern": "globex-*",
+}
+
+
+@pytest.mark.unit
+class TestStrictTenantIsolation:
+    """The ingest half of ``TenantIsolationMode=Strict``.
+
+    The boundary rule is the real ``ingest_rejection_reason``; only the tenant store
+    and the test-run read are stubbed. Each case asserts what the handler DID — wrote
+    a FAILED row, enqueued, raised — and not only what it returned.
+    """
+
+    @staticmethod
+    def _run(
+        assignment,
+        key,
+        *,
+        mode="Strict",
+        tenants=(ACME, GLOBEX),
+        source=None,
+        tenant_read_error=None,
+        test_run=None,
+        test_run_status="RUNNING",
+    ):
+        import index
+
+        document = MagicMock()
+        document.id = key
+        document.input_key = key
+        document.config_version = None
+        document.config_revision = None
+        document.submission_source = source
+        document.to_json.return_value = "{}"
+
+        store = MagicMock()
+        if tenant_read_error:
+            store.return_value.list.side_effect = tenant_read_error
+        else:
+            store.return_value.list.return_value = list(tenants)
+        table = MagicMock()
+        run_item = {"ConfigVersion": test_run} if test_run else None
+        if run_item is not None and test_run_status is not None:
+            run_item["Status"] = test_run_status
+        table.get_item.return_value = {"Item": run_item} if run_item else {}
+        env = {"TENANT_ISOLATION_MODE": mode, "TRACKING_TABLE": "tracking"}
+        with (
+            patch.dict(os.environ, env),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "delete_current_output_objects") as mock_purge,
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "PrefixMappingStore"),
+            patch.object(index, "ConfigurationManager"),
+            patch.object(index, "TenantStore", store),
+            patch.object(index, "_config_table", return_value=table),
+            patch.object(index.Document, "from_s3_event", return_value=document),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+            patch.object(index, "resolve_config_assignment", return_value=assignment),
+        ):
+            response = index.handler(make_event(key), None)
+        metrics = [
+            datum["MetricName"]
+            for call in mock_cw.put_metric_data.call_args_list
+            for datum in call.kwargs.get("MetricData", [])
+        ]
+        return {
+            "response": response,
+            "document": document,
+            "metrics": metrics,
+            "enqueued": mock_sqs.send_message.called,
+            "created": mock_doc_service.create_document.called,
+            "purged": mock_purge.called,
+            "tenant_reads": store.return_value.list.call_count,
+            "test_run_reads": table.get_item.call_count,
+        }
+
+    def _assert_refused(self, result):
+        assert result["response"]["refused"] == "tenant_boundary"
+        assert result["document"].status == Status.FAILED
+        assert "Refused" in result["document"].config_assignment_error
+        assert result["created"] is True, "the refusal must be visible, not dropped"
+        assert result["enqueued"] is False
+        assert result["purged"] is False
+        assert "TenantBoundaryRejected" in result["metrics"]
+
+    def test_an_in_tenant_document_is_processed(self):
+        result = self._run(
+            FakeAssignment(profile="acme-invoices"), "clients/acme/x.pdf"
+        )
+        assert result["enqueued"] is True
+        assert result["tenant_reads"] == 1
+        assert "TenantBoundaryRejected" not in result["metrics"]
+
+    def test_metadata_naming_another_tenants_profile_is_refused(self):
+        self._assert_refused(
+            self._run(
+                FakeAssignment(profile="globex-w2", source="metadata"),
+                "clients/acme/x.pdf",
+            )
+        )
+
+    def test_an_upload_outside_every_tenant_is_refused(self):
+        self._assert_refused(
+            self._run(FakeAssignment(profile="default"), "loose/x.pdf")
+        )
+
+    def test_a_forged_submission_source_does_not_cross_the_boundary(self):
+        self._assert_refused(
+            self._run(
+                FakeAssignment(profile="globex-w2", source="internal-producer"),
+                "clients/acme/x.pdf",
+                source="pii-anonymizer",
+            )
+        )
+
+    def test_a_verified_test_run_into_a_tenant_profile_is_processed(self):
+        result = self._run(
+            FakeAssignment(profile="acme-invoices", source="internal-producer"),
+            "run-123/doc.pdf",
+            source="test-studio",
+            test_run="acme-invoices",
+        )
+        assert result["enqueued"] is True
+        assert result["test_run_reads"] == 1
+
+    @pytest.mark.parametrize(
+        "status", ["COMPLETE", "PARTIAL_COMPLETE", "ABORTED", "FAILED", None]
+    )
+    def test_a_finished_test_run_cannot_be_replayed(self, status):
+        """A run that has stopped has no documents left to write, so its record is
+        not evidence for a new one. A record with no status is refused too."""
+        self._assert_refused(
+            self._run(
+                FakeAssignment(profile="acme-invoices", source="internal-producer"),
+                "run-123/doc.pdf",
+                source="test-studio",
+                test_run="acme-invoices",
+                test_run_status=status,
+            )
+        )
+
+    @pytest.mark.parametrize("status", ["QUEUED", "RUNNING", "EVALUATING"])
+    def test_an_in_flight_test_run_is_honoured(self, status):
+        result = self._run(
+            FakeAssignment(profile="acme-invoices", source="internal-producer"),
+            "run-123/doc.pdf",
+            source="test-studio",
+            test_run="acme-invoices",
+            test_run_status=status,
+        )
+        assert result["enqueued"] is True
+
+    def test_an_unverified_test_run_is_refused(self):
+        self._assert_refused(
+            self._run(
+                FakeAssignment(profile="acme-invoices", source="internal-producer"),
+                "run-123/doc.pdf",
+                source="test-studio",
+                test_run=None,
+            )
+        )
+
+    def test_a_tenant_read_failure_fails_closed(self):
+        """Raised out of the handler so Lambda's async retries and the alarmed DLQ
+        take it; nothing is written and nothing is queued."""
+        import index
+
+        with pytest.raises(index.TenantIsolationUnavailable):
+            self._run(
+                FakeAssignment(profile="acme-invoices"),
+                "clients/acme/x.pdf",
+                tenant_read_error=RuntimeError("throttled"),
+            )
+
+    def test_an_unresolvable_configuration_fails_closed(self):
+        import index
+
+        with patch.object(
+            index, "resolve_configuration", side_effect=RuntimeError("boom")
+        ):
+            with pytest.raises(index.TenantIsolationUnavailable):
+                self._run(FakeAssignment(), "clients/acme/x.pdf")
+
+    def test_a_mapping_rejection_is_reported_as_one(self):
+        result = self._run(
+            FakeAssignment(rejected=True, source="rejected", profile=None),
+            "clients/acme/x.pdf",
+        )
+        assert result["response"]["refused"] == "config_prefix_mapping_conflict"
+        assert result["tenant_reads"] == 0
+
+    @pytest.mark.parametrize("mode", ["Off", ""])
+    def test_off_mode_reads_no_tenants_and_refuses_nothing(self, mode):
+        result = self._run(
+            FakeAssignment(profile="globex-w2"), "clients/acme/x.pdf", mode=mode
+        )
+        assert result["tenant_reads"] == 0
+        assert result["test_run_reads"] == 0
+        assert result["enqueued"] is True
+        assert "refused" not in result["response"]
+
+
+class TestStrictTenantIsolationAtTheVerdict:
+    """The malware gate re-resolves the configuration when the verdict arrives, so
+    strict mode re-checks the tenant boundary there too: a mapping or tenant change
+    during the scan must not admit a document the upload path would have refused."""
+
+    @staticmethod
+    def _run(assignment, key, *, mode="Strict", row_source=None):
+        import index
+
+        doc = _mock_document(key)
+        # What a failed object-metadata read leaves: no submission source on the
+        # document built from the verdict, so only the row knows it.
+        doc.submission_source = None
+        store = MagicMock()
+        store.return_value.list.return_value = [ACME, GLOBEX]
+        with (
+            patch.dict(os.environ, {"TENANT_ISOLATION_MODE": mode}),
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index, "resolve_configuration", return_value=assignment),
+            patch.object(index, "TenantStore", store),
+            patch.object(index, "_config_table", return_value=MagicMock()),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            row = _row_double()
+            row.submission_source = row_source
+            mock_doc_service.get_document.return_value = row
+            response = index.handler(make_scan_result_event(key=key), None)
+        return response, doc, mock_sqs, mock_doc_service, store
+
+    def test_a_clean_verdict_for_a_cross_tenant_document_is_refused(self):
+        _, doc, mock_sqs, mock_doc_service, _ = self._run(
+            FakeAssignment(profile="globex-w2"), "clients/acme/x.pdf"
+        )
+        assert doc.status == Status.FAILED
+        mock_sqs.send_message.assert_not_called()
+        extra = mock_doc_service.update_document_status.call_args.kwargs[
+            "extra_attributes"
+        ]
+        assert "tenant 'acme'" in extra["ConfigAssignmentError"]
+
+    def test_a_clean_verdict_for_an_in_tenant_document_is_admitted(self):
+        _, doc, mock_sqs, _, _ = self._run(
+            FakeAssignment(profile="acme-invoices"), "clients/acme/x.pdf"
+        )
+        assert doc.status == Status.QUEUED
+        mock_sqs.send_message.assert_called_once()
+
+    def test_the_rows_submission_source_decides_when_the_metadata_read_failed(self):
+        """An internal producer's document outside every tenant is admitted on the
+        row's authority. Checked before the overlay, it would be refused."""
+        _, doc, mock_sqs, _, _ = self._run(
+            FakeAssignment(profile="lending"),
+            "redacted/x.pdf",
+            row_source="pii-anonymizer",
+        )
+        assert doc.status == Status.QUEUED
+        mock_sqs.send_message.assert_called_once()
+
+    def test_off_mode_reads_no_tenants_at_the_verdict(self):
+        _, doc, _, _, store = self._run(
+            FakeAssignment(profile="globex-w2"), "clients/acme/x.pdf", mode="Off"
+        )
+        assert doc.status == Status.QUEUED
+        assert store.return_value.list.call_count == 0

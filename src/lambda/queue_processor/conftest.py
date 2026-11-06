@@ -72,6 +72,12 @@ _REAL_MODULES: tuple[tuple[str, str], ...] = (
         "idp_common.utils.execution_names",
         "lib/idp_common_pkg/idp_common/utils/execution_names.py",
     ),
+    # start_workflow moves the incoming usage into the metering baseline with
+    # the real helper; stdlib only.
+    (
+        "idp_common.utils.metering",
+        "lib/idp_common_pkg/idp_common/utils/metering.py",
+    ),
 )
 
 

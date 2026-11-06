@@ -15,6 +15,18 @@ from botocore.exceptions import ClientError
 
 from idp_common.api_adapter import ResourceNotFound  # type: ignore
 from idp_common.config.migrations import migrate_config  # type: ignore
+from idp_common.config_scope import (  # type: ignore
+    ScopeLookupError,
+    caller_email_from_claims,
+    caller_sub_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
+from idp_common.forced_sections import (  # type: ignore
+    ForcedSectionsError,
+    decode_forced_sections,
+    is_valid_document_class,
+)
 from idp_common.review_queues.statuses import (  # type: ignore
     LegacyHitlStatus,
     normalize_hitl_status,
@@ -80,6 +92,50 @@ def _caller_in_groups(event, allowed):
     return bool(set(allowed).intersection(groups))
 
 
+_user_scope_cache: dict = {}
+
+
+def _require_profile_in_scope(event, profile):
+    """Refuse a run started by a non-Admin under a profile outside their scope.
+
+    A run's documents are stamped with its profile, so they become visible to
+    every user scoped to that profile. Without this check a scoped Author could
+    start a run under a profile they cannot see, putting documents into another
+    scope's view — and, under strict tenant isolation, into another tenant's, since
+    ingest accepts a Test Studio document under the profile its run record names.
+
+    Admins are unrestricted, as everywhere else. A direct (IAM) invocation carries
+    no identity and is gated by IAM on the function ARN, so it is not scoped
+    either. Everything else fails CLOSED: a scope that cannot be evaluated refuses
+    the run.
+    """
+    identity = event.get("identity")
+    if identity is None or _caller_in_groups(event, ("Admin",)):
+        return
+    claims = identity.get("claims", {}) or {}
+    try:
+        allowed = resolve_allowed_config_versions(
+            caller_email_from_claims(claims),
+            caller_sub=caller_sub_from_claims(claims),
+            users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+            dynamodb=dynamodb,
+            cache=_user_scope_cache,
+        )
+    except ScopeLookupError as e:
+        logger.warning(f"Denied startTestRun: scope could not be evaluated ({e})")
+        raise PermissionError(
+            "Access denied: your configuration scope could not be verified"
+        ) from e
+    if not scope_allows(allowed, profile):
+        logger.warning(
+            "Denied startTestRun: profile %r is outside the caller's scope", profile
+        )
+        raise PermissionError(
+            f"Access denied: configuration profile '{profile}' is not in your "
+            f"allowed scope"
+        )
+
+
 def handler(event, context):
     logger.info(
         f"Test runner invoked with event: {json.dumps(sanitize_event_for_logging(event))}"
@@ -100,7 +156,7 @@ def handler(event, context):
         # Route by GraphQL field. startTestRun is the default/legacy path.
         field_name = event.get("info", {}).get("fieldName", "startTestRun")
         if field_name == "sendTestRunToReview":
-            return send_test_run_to_review(event["arguments"])
+            return send_test_run_to_review(event["arguments"], event)
 
         input_data = event["arguments"]["input"]
         test_set_id = input_data["testSetId"]
@@ -115,6 +171,9 @@ def handler(event, context):
         # first N of the set.
         object_keys = input_data.get("objectKeys") or []
         document_class = input_data.get("documentClass")
+        # A whole-document section grouping to force instead of classifying, set by
+        # a section-scoped re-extract (reextractTestSetDocument with sectionId).
+        document_sections = input_data.get("documentSections")
         config_version = input_data.get("configVersion")
         # Revision of that profile to score against. Pinning it is what makes two
         # runs of the same profile comparable — otherwise a run records only which
@@ -124,6 +183,40 @@ def handler(event, context):
         # against it, so it is never evaluated. Carried as its own flag; the
         # free-text `context` is a user-facing label and must not be load-bearing.
         purpose = "draft-labeling" if input_data.get("draftLabeling") else "scoring"
+        if document_sections:
+            # Only a section-scoped re-extract builds one, and it describes exactly
+            # one document's ground truth, so it is refused on any other kind of
+            # run. Decoded here too, so a malformed value is a bad request rather
+            # than a document failing later in the pipeline.
+            if purpose != "draft-labeling" or len(object_keys) != 1:
+                raise ValueError(
+                    "documentSections is accepted only on a draft-labeling run of "
+                    "exactly one document"
+                )
+            try:
+                decode_forced_sections(document_sections)
+            except ForcedSectionsError as e:
+                raise ValueError(f"Invalid documentSections: {e}") from e
+        if document_class is not None and document_class != "":
+            # Replaces classification for every document in the run and is stamped
+            # as S3 object metadata by the copier, so it is held to what the
+            # re-extract that sends it means: one named document, a draft-labeling
+            # run, and a class name metadata can carry (#1728).
+            if not is_valid_document_class(document_class):
+                raise ValueError(
+                    "Invalid documentClass: expected up to 100 characters of "
+                    "letters, digits, spaces, hyphens or underscores"
+                )
+            if purpose != "draft-labeling" or len(object_keys) != 1:
+                raise ValueError(
+                    "documentClass is accepted only on a draft-labeling run of "
+                    "exactly one document"
+                )
+            if document_sections:
+                raise ValueError(
+                    "Pass documentClass or documentSections, not both: a forced "
+                    "grouping already carries every section's class"
+                )
         tracking_table = os.environ["TRACKING_TABLE"]
         config_table = os.environ["CONFIG_TABLE"]
 
@@ -168,6 +261,10 @@ def handler(event, context):
         effective_config_version = config_version or _active_config_version(
             config_table
         )
+        # Scope is checked on the EFFECTIVE profile, not the named one: a caller
+        # who names none gets the active profile, and the run's documents are
+        # stamped with it all the same.
+        _require_profile_in_scope(event, effective_config_version)
         # A profile the caller named must exist. Without this the run was created
         # anyway — an empty captured config, the profile stamped onto every
         # document — and each document then failed in OCR, minutes later, with
@@ -293,6 +390,10 @@ def handler(event, context):
         # point of the request is that the model's own answer was wrong.
         if document_class:
             message_body["documentClass"] = document_class
+        # A re-extract of one section of a multi-section document: the document's
+        # whole grouping, with that section's class corrected, forced the same way.
+        if document_sections:
+            message_body["documentSections"] = document_sections
 
         sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(message_body))
 
@@ -318,12 +419,16 @@ def handler(event, context):
         # level down from the 500-for-a-not-found this convention exists to fix.
         logger.warning(f"Not found in test runner: {str(e)}")
         raise
+    except PermissionError:
+        # Already logged at WARNING where it was raised; re-raised as itself so the
+        # dispatcher answers 403 rather than 500.
+        raise
     except Exception as e:
         logger.error(f"Error in test runner: {str(e)}")
         raise
 
 
-def send_test_run_to_review(args):
+def send_test_run_to_review(args, event=None):
     """Mark a completed test run's documents for HITL review, on demand.
 
     A test run's inputs are copied into the pipeline under a ``{test_run_id}/``
@@ -349,6 +454,13 @@ def send_test_run_to_review(args):
     )
     if not run:
         raise ResourceNotFound(f"Test run '{test_run_id}' not found")
+    # The run's documents carry its profile, so queueing them for review is an
+    # action on documents in that profile's scope: the same check as starting it.
+    # ⚠️ ``event=None`` is the direct-invocation shape -- no identity, gated by IAM
+    # on the function ARN -- and is unscoped exactly as ``startTestRun`` is for that
+    # shape. The handler always passes the event; a caller acting for a USER must
+    # too, or the check has nobody to scope.
+    _require_profile_in_scope(event or {}, run.get("ConfigVersion"))
 
     files = run.get("Files") or []
     queued = 0

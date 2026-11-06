@@ -673,6 +673,17 @@
         }
       ]
     },
+    "deleteTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "deleteTestSets": {
       "args": [
         {
@@ -1607,6 +1618,9 @@
     "listSampleDocuments": {
       "args": []
     },
+    "listTenants": {
+      "args": []
+    },
     "listTestSetQueues": {
       "args": []
     },
@@ -1780,6 +1794,45 @@
           "elem_non_null": false,
           "is_list": false,
           "name": "description",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "putTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "prefixes",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profilePattern",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "description",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "grantedBy",
           "non_null": false,
           "type": "String"
         }
@@ -2370,6 +2423,24 @@
           "is_list": false,
           "name": "versionName",
           "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "setUserTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "email",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
+          "non_null": false,
           "type": "String"
         }
       ]
@@ -3704,6 +3775,13 @@
       {
         "elem_non_null": false,
         "is_list": false,
+        "name": "sectionId",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
         "name": "configVersion",
         "non_null": false,
         "type": "String"
@@ -3895,6 +3973,13 @@
         "name": "enabled",
         "non_null": false,
         "type": "Boolean"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "version",
+        "non_null": false,
+        "type": "Int"
       }
     ],
     "SectionInput": [

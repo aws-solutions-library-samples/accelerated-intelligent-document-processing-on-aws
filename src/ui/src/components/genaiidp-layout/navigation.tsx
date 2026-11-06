@@ -657,7 +657,8 @@ const FullNavigation = ({
  * Navigation for a user whose only work is the review queues — Annotator-only, or a
  * Reviewer with no Admin, Author or Viewer role: Home (Inbox, Tasks, Queues) and
  * Deployment Info. No Documents or Extensions: their work is reached from Home.
- * Mounts no feature or catalog hooks.
+ * No Test Studio either: an Annotator reaches its test-set queues from Home › Queues,
+ * and a Reviewer works Production queues only. Mounts no feature or catalog hooks.
  */
 const QueueWorkerNavigation = ({ onFollowHandler = defaultOnFollowHandler, activeHref: pinned }: NavigationProps): React.JSX.Element => {
   const location = useLocation();
@@ -669,7 +670,7 @@ const QueueWorkerNavigation = ({ onFollowHandler = defaultOnFollowHandler, activ
     buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: true, taskCount: reviewWork?.count ?? null }),
     ...(deploymentInfo ? [deploymentInfo] : []),
   ];
-  // The edit pages (a Test Studio item under /review-queues/.../items, or a document's
+  // The edit pages (a Test Studio item under /review-queues/.../items for an Annotator, or a document's
   // edit page, which sets the entry itself) are opened from Tasks; a queue's own page
   // (under /review-queues) from Queues.
   let activeHref = `#${MY_TASKS_PATH}`;

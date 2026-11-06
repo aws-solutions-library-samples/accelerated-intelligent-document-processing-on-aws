@@ -22,7 +22,6 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Alert,
-  Badge,
   Box,
   Button,
   ButtonDropdown,
@@ -34,7 +33,6 @@ import {
   Link,
   Modal,
   Pagination,
-  Popover,
   Select,
   SpaceBetween,
   Spinner,
@@ -50,7 +48,7 @@ import useSettingsContext from '../../contexts/settings';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError, isAuthorizationError } from '../../hooks/utils/graphql-error';
-import { testSetAnnotateHref, testSetItemPath } from '../../routes/constants';
+import { SHOW_REVIEWED, testSetAnnotateHref, testSetItemPath } from '../../routes/constants';
 import AssignModal from '../review-queues/AssignModal';
 import QueueAnnotatorsTable, { queueAnnotatorRows } from '../review-queues/QueueAnnotatorsTable';
 import QueueProgress, { progressPercent } from '../review-queues/QueueProgress';
@@ -64,6 +62,7 @@ import {
   listTestSetQueues,
   unassignTestSetDocuments,
 } from '../review-queues/reviewer-assignment';
+import VersionBadge from '../common/VersionBadge';
 import type { AnnotationQueue, QueueItem } from '../edit-screen/test-set-item-edit-adapter';
 import { renderAlertCount, renderLabelSource } from './TestSetDetail';
 import {
@@ -75,6 +74,7 @@ import {
   formatPct,
   queueEmptyText,
   staleLinkVersion as staleVersionFor,
+  versionBadgeText,
 } from './annotation-edit-flags';
 import { createLatestResponseGuard } from './latestResponseOnly';
 
@@ -145,7 +145,7 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
   const requestedVersion = searchParams.get('v');
   const { settings } = useSettingsContext();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
-  const { canAnnotate, isAdmin, isAnnotatorOnly, isQueueWorker, loading: roleLoading } = useUserRole();
+  const { canAnnotate, isAdmin, isAnnotatorOnly, canWorkTestSetQueues, loading: roleLoading } = useUserRole();
   // An item opened from here keeps this page in its breadcrumbs: under Review Management for an Admin, Queues otherwise.
   const itemOrigin = isAdmin ? 'review' : 'queues';
   const reviewWork = useOptionalReviewWork();
@@ -161,8 +161,8 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
         setEligibleAnnotators([]);
       });
   }, [isAdmin, testSetId]);
-  // A non-Admin Annotator or Reviewer claims documents rather than assigning them.
-  const claimsWork = isQueueWorker && !isAdmin;
+  // A non-Admin Annotator claims documents rather than assigning them.
+  const claimsWork = canWorkTestSetQueues && !isAdmin;
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
 
   const [queue, setQueue] = useState<AnnotationQueue | null>(null);
@@ -177,7 +177,11 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
   const [queuePage, setQueuePage] = useState(1);
   // Worst-first until someone sorts by Annotator; then by assignee, either way.
   const [annotatorSort, setAnnotatorSort] = useState<{ descending: boolean } | null>(null);
-  const [statusFilter, setStatusFilter] = useState<DocStatusFilter>(DEFAULT_STATUS_FILTER);
+  // `?show=reviewed` (a fully labelled set's "Review the set's documents") opens with
+  // every document listed, reviewed ones included.
+  const [statusFilter, setStatusFilter] = useState<DocStatusFilter>(
+    searchParams.get('show') === SHOW_REVIEWED ? 'all' : DEFAULT_STATUS_FILTER,
+  );
   const showReviewed = statusFilter === 'all';
   const [selectedRows, setSelectedRows] = useState<QueueItem[]>([]);
   const [assignOpen, setAssignOpen] = useState(false);
@@ -608,11 +612,7 @@ const AnnotationQueuePage = ({ onName }: AnnotationQueuePageProps): React.JSX.El
                 {draft && (
                   <>
                     {' '}
-                    <Popover dismissButton={false} position="bottom" size="medium" triggerType="custom" content={draftBadgeHover(draft)}>
-                      <Badge color="blue">
-                        v{draft.baseVersion} &rarr; v{draft.draftVersion}
-                      </Badge>
-                    </Popover>
+                    <VersionBadge text={versionBadgeText(draft)} hover={draftBadgeHover(draft)} />
                   </>
                 )}
               </>

@@ -174,7 +174,7 @@ correct. `observations_from_baseline_review` derives those pairs by diffing the
 drafted label against the saved one — which is why the review Lambda must read
 the previous baseline **before** overwriting it.
 
-Curves are keyed by `(test set, config version, confidence fingerprint)` since
+Curves are keyed by `(test set, configuration profile, confidence fingerprint)` since
 confidence semantics shift across models and assessment settings (`curve_sk`:
 `curve#<profile>@<fingerprint>`, #698). Every observation is also folded into the
 profile's pooled key `curve#<profile>`, the set aggregate `curve#_aggregate` and the

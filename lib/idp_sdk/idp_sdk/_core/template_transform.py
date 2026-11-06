@@ -421,6 +421,8 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "ExternalIdPViewerGroupName",
             "ExternalIdPAutoLogin",
             "ExternalIdPEmailMutable",
+            # The web UI client's refresh-token lifetime; no client in headless
+            "RefreshTokenValidityHours",
             # Public-template version-check (UI-only feature — resolver
             # removed above in self.appsync_resources). Drop the params so
             # the headless template doesn't expose unused UI configuration.
@@ -481,6 +483,8 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "ShouldMapExternalIdPGroups",
             "ExternalIdPEmailIsMutable",  # reads ExternalIdPEmailMutable (#835)
             "CreateExternalAppClient",
+            # Reads RefreshTokenValidityHours, a web UI client setting (removed below)
+            "HasCustomRefreshTokenValidity",
             # Used only by the removed VersionCheckResolverFunction (AppSync UI feature)
             "HasPublicArtifactsBucket",
             # Tests the AdminEmail parameter against the CI sentinel to suppress
@@ -505,6 +509,8 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
 
         self.rules_to_remove: Set[str] = {
             "ValidateExistingPrivateWorkforceArn",
+            # Asserts ExternalIdPGroupAttributeName, removed with the IdP parameters
+            "TenantGrantFromIdpClaimNeedsGroupAttribute",
         }
 
         # ---- Parameter groups to remove ----
@@ -1784,8 +1790,14 @@ class GovCloudTemplateTransformer(_PolicyStatementRemovalReporter):
                         continue
                 count += self._blank_function_url_refs(v, url_names)
         elif isinstance(node, list):
-            for x in node:
-                count += self._blank_function_url_refs(x, url_names)
+            # A reference can also be a list ELEMENT — an `Fn::If` branch such as
+            # `!If [Cond, "", !GetAtt Url.FunctionUrl]` — which the dict branch
+            # above never sees, because it only replaces dict values. Wrapping the
+            # element in a one-key dict lets that branch decide, then unwraps it.
+            for i, x in enumerate(node):
+                holder = {"_": x}
+                count += self._blank_function_url_refs(holder, url_names)
+                node[i] = holder["_"]
         return count
 
     # ---- LWA-dependent function removal (see LWA_LAYER_MARKERS) ----

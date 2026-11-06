@@ -104,6 +104,12 @@ describe.each(QUEUE_WORKERS)('navigation for %s', (_name, role) => {
     expect(JSON.stringify(nav.items)).not.toContain('#/documents');
   });
 
+  it('has no Test Studio entry', () => {
+    const nav = renderNav();
+    expect(sections(nav)).not.toContain('Test Studio');
+    expect(JSON.stringify(nav.items)).not.toContain('#/test-studio');
+  });
+
   it('keeps Tasks and Queues in Home', () => {
     expect(linkTexts(section(renderNav(), 'Home'))).toEqual(['Inbox', 'Tasks', 'Queues']);
   });

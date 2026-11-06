@@ -116,7 +116,6 @@ class ReviewQueueSummary(_View):
 class MyReviewQueues(_View):
     queues: list[ReviewQueueSummary] = Field(default_factory=list)
     my_claim_count: int = 0
-    enabled_profiles: list[str] = Field(default_factory=list)
     items: ReviewItemPage = Field(default_factory=ReviewItemPage)
 
 

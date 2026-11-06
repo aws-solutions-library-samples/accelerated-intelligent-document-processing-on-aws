@@ -24,8 +24,11 @@ complementary layers that share one source of truth:
 > only in their *denied* role, because an allowed-role call would start real work —
 > `sendChatDocumentMessage` starts a chat turn — so their scope enforcement is not
 > reached here and is covered by that component's own unit suite instead. The
-> static scan's **S4** is a grep: it asserts the `enforced_in` file mentions
-> `allowedConfigVersions`, which a file containing a broken lookup also does.
+> static scan's **S4** reads the code each operation can reach: it asserts that
+> code refers to the caller's config-version scope, and, for a `scope_filtered`
+> operation, that it applies a per-item scope predicate bottoming out at
+> `scope_allows` to what it returns, following calls into `idp_common`. It is a
+> structural check, not dataflow: a broken scope *lookup* still passes it.
 > Neither layer would have caught issue #970, where the lookup named a DynamoDB
 > index no template declares.
 
@@ -177,7 +180,7 @@ regenerate the manifest.
 
 ## Files
 
-- `scripts/api_rbac_expectations.yaml` — single source of truth (164 ops + gap
+- `scripts/api_rbac_expectations.yaml` — single source of truth (168 ops + gap
   register). Entry schema is documented at the top of the file.
 - `scripts/sdlc/scan_api_rbac.py` — static scanner (`--strict` fails on known
   gaps, use to confirm a gap was fixed; `--json PATH` for machine output).
@@ -449,7 +452,7 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
 > any authenticated caller — including one in no group, which self-signup produces.
-> 8 of the 164 declared operations are `ANY`, each with a note in the expectations file
+> 8 of the 168 declared operations are `ANY`, each with a note in the expectations file
 > saying why that is the intended answer for **that operation**, not for the section
 > it sits in. In full: `getMyProfile`, `listChatSessions`,
 > `getLatestPublishedVersion`, `listFinetuningJobs`, `getFinetuningJob`,

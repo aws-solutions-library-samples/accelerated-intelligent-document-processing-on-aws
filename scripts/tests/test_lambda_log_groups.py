@@ -29,6 +29,10 @@ Rules enforced:
 4. A log group's ``Condition`` matches the ``Condition`` of the function it
    serves, so a group is never created on a stack whose function does not exist
    (and never missing on one where it does).
+5. A custom-resource handler with a declared log group has a role that denies
+   ``logs:CreateLogGroup`` on that group (#1754), so the last log lines of its
+   stack-delete invocation, which Lambda delivers after the group is deleted,
+   cannot recreate it with no retention. See ``_check_rule_5``.
 
 Rule 1's exemption is for Lambdas that run **only** during a CloudFormation
 stack operation: a custom-resource handler, or an install hook invoked by
@@ -86,6 +90,7 @@ Two seams remain, both known and both currently harmless:
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from pathlib import Path
 from typing import Any
@@ -533,6 +538,386 @@ def test_exemptions_are_really_custom_resource_only(rel_path: str) -> None:
 # bypass an earlier revision of this file accepted.
 # ---------------------------------------------------------------------------
 
+
+def _custom_resource_log_groups(doc: dict) -> dict[str, set[str]]:
+    """``{function: log groups}`` for every custom-resource handler with a group.
+
+    A function counts when a ``ServiceToken`` in this template names it and its
+    ``LoggingConfig`` resolves to an ``AWS::Logs::LogGroup`` declared here. An
+    ``Fn::If`` between two groups yields both, and rule 5 needs a deny on each. CloudFormation sends each such function a ``Delete`` while it
+    deletes the stack, so these are the groups rule 5 is about. The functions in
+    ``CUSTOM_RESOURCE_ONLY`` declare no group and drop out on the second leg.
+    """
+    resources = doc.get("Resources", {}) or {}
+    log_groups = set(_log_groups(resources))
+    tokens: set[str] = set()
+    for body in resources.values():
+        if isinstance(body, dict):
+            tokens |= _referenced_logical_ids(
+                (body.get("Properties") or {}).get("ServiceToken")
+            )
+    found: dict[str, set[str]] = {}
+    for name, body in _functions(resources).items():
+        if name not in tokens:
+            continue
+        groups = set()
+        for branch in _branches(_logging_config_target(body)):
+            if _resolves_exactly_to(branch, log_groups):
+                groups |= _referenced_logical_ids(branch) & log_groups
+        if groups:
+            found[name] = groups
+    return found
+
+
+def _unconditional_statements(policy_items: Any) -> list[dict]:
+    """Statements in a ``Policies`` list that deploy on every branch.
+
+    Handles both shapes: a SAM function's items (``{Statement: [...]}``) and an
+    ``AWS::IAM::Role``'s (``{PolicyName, PolicyDocument: {Statement: [...]}}``).
+    Anything reached only through ``Fn::If`` is left out, because a statement on
+    one branch is absent on the other. That needs no test of its own: an
+    ``Fn::If`` wrapper has neither ``PolicyDocument`` nor ``Statement`` nor
+    ``Effect``, so nothing under it is read as a statement.
+    """
+    statements: list[dict] = []
+    if not isinstance(policy_items, list):
+        return statements
+    for item in policy_items:
+        if not isinstance(item, dict):
+            continue
+        document = item.get("PolicyDocument", item)
+        if not isinstance(document, dict):
+            continue
+        listed = document.get("Statement")
+        listed = listed if isinstance(listed, list) else [listed]
+        statements.extend(s for s in listed if isinstance(s, dict))
+    return statements
+
+
+def _denies_creating(statement: dict, group: str) -> bool:
+    """True if ``statement`` alone denies ``logs:CreateLogGroup`` on ``group``."""
+    if statement.get("Effect") != "Deny" or "Condition" in statement:
+        return False
+    actions = statement.get("Action")
+    actions = actions if isinstance(actions, list) else [actions]
+    if not any(
+        isinstance(a, str) and fnmatch.fnmatchcase("logs:createloggroup", a.lower())
+        for a in actions
+    ):
+        return False
+    resources = statement.get("Resource")
+    resources = resources if isinstance(resources, list) else [resources]
+    arn = (
+        "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}"
+        f":log-group:${{{group}}}"
+    )
+    # Both spellings of the group's ARN, because which one IAM evaluates for
+    # this call was not observed: the CloudWatch Logs documentation names the
+    # bare log-group ARN, and ``GetAtt <group>.Arn`` is the ``:*`` form.
+    bare = suffixed = False
+    for resource in resources:
+        if resource == "*":
+            return True
+        if not isinstance(resource, dict):
+            continue
+        attr = resource.get("Fn::GetAtt")
+        sub = resource.get("Fn::Sub")
+        if attr in (f"{group}.Arn", [group, "Arn"]) or sub == f"{arn}:*":
+            suffixed = True
+        if sub == arn:
+            bare = True
+    return bare and suffixed
+
+
+def _check_rule_5(doc: dict) -> list[str]:
+    """Rule 5 (#1754): a custom-resource handler cannot recreate its own group.
+
+    Deleting the stack sends the handler a ``Delete``; Lambda delivers that
+    invocation's last lines a few seconds after CloudFormation has deleted the
+    function, its role and its group, and the delivery recreates the group under
+    the function's role, with no retention and no KMS key. The function's own
+    ordering cannot prevent it: it already depends on its group through
+    ``LoggingConfig``, so it is deleted first. The role denying
+    ``logs:CreateLogGroup`` on the group costs nothing while the stack lives,
+    because CloudFormation creates the group before the function, and naming
+    the group in the role's policy makes the role depend on it, so the group is
+    deleted after the role. On one live delete that moved each group's deletion
+    from about 4 to about 15 seconds after its function's, and no group came
+    back; the deny itself was never exercised there, so whether IAM still
+    applies it to a deleted role's session is unobserved. The delay is a margin,
+    not a guarantee, and the deny is the backstop for a delivery later still.
+    """
+    resources = doc.get("Resources", {}) or {}
+    problems = []
+    for name, groups in sorted(_custom_resource_log_groups(doc).items()):
+        properties = resources[name].get("Properties") or {}
+        role = properties.get("Role")
+        if role is None:
+            owner, items = name, properties.get("Policies")
+        else:
+            ids = _referenced_logical_ids(role)
+            role_id = next(iter(ids)) if len(ids) == 1 else None
+            role_body = resources.get(role_id) if role_id else None
+            if (
+                not isinstance(role_body, dict)
+                or role_body.get("Type") != "AWS::IAM::Role"
+            ):
+                problems.append(
+                    f"{name}: its Role is not an AWS::IAM::Role in this template, "
+                    f"so nothing here can show it denies recreating {sorted(groups)}"
+                )
+                continue
+            owner, items = role_id, (role_body.get("Properties") or {}).get("Policies")
+        statements = _unconditional_statements(items)
+        for group in sorted(groups):
+            if not any(_denies_creating(s, group) for s in statements):
+                problems.append(
+                    f"{name}: {owner}'s policies do not deny logs:CreateLogGroup "
+                    f"on {group}"
+                )
+    return problems
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rel_path", TEMPLATES)
+def test_custom_resource_functions_cannot_recreate_their_log_group(
+    rel_path: str,
+) -> None:
+    """Rule 5 (#1754): deleting the stack must not leave the group behind."""
+    problems = _check_rule_5(_load(rel_path))
+    assert not problems, (
+        f"{rel_path}: a custom-resource function's last log lines arrive after "
+        f"the stack delete removed its log group, and recreate it with no "
+        f"retention and no KMS key: {problems}. Add a Deny on "
+        f"logs:CreateLogGroup naming the group to the function's role (see "
+        f".claude/skills/infrastructure.md)."
+    )
+
+
+@pytest.mark.unit
+def test_rule_5_reaches_real_functions() -> None:
+    """Rule 5's universe is closed: every handler with a group is in it.
+
+    Walked independently of ``_custom_resource_log_groups``: any function some
+    resource's ``ServiceToken`` names that also has a ``LoggingConfig`` naming a
+    declared group must be in the universe with every such group. A derivation
+    that dropped members would leave rule 5 green over fewer functions.
+    """
+    total = 0
+    for rel_path in TEMPLATES:
+        doc = _load(rel_path)
+        resources = doc.get("Resources", {}) or {}
+        declared = set(_log_groups(resources))
+        universe = _custom_resource_log_groups(doc)
+        for name, body in _functions(resources).items():
+            targeted = any(
+                isinstance(other, dict)
+                and name
+                in _referenced_logical_ids(
+                    (other.get("Properties") or {}).get("ServiceToken")
+                )
+                for other in resources.values()
+            )
+            named = _referenced_logical_ids(_logging_config_target(body)) & declared
+            if targeted and named:
+                assert universe.get(name) == named, (rel_path, name, universe.get(name))
+                total += 1
+        assert len(universe) == sum(
+            1 for name in universe if name in _functions(resources)
+        )
+    assert total, "rule 5 reaches no function at all"
+
+
+_CR = """
+Resources:
+  Handler:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      LoggingConfig:
+        LogGroup: !Ref G
+{policies}
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+  Other:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+  Thing:
+    Type: Custom::Thing
+    Properties:
+      ServiceToken: !GetAtt Handler.Arn
+{extra}
+"""
+
+_DENY = """        - Effect: Deny
+          Action: {action}
+          Resource: {resource}"""
+
+
+def _sam(statement: str) -> str:
+    return "      Policies:\n        - Statement:\n" + statement.replace(
+        "\n", "\n  "
+    ).replace("        - Effect", "          - Effect", 1)
+
+
+_ROLE = """  R:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: p
+          PolicyDocument:
+            Statement:
+{statement}"""
+
+
+def _role_shape(statement: str) -> dict:
+    return {
+        "policies": "      Role: !GetAtt R.Arn",
+        "extra": _ROLE.format(
+            statement=statement.replace("        - ", "              - ").replace(
+                "\n          ", "\n                "
+            )
+        ),
+    }
+
+
+_BOTH = (
+    '[!GetAtt G.Arn, !Sub "arn:${AWS::Partition}:logs:${AWS::Region}'
+    ':${AWS::AccountId}:log-group:${G}"]'
+)
+_GOOD = _DENY.format(action="logs:CreateLogGroup", resource=_BOTH)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "shape",
+    [
+        {"policies": _sam(_GOOD), "extra": ""},
+        {
+            "policies": _sam(
+                _DENY.format(action="logs:CreateLogGroup", resource="'*'")
+            ),
+            "extra": "",
+        },
+        _role_shape(_GOOD),
+    ],
+)
+def test_rule_5_accepts_a_deny_on_the_group(shape: dict) -> None:
+    """Positive control, so the bypass cases below fail for their own reason."""
+    assert _check_rule_5(_load_text(_CR.format(**shape))) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case,shape",
+    [
+        ("no-policies", {"policies": "", "extra": ""}),
+        (
+            "allow-not-deny",
+            {"policies": _sam(_GOOD.replace("Deny", "Allow")), "extra": ""},
+        ),
+        (
+            "deny-other-group",
+            {
+                "policies": _sam(
+                    _GOOD.replace("G.Arn", "Other.Arn").replace("${G}", "${Other}")
+                ),
+                "extra": "",
+            },
+        ),
+        (
+            "getatt-plus-a-sub-that-only-mentions-the-group",
+            {
+                "policies": _sam(
+                    _DENY.format(
+                        action="logs:CreateLogGroup",
+                        resource="[!GetAtt G.Arn, !Sub '${G}-suffix']",
+                    )
+                ),
+                "extra": "",
+            },
+        ),
+        (
+            "getatt-names-another-group",
+            {"policies": _sam(_GOOD.replace("G.Arn", "Other.Arn")), "extra": ""},
+        ),
+        (
+            "only-the-getatt-form",
+            {
+                "policies": _sam(
+                    _DENY.format(action="logs:CreateLogGroup", resource="!GetAtt G.Arn")
+                ),
+                "extra": "",
+            },
+        ),
+        (
+            "only-the-bare-arn",
+            {
+                "policies": _sam(
+                    _DENY.format(
+                        action="logs:CreateLogGroup",
+                        resource='!Sub "arn:${AWS::Partition}:logs:${AWS::Region}'
+                        ':${AWS::AccountId}:log-group:${G}"',
+                    )
+                ),
+                "extra": "",
+            },
+        ),
+        (
+            "deny-mentions-group",
+            {
+                "policies": _sam(
+                    _DENY.format(
+                        action="logs:CreateLogGroup",
+                        resource="!Sub '${G}-suffix'",
+                    )
+                ),
+                "extra": "",
+            },
+        ),
+        (
+            "deny-other-action",
+            {
+                "policies": _sam(_GOOD.replace("CreateLogGroup", "CreateLogStream")),
+                "extra": "",
+            },
+        ),
+        (
+            "deny-with-condition",
+            {
+                "policies": _sam(
+                    _GOOD + "\n          Condition: {Bool: {aws:ViaAWSService: 'true'}}"
+                ),
+                "extra": "",
+            },
+        ),
+        (
+            "deny-behind-fn-if",
+            {
+                "policies": "      Policies:\n        - !If\n          - C\n"
+                "          - Statement:\n"
+                + _GOOD.replace("        - ", "              - ").replace(
+                    "\n          ", "\n                "
+                )
+                + "\n          - !Ref AWS::NoValue",
+                "extra": "",
+            },
+        ),
+        ("role-without-deny", _role_shape(_GOOD.replace("Deny", "Allow"))),
+        (
+            "role-not-in-template",
+            {"policies": "      Role: !ImportValue SomeRole", "extra": ""},
+        ),
+    ],
+)
+def test_rule_5_catches_bypasses(case: str, shape: dict) -> None:
+    """Each shape leaves the group recreatable and must be reported."""
+    assert _check_rule_5(_load_text(_CR.format(**shape))), case
+
+
 _FN = """
 Resources:
   MyFn:
@@ -896,3 +1281,20 @@ Resources:
     finally:
         CUSTOM_RESOURCE_ONLY.pop(rel, None)
         probe.unlink()
+
+
+@pytest.mark.unit
+def test_rule_5_needs_a_deny_on_every_group_an_fn_if_can_pick() -> None:
+    """``LogGroup: !If [C, !Ref G, !Ref Other]`` logs to either group."""
+    one = _CR.format(policies=_sam(_GOOD), extra="").replace(
+        "        LogGroup: !Ref G", "        LogGroup: !If [C, !Ref G, !Ref Other]"
+    )
+    assert "!If [C, !Ref G, !Ref Other]" in one
+    assert _check_rule_5(_load_text(one)) == [
+        "Handler: Handler's policies do not deny logs:CreateLogGroup on Other"
+    ]
+    other = _GOOD.replace("G.Arn", "Other.Arn").replace("${G}", "${Other}")
+    both = _CR.format(policies=_sam(_GOOD + "\n" + other), extra="").replace(
+        "        LogGroup: !Ref G", "        LogGroup: !If [C, !Ref G, !Ref Other]"
+    )
+    assert _check_rule_5(_load_text(both)) == [], both

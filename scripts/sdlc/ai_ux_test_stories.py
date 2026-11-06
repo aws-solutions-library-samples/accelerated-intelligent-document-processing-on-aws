@@ -148,6 +148,10 @@ Environment
 ``UX_TEST_STORIES_SLACK_WEBHOOK_URL``
     Optional. A scheduled ``--digest`` posts its one-line summary to this Slack
     Workflow Builder webhook; without it nothing is posted and nothing is said.
+    It is never ``SLACK_WEBHOOK_URL``, the integration build's: that one reaches
+    every job, so any process running the digest in a scheduled pipeline, a test
+    among them, would post through it, and its workflow's message names the
+    integration deploy.
 ``ANTHROPIC_MODEL``, ``AWS_REGION`` / ``AWS_DEFAULT_REGION``
     The Bedrock model id and the region of Bedrock, STS and Polly.
 ``UX_HARNESS``, ``UX_ENTRY``
@@ -377,7 +381,7 @@ _OVER_LIMIT_LINE = (
     "artifacts._"
 )
 _NOT_RENDERED_LINE = "_The video of `{key}` could not be rendered._"
-_DROPPED_CAVEAT = "not run as {persona}: UX_TEST_PERSONAS has no {group} persona"
+_DROPPED_CAVEAT = "not run as {persona}: UX_TEST_PERSONAS has no {key} entry"
 _SINCE_CAVEAT = (
     "the stack's version could not be read, so no story's `since` was checked"
 )
@@ -942,7 +946,7 @@ def post_slack(
     error says about it.
     """
     if not _usable_webhook(webhook):
-        return f"not posted, because {SLACK_WEBHOOK_ENV} is not an https URL"
+        return "not posted, because the webhook is not an https URL"
     body = json.dumps(dict(payload), ensure_ascii=False).encode("utf-8")
     try:
         request = urllib.request.Request(
@@ -973,7 +977,9 @@ def post_digest_summary(
     ``story_digest.slack_payload`` builds it from closed values only, and
     ``CI_JOB_URL`` is its link. Without :data:`SLACK_WEBHOOK_ENV` nothing is
     posted or printed; outside a scheduled pipeline one line says it was not
-    posted; and whatever happens, the digest's own outcome does not change.
+    posted; a value that is not an https URL is reported by the variable's name
+    and posts nothing; and whatever happens, the digest's own outcome does not
+    change.
     """
     webhook = runtime.environ.get(SLACK_WEBHOOK_ENV, "").strip()
     if not webhook or runtime.slack is None:
@@ -981,6 +987,11 @@ def post_digest_summary(
     scrub.redactor.add(webhook)
     if not _scheduled(runtime.environ):
         _say(scrub, "slack: not posted, because this is not a scheduled pipeline")
+        return
+    if not _usable_webhook(webhook):
+        _say(
+            scrub, f"slack: not posted, because {SLACK_WEBHOOK_ENV} is not an https URL"
+        )
         return
     try:
         payload = story_digest.slack_payload(
@@ -1146,7 +1157,8 @@ def _web_url(args: argparse.Namespace, environ: Mapping[str, str]) -> str | None
 
 
 def _groups(environ: Mapping[str, str]) -> frozenset[str]:
-    """The Cognito groups ``UX_TEST_PERSONAS`` can sign in as; empty when unreadable."""
+    """The ``UX_TEST_PERSONAS`` entries a run can sign in with, each a Cognito
+    group or a persona's own ``credentials``; empty when unreadable."""
     try:
         return frozenset(signin.personas_from_env(environ.get("UX_TEST_PERSONAS", "")))
     except signin.SignInError:
@@ -1189,10 +1201,10 @@ def settings_problem(
         except signin.SignInError as error:
             return str(error)
         wanted = sorted(set(groups))
-        if wanted and not any(group in personas for group in wanted):
+        if wanted and not any(key in personas for key in wanted):
             return (
-                "UX_TEST_PERSONAS holds none of the groups these flows sign in as: "
-                + ", ".join(wanted)
+                "UX_TEST_PERSONAS holds none of the entries these flows sign in "
+                "with: " + ", ".join(wanted)
             )
     expected = environ.get("UX_TEST_AWS_ACCOUNT_ID", "").strip()
     if not expected:
@@ -1363,7 +1375,7 @@ def precheck_flows(
     kind, build, url, problem = _ui_source(args, environ)
     if problem and mode != "watch":
         return Decision(False, "skipped", problem)
-    groups = [catalogue.persona(key.persona).group for key in keys]
+    groups = [catalogue.persona(key.persona).credentials_key for key in keys]
     problem = settings_problem(
         args,
         environ,
@@ -1487,7 +1499,7 @@ def precheck_replay(
                 "pass --web-url",
             )
     run_stack = args.stack or stack or session.REVIEW_STACK
-    groups = [catalogue.persona(key.persona).group for key in keys]
+    groups = [catalogue.persona(key.persona).credentials_key for key in keys]
     problem = settings_problem(
         args, environ, stack=run_stack, web_url=url, groups=groups
     )
@@ -1796,7 +1808,9 @@ def precheck_mr(
         environ,
         stack=args.stack,
         web_url=url,
-        groups=[catalogue.persona(key.persona).group for key in selection.flows],
+        groups=[
+            catalogue.persona(key.persona).credentials_key for key in selection.flows
+        ],
     )
     if problem:
         return Decision(False, "skipped", problem, extra=extra)
@@ -2162,10 +2176,10 @@ class FlowSession:
         except signin.SignInError as error:
             self.harness_error = "sign_in"
             if str(error).startswith(_SIGN_IN_REFUSED):
-                run.refused_groups.add(flow.persona.group)
+                run.refused_groups.add(flow.persona.credentials_key)
                 run.say(
-                    f"sign-in: refused for {flow.persona.group}, so its remaining "
-                    "flows are not run"
+                    f"sign-in: refused for {flow.persona.credentials_key}, so its "
+                    "remaining flows are not run"
                 )
             run.say(f"flow {flow.key}: harness error (sign_in): {error}")
             return
@@ -3089,7 +3103,7 @@ class StoryRun:
     def browser_plan(self, flow: Flow, run_dir: Path) -> session.BrowserPlan:
         """The confined browser one attempt of ``flow`` is opened with."""
         plan = self.planned
-        persona = self.prepared.personas[flow.persona.group]
+        persona = self.prepared.personas[flow.persona.credentials_key]
         return session.BrowserPlan(
             toolchain=self.toolchain,
             run_dir=run_dir,
@@ -3315,10 +3329,10 @@ class StoryRun:
     def _not_run_reason(self, attempt: Attempt) -> str | None:
         """Why an attempt does not start, in the order the run learns each reason."""
         flow = attempt.flow
-        group = flow.persona.group
-        if group in self.refused_groups:
+        key = flow.persona.credentials_key
+        if key in self.refused_groups:
             return "sign_in_refused"
-        if group not in self.prepared.personas:
+        if key not in self.prepared.personas:
             return "persona"
         version = self._stack_version()
         if (
@@ -3705,8 +3719,8 @@ class StoryRun:
             ]
         if plan.selection is not None:
             for persona in plan.selection.dropped_personas:
-                group = self.catalogue.persona(persona).group
-                caveats.append(_DROPPED_CAVEAT.format(persona=persona, group=group))
+                key = self.catalogue.persona(persona).credentials_key
+                caveats.append(_DROPPED_CAVEAT.format(persona=persona, key=key))
         if self.facts_seen and self._stack_version() is None:
             caveats.append(_SINCE_CAVEAT)
         return caveats

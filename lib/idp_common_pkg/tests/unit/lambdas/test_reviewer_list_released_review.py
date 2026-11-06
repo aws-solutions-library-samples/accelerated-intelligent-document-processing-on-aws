@@ -36,13 +36,15 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from tests.unit import scope_tables as st
+
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.."))
 _LAMBDA_DIR = os.path.join(_REPO, "nested", "api-resolvers", "src", "lambda")
 _REVIEW_LAMBDA = os.path.join(_REPO, "src", "lambda", "complete_section_review")
 TABLE = "reviewer-list-released"
 # Handler-local modules that other handler directories also ship under these names.
 _SIBLINGS = ("config_scope", "review_statuses", "log_sanitizer")
-# TypeDateIndex's NonKeyAttributes in template.yaml: a filter can test only these.
+# NonKeyAttributes both list indexes project in template.yaml: a filter can test only these.
 _PROJECTED = [
     "ObjectKey",
     "ObjectStatus",
@@ -61,6 +63,10 @@ _ENV = {
     "AWS_SESSION_TOKEN": "testing",  # nosec B105 - moto dummy credential
     "TRACKING_TABLE_NAME": TABLE,
     "TRACKING_TABLE": TABLE,
+    # The review Lambda confines production review to the caller's configuration
+    # scope and the lookup fails closed, so the UsersTable has to exist. None of
+    # the callers here has a row, so all of them are unscoped.
+    "USERS_TABLE_NAME": st.USERS,
     "HITL_TABLE_NAME": "",
     "TEST_SET_BUCKET": "",
     "QUEUE_URL": "",
@@ -245,9 +251,11 @@ def _create_table(dynamodb):
             for name in ("PK", "SK", "ItemType", "InitialEventTime")
         ],
         BillingMode="PAY_PER_REQUEST",
+        # listDocuments reads TypeDateIndexV2 and getDocumentCount reads
+        # TypeDateIndex; both carry these keys and (at least) these attributes.
         GlobalSecondaryIndexes=[
             {
-                "IndexName": "TypeDateIndex",
+                "IndexName": index_name,
                 "KeySchema": [
                     {"AttributeName": "ItemType", "KeyType": "HASH"},
                     {"AttributeName": "InitialEventTime", "KeyType": "RANGE"},
@@ -257,6 +265,7 @@ def _create_table(dynamodb):
                     "NonKeyAttributes": _PROJECTED,
                 },
             }
+            for index_name in ("TypeDateIndex", "TypeDateIndexV2")
         ],
     )
 
@@ -266,6 +275,7 @@ def env():
     with patch.dict(os.environ, _ENV), mock_aws():
         dynamodb = boto3.resource("dynamodb")
         table = _create_table(dynamodb)
+        st.make_users_table(dynamodb)
         gsi = _load_resolver("list_documents_gsi_resolver")
         gsi.dynamodb = dynamodb
         rng = _load_resolver("list_documents_range_resolver")

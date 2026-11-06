@@ -433,17 +433,24 @@ declared, and no test can read a sentence — the name is the reliable route.
 GitLab and GitHub now run the **same** non-integration gates. Integration tests
 (`integration_tests`) remain GitLab-only, as they need AWS credentials.
 
-⚠️ **`integration_tests` is nightly plus a manual button — it is not a merge gate
+⚠️ **`integration_tests` is scheduled plus a manual button — it is not a merge gate
 at all any more**, on either platform. It was automatic on `develop` and on
 non-Draft MRs, and it put 62–113 minutes onto every pipeline *after* a 45-minute
 check stage (111 min for an MR, 160 for a `develop` push). The deploy path is now
-a scheduled run, with a play button on any MR targeting `develop`. **Click that
-button before merging a change on the deploy path** — `template.yaml`,
+scheduled — the nightly runs the primary suite and, while it is active in the GitLab
+project, a separate weekly schedule runs the deployment-variant probes, and two more
+weekly schedules, while active, run the primary suite in `eu-central-1` and
+`ca-central-1` — with a play button on any MR targeting `develop`.
+**Click that button before merging a change on the deploy path** — `template.yaml`,
 `publish.py`, `patterns/`, `nested/`, `src/`, `lib/`, `config_library/`,
 `feature-platform/`, `iam-roles/`, `scripts/` — because nothing else exercises it
-pre-merge, and a break surfaces a night later with other merges stacked on top, so
-triage means bisecting the day's merges rather than reading the failing pipeline's
-own commit. `.deploy_affecting_changes` in `.gitlab-ci.yml` is still the
+pre-merge, and a break surfaces a night later (a week later, for a variant probe)
+with other merges stacked on top, so triage means bisecting the merges since the last
+green run rather than reading the failing pipeline's own commit. That button runs
+the primary suite only (`IDP_RUN_PROBES` counts only on a schedule), so a change to
+the probe path is verified with `make stacktest-*` or by pressing Run on the weekly
+schedule, not by the button.
+`.deploy_affecting_changes` in `.gitlab-ci.yml` is still the
 maintained definition of that path list, but it now gates nothing and is
 documentation. The full trade is in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 
@@ -457,9 +464,9 @@ MR to `develop` that changes `src/ui/`, are both `allow_failure: true` and absen
 from `SHARED_GATES` (footnote ³ in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`). The
 first-time-user stories are the third: `ai_ux_test_stories`, on a non-Draft MR to
 `develop` that changes `CHANGELOG.md`, and `ai_ux_test_stories_nightly` and
-`ai_ux_test_stories_digest`, in the `ux_nightly` stage of the scheduled `develop`
-pipeline, are all `allow_failure: true` and absent from `SHARED_GATES` (footnote ⁴
-in the same file).
+`ai_ux_test_stories_digest`, in the `ux_nightly` stage of the nightly `develop`
+pipeline (never the weekly variant-probe or region ones), are all `allow_failure: true` and
+absent from `SHARED_GATES` (footnote ⁴ in the same file).
 
 ### The advisory AI review runs on both platforms
 
@@ -495,10 +502,13 @@ Three things about the GitHub arm are not guessable from the GitLab one:
   pull request's head is fetchable from this repository as `refs/pull/<n>/head`
   with no access to the fork. `workflow_dispatch` reviews one on demand.
 - ⚠️ **`on: schedule` is read from the workflow file on the *default* branch,
-  which is `main`.** Until `ai-pr-review.yml` is on `main` the cron never fires,
-  and it fails silently — the sweep looks installed and does nothing, so fork
-  coverage is absent with no error anywhere. The `pull_request` trigger has no
-  such constraint and works as soon as the file reaches `develop`.
+  which is `develop`, and a scheduled or dispatched run's OIDC token names that
+  branch.** The review role trusts exactly one branch ref, set by the
+  `DefaultBranch` parameter of `github-oidc-review-role.yml`. If the repository's
+  default branch changes, that parameter has to be redeployed to match; until it
+  is, every scheduled sweep fails at the credential step with
+  `Not authorized to perform sts:AssumeRoleWithWebIdentity`, and fork pull
+  requests go unreviewed while their own runs still show the job as skipped.
 
 The cost bound is the one property easiest to delete by accident, and it is
 spelled differently on each side: `interruptible: true` on GitLab,
@@ -640,9 +650,8 @@ Parity between the two CIs only means both *run* the gates. Whether a red gate c
 actually stop a merge is a **repository setting**, not anything in this tree, and
 today it does not: **neither `develop` nor `main` has any branch protection**, so
 every gate above is advisory. A pull request can be merged with all checks red.
-`main` matters as much as `develop` here — it is the repository's default branch
-and the one releases are cut from — and one invocation reads one branch, so
-answering the question takes two:
+`main` matters as much as `develop` here — it is the branch releases are cut
+from — and one invocation reads one branch, so answering the question takes two:
 
 ```bash
 make check-branch-protection                                       # develop
@@ -1591,7 +1600,7 @@ that domain:
 | `.claude/skills/ux-test-stories.md` | **First-time-user stories** against the web UI: a model that knows the product only through its published docs attempts one intent-only story from `scripts/ux_stories.toml` as one persona, in the confined browser, and the verdict is computed from the journal of its tool calls against that persona's expectation (allowed, refused or not offered), never from its prose. Three local modes, with commands for a Mac, Windows (`py`) and an EC2 devbox: unattended in Docker (`make ai-ux-test-stories-local`), watched live (`INTERACTIVE=1`) and paired with a session you start (`make ai-ux-test-stories-pair`); authoring with `make ai-ux-test-stories-list`, `make ai-ux-test-stories-search` and `make ai-ux-test-stories-judge`; seeding the review stack's fixtures. A session running it reads only the judge's `--summary` table and tests secrets for presence without printing them. Holds the brief every story prompt inlines, between `<!-- brief:start -->` and `<!-- brief:end -->`. No `.cline` entry, because its pair and background-run flows are Claude Code mechanisms |
 | `.claude/skills/ux-test-stories-ci.md` | The **unattended** contract for first-time-user stories, used by `scripts/sdlc/ai_ux_test_stories.py` (CI jobs `ai_ux_test_stories` and `ai_ux_test_stories_nightly`; `make ai-ux-test-stories-local` runs it in Docker as a dry run) and inlined whole into every story prompt beside the brief. It states only where a story run differs from `ux-test-ci.md`: the model is the user and judges nothing, the task comes from the catalogue and never from the MR, it holds only the story tools and every action is counted, a commit point is reported rather than pressed, pages and docs are untrusted (`note_injection`), and the verdict comes from its tool calls, never its prose |
 | `.claude/skills/product-demo.md` | Recording a **product demo video** of changelog entries, a PR/MR or a named feature against a live stack, for the team or `docs/demo-videos.md`. Proposes three storyboards, records the one the user picks with `scripts/ux_recorder.py start --kind demo` (narrated, captioned mp4 ending on a Key-takeaways card), drafts the docs entry; confirmed storyboards live in `scripts/demo_storyboards.yaml`. Sibling of `ux-test.md`: that one judges the UI, this one shows it |
-| `.claude/skills/run-stack-tests.md` | Running the deploy-variant stack-tests (`make stacktest-*`: ZAP DAST, Jobs API, WAF, APIGateway hosting variants) manually against a live stack — they no longer run automatically in CI. Includes VPC auto-discovery + confirm for the VPC-requiring ones |
+| `.claude/skills/run-stack-tests.md` | Running the deploy-variant stack-tests (`make stacktest-*`: ZAP DAST, Jobs API, WAF, APIGateway hosting variants) manually against a live stack — in CI they run only on the weekly variant-probe schedule, while it is active in the GitLab project, never on the nightly. Includes VPC auto-discovery + confirm for the VPC-requiring ones |
 | `.claude/skills/transform-deploy-test.md` | Deploy-testing the `--headless` / `--govcloud` template **transforms** (`make transform-deploy-test-*`) — the only tier that deploys a transformed template and processes a real document. Includes the commercial-vs-GovCloud caveat you must report |
 | `.claude/skills/pr-review.md` | Reviewing an external GitHub PR or GitLab MR at a URL (e.g. `review <url>`) |
 | `.claude/skills/pr-review-ci.md` | The **unattended** contract for the same review, used by `scripts/sdlc/ai_mr_review.py` (`make ai-mr-review` for GitLab, `make ai-pr-review` for GitHub) — inputs arrive as files, SRT is skipped, the review is posted as a comment on the MR or PR, and the diff is treated as untrusted input. It defers to `pr-review.md` for every criterion rather than restating them |

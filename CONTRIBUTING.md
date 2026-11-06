@@ -138,7 +138,10 @@ npm install -g basedpyright    # the type-check gate; neither target above insta
 `make setup` and `make setup-venv` install `idp_common`, `idp_cli`, `idp_sdk`,
 `idp_mcp_connector`, `idp_feature_sdk`, the capacity-planning test dependencies,
 and the pinned `cfn-lint` and `ruff`, then verify that every first-party package
-resolved from the checkout. Use them in preference to hand-rolling `pip install` lines.
+resolved from the checkout. Every install is constrained to
+`lib/idp_common_pkg/uv.lock`, the same constraints both CI systems install against,
+so a local environment holds the versions CI tests; exporting the lock is why both
+targets need `uv`. Use them in preference to hand-rolling `pip install` lines.
 
 **Activate the virtual environment if you used `make setup-venv`.** The
 `Makefile` resolves `$(PYTHON)` and `$(PIP)` to `.venv/bin/` when `.venv`
@@ -416,8 +419,8 @@ The second is that `ruff` still does not read everything, and what it skips is
 now a **named list of individual files** rather than a directory. Any file you
 add, anywhere in the repository, is linted and format-checked from the moment it
 exists. The files that are skipped are the ones that already carried findings
-when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 77 files
-holding 181 pre-existing findings, and `[format] exclude` names 166 files that
+when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 72 files
+holding 176 pre-existing findings, and `[format] exclude` names 161 files that
 `ruff format` has never been run over. Both counts fall as files are paid off, and
 `scripts/tests/test_contributing_doc.py` reads them out of
 `scripts/lint_debt.json` and fails if the right figure appears nowhere on this page.
@@ -789,9 +792,9 @@ documented in [docs/deployment.md](docs/deployment.md) and
 
 | Command | Description |
 |---|---|
-| `make setup` | Install all first-party packages into the current Python environment |
-| `make setup-venv` | Create `.venv` and install everything into it |
-| `make install-first-party` | Install just the first-party editables in one pip pass |
+| `make setup` | Install all first-party packages into the current Python environment, constrained to `lib/idp_common_pkg/uv.lock` (needs `uv`) |
+| `make setup-venv` | Create `.venv` and install everything into it, constrained to the same lock (needs `uv`) |
+| `make install-first-party` | Install just the first-party editables in one pip pass, constrained to `lib/idp_common_pkg/uv.lock` (needs `uv`) |
 
 ### Code quality
 

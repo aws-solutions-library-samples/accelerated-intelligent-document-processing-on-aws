@@ -59,8 +59,8 @@ Rule validation works for any industry using this two-step process:
 **How to do it:** Use **Policy Discovery** — see [docs/policy-discovery.md](./policy-discovery.md) for the full walkthrough. In short:
 
 1. In the Web UI, open the **Discovery** tab and switch to **Policy Discovery** mode.
-2. Upload your policy PDF. Policy Discovery parses it into structured rules and writes them to the active configuration version's `policy_classes` field.
-3. Review the extracted rules in **Configuration → Policy Schema**, then save the version.
+2. Upload your policy PDF. Policy Discovery parses it into structured rules and writes them to the active configuration profile's `policy_classes` field.
+3. Review the extracted rules in **Configuration → Policy Schema**, then save the profile.
 
 **Skip this step if:** You already have your rules in a structured format — paste them directly into the Policy Schema editor.
 
@@ -726,7 +726,7 @@ We provide a complete healthcare example demonstrating prior authorization valid
   - Contains medical coding rules, bundling guidelines, and compliance requirements
 
 **Configuration Files:**
-- **Step 1 - Policy Discovery**: extracted rules are written into `policy_classes` on the active config version (see [docs/policy-discovery.md](./policy-discovery.md))
+- **Step 1 - Policy Discovery**: extracted rules are written into `policy_classes` on the active configuration profile (see [docs/policy-discovery.md](./policy-discovery.md))
 - **Step 2 - Rule Validation**: `config_library/unified/rule-validation/config.yaml`
 
 This example includes:
@@ -779,5 +779,5 @@ triggers).
 4. **Use Caching**: Always place static content before `<<CACHEPOINT>>`
 5. **Clear Recommendations**: Define unambiguous recommendation options
 6. **Document Rules**: Include context and examples in rule descriptions
-7. **Version Control**: Track rule changes and their impact on results
+7. **Track Changes**: Each save cuts a profile [revision](./configuration-profiles.md#revision-history); compare revisions to track rule changes and their impact on results
 8. **Regular Review**: Periodically review and update rules based on results

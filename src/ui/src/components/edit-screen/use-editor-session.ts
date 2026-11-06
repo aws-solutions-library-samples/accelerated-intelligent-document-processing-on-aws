@@ -9,6 +9,7 @@ import type React from 'react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 
 import type { EditAction } from './EditScreen';
+import type { FieldFocusRequest } from './field-focus';
 import type { SectionEditorController, SectionEditorProps } from './SectionEditor';
 import useEditView from './use-edit-view';
 import type { EditView } from './use-edit-view';
@@ -23,6 +24,10 @@ export interface EditorSession {
   view: EditView;
   setView: (v: EditView) => void;
   busy: EditAction | null;
+  /** The latest field focus request (a review reason, Next alert), for the editor. */
+  focusRequest: FieldFocusRequest | null;
+  /** Open the section, then scroll to the field and focus it. */
+  focusField: (sectionId: string, fieldPath: string) => void;
   /**
    * Run an action: `busy` is set while it runs. Resolves true when `fn` succeeded; on a
    * throw, `onError` is told and it resolves false.
@@ -42,6 +47,11 @@ const useEditorSession = (): EditorSession => {
   const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null);
   const [view, setView] = useEditView();
   const [busy, setBusy] = useState<EditAction | null>(null);
+  const [focusRequest, setFocusRequest] = useState<FieldFocusRequest | null>(null);
+
+  const focusField = useCallback((sectionId: string, fieldPath: string) => {
+    setFocusRequest((prev) => ({ sectionId, fieldPath, nonce: (prev?.nonce ?? 0) + 1 }));
+  }, []);
 
   const run = useCallback(async (action: EditAction, fn: () => Promise<void>, onError: (err: unknown) => void): Promise<boolean> => {
     setBusy(action);
@@ -67,7 +77,20 @@ const useEditorSession = (): EditorSession => {
     [],
   );
 
-  return { controllerRef, dirty, saving, sectionData, selectedSectionId, view, setView, busy, run, editorBindings };
+  return {
+    controllerRef,
+    dirty,
+    saving,
+    sectionData,
+    selectedSectionId,
+    view,
+    setView,
+    busy,
+    focusRequest,
+    focusField,
+    run,
+    editorBindings,
+  };
 };
 
 export default useEditorSession;

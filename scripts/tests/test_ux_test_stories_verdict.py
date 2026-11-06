@@ -2001,7 +2001,7 @@ def test_flow_context_json_has_the_field_order_and_round_trips():
             "journal": "flows/route-folder-to-profile@new-analyst/attempt-2/journal.jsonl"
         },
         {"key": "a@b"},
-        {"group": "Annotator"},
+        {"group": "Operator"},
         {"not_run_reason": SENTINEL},
         {"harness_error": "hang"},
         {"audit_state": SENTINEL},

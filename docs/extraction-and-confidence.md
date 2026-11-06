@@ -399,6 +399,24 @@ extraction:
                                      # parse succeeds (big cost saver; see below)
 ```
 
+When OCR emits a table with a blank header row and the column labels in the rows
+under it, and the table runs over several pages that each start it again (a blank
+header row, the Markdown separator row, then the same labels), the parser takes
+the label rows as the header instead of returning them as data, so they are not
+counted as extra items. Four bounds:
+
+- A page that repeats the labels without its own header and separator rows is part
+  of the previous page's table, not a new one, so it does not count as a repeat.
+
+- A one-page table in that shape is parsed as before, since one page cannot tell a
+  short all-text data row from a label row.
+- The check runs over the text the parser is given, so on the sharded path a shard
+  holding a single page of the table is not recovered.
+- On the table's first page, a first-column row directly under the labels is read
+  as a wrapped label, so a category row there, such as `EQUITIES`, becomes the first
+  column's name rather than a row. On later pages it stays a row. The parse warning
+  gives the number of rows taken as the header.
+
 > **`lazy_images` (default `true`) — cost optimization for table documents.** When
 > a pre-flight table parse succeeds, page images are **not** attached to the
 > extraction prompt. The deterministic table tool is text/markdown-driven and never
@@ -1332,7 +1350,7 @@ Confidence does not have to run as a separate downstream step:
 
 - **`separate` on the agentic path** runs a second inference **inside each extraction shard** (over that shard's pages and extracted values) and collates on merge — per-field, page-ordered for list items, first-shard-wins for scalars — then grounds once in OCR geometry over the whole section. This reuses the *same* `AssessmentService.assess_results` core and `ground_assessment_geometry` the standalone step uses, so the `explainability_info` output is identical; only the execution location differs. A single post-merge assessment would re-introduce exactly the context-window pressure sharding removes, hence per-shard.
 - **`integrated` on the simple path** is a true single inference: one Bedrock call returns values **and** confidence together. The prompt asks for a `{"extraction": {...}, "confidence": {...}}` envelope; the service splits that (values → `inference_result`, confidence → `explainability_info` after threshold-enrichment + OCR grounding), so the standalone Assessment step auto-skips (the single-inference cost win). For robustness the split also recognizes a `field_assessment` (or `confidence`) **sibling** key placed next to the extracted fields — a shape some models emit — and lifts it the same way (and strips it from `inference_result` so it never leaks). Only a genuinely flat response with no recognizable confidence falls back to the standalone step. Best for **smaller documents** where the whole section fits one inference; for large docs prefer agentic or `separate`. Any list rows the single inference leaves unscored are retried (missing rows only, bounded) so large-list coverage still reaches 100%.
-- **`integrated` on the agentic path** produces confidence within the agent's turn. Because extraction is delivered through a tool call, a hidden experimental setting `extraction.agentic.integrated_confidence_strategy` controls how confidence is produced. It is **deliberately not exposed in the config UI**; set it via `idp-cli config-upload` on a throwaway config version to A/B the trade-off. Both values yield identical `explainability_info`:
+- **`integrated` on the agentic path** produces confidence within the agent's turn. Because extraction is delivered through a tool call, a hidden experimental setting `extraction.agentic.integrated_confidence_strategy` controls how confidence is produced. It is **deliberately not exposed in the config UI**; set it via `idp-cli config-upload` on a throwaway configuration profile to A/B the trade-off. Both values yield identical `explainability_info`:
   - **`two_step`** *(default)*: the agent extracts, then calls `provide_field_assessment` in a **follow-up inference** — a dedicated reflection pass over finalized values (often better-calibrated). ~3 inferences: extract → assess → close.
   - **`single_shot`**: the agent emits values **and** per-field confidence in **one combined tool call**, saving the middle inference. ~2 inferences. Multi-step (patched) extractions may still call `provide_field_assessment` once at the end so every row is assessed (unassessed rows padded with neutral `confidence: null`).
 
@@ -1528,9 +1546,23 @@ extraction:
 >    extraction. With rows still unscored the section reports
 >    `assessment_incomplete` naming the time budget, and those rows carry a per-row
 >    reason naming it too (the `assessment_deadline_reached` warning is for a run
->    that was cut short and scored every row regardless). ⚠️ Two routes to this
->    symptom are **not** covered: an out-of-memory kill, which is equally
->    exception-free and which nothing here bounds, and the sizing bug itself —
+>    that was cut short and scored every row regardless). An out-of-memory kill is
+>    equally exception-free. Every concurrent batch carries all of the section's
+>    page images, and measured offline each one in flight costs about three times
+>    its serialised request (roughly 90 MB per batch for a 17-page section's 27 MB
+>    request), so memory grows with the request size times
+>    `extraction.agentic.max_concurrent_batches`. Request size grows with page count
+>    up to 20 pages; above that the client shrinks each image to fit Bedrock's
+>    many-image limit, so a 33-page section measured about the same as a 17-page one. A
+>    throttled or timed-out Bedrock call used to keep one more copy of its request
+>    per retry until the whole retry sequence ended. Measured offline on a 17-page
+>    section with the default ten batches, peak memory was about 1.0 GB with no
+>    retries, 3.1 GB with six throttled attempts per call or two timed-out ones, and
+>    7.1 GB with six timed-out ones. A retry now frees the attempt it replaces, and
+>    each of those retry cases measured about 1.1 GB (#1678). Nothing bounds the
+>    concurrency term against the function's memory, so for a section with many
+>    large page images lower `max_concurrent_batches`. ⚠️ One route to this symptom
+>    is **not** covered: the sizing bug itself —
 >    a wrongly large batch size makes the pass issue few big calls rather than many
 >    small ones, which is not the shape a per-dispatch guard refuses. Until #894 is
 >    fixed, score such a class with a large-output-cap confidence model
@@ -1901,12 +1933,17 @@ tokens** to the request.
 ## 5. HITL (Human Review)
 
 Fields whose confidence falls below a threshold can be routed to human review.
+A field extraction found no value for raises no confidence alert. With review queues,
+a *required* field with no value still sends its document to the Default queue while
+`hitl.route_missing_required_fields` is on (the default); see
+[Absent values and missing required fields](#absent-values-and-missing-required-fields).
 HITL is configured under the top-level `hitl` block in v0.6:
 
 ```yaml
 hitl:
   enabled: true
   confidence_threshold: 0.85   # fields below this are flagged for review
+  route_missing_required_fields: true   # review queues: a required field with no value also holds the document
   notifications:
     retention_days: 30         # 1-365: days an Inbox message is kept
     max_per_user: 50           # 1-200: Inbox messages kept per user
@@ -1975,6 +2012,79 @@ to the `explainability_info` based on configuration.
   ]
 }
 ```
+
+### Absent values and missing required fields
+
+A confidence alert is raised only for a field that **has an extracted value**. A
+field whose value is absent keeps its `confidence` and `confidence_reason` in
+`explainability_info`, where the UI still shows them, but it is left out of the
+section's confidence alerts. So it does not count in the document's
+`ConfidenceAlertCount`, it does not trigger legacy HITL, and it does not become a
+review reason in review-queue mode. The rule is the same in every confidence mode
+(`separate`, `integrated`) and in BDA mode, with one exception: when Advanced
+(agentic) extraction is sharded and `separate` confidence runs inside the shards,
+the stored alerts on list rows are numbered from the start of each shard, so they
+cannot be matched to the row they describe. Those row alerts are kept as they are,
+and only the alerts on fields outside lists are judged.
+
+A value is **absent** when it is null, a blank string, an empty list or object, or
+an object or list that holds nothing but those, such as `{"City": null, "Zip": ""}`.
+`0` and `false` are values. Each confidence leaf is judged against its own value, so
+in a group only the empty sub-fields drop out, and in a list each row's empty cells
+drop out. A list with no rows has no confidence leaves at all, so it never alerted.
+
+Absent fields are not all dropped silently. Each section lists the fields its class
+schema marks **required** that extraction left absent, as `MissingRequiredFields`.
+Each entry has the same shape as a confidence alert (`attributeName`, `confidence`,
+`confidenceThreshold`, the last two null when the field has no score). The document
+carries the total as `MissingRequiredFieldCount`, and the Web UI shows it beside the
+confidence alerts: in Document Details, as a **Missing Required Fields** column in
+the sections table (hover the count for the field names), and as an optional column
+in the document list. In review-queue mode, with HITL enabled, the Default queue on
+and `hitl.route_missing_required_fields` on (the default), each missing required
+field is also a review reason, **Missing required: <field>**, so the document is
+held in the Default queue. Turn the setting off (**Configuration** ›
+**Human-in-the-Loop (HITL) Review** › **Review missing required fields**) to keep
+missing required fields informational. Legacy HITL, used while the Default queue is
+off, does not trigger on them.
+
+In the document list, the **Missing Required Fields** column and the **Processing
+Issues** column show a dash, not a 0, for a row that does not carry the count: a
+document processed before the count existed, or one whose processing stopped before
+any section was written. After an in-place upgrade to a release that adds the list's
+`TypeDateIndexV2` index, rows can show a dash in both columns until DynamoDB
+finishes building that index, which continues after the stack update reports
+complete and takes longer on a larger tracking table. The list keeps working
+meanwhile, read from the previous index, and the counts appear without any action
+once the build completes. If that stack update rolls back after the index was
+created, CloudFormation leaves the index on the table, and retrying the update
+fails until `TypeDateIndexV2` is deleted from the tracking table by hand.
+
+"Required" follows JSON Schema `required`:
+
+- A property is required when the `required` array of the object that declares it
+  names it.
+- A nested object's own `required` applies only when that object has a value. A
+  required object that is absent is one entry (`Address`), not one per sub-field;
+  an absent object that is not required adds nothing.
+- An array's item schema `required` applies to every row the list holds
+  (`Rows[2].Amount`), including a null or empty row. A list with no rows adds only
+  its own entry, and only when the list itself is required.
+- A class whose schema declares no `required` anywhere has a count of 0. For a
+  multi-instance class, the `instances` wrapper's own requirement is ignored and
+  each record's `required` applies per instance.
+- `$ref` into `$defs` is followed. `allOf`, `anyOf`, `oneOf` and conditional
+  schemas are not evaluated.
+
+The count is evaluated per section, against that section's class schema, and the
+document count is the sum over its sections.
+
+> ⚠️ **A field the extraction genuinely missed no longer raises an alert either.**
+> Nothing compares an absent scalar with the page text yet, so a value that is on
+> the page but came back empty is now visible only as a missing required field
+> (when the schema requires it) or in its own confidence score. Documents processed
+> before this change keep their stored alerts until their extraction or confidence
+> assessment runs again.
 
 ### Thresholds inside lists (arrays)
 

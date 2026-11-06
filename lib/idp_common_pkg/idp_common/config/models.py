@@ -1247,6 +1247,14 @@ class HITLConfig(BaseModel):
         le=1.0,
         description="Confidence threshold below which a field is flagged for review",
     )
+    route_missing_required_fields: bool = Field(
+        default=True,
+        description=(
+            "With HITL enabled and the Default review queue on, also send a document "
+            "to review when a field its class schema marks required has no extracted "
+            "value. Legacy HITL (no review queues) triggers on confidence alerts only."
+        ),
+    )
     notifications: HITLNotificationsConfig = Field(
         default_factory=HITLNotificationsConfig,
         description="Inbox message retention and cap. Applies whether or not hitl.enabled is set.",

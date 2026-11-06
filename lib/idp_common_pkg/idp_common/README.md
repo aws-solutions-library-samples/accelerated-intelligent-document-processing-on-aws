@@ -37,6 +37,7 @@ The IDP Common library provides these main modules:
 - **[Config](config/README.md)**: Configuration loading, merging, validation, and typed models
 - **[Hooks](hooks/README.md)**: Helpers for authoring pipeline-hook Lambdas (load / mutate / return a Document)
 - **[Monitoring](monitoring/README.md)**: Shared monitoring foundation (logs, X-Ray, Step Functions, stack discovery)
+- **Test-set drafting runs** (`testset_label_jobs.py`): which test runs drafted a Test Studio set's labels, read from its labeling-job records and `labelJobId` pointer. The test-set resolver (a set's configuration profile and confidence fingerprint) and the test-execution aggregation (whether a scoring run measures a configuration against labels it drafted) both use it, so they agree. A FAILED job labeled nothing and is not a drafting run; the run an older pointer named, when it has no job record, is one
 - **Step Functions history** (`stepfunctions_history.py`): the one rule for reading an execution history and naming the state that failed — see [Naming the state that failed](#-naming-the-state-that-failed) below
 
 ## 🗃️ Key Classes
@@ -99,6 +100,8 @@ class Document:
     
     # Confidence alerts
     confidence_alert_count: int = 0
+    # Required fields left absent, summed over sections
+    missing_required_field_count: int = 0
 ```
 
 #### The two review lists are `Optional` on purpose
@@ -196,6 +199,7 @@ class Section:
     extraction_result_uri: Optional[str] = None
     attributes: Optional[Dict[str, Any]] = None
     confidence_threshold_alerts: List[Dict[str, Any]] = field(default_factory=list)
+    missing_required_fields: List[Dict[str, Any]] = field(default_factory=list)
 ```
 
 ### Status
@@ -545,9 +549,9 @@ does exactly that with `document.errors`, and a test pins it.
 `ProcessingIssueCount` is written by `update_document` and **not** by
 `update_document_section`, so a failure recorded through `persist_failed_section`
 shows on the Sections panel but can leave the list badge at its previous value.
-Neither list resolver recovers it — the range resolver returns the stored value, and
-the counter is absent from the fast GSI's INCLUDE projection, which also returns no
-`Sections` to derive from. This is not an oversight to patch at that writer: it does
+Neither list resolver recovers it — both return the stored value (the GSI resolver
+through `TypeDateIndexV2`'s projection), and neither returns `Sections` to derive
+from. This is not an oversight to patch at that writer: it does
 not read the item, the per-section handler has already narrowed `document.sections`
 to its own section (so a local count would be 1 and would clobber a larger correct
 one), and ten sections are being written concurrently. Correcting it needs an atomic

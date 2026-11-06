@@ -3,7 +3,9 @@
 //
 // Home › Queues (Annotators): the queues that list the caller as an Annotator —
 // production review queues (getMyReviewQueues) and Test Studio queues
-// (listTestSetQueues, which returns an Annotator only the sets that list them).
+// (listTestSetQueues, which returns an Annotator only the sets that list them). A
+// Reviewer works Production queues only, so a caller who works no test set makes no
+// listTestSetQueues call.
 // Opening a queue lists its items; any item opens read-only, and Claim assigns one
 // to the caller so it shows in Home › Tasks.
 import React, { useCallback, useMemo, useState } from 'react';
@@ -13,6 +15,7 @@ import type { TableProps } from '@cloudscape-design/components';
 import { Alert, Badge, Box, Button, ContentLayout, Header, Link, Pagination, Table, TextFilter } from '@cloudscape-design/components';
 
 import usePolling from '../../hooks/use-polling';
+import useUserRole from '../../hooks/use-user-role';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
@@ -106,21 +109,26 @@ const COLUMNS: TableProps.ColumnDefinition<MyQueueRow>[] = [
 
 const MyQueuesPage = (): React.JSX.Element => {
   const reviewWork = useOptionalReviewWork();
+  const { canWorkTestSetQueues, loading: roleLoading } = useUserRole();
   const [production, setProduction] = useState<ReviewQueueSummary[] | null>(null);
   const [testSets, setTestSets] = useState<TestSetQueueSummary[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    const [mine, sets] = await Promise.allSettled([fetchMyReviewQueues(1), listTestSetQueues()]);
+    const [mine, sets] = await Promise.allSettled([
+      fetchMyReviewQueues(1),
+      canWorkTestSetQueues ? listTestSetQueues() : Promise.resolve<TestSetQueueSummary[]>([]),
+    ]);
     if (mine.status === 'fulfilled') setProduction(mine.value.queues);
     if (sets.status === 'fulfilled') setTestSets(sets.value.filter((t) => (t.fileCount ?? 0) > 0));
     const failure = mine.status === 'rejected' ? mine.reason : sets.status === 'rejected' ? sets.reason : null;
     if (failure) logger.error('loading my queues failed', failure);
     setError(failure);
-  }, []);
+  }, [canWorkTestSetQueues]);
 
-  usePolling(load, { enabled: true, intervalMs: QUEUES_POLL_INTERVAL_MS, immediate: true });
+  // Waits for the role, so the first load already knows whether to list test-set queues.
+  usePolling(load, { enabled: !roleLoading, intervalMs: QUEUES_POLL_INTERVAL_MS, immediate: true });
 
   const rows = useMemo(() => {
     const tasksPerSet = new Map<string, number>();

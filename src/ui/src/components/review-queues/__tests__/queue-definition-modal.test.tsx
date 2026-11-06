@@ -12,7 +12,7 @@
  */
 
 import React from 'react';
-import { fireEvent, render, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import type { FormFieldWrapper } from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -20,8 +20,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const createReviewQueue = vi.fn();
 const updateReviewQueue = vi.fn();
 const updateTestSetQueue = vi.fn();
+const listReviewQueues = vi.fn();
 vi.mock('../reviewer-assignment', () => ({
   createReviewQueue: (...a: unknown[]) => createReviewQueue(...a),
+  listReviewQueues: (...a: unknown[]) => listReviewQueues(...a),
   updateReviewQueue: (...a: unknown[]) => updateReviewQueue(...a),
   updateTestSetQueue: (...a: unknown[]) => updateTestSetQueue(...a),
 }));
@@ -85,6 +87,147 @@ beforeEach(() => {
   createReviewQueue.mockReset().mockImplementation(async (input: unknown) => input);
   updateReviewQueue.mockReset().mockImplementation(async (input: unknown) => input);
   updateTestSetQueue.mockReset().mockResolvedValue({});
+  listReviewQueues.mockReset().mockResolvedValue([]);
+});
+
+/** What the REST client throws for the API's refusal of a save over a newer version. */
+const queueChanged = {
+  errors: [
+    {
+      message: "QUEUE_CHANGED: queue 'claims' was changed by someone else after you opened it; reload it and make your change again",
+      errorType: 'BadRequest',
+    },
+  ],
+};
+
+const alerts = () => createWrapper(document.body).findAllAlerts();
+const changedAlert = () => alerts().find((a) => /changed by someone else/.test(a.getElement().textContent ?? ''));
+
+describe("a save over someone else's change (#1727)", () => {
+  it('sends the version the form was filled from, with the stored fields', async () => {
+    const onSaved = open({ queue: queue({ version: 4, description: 'Note', eligibleAnnotators: ['a@example.com'] }) });
+    clickSave();
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(updateReviewQueue.mock.calls[0][0]).toMatchObject({
+      id: 'claims',
+      version: 4,
+      description: 'Note',
+      eligibleAnnotators: ['a@example.com'],
+    });
+  });
+
+  it('sends no version when creating', async () => {
+    const onCreated = open();
+    setInput('Queue id', 'new-q');
+    setInput('Name', 'New');
+    clickSave();
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect((createReviewQueue.mock.calls[0][0] as Record<string, unknown>).version).toBeUndefined();
+  });
+
+  it('sends no version when the API reported none (an older backend)', async () => {
+    const onSaved = open({ queue: queue() });
+    clickSave();
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect((updateReviewQueue.mock.calls[0][0] as Record<string, unknown>).version).toBeUndefined();
+  });
+
+  it('says the queue changed, keeps the dialog open and offers a reload', async () => {
+    updateReviewQueue.mockRejectedValueOnce(queueChanged);
+    const onSaved = open({ queue: queue({ version: 1 }) });
+    clickSave();
+    await waitFor(() => expect(changedAlert()).toBeTruthy());
+    expect(onSaved).not.toHaveBeenCalled();
+    const text = changedAlert()!.getElement().textContent ?? '';
+    expect(text).toMatch(/your changes were not saved/i);
+    expect(text).not.toMatch(/QUEUE_CHANGED/);
+    expect(changedAlert()!.findActionSlot()!.findButton()!.getElement().textContent).toBe('Reload queue');
+    // The generic failure banner is not shown as well.
+    expect(modal().findContent().getElement().textContent).not.toMatch(/Failed to save the queue/);
+  });
+
+  it('reloads the stored queue into the form, and the next save sends its version', async () => {
+    updateReviewQueue.mockRejectedValueOnce(queueChanged);
+    listReviewQueues.mockResolvedValue([
+      queue({ id: 'other', version: 9 }),
+      queue({
+        name: 'Claims (renamed)',
+        priority: 7,
+        description: 'Their note',
+        eligibleAnnotators: ['b@example.com'],
+        skipReasons: ['Busy'],
+        timeLimitMinutes: 15,
+        enabled: true,
+        version: 2,
+      }),
+    ]);
+    const onSaved = open({ queue: queue({ version: 1 }) });
+    setInput('Priority', '3');
+    clickSave();
+    await waitFor(() => expect(changedAlert()).toBeTruthy());
+    fireEvent.click(changedAlert()!.findActionSlot()!.findButton()!.getElement());
+    await waitFor(() => expect(changedAlert()).toBeFalsy());
+    expect(field('Name').findControl()!.findInput()!.getInputValue()).toBe('Claims (renamed)');
+    expect(field('Priority').findControl()!.findInput()!.getInputValue()).toBe('7');
+    clickSave();
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    // Every field comes from the reloaded definition, so the save keeps the other Admin's change.
+    expect(updateReviewQueue.mock.calls[1][0]).toEqual(
+      expect.objectContaining({
+        id: 'claims',
+        name: 'Claims (renamed)',
+        description: 'Their note',
+        priority: 7,
+        timeLimitMinutes: 15,
+        eligibleAnnotators: ['b@example.com'],
+        skipReasons: ['Busy'],
+        enabled: true,
+        version: 2,
+      }),
+    );
+  });
+
+  it("keeps what was typed, and the warning, when the page's poll hands it a newer copy", async () => {
+    // ReviewQueuePage passes the definition from its polled list, a new object every poll.
+    updateReviewQueue.mockRejectedValueOnce(queueChanged);
+    const props = {
+      visible: true,
+      existingIds: [],
+      annotators: [],
+      annotatorsLoading: false,
+      onDismiss: () => undefined,
+      onSaved: vi.fn(),
+    };
+    const { rerender } = render(<QueueDefinitionModal {...props} queue={queue({ version: 1 })} />);
+    setInput('Priority', '3');
+    clickSave();
+    await waitFor(() => expect(changedAlert()).toBeTruthy());
+    act(() => rerender(<QueueDefinitionModal {...props} queue={queue({ version: 2, name: 'Polled' })} />));
+    expect(changedAlert()).toBeTruthy();
+    expect(field('Priority').findControl()!.findInput()!.getInputValue()).toBe('3');
+    // Pointed at another queue, the dialog does refill.
+    act(() => rerender(<QueueDefinitionModal {...props} queue={queue({ id: 'other', name: 'Other', version: 5 })} />));
+    expect(changedAlert()).toBeFalsy();
+    expect(field('Name').findControl()!.findInput()!.getInputValue()).toBe('Other');
+  });
+
+  it('says so when the queue was deleted in the meantime', async () => {
+    updateReviewQueue.mockRejectedValueOnce(queueChanged);
+    listReviewQueues.mockResolvedValue([]);
+    open({ queue: queue({ version: 1 }) });
+    clickSave();
+    await waitFor(() => expect(changedAlert()).toBeTruthy());
+    fireEvent.click(changedAlert()!.findActionSlot()!.findButton()!.getElement());
+    await waitFor(() => expect(changedAlert()!.getElement().textContent).toMatch(/no longer exists/));
+  });
+
+  it('shows any other failure as before', async () => {
+    updateReviewQueue.mockRejectedValueOnce({ errors: [{ message: 'BAD_ARGUMENT: priority', errorType: 'BadRequest' }] });
+    open({ queue: queue({ version: 1 }) });
+    clickSave();
+    await waitFor(() => expect(modal().findContent().getElement().textContent).toMatch(/Failed to save the queue: BAD_ARGUMENT/));
+    expect(changedAlert()).toBeFalsy();
+  });
 });
 
 describe('the queue dialog', () => {

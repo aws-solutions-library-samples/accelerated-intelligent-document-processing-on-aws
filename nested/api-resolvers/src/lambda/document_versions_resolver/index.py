@@ -27,6 +27,8 @@ import os
 from typing import Any, Dict, List, Optional
 
 import boto3
+
+from idp_common import document_scope
 from idp_common.docs_service import create_document_service
 from idp_common.document_versions import (
     delete_run_artifacts,
@@ -40,6 +42,9 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 s3_client = boto3.client("s3")
 document_service = create_document_service()
+_dynamodb = boto3.resource("dynamodb")
+# Per-container cache of callers' configuration scopes (see config_scope).
+_user_scope_cache: Dict[str, Any] = {}
 
 output_bucket = os.environ.get("OUTPUT_BUCKET")
 
@@ -106,6 +111,8 @@ def _shape_version(item: Dict[str, Any]) -> Dict[str, Any]:
             # emit empty lists rather than null so the UI's Array.isArray()
             # checks behave the same as on the live document.
             "ConfidenceThresholdAlerts": s.get("ConfidenceThresholdAlerts") or [],
+            # Snapshotted beside the alerts (#1527); same allow-list hazard.
+            "MissingRequiredFields": s.get("MissingRequiredFields") or [],
             "ProcessingIssues": _shape_processing_issues(s),
             # Multi-instance count, snapshotted by create_document_run. This
             # allow-list is explicit, so a key omitted here is silently dropped
@@ -355,6 +362,19 @@ def handler(event, context):
     object_key = args.get("objectKey")
     if not object_key:
         raise ValueError("objectKey is required")
+
+    # Every field here acts on one document's run history, and two of them return
+    # the document's extracted values (a version's sections, and the per-field
+    # changes between two runs), so the caller's configuration scope must cover the
+    # document. Admins skip the lookup; a refusal is a 403.
+    document_scope.require_document_scope(
+        event,
+        [object_key],
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=_dynamodb,
+        tracking_table=lambda: _dynamodb.Table(os.environ["TRACKING_TABLE"]),
+        cache=_user_scope_cache,
+    )
 
     if field == "listDocumentVersions":
         return list_document_versions(object_key)

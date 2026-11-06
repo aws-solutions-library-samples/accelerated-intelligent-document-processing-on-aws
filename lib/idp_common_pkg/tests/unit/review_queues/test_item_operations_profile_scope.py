@@ -152,3 +152,39 @@ class TestOutOfScopeItems:
         )
         assert [i.object_key for i in listed.items] == ["in.pdf"]
         assert service.claim(caller, "in.pdf", CYCLE).state == "CLAIMED"
+
+
+#: Calls whose arguments are checked against the item's queue definition.
+ARGUMENT_CHECKED = [
+    ("complete", lambda s, c, k: s.complete(c, k, CYCLE, checklist=[True] * 7)),
+    ("reject", lambda s, c, k: s.reject(c, k, CYCLE, "not-a-listed-reason")),
+]
+
+
+@pytest.mark.unit
+class TestAccessIsCheckedBeforeArguments:
+    """A caller who may not work an item is refused before its arguments are read."""
+
+    @pytest.mark.parametrize("name,call", ARGUMENT_CHECKED)
+    def test_an_out_of_scope_caller_is_refused_not_told_the_argument_is_wrong(
+        self, service, name, call
+    ):
+        _seed(service, f"{name}/out.pdf", OUT_OF_SCOPE)
+        with pytest.raises(ReviewAccessDenied) as exc:
+            call(service, WORKERS["Reviewer"], f"{name}/out.pdf")
+        assert exc.value.code == "OUT_OF_SCOPE"
+
+    @pytest.mark.parametrize("name,call", ARGUMENT_CHECKED)
+    def test_a_non_member_is_refused_not_told_the_argument_is_wrong(
+        self, service, name, call
+    ):
+        _seed(service, f"{name}/in.pdf", IN_SCOPE)
+        outsider = CallerContext(
+            reviewer_key="other@example.com",
+            email="other@example.com",
+            groups=frozenset({"Annotator"}),
+            allowed_versions=[IN_SCOPE],
+        )
+        with pytest.raises(ReviewAccessDenied) as exc:
+            call(service, outsider, f"{name}/in.pdf")
+        assert exc.value.code == "NOT_A_MEMBER"

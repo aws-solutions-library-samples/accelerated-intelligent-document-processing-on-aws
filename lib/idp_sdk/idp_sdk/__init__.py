@@ -65,6 +65,7 @@ from .models import (
     ConfigDeleteResult,
     ConfigDownloadResult,
     ConfigListResult,
+    ConfigMigrateResult,
     ConfigRevisionInfo,
     ConfigRevisionListResult,
     ConfigSyncBdaResult,
@@ -124,13 +125,28 @@ from .models import (
     StackState,
     StopWorkflowsResult,
     TemplateTransformResult,
+    TenantAccessPoint,
+    # Tenancy models
+    TenantApplyResult,
+    TenantAuditFinding,
+    TenantAuditResult,
+    TenantInfo,
+    TenantListResult,
+    TenantPlanAction,
+    TenantPlanItem,
+    TenantPolicyDeployResult,
+    TenantPolicyResult,
+    TenantUserGrant,
+    TenantVerifyCheck,
+    TenantVerifyOutcome,
+    TenantVerifyResult,
     TestComparisonResult,
     TestRunResult,
     UseAsBaselineResult,
     classify_document_state,
 )
 
-__version__ = "0.6.13"
+__version__ = "0.6.14"
 
 from idp_common.review_queues.statuses import ReviewStatus  # noqa: E402
 
@@ -213,6 +229,7 @@ __all__ = [
     "SearchDocumentReference",
     # Config models
     "ConfigCreateResult",
+    "ConfigMigrateResult",
     "ConfigValidationResult",
     "ConfigDownloadResult",
     "ConfigUploadResult",
@@ -241,4 +258,19 @@ __all__ = [
     "LoadTestResult",
     "TestRunResult",
     "TestComparisonResult",
+    # Tenancy models
+    "TenantApplyResult",
+    "TenantAuditFinding",
+    "TenantAuditResult",
+    "TenantInfo",
+    "TenantListResult",
+    "TenantPlanAction",
+    "TenantPlanItem",
+    "TenantAccessPoint",
+    "TenantPolicyDeployResult",
+    "TenantPolicyResult",
+    "TenantVerifyCheck",
+    "TenantVerifyOutcome",
+    "TenantUserGrant",
+    "TenantVerifyResult",
 ]

@@ -11,7 +11,7 @@ Nothing here modifies the existing main stack; this directory is self-contained 
 | 6 UI-facing resolver Lambdas | `listCatalogFeatures`, `listInstalledFeatures`, `checkFeatureEntitlement`, `getFeatureLaunchUrl`, `subscribeFeature`, `unsubscribeFeature`. Their ARNs are plain (un-exported) stack Outputs that the main `template.yaml` forwards into the host REST dispatcher's field→function map, so the UI reaches them at `POST /op/<field>` on the host's API Gateway REST API. |
 | 3 install-hook resolver Lambdas | `registerFeature`/`unregisterFeature`, `registerFeatureHooks`/`unregisterFeatureHooks`, `applyFeatureConfigPreset`/`removeFeatureConfigPreset` (one Lambda per pair). These are **not** reachable through the REST dispatcher — a feature stack's own `ui-deployer` custom resource invokes them directly with `lambda:InvokeFunction`. |
 | `WebUIBucket` prefix-scoped policy | Allow same-account principals with session tag `idp:feature-id=<id>` to write under `features/<id>/*`. Used by the feature-stack's UI-deployer custom resource. |
-| Extra stack Exports | The three install-hook function ARNs (`<MainStackName>-RegisterFeatureFunctionArn`, `-RegisterFeatureHooksFunctionArn`, `-ApplyFeatureConfigPresetFunctionArn`), plus re-exports of host resources feature stacks need: `-UserPoolId`, `-UserPoolClientId`, `-WebUIBucketName`/`-WebUIBucketArn`, `-InstalledFeaturesTableName`/`-InstalledFeaturesTableArn`, `-TrackingTableName`/`-TrackingTableArn`, `-ConfigurationTableName`/`-ConfigurationTableArn`, `-CustomerManagedEncryptionKeyArn`, and the Input/Output/Working/Discovery/Reporting/TestSet bucket and UsersTable names. |
+| Extra stack Exports | The three install-hook function ARNs (`<MainStackName>-RegisterFeatureFunctionArn`, `-RegisterFeatureHooksFunctionArn`, `-ApplyFeatureConfigPresetFunctionArn`), plus re-exports of host resources feature stacks need: `-UserPoolId`, `-UserPoolClientId`, `-WebUIBucketName`/`-WebUIBucketArn`, `-InstalledFeaturesTableName`/`-InstalledFeaturesTableArn`, `-TrackingTableName`/`-TrackingTableArn`, `-ConfigurationTableName`/`-ConfigurationTableArn`, `-ConfigurationBucketName` (for a feature that saves configuration profiles and so must record their revisions), `-CustomerManagedEncryptionKeyArn`, and the Input/Output/Working/Discovery/Reporting/TestSet bucket and UsersTable names. |
 
 ## Files
 
@@ -80,8 +80,8 @@ authenticates. See [`docs/migration-appsync-to-rest.md`](../../docs/migration-ap
 
 ## Hook registration is checked against the processing mode
 
-`registerFeatureHooks` writes a feature's hooks inline into the **active** config
-version, and three of the seven hook points — `postOcr`, `postClassification`,
+`registerFeatureHooks` writes a feature's hooks inline into the **active** configuration
+profile, and three of the seven hook points — `postOcr`, `postClassification`,
 `postExtraction` — exist only on the Pipeline branch of the unified state machine.
 So a registration at one of them while the active configuration sets
 `use_bda: true` produces a hook that is never invoked.
@@ -98,7 +98,7 @@ state machine definition by `scripts/generate_hook_point_reachability.py`.
 `applyFeatureConfigPreset` applies the same rule, because a feature can ship its
 hook **inside its config preset** rather than calling `registerFeatureHooks` — and
 both bundled extensions do exactly that, so the hook travels with the classes it
-belongs to and activating the version brings both. It judges the preset merged over
+belongs to and activating the profile brings both. It judges the preset merged over
 the host default, and the preset is the delta: a preset that says nothing about
 hooks is unaffected by a hook already stored in `Config#default`. The shared
 implementation is `idp_common.config.hook_reachability.reject_inert_gating_hooks`,

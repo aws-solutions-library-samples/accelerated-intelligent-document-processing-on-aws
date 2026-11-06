@@ -9,6 +9,10 @@
 // mode stays in the component for the API, but Review Management doesn't open it. Every queue's skip reasons, which an Annotator
 // picks from when giving an item back, are edited here one per line. A queue's stored
 // checklist and reject reasons are kept as they are; the dialog doesn't edit them.
+//
+// A save sends back the version of the definition the form was filled from. If another
+// Admin saved the queue in the meantime the API refuses it (QUEUE_CHANGED) rather than
+// overwriting their change; the dialog then says so and offers to reload the queue.
 import React, { useEffect, useState } from 'react';
 import type { MultiselectProps } from '@cloudscape-design/components';
 import {
@@ -27,8 +31,8 @@ import {
 } from '@cloudscape-design/components';
 
 import type { ReviewQueueDefinition, ReviewQueueDefinitionInput } from '../../graphql/generated/operation-types';
-import { describeApiError } from '../../hooks/utils/graphql-error';
-import { createReviewQueue, updateReviewQueue, updateTestSetQueue } from './reviewer-assignment';
+import { describeApiError, extractGraphQLErrorMessage } from '../../hooks/utils/graphql-error';
+import { createReviewQueue, listReviewQueues, updateReviewQueue, updateTestSetQueue } from './reviewer-assignment';
 
 /** The server's limit on a queue's skip list. */
 const MAX_SKIP_REASONS = 20;
@@ -49,6 +53,9 @@ export interface TestSetQueueTarget {
 export const QUEUE_ID_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
 const DEFAULT_TIME_LIMIT_MINUTES = 60;
 const MAX_TIME_LIMIT_MINUTES = 10080;
+
+/** True when the API refused a save because the queue changed after it was read. */
+export const isQueueChangedError = (err: unknown): boolean => /\bQUEUE_CHANGED\b/.test(extractGraphQLErrorMessage(err));
 
 interface QueueDefinitionModalProps {
   visible: boolean;
@@ -90,21 +97,55 @@ const QueueDefinitionModal = ({
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The production queue the form was filled from: the prop, or a reload after a
+  // refused save. Its version is what a save is checked against.
+  const [base, setBase] = useState<ReviewQueueDefinition | null>(queue);
+  // The last save was refused because someone else changed the queue.
+  const [changed, setChanged] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [reloadError, setReloadError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!visible) return;
-    setId(testSet?.testSetId ?? queue?.id ?? '');
-    setName(testSet?.name ?? queue?.name ?? '');
-    setDescription(testSet?.description ?? queue?.description ?? '');
-    setPriority(String(testSet?.priority ?? queue?.priority ?? 0));
-    setTimeLimit(String(testSet?.claimLeaseMinutes ?? queue?.timeLimitMinutes ?? DEFAULT_TIME_LIMIT_MINUTES));
-    setEnabled(queue?.enabled ?? true);
-    setEligible((testSet?.eligibleAnnotators ?? queue?.eligibleAnnotators ?? []).map((e) => ({ value: e, label: e })));
-    setChecklist([...(testSet?.checklist ?? queue?.checklist ?? [])]);
-    setSkipReasonsText((testSet?.skipReasons ?? queue?.skipReasons ?? []).join('\n'));
+  const fill = (from: ReviewQueueDefinition | null) => {
+    setBase(from);
+    setId(testSet?.testSetId ?? from?.id ?? '');
+    setName(testSet?.name ?? from?.name ?? '');
+    setDescription(testSet?.description ?? from?.description ?? '');
+    setPriority(String(testSet?.priority ?? from?.priority ?? 0));
+    setTimeLimit(String(testSet?.claimLeaseMinutes ?? from?.timeLimitMinutes ?? DEFAULT_TIME_LIMIT_MINUTES));
+    setEnabled(from?.enabled ?? true);
+    setEligible((testSet?.eligibleAnnotators ?? from?.eligibleAnnotators ?? []).map((e) => ({ value: e, label: e })));
+    setChecklist([...(testSet?.checklist ?? from?.checklist ?? [])]);
+    setSkipReasonsText((testSet?.skipReasons ?? from?.skipReasons ?? []).join('\n'));
     setSubmitted(false);
     setError(null);
-  }, [visible, queue, testSet]);
+    setChanged(false);
+    setReloadError(null);
+  };
+
+  // Refilled when the dialog opens or is pointed at another queue, not when the parent
+  // hands it a fresh copy of the same one (a page's poll does): that would discard what
+  // has been typed, and a newer copy is what a refused save and Reload are for.
+  const target = testSet ? `testset:${testSet.testSetId}` : queue ? `queue:${queue.id}` : 'new';
+  useEffect(() => {
+    if (!visible) return;
+    fill(queue);
+  }, [visible, target]);
+
+  /** Refill the form from the queue as it is stored now, after a refused save. */
+  const reload = async () => {
+    if (!base) return;
+    setReloading(true);
+    setReloadError(null);
+    try {
+      const current = (await listReviewQueues()).find((q) => q.id === base.id);
+      if (current) fill(current);
+      else setReloadError('This queue no longer exists. It may have been deleted. Close this dialog.');
+    } catch (err) {
+      setReloadError(describeApiError(err, 'reload the queue'));
+    } finally {
+      setReloading(false);
+    }
+  };
 
   const idError = !creating
     ? undefined
@@ -175,7 +216,7 @@ const QueueDefinitionModal = ({
       return;
     }
     const input: ReviewQueueDefinitionInput = {
-      id: queue?.id ?? id,
+      id: base?.id ?? id,
       name: name.trim(),
       description: description.trim(),
       priority: priorityNumber,
@@ -183,14 +224,18 @@ const QueueDefinitionModal = ({
       eligibleAnnotators: eligible.map((o) => o.value as string),
       checklist,
       // Not edited here: an existing queue keeps its list; a new one gets the defaults.
-      rejectReasons: queue?.rejectReasons ?? undefined,
+      rejectReasons: base?.rejectReasons ?? undefined,
       skipReasons: skipReasons.length > 0 ? skipReasons : undefined,
       enabled,
+      // The version this form was filled from, so a save over someone else's change is
+      // refused. Left out when the API did not report one.
+      version: creating ? undefined : (base?.version ?? undefined),
     };
     try {
       onSaved(creating ? await createReviewQueue(input) : await updateReviewQueue(input));
     } catch (err) {
-      setError(describeApiError(err, creating ? 'create the queue' : 'save the queue'));
+      if (!creating && isQueueChangedError(err)) setChanged(true);
+      else setError(describeApiError(err, creating ? 'create the queue' : 'save the queue'));
     } finally {
       setSaving(false);
     }
@@ -201,7 +246,7 @@ const QueueDefinitionModal = ({
       visible={visible}
       onDismiss={onDismiss}
       size="large"
-      header={creating ? 'Create Queue' : `Queue Settings: ${testSet?.name ?? queue?.name ?? ''}`}
+      header={creating ? 'Create Queue' : `Queue Settings: ${testSet?.name ?? base?.name ?? ''}`}
       footer={
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
@@ -217,7 +262,22 @@ const QueueDefinitionModal = ({
     >
       <Form errorText={error ?? undefined}>
         <SpaceBetween size="m">
-          {queue?.isDefaultQueue && (
+          {changed && (
+            <Alert
+              type="warning"
+              header="This queue was changed by someone else"
+              action={
+                <Button loading={reloading} onClick={() => void reload()}>
+                  Reload queue
+                </Button>
+              }
+            >
+              Another Admin saved this queue after you opened it, so your changes were not saved. Reload the queue to see its current
+              settings, then make your changes again. Reloading replaces what you have entered here.
+              {reloadError && <Box color="text-status-error">{reloadError}</Box>}
+            </Alert>
+          )}
+          {base?.isDefaultQueue && (
             <Alert type="info">
               Documents with confidence alerts arrive here when HITL is enabled in their configuration and this queue is enabled.
             </Alert>

@@ -99,6 +99,8 @@ from sse import (
     sse,
 )
 
+from idp_common.config_scope import unscoped_is_denied
+
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
@@ -213,6 +215,33 @@ def _enforce_groups_or_403(identity: dict | None) -> None:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
+def _refuse_unverified_when_unscoped_is_denied_or_403(identity: dict | None) -> None:
+    """Tenant isolation: refuse a turn this transport cannot attribute.
+
+    Applies under ``TenantIsolationMode=Strict`` or an external
+    ``TenantGrantSource`` (``IdpClaim`` or ``Api``). With ``identity`` ``None``
+    (GAP-07) the processors stand their scope and group checks down, which serves
+    the turn unrestricted. Tenant isolation is defined as never doing that, and the denial has to be raised here, before the
+    ``StreamingResponse`` commits HTTP 200, to arrive as a 403 rather than an error
+    frame. Both processors refuse too, as defence in depth. The UI's REST fallback
+    (``sendChatDocumentMessage`` / ``sendAgentChatMessage``) carries verified
+    claims and is unaffected by this check.
+    """
+    if identity is None and unscoped_is_denied():
+        logger.warning(
+            "Rejecting streamed chat: tenant isolation requires a verified "
+            "caller identity, which this transport does not supply (GAP-07)"
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Unauthorized: this deployment runs with tenant isolation, "
+                "which requires a verified caller identity that the streaming chat "
+                "endpoint cannot supply"
+            ),
+        )
+
+
 def _resolve_caller_sub(request: Request, claimed: str) -> str:
     """Caller identity for this request; 403 if the body contradicts the token.
 
@@ -293,6 +322,7 @@ async def chat_document(
     # caller from `identity` below, which only a transport can set, rather than
     # from a field a client can choose.
     _resolve_caller_sub(request, body.callerSub)
+    _refuse_unverified_when_unscoped_is_denied_or_403(_caller_identity())
 
     q: "queue.Queue" = queue.Queue()
 
@@ -360,6 +390,7 @@ async def chat_agent(request: Request, body: AgentChatRequest) -> StreamingRespo
     # only reachable before StreamingResponse is returned. No-op while
     # _caller_identity() is None (GAP-07).
     identity = _caller_identity()
+    _refuse_unverified_when_unscoped_is_denied_or_403(identity)
     _enforce_groups_or_403(identity)
 
     q: "queue.Queue" = queue.Queue()

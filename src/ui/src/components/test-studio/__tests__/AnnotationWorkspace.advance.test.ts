@@ -75,7 +75,7 @@ describe('leaving a document does not wait for the queue reload', () => {
     const verdictAt = processChanges.indexOf('if (!reviewed) throw new NotReviewedYet(notReviewedMessage(name));');
     expect(verdictAt).toBeGreaterThan(-1);
     expect(processChanges.indexOf('labels are marked reviewed')).toBeGreaterThan(verdictAt);
-    expect(SCREEN).toContain('Check its sections and choose Process Changes again.');
+    expect(SCREEN).toContain('Check its sections and choose ${PROCESS_CHANGES_LABEL} again.');
   });
 
   it('does not report a skipped document as reviewed', () => {

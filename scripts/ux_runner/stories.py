@@ -35,7 +35,7 @@ EXPECTATIONS: tuple[str, ...] = ("allowed", "refused", "not_offered")
 KINDS: tuple[str, ...] = ("read", "commit_point")
 TIERS: tuple[str, ...] = ("p0", "p1")
 ORIGINS: tuple[str, ...] = ("changelog", "smoke", "finding")
-SIGN_IN_GROUPS: tuple[str, ...] = ("Admin", "Author", "Reviewer", "Viewer")
+SIGN_IN_GROUPS: tuple[str, ...] = ("Admin", "Annotator", "Author", "Reviewer", "Viewer")
 CONTROL_WORDS: tuple[str, ...] = (
     "click",
     "press",
@@ -54,15 +54,18 @@ ID_CHARS = 60
 TITLE_CHARS = 80
 INTENT_CHARS = 600
 BACKGROUND_CHARS = 400
+CREDENTIALS_CHARS = 40
 HASH_CHARS = 12
 ID_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+CREDENTIALS_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*")
 SINCE_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 DOC_REF_RE = re.compile(r"[A-Za-z0-9._/-]+\.md(?:#[^\s#]+)?")
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TOP_KEYS = ("version", "limits", "runs", "personas", "fixtures", "stories")
 _TOP_REQUIRED = ("version", "personas", "stories")
-_PERSONA_KEYS = ("group", "background")
+_PERSONA_KEYS = ("group", "background", "credentials")
+_PERSONA_REQUIRED = ("group", "background")
 _FIXTURE_KEYS = ("description",)
 _STORY_KEYS = (
     "id",
@@ -113,7 +116,6 @@ _FOREIGN_TOP_KEYS: dict[str, str] = {
         "test's flows"
     ),
 }
-_ANNOTATOR = "Annotator"
 _LIMIT_CEILINGS: dict[str, float] = {
     "documented_steps_max": 10,
     "flow_usd": 20.0,
@@ -185,6 +187,13 @@ class Persona:
     id: str
     group: str
     background: str
+    credentials: str = ""
+
+    @property
+    def credentials_key(self) -> str:
+        """The ``UX_TEST_PERSONAS`` entry this persona signs in with: its own
+        ``credentials``, or its group's entry when it names none."""
+        return self.credentials or self.group
 
 
 @dataclass(frozen=True)
@@ -487,19 +496,35 @@ def _personas(value: object, source: str) -> dict[str, Persona]:
         _identifier(persona_id, where, "persona id")
         here = f"{source}: [personas.{persona_id}]"
         table = _table(entry, here)
-        _closed(table, here, _PERSONA_KEYS, _PERSONA_KEYS)
-        group = table["group"]
-        if group == _ANNOTATOR:
-            raise CatalogueError(
-                f"{here}: group Annotator stays refused until `--long-lived` "
-                "supports it"
-            )
+        _closed(table, here, _PERSONA_KEYS, _PERSONA_REQUIRED)
         personas[persona_id] = Persona(
             id=persona_id,
-            group=_choice(group, here, "group", SIGN_IN_GROUPS),
+            group=_choice(table["group"], here, "group", SIGN_IN_GROUPS),
             background=_text(table["background"], here, "background", BACKGROUND_CHARS),
+            credentials=_credentials(table.get("credentials", ""), here),
         )
     return personas
+
+
+def _credentials(value: object, here: str) -> str:
+    """A persona's own ``UX_TEST_PERSONAS`` key, or ``""`` for its group's.
+
+    A persona that needs an account of its own, such as an Annotator limited to
+    one profile, names it here, and is never signed in with its group's account
+    instead: a run without that entry reports the persona as not run.
+    """
+    if value == "":
+        return ""
+    if (
+        not isinstance(value, str)
+        or len(value) > CREDENTIALS_CHARS
+        or not CREDENTIALS_RE.fullmatch(value)
+    ):
+        raise CatalogueError(
+            f"{here}: credentials must be a UX_TEST_PERSONAS key of letters, digits "
+            f"and single hyphens, at most {CREDENTIALS_CHARS} characters"
+        )
+    return value
 
 
 def _fixtures(value: object, source: str) -> dict[str, Fixture]:

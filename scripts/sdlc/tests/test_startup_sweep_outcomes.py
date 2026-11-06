@@ -1472,7 +1472,9 @@ def test_a_live_stack_keeps_every_bda_resource_named_for_it(cbd, monkeypatch, sh
 
     assert aws.deleted == [], f"a live stack's BDA resources were reaped: {aws.deleted}"
     assert findings == [], findings
-    assert aws.calls.count("list_stacks") == 1, aws.calls
+    # One listing per CI region: IAM is global, so a run's stacks are looked for
+    # in every region a run can be in (_live_run_regions).
+    assert aws.calls.count("list_stacks") == len(cbd._live_run_regions()), aws.calls
     assert aws.described == [], f"asked CloudFormation by name: {aws.described}"
 
 
@@ -1779,7 +1781,7 @@ def test_the_stacks_are_read_after_the_bda_listings(cbd, monkeypatch):
     assert aws.calls == [
         "list_blueprints",
         "list_data_automation_projects",
-        "list_stacks",
+        *["list_stacks"] * len(cbd._live_run_regions()),
     ], aws.calls
 
 
@@ -2874,7 +2876,9 @@ def test_the_bda_sweep_never_asks_after_the_long_lived_stack(
 
     assert findings == [], findings
     assert aws.described == [], f"the sweep asked CloudFormation about {aws.described}"
-    assert aws.calls.count("list_stacks") == 1, aws.calls
+    # One listing per CI region: IAM is global, so a run's stacks are looked for
+    # in every region a run can be in (_live_run_regions).
+    assert aws.calls.count("list_stacks") == len(cbd._live_run_regions()), aws.calls
     assert sorted(aws.deleted) == sorted(
         _resources_of("cleanup_stale_bda_blueprints", OLD_RUN_STACK)
     ), aws.deleted
@@ -3553,7 +3557,7 @@ CLIENT_SITES_FLOOR = frozenset(
         ("_expired_retention_markers", "client", "s3"),
         ("_force_delete_vpc_stack_enis", "client", "cloudformation"),
         ("_force_delete_vpc_stack_enis", "client", "ec2"),
-        ("_live_idp_run_prefixes", "client", "cloudformation"),
+        ("_live_idp_run_prefixes_in", "client", "cloudformation"),
         ("cleanup_stale_apigw_test_vpcs", "client", "cloudformation"),
         ("cleanup_stale_bda_blueprints", "client", "bedrock-data-automation"),
         ("cleanup_stale_ci_diagnostics", "client", "s3"),

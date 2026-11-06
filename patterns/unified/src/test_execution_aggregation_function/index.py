@@ -404,18 +404,28 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
 
-def _drafting_config_versions(table, test_set_id: str, exclude_run_id: str) -> set:
+def _drafting_config_versions(
+    table, test_set_id: str, pointer: Optional[str], exclude_run_id: str
+) -> set:
     """Config versions that produced any of this set's draft labels.
 
-    Labeling-job items are per-run (SK ``labeljob#{runId}``) and the job id *is* a
-    test run id, so each one's run record carries the version the runner resolved —
-    no extra field to keep in sync. Returns an empty set if the jobs cannot be read,
-    which makes the caller's guard fail *open*: a curve that misses a refusal is
-    recoverable (reset and rebuild), whereas dropping every observation on a
-    transient read error would silently stop the estimator from ever measuring.
+    The drafting runs are the test-set resolver's
+    (:func:`idp_common.testset_label_jobs.drafting_run_ids`): every labeling job's
+    run but a FAILED one, which drafted nothing, plus the run an older pointer
+    named when it has no job record, and the set's ``labelJobId`` ``pointer`` alone
+    when there is no job record at all (#1757). Labeling-job items are per-run (SK
+    ``labeljob#{runId}``) and the job id *is* a test run id, so each run's record
+    carries the version the runner resolved. Returns an empty set if the jobs
+    cannot be read, which makes the caller's guard fail *open*: a curve that misses
+    a refusal is recoverable (reset and rebuild), whereas dropping every
+    observation on a transient read error would silently stop the estimator from
+    ever measuring.
     """
+    from idp_common.testset_label_jobs import drafting_run_ids, oldest_first
+
     versions = set()
     try:
+        jobs = []
         start_key = None
         for _ in range(20):
             kwargs = {
@@ -425,21 +435,21 @@ def _drafting_config_versions(table, test_set_id: str, exclude_run_id: str) -> s
             if start_key:
                 kwargs["ExclusiveStartKey"] = start_key
             page = table.query(**kwargs)
-            for job in page.get("Items") or []:
-                run_id = job.get("jobId")
-                if not run_id or run_id == exclude_run_id:
-                    continue
-                version = (
-                    table.get_item(
-                        Key={"PK": f"testrun#{run_id}", "SK": "metadata"}
-                    ).get("Item")
-                    or {}
-                ).get("ConfigVersion")
-                if version:
-                    versions.add(version)
+            jobs.extend(page.get("Items") or [])
             start_key = page.get("LastEvaluatedKey")
             if not start_key:
                 break
+        for run_id in drafting_run_ids(oldest_first(jobs), pointer):
+            if run_id == exclude_run_id:
+                continue
+            version = (
+                table.get_item(Key={"PK": f"testrun#{run_id}", "SK": "metadata"}).get(
+                    "Item"
+                )
+                or {}
+            ).get("ConfigVersion")
+            if version:
+                versions.add(version)
     except Exception as e:  # noqa: BLE001 — see docstring: guard fails open
         logger.warning(f"Could not resolve drafting configs for {test_set_id}: {e}")
     return versions
@@ -506,7 +516,9 @@ def _record_confidence_curve(
         # Every labeling job, not just the set's current pointer: a one-document
         # re-extract repoints it, so reading only the newest job would let a run
         # score the config that drafted the *other* 199 documents.
-        drafted_by = _drafting_config_versions(table, test_set_id, test_run_id)
+        drafted_by = _drafting_config_versions(
+            table, test_set_id, test_set.get("labelJobId"), test_run_id
+        )
         if test_set.get("labelState") == "draft" and run_config in drafted_by:
             logger.info(
                 f"Skipping confidence-curve update for {test_set_id}: run scored "

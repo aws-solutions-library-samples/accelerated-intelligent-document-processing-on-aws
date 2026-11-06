@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import threading
+import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -37,6 +38,12 @@ from botocore.exceptions import ClientError
 from deepdiff import DeepDiff
 
 from idp_common.bda.bda_blueprint_creator import BDABlueprintCreator
+from idp_common.bda.blueprint_class import (
+    BDA_CLASS_MAX_LENGTH,
+    BDA_TEXT_CHARS,
+    from_blueprint_class,
+    to_blueprint_class,
+)
 from idp_common.config.class_names import sanitize_class_name
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.schema_constants import (
@@ -54,6 +61,87 @@ from idp_common.config.schema_constants import (
 
 logger = logging.getLogger(__name__)
 
+# The characters CreateBlueprint takes in a blueprint's text values; defined,
+# with its measurements, in blueprint_class because the blueprint ``class``
+# takes the same set.
+_BDA_TEXT_CHARS = BDA_TEXT_CHARS
+
+# Replacements that keep the meaning of a character outside _BDA_TEXT_CHARS.
+# Anything not listed here is reduced through NFKD (which turns "ý" into "y" and
+# a full-width letter into its ASCII form); whatever is still outside the set
+# after that is removed, and the removal is recorded as a per-class warning.
+_BDA_TEXT_REPLACEMENTS = {
+    **dict.fromkeys("‐‑‒–—―−﹘﹣", "-"),
+    **dict.fromkeys("‘‚‛′`", "'"),
+    **dict.fromkeys("„‟″«»", '"'),
+    # No-break, en/em/thin/hair and other fixed-width spaces, and the
+    # ideographic space.
+    **dict.fromkeys(
+        "\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007"
+        "\u2008\u2009\u200a\u202f\u205f\u3000",
+        " ",
+    ),
+    # Soft hyphen, zero-width non-joiner, joiner, word joiner, BOM.
+    **dict.fromkeys("\u00ad\u200c\u200d\u2060\ufeff", ""),
+    **dict.fromkeys("•‣⁃∙◦·", "-"),
+    "…": "...",
+    "×": "x",
+    "÷": "/",
+    "⁄": "/",
+    "→": "->",
+    "←": "<-",
+    "↔": "<->",
+    "⇒": "=>",
+    "{": "(",
+    "}": ")",
+}
+
+
+# Item types of an array CreateBlueprint was measured to accept inside a
+# definition (see BdaBlueprintService._is_primitive_array). ``integer`` is listed
+# because it reaches BDA as ``number`` (see _convert_integer_types).
+_PRIMITIVE_ARRAY_ITEM_TYPES = ("string", "number", "integer")
+
+# CreateBlueprint rejects ``"type": "integer"`` wherever it appears — a leaf, an
+# array's items, a member of a definition — and accepts ``number`` in each of
+# those places (measured; catalog blueprints use only string, number and
+# boolean). An integer is therefore sent as a number, and this note is added to
+# its instruction so the whole-number meaning is not lost.
+_WHOLE_NUMBER_HINT = "(a whole number)"
+_WHOLE_NUMBERS_HINT = "(whole numbers)"
+
+
+# The warning ``type`` of a class that was not sent to BDA at all, because its
+# blueprint would have had no properties (see _skip_if_nothing_to_send).
+EMPTY_BLUEPRINT_WARNING = "empty_blueprint"
+
+
+def classes_not_sent(statuses: object) -> list:
+    """The classes a sync's status list reports as not sent to BDA.
+
+    Such a class's entry is a ``success`` — nothing went wrong, and there is
+    nothing to retry — but no blueprint exists for it, so a caller counting
+    synced classes should count it apart. Recognised by its
+    ``EMPTY_BLUEPRINT_WARNING`` warning.
+    """
+    if not isinstance(statuses, list):
+        return []
+    return [
+        entry.get("class")
+        for entry in statuses
+        if isinstance(entry, dict)
+        and entry.get("status") == "success"
+        and any(
+            isinstance(w, dict) and w.get("type") == EMPTY_BLUEPRINT_WARNING
+            for w in entry.get("warnings") or []
+        )
+    ]
+
+
+def _has_visible_text(text: str) -> bool:
+    """False for text that is empty, whitespace, or zero-width spaces only."""
+    return bool(text.replace("\u200b", "").strip())
+
 
 @dataclass
 class _DropRecording:
@@ -68,6 +156,10 @@ class _DropRecording:
 
     class_name: Optional[str]
     drops: list = field(default_factory=list)
+    # False for a trial conversion whose drops may be discarded
+    # (``_skip_if_nothing_to_send``), so they are not also appended to the
+    # instance's ``_skipped_properties`` unless the trial's result is used.
+    mirrored: bool = True
 
 
 # The recording in force for the calling thread, or None when the transform is being
@@ -509,11 +601,13 @@ class BdaBlueprintService:
         # Validate that array properties have instruction field
         self._validate_bda_array_instruction_requirements(schema_copy)
 
-        # Create base IDP schema structure
-        idp_schema = {
+        # Create base IDP schema structure. The class id is read back through
+        # the reverse of the escaping the IDP -> BDA direction applies.
+        class_id = from_blueprint_class(str(schema_copy.get("class", "Document")))
+        idp_schema: dict = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": schema_copy.get("class", "Document"),
-            "x-aws-idp-document-type": schema_copy.get("class", "Document"),
+            "$id": class_id,
+            "x-aws-idp-document-type": class_id,
             "type": "object",
         }
 
@@ -762,17 +856,25 @@ class BdaBlueprintService:
                 new_name = sanitize_name(prop_name)
 
                 if isinstance(prop_value, dict):
-                    # Recursively sanitize nested object properties
-                    if (
-                        prop_value.get("type") == "object"
-                        and "properties" in prop_value
+                    # Recursively sanitize nested object properties. A missing
+                    # "type" counts as an object, as it does in the transform,
+                    # which hoists such an object with its member names intact.
+                    if self._is_inline_object(prop_value) and isinstance(
+                        prop_value["properties"], dict
                     ):
                         prop_value["properties"] = sanitize_properties(
                             prop_value["properties"]
                         )
 
-                    # Recursively sanitize array item properties
-                    if prop_value.get("type") == "array" and "items" in prop_value:
+                    # Recursively sanitize array item properties (a missing
+                    # "type" beside "items" counts as an array).
+                    if (
+                        prop_value.get(
+                            "type", "array" if "items" in prop_value else None
+                        )
+                        == "array"
+                        and "items" in prop_value
+                    ):
                         items = prop_value["items"]
                         if isinstance(items, dict) and "properties" in items:
                             items["properties"] = sanitize_properties(
@@ -981,7 +1083,181 @@ class BdaBlueprintService:
         else:
             blueprint.update(self._process_flat_schema(properties))
 
+        self._drop_arrays_from_item_definitions(blueprint)
+
+        self._convert_integer_types(blueprint)
+
+        # Last, so every path above (and every default it filled in) is covered.
+        self._normalize_blueprint_text(blueprint)
+
         return blueprint
+
+    def _drop_arrays_from_item_definitions(self, blueprint: dict) -> None:
+        """Drop array members from a definition that is used as array items.
+
+        CreateBlueprint accepts a primitive array inside a definition referenced
+        by an object property, but rejects the same definition when an array's
+        ``items`` references it, which would nest one array in another (both
+        measured; no catalog blueprint uses the second form). Which kind of
+        reference a definition gets is known only once the blueprint is built, so
+        this runs over the finished blueprint and records each drop.
+        """
+        definitions = blueprint.get("definitions") or {}
+        prefix = "#/definitions/"
+        item_defs: dict[str, None] = {}
+        for prop in (blueprint.get(SCHEMA_PROPERTIES) or {}).values():
+            if not isinstance(prop, dict) or prop.get(SCHEMA_TYPE) != TYPE_ARRAY:
+                continue
+            items = prop.get(SCHEMA_ITEMS)
+            ref = items.get(REF_FIELD) if isinstance(items, dict) else None
+            if isinstance(ref, str) and ref.startswith(prefix):
+                item_defs[ref[len(prefix) :]] = None
+        for def_name in item_defs:
+            members = (definitions.get(def_name) or {}).get(SCHEMA_PROPERTIES)
+            if not isinstance(members, dict):
+                continue
+            for name in [
+                n
+                for n, m in members.items()
+                if isinstance(m, dict) and m.get(SCHEMA_TYPE) == TYPE_ARRAY
+            ]:
+                del members[name]
+                self._record_skipped_property(
+                    name,
+                    "nested_array",
+                    f"Property '{name}' skipped - BDA does not support an array "
+                    f"inside a definition used as array items "
+                    f"('{def_name}')",
+                )
+            if not members:
+                # Nothing representable is left. A definition with no
+                # properties is never sent, so every property that refers to it
+                # is dropped and recorded too, as the hoisting paths do.
+                del definitions[def_name]
+                self._drop_properties_referring_to(blueprint, def_name)
+        if "definitions" in blueprint and not definitions:
+            # Nothing references an empty object, so it is not sent at all.
+            del blueprint["definitions"]
+
+    def _convert_integer_types(self, blueprint: dict) -> None:
+        """Send every ``integer`` in the finished blueprint as ``number``.
+
+        CreateBlueprint rejects the whole blueprint over one ``"type": "integer"``
+        (issue #1755: four classes of the shipped ``ocr-benchmark`` preset), and
+        accepts ``number`` in the same place. The property keeps its whole-number
+        meaning through a note appended to its instruction. Only schema positions
+        are visited — ``properties`` values, ``items`` and definitions — so a
+        property that happens to be named ``type`` is never rewritten.
+        """
+        nodes = list((blueprint.get(SCHEMA_PROPERTIES) or {}).values())
+        for definition in (blueprint.get("definitions") or {}).values():
+            if isinstance(definition, dict):
+                nodes.extend((definition.get(SCHEMA_PROPERTIES) or {}).values())
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            items = node.get(SCHEMA_ITEMS)
+            if node.get(SCHEMA_TYPE) == "integer":
+                node[SCHEMA_TYPE] = "number"
+                hint = _WHOLE_NUMBER_HINT
+            elif isinstance(items, dict) and items.get(SCHEMA_TYPE) == "integer":
+                items[SCHEMA_TYPE] = "number"
+                hint = _WHOLE_NUMBERS_HINT
+            else:
+                continue
+            instruction = node.get("instruction")
+            if not isinstance(instruction, str) or not _has_visible_text(
+                instruction.replace("-", "")
+            ):
+                node["instruction"] = hint
+            elif hint not in instruction:
+                node["instruction"] = f"{instruction.rstrip()} {hint}"
+
+    def _drop_properties_referring_to(self, blueprint: dict, def_name: str) -> None:
+        """Drop and record every top-level property that refers to ``def_name``."""
+        ref = f"#/definitions/{def_name}"
+        properties = blueprint.get(SCHEMA_PROPERTIES) or {}
+        for name, prop in list(properties.items()):
+            if not isinstance(prop, dict):
+                continue
+            items = prop.get(SCHEMA_ITEMS)
+            if prop.get(REF_FIELD) == ref:
+                kind = "nested_object"
+            elif isinstance(items, dict) and items.get(REF_FIELD) == ref:
+                kind = "nested_array"
+            else:
+                continue
+            del properties[name]
+            self._record_skipped_property(
+                name,
+                kind,
+                f"Property '{name}' skipped - none of its members can be "
+                f"represented in a BDA blueprint",
+            )
+
+    def _normalize_blueprint_text(self, node: object, path: str = "") -> None:
+        """Make every ``instruction`` and ``description`` text BDA-acceptable.
+
+        CreateBlueprint rejects the whole blueprint over one character outside
+        ``_BDA_TEXT_CHARS`` in any of these values (issue #1741: an em dash in one
+        preset field's instruction). Walks the finished blueprint in place, so it
+        covers user classes, shipped presets and the converter's own defaults
+        alike. Only string values are touched, so a property that happens to be
+        named ``description`` is still recursed into rather than overwritten.
+        """
+        if isinstance(node, dict):
+            for key, value in node.items():
+                child = f"{path}.{key}" if path else key
+                if key in ("instruction", SCHEMA_DESCRIPTION) and isinstance(
+                    value, str
+                ):
+                    node[key] = self._normalize_bda_text(value, child)
+                else:
+                    self._normalize_blueprint_text(value, child)
+
+    def _normalize_bda_text(self, text: str, path: str) -> str:
+        """Return ``text`` with every character BDA rejects replaced or removed.
+
+        Text BDA already accepts is returned unchanged, so a blueprint that synced
+        before is not re-versioned by the next sync's update check. Otherwise the
+        text is composed (NFC), each remaining character outside
+        ``_BDA_TEXT_CHARS`` is replaced from ``_BDA_TEXT_REPLACEMENTS``, or else
+        reduced through NFKD; a character that leaves nothing acceptable behind is
+        removed and recorded as a warning for the class. A text that is blank, or
+        left blank, becomes ``"-"``, because CreateBlueprint rejects a blank
+        instruction.
+        """
+        if all(ch in _BDA_TEXT_CHARS for ch in text):
+            # A blank instruction is rejected too, and cannot have synced.
+            return text if _has_visible_text(text) else "-"
+        kept: list[str] = []
+        removed: list[str] = []
+        for ch in unicodedata.normalize("NFC", text):
+            if ch in _BDA_TEXT_CHARS:
+                kept.append(ch)
+            elif ch in _BDA_TEXT_REPLACEMENTS:
+                kept.append(_BDA_TEXT_REPLACEMENTS[ch])
+            else:
+                reduced = "".join(
+                    c if c in _BDA_TEXT_CHARS else _BDA_TEXT_REPLACEMENTS.get(c, "")
+                    for c in unicodedata.normalize("NFKD", ch)
+                )
+                kept.append(reduced)
+                if not reduced:
+                    removed.append(ch)
+        result = "".join(kept)
+        if not _has_visible_text(result):
+            result = "-"
+        logger.info(f"Normalized text at '{path}' for BDA: {text!r} -> {result!r}")
+        if removed:
+            shown = ", ".join(f"{c!r} U+{ord(c):04X}" for c in dict.fromkeys(removed))
+            self._record_skipped_property(
+                path,
+                "unsupported_characters",
+                f"Text at '{path}' had characters a BDA blueprint cannot hold; "
+                f"removed {len(removed)} ({shown})",
+            )
+        return result
 
     def _validate_array_instruction_requirements(self, json_schema: dict) -> None:
         """
@@ -1043,11 +1319,20 @@ class BdaBlueprintService:
                 add_missing_instructions(def_value["properties"], f"$defs.{def_name}")
 
     def _create_base_blueprint_structure(self, json_schema: dict) -> dict:
-        """Create the base blueprint structure."""
+        """Create the base blueprint structure.
+
+        The class id is carried in ``class`` through ``to_blueprint_class``, which
+        escapes the characters BDA rejects there reversibly, so a BDA → IDP sync
+        restores the id exactly (issue #1755).
+        """
         return {
             "$schema": "http://json-schema.org/draft-07/schema#",
-            "class": json_schema.get(
-                ID_FIELD, json_schema.get(X_AWS_IDP_DOCUMENT_TYPE, "Document")
+            "class": to_blueprint_class(
+                str(
+                    json_schema.get(
+                        ID_FIELD, json_schema.get(X_AWS_IDP_DOCUMENT_TYPE, "Document")
+                    )
+                )
             ),
             "description": json_schema.get(
                 SCHEMA_DESCRIPTION, "Document schema for data extraction"
@@ -1071,12 +1356,90 @@ class BdaBlueprintService:
                     REF_FIELD: self._normalize_ref_path(prop_value[REF_FIELD]),
                     "instruction": "-",
                 }
+            elif self._is_inline_object_shape(prop_value):
+                self._hoist_inline_object_property(prop_name, prop_value, result)
             else:
                 result["properties"][prop_name] = self._add_bda_fields_to_schema(
                     prop_value
                 )
 
         return result
+
+    @staticmethod
+    def _is_inline_object(schema: object) -> bool:
+        """True for an object schema written inline (with properties, no $ref)."""
+        return (
+            isinstance(schema, dict)
+            and REF_FIELD not in schema
+            and SCHEMA_PROPERTIES in schema
+            and schema.get(SCHEMA_TYPE, TYPE_OBJECT) == TYPE_OBJECT
+        )
+
+    def _is_inline_object_shape(self, prop_value: object) -> bool:
+        """True when a top-level property carries an object BDA needs hoisted.
+
+        BDA rejects a blueprint with an object written inline under
+        ``properties``, either as the property itself or as an array's ``items``
+        ("Request has invalid blueprint schema", issue #1732). It accepts the same
+        object moved into ``definitions`` and referenced with ``$ref``, which is
+        the only form any catalog blueprint uses.
+        """
+        if not isinstance(prop_value, dict):
+            return False
+        if self._is_inline_object(prop_value):
+            return True
+        return prop_value.get(
+            SCHEMA_TYPE, TYPE_ARRAY if SCHEMA_ITEMS in prop_value else None
+        ) == TYPE_ARRAY and self._is_inline_object(prop_value.get(SCHEMA_ITEMS))
+
+    def _hoist_inline_object_property(
+        self, prop_name: str, prop_value: dict, result: dict
+    ) -> None:
+        """Move an inline object property into ``result["definitions"]``.
+
+        On this path an inline object is treated exactly as if it had been
+        written under ``$defs``: it becomes a definition, processed by
+        ``_add_bda_fields_to_schema`` like every other definition (so a member
+        BDA cannot represent is dropped and recorded individually), and the
+        property becomes a ``$ref`` to it. An array whose ``items`` is an inline
+        object gets the same treatment for its items, under ``<name>Item``.
+
+        The property keeps its name, so extraction output paths are unchanged;
+        only the definition name is new, and it is made unique against the
+        definitions already present. A definition left with no properties at
+        all is not sent: the property is dropped and recorded instead.
+        """
+        is_array = not self._is_inline_object(prop_value)
+        # A missing "type" is inferred as object from "properties" here.
+        definition = self._add_bda_fields_to_schema(
+            prop_value[SCHEMA_ITEMS] if is_array else prop_value
+        )
+        if not definition.get(SCHEMA_PROPERTIES):
+            self._record_skipped_property(
+                prop_name,
+                "nested_array" if is_array else "nested_object",
+                f"Property '{prop_name}' skipped - none of its members can be "
+                f"represented in a BDA blueprint",
+            )
+            return
+
+        base_name = f"{prop_name}Item" if is_array else prop_name
+        def_name = base_name
+        suffix = 2
+        while def_name in result["definitions"]:
+            def_name = f"{base_name}{suffix}"
+            suffix += 1
+        result["definitions"][def_name] = definition
+
+        ref = {REF_FIELD: f"#/definitions/{def_name}"}
+        if is_array:
+            # A missing "type" is inferred as array from "items" here.
+            result["properties"][prop_name] = self._add_bda_fields_to_schema(
+                {**prop_value, SCHEMA_ITEMS: ref}
+            )
+        else:
+            # Same form as every other $ref property on this path.
+            result["properties"][prop_name] = {**ref, "instruction": "-"}
 
     def _process_flat_schema(self, properties: dict) -> dict:
         """Process flat nested schema (Pattern 2: from classes_discovery.py)."""
@@ -1194,7 +1557,8 @@ class BdaBlueprintService:
             recording.drops.append(entry)
         # Also kept on the instance as an ordered record of everything dropped,
         # independently of which class was being processed.
-        self._skipped_properties.append(entry)
+        if recording is None or recording.mirrored:
+            self._skipped_properties.append(entry)
         if class_name is None:
             logger.warning(message)
         else:
@@ -1205,27 +1569,33 @@ class BdaBlueprintService:
         Process object properties, adding BDA fields to leaf properties only.
 
         BDA Limitations (as of current version):
-        - Nested objects are not supported
-        - Nested arrays (arrays within object definitions) are not supported
+        - Nested objects, and $ref members, are not supported
+        - Arrays of objects within object definitions are not supported; an array
+          of a scalar type is, and is kept
 
         TODO: When BDA supports nested structures, re-enable processing of:
         - TYPE_OBJECT properties with nested properties
-        - TYPE_ARRAY properties within object definitions
+        - TYPE_ARRAY properties of objects within object definitions
         """
         processed_properties = {}
 
         for name, value in properties.items():
-            # Handle $ref properties — normalize path and include with instruction
+            # A $ref here would put one definition inside another, which
+            # CreateBlueprint rejects ("Request has invalid blueprint schema",
+            # measured, with or without an instruction beside it). Dropped and
+            # recorded like the nested object it stands for.
             if REF_FIELD in value:
-                processed_properties[name] = {
-                    REF_FIELD: self._normalize_ref_path(value[REF_FIELD]),
-                    "instruction": "-",
-                }
+                self._record_skipped_property(
+                    name,
+                    "nested_object",
+                    f"Property '{name}' skipped - BDA does not support a $ref "
+                    f"inside a definition",
+                )
                 continue
 
             # Skip nested objects - BDA doesn't support them
             # TODO: Re-enable when BDA supports nested objects
-            if value.get(SCHEMA_TYPE) == TYPE_OBJECT:
+            if self._schema_type(value) == TYPE_OBJECT:
                 self._record_skipped_property(
                     name,
                     "nested_object",
@@ -1233,13 +1603,20 @@ class BdaBlueprintService:
                 )
                 continue
 
-            # Skip nested arrays - BDA doesn't support arrays within object definitions
-            # TODO: Re-enable when BDA supports nested arrays within objects
-            if value.get(SCHEMA_TYPE) == TYPE_ARRAY:
+            # A primitive array is kept: CreateBlueprint accepts one inside a
+            # definition (measured; catalog blueprints such as receipt carry it).
+            if self._is_primitive_array(value):
+                processed_properties[name] = self._add_bda_fields_to_schema(value)
+                continue
+
+            # Any other array nests an object or a $ref inside the definition,
+            # which BDA rejects.
+            if self._schema_type(value) == TYPE_ARRAY:
                 self._record_skipped_property(
                     name,
                     "nested_array",
-                    f"Property '{name}' skipped - BDA does not support nested arrays within definitions",
+                    f"Property '{name}' skipped - BDA does not support arrays of "
+                    f"objects within definitions",
                 )
                 continue
 
@@ -1249,6 +1626,50 @@ class BdaBlueprintService:
             )
 
         return processed_properties
+
+    @staticmethod
+    def _schema_type(schema: dict) -> Optional[str]:
+        """A schema's declared ``type``, or the one its structure implies.
+
+        An object is often written with ``properties`` and no ``type``, and an
+        array with ``items`` and no ``type``. Reading only the declared type
+        turned such an object inside a definition into a string field, and such
+        array items on the path without ``$defs`` into ``{"type": "string"}``,
+        with no warning (issue #1742). A declared type always wins.
+        """
+        declared = schema.get(SCHEMA_TYPE)
+        if declared is not None:
+            return declared
+        if SCHEMA_PROPERTIES in schema:
+            return TYPE_OBJECT
+        if SCHEMA_ITEMS in schema:
+            return TYPE_ARRAY
+        return None
+
+    @staticmethod
+    def _is_primitive_array(schema: object) -> bool:
+        """True for an array of strings or numbers (integers included).
+
+        Such an array is representable inside a definition; an array of objects
+        or of ``$ref`` items is not. Only ``string`` and ``number`` items were
+        probed there; ``integer`` items count because they are sent as
+        ``number`` (``_convert_integer_types``). Any other item type is not
+        treated as primitive and is dropped as before. ``items`` must be
+        present: an array with no ``items`` inside a definition was not probed.
+        """
+        if (
+            not isinstance(schema, dict)
+            or BdaBlueprintService._schema_type(schema) != TYPE_ARRAY
+        ):
+            return False
+        items = schema.get(SCHEMA_ITEMS)
+        return (
+            isinstance(items, dict)
+            and REF_FIELD not in items
+            and SCHEMA_PROPERTIES not in items
+            and (BdaBlueprintService._schema_type(items) or "string")
+            in _PRIMITIVE_ARRAY_ITEM_TYPES
+        )
 
     def _process_array_property_simple(self, prop_value: dict) -> dict:
         """Process array properties for simple cases."""
@@ -1301,7 +1722,7 @@ class BdaBlueprintService:
 
         if (
             isinstance(items, dict)
-            and items.get(SCHEMA_TYPE) == TYPE_OBJECT
+            and self._schema_type(items) == TYPE_OBJECT
             and SCHEMA_PROPERTIES in items
         ):
             # Array of simple objects - extract to definition
@@ -1382,7 +1803,7 @@ class BdaBlueprintService:
                 )
                 continue
 
-            prop_type = prop_value.get(SCHEMA_TYPE, "string")
+            prop_type = self._schema_type(prop_value) or "string"
 
             if prop_type == TYPE_OBJECT and SCHEMA_PROPERTIES in prop_value:
                 # Check if this object has nested complex structures
@@ -1433,7 +1854,7 @@ class BdaBlueprintService:
                 items = prop_value.get(SCHEMA_ITEMS, {})
                 if (
                     isinstance(items, dict)
-                    and items.get(SCHEMA_TYPE) == TYPE_OBJECT
+                    and self._schema_type(items) == TYPE_OBJECT
                     and SCHEMA_PROPERTIES in items
                     and self._has_nested_complex_structures(items[SCHEMA_PROPERTIES])
                 ):
@@ -1460,11 +1881,12 @@ class BdaBlueprintService:
 
     def _has_nested_complex_structures(self, properties: dict) -> bool:
         """
-        Check if properties contain nested complex structures (objects or arrays).
+        Check if properties contain nested complex structures (objects, or
+        arrays other than an array of a scalar type).
 
         BDA doesn't support:
         - Objects within objects
-        - Arrays within objects
+        - Arrays of objects within objects
 
         Args:
             properties: Properties dict to check
@@ -1476,15 +1898,16 @@ class BdaBlueprintService:
             if not isinstance(prop_value, dict):
                 continue
 
-            prop_type = prop_value.get(SCHEMA_TYPE, "string")
+            prop_type = self._schema_type(prop_value) or "string"
 
             # Check for nested objects
             if prop_type == TYPE_OBJECT:
                 logger.debug(f"Found nested object property '{prop_name}'")
                 return True
 
-            # Check for nested arrays
-            if prop_type == TYPE_ARRAY:
+            # Check for nested arrays. A primitive array is not one: it is kept
+            # inside the definition (see _process_object_properties).
+            if prop_type == TYPE_ARRAY and not self._is_primitive_array(prop_value):
                 logger.debug(f"Found nested array property '{prop_name}'")
                 return True
 
@@ -1581,9 +2004,13 @@ class BdaBlueprintService:
         if isinstance(blueprint_schema, str):
             blueprint_schema = json.loads(blueprint_schema)
 
-        # Transform the custom_class to Bedrock format for comparison
+        # Sanitize before transforming, exactly as the create and update paths
+        # do: the blueprint being compared against was built from the sanitized
+        # class, so comparing the unsanitized one reports a difference in every
+        # renamed property name even when nothing changed (issue #1742).
+        sanitized_class, _ = self._sanitize_property_names(deepcopy(custom_class))
         transformed_custom = self._transform_json_schema_to_bedrock_blueprint(
-            custom_class
+            sanitized_class
         )
 
         # Use DeepDiff to compare the schemas
@@ -1651,6 +2078,24 @@ class BdaBlueprintService:
                 # Name the recording now that the class id is known, so every drop
                 # below is attributed to it.
                 recording.class_name = docu_class
+
+                blueprint_class = to_blueprint_class(str(docu_class))
+                if len(blueprint_class) > BDA_CLASS_MAX_LENGTH:
+                    raise ValueError(
+                        f"Document class '{docu_class}' is too long for BDA: a "
+                        f"blueprint's class holds at most {BDA_CLASS_MAX_LENGTH} "
+                        f"characters, and this one needs {len(blueprint_class)}"
+                        + (
+                            " once the characters BDA does not accept are escaped"
+                            if blueprint_class != docu_class
+                            else ""
+                        )
+                        + ". Use a shorter class name before syncing to BDA."
+                    )
+
+                skipped = self._skip_if_nothing_to_send(custom_class, recording)
+                if skipped is not None:
+                    return skipped
 
                 blueprint_exists = self._blueprint_lookup(
                     existing_blueprints, docu_class
@@ -1784,6 +2229,53 @@ class BdaBlueprintService:
                     "error": str(e),
                 }
 
+    def _skip_if_nothing_to_send(
+        self, custom_class: dict, recording: _DropRecording
+    ) -> Optional[dict]:
+        """Skip a class whose blueprint would have no properties.
+
+        CreateBlueprint rejects a blueprint with no properties — an empty
+        ``properties``, none at all, or only ``definitions`` (measured). A class
+        with no fields, or whose every field is dropped as unrepresentable, used to
+        be sent anyway and reported failed with a bare ValidationException (issue
+        #1755: three shipped preset classes). It is now not sent, and the result is
+        a success carrying an ``empty_blueprint`` warning, on the same channel as a
+        dropped property, together with the drops that emptied it. No blueprint is
+        created or updated for it, so in replace mode a blueprint synced for it
+        earlier is removed like that of a deleted class.
+
+        The conversion here runs in its own recording, so when the class is *not*
+        skipped its drops are not reported twice: the create or update path that
+        follows runs the transform again and records them itself.
+
+        Returns:
+            The class's result if it is skipped, otherwise None.
+        """
+        with self._recording_drops_for(recording.class_name) as trial:
+            trial.mirrored = False
+            sanitized, _ = self._sanitize_property_names(deepcopy(custom_class))
+            candidate = self._transform_json_schema_to_bedrock_blueprint(sanitized)
+        if candidate.get(SCHEMA_PROPERTIES):
+            return None
+        recording.drops.extend(trial.drops)
+        self._skipped_properties.extend(trial.drops)
+        reason = (
+            "it has no properties"
+            if not trial.drops
+            else "none of its properties can be represented in a BDA blueprint"
+        )
+        self._record_skipped_property(
+            str(recording.class_name),
+            EMPTY_BLUEPRINT_WARNING,
+            f"Class '{recording.class_name}' was not sent to BDA: {reason}, and "
+            f"BDA rejects a blueprint with no fields.",
+        )
+        return {
+            "class": recording.class_name,
+            "status": "success",
+            "warnings": list(recording.drops),
+        }
+
     def _process_classes_parallel(
         self, classess: list, existing_blueprints: list
     ) -> tuple:
@@ -1908,6 +2400,8 @@ class BdaBlueprintService:
                 )
 
             docu_class = blueprint_schema.get("class", None)
+            if isinstance(docu_class, str):
+                docu_class = from_blueprint_class(docu_class)
             class_exists = False
 
             if docu_class:

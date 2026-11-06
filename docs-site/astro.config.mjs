@@ -60,6 +60,7 @@ export default defineConfig({
             // so the nav does not read as two competing pages. sync-sidebar.mjs
             // adds any unlisted doc automatically, so leaving it out entirely
             // just means it lands in "New & Uncategorized" on the next run.
+            { label: "Multi-Tenant Isolation", slug: "multi-tenancy" },
             {
               label: "Configuration Versions (renamed)",
               slug: "configuration-versions",

@@ -966,8 +966,60 @@ The BedrockClient automatically handles common failure scenarios:
 
 - Exponential backoff with jitter for rate limits and transient errors
 - Intelligent classification of retryable vs. non-retryable errors
+- A read or connect timeout, a failed connection (`EndpointConnectionError`) and a
+  connection dropped before the response arrived (`ConnectionClosedError`, botocore's
+  rewrap of urllib3's `ProtocolError`) are retried by `_invoke_with_retry` and counted
+  as `BedrockTimeouts`. botocore's own retries are pinned to one attempt, so this
+  ladder is the only one that sees them; a dropped connection used to fall to the
+  unexpected-error branch and fail the call on its first attempt.
+  `tests/unit/bedrock/test_retry_ladder_bounds.py` drives a real `bedrock-runtime`
+  client with only urllib3's `urlopen` replaced, so the exception is the one botocore
+  itself raises (#1706).
 - Detailed logging with appropriate content sanitization
 - Metrics collection for request counts, latencies, and token usage
+- A retry frees the attempt it replaces before it starts. Every ladder here
+  (`_invoke_with_retry`, `_generate_embedding_with_retry`,
+  `_invoke_lambda_hook_with_retry`) retries by calling itself, and an `except`
+  handler only records the decision: the call is made after the `try` statement,
+  once the handler has exited. A call made from inside the handler runs while the
+  failure is still being handled, so the exception stays reachable for the rest of
+  the ladder, and through its traceback, its chained exceptions and botocore's
+  `error=` and `request=` kwargs so does the failed attempt's serialised request
+  body, with every attached image base64-encoded: one more copy per retry. Before
+  recording the decision the handler also calls `_drop_failed_attempt(e)` (defined in
+  the leaf module `idp_common/failed_attempt.py`, which the agentic retry decorator in
+  `utils/bedrock_utils.py` also uses), which
+  detaches the tracebacks along that chain. botocore's `Endpoint._send_request`
+  holds the exception it raises in a local, which makes a reference cycle; without
+  the detach the attempt is unreachable but stays in memory until the cyclic
+  garbage collector next reaches it. The LambdaHook ladder serialises its payload
+  inline, so its frame holds no copy of the serialised request.
+  No ladder retries from anywhere inside a `try` statement, the body included. The
+  LambdaHook function-error retry (a hook that answers with `FunctionError:
+  Unhandled`) is decided in the `try` body, where no exception is being handled, but
+  it is made after the statement like every other retry: made from the body, the
+  outer frame's own handlers caught whatever the nested ladder finally raised and
+  retried it again on their own count, so with `max_retries=4` one function error
+  followed by read timeouts made 9 invocations instead of 5, and the worst mix of
+  function errors and throttles found made 22 (40 against 8 at the default of 7). A request now makes at
+  most `max_retries + 1` invocations whatever mix of failures it meets;
+  `tests/unit/bedrock/test_retry_ladder_bounds.py` checks every ordering of the three
+  retryable failure kinds (#1706).
+- `LambdaHookRequestsFailed` is emitted once per failed request, at the
+  `except Exception` handler every terminal function error passes through, and never
+  at the `raise` that feeds it. The same test file drives every `raise` in the hook
+  ladder, which it finds in the source and confirms by tracing the lines executed,
+  and asserts one emission for each failure and none for a request that recovers.
+  `tests/unit/bedrock/test_retry_releases_failed_attempts.py` drives every handler
+  that can retry with a stub that fails the way botocore does, and measures the
+  memory still held at each attempt with the cyclic collector off. It also fails
+  when an `except` handler of a ladder calls the ladder by name or contains any
+  `return`, which is how a retry spelled through `getattr`, an alias or
+  `functools.partial` shows up. `_drop_failed_attempt` stops at the exception the
+  caller was already handling when it called in, so a caller's own traceback is
+  left intact. Not covered: a retry started inside a handler through an alias whose
+  result leaves the handler by assignment, on a branch no route drives, and a retry
+  loop placed inside an `except` block (#1678).
 
 ## Configuration Options
 

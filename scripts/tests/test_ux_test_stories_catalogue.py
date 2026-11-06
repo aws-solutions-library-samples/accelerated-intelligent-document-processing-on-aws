@@ -570,13 +570,10 @@ def test_runs_have_no_dollar_ceiling() -> None:
 
 
 @pytest.mark.unit
-def test_a_persona_signs_in_as_a_supported_group_and_annotator_says_why_not() -> None:
+def test_a_persona_signs_in_as_a_supported_group_and_annotator_is_one() -> None:
     data = _fixture()
     data["personas"]["analyst"]["group"] = "Annotator"
-    assert _refused(data) == (
-        "fixture.toml: [personas.analyst]: group Annotator stays refused until "
-        "`--long-lived` supports it"
-    )
+    assert _parsed(data).persona("analyst").group == "Annotator"
     for group in ("admin", "Operator", "", 3):
         data = _fixture()
         data["personas"]["analyst"]["group"] = group
@@ -584,7 +581,7 @@ def test_a_persona_signs_in_as_a_supported_group_and_annotator_says_why_not() ->
         assert message.startswith(
             "fixture.toml: [personas.analyst]: group must be one of"
         )
-        assert "Admin, Author, Reviewer, Viewer" in message
+        assert "Admin, Annotator, Author, Reviewer, Viewer" in message
 
 
 @pytest.mark.unit
@@ -1653,7 +1650,7 @@ def test_section_anchors_are_the_h1_to_h3_headings_deduplicated_like_anchors() -
 def test_the_permission_matrix_parser_reads_every_row_of_docs_rbac() -> None:
     columns, rows = _rbac_matrix(RBAC_DOC.read_text(encoding="utf-8"))
     assert columns == ("Admin", "Author", "Reviewer", "Viewer")
-    assert set(stories.SIGN_IN_GROUPS) <= set(columns)
+    assert set(stories.SIGN_IN_GROUPS) - set(columns) == {"Annotator"}
     assert {
         "Upload documents",
         "View document details",
@@ -1708,6 +1705,15 @@ def test_every_rbac_row_exists_and_agrees_with_each_persona_expectation(
             continue
         for persona, expectation in story.expectations:
             group = catalogue.persona(persona).group
+            if group not in columns:
+                if expectation != "allowed":
+                    problems.append(
+                        f"story {story.id}: as.{persona} = {expectation} ({group}), "
+                        f"but docs/rbac.md's Permission Matrix has no {group} column "
+                        "to hold that against; add the column before a story expects "
+                        f"a {group} to be refused"
+                    )
+                continue
             cell = row.get(group, "")
             allows = _cell_allows(cell)
             checked += 1
@@ -1812,7 +1818,7 @@ def test_no_since_is_above_the_release_of_version(catalogue: stories.Catalogue) 
 
 
 @pytest.mark.unit
-def test_sign_in_groups_are_the_session_helper_groups_without_annotator() -> None:
+def test_sign_in_groups_are_the_session_helper_groups() -> None:
     """The groups as the session helper computes them, which it may read from
     ``template.yaml`` rather than spell out, so the module is loaded by path."""
     spec = importlib.util.spec_from_file_location(
@@ -1821,11 +1827,7 @@ def test_sign_in_groups_are_the_session_helper_groups_without_annotator() -> Non
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    groups = module.VALID_GROUPS
-    assert "Annotator" in groups
-    assert stories.SIGN_IN_GROUPS == tuple(
-        group for group in groups if group != "Annotator"
-    )
+    assert stories.SIGN_IN_GROUPS == tuple(module.VALID_GROUPS)
 
 
 @pytest.mark.unit

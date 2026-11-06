@@ -401,6 +401,24 @@ at the producer rather than in this deployment. Each refused document appears in
 UI as **Failed** with the reason on it, so no investigation starts from the metric
 alone.
 
+### Tenant Isolation
+
+With `TenantIsolationMode=Strict` (see [Multi-Tenant Isolation](multi-tenancy.md)), the
+queue sender checks every incoming document against the tenant declarations and
+publishes two metrics in the stack's namespace:
+
+| Metric | Published when | Alarmed |
+|---|---|---|
+| `TenantBoundaryRejected` | A document was refused because its key and its resolved profile belong to different tenants, or it landed outside every tenant | No: this is the control working. A sustained count usually means an uploader is writing to the wrong prefix |
+| `TenantIsolationLookupFailed` | The tenant declarations could not be read | Yes, `TenantIsolationLookupFailedAlarm`, on the first occurrence (strict stacks only) |
+
+Unlike prefix mappings, the tenant check **fails closed**. When the declarations
+cannot be read, the document is not processed; Lambda retries the event twice and
+then sends it to the QueueSender dead-letter queue. The object remains in the Input
+bucket, so once the cause is fixed (typically a KMS or policy change denying
+`dynamodb:GetItem` on the ConfigurationTable) re-upload the object or redrive the
+queue. A refused document appears in the document list as **Failed** with the reason.
+
 ### Confidence Assessment Degraded
 
 Confidence assessment is an *enrichment* pass: extraction has already run,
@@ -447,7 +465,7 @@ and two of the three causes report nothing here:
   `unclassified` — a blank page, a page whose classification failed, or any page in
   a deployment with no document types configured. The [classification
   stage](./classification.md#pages-classification-could-not-classify) reports this
-  one, at the severity it can judge and with a remedy that points at the right
+  one on the paths that scope note lists, at the severity it can judge and with a remedy that points at the right
   place. An error indicator and an alarm data point per blank page would make both
   this page's alarm and that indicator useless;
 - **the section's named class is absent from the configuration in force** — renamed

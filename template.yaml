@@ -103,6 +103,51 @@ Parameters:
     ConstraintDescription: >-
       Must be empty or a list of comma separated email domains (example1.com, example2.com)
 
+  TenantIsolationMode:
+    Type: String
+    Default: "Off"
+    AllowedValues:
+      - "Off"
+      - "Strict"
+    Description: >-
+      Off (default) keeps today's behaviour. Strict makes tenant isolation fail
+      closed: a non-Admin user with no configuration scope sees nothing rather than
+      everything; a document is processed only if the tenant owning its Input-bucket
+      key also owns the Configuration Profile it resolves to, so an upload outside
+      every tenant's prefixes is refused; Agent Chat, agent queries and Knowledge
+      Base queries are Admin-only and MCP tools are refused, because none can be
+      scoped to a tenant; and the Input and Output bucket policies delegate to S3
+      Access Points in this account, so restrict s3:CreateAccessPoint and
+      s3:PutAccessPointPolicy to the access point deployer first. Declare tenants
+      before switching to Strict.
+
+  TenantGrantSource:
+    Type: String
+    Default: "Manual"
+    AllowedValues:
+      - "Manual"
+      - "IdpClaim"
+      - "Api"
+    Description: >-
+      Where a user's tenant comes from. Manual (default): an Admin sets each user's
+      configuration scope in User Management. IdpClaim: the external identity
+      provider's group or role claim (ExternalIdPGroupAttributeName) grants it at
+      each fresh sign-in, matched against each tenant's grantedBy values. Api: an
+      entitlement system grants it through setUserTenant or idp-cli tenancy
+      set-user-tenant. Under IdpClaim and Api, Admins cannot edit scopes and a
+      non-Admin user with no tenant sees nothing.
+
+  RefreshTokenValidityHours:
+    Type: Number
+    Default: 720
+    MinValue: 1
+    MaxValue: 87600
+    Description: >-
+      How long a web UI session can renew itself without a fresh sign-in, in hours
+      (default 720, 30 days). A tenant or role removed in the identity provider
+      takes effect at the next fresh sign-in, so a shorter value shortens how long a
+      removed grant can outlive its removal.
+
   # External Identity Provider (Federation)
 
   ExternalIdPType:
@@ -1178,6 +1223,15 @@ Parameters:
   # =========================================================================
 
 Rules:
+  # IdpClaim grants tenants from the IdP's group/role claim, which Cognito stores in
+  # custom:idp_groups only when ExternalIdPGroupAttributeName names the claim. Without
+  # it no user could ever be granted a tenant.
+  TenantGrantFromIdpClaimNeedsGroupAttribute:
+    RuleCondition: !Equals [ !Ref TenantGrantSource, "IdpClaim" ]
+    Assertions:
+      - Assert: !Not [ !Equals [ !Ref ExternalIdPGroupAttributeName, "" ] ]
+        AssertDescription: "TenantGrantSource=IdpClaim requires ExternalIdPGroupAttributeName (the claim that carries the group or role values)."
+
   MLflowTrackingURIRequired:
     RuleCondition: !Equals [ !Ref EnableMLflow, "true" ]
     Assertions:
@@ -1277,6 +1331,18 @@ Rules:
           integration and does not auto-provision an S3 VPC endpoint).
 
 Conditions:
+  IsTenantIsolationStrict: !Equals [!Ref TenantIsolationMode, "Strict"]
+  IsTenantGrantFromIdpClaim: !Equals [!Ref TenantGrantSource, "IdpClaim"]
+  # Mirrors idp_common.config_scope.unscoped_is_denied: tenants granted from outside
+  # the stack confine users just as Strict does, so the surfaces that cannot be
+  # scoped (the chat stream Function URL among them) are closed under either.
+  DeniesUnscopedCaller: !Or
+    - !Condition IsTenantIsolationStrict
+    - !Not [!Equals [!Ref TenantGrantSource, "Manual"]]
+  # Left at the default, the web UI client keeps its RefreshTokenValidity of 30
+  # (days) and no TokenValidityUnits, so an upgraded stack's client is not modified:
+  # UpdateUserPoolClient is a full replace, and nothing restores a property it drops.
+  HasCustomRefreshTokenValidity: !Not [!Equals [!Ref RefreshTokenValidityHours, 720]]
   # API transport: API Gateway REST API + polling + Lambda response streaming is
   # now the only path (the former GraphQL API has been fully removed). No transport
   # conditions are needed — the REST API resources deploy unconditionally.
@@ -1498,6 +1564,9 @@ Metadata:
         Parameters:
           - AdminEmail
           - AllowedSignUpEmailDomain
+          - TenantIsolationMode
+          - TenantGrantSource
+          - RefreshTokenValidityHours
       - Label:
           default: "Configuration"
         Parameters:
@@ -1843,6 +1912,15 @@ Resources:
       LoggingConfig:
         LogGroup:
           Ref: StacknameCheckFunctionLogGroup
+      Policies:
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${StacknameCheckFunctionLogGroup}"
+                - !GetAtt StacknameCheckFunctionLogGroup.Arn
 
   StacknameCheckFunctionLogGroup:
     Metadata:
@@ -2369,6 +2447,14 @@ Resources:
                   - kms:DescribeKey
                 Resource: !Ref ArtifactsBucketKmsKeyArn
               - !Ref AWS::NoValue
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ConfigurationCopyFunctionLogGroup}"
+                - !GetAtt ConfigurationCopyFunctionLogGroup.Arn
 
   ConfigurationCopyFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -2471,6 +2557,8 @@ Resources:
         - !Ref IDPCommonAgentsLayer
       Environment:
         Variables:
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
@@ -2725,7 +2813,7 @@ Resources:
           - id: F38
             reason: "PassRole is required to delegate the execution role to the Bedrock AgentCore Gateway service, and is scoped to the single AgentCoreGatewayExecutionRole ARN"
           - id: F3
-            reason: "Wildcard actions required for AgentCore Gateway lifecycle management (create, update, delete) and CloudWatch Logs delivery configuration"
+            reason: "bedrock-agentcore:* covers the AgentCore Gateway and gateway target lifecycle (list, get, create, update, delete); the CloudWatch Logs actions are the deletes that remove the log group and delivery resources older gateways created, and are not wildcards"
           - id: W11
             reason: "Wildcard resource required as AgentCore Gateway ARNs are dynamically generated and unknown at deployment time"
     # checkov:skip=CKV_AWS_116: "DLQ not required for Cfn Custom Resource function"
@@ -2752,21 +2840,24 @@ Resources:
       Policies:
         - Statement:
             - Effect: Allow
+              # The gateway and target lifecycle runs through bedrock-agentcore,
+              # the IAM prefix of the bedrock-agentcore-control API (issue #1753).
+              # The two delivery deletes are delete_gateway_observability's, which
+              # removes the delivery resources that gateways created before
+              # enable_observability=False left behind; they stay on "*" because
+              # their scoping has not been measured against the service. The
+              # function's own log writes come from the AWSLambdaBasicExecutionRole
+              # policy SAM attaches, not from this statement.
               Action:
-                - bedrock-agent:*
                 - bedrock-agentcore:*
-                - bedrock-agentcore-control:*
-                - logs:CreateLogGroup
-                - logs:PutLogEvents
-                - logs:DeleteLogGroup
-                - logs:PutDeliverySource
                 - logs:DeleteDeliverySource
-                - logs:PutDeliveryDestination
                 - logs:DeleteDeliveryDestination
-                - logs:DescribeDeliveryDestinations
-                - logs:DescribeDeliverySources
-                - cognito-idp:DescribeUserPool
               Resource: "*"
+            # The vended log group older gateways created; its path is fixed and
+            # only the gateway id after it is service-assigned.
+            - Effect: Allow
+              Action: logs:DeleteLogGroup
+              Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/bedrock-agentcore/gateway/APPLICATION_LOGS/*"
             # AppSec finding b2b397a9 (Security Invariant scenario 1.1,
             # iam-role-without-privilege-escalation): this function is a
             # configuration custom resource and must not be able to grant itself
@@ -2789,6 +2880,14 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${AgentCoreGatewayManagerLogGroup}"
+                - !GetAtt AgentCoreGatewayManagerLogGroup.Arn
 
   AgentCoreGatewayManagerLogGroup:
     Type: AWS::Logs::LogGroup
@@ -2886,6 +2985,14 @@ Resources:
               Action: ssm:GetParameter
               Resource:
                 - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${SettingsParameter}"
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ReadPreviousIDPPatternFunctionLogGroup}"
+                - !GetAtt ReadPreviousIDPPatternFunctionLogGroup.Arn
 
   ReadPreviousIDPPatternFunctionLogGroup:
     Metadata:
@@ -3110,6 +3217,8 @@ Resources:
         # User management (for config-version scoping)
         UsersTableName: !Ref UsersTable
         UsersTableArn: !GetAtt UsersTable.Arn
+        TenantIsolationMode: !Ref TenantIsolationMode
+        TenantGrantSource: !Ref TenantGrantSource
 
         # S3 VPC endpoint URL — passed to presigner resolver Lambdas only when
         # explicitly opted in (S3PresignedUrlViaVpcEndpoint=true or BYO override).
@@ -3270,6 +3379,8 @@ Resources:
         # Report is shown only to users allowed the original's config version).
         UsersTableName: !Ref UsersTable
         UsersTableArn: !GetAtt UsersTable.Arn
+        TenantIsolationMode: !Ref TenantIsolationMode
+        TenantGrantSource: !Ref TenantGrantSource
         # Test Set bucket name re-exported so feature stacks that generate test
         # sets (idp-data-generator) can write documents Test Studio discovers.
         TestSetBucketName: !Ref TestSetBucket
@@ -3822,6 +3933,35 @@ Resources:
             Condition:
               Bool:
                 "aws:SecureTransport": false
+          # Strict tenant isolation: let per-tenant S3 Access Points in this
+          # account govern access (`idp-cli tenancy generate-policies` writes them).
+          # Not a public grant: every request it admits arrives through an access
+          # point owned by this account, whose own policy names the principals and
+          # confines them to one tenant's prefixes, and S3 does not treat a policy
+          # conditioned on s3:DataAccessPointAccount as public. The actions are the
+          # ones those access point policies grant, so delegating widens nothing
+          # for a principal that does not use one.
+          # PREREQUISITE this template cannot enforce: the condition admits ANY
+          # access point this account owns, so only the people who deploy the
+          # generated tenant access points may hold s3:CreateAccessPoint and
+          # s3:PutAccessPointPolicy. See docs/multi-tenancy.md for an SCP.
+          - !If
+            - IsTenantIsolationStrict
+            - Sid: DelegateToTenantAccessPoints
+              Effect: Allow
+              Principal:
+                AWS: "*"
+              # Write only: a tenant's uploader delivers documents into the Input
+              # bucket, and nothing outside the solution needs to read or list it.
+              Action:
+                - "s3:PutObject"
+              # Objects only: s3:PutObject never evaluates against the bucket ARN.
+              Resource:
+                - !Sub "${InputBucket.Arn}/*"
+              Condition:
+                StringEquals:
+                  "s3:DataAccessPointAccount": !Ref AWS::AccountId
+            - !Ref AWS::NoValue
 
   StagingBucket:
     Type: AWS::S3::Bucket
@@ -4063,6 +4203,14 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${TestSetBucketAutoDeleteFunctionLogGroup}"
+                - !GetAtt TestSetBucketAutoDeleteFunctionLogGroup.Arn
 
   TestSetBucketAutoDeleteFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -4151,6 +4299,14 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${FccDatasetDeployerLogGroup}"
+                - !GetAtt FccDatasetDeployerLogGroup.Arn
 
   FccDatasetDeployment:
     Type: Custom::FccDatasetDeployer
@@ -4229,6 +4385,14 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${OcrBenchmarkDeployerLogGroup}"
+                - !GetAtt OcrBenchmarkDeployerLogGroup.Arn
 
   OcrBenchmarkDeployment:
     Type: Custom::OcrBenchmarkDeployer
@@ -4308,6 +4472,14 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${RvlCdipNmpDeployerLogGroup}"
+                - !GetAtt RvlCdipNmpDeployerLogGroup.Arn
 
   RvlCdipNmpDeployment:
     Type: Custom::RvlCdipNmpDeployer
@@ -4381,6 +4553,14 @@ Resources:
                 - kms:GenerateDataKey*
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${W2DatasetDeployerLogGroup}"
+                - !GetAtt W2DatasetDeployerLogGroup.Arn
 
   W2DatasetDeployment:
     Type: Custom::W2DatasetDeployer
@@ -4626,6 +4806,37 @@ Resources:
             Condition:
               Bool:
                 "aws:SecureTransport": false
+          # Strict tenant isolation: let per-tenant S3 Access Points in this
+          # account govern access (`idp-cli tenancy generate-policies` writes them).
+          # Not a public grant: every request it admits arrives through an access
+          # point owned by this account, whose own policy names the principals and
+          # confines them to one tenant's prefixes, and S3 does not treat a policy
+          # conditioned on s3:DataAccessPointAccount as public. The actions are the
+          # ones those access point policies grant, so delegating widens nothing
+          # for a principal that does not use one.
+          # PREREQUISITE this template cannot enforce: the condition admits ANY
+          # access point this account owns, so only the people who deploy the
+          # generated tenant access points may hold s3:CreateAccessPoint and
+          # s3:PutAccessPointPolicy. See docs/multi-tenancy.md for an SCP.
+          - !If
+            - IsTenantIsolationStrict
+            - Sid: DelegateToTenantAccessPoints
+              Effect: Allow
+              Principal:
+                AWS: "*"
+              # Read and list only: a tenant's consumer collects results from the
+              # Output bucket, and nothing outside the solution writes there. Keep
+              # each list to the actions the generated access point policies grant.
+              Action:
+                - "s3:GetObject"
+                - "s3:ListBucket"
+              Resource:
+                - !GetAtt OutputBucket.Arn
+                - !Sub "${OutputBucket.Arn}/*"
+              Condition:
+                StringEquals:
+                  "s3:DataAccessPointAccount": !Ref AWS::AccountId
+            - !Ref AWS::NoValue
 
   ReportingBucket:
     Type: AWS::S3::Bucket
@@ -5669,6 +5880,14 @@ Resources:
                   - HasReportingBucketKmsKey
                   - !Ref ReportingBucketKmsKeyArn
                   - !Ref AWS::NoValue
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${MeteringHourMigrationFunctionLogGroup}"
+                - !GetAtt MeteringHourMigrationFunctionLogGroup.Arn
 
   MeteringHourMigrationFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -6491,6 +6710,14 @@ Resources:
                 - ssm:DeleteParameter
               Resource:
                 - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/idp/${AWS::StackName}/data-mart-rollup/*"
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DataMartMigrationDispatcherFunctionLogGroup}"
+                - !GetAtt DataMartMigrationDispatcherFunctionLogGroup.Arn
       InlineCode: |
         import json
         import logging
@@ -7203,6 +7430,44 @@ Resources:
               # projected attribute — see idp_common.dynamodb.service. (Same reason
               # VersionCount is deliberately absent; see the Document type in
               # schema.graphql.)
+        # TypeDateIndexV2: the same keys as TypeDateIndex, projecting what the
+        # document list reads, including the per-document counts TypeDateIndex
+        # cannot carry (see the NOTE above for why that index cannot be widened in
+        # place). Only listDocuments reads it, and it falls back to TypeDateIndex
+        # while this index is still backfilling after an upgrade — see
+        # list_documents_gsi_resolver. The same NOTE applies here: a further
+        # attribute means a further index, never an edit to this one.
+        #
+        # It cannot be a superset of TypeDateIndex: DynamoDB accepts at most 20
+        # NonKeyAttributes per index, and TypeDateIndex already uses all 20. So it
+        # omits the test-run and test-set attributes, which no document row has.
+        # INCLUDE rather than ALL because the list is polled: ALL would make every
+        # list page read whole document items (Sections, Pages, Metering), and a
+        # query page stops at 1 MB of items read.
+        - IndexName: TypeDateIndexV2
+          KeySchema:
+            - AttributeName: ItemType
+              KeyType: HASH
+            - AttributeName: InitialEventTime
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - ObjectKey
+              - ObjectStatus
+              - CompletionTime
+              - ConfigVersion
+              - EvaluationStatus
+              - NumPages
+              - ConfidenceAlertCount
+              - HITLTriggered
+              - HITLCompleted
+              - HITLStatus
+              - HITLReviewOwner
+              - HITLReviewedBy
+              - ConfigRevision
+              - MissingRequiredFieldCount
+              - ProcessingIssueCount
       TimeToLiveSpecification:
         AttributeName: ExpiresAfter
         Enabled: true
@@ -7335,6 +7600,14 @@ Resources:
                 - kms:Decrypt
                 - kms:DescribeKey
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${BackfillTriggerFunctionLogGroup}"
+                - !GetAtt BackfillTriggerFunctionLogGroup.Arn
 
   BackfillCustomResource:
     Type: Custom::GSIBackfill
@@ -7587,7 +7860,9 @@ Resources:
         ]
       Handler: index.handler
       Runtime: python3.12
-      Timeout: 30
+      # Saves every preset and then checks each custom profile with revision
+      # history against `default` (#1782), stopping 10 s before this limit.
+      Timeout: 300
       VpcConfig:
         !If
           - DeployInVPC
@@ -7735,6 +8010,14 @@ Resources:
                 - ssm:PutParameter
               Resource:
                 - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${SettingsParameter}"
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${UpdateSettingsFunctionLogGroup}"
+                - !GetAtt UpdateSettingsFunctionLogGroup.Arn
 
   UpdateSettingsFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -7952,6 +8235,10 @@ Resources:
           DATA_RETENTION_IN_DAYS: !Ref DataRetentionInDays
           OUTPUT_BUCKET: !Ref OutputBucket
           CONFIG_TABLE: !Ref ConfigurationTable
+          # Strict: refuse a document whose key and resolved profile belong to
+          # different tenants (``idp_common.config.tenants.ingest_rejection_reason``).
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # Namespace for this Lambda's telemetry: ``StaleOutputPurgeFailed``
           # (issue #719) and the five prefix-mapping metrics
           # (``PrefixMappingApplied``, ``Conflict``, ``Rejected``,
@@ -9862,6 +10149,27 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
 
+  # Strict tenant isolation fails CLOSED where prefix mappings fail open: a document
+  # whose tenant boundary cannot be checked is not processed, and its event goes to
+  # QueueSenderDLQ after Lambda's retries. Alarm on the first occurrence, because
+  # every document arriving while it lasts is held.
+  TenantIsolationLookupFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsTenantIsolationStrict
+    Properties:
+      AlarmDescription: !Sub "Alert when ${AWS::StackName}, running with TenantIsolationMode=Strict, could not read its tenant declarations at ingest. Strict isolation FAILS CLOSED: the document is not processed, Lambda retries the event twice, and it then lands in the QueueSender dead-letter queue. The object stays in the Input bucket, so recovery is a re-upload (or a redrive) once the cause is fixed. Usual cause is a KMS or table-policy change denying dynamodb:GetItem on the ConfigurationTable. See docs/multi-tenancy.md."
+      MetricName: TenantIsolationLookupFailed
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # Published only on failure, so "no data" means every lookup succeeded.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
   PrefixMappingUnresolvableAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -11548,6 +11856,8 @@ Resources:
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
           USERS_TABLE_NAME: !Ref UsersTable
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           APPSYNC_API_URL: ""
           # Non-streaming (GovCloud poll) path: persist the final chat message to
           # the ChatMessages table so the UI can poll getChatMessages for it when
@@ -11699,6 +12009,8 @@ Resources:
           - !Ref AWS::NoValue
       Environment:
         Variables:
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
@@ -11747,6 +12059,26 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref AgentChatProcessorLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - Statement:
             Effect: Allow
             Action: bedrock-agentcore:InvokeAgentRuntime
@@ -12027,6 +12359,8 @@ Resources:
           CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           TRACKING_TABLE_NAME: !Ref TrackingTable
           USERS_TABLE_NAME: !Ref UsersTable
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           GUARDRAIL_ID_AND_VERSION:
             !If [HasGuardrailConfig, !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}", ""]
           # --- Agent-chat processor env (mirrors AgentChatProcessorFunction) ---
@@ -12063,6 +12397,26 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref ChatStreamProcessorLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3ReadPolicy:
             BucketName: !Ref OutputBucket
         - S3WritePolicy:
@@ -12817,6 +13171,7 @@ Resources:
         Variables:
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           TRACKING_TABLE_NAME: !Ref TrackingTable
           LOOKUP_FUNCTION_NAME: !Ref LookupFunction
           STRANDS_LOG_LEVEL: !Ref LogLevel
@@ -12853,6 +13208,26 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref AgentProcessorLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - DynamoDBCrudPolicy:
             TableName: !Ref AgentTable
         - DynamoDBReadPolicy:
@@ -13317,7 +13692,17 @@ Resources:
           - ShouldMapExternalIdPGroups
           - custom:idp_groups
           - !Ref AWS::NoValue
-      RefreshTokenValidity: 30
+      RefreshTokenValidity: !If
+        - HasCustomRefreshTokenValidity
+        - !Ref RefreshTokenValidityHours
+        - 30
+      # Only the refresh token's unit is set. Naming an access or ID token unit
+      # with no matching validity would leave those lifetimes to Cognito's reading
+      # of an unset value in a unit this stack chose.
+      TokenValidityUnits: !If
+        - HasCustomRefreshTokenValidity
+        - RefreshToken: hours
+        - !Ref AWS::NoValue
       SupportedIdentityProviders: !If
         - HasExternalIdP
         - - COGNITO
@@ -13364,6 +13749,17 @@ Resources:
                   - cognito-idp:DescribeUserPoolClient
                   - cognito-idp:UpdateUserPoolClient
                 Resource: !GetAtt UserPool.Arn
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${WebUIClientOAuthUrlsLogGroup}"
+                  - !GetAtt WebUIClientOAuthUrlsLogGroup.Arn
 
   WebUIClientOAuthUrlsFunction:
     Type: AWS::Serverless::Function
@@ -13520,6 +13916,14 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue  # pragma: allowlist secret - IAM action name, not a secret value
               Resource: !Ref ExternalIdPOIDCClientSecretArn
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ResolveOIDCClientSecretFunctionLogGroup}"
+                - !GetAtt ResolveOIDCClientSecretFunctionLogGroup.Arn
       InlineCode: |
         import cfnresponse
         import boto3
@@ -13621,7 +14025,13 @@ Resources:
       Handler: index.handler
       Runtime: python3.12
       Timeout: 30
-      MemorySize: 128
+      # Cognito gives a pre-token trigger 5 seconds whatever Timeout says.
+      # Under IdpClaim the trigger also imports idp_common and writes the user's
+      # grant, inside Cognito's 5-second budget for a pre-token trigger. Measured
+      # cold starts on x86_64 (the architecture the layer is built for), init included: 4.34 s at 512 MB, 2.74 s at 1024 MB,
+      # 1.95 s at 1769 MB (one full vCPU); warm calls are under 1 s. 1769 keeps
+      # three seconds of headroom for a few cents a month at sign-in volumes.
+      MemorySize: !If [IsTenantGrantFromIdpClaim, 1769, 128]
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
@@ -13634,249 +14044,56 @@ Resources:
           # requires the signing-in user to be linked to it before it reads
           # custom:idp_groups.
           EXTERNAL_IDP_NAME: !Ref ExternalIdPName
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          USERS_TABLE_NAME: !Ref UsersTable
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
       LoggingConfig:
         LogGroup: !Ref ExternalIdPGroupMappingFunctionLogGroup
-      Policies: []
-      # MAINTENANCE NOTE: this inline handler is what deploys. A standalone copy
-      # with the same logic lives at src/lambda/external_idp_group_mapping/index.py
-      # and carries the unit tests (test_index.py). Change both together.
-      InlineCode: |
-        """Pre-token-generation Lambda trigger to map external IdP groups to Cognito groups.
-
-        The group claim arrives as the `custom:idp_groups` user-pool attribute, written
-        by Cognito's identity-provider AttributeMapping at each federated sign-in. That
-        attribute is `Mutable: true` and — when it is IdP-mapped — must also be listed in
-        the app client's `WriteAttributes` (Cognito writes mapped attributes *as the app
-        client*, and fails the sign-in if it lacks write access). A user's own access
-        token can therefore write it via `UpdateUserAttributes`.
-
-        Two checks keep a self-set value from granting groups:
-
-        1. Provenance. The user must be federated through the configured provider
-           (`EXTERNAL_IDP_NAME`). Provenance comes from the Cognito-managed `identities`
-           attribute read back via `AdminGetUser`, which no client can write. A native
-           user who sets `custom:idp_groups` on themselves has no `identities` entry and
-           is ignored.
-        2. Freshness. Only a fresh sign-in is honoured, never a token refresh. At a fresh
-           federated sign-in Cognito has just rewritten the mapped attribute from the
-           assertion, so the value read here is the IdP's. On a refresh the stored
-           attribute may be whatever the user last wrote, so the mapping is skipped and
-           the token carries the group membership already synced to Cognito.
-
-        Both checks fail closed: anything unverified returns the event untouched, which
-        leaves existing group membership alone and adds no token override.
-        """
-        import json
-        import os
-        import logging
-        import boto3
-
-        logger = logging.getLogger()
-        logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
-
-        cognito = boto3.client("cognito-idp")
-
-        # Mapping: external IdP group name -> Cognito group name
-        GROUP_MAPPING = {}
-        for env_key, cognito_group in [
-            ("ADMIN_GROUP_NAME", "Admin"),
-            ("AUTHOR_GROUP_NAME", "Author"),
-            ("REVIEWER_GROUP_NAME", "Reviewer"),
-            ("ANNOTATOR_GROUP_NAME", "Annotator"),
-            ("VIEWER_GROUP_NAME", "Viewer"),
-        ]:
-            idp_group = os.environ.get(env_key, "").strip()
-            if idp_group:
-                GROUP_MAPPING[idp_group] = cognito_group
-
-        COGNITO_GROUPS = set(GROUP_MAPPING.values())
-
-        # Name of the Cognito identity provider whose assertions may grant groups.
-        # Empty means no provider is trusted, so no sign-in can be granted groups.
-        EXTERNAL_IDP_NAME = os.environ.get("EXTERNAL_IDP_NAME", "").strip()
-
-        # Trigger sources that represent a fresh sign-in, where Cognito has just
-        # applied the provider's AttributeMapping. TokenGeneration_RefreshTokens is
-        # deliberately absent: a refresh re-reads whatever is stored on the user,
-        # which the user may have written themselves. Anything not listed is
-        # treated as untrusted.
-        FRESH_SIGN_IN_TRIGGERS = frozenset({
-            "TokenGeneration_HostedAuth",
-            "TokenGeneration_Authentication",
-            "TokenGeneration_NewPasswordChallenge",
-            "TokenGeneration_AuthenticateDevice",
-        })
-
-
-        def is_federated_via_configured_idp(user_pool_id, username):
-            """Return True only if `username` is linked to the configured IdP.
-
-            Reads the Cognito-managed `identities` attribute through AdminGetUser
-            rather than trusting the trigger event, so the answer comes from a field
-            no client can write. Any failure returns False.
-            """
-            if not EXTERNAL_IDP_NAME:
-                logger.warning("EXTERNAL_IDP_NAME is not set; refusing to map groups for any sign-in")
-                return False
-
-            try:
-                response = cognito.admin_get_user(UserPoolId=user_pool_id, Username=username)
-            except Exception as e:
-                logger.error(f"Failed to read user {username} for provenance check: {e}")
-                return False
-
-            raw_identities = ""
-            for attr in response.get("UserAttributes", []):
-                if attr.get("Name") == "identities":
-                    raw_identities = attr.get("Value", "")
-                    break
-
-            if not raw_identities:
-                logger.warning(f"User {username} has no federated identities; ignoring custom:idp_groups")
-                return False
-
-            try:
-                identities = json.loads(raw_identities)
-            except Exception as e:
-                logger.error(f"Could not parse identities for user {username}: {e}")
-                return False
-
-            if not isinstance(identities, list):
-                logger.error(f"Unexpected identities shape for user {username}")
-                return False
-
-            for identity in identities:
-                if isinstance(identity, dict) and identity.get("providerName") == EXTERNAL_IDP_NAME:
-                    return True
-
-            logger.warning(
-                f"User {username} is not federated through '{EXTERNAL_IDP_NAME}'; ignoring custom:idp_groups"
-            )
-            return False
-
-
-        def handler(event, context):
-            """Handle pre-token-generation trigger from Cognito."""
-            trigger_source = event.get("triggerSource")
-            logger.info(f"Pre-token trigger source: {trigger_source}")
-
-            # Extract user pool ID from the event (avoids circular CloudFormation dependency)
-            user_pool_id = event.get("userPoolId", "")
-            username = event.get("userName", "")
-            user_attributes = event.get("request", {}).get("userAttributes", {})
-            idp_groups_raw = user_attributes.get("custom:idp_groups", "")
-
-            if not idp_groups_raw:
-                logger.info(f"No IdP groups claim for user {username}")
-                return event
-
-            # A refresh re-reads the stored attribute, which the user's own access
-            # token may have written. Only a fresh sign-in has just had it rewritten
-            # from the provider's assertion.
-            if trigger_source not in FRESH_SIGN_IN_TRIGGERS:
-                logger.info(
-                    f"Trigger source {trigger_source} is not a fresh sign-in; "
-                    f"leaving groups for user {username} unchanged"
-                )
-                return event
-
-            if not is_federated_via_configured_idp(user_pool_id, username):
-                return event
-
-            # Parse IdP groups - handle comma-separated, JSON array, or single value
-            idp_groups = []
-            idp_groups_raw = idp_groups_raw.strip()
-            if not idp_groups_raw:
-                logger.info(f"No IdP groups claim for user {username}")
-                return event
-            if idp_groups_raw.startswith("["):
-                try:
-                    idp_groups = json.loads(idp_groups_raw)
-                except Exception:
-                    idp_groups = [g.strip().strip('"') for g in idp_groups_raw.strip("[]").split(",")]
-            else:
-                idp_groups = [g.strip() for g in idp_groups_raw.split(",")]
-
-            logger.info(f"User {username} IdP groups: {idp_groups}")
-
-            # Determine target Cognito groups from mapping
-            target_groups = set()
-            unmapped_groups = []
-            for idp_group in idp_groups:
-                if idp_group in GROUP_MAPPING:
-                    target_groups.add(GROUP_MAPPING[idp_group])
-                else:
-                    unmapped_groups.append(idp_group)
-
-            # Name every discarded claim value. Without this a claim carrying one
-            # mapped name plus an unmapped one produced no diagnostic at all: the
-            # warning below is skipped because target_groups is non-empty, so the
-            # role the operator expected went missing with nothing to point at.
-            # Group names only — never the token or the whole claim set.
-            if unmapped_groups:
-                logger.warning(
-                    f"Ignoring IdP group(s) with no Cognito mapping for user "
-                    f"{username}: {unmapped_groups}. Set the matching "
-                    f"ExternalIdP*GroupName stack parameter to map them."
-                )
-
-            if not target_groups:
-                logger.warning(f"No matching Cognito groups for user {username} with IdP groups {idp_groups}")
-                return event
-
-            # Get current Cognito groups for user
-            try:
-                response = cognito.admin_list_groups_for_user(
-                    UserPoolId=user_pool_id, Username=username
-                )
-                current_groups = {g["GroupName"] for g in response.get("Groups", [])}
-            except Exception as e:
-                logger.error(f"Failed to list groups for user {username}: {e}")
-                return event
-
-            # Add user to target groups they are not already in
-            for group in target_groups - current_groups:
-                try:
-                    cognito.admin_add_user_to_group(
-                        UserPoolId=user_pool_id, Username=username, GroupName=group
-                    )
-                    logger.info(f"Added user {username} to group {group}")
-                except Exception as e:
-                    logger.error(f"Failed to add user {username} to group {group}: {e}")
-
-            # Remove user from managed groups they should no longer be in
-            for group in (current_groups & COGNITO_GROUPS) - target_groups:
-                try:
-                    cognito.admin_remove_user_from_group(
-                        UserPoolId=user_pool_id, Username=username, GroupName=group
-                    )
-                    logger.info(f"Removed user {username} from group {group}")
-                except Exception as e:
-                    logger.error(f"Failed to remove user {username} from group {group}: {e}")
-
-            logger.info(f"User {username} group sync complete. Groups: {target_groups}")
-
-            # Inject groups into the token so they are available immediately on
-            # first sign-in, rather than only from the second token onwards.
-            #
-            # BOTH response keys are emitted because the key Cognito reads depends
-            # on the pool's PreTokenGenerationConfig.LambdaVersion, and the two
-            # names are not interchangeable:
-            #   V1_0      -> claimsOverrideDetails
-            #   V2_0/V3_0 -> claimsAndScopeOverrideDetails
-            # This template registers the trigger with `PreTokenGeneration:`,
-            # which is V1_0, so emitting only the V2 name meant the override was
-            # silently ignored and a first sign-in produced a token with no group
-            # claim. Cognito ignores an unrecognised key, so writing both is safe
-            # and survives a later move to V2_0/V3_0.
-            group_override = {
-                "groupOverrideDetails": {"groupsToOverride": list(target_groups)}
-            }
-            event.setdefault("response", {})
-            event["response"]["claimsOverrideDetails"] = group_override
-            event["response"]["claimsAndScopeOverrideDetails"] = group_override
-
-            return event
+      # The code is src/lambda/external_idp_group_mapping, which carries the unit
+      # tests. The idp_common layer is imported only under TenantGrantSource=IdpClaim,
+      # so it is attached only then: every other mode runs the function as it was
+      # before tenant grants existed, layer-free at 128 MB.
+      CodeUri: ./src/lambda/external_idp_group_mapping
+      Layers: !If
+        - IsTenantGrantFromIdpClaim
+        - - !Ref IDPCommonBaseLayer
+        - !Ref AWS::NoValue
+      # Cognito access is the separate ExternalIdPGroupMappingCognitoPolicy below,
+      # to avoid a circular dependency on the user pool. These grants exist only
+      # when the claim grants tenants: the user's UsersTable row and SUB# pointer,
+      # the email index the row is found by, and the one tenant-index item.
+      Policies:
+        - !If
+          - IsTenantGrantFromIdpClaim
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt UsersTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource: !Sub "${UsersTable.Arn}/index/EmailIndex"
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource: !GetAtt ConfigurationTable.Arn
+                Condition:
+                  ForAllValues:StringEquals:
+                    dynamodb:LeadingKeys:
+                      - "TenantIndex#__index"
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+          - !Ref AWS::NoValue
 
   ExternalIdPGroupMappingFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -13959,6 +14176,15 @@ Resources:
               'OutputString': lowercaseWithTimestamp, # don't change key - avoid UserPool update errors
             }                                            
             cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+      Policies:
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${GetDomainLambdaLogGroup}"
+                - !GetAtt GetDomainLambdaLogGroup.Arn
 
   GetDomainLambdaLogGroup:
     Type: AWS::Logs::LogGroup
@@ -14207,7 +14433,10 @@ Resources:
   ReviewerGroup:
     Type: AWS::Cognito::UserPoolGroup
     Properties:
-      Description: Document Reviewers for HITL
+      Description: >-
+        Document Reviewers: work the production HITL review queues their
+        configuration profile scope admits. Test Studio queues and labelling
+        are for Admins, Authors and Annotators.
       GroupName: Reviewer
       Precedence: 2
       UserPoolId: !Ref UserPool
@@ -14216,9 +14445,10 @@ Resources:
     Type: AWS::Cognito::UserPoolGroup
     Properties:
       Description: >-
-        Ground-truth Annotators for Test Studio. Least-privilege: scoped by the
+        Ground-truth Annotators for Test Studio, who also work the production
+        review queues that list them as eligible. Least-privilege: scoped by the
         user's allowedTestSets to the test set(s) they were onboarded for, and
-        can only read and annotate those documents — not list other test sets,
+        can only read and annotate those documents - not list other test sets,
         run configurations, or publish versions.
       GroupName: Annotator
       Precedence: 3
@@ -14998,6 +15228,7 @@ Resources:
           DISCOVERY_BUCKET: !Ref DiscoveryBucket
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTable
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           APPSYNC_API_URL: ""
           BLUEPRINT_OPTIMIZATION_FUNCTION_NAME: !Ref BlueprintOptimizationFunction
       LoggingConfig:
@@ -15011,6 +15242,26 @@ Resources:
             FunctionResponseTypes:
               - ReportBatchItemFailures
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3ReadPolicy:
             BucketName: !Ref DiscoveryBucket
         - DynamoDBCrudPolicy:
@@ -15144,6 +15395,7 @@ Resources:
         InputBucketName: !Ref InputBucket
         TestSetBucketName: !Ref TestSetBucket
         ConfigurationTableName: !Ref ConfigurationTable
+        ConfigurationBucketName: !Ref ConfigurationBucket
         ConfigurationTableArn: !GetAtt ConfigurationTable.Arn
         CustomerManagedEncryptionKeyArn: !GetAtt CustomerManagedEncryptionKey.Arn
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
@@ -15271,11 +15523,32 @@ Resources:
           METRIC_NAMESPACE: !Ref AWS::StackName
           APPSYNC_API_URL: ""
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           STACK_NAME: !Ref AWS::StackName
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTable
       LoggingConfig:
         LogGroup: !Ref BlueprintOptimizationFunctionLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3CrudPolicy:
             BucketName: !Ref DiscoveryBucket
         - DynamoDBCrudPolicy:
@@ -15750,9 +16023,16 @@ Resources:
               - !Sub "${CustomDomainUrl}/api"
               - !GetAtt APIRESOLVERSTACK.Outputs.HttpApiEndpoint
           # Chat streaming Function URL (IAM-authed, response streaming). The
-          # signed stream client (src/api/stream-client.ts) reads this.
+          # signed stream client (src/api/stream-client.ts) reads this. Empty
+          # under strict tenant isolation or an external TenantGrantSource, which
+          # sends the UI to its REST polling fallback (as on GovCloud): that path
+          # carries the caller's verified Cognito claims, so it can be scoped,
+          # where the Function URL cannot (GAP-07) and refuses every turn there.
           - Name: VITE_STREAM_URL
-            Value: !GetAtt ChatStreamProcessorUrl.FunctionUrl
+            Value: !If
+              - DeniesUnscopedCaller
+              - ""
+              - !GetAtt ChatStreamProcessorUrl.FunctionUrl
           - Name: VITE_AWS_REGION
             Value: !Ref AWS::Region
           - Name: VITE_ENABLE_QUICK_START_WIDGET
@@ -15879,6 +16159,17 @@ Resources:
                   - lambda:RemovePermission
                 Resource:
                   - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${StartUICodeBuildLogGroup}"
+                  - !GetAtt StartUICodeBuildLogGroup.Arn
 
   StartUICodeBuild:
     Type: AWS::Serverless::Function
@@ -15962,6 +16253,10 @@ Resources:
           - !Ref ExternalIdPAutoLogin
           # -> VITE_ENABLE_QUICK_START_WIDGET
           - !Ref EnableQuickStartWidget
+          # -> VITE_STREAM_URL (empty under strict tenant isolation or an external
+          #    TenantGrantSource, which moves chat onto the REST polling path)
+          - !Ref TenantIsolationMode
+          - !Ref TenantGrantSource
           # -> VITE_UI_BASE_PATH + VITE_CLOUDFRONT_DOMAIN (Vite `base`, so every
           #    asset URL in the bundle) and the CloudFront-invalidation branch of
           #    the buildspec
@@ -16001,6 +16296,10 @@ Resources:
       Description: Lambda function for user management (create, delete, list users)
       MemorySize: 256
       Timeout: 30
+      # For idp_common.config.tenants: a scope an admin sets is checked against
+      # the tenant declarations with the same code the configuration resolver uses.
+      Layers:
+        - !Ref IDPCommonBaseLayer
       Environment:
         Variables:
           USER_POOL_ID: !Ref UserPool
@@ -16010,12 +16309,25 @@ Resources:
           ANNOTATOR_GROUP: !Ref AnnotatorGroup
           VIEWER_GROUP: !Ref ViewerGroup
           USERS_TABLE_NAME: !Ref UsersTable
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           ALLOWED_SIGNUP_EMAIL_DOMAINS: !Ref AllowedSignUpEmailDomain
       LoggingConfig:
         LogGroup: !Ref UserManagementFunctionLogGroup
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref UsersTable
+        # Read-only, and only the one item: the tenant index the scope check reads.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource: !GetAtt ConfigurationTable.Arn
+              Condition:
+                ForAllValues:StringEquals:
+                  dynamodb:LeadingKeys:
+                    - "TenantIndex#__index"
         - Statement:
             - Effect: Allow
               Action:
@@ -16081,6 +16393,13 @@ Resources:
                 - cognito-idp:AdminAddUserToGroup
                 - cognito-idp:AdminRemoveUserFromGroup
               Resource: !GetAtt UserPool.Arn
+            # UsersTable is encrypted with the stack's key, and Lambda reads its
+            # stream as this role: without Decrypt the event source mapping is
+            # refused at creation, or disabled when it first polls.
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
       Events:
         DynamoDBStream:
           Type: DynamoDB
@@ -16139,6 +16458,8 @@ Resources:
           # Annotator scope: review operations verify the document's test set is
           # in the caller's allowedTestSets, which is stored on the user record.
           USERS_TABLE_NAME: !Ref UsersTable
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # A Test Studio save is accepted only from the document's assignee
           # (TSDOC# item), and completing the document ends the assignment.
           HITL_TABLE_NAME: !Ref HITLTable
@@ -16998,7 +17319,10 @@ Outputs:
         - !Sub "VITE_USER_POOL_CLIENT_ID=${UserPoolClient}"
         - !Sub "VITE_IDENTITY_POOL_ID=${IdentityPool}"
         - !Sub "VITE_API_BASE_URL=${APIRESOLVERSTACK.Outputs.HttpApiEndpoint}"
-        - !Sub "VITE_STREAM_URL=${ChatStreamProcessorUrl.FunctionUrl}"
+        - !If
+          - DeniesUnscopedCaller
+          - "VITE_STREAM_URL="
+          - !Sub "VITE_STREAM_URL=${ChatStreamProcessorUrl.FunctionUrl}"
         - !Sub "VITE_AWS_REGION=${AWS::Region}"
         - !Sub "VITE_ENABLE_QUICK_START_WIDGET=${EnableQuickStartWidget}"
         - !Sub "VITE_SETTINGS_PARAMETER=${SettingsParameter}"

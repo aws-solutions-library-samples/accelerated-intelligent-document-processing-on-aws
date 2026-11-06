@@ -4,11 +4,9 @@
 """Server-side enforcement of per-user test-set scope.
 
 An ``Annotator`` may read and annotate only the test sets named in their
-``allowedTestSets``. A ``Reviewer`` may read and annotate every test set whose
-configuration profile is within their ``allowedConfigVersions`` (every test set when
-they have no such restriction): the same profile scope that decides which Production
-review items they see. Both are enforced in every resolver that touches test-set
-documents.
+``allowedTestSets``. That is enforced in every resolver that touches test-set
+documents. Test-set work belongs to Annotators: a caller who is neither Admin,
+Author nor a scoped Annotator is refused.
 This is a security boundary, not a UI convention: annotators are often external
 contractors onboarded to label a single test set.
 
@@ -27,7 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +35,6 @@ UNSCOPED_GROUPS = ("Admin", "Author")
 
 # The role this scope exists for.
 ANNOTATOR_GROUP = "Annotator"
-
-# Scoped by configuration profile rather than by named test sets: a Reviewer works
-# every test set whose profile their ``allowedConfigVersions`` admits.
-REVIEWER_GROUP = "Reviewer"
-
-#: The test set's configuration profile as the Test Studio resolver resolved it
-#: (declared, bound, or from its drafting run), kept on its metadata item so every
-#: check reads one value. Empty when the set has no single profile.
-SCOPE_PROFILE_ATTRIBUTE = "ScopeProfile"
 
 # Scope lookups happen on every queue read and every review operation, so they are
 # cached briefly per Lambda container. The TTL bounds how long a *revoked*
@@ -59,11 +48,12 @@ _EMPTY_SCOPE_CACHE_TTL_SECONDS = 10
 _scope_cache: Dict[str, Dict[str, Any]] = {}
 
 
-class TestSetAccessDenied(Exception):
+class TestSetAccessDenied(PermissionError):
     """Raised when a caller may not touch the requested test set.
 
-    A distinct type so resolvers can map it to a 403 rather than a 500, and so a
-    scope failure is never confused with a missing-record error.
+    A ``PermissionError`` so every resolver maps it to a 403 rather than a 500, and
+    a distinct type so a scope failure is never confused with a missing-record
+    error.
     """
 
     # Stops pytest collecting this as a test class on the strength of its "Test"
@@ -158,121 +148,12 @@ def get_allowed_test_sets(email: str, users_table: Any = None) -> Optional[List[
 def clear_scope_cache() -> None:
     """Drop cached scopes (used by tests and after a scope change)."""
     _scope_cache.clear()
-    _reviewer_scope_cache.clear()
-
-
-def _config_scope():
-    """The configuration-profile scope module: the package sibling when this module
-    runs as part of the library, or the byte-identical top-level copy a resolver
-    without the library layer vendors beside this one.
-
-    Relative on purpose: in a layer-free bundle there is no parent package, so the
-    relative import raises ImportError and the vendored sibling is used, and the
-    bundle never names the library it does not carry."""
-    try:
-        from . import config_scope
-    except ImportError:
-        import config_scope  # type: ignore[no-redef]
-    return config_scope
-
-
-#: How many ``BatchGetItem`` calls the profile read makes before an unprocessed key
-#: is treated as unreadable (and so refused).
-_PROFILE_READ_ATTEMPTS = 3
-
-
-def _stored_scope_profile(test_set_id: str) -> Optional[str]:
-    """The set's ``ScopeProfile`` as recorded on its metadata item; None if unrecorded.
-
-    Read with ``BatchGetItem`` rather than ``GetItem``: the layer-free file resolver
-    is granted only ``BatchGetItem`` on the tracking table, deliberately, and every
-    other caller's role allows both. Raises when the item cannot be read (including
-    a key DynamoDB leaves unprocessed after the retries), so the caller refuses.
-    """
-    table_name = os.environ.get("TRACKING_TABLE_NAME") or os.environ.get(
-        "TRACKING_TABLE", ""
-    )
-    if not table_name:
-        raise RuntimeError("the tracking table is not configured")
-    import boto3
-
-    dynamodb = boto3.resource("dynamodb")
-    request = {
-        table_name: {
-            "Keys": [{"PK": f"testset#{test_set_id}", "SK": "metadata"}],
-            "ProjectionExpression": SCOPE_PROFILE_ATTRIBUTE,
-        }
-    }
-    items: list = []
-    for _ in range(_PROFILE_READ_ATTEMPTS):
-        response = dynamodb.batch_get_item(RequestItems=request)
-        items.extend(response.get("Responses", {}).get(table_name, []))
-        request = response.get("UnprocessedKeys") or {}
-        if not request:
-            break
-    else:
-        raise RuntimeError("the test set's metadata item was left unprocessed")
-    item = items[0] if items else None
-    if not item or SCOPE_PROFILE_ATTRIBUTE not in item:
-        return None
-    return str(item[SCOPE_PROFILE_ATTRIBUTE] or "")
-
-
-def reviewer_may_access_test_set(
-    event: Optional[Dict[str, Any]],
-    test_set_id: str,
-    set_profile: Optional[Callable[[str], Optional[str]]] = None,
-) -> bool:
-    """Whether a Reviewer's ``allowedConfigVersions`` admits this test set's profile.
-
-    A Reviewer with no profile restriction works every test set. A scoped Reviewer
-    works a set only when its profile is known and within their scope
-    (``scope_allows``, which admits no empty profile): a set with no single profile,
-    or none recorded yet, is refused. ``set_profile`` resolves (and records) the
-    profile where the full resolution is available; otherwise the recorded
-    ``ScopeProfile`` is read. Any lookup that cannot be answered refuses.
-    """
-    scope_module = _config_scope()
-    claims = ((event or {}).get("identity") or {}).get("claims") or {}
-    try:
-        import boto3
-
-        scope = scope_module.resolve_allowed_config_versions(
-            scope_module.caller_email_from_claims(claims),
-            caller_sub=scope_module.caller_sub_from_claims(claims),
-            users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
-            dynamodb=boto3.resource("dynamodb"),
-            cache=_reviewer_scope_cache,
-        )
-    except Exception as e:  # noqa: BLE001 — fail closed, ScopeLookupError included
-        logger.warning("Could not resolve a Reviewer's configuration scope: %s", e)
-        return False
-    if scope is None:
-        return True
-    try:
-        profile = (
-            set_profile(test_set_id)
-            if set_profile is not None
-            else _stored_scope_profile(test_set_id)
-        )
-    except Exception as e:  # noqa: BLE001 — fail closed
-        logger.warning(
-            "Could not read the configuration profile of test set '%s': %s",
-            test_set_id,
-            e,
-        )
-        return False
-    return scope_module.scope_allows(scope, profile)
-
-
-_reviewer_scope_cache: Dict[str, Any] = {}
 
 
 def assert_can_access_test_set(
     event: Optional[Dict[str, Any]],
     test_set_id: str,
     users_table: Any = None,
-    set_profile: Optional[Callable[[str], Optional[str]]] = None,
 ) -> None:
     """Raise ``TestSetAccessDenied`` unless the caller may touch this test set.
 
@@ -286,10 +167,7 @@ def assert_can_access_test_set(
        widen that. An
        Annotator with *no* scope is denied rather than unrestricted, so a
        misconfigured or half-created annotator fails closed.
-    4. A Reviewer (not also an Annotator) may touch a test set whose configuration
-       profile is within their ``allowedConfigVersions``
-       (``reviewer_may_access_test_set``).
-    5. Any other role (e.g. Viewer) is refused test-set annotation access.
+    4. Any other role (e.g. Viewer) is refused test-set annotation access.
     """
     if is_direct_invoke(event):
         return
@@ -299,19 +177,6 @@ def assert_can_access_test_set(
         return
 
     email = caller_email(event)
-
-    if REVIEWER_GROUP in groups and ANNOTATOR_GROUP not in groups:
-        if reviewer_may_access_test_set(event, test_set_id, set_profile):
-            return
-        logger.warning(
-            "Forbidden: reviewer %s is not scoped to the profile of test set '%s'",
-            email,
-            test_set_id,
-        )
-        raise TestSetAccessDenied(
-            f"Unauthorized: test set '{test_set_id}' is outside your allowed "
-            "configuration scope"
-        )
 
     if ANNOTATOR_GROUP in groups:
         allowed = get_allowed_test_sets(email, users_table)
@@ -339,6 +204,6 @@ def assert_can_access_test_set(
         groups,
     )
     raise TestSetAccessDenied(
-        "Unauthorized: test-set annotation requires Admin, Author, Reviewer or a "
-        "scoped Annotator account"
+        "Unauthorized: test-set annotation requires an Admin, Author or scoped "
+        "Annotator account"
     )

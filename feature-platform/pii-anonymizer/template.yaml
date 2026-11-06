@@ -283,8 +283,21 @@ Resources:
           HOOK_FUNCTION_ARN: !GetAtt PiiAnonymizerHookFunction.Arn
           # RBAC-gated PII mapping view: read the caller's allowedConfigVersions.
           USERS_TABLE_NAME: { 'Fn::ImportValue': !Sub '${MainStackName}-UsersTableName' }
+          # The host's TenantIsolationMode, read at run time from the SSM parameter
+          # the host publishes (not an export: an imported export could never
+          # change value, so the mode could never be switched).
+          TENANT_ISOLATION_MODE_PARAMETER: !Sub '/${MainStackName}/tenant-isolation-mode'
+          # The host's TenantGrantSource, published the same way.
+          TENANT_GRANT_SOURCE_PARAMETER: !Sub '/${MainStackName}/tenant-grant-source'
       Policies:
         - Statement:
+            # The two parameters holding the host's TenantIsolationMode and
+            # TenantGrantSource.
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource:
+                - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${MainStackName}/tenant-isolation-mode'
+                - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${MainStackName}/tenant-grant-source'
             - Effect: Allow
               Action:
                 - dynamodb:GetItem
@@ -400,6 +413,17 @@ Resources:
                   - { 'Fn::ImportValue': !Sub '${MainStackName}-RegisterFeatureFunctionArn' }
                   - { 'Fn::ImportValue': !Sub '${MainStackName}-RegisterFeatureHooksFunctionArn' }
                   - { 'Fn::ImportValue': !Sub '${MainStackName}-ApplyFeatureConfigPresetFunctionArn' }
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${UiDeployerFunctionLogGroup}"
+                  - !GetAtt UiDeployerFunctionLogGroup.Arn
 
   UiDeployerFunction:
     Type: AWS::Serverless::Function

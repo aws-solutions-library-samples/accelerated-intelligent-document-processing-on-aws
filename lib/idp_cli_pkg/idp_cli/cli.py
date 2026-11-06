@@ -449,6 +449,21 @@ def _parse_tags(tags: Optional[str]) -> Dict[str, str]:
     return result
 
 
+def _print_unsent_classes(classes) -> None:
+    """Name the classes a BDA sync did not send, because none of their fields can
+    be represented in a blueprint (issue #1755). Prints nothing when there are none."""
+    classes = list(classes or [])
+    if not classes:
+        return
+    console.print(
+        f"[yellow]⚠ {len(classes)} class(es) not sent to BDA: none of their fields "
+        f"can be represented in a BDA blueprint, and BDA rejects a blueprint with "
+        f"no fields[/yellow]"
+    )
+    for cls_name in classes:
+        console.print(f"    • {cls_name}")
+
+
 def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
     """Report blueprints a BDA sync disassociated but could not delete.
 
@@ -477,7 +492,7 @@ def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.13")
+@click.version_option(version="0.6.14")
 def cli():
     """
     IDP CLI - Batch document processing for IDP Accelerator
@@ -2018,7 +2033,7 @@ def _process_impl(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to use for processing (e.g., v1, v2); --config-version is the former name and still works",
+    help="Configuration profile to use for processing (e.g., default, lending); --config-version is the former name and still works",
 )
 @click.option(
     "--config-revision",
@@ -2261,7 +2276,7 @@ def reprocess(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to use for processing (e.g., v1, v2); --config-version is the former name and still works",
+    help="Configuration profile to use for processing (e.g., default, lending); --config-version is the former name and still works",
 )
 @click.option(
     "--config-revision",
@@ -5001,7 +5016,7 @@ def remove_residual_resources_from_deleted_stacks(
 @click.option(
     "--features",
     default="min",
-    help="Feature set: 'min' (classification, extraction, classes), 'core' (adds ocr, assessment), 'all', or comma-separated list of sections",
+    help="Feature set: 'min' (classification, extraction; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all' (every section except hitl, chat and rule_validation; on upload every setting it writes resets that deployment's value to the default, so edit it first), or one or more section names, comma-separated. An unknown section name is refused",
 )
 @click.option(
     "--output",
@@ -5032,11 +5047,16 @@ def config_create(
     to customize the values they want to change - unspecified fields use defaults.
 
     Feature sets:
-      min:  classification, extraction, classes (simplest)
-      core: min + ocr, assessment
-      all:  all sections with full defaults
+      min:  classification, extraction (simplest); switches
+            summarization and evaluation off and leaves confidence scoring on
+      core: min + ocr, with summarization and evaluation left at their defaults
+      all:  every section except hitl, chat and rule_validation. Uploaded
+            unedited, every setting it writes resets the deployment's value
+            to the default (summarization and evaluation switch back on where
+            a preset turned them off; prompts left out keep their own)
 
-    Or specify a comma-separated list of sections:
+    Or name one or more sections, comma-separated (an unknown name is refused):
+      --features summarization
       --features "classification,extraction,summarization"
 
     Examples:
@@ -5044,7 +5064,7 @@ def config_create(
       # Generate minimal config to stdout
       idp-cli config-create
 
-      # Generate full config with all sections
+      # Generate a config with every section except hitl, chat and rule_validation
       idp-cli config-create --features all --output full-config.yaml
 
       # Include full prompts (verbose)
@@ -5054,36 +5074,25 @@ def config_create(
       idp-cli config-create --features "classification,extraction,summarization" --output config.yaml
     """
     try:
-        from idp_common.config.merge_utils import generate_config_template
+        from idp_sdk.exceptions import IDPValidationError
 
-        # Parse features - could be a preset or comma-separated list. The comma is what
-        # decides which of the two it is, so that branch is left alone; only the blank
-        # segments inside a list change, and a list that is all blanks is refused rather
-        # than handed on as a section whose name is the empty string.
-        if "," in features:
-            feature_list = _comma_separated_values(features)
-            if not feature_list:
-                console.print(
-                    "[red]✗ Error: --features contains no section names. Give a preset "
-                    "('min', 'core', 'all') or one or more section names, "
-                    "comma-separated.[/red]"
-                )
-                sys.exit(1)
-        else:
-            feature_list = features  # type: ignore
-
-        # Generate template
-        yaml_content = generate_config_template(
-            features=feature_list,
-            pattern="pattern-2",
-            include_prompts=include_prompts,
-            include_comments=not no_comments,
-        )
+        # The SDK parses --features (a preset, or one or more section names,
+        # comma-separated) and writes --output, so this command and
+        # client.config.create cannot read the same value differently.
+        try:
+            result = IDPClient().config.create(
+                features=features,
+                pattern="pattern-2",
+                output=output,
+                include_prompts=include_prompts,
+                include_comments=not no_comments,
+            )
+        except IDPValidationError as e:
+            err_console.print(f"[red]✗ Error (--features): {e}[/red]")
+            sys.exit(1)
+        yaml_content = result.yaml_content
 
         if output:
-            # Write to file
-            with open(output, "w", encoding="utf-8") as f:
-                f.write(yaml_content)
             console.print(
                 f"[green]✓ Configuration template written to: {output}[/green]"
             )
@@ -5170,65 +5179,44 @@ def config_validate(
     try:
         import yaml
 
-        from idp_common.config.merge_utils import load_yaml_file, validate_config
+        from idp_sdk import IDPClient
 
-        # Load the user's config
+        # The SDK loads, migrates and validates and this command only reports,
+        # so it and client.config.validate cannot read one file differently.
+        client = IDPClient()
+
         console.print(f"[bold blue]Validating: {config_file}[/bold blue]")
         console.print()
 
-        try:
-            from pathlib import Path
-
-            user_config = load_yaml_file(Path(config_file))
-            console.print("[green]✓ YAML syntax valid[/green]")
-        except yaml.YAMLError as e:
-            console.print(f"[red]✗ YAML syntax error: {e}[/red]")
+        result = client.config.validate(
+            config_file=config_file, pattern="pattern-2", show_merged=show_merged
+        )
+        if not result.document_loaded:
+            # A file that is not YAML, or cannot be read, or an installation that
+            # cannot run the checks: each error says which.
+            for error in result.errors:
+                console.print(f"[red]✗ {error}[/red]")
             sys.exit(1)
-        except Exception as e:
-            console.print(f"[red]✗ Failed to load file: {e}[/red]")
-            sys.exit(1)
+        console.print("[green]✓ YAML syntax valid[/green]")
 
-        # Emit the migrated (current-format) config if requested. Done up front so it
-        # works even when the file is an older format that would otherwise warn about
-        # deprecated fields — the whole point is to hand the user a pre-migrated file.
+        # Emit the migrated (current-format) config if requested. Before the
+        # strict and validity verdicts below, so it is written even when the file
+        # is an older format that fails them — the whole point is to hand the user
+        # a pre-migrated file.
         if emit_migrated:
-            from idp_common.config.migrations import migrate_config
-
-            migrated = migrate_config(user_config)
-            migrated_yaml = yaml.dump(
-                migrated,
-                default_flow_style=False,
-                sort_keys=False,
-                allow_unicode=True,
-                width=120,
-            )
-            with open(emit_migrated, "w", encoding="utf-8") as f:
-                f.write(
-                    f"# Migrated to config_format_version {migrated.get('config_format_version', '?')} "
-                    f"from: {config_file}\n\n"
-                )
-                f.write(migrated_yaml)
+            client.config.migrate(config_file=config_file, output=emit_migrated)
             console.print(
                 f"[green]✓ Migrated config written to: {emit_migrated}[/green]"
             )
-
-        # Validate config. The unread-key findings come from validate_config rather
-        # than from a set difference computed here: a raw
-        # `set(config) - set(IDPConfig.model_fields)` reports every key IDPConfig
-        # does not declare, which told an operator that two keys the loader honours
-        # would be ignored — `description`, which update_configuration pops and
-        # stores, and `rule_classes`, which is renamed to `policy_classes` on load.
-        # It also sees only the top level, where a typo is least likely.
-        result = validate_config(user_config, pattern="pattern-2")
 
         # --strict keeps its contract: top-level fields only. A nested finding is
         # reported either way (in the warnings below, with the path and often the
         # field it was meant to be), and failing on one would fail configurations
         # that pass today, which is a decision for a release rather than a fix.
         top_level_extras = sorted(
-            finding["path"]
-            for finding in result.get("ignored_keys", [])
-            if "." not in finding["path"] and "[" not in finding["path"]
+            path
+            for path in [*result.deprecated_fields, *result.unknown_fields]
+            if "." not in path and "[" not in path
         )
         if strict and top_level_extras:
             console.print()
@@ -5241,22 +5229,21 @@ def config_validate(
             )
             sys.exit(1)
 
-        if result["valid"]:
+        if result.valid:
             console.print("[green]✓ Config merges with system defaults[/green]")
             console.print("[green]✓ Pydantic validation passed[/green]")
 
             # Show warnings
-            if result["warnings"]:
+            if result.warnings:
                 console.print()
                 console.print("[bold yellow]Warnings:[/bold yellow]")
-                for warning in result["warnings"]:
+                for warning in result.warnings:
                     console.print(f"  ⚠ {warning}")
 
             # Check for document classes
-            classes = user_config.get("classes", [])
-            if classes:
+            if result.class_count:
                 console.print(
-                    f"[green]✓ {len(classes)} document class(es) defined[/green]"
+                    f"[green]✓ {result.class_count} document class(es) defined[/green]"
                 )
             else:
                 console.print(
@@ -5271,7 +5258,7 @@ def config_validate(
                 console.print("[bold]Merged configuration:[/bold]")
                 console.print("-" * 60)
                 merged_yaml = yaml.dump(
-                    result["merged_config"],
+                    result.merged_config,
                     default_flow_style=False,
                     sort_keys=False,
                     allow_unicode=True,
@@ -5281,7 +5268,7 @@ def config_validate(
         else:
             console.print("[red]✗ Validation failed[/red]")
             console.print()
-            for error in result["errors"]:
+            for error in result.errors:
                 console.print(f"  [red]• {error}[/red]")
             # The unread-key findings belong on this branch too, not only on the
             # passing one. They are the likely explanation for the error above rather
@@ -5291,10 +5278,10 @@ def config_validate(
             # which of the two the author wrote. On this path `warnings` holds these
             # findings and nothing else, since every other check runs only after the
             # configuration validates, so there is no duplication with the block above.
-            if result["warnings"]:
+            if result.warnings:
                 console.print()
                 console.print("[bold yellow]Warnings:[/bold yellow]")
-                for warning in result["warnings"]:
+                for warning in result.warnings:
                     console.print(f"  ⚠ {warning}")
             sys.exit(1)
 
@@ -5329,7 +5316,7 @@ def config_validate(
     "--config-version",
     "config_version",
     required=True,
-    help="Configuration profile to update (e.g., v1, v2). If the profile doesn't exist, it will be created. --config-version is the former name and still works.",
+    help="Configuration profile to update (e.g., default, lending). If the profile doesn't exist, it will be created. --config-version is the former name and still works.",
 )
 @click.option(
     "--version-description",
@@ -5479,7 +5466,7 @@ def config_upload(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile. --config-version is the former name and still works.",
+    help="Configuration profile to download (e.g., default, lending). If not specified, downloads the active profile. --config-version is the former name and still works.",
 )
 @click.option(
     "--config-revision",
@@ -5621,6 +5608,7 @@ def config_activate(
             # the deletes run whatever happened to the classes — and it is the one
             # where nothing else printed says so. `bda_synced` is False on every
             # failing path, so gating on it would have hidden exactly those.
+            _print_unsent_classes(result.bda_unsent_classes)
             _print_orphaned_blueprints(result.bda_orphaned_blueprint_arns)
             sys.exit(1)
 
@@ -5635,6 +5623,7 @@ def config_activate(
                 console.print(
                     f"[green]✓ Successfully synced {result.bda_classes_synced} classes to BDA[/green]"
                 )
+            _print_unsent_classes(result.bda_unsent_classes)
         _print_orphaned_blueprints(result.bda_orphaned_blueprint_arns)
 
         console.print(
@@ -6141,7 +6130,9 @@ def config_sync_bda(
             console.print(f"  Classes synced: {result.classes_synced}")
             if result.processed_classes:
                 for cls_name in result.processed_classes:
-                    console.print(f"    • {cls_name}")
+                    if cls_name not in result.unsent_classes:
+                        console.print(f"    • {cls_name}")
+            _print_unsent_classes(result.unsent_classes)
             _print_orphaned_blueprints(result.orphaned_blueprint_arns)
         else:
             console.print("[yellow]⚠ BDA sync completed with issues[/yellow]")
@@ -6149,6 +6140,7 @@ def config_sync_bda(
             console.print(f"  Classes failed: {result.classes_failed}")
             if result.error:
                 console.print(f"  [red]Error: {result.error}[/red]")
+            _print_unsent_classes(result.unsent_classes)
             _print_orphaned_blueprints(result.orphaned_blueprint_arns)
             sys.exit(1)
 
@@ -6917,12 +6909,12 @@ def _write_discover_output(output, all_schemas, console, is_batch=True):
 @click.option(
     "--embedding-model",
     default=None,
-    help="Bedrock embedding model ID (default: us.cohere.embed-v4:0)",
+    help="Bedrock embedding model ID (default: us.cohere.embed-v4:0; eu.cohere.embed-v4:0 in EU Regions, global.cohere.embed-v4:0 in Canada)",
 )
 @click.option(
     "--analysis-model",
     default=None,
-    help="Bedrock LLM for cluster analysis (default: us.anthropic.claude-sonnet-4-6)",
+    help="Bedrock LLM for cluster analysis (default: us.anthropic.claude-sonnet-4-6; eu.anthropic.claude-sonnet-4-6 in EU Regions)",
 )
 @click.option(
     "--output",
@@ -8014,7 +8006,10 @@ def bootstrap(
         from idp_sdk import IDPClient
 
         client = IDPClient(stack_name=stack_name, region=region)
-        config_table = client.discovery._get_config_table(stack_name)
+        # Table AND bucket: the bootstrap saves a configuration profile, and a
+        # save without CONFIGURATION_BUCKET cannot record the profile's revision
+        # (refused outright for a profile that already has history, #1778).
+        config_table = client.config._configure_config_env(stack_name)
         _os.environ["CONFIGURATION_TABLE_NAME"] = config_table
 
         from idp_common.config.configuration_manager import ConfigurationManager
@@ -8056,6 +8051,13 @@ def bootstrap(
         logger.error(f"Error in bootstrap: {e}", exc_info=True)
         console.print(f"[red]✗ Error: {e}[/red]")
         sys.exit(1)
+
+
+# `idp-cli tenancy ...` lives in its own module; registered here, after `cli`
+# exists, so importing it cannot run ahead of the group it attaches to.
+from .tenancy import tenancy as _tenancy_group  # noqa: E402
+
+cli.add_command(_tenancy_group)
 
 
 def main():

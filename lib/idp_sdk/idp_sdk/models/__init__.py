@@ -38,6 +38,7 @@ from .config import (
     ConfigDeleteResult,
     ConfigDownloadResult,
     ConfigListResult,
+    ConfigMigrateResult,
     ConfigRevisionInfo,
     ConfigRevisionListResult,
     ConfigSyncBdaResult,
@@ -90,6 +91,22 @@ from .stack import (
     StackOperationInProgress,
     StackResources,
     StackStableStateResult,
+)
+from .tenancy import (
+    TenantAccessPoint,
+    TenantApplyResult,
+    TenantAuditFinding,
+    TenantAuditResult,
+    TenantInfo,
+    TenantListResult,
+    TenantPlanAction,
+    TenantPlanItem,
+    TenantPolicyDeployResult,
+    TenantPolicyResult,
+    TenantUserGrant,
+    TenantVerifyCheck,
+    TenantVerifyOutcome,
+    TenantVerifyResult,
 )
 from .testing import (
     DocumentsAbortedResult,
@@ -147,6 +164,7 @@ __all__ = [
     "DocumentListResult",
     # Config models
     "ConfigCreateResult",
+    "ConfigMigrateResult",
     "ConfigValidationResult",
     "ConfigDownloadResult",
     "ConfigUploadResult",
@@ -197,4 +215,19 @@ __all__ = [
     "AssessmentGeometryResult",
     "AssessmentFieldGeometry",
     "AssessmentMetrics",
+    # Tenancy models
+    "TenantApplyResult",
+    "TenantAuditFinding",
+    "TenantAuditResult",
+    "TenantInfo",
+    "TenantListResult",
+    "TenantPlanAction",
+    "TenantPlanItem",
+    "TenantAccessPoint",
+    "TenantPolicyDeployResult",
+    "TenantPolicyResult",
+    "TenantVerifyCheck",
+    "TenantVerifyOutcome",
+    "TenantUserGrant",
+    "TenantVerifyResult",
 ]

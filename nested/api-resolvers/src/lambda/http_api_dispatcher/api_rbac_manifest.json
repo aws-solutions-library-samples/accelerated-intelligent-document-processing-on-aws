@@ -57,8 +57,7 @@
       "Reviewer"
     ],
     "claimTestSetDocument": [
-      "Annotator",
-      "Reviewer"
+      "Annotator"
     ],
     "clearDraftLabels": [
       "Admin",
@@ -158,6 +157,9 @@
     "deleteReviewQueue": [
       "Admin"
     ],
+    "deleteTenant": [
+      "Admin"
+    ],
     "deleteTestSets": [
       "Admin",
       "Author"
@@ -172,8 +174,7 @@
     "estimateReviewEffort": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "forceReleaseReviewItem": [
       "Admin"
@@ -194,8 +195,7 @@
     "getAnnotationQueue": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "getChatMessages": [
       "Admin",
@@ -257,8 +257,7 @@
     "getDraftLabelJob": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "getFeatureLaunchUrl": [
       "Admin"
@@ -351,8 +350,7 @@
     "getTestSetDocuments": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "getTestSetVersions": [
       "Admin",
@@ -453,8 +451,7 @@
     "listMyTestSetTasks": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "listReviewQueueItems": [
       "Admin",
@@ -469,10 +466,12 @@
       "Author",
       "Viewer"
     ],
+    "listTenants": [
+      "Admin"
+    ],
     "listTestSetQueues": [
       "Admin",
-      "Annotator",
-      "Reviewer"
+      "Annotator"
     ],
     "listUsers": [
       "Admin"
@@ -497,8 +496,7 @@
     "openTestSetAnnotationDraft": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "pauseCircuitBreaker": [
       "Admin"
@@ -517,6 +515,9 @@
     "putConfigPrefixMapping": [
       "Admin"
     ],
+    "putTenant": [
+      "Admin"
+    ],
     "queryKnowledgeBase": [
       "Admin",
       "Annotator",
@@ -530,8 +531,7 @@
     "reextractTestSetDocument": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "rejectReviewItem": [
       "Admin",
@@ -594,14 +594,12 @@
     "saveTestSetDocumentSection": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "saveTestSetDocumentSectionDraft": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "sendAgentChatMessage": [
       "Admin",
@@ -623,6 +621,9 @@
       "Admin",
       "Author"
     ],
+    "setUserTenant": [
+      "Admin"
+    ],
     "skipAllSectionsReview": [
       "Admin",
       "Reviewer"
@@ -630,8 +631,7 @@
     "skipTestSetDocument": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "startMultiDocDiscovery": [
       "Admin",
@@ -696,8 +696,7 @@
     "updateTestSetDocumentSections": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "updateTestSetQueue": [
       "Admin"

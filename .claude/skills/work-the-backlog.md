@@ -1589,9 +1589,10 @@ the judgement the run produced. Write what the defect was, what was measured,
 what the fix does, **what was withdrawn or narrowed and why**, and any residual
 filed separately. These comments are the repo's real defect history and are read
 later by people deciding whether a similar-looking report is the same bug. Draft
-from the agent's report rather than from the diff. `Fixes #N` does not auto-close
-here — the default branch is `main`, so develop-targeted PRs never trigger it.
-Close by hand.
+from the agent's report rather than from the diff. `develop` is the default branch,
+so a closing keyword (`Fixes #N`) that reaches it can close the issue automatically,
+with no comment. Write the closing comment anyway, and check the issue's state rather
+than assuming it either way.
 
 **Update the state file** after each merge: move the entry from `inFlight` to
 `merged`, increment `mergesSinceCheckIn` and `mergesSinceIntegration`, add any

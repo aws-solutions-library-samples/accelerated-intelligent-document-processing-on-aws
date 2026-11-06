@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from idp_common.config_scope import scope_allows
+from idp_common.config_scope import normalize_scope, scope_allows
 from idp_common.dynamodb.client import DynamoDBTransactionCanceledError
 
 from . import keys, status_object
@@ -275,15 +275,21 @@ class ReviewQueueService:
             raise ReviewConflict("STALE_CYCLE", "the item has a newer review cycle")
 
     @staticmethod
-    def _sees(caller: CallerContext, record: ReviewItemRecord) -> bool:
+    def _admits(caller: CallerContext, profile: Optional[str]) -> bool:
+        """Whether the caller's profile scope admits an item with this profile."""
+        return caller.is_admin or scope_allows(caller.allowed_versions, profile)
+
+    @classmethod
+    def _sees(cls, caller: CallerContext, record: ReviewItemRecord) -> bool:
         """Whether the caller's profile scope admits this item, by its own profile.
 
         Queues are system-wide, so one queue holds items of several profiles; scope is
         decided per item, by the same comparison the API uses everywhere else
         (``scope_allows``), which admits no item without a profile to a scoped caller.
-        Every read of items applies it: the per-item operations and the listings.
+        Every read of items applies it: the per-item operations, the listings and the
+        queue summaries.
         """
-        return caller.is_admin or scope_allows(caller.allowed_versions, record.profile)
+        return cls._admits(caller, record.profile)
 
     def _check_access(self, caller: CallerContext, record: ReviewItemRecord) -> None:
         if caller.is_admin:
@@ -429,7 +435,15 @@ class ReviewQueueService:
         self, caller: CallerContext, item_limit: int = 25
     ) -> MyReviewQueues:
         queues = self.directory.queues_for(caller)
-        owned = self.store.all_owned(caller.reviewer_key)
+        # A scoped caller's counts cover only the items its scope admits, item by
+        # item (one projected pass per queue); Admins and unscoped callers keep the
+        # cheap whole-queue counts.
+        scoped = not caller.is_admin and bool(normalize_scope(caller.allowed_versions))
+        owned = [
+            r
+            for r in self.store.all_owned(caller.reviewer_key)
+            if self._sees(caller, r)
+        ]
         mine_by_queue: dict[str, int] = {}
         for r in owned:
             mine_by_queue[r.ref.partition] = mine_by_queue.get(r.ref.partition, 0) + 1
@@ -437,11 +451,27 @@ class ReviewQueueService:
         def summarise(entry) -> ReviewQueueSummary:
             ref, definition, rq = entry
             client = self.store.thread_client()
-            depth = self.store.count_queue(ref, open_only=False, client=client)
-            unclaimed = self.store.count_queue(ref, open_only=True, client=client)
-            oldest, _ = self.store.query_queue(
-                ref, open_only=False, limit=1, client=client
-            )
+            if scoped:
+                depth = unclaimed = claimed = 0
+                oldest_at: Optional[str] = None
+                for row in self.store.queue_scope_rows(ref, client=client):
+                    if not self._admits(caller, row.get("Profile")):
+                        continue
+                    depth += 1
+                    if row.get("State") == QueueItemState.OPEN.value:
+                        unclaimed += 1
+                    else:
+                        claimed += 1
+                    if oldest_at is None:
+                        oldest_at = row.get("EnqueuedAt")
+            else:
+                depth = self.store.count_queue(ref, open_only=False, client=client)
+                unclaimed = self.store.count_queue(ref, open_only=True, client=client)
+                claimed = max(0, depth - unclaimed)
+                oldest, _ = self.store.query_queue(
+                    ref, open_only=False, limit=1, client=client
+                )
+                oldest_at = oldest[0].enqueued_at if oldest else None
             return ReviewQueueSummary(
                 profile=ref.profile,
                 name=definition.id,
@@ -450,9 +480,9 @@ class ReviewQueueService:
                 priority=definition.priority,
                 depth=depth,
                 unclaimed=unclaimed,
-                claimed=max(0, depth - unclaimed),
+                claimed=claimed,
                 claimed_by_me=mine_by_queue.get(ref.partition, 0),
-                oldest_enqueued_at=oldest[0].enqueued_at if oldest else None,
+                oldest_enqueued_at=oldest_at,
                 is_default_queue=definition.id.lower() == rq.default_queue.lower(),
                 enabled=definition.enabled,
                 claim_cap=rq.max_claims_per_reviewer,
@@ -462,11 +492,9 @@ class ReviewQueueService:
         with ThreadPoolExecutor(max_workers=8) as pool:
             summaries = list(pool.map(summarise, queues))
         summaries.sort(key=lambda s: (-s.priority, s.profile, s.name))
-        profiles = sorted({ref.profile for ref, _, _ in queues})
         return MyReviewQueues(
             queues=summaries,
             my_claim_count=len(owned),
-            enabled_profiles=profiles,
             items=self.list_queue_items(
                 caller, None, claimable=False, limit=item_limit, cursor=None
             ),
@@ -1186,6 +1214,9 @@ class ReviewQueueService:
         note: Optional[str] = None,
     ) -> ReviewItemView:
         record = self._load(object_key)
+        # Access first: a caller who may not work this item learns nothing about its
+        # queue's checklist from the argument check below.
+        self._check_access(caller, record)
         definition = self._rq(record.profile).queue(record.queue)
         template = list(definition.checklist) if definition else []
         if checklist is not None and len(checklist) != len(template):
@@ -1213,6 +1244,9 @@ class ReviewQueueService:
         if not reason or not reason.strip():
             raise ReviewValidationError("REASON_REQUIRED", "choose a reject reason")
         record = self._load(object_key)
+        # Access first: a caller who may not work this item learns nothing about its
+        # queue's reject reasons from the argument check below.
+        self._check_access(caller, record)
         rq = self._rq(record.profile)
         definition = rq.queue(record.queue)
         allowed = definition.reject_reasons if definition else rq.reject_reasons
@@ -1520,6 +1554,13 @@ class ReviewQueueService:
         told), and HOLDING items are re-pointed at Default before they activate.
         Refused while an item is FINALIZING, because its finalize run still
         reads the queue (``QUEUE_FINALIZING``).
+
+        The definition is deleted first and the items are moved after it, so a
+        delete that is refused (``QUEUE_CHANGED``, or a fault) has moved nothing.
+        Items in a queue that no longer exists are a state the rest of the service
+        already handles — a HOLDING item activates into Default, the overview lists
+        the queue's items, and an Admin can move them — and deleting the queue again
+        moves whatever a run that failed part-way left behind.
         """
         self._require_admin(caller)
         queue_id = queue_id.strip().lower()
@@ -1532,6 +1573,7 @@ class ReviewQueueService:
                 "QUEUE_FINALIZING",
                 "an item in this queue is being finalized; try again in a minute",
             )
+        self.directory.queue_defs.delete(queue_id)
         ref = QueueRef(queue=queue_id)
         live: list[ReviewItemRecord] = []
         start: Optional[dict[str, Any]] = None
@@ -1569,7 +1611,6 @@ class ReviewQueueService:
             except DynamoDBTransactionCanceledError:
                 # Activated or withdrawn meanwhile: activation re-points it.
                 logger.info("event=review_queue_delete_hold_changed")
-        self.directory.queue_defs.delete(queue_id)
         logger.info("event=review_queue_deleted moved=%d", moved)
         return moved
 

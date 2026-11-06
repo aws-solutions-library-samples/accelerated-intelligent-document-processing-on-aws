@@ -271,7 +271,7 @@ def _claim_event(groups, entry):
 @pytest.fixture
 def scoped_resolver(resolver, monkeypatch):
     """The resolver with the probe's test set in every Annotator's scope, and every
-    Reviewer unrestricted by profile."""
+    caller unrestricted by profile."""
     from idp_common import config_scope
 
     index, _ = resolver
@@ -503,109 +503,66 @@ def reviewer_scope(monkeypatch):
     return state
 
 
-def _as_reviewer(field="listTestSetQueues"):
-    return {
+@pytest.mark.unit
+@pytest.mark.parametrize("scope", [None, ["lending"]], ids=["unscoped", "in-scope"])
+def test_a_reviewer_is_refused_the_test_studio_queues(
+    queues, reviewer_scope, scope, caplog
+):
+    """Test-set work belongs to Annotators: a Reviewer works Production review queues
+    only, whatever their profile scope, and the refusal is a `PermissionError`."""
+    index, _, tracking = queues
+    tracking.update_item(
+        Key={"PK": f"testset#{TEST_SET_ID}", "SK": "metadata"},
+        UpdateExpression="SET configVersion = :c",
+        ExpressionAttributeValues={":c": "lending"},
+    )
+    reviewer_scope["scope"] = scope
+    event = {
         "identity": _caller(["Reviewer"], REVIEWER),
-        "info": {"fieldName": field},
+        "info": {"fieldName": "listTestSetQueues"},
         "arguments": {},
     }
+    with caplog.at_level("WARNING"), pytest.raises(PermissionError):
+        index.handler(event, None)
+    assert "Forbidden" in caplog.text
 
 
 @pytest.mark.unit
-def test_a_reviewer_lists_every_set_their_profile_scope_admits_listed_or_not(
-    queues, reviewer_scope
-):
-    index, _, tracking = queues
-    tracking.update_item(
-        Key={"PK": f"testset#{TEST_SET_ID}", "SK": "metadata"},
-        UpdateExpression="SET configVersion = :c",
-        ExpressionAttributeValues={":c": "lending"},
-    )
-    for set_id, profile in (("claims-set", "claims"), ("undeclared-set", None)):
-        item = {
-            "PK": f"testset#{set_id}",
-            "SK": "metadata",
-            "id": set_id,
-            "status": "COMPLETED",
-        }
-        if profile:
-            item["configVersion"] = profile
-        tracking.put_item(Item=item)
-
-    reviewer_scope["scope"] = ["lending"]
-    assert [q["id"] for q in index.handler(_as_reviewer(), None)] == [TEST_SET_ID]
-
-    # With no profile restriction, a Reviewer sees every set, including one with no profile.
-    reviewer_scope["scope"] = None
-    testset_scope.clear_scope_cache()
-    assert {q["id"] for q in index.handler(_as_reviewer(), None)} == {
-        TEST_SET_ID,
-        "claims-set",
-        "undeclared-set",
-    }
-
-
-@pytest.mark.unit
-def test_the_resolved_profile_is_recorded_once_and_dropped_by_a_new_drafting_run(
-    queues, reviewer_scope
-):
-    index, _, tracking = queues
-    tracking.update_item(
-        Key={"PK": f"testset#{TEST_SET_ID}", "SK": "metadata"},
-        UpdateExpression="SET configVersion = :c",
-        ExpressionAttributeValues={":c": "lending"},
-    )
-    assert index._scope_profile(TEST_SET_ID) == "lending"
-    meta = tracking.get_item(Key={"PK": f"testset#{TEST_SET_ID}", "SK": "metadata"})[
-        "Item"
-    ]
-    assert meta["ScopeProfile"] == "lending"
-    # The recorded value is what is read next, so a vendored reader agrees.
-    tracking.update_item(
-        Key={"PK": f"testset#{TEST_SET_ID}", "SK": "metadata"},
-        UpdateExpression="SET configVersion = :c",
-        ExpressionAttributeValues={":c": "claims"},
-    )
-    assert index._scope_profile(TEST_SET_ID) == "lending"
-    source = open(index.__file__, encoding="utf-8").read()
-    assert (
-        "SET labelJobId = :j, labelJobStatus = :s REMOVE {SCOPE_PROFILE_ATTRIBUTE}"
-        in source
-    )
-
-
-@pytest.mark.unit
-def test_a_reviewer_claims_a_document_without_being_listed(queues, reviewer_scope):
-    index, hitl, _ = queues
-    _put_doc_item(hitl, "r.pdf")
-    claimed = index.claim_test_set_document(
-        {"testSetId": TEST_SET_ID, "objectKey": "r.pdf"},
-        {"identity": _caller(["Reviewer"], REVIEWER)},
-    )
-    assert claimed["assignedTo"] == REVIEWER
-
-
-@pytest.mark.unit
-def test_a_scoped_reviewer_is_refused_a_set_outside_their_profile_scope(
-    queues, reviewer_scope
-):
+@pytest.mark.parametrize("scope", [None, ["lending"]], ids=["unscoped", "in-scope"])
+def test_a_reviewer_is_refused_a_test_set_claim(queues, reviewer_scope, scope, caplog):
     index, hitl, tracking = queues
     tracking.update_item(
         Key={"PK": f"testset#{TEST_SET_ID}", "SK": "metadata"},
         UpdateExpression="SET configVersion = :c",
-        ExpressionAttributeValues={":c": "claims"},
+        ExpressionAttributeValues={":c": "lending"},
     )
-    reviewer_scope["scope"] = ["lending"]
+    reviewer_scope["scope"] = scope
     _put_doc_item(hitl, "x.pdf")
     event = {
         "identity": _caller(["Reviewer"], REVIEWER),
         "info": {"fieldName": "claimTestSetDocument"},
         "arguments": {"testSetId": TEST_SET_ID, "objectKey": "x.pdf"},
     }
-    with pytest.raises(index.TestSetAccessDenied):
+    with caplog.at_level("WARNING"), pytest.raises(PermissionError):
         index.handler(event, None)
+    assert "Forbidden" in caplog.text
+    # The claim function itself refuses too, not only the dispatch.
+    with pytest.raises(PermissionError, match="only Annotators"):
+        index.claim_test_set_document(
+            {"testSetId": TEST_SET_ID, "objectKey": "x.pdf"},
+            {"identity": _caller(["Reviewer"], REVIEWER)},
+        )
     item = hitl.get_item(Key={"PK": f"TSDOC#{TEST_SET_ID}", "SK": "D#x.pdf"})["Item"]
     assert not item.get("AssignedTo")
+
+
+@pytest.mark.unit
+def test_a_new_drafting_run_writes_no_scope_profile():
+    """The stored `ScopeProfile` attribute is no longer written or removed: the
+    Reviewer profile rule it served is gone (stored values are left in place)."""
+    source = (Path(__file__).resolve().parent / "index.py").read_text(encoding="utf-8")
+    assert "ScopeProfile" not in source
+    assert "SCOPE_PROFILE_ATTRIBUTE" not in source
 
 
 @pytest.mark.unit
@@ -932,7 +889,9 @@ def test_claim_state_keeps_rows_read_when_keys_stay_unprocessed(
     """A document left unread loses its claim state, loudly; the rows that were
     read keep theirs rather than being discarded with the batch."""
     index, stubber, sleeps = stubbed_ddb
-    monkeypatch.setattr(index, "_run_id_by_object_key", lambda _id: ({}, "run1"))
+    monkeypatch.setattr(
+        index, "_run_id_by_object_key", lambda _id, _meta=None: ({}, "run1")
+    )
     docs = [{"objectKey": "a.pdf"}, {"objectKey": "b.pdf"}, {"objectKey": "c.pdf"}]
     unclaimed = {"PK": {"S": "doc#run1/c.pdf"}, "SK": {"S": "none"}}
     claimed = {
@@ -962,7 +921,9 @@ def test_claim_state_keeps_rows_read_when_keys_stay_unprocessed(
 @pytest.mark.unit
 def test_claim_state_retries_unprocessed_keys(stubbed_ddb, monkeypatch):
     index, stubber, sleeps = stubbed_ddb
-    monkeypatch.setattr(index, "_run_id_by_object_key", lambda _id: ({}, "run1"))
+    monkeypatch.setattr(
+        index, "_run_id_by_object_key", lambda _id, _meta=None: ({}, "run1")
+    )
     docs = [{"objectKey": "a.pdf"}, {"objectKey": "b.pdf"}]
     item_b = {
         "PK": {"S": "doc#run1/b.pdf"},

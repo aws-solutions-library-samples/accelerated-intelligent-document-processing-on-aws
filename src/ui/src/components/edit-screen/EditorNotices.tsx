@@ -11,7 +11,7 @@ export interface EditorNotice {
   id: string;
   type: 'error' | 'warning' | 'info';
   content: React.ReactNode;
-  /** A button the notice offers (Take over, Start editing, Review in queue). */
+  /** A button the notice offers (Claim, Take over, Next alert, Review in queue). */
   action?: React.ReactNode;
   /** An error the reader can dismiss. */
   onDismiss?: () => void;

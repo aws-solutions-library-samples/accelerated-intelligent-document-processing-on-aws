@@ -5,9 +5,10 @@
 // from the source document (test-set documents have no processed page images), the
 // baselines as the sections, the classes of the config the labels were written under,
 // the page-class board over the set's 0-based page indices, and the notices after a
-// regroup or a class change (with Re-extract). The shared SectionEditor does the field
+// regroup or a class change (with Re-extract: the whole document when it has one section,
+// the open section only when it has several). The shared SectionEditor does the field
 // editing; this hook supplies its slots and the board.
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, FormField, Input } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
@@ -88,9 +89,11 @@ export interface TestSetEditorSlots {
   loadSection: (sectionId: string) => Promise<LoadedSection>;
   /** Bumped to re-read the open section after a regroup or re-extract rewrites it (its key is unchanged). */
   reloadToken: number;
-  onLoaded: () => void;
+  onLoaded: (sectionId: string) => void;
   classOptions: ConfigClassOption[];
   classConfig: ReturnType<typeof resolveClassConfigVersion>;
+  /** The configuration the set was labelled with (null until read, or unreadable for this role). */
+  mergedConfig: ReturnType<typeof useConfiguration>['mergedConfig'];
   headerExtras: EditorSlot;
   classSlot: EditorSlot;
   emptyFieldsSlot: EditorSlot;
@@ -122,11 +125,19 @@ export const useTestSetEditorSlots = ({
    */
   const [regroupedSectionIds, setRegroupedSectionIds] = useState<string[]>([]);
   const [isReextracting, setIsReextracting] = useState(false);
-  const [reextractNote, setReextractNote] = useState<string | null>(null);
+  /**
+   * What the last re-extract did, and the section it did it to. Kept while that section
+   * is re-read after the re-extract — the re-read is how its new fields reach the screen,
+   * so clearing on any load hid the note before it was ever seen — and cleared once a
+   * different section is opened, where it would describe something else.
+   */
+  const [reextractNote, setReextractNote] = useState<{ text: string; sectionId: string; kept?: boolean } | null>(null);
   // Sections whose class Edit Page Grouping just changed, by section id, with the class
   // their fields were extracted under: their fields no longer match their class until
   // they are re-extracted.
   const [reclassified, setReclassified] = useState<Record<string, string>>({});
+  // How many sections the last saved grouping wrote, until the caller's refs catch up.
+  const [savedSectionCount, setSavedSectionCount] = useState<number | null>(null);
   // Forces a baseline re-read after a re-extract rewrites it: the key is unchanged.
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -169,6 +180,25 @@ export const useTestSetEditorSlots = ({
   /** Pages for the board, in the 1-based page-id space. */
   const boardPages = useMemo(() => pages.map((page) => ({ id: Number(page.Id), imageUri: page.ImageUri })), [pages]);
   const canRegroup = boardPages.length > 0 && sections.length > 0;
+  /**
+   * Which Re-extract this document gets. A whole-document re-extract forces one class
+   * onto every page as one section, so on a document with several sections it would
+   * merge them all and discard their ground truth (#1672); the server refuses it there.
+   * Such a document re-extracts the open section only (#1699): the run keeps every
+   * other section's pages and class, and only that section's label is replaced.
+   */
+  // Also counts the grouping just saved: the caller's refs lag the save until its reload
+  // lands, and a split into several sections must already be treated as several. Once
+  // new refs arrive they are the truth and the saved count is dropped. Keyed on the
+  // array's identity, which the caller replaces on each reload: a content key would miss
+  // a re-read that lands on the same section ids the save started from.
+  const sectionCount = Math.max(sections.length, savedSectionCount ?? 0);
+  const perSection = sectionCount > 1;
+  // A save renumbers sections in page order, so until the refs catch up the open
+  // section's id may name a different section on the server: a per-section re-extract
+  // waits for them.
+  const refsPending = savedSectionCount !== null;
+  useEffect(() => setSavedSectionCount(null), [sections]);
 
   /**
    * Every section's grouping, in the board's 1-based page-id space, from the queue's
@@ -224,6 +254,7 @@ export const useTestSetEditorSlots = ({
       if (was && after && was !== after) moved[sec.sectionId] = was;
     });
     setReclassified(moved);
+    setSavedSectionCount(written.filter(Boolean).length);
     setReloadToken((token) => token + 1);
     // Section ids and classes have moved, so the caller's refs are stale.
     onChanged();
@@ -236,15 +267,31 @@ export const useTestSetEditorSlots = ({
    * the fields on screen are wrong until then; labels are harvested on read, so this poll
    * drives the write-back.
    */
-  const handleReextract = async () => {
+  const handleReextract = async (sectionId: string, labelSource?: unknown) => {
     if (!documentClassType || !testSetId) return;
+    // Captured now: the open section can change while the run is in flight.
+    const target = perSection ? sectionId : null;
+    // Authored ground truth (neither a draft nor a reviewed draft) is never overwritten by
+    // the run: the class is corrected and the values stay, so "Re-extracted" would be untrue.
+    const authored = labelSource !== 'reviewed-human' && labelSource !== 'draft-machine';
     setIsReextracting(true);
     setError(null);
     setReextractNote(null);
     try {
       const started = await client.graphql({
         query: reextractTestSetDocument,
-        variables: { input: { testSetId, objectKey, documentClass: documentClassType, configVersion: classConfigVersion } },
+        variables: {
+          input: {
+            testSetId,
+            objectKey,
+            documentClass: documentClassType,
+            configVersion: classConfigVersion,
+            // Present only on a document with several sections: the server refuses a
+            // whole-document class there, and a single-section document keeps the
+            // whole-document form it always had.
+            ...(target ? { sectionId: target } : {}),
+          },
+        },
       });
       const job = started.data?.reextractTestSetDocument;
       if (!job?.jobId) throw new Error('No job returned');
@@ -259,18 +306,34 @@ export const useTestSetEditorSlots = ({
       }
       if (status === 'RUNNING') {
         // Not an error: the job is still running and the harvest is idempotent.
-        setReextractNote(
-          'Re-extraction is taking longer than expected. It is still running — reopen this document shortly to see the new fields.',
-        );
+        setReextractNote({
+          text: 'Re-extraction is taking longer than expected. It is still running — reopen this document shortly to see the new fields.',
+          sectionId,
+        });
         return;
       }
       setReloadToken((token) => token + 1);
       setReclassified({});
-      setReextractNote(`Re-extracted as ${documentClassType}.`);
+      setReextractNote(
+        authored
+          ? {
+              text: `Class corrected to ${documentClassType}${target ? ` on section ${target}` : ''}. This ${
+                target ? 'section' : 'document'
+              } has authored ground truth, so its field values were kept rather than re-extracted; if they need to change, edit them here or in the JSON Editor tab.`,
+              sectionId,
+              kept: true,
+            }
+          : {
+              text: target
+                ? `Re-extracted section ${target} as ${documentClassType}. The other sections were not changed.`
+                : `Re-extracted as ${documentClassType}.`,
+              sectionId,
+            },
+      );
       onChanged();
     } catch (err) {
       logger.error('Re-extraction failed:', err);
-      setError(`Could not re-extract this document: ${getErrorMessage(err)}`);
+      setError(`Could not re-extract this ${target ? 'section' : 'document'}: ${getErrorMessage(err)}`);
     } finally {
       setIsReextracting(false);
     }
@@ -289,8 +352,8 @@ export const useTestSetEditorSlots = ({
           onDismiss={() => setRegroupedSectionIds([])}
         >
           The grouping is saved and your field values are untouched — but those sections were extracted from a different set of pages, so
-          their values may no longer match. Check them, and change a section&apos;s class and use <b>Re-extract</b> if you would rather the
-          model redo it.
+          their values may no longer match. Check them, and change the section&apos;s class and use <b>Re-extract</b> if you would rather
+          the model redo it{perSection ? ' (on this document it re-extracts that one section)' : ''}.
         </Alert>
       )}
       {error && <Alert type="error">{error}</Alert>}
@@ -302,12 +365,44 @@ export const useTestSetEditorSlots = ({
     <>
       {/* A section's class is changed in Edit Page Grouping. Its fields were extracted under
           the previous class, and only a re-extract replaces them. */}
-      {ctx.data && reclassified[ctx.selectedSectionId] && testSetId && (
+      {ctx.data && reclassified[ctx.selectedSectionId] && testSetId && perSection && (
         <Alert
           type="info"
           header="Fields still reflect the previous class"
           action={
-            <Button onClick={handleReextract} loading={isReextracting} disabled={!mayChangeClass}>
+            <Button
+              onClick={() => void handleReextract(ctx.selectedSectionId, ctx.data?.labelSource)}
+              loading={isReextracting}
+              disabled={!mayChangeClass || refsPending}
+              disabledReason={refsPending ? 'Loading the saved grouping…' : undefined}
+              ariaLabel={`Re-extract section ${ctx.selectedSectionId}`}
+            >
+              {isReextracting ? 'Re-extracting…' : 'Re-extract'}
+            </Button>
+          }
+        >
+          These fields were extracted as <b>{reclassified[ctx.selectedSectionId]}</b>. Re-extract replaces this section&apos;s fields with
+          ones the <b>{documentClassType}</b> schema produces; the other {sectionCount - 1} section
+          {sectionCount > 2 ? 's keep their' : ' keeps its'} pages, class and fields.
+          {ctx.data?.labelSource === 'reviewed-human'
+            ? ' This section was already marked reviewed; re-extracting discards its confirmed values.'
+            : ctx.data?.labelSource === 'draft-machine'
+              ? " This section's draft labels are replaced."
+              : ' The class is corrected, but this section has authored ground truth, so its field values are kept.'}{' '}
+          Changing the class for the whole document would merge all {sectionCount} sections into one and discard their ground truth, so
+          Re-extract here works on this section only.
+        </Alert>
+      )}
+      {ctx.data && reclassified[ctx.selectedSectionId] && testSetId && !perSection && (
+        <Alert
+          type="info"
+          header="Fields still reflect the previous class"
+          action={
+            <Button
+              onClick={() => void handleReextract(ctx.selectedSectionId, ctx.data?.labelSource)}
+              loading={isReextracting}
+              disabled={!mayChangeClass}
+            >
               {isReextracting ? 'Re-extracting…' : 'Re-extract'}
             </Button>
           }
@@ -322,7 +417,7 @@ export const useTestSetEditorSlots = ({
               : ' The class is corrected, but this document has authored ground truth, so its field values are kept.'}
         </Alert>
       )}
-      {reextractNote && <Alert type="success">{reextractNote}</Alert>}
+      {reextractNote && <Alert type={reextractNote.kept ? 'info' : 'success'}>{reextractNote.text}</Alert>}
       {splitPageIndices !== undefined && (
         <FormField
           label="Pages in this section"
@@ -354,7 +449,12 @@ export const useTestSetEditorSlots = ({
             ? 'This section has an empty result: extraction ran but produced no fields, or the section was added when the pages were re-grouped and nothing has extracted it as a group yet.'
             : 'This section has no inference_result at all.'}{' '}
         {sections.length > 1 ? 'Other sections of this document may still have values — choose one from the Section list above. ' : ''}
-        {documentClassType ? (
+        {documentClassType && perSection ? (
+          <>
+            To have the model populate it, change its class in <b>Edit Page Grouping</b> and choose <b>Re-extract</b>, which re-extracts
+            this section only and leaves the others as they are, or use the <b>JSON Editor</b> tab to enter values by hand.
+          </>
+        ) : documentClassType ? (
           <>
             To have the model populate it, change its class in <b>Edit Page Grouping</b> and choose <b>Re-extract</b>, or use the{' '}
             <b>JSON Editor</b> tab to enter values by hand.
@@ -402,9 +502,10 @@ export const useTestSetEditorSlots = ({
     reviewSections,
     loadSection,
     reloadToken,
-    onLoaded: () => setReextractNote(null),
+    onLoaded: (sectionId: string) => setReextractNote((note) => (note && note.sectionId !== sectionId ? null : note)),
     classOptions,
     classConfig,
+    mergedConfig,
     headerExtras,
     classSlot,
     emptyFieldsSlot,

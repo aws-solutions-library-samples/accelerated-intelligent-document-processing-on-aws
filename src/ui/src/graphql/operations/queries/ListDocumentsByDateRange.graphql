@@ -32,6 +32,11 @@ query ListDocumentsByDateRange($startDateTime: AWSDateTime!, $endDateTime: AWSDa
           confidence
           confidenceThreshold
         }
+        MissingRequiredFields {
+          attributeName
+          confidence
+          confidenceThreshold
+        }
         ProcessingIssues {
           stage
           severity

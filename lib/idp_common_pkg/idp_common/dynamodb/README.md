@@ -111,6 +111,18 @@ High-level service for document operations:
   and returns False if the document is ABORTED or has no tracking record. The
   queue processor calls it immediately before starting an execution, so a
   QUEUED document aborted after the processor read it is not started
+- `update_document_section(document_id, section_index, section)` - Write one
+  section as `SET Sections[i]`, for the per-section steps inside the
+  `ProcessSections` map. `section_index` is the section's position in the full
+  document the map iterates, written as given: during the map that list is the
+  authority, since a postClassification hook may have reshaped it without the
+  stored item knowing. Pass `section_index=None` when the caller cannot know that
+  position (the assessment step, whose incoming document holds only its own
+  section): the stored `Sections` are read and the section is written at the slot
+  carrying its `Id` — preferring the copy with its extraction result URI when a
+  hook-reshaped list briefly holds two — conditional on that slot still carrying
+  the `Id`. If no slot does, or it keeps changing, nothing is written and `{}` is
+  returned
 - `list_documents()` - List documents with date filtering
 - `list_documents_date_hour()` - List by specific date/hour
 - `list_documents_date_shard()` - List by date/shard
@@ -127,6 +139,8 @@ S3 object versions into a manifest):
 - `create_document_run(document, run_id, manifest_uri, file_count, expires_after)`
   - Writes `PK = doc#<key>`, `SK = run#<run_id>` and increments a
     `VersionCount` counter on the doc item.
+  - The run record's metering is `document.metering` only, the usage of that
+    run, so the version of a reprocess shows what the reprocess cost.
 - `list_document_runs(object_key)` - All runs for a document, newest first.
 - `get_document_run(object_key, run_id)` - A single run record.
 - `delete_document_run(object_key, run_id)` - Remove a run record and decrement
@@ -275,7 +289,7 @@ shows up as a missing field in the UI, not as a schema error.
 - **ObjectStatus**: Document processing status
 - **Pages**: List of page objects with Id, Class, ImageUri, TextUri
 - **Sections**: List of section objects with Id, PageIds, Class, OutputJSONUri
-- **Metering**: JSON string of metering data
+- **Metering**: JSON string of the document's cumulative metering: `Document.metering_baseline` (the usage of earlier runs) plus `Document.metering` (this run's own), written as `idp_common.utils.cumulative_metering(document)`. Reading the row back puts that total in `Document.metering`
 - **TTL**: ExpiresAfter timestamp
 
 ### List Partition Structure
