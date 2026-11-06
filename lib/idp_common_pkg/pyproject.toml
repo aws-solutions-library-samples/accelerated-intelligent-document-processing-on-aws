@@ -1,10 +1,12 @@
 [build-system]
-# Floor matches the `test` extra below: 78.1.1 is where CVE-2025-47273
-# (setuptools PackageIndex path traversal) is fixed. This was the only one of the
+# Floor matches the `test` extra below: 84.1.0 fixes GHSA-xmj3-9gf7-h52w and
+# GHSA-grgh-hr87-3jpw (path traversal in legacy wheel install and archive
+# extraction), and is above 78.1.1, where CVE-2025-47273 (PackageIndex path
+# traversal) is fixed. This was the only one of the
 # five first-party distributions with an unfloored build requirement, so a build
 # here could resolve an arbitrarily old setuptools while the same file pinned a
 # floor for the test path.
-requires = ["setuptools>=78.1.1", "wheel"]
+requires = ["setuptools>=84.1.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -271,9 +273,9 @@ test = [
   # package finders and read_configuration) to check the packaging policy. No
   # first-party pyproject declared it outside build-system.requires, which pip
   # provisions only for the build backend, so the suite silently depended on an
-  # ambient install. Floor is the security floor (CVE-2025-47273 path traversal
-  # is fixed in 78.1.1); the APIs used are much older than that.
-  "setuptools>=78.1.1",
+  # ambient install. Floor is the security floor, the same as build-system.requires
+  # above; the APIs used are much older than that.
+  "setuptools>=84.1.0",
   # scripts/tests/test_xray_annotations.py calls the real
   # aws_xray_sdk Segment offline to assert which annotation keys and values the
   # SDK keeps rather than silently drops. Already declared in the `docs_service`
