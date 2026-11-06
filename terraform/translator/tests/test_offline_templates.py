@@ -303,6 +303,11 @@ def test_every_role_is_named_after_the_stack_and_takes_the_boundary(standard_mod
                 problems.append(f"{where}: no permissions_boundary")
             if "create_before_destroy = true" not in body:
                 problems.append(f"{where}: a rename would delete before creating")
+            generated = "md5(" in body or "time_static." in body
+            if generated and "ignore_changes = [name, name_prefix]" not in body:
+                # A generated name is kept for the role's life: replacing a role
+                # replaces the custom resources' dependants (see aws_mappers).
+                problems.append(f"{where}: a generated name could be changed")
     assert names, "no aws_iam_role found"
     assert not problems, problems[:20]
 
@@ -342,4 +347,26 @@ def test_a_retained_role_keeps_its_name_and_cannot_collide_on_redeploy(
         bodies = dict(ROLE_BLOCK.findall(_module_text(module)))
         body = bodies[label]
         assert RETAINED_NAME.search(body), (address, body)
-        assert "ignore_changes = [name]" in body, address
+        assert "ignore_changes = [name, name_prefix]" in body, address
+
+
+def test_a_permission_granted_to_a_role_survives_the_role_being_replaced(
+    standard_module,
+):
+    """Roles are replaced create-before-destroy, and Terraform applies that order
+    to every dependant replaced with them. A Lambda permission whose principal is
+    a role is replaced whenever the role is, so a fixed `statement_id` makes the
+    new permission collide with the old one (409) while both exist. Measured on
+    a live upgrade that renamed every role."""
+    problems = []
+    for module in _modules(standard_module):
+        text = _module_text(module)
+        for m in re.finditer(
+            r'^resource "aws_lambda_permission" "(\w+)" \{\n(.*?)^\}', text, re.M | re.S
+        ):
+            body = m.group(2)
+            if re.search(r"^\s*principal = aws_iam_role\.", body, re.M) and re.search(
+                r"^\s*statement_id = ", body, re.M
+            ):
+                problems.append(f"{module.name}: {m.group(1)}")
+    assert not problems, problems[:20]

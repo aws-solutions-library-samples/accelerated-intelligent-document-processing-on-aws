@@ -473,13 +473,14 @@ longer has is dropped with a warning. The deploy runs `init -upgrade` because th
 module source changed, and refuses the plan if it would delete or replace a retained
 resource (see [With `idp-cli deploy --terraform`](#with-idp-cli-deploy---terraform)).
 
-A deployment generated before the module named its IAM roles has roles named
-`terraform-<timestamp>`. The first upgrade to a module that names them replaces those
-roles: the new role is created first, functions and other resources that use it switch
-to it in place, and the old role is deleted last. For the seconds between the old
-role's policies being removed and a function switching to the new role, calls that
-function makes with the old role can be refused, so run that upgrade when the
-deployment is idle. Retained roles keep their existing names and are not replaced.
+A role the template leaves unnamed keeps the name it was created with for the life of
+the deployment, as CloudFormation keeps a name it generated. So a deployment created
+from a module that predates stack-prefixed role names keeps its `terraform-<timestamp>`
+role names across upgrades; only a new deployment gets names a scoped deploying role
+can create (see [Deploying with a scoped role](#deploying-with-a-scoped-role)).
+Replacing a role is not contained to the role: custom resources that take its ARN are
+updated, and a resource that takes one of their outputs as a create-only property is
+replaced with them.
 
 Read the release's `CHANGELOG.md` entries and any migration guide for the release
 before upgrading, as for a CloudFormation stack: configuration changes and upgrade

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from . import hcl
-from .aws_mappers import ROLE_LIFECYCLE, default_name
+from .aws_mappers import GENERATED_NAME_ROLE_LIFECYCLE, default_name
 from .translate import STACK_NAME_VAR
 
 VERSIONS_TF = """terraform {
@@ -48,7 +48,9 @@ def bridge_tf(boundary_var: str | None = None) -> str:
             f'permissions_boundary = {v} == null ? null : ({v} == "" ? null : {v})'
         )
     role_head = "\n".join(f"  {line}" for line in role_lines)
-    role_lifecycle = "\n".join(f"  {line}" for line in ROLE_LIFECYCLE.splitlines())
+    role_lifecycle = "\n".join(
+        f"  {line}" for line in GENERATED_NAME_ROLE_LIFECYCLE.splitlines()
+    )
     return f"""# Runs CloudFormation custom-resource handlers for Terraform. See
 # terraform/bridge/index.py in the source repository.
 
