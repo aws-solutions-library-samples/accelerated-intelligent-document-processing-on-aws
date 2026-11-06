@@ -183,14 +183,24 @@ class SpecMapper:
 
 
 # --------------------------------------------------------------- IAM role
-#: A role whose name changes is replaced (a deployment generated before roles
-#: were named, for one). Functions and other dependants take the role by ARN and
-#: update in place, so creating the new role first means none of them is ever
-#: left pointing at a deleted role. Only a change of ``path`` with the name
-#: unchanged would collide under this ordering, and no template sets ``Path``.
+#: A role whose template name changes is replaced. Functions and other
+#: dependants take the role by ARN and update in place, so creating the new role
+#: first means none of them is ever left pointing at a deleted role. Only a
+#: change of ``path`` with the name unchanged would collide under this ordering,
+#: and no template sets ``Path``.
 ROLE_LIFECYCLE = "lifecycle {\n  create_before_destroy = true\n}"
-RETAINED_ROLE_LIFECYCLE = (
-    "lifecycle {\n  create_before_destroy = true\n  ignore_changes = [name]\n}"
+#: A role the template leaves unnamed gets a name the translator generates, and
+#: that name is kept for the life of the role, as CloudFormation keeps the name
+#: it generated. Renaming it would replace the role, and a replaced role is not
+#: contained: every custom resource taking the role's ARN as a property is
+#: updated, its outputs are unknown until apply, and a resource taking one of
+#: them as a create-only property is replaced with it. Measured on a live
+#: upgrade, that replaced the knowledge base's data source.
+GENERATED_NAME_ROLE_LIFECYCLE = (
+    "lifecycle {\n"
+    "  create_before_destroy = true\n"
+    "  ignore_changes = [name, name_prefix]\n"
+    "}"
 )
 
 
@@ -279,12 +289,11 @@ class IamRoleMapper:
             # modules because a module's stack name carries its parent's.
             if plan.logical_id in tr.retained:
                 name, stamp_blocks = self._retained_name(tr, plan)
-                # Keep the name a retained role was created with: replacing it
-                # would delete a resource CloudFormation keeps, which
-                # `idp-cli deploy --terraform` refuses to plan.
-                lifecycle = RETAINED_ROLE_LIFECYCLE
+                # A retained role's name also carries a creation timestamp, so
+                # a redeploy after a delete cannot collide with the kept role.
             else:
                 name = default_name(plan.logical_id, 64)
+            lifecycle = GENERATED_NAME_ROLE_LIFECYCLE
             lines.insert(0, f"name = {name}")
         head, tail = tr.meta_lines(plan, res)
         tail = tail + [lifecycle]

@@ -703,7 +703,11 @@ class Translator:
             f'resource "aws_lambda_permission" "{plan.name}_bridge"',
             head
             + [
-                f'statement_id = "cfnbridge-{plan.logical_id}"',
+                # A prefix, not a fixed id: when the bridge role is replaced
+                # (create_before_destroy), the new permission is created while
+                # the old one still holds its statement id, and a fixed id is
+                # refused with 409. 100 characters at most, 26 of them Terraform's.
+                f'statement_id_prefix = "cfnbridge-{plan.logical_id[:60]}-"',
                 'action = "lambda:InvokeFunction"',
                 f"function_name = {token_expr}",
                 "principal = aws_iam_role.cfn_bridge.arn",
