@@ -419,10 +419,12 @@ CloudFormation deployment of the same version, but these things differ:
   SDK's hook, not by AWS, so the AWS CLI, the CloudFormation console's Resources tab
   and any tool that does not import `idp_sdk` see only the label. Use `terraform state
   list`, or the resource directory named by `TerraformResourceDirectory`.
-- Two runtime features that look resources up through CloudFormation from inside the
-  deployment, the error-analyzer agent and the reporting data-mart rollup function, do
-  not use the SDK's hook and have not been made to work against a Terraform
-  deployment.
+- Two runtime features look resources up through CloudFormation from inside the
+  deployment: the error-analyzer agent and the reporting data-mart rollup function. In
+  a Terraform deployment the module gives those functions the resource directory's
+  location (`IDP_TF_RESOURCE_DIRECTORY`) and read access to that one object, and
+  `idp_common` answers their lookups from it, so they work as in a CloudFormation
+  deployment. A CloudFormation deployment never sets that variable and is unaffected.
 - Physical names differ. CloudFormation generates names like
   `<stack>-<LogicalId>-<random>`; the module generates `<stack>-<LogicalId>-<hash>`
   for most resources, and Cloud Control generates its own names for `awscc` resources

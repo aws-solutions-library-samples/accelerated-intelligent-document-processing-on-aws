@@ -243,8 +243,8 @@ live deploy.
 
 ## Declared overrides
 
-Three tables in `translator/idp_tf/translate.py` record the places where a mechanical
-translation is wrong. Each entry is keyed narrowly and carries its reason.
+Four tables in `translator/idp_tf/translate.py` record the places where a mechanical
+translation is wrong or incomplete. Each entry is keyed narrowly and carries its reason.
 
 - **`AWSCC_PROPERTY_FIXUPS`**, keyed by `(type, property)`. For properties where
   `awscc` stores what the service returns and the service returns a different spelling
@@ -265,6 +265,16 @@ translation is wrong. Each entry is keyed narrowly and carries its reason.
   The one entry today is `SettingsParameter`, whose value the `UpdateSettings` custom
   resource rewrites at deploy time. The translator fails if an entry names a resource
   the template no longer has, so an override cannot outlive what it described.
+- **`TERRAFORM_DIRECTORY_READERS`**, keyed by function logical ID. These functions walk
+  the stack tree at run time through CloudFormation: `DataMartRollupFunction`, and the
+  two agent functions in which the error-analyzer agent runs. In the root module each
+  gets `IDP_TF_RESOURCE_DIRECTORY` (the S3 URL of the resource directory) and an
+  inline policy allowing `s3:GetObject` on that one object.
+  `idp_common.utils.terraform_stack.install_if_terraform()` installs the lookup hook
+  only when that variable is set, so CloudFormation deployments are unaffected. A
+  variant that removes a reader (headless removes the agents) skips it, and
+  `tests/test_offline_templates.py` fails if a reader is not a function in the standard
+  template.
 
 ## Testing live
 
@@ -364,10 +374,6 @@ to create its DynamoDB stream event source mapping. The statement is now in
 
 ### Not yet covered
 
-- Runtime callers inside the deployment that walk the stack tree,
-  `idp_common.monitoring.stack_utils` (the error-analyzer agent) and the
-  `data_mart_rollup` Lambda. Neither is exercised by the integration suite, and their
-  roles would also need read access to the directory object.
 - Neither CI runs a live Terraform tier.
 - A full-stack apply with OpenTofu.
 - The `--headless` and `--govcloud` variants, and the feature-platform extensions,

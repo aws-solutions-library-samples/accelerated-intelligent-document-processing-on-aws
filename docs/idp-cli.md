@@ -538,27 +538,7 @@ idp-cli deploy \
 
 #### Terraform deployments
 
-`idp-cli deploy --terraform` deploys the experimental Terraform module instead of a
-CloudFormation stack:
-
-```bash
-idp-cli deploy --terraform \
-    --stack-name idp-tf \
-    --admin-email user@example.com \
-    --parameters "MaxConcurrentWorkflows=50" \
-    [--terraform-module-url URL] [--terraform-dir DIR] [--terraform-bin terraform|tofu] [--wait]
-```
-
-It writes `main.tf` (the `aws` and `awscc` providers in the region and a
-`module "idp"` block) and `terraform.tfvars` into the directory, then runs `init` and
-`apply` there. `--parameters` takes CloudFormation parameter names, mapped to the
-module's variables through the module's `idp-terraform.json`; an unknown name is an
-error. State is local in the directory unless you put a backend block there first, so
-keep the directory. The CLI never overwrites a `main.tf` it did not write. Without
-`--terraform`, `deploy` refuses a Terraform deployment, because its CloudFormation
-stack of the same name is only a read-only label. See
-[Terraform Deployment](./terraform.md) for parameters, the label stack, upgrading and
-current limitations.
+`deploy --terraform` deploys the experimental Terraform module instead of a CloudFormation stack. Its options, and how it writes and reuses the Terraform directory, are under [Terraform deployments](#terraform-deployments-1) below; parameters, the label stack and upgrading are in the [Terraform Deployment](./terraform.md) guide.
 
 ---
 
@@ -887,14 +867,7 @@ Proceeding with stack deletion...
 
 #### Deleting a Terraform deployment
 
-`idp-cli delete --terraform --stack-name S [--terraform-dir DIR] [--force]` empties
-the deployment's buckets the way the CloudFormation path does, then runs
-`terraform state rm` on every resource whose CloudFormation `DeletionPolicy` keeps it
-(the module's `retainedAddresses`), and then `terraform destroy`. The retained
-resources are therefore left in place, as a CloudFormation delete leaves them, and the
-command reports which ones were left. Without `--terraform`, `delete` refuses a
-Terraform deployment and names the Terraform command to run. See
-[Terraform Deployment](./terraform.md#deleting).
+`delete --terraform` removes a Terraform deployment, keeping the resources CloudFormation would retain. See [Terraform deployments](#terraform-deployments-1) below and [Terraform Deployment](./terraform.md#deleting).
 
 ---
 
