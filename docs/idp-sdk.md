@@ -177,6 +177,19 @@ client.stack_name = "new-stack"
 | `stack_name` | str | No | CloudFormation stack name |
 | `region` | str | No | AWS region (defaults to boto3 default) |
 
+### Terraform deployments
+
+`stack_name` also accepts the name of a [Terraform deployment](./terraform.md)
+(experimental). Such a deployment has a read-only CloudFormation label stack of the
+same name, and importing `idp_sdk` installs a hook on botocore's CloudFormation clients
+that answers resource lookups for a label stack from the deployment's resource
+directory. Every client operation therefore works against either kind of deployment
+with no change to your code. The hook applies only inside a process that imported
+`idp_sdk`; the AWS CLI and other tools see only the label stack's single resource.
+Deploying and deleting a Terraform deployment through the SDK's CloudFormation path
+is refused; use `idp-cli deploy --terraform` and `idp-cli delete --terraform`, or
+Terraform itself.
+
 ---
 
 ## Document Operations
