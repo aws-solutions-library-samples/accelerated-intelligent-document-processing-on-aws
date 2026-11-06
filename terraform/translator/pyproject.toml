@@ -1,0 +1,18 @@
+[project]
+name = "idp-tf-translator"
+version = "0.1.0"
+description = "Generate Terraform modules from the GenAI IDP Accelerator's CloudFormation templates"
+requires-python = ">=3.12"
+dependencies = [
+  "aws-sam-translator>=1.116",
+  "PyYAML>=6.0",
+]
+
+[project.scripts]
+idp-tf = "idp_tf.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["idp_tf*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
