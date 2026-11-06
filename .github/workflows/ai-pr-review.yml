@@ -29,11 +29,12 @@
 #   - drafts are excluded, so the WIP phase (where pushes are frequent) is free.
 #
 # ⚠️ THE SCHEDULE ONLY RUNS FROM THE DEFAULT BRANCH. GitHub reads `on: schedule`
-# from the workflow file on the repository's DEFAULT branch, which is `main` here
-# and NOT the `develop` branch pull requests target. Until this file is on `main`
-# the cron fires never — and it fires silently, so the sweep looks installed and
-# does nothing. The `pull_request` trigger has no such constraint and works as
-# soon as this merges to `develop`.
+# from the workflow file on the repository's DEFAULT branch, which is `develop`
+# here, and the scheduled and dispatched runs present that branch's ref in their
+# OIDC token. If the default branch ever changes, the cron moves with it silently,
+# and the review role's `DefaultBranch` parameter
+# (scripts/sdlc/cfn/github-oidc-review-role.yml) must be updated to match, or
+# every scheduled run fails at the credential step.
 
 name: AI PR Review
 
@@ -169,9 +170,9 @@ jobs:
       # effect once merged.
       #
       # This also covers the schedule and dispatch paths, where the checkout is
-      # the DEFAULT branch (`main`) rather than the target branch — there the
-      # concern is not authorship but staleness, since `main` is a release branch
-      # and can be many merges behind `develop`.
+      # the DEFAULT branch rather than the target branch. That is `develop` today,
+      # so the two coincide, but pinning keeps the harness tied to the target
+      # branch should the default branch ever differ from it again.
       #
       # The anonymous fetch works because this repository is public and
       # persist-credentials is off above.

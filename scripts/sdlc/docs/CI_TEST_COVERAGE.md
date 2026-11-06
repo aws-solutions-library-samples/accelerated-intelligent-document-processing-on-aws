@@ -337,8 +337,8 @@ ran on that change.
 ⚠️ **A workflow makes a check visible, not blocking.** Both check names have to be
 added to the branch-protection rule for `develop` as *required status checks*, or a
 PR can still be merged while they are red or pending. **Today they are not**, and
-**neither `develop` nor `main` has any branch protection** — `main` being the default
-branch and the one releases are cut from — so every gate on this page is advisory.
+**neither `develop` nor `main` has any branch protection** — `main` being the branch
+releases are cut from — so every gate on this page is advisory.
 
 Run `make check-branch-protection` to measure it rather than trust this paragraph.
 It parses `.github/workflows/*.yml` for the job names GitHub turns into check
@@ -534,9 +534,12 @@ Three differences are worth reading before relying on either side:
 | Fork contributions | not reviewed — masked variables are absent from a fork pipeline | reviewed by the **hourly `schedule`**, which is triggered by the repository rather than by the contribution and so holds the credentials regardless of origin |
 
 ⚠️ **GitHub reads `on: schedule` from the workflow file on the *default* branch,
-which is `main`.** Until `ai-pr-review.yml` reaches `main` the cron never fires
-and says nothing, so fork coverage is silently absent. The `pull_request`
-trigger is unaffected and works from `develop`.
+which is `develop`, and a scheduled run's OIDC token names that branch.** The
+review role trusts exactly one branch ref, set by the `DefaultBranch` parameter of
+`github-oidc-review-role.yml`, and that parameter takes effect only when the stack
+is updated. If the default branch changes and the stack is not redeployed to match,
+every scheduled sweep fails at the credential step, so fork coverage is absent
+while fork PRs' own runs still show the job as skipped.
 
 ⚠️ **It runs automatically, and it costs real money per run.** A 5,400-line MR
 measured **$3.42** in CI ($6.12 locally), and reviews are idempotent per head SHA,

@@ -33,10 +33,11 @@ repository is recorded in closed issue #933. So a red check cannot stop a merge;
 *you* are what stops it. Never propose branch protection and never treat a green
 mark as permission you did not grant yourself.
 
-⚠️ **`Fixes #N` does not auto-close here.** GitHub only auto-closes on a merge into
-the **default** branch, which is `main`, and this PR targets `develop`. Write
-`Fixes #N` anyway for the cross-link, and then close the issue by hand with a
-substantive comment. See the last section.
+⚠️ **`Fixes #N` can close the issue with no comment.** `develop` is the repository's
+default branch, and GitHub closes a linked issue when a closing keyword reaches the
+default branch, so merging this PR may close the issue silently. Write `Fixes #N` for
+the cross-link, then write a substantive closing comment yourself and check the issue's
+state rather than assuming it. See the last section.
 
 ---
 
@@ -179,9 +180,10 @@ gh pr create --repo <repo> --base develop --head fix/<slug> \
   --title "fix(<area>): <what it fixes>" --body "..."
 ```
 
-**`--base develop` is not optional.** The default branch is `main`, so an omitted base
-targets `main`, and a wrong base is the first thing any review of this repository
-flags.
+**Pass `--base develop` explicitly.** `develop` is the repository's default branch, so
+an omitted base targets it, but an explicit base does not depend on a repository
+setting that can change. A wrong base is the first thing any review of
+this repository flags.
 
 Then **verify the PR's head is your commit** before waiting on anything:
 
@@ -306,7 +308,7 @@ gh pr merge <pr> --repo <repo> --merge --delete-branch
 The `check_shared_branch.py` hook refuses this on a **concluded** failing check, which
 is the behaviour you want — `ALLOW_RED_MERGE=1` exists and this is not the place for it.
 
-Then **close the issue by hand**, because `Fixes #N` will not. Write what the defect
+Then **write the closing comment**, and close the issue if `Fixes #N` did not. Write what the defect
 was, what was measured, what the fix does, **what was withdrawn or narrowed and why**,
 and any residual you are filing separately. These comments are the repository's real
 defect history and get read later by people deciding whether a similar-looking report is
