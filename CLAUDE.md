@@ -651,8 +651,7 @@ actually stop a merge is a **repository setting**, not anything in this tree, an
 today it does not: **neither `develop` nor `main` has any branch protection**, so
 every gate above is advisory. A pull request can be merged with all checks red.
 `main` matters as much as `develop` here — it is the branch releases are cut
-from — and one invocation reads one branch, so
-answering the question takes two:
+from — and one invocation reads one branch, so answering the question takes two:
 
 ```bash
 make check-branch-protection                                       # develop

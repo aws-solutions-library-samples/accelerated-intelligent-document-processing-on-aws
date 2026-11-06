@@ -135,9 +135,9 @@ rather than an ambiguous one. The ambiguous ``unverifiable`` state is reserved f
 when even the ``branches/{branch}`` read fails.
 
 **Run it against both long-lived branches.** ``develop`` is what pull requests
-target and is this script's default, but ``main`` is the repository's *default*
-branch and the one releases are cut from, and it is equally unprotected. A single
-run answers the question for one branch only.
+target, the repository's default branch and this script's default, but ``main`` is
+the branch releases are cut from, and it is equally unprotected. A single run
+answers the question for one branch only.
 
 Why this is opt-in and non-blocking
 -----------------------------------
@@ -1573,8 +1573,8 @@ def print_report(
 
     # One run answers for one branch. Both long-lived branches matter here and
     # only one of them is this script's default, which is how `main` — the
-    # repository's default branch, and the one releases are cut from — went
-    # unexamined while `develop` was being measured.
+    # branch releases are cut from — went unexamined while `develop` was being
+    # measured.
     unread = [name for name in SHARED_BRANCHES if name != branch]
     if unread:
         print(
