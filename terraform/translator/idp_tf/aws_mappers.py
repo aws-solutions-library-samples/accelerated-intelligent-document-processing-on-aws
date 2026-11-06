@@ -548,6 +548,10 @@ class PerTargetPolicyMapper:
                 continue
             for i, _ in enumerate(items):
                 plan.extra_deps.append(f"{tf_type}.{plan.name}_{prop.lower()}_{i}")
+        if self.tf_type.startswith("aws_iam_"):
+            # A new IAM grant takes seconds to propagate; a dependant (often a
+            # custom resource) that uses it at once is otherwise refused.
+            plan.extra_deps.append(f"time_sleep.{plan.name}_iam")
 
     def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
         props = dict(plan.props)
@@ -583,6 +587,15 @@ class PerTargetPolicyMapper:
                     lines.insert(len(head), f"name = {tr.expr(name)}")
                 label = f"{plan.name}_{prop.lower()}_{i}"
                 out.append(hcl.block(f'resource "{tf_type}" "{label}"', lines + tail))
+        if self.tf_type.startswith("aws_iam_"):
+            created = [a for a in plan.extra_deps if not a.startswith("time_sleep.")]
+            out.append(
+                hcl.block(
+                    f'resource "time_sleep" "{plan.name}_iam"',
+                    head
+                    + ['create_duration = "15s"', "depends_on = " + hcl.lst(created)],
+                )
+            )
         return "\n".join(out)
 
 
