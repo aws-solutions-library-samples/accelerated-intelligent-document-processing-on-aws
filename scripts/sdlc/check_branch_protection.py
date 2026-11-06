@@ -135,9 +135,9 @@ rather than an ambiguous one. The ambiguous ``unverifiable`` state is reserved f
 when even the ``branches/{branch}`` read fails.
 
 **Run it against both long-lived branches.** ``develop`` is what pull requests
-target and is this script's default, but ``main`` is the repository's *default*
-branch and the one releases are cut from, and it is equally unprotected. A single
-run answers the question for one branch only.
+target, the repository's default branch and this script's default, but ``main`` is
+the branch releases are cut from, and it is equally unprotected. A single run
+answers the question for one branch only.
 
 Why this is opt-in and non-blocking
 -----------------------------------
@@ -234,10 +234,10 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 DEFAULT_REPO = (
     "aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws"
 )
-# `develop` is what pull requests target, so it is the default here. It is NOT the
-# repository's default branch — `main` is, and `main` is where releases are cut
-# from — so answering the question for this repository takes two runs. Both are
-# unprotected today; see the module docstring.
+# `develop` is what pull requests target, and the repository's default branch, so
+# it is the default here. Releases are cut from `main`, which matters as much, so
+# answering the question for this repository takes two runs. Both are unprotected
+# today; see the module docstring.
 DEFAULT_BRANCH = "develop"
 SHARED_BRANCHES = ("develop", "main")
 
@@ -1573,8 +1573,8 @@ def print_report(
 
     # One run answers for one branch. Both long-lived branches matter here and
     # only one of them is this script's default, which is how `main` — the
-    # repository's default branch, and the one releases are cut from — went
-    # unexamined while `develop` was being measured.
+    # branch releases are cut from — went unexamined while `develop` was being
+    # measured.
     unread = [name for name in SHARED_BRANCHES if name != branch]
     if unread:
         print(

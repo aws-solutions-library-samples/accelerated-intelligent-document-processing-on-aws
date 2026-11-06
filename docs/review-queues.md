@@ -267,7 +267,7 @@ any other queue that already exists stays listed and usable. Each queue has:
 | Name, description | What Admins and Annotators see; the name defaults from the id | — |
 | Priority | Higher-priority queues are listed first, and **Next item** takes from them first (0–100). For information: kept for when there is more than one queue; with only the Default queue it changes nothing yet | `50` |
 | Time limit | Minutes after which an Annotator with an open assigned item gets a reminder (1–10080). For information: one reminder is sent, and the item stays assigned | `60` |
-| Eligible Annotators | The Annotators who work this queue: they see it, claim its items and can be assigned them. Reviewers work every Production queue without being listed, and claim their own items. Empty means no Annotators (Admins and Reviewers only) | empty |
+| Eligible Annotators | The Annotators who work this queue: they see it, claim its items and can be assigned them. Reviewers work every Production queue without being listed, and claim their own items. Empty means no Annotators (Admins and Reviewers only). Taking an Annotator off the list stops them seeing the queue and claiming from it; items they already hold stay assigned to them until they finish or release them, or you unassign them. A change can take up to 30 seconds to apply everywhere | empty |
 | Enabled | When off, no documents are added to the queue | on |
 
 A saved change shows at once on the queue's page, including its name in the title and the breadcrumb, and in Review Management.

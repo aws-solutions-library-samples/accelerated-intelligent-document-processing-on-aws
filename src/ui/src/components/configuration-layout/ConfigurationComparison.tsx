@@ -5,6 +5,8 @@
 
 import React from 'react';
 import { Table, Box, SpaceBetween, Badge, Header, ButtonDropdown } from '@cloudscape-design/components';
+import useElementWidth from '../../hooks/use-element-width';
+import { useDebounce } from '../../hooks/useDebounce';
 
 interface ConfigurationComparisonProps {
   versions: string[];
@@ -100,7 +102,29 @@ const scrollBoxStyle: React.CSSProperties = {
   display: 'block',
 };
 
+// Column sizing. Cloudscape's resizable columns take PIXEL widths; percentage strings
+// are not supported there and make a dragged column swallow its neighbours. So the
+// columns are fitted to the measured width, and re-fitted when the dialog or the
+// window is resized (debounced, because re-fitting remounts the table).
+const FIELD_COLUMN_MIN = 160;
+const FIELD_COLUMN_MAX = 420;
+const VALUE_COLUMN_MIN = 160;
+// Table border and cell padding inside the measured wrapper.
+const TABLE_CHROME = 40;
+const REFIT_DELAY_MS = 200;
+
+export const fitColumnWidths = (available: number, valueColumns: number): { field: number; value: number } | null => {
+  if (available <= 0 || valueColumns <= 0) return null;
+  const usable = Math.max(available - TABLE_CHROME, 0);
+  const field = Math.min(FIELD_COLUMN_MAX, Math.max(FIELD_COLUMN_MIN, Math.round(usable * 0.28)));
+  const value = Math.max(VALUE_COLUMN_MIN, Math.floor((usable - field) / valueColumns));
+  return { field, value };
+};
+
 const ConfigurationComparison = ({ versions, configs }: ConfigurationComparisonProps): React.JSX.Element => {
+  const [measureRef, measuredWidth] = useElementWidth<HTMLDivElement>();
+  const fitWidth = useDebounce(measuredWidth, REFIT_DELAY_MS);
+
   // Safety checks
   if (!versions || !Array.isArray(versions) || !configs) {
     return (
@@ -328,9 +352,7 @@ const ConfigurationComparison = ({ versions, configs }: ConfigurationComparisonP
     URL.revokeObjectURL(url);
   };
 
-  // Create column definitions with equal width distribution
-  const totalColumns = versions.length + 1; // +1 for field column
-  const equalWidth = Math.floor(100 / totalColumns);
+  const widths = fitColumnWidths(fitWidth, versions.length);
 
   // Two-version comparisons get a word-level diff (added=green, removed=red);
   // 3+ versions fall back to showing each full value side by side.
@@ -340,63 +362,71 @@ const ConfigurationComparison = ({ versions, configs }: ConfigurationComparisonP
     {
       id: 'field',
       header: 'Field',
-      cell: (item: { field: string; values: Record<string, string> }) => item.field,
+      // Config paths are long and dotted, with no natural break points.
+      cell: (item: { field: string; values: Record<string, string> }) => <span style={{ overflowWrap: 'anywhere' }}>{item.field}</span>,
       sortingField: 'field',
-      width: `${equalWidth}%`,
+      width: widths?.field,
+      minWidth: 140,
     },
     ...versions.map((version, index) => ({
       id: version,
       header: version,
       cell: (item: { field: string; values: Record<string, string> }) =>
         isPairwiseDiff ? renderDiffCell(item, index === 0 ? 'left' : 'right') : formatValue(item.values[version]),
-      width: `${equalWidth}%`,
+      width: widths?.value,
+      minWidth: 160,
     })),
   ];
 
   return (
-    <SpaceBetween size="m">
-      {differences.length === 0 ? (
-        <Box textAlign="center" color="inherit">
-          <SpaceBetween size="m">
-            <b>No differences found</b>
-            <Box variant="p">The selected configuration profiles are identical.</Box>
-          </SpaceBetween>
-        </Box>
-      ) : (
-        <Table
-          resizableColumns
-          wrapLines={true}
-          columnDefinitions={columnDefinitions}
-          items={differences}
-          sortingDisabled={false}
-          header={
-            <Header
-              actions={
-                <ButtonDropdown
-                  items={[
-                    { text: 'Export as CSV', id: 'csv' },
-                    { text: 'Export as JSON', id: 'json' },
-                  ]}
-                  onItemClick={({ detail }) => {
-                    if (detail.id === 'csv') exportToCSV();
-                    if (detail.id === 'json') exportToJSON();
-                  }}
-                >
-                  Export
-                </ButtonDropdown>
-              }
-            >
-              Config differences between versions: [{versions.join(', ')}]
-            </Header>
-          }
-          empty={
-            <Box textAlign="center" color="inherit">
-              No differences found
-            </Box>
-          }
-        />
-      )}
-    </SpaceBetween>
+    <div ref={measureRef}>
+      <SpaceBetween size="m">
+        {differences.length === 0 ? (
+          <Box textAlign="center" color="inherit">
+            <SpaceBetween size="m">
+              <b>No differences found</b>
+              <Box variant="p">The selected configuration profiles are identical.</Box>
+            </SpaceBetween>
+          </Box>
+        ) : (
+          <Table
+            // Remount on a new fit so the fitted widths apply (Cloudscape reads column
+            // widths when the table mounts).
+            key={widths ? `${widths.field}-${widths.value}` : 'unmeasured'}
+            resizableColumns
+            wrapLines={true}
+            columnDefinitions={columnDefinitions}
+            items={differences}
+            sortingDisabled={false}
+            header={
+              <Header
+                actions={
+                  <ButtonDropdown
+                    items={[
+                      { text: 'Export as CSV', id: 'csv' },
+                      { text: 'Export as JSON', id: 'json' },
+                    ]}
+                    onItemClick={({ detail }) => {
+                      if (detail.id === 'csv') exportToCSV();
+                      if (detail.id === 'json') exportToJSON();
+                    }}
+                  >
+                    Export
+                  </ButtonDropdown>
+                }
+              >
+                Config differences between versions: [{versions.join(', ')}]
+              </Header>
+            }
+            empty={
+              <Box textAlign="center" color="inherit">
+                No differences found
+              </Box>
+            }
+          />
+        )}
+      </SpaceBetween>
+    </div>
   );
 };
 

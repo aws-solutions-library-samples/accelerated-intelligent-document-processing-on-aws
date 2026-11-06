@@ -1477,8 +1477,8 @@ def test_main_exit_codes_and_json_report(
         "not an issue state; #933 is already closed"
     )
     # A run reads one branch, and the JSON names the ones it did not read. `main`
-    # is the default branch and is equally unprotected; it went unexamined for
-    # months because only `develop` was ever checked.
+    # is the branch releases are cut from and is equally unprotected; it went
+    # unexamined for months because only `develop` was ever checked.
     assert report["shared_branches"] == ["develop", "main"]
     assert report["branches_not_read_by_this_run"] == ["main"]
 

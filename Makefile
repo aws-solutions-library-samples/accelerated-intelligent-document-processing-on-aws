@@ -751,8 +751,8 @@ cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) 
 # Deliberately NOT part of `lint`, `fastlint` or `lint-cicd`, and deliberately NOT
 # in test_ci_gate_parity.py's SHARED_GATES. It needs network access and a token
 # with administration:read, and on this repository it reports "not protected" on
-# BOTH long-lived branches: `develop`, which pull requests target, and `main`,
-# which is the default branch and the one releases are cut from. Wiring it into a
+# BOTH long-lived branches: `develop`, which pull requests target and which is the
+# default branch, and `main`, which releases are cut from. Wiring it into a
 # blocking gate would red-line every branch for a condition nobody working in the
 # tree can fix. test_check_branch_protection.py fails if it is added to a lint
 # target, to SHARED_GATES, or to either CI configuration.
