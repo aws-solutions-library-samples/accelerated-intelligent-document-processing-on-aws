@@ -257,10 +257,10 @@ To keep the state remotely, create the directory before the first deploy and put
 Each CloudFormation parameter of the main template is a variable of the root module,
 named in snake_case: `AdminEmail` is `admin_email`, `MaxConcurrentWorkflows` is
 `max_concurrent_workflows`, `PermissionsBoundaryArn` is `permissions_boundary_arn`.
-The conversion is mechanical, so names with runs of capitals come out less obviously:
-`WAFAllowedIPv4Ranges` is `waf_allowed_i_pv4_ranges`, and `ExternalIdPOIDCClientId` is
-`external_id_poidc_client_id`. Check the module's `variables.tf`, or the `parameters`
-map in its `idp-terraform.json`, for the exact name. A `CommaDelimitedList` parameter
+A run of capitals is one word, so `WAFAllowedIPv4Ranges` is
+`waf_allowed_ipv4_ranges`, `ExternalIdPOIDCClientId` is `external_idp_oidc_client_id`
+and `CloudFrontPriceClass` is `cloudfront_price_class`. The module's `variables.tf`, and
+the `parameters` map in its `idp-terraform.json`, give every exact name. A `CommaDelimitedList` parameter
 is a `list(string)` variable, so `LambdaSubnetIds` is written
 `lambda_subnet_ids = ["subnet-a", "subnet-b"]`. A `NoEcho` parameter is a `sensitive`
 variable.

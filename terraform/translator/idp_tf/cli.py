@@ -32,24 +32,27 @@ def apply_variant(template: Path, variant: str | None, workdir: Path) -> Path:
     """Write the variant of a main template into workdir and return its path."""
     if variant is None:
         return template
-    from idp_sdk._core.template_transform import (  # noqa: PLC0415 - optional
-        GovCloudTemplateTransformer,
-        HeadlessTemplateTransformer,
-    )
-
     import yaml
+
+    from idp_sdk import IDPClient  # noqa: PLC0415 - only the variants need it
 
     # The transformers read packaged templates, which use long-form intrinsics;
     # a source template uses short tags (!Ref, !Equals), so write it long-form.
     long_form = workdir / "template-long-form.yaml"
     long_form.write_text(yaml.safe_dump(load_template(template), sort_keys=False))
     out = workdir / f"template-{variant}.yaml"
+    publish = IDPClient().publish
     if variant == "headless":
-        ok = HeadlessTemplateTransformer().transform(str(long_form), str(out))
+        result = publish.transform_template_headless(str(long_form), str(out))
     elif variant == "govcloud":
-        ok = GovCloudTemplateTransformer().transform(str(long_form), str(out))
+        # The gate validates the Terraform; CloudFormation's own lint of the
+        # transformed template is the CloudFormation gate's job.
+        result = publish.transform_template_govcloud(
+            str(long_form), str(out), lint_region=None
+        )
     else:
         raise TranslationError(f"unknown variant {variant!r}")
+    ok = result.success
     if not ok:
         raise TranslationError(f"the {variant} transform failed for {template}")
     return out
