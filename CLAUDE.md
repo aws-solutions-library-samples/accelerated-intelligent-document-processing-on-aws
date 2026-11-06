@@ -502,10 +502,13 @@ Three things about the GitHub arm are not guessable from the GitLab one:
   pull request's head is fetchable from this repository as `refs/pull/<n>/head`
   with no access to the fork. `workflow_dispatch` reviews one on demand.
 - ⚠️ **`on: schedule` is read from the workflow file on the *default* branch,
-  which is `main`.** Until `ai-pr-review.yml` is on `main` the cron never fires,
-  and it fails silently — the sweep looks installed and does nothing, so fork
-  coverage is absent with no error anywhere. The `pull_request` trigger has no
-  such constraint and works as soon as the file reaches `develop`.
+  which is `develop`, and a scheduled or dispatched run's OIDC token names that
+  branch.** The review role trusts exactly one branch ref, set by the
+  `DefaultBranch` parameter of `github-oidc-review-role.yml`. If the repository's
+  default branch changes, that parameter has to be redeployed to match; until it
+  is, every scheduled sweep fails at the credential step with
+  `Not authorized to perform sts:AssumeRoleWithWebIdentity`, and fork pull
+  requests go unreviewed while their own runs still show the job as skipped.
 
 The cost bound is the one property easiest to delete by accident, and it is
 spelled differently on each side: `interruptible: true` on GitLab,
@@ -647,9 +650,8 @@ Parity between the two CIs only means both *run* the gates. Whether a red gate c
 actually stop a merge is a **repository setting**, not anything in this tree, and
 today it does not: **neither `develop` nor `main` has any branch protection**, so
 every gate above is advisory. A pull request can be merged with all checks red.
-`main` matters as much as `develop` here — it is the repository's default branch
-and the one releases are cut from — and one invocation reads one branch, so
-answering the question takes two:
+`main` matters as much as `develop` here — it is the branch releases are cut
+from — and one invocation reads one branch, so answering the question takes two:
 
 ```bash
 make check-branch-protection                                       # develop
