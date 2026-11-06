@@ -23,6 +23,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from textwrap import dedent
 
 import boto3
@@ -814,8 +815,63 @@ def cleanup_stale_bda_blueprints():
         )
 
 
-def publish_templates():
-    """Run publish.py to build and upload templates to S3"""
+#: The module source `idp-cli publish --terraform` prints: an HTTPS S3 URL ending
+#: in the versioned module zip (`<prefix>/<version>/terraform/idp-terraform-<version>.zip`).
+_TERRAFORM_MODULE_URL_PATTERN = (
+    r"https://s3\.\S+?/terraform/idp-terraform-[^\s/]+?\.zip"
+)
+
+
+def build_publish_command(bucket_basename, prefix, region, iac=None):
+    """`idp-cli publish`, with `--terraform` on a Terraform run so the same build
+    also translates and uploads the module the deploy will use."""
+    cmd = (
+        f"idp-cli publish --source-dir . --bucket-basename {bucket_basename} "
+        f"--prefix {prefix} --region {region}"
+    )
+    if (iac or IAC_CLOUDFORMATION) == IAC_TERRAFORM:
+        cmd += " --terraform"
+    return cmd
+
+
+def parse_publish_output(stdout, iac=None):
+    """{"template_url", "terraform_module_url"} from `idp-cli publish` output.
+
+    Raises when the template URL is missing, and on a Terraform run when the
+    module URL is: a Terraform deploy without one would fall back to the latest
+    PUBLISHED module, which is not the code under test.
+    """
+    # Remove line breaks that might split the URL in terminal output
+    clean_stdout = (stdout or "").replace("\n", "").replace("\r", "")
+    template_url_match = re.search(r"https://s3\..*?idp-main\.yaml", clean_stdout)
+    if not template_url_match:
+        raise Exception("Failed to extract template URL from publish output")
+    artifacts = {
+        "template_url": template_url_match.group(0),
+        "terraform_module_url": None,
+    }
+    if (iac or IAC_CLOUDFORMATION) == IAC_TERRAFORM:
+        # Searched per line, so a template URL earlier on the joined text cannot
+        # become the start of the match.
+        module_match = next(
+            (
+                m
+                for line in (stdout or "").splitlines()
+                for m in [re.search(_TERRAFORM_MODULE_URL_PATTERN, line)]
+                if m
+            ),
+            None,
+        )
+        if not module_match:
+            raise Exception(
+                "Failed to extract the Terraform module URL from publish output"
+            )
+        artifacts["terraform_module_url"] = module_match.group(0)
+    return artifacts
+
+
+def publish_artifacts(iac=None):
+    """Run `idp-cli publish` and return what it uploaded (parse_publish_output)."""
     print("📦 Publishing templates to S3...")
 
     # Get AWS account ID and region
@@ -827,23 +883,23 @@ def publish_templates():
     prefix = f"codebuild-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
     # Run idp-cli publish — cold-cache Docker/UI builds can run long
-    cmd = f"idp-cli publish --source-dir . --bucket-basename {bucket_basename} --prefix {prefix} --region {region}"
+    cmd = build_publish_command(bucket_basename, prefix, region, iac)
     result = run_command(cmd, timeout=3 * 3600)
 
-    # Extract template URL from output - match S3 URLs only
-    template_url_pattern = r"https://s3\..*?idp-main\.yaml"
+    try:
+        artifacts = parse_publish_output(result.stdout, iac)
+    except Exception as e:
+        print(f"❌ {e}")
+        raise
+    print(f"✅ Template published: {artifacts['template_url']}")
+    if artifacts["terraform_module_url"]:
+        print(f"✅ Terraform module published: {artifacts['terraform_module_url']}")
+    return artifacts
 
-    # Remove line breaks that might split the URL in terminal output
-    clean_stdout = result.stdout.replace("\n", "").replace("\r", "")
-    template_url_match = re.search(template_url_pattern, clean_stdout)
 
-    if template_url_match:
-        template_url = template_url_match.group(0)
-        print(f"✅ Template published: {template_url}")
-        return template_url
-    else:
-        print("❌ Failed to extract template URL from publish output")
-        raise Exception("Failed to extract template URL from publish output")
+def publish_templates():
+    """Run publish.py to build and upload templates to S3; the template URL."""
+    return publish_artifacts()["template_url"]
 
 
 def validate_headless_template(main_template_url):
@@ -4316,6 +4372,517 @@ def _integration_malware_mode():
     return mode
 
 
+# ---------------------------------------------------------------------------
+# The IaC switch: deploy the primary stack with CloudFormation (the default) or
+# with Terraform, from the module `idp-cli publish --terraform` builds.
+#
+# What a Terraform run changes, and nothing else: publish also builds the module;
+# the deploy is `idp-cli deploy --terraform`; the health check reads the
+# CloudFormation label stack and `terraform output`; teardown is
+# `idp-cli delete --terraform` plus the sweeps of what it retains; and the failure
+# evidence is the tail of the Terraform log instead of stack events. The numbered
+# steps run unchanged: they address the deployment by its stack name, and the
+# SDK's hook answers their CloudFormation resource lookups from the label stack's
+# resource directory (install_terraform_stack_hook, for this process; every
+# `idp-cli` subprocess gets it from `import idp_sdk`).
+#
+# The variant probes and the weekly region runs stay CloudFormation-only, and a
+# Terraform run that asks for either is refused (terraform_unsupported_reason).
+# ---------------------------------------------------------------------------
+
+IAC_VARIABLE = "IDP_IAC"
+IAC_CLOUDFORMATION = "cloudformation"
+IAC_TERRAFORM = "terraform"
+IAC_MODES = (IAC_CLOUDFORMATION, IAC_TERRAFORM)
+
+#: The binary `idp-cli deploy/delete --terraform` runs: `terraform`, `tofu` or a
+#: path. When it is the default and not on PATH, ensure_terraform_binary installs
+#: the pinned release below.
+TERRAFORM_BIN_VARIABLE = "IDP_TERRAFORM_BIN"
+#: Where each run's root configuration, local state and module download live.
+#: Outside the checkout on purpose: the directory holds a provider binary of
+#: several hundred megabytes and a copy of the module's Python, and the offline
+#: gates walk the checkout (basedpyright reads gitignored trees too).
+TERRAFORM_WORK_ROOT_VARIABLE = "IDP_TERRAFORM_WORK_ROOT"
+
+#: The Terraform release a run installs when none is on PATH. 1.13.4 is one of
+#: the releases the module is validated against (terraform/README.md). The
+#: checksums are from that release's SHA256SUMS file, whose signature verifies
+#: against HashiCorp's release key; a downloaded archive that does not match is
+#: refused, so changing the version means changing the checksums with it.
+TERRAFORM_VERSION = "1.13.4"
+TERRAFORM_SHA256 = {
+    "linux_amd64": "98aa516201e948306698efd9954ab4cc0d1227c2578ba56245898b5f679e590b",
+    "linux_arm64": "a17bde150a4d6c9e7ece063ab634c07723b8242e078f3ae9017486277d6690c4",
+}
+TERRAFORM_RELEASE_URL = (
+    "https://releases.hashicorp.com/terraform/{version}/"
+    "terraform_{version}_{platform}.zip"
+)
+
+#: Files in the run's Terraform directory holding each `idp-cli` command's
+#: output. `idp-cli deploy --terraform` streams `init` and `apply` to stderr, so
+#: this is the Terraform log, and its tail is the failure evidence.
+TERRAFORM_DEPLOY_LOG = "idp-cli-deploy.log"
+TERRAFORM_DELETE_LOG = "idp-cli-delete.log"
+TERRAFORM_LOG_TAIL_LINES = 120
+
+#: Heads the consolidated summary, and marks the failure email's subject, on a
+#: Terraform run, so its result is never read as the nightly's.
+TERRAFORM_RUN_LABEL = "WEEKLY TERRAFORM RUN"
+
+#: What a Terraform deploy of the primary stack needs beside the stack name.
+TerraformRun = namedtuple("TerraformRun", ["module_url", "directory", "binary"])
+
+
+def iac_mode(environ: dict | None = None, options: dict | None = None) -> str:
+    """How this run deploys the primary stack: ``cloudformation`` or ``terraform``.
+
+    ``IDP_IAC`` in the environment wins, which is how a run started by hand
+    selects it. In CI the GitLab job's environment does not reach CodeBuild, so
+    integration_test_deployment.py records the schedule's choice in
+    ci_run_options.json as ``iac`` and that is read next. Neither set means
+    CloudFormation. An unknown value raises ValueError rather than falling back:
+    a typo deploying with CloudFormation would report a Terraform result that
+    never ran.
+    """
+    env = os.environ if environ is None else environ
+    value = str(env.get(IAC_VARIABLE, "")).strip().lower()
+    if not value and isinstance(options, dict):
+        value = str(options.get("iac") or "").strip().lower()
+    value = value or IAC_CLOUDFORMATION
+    if value not in IAC_MODES:
+        raise ValueError(
+            f"{IAC_VARIABLE} must be one of {', '.join(IAC_MODES)}, got {value!r}"
+        )
+    return value
+
+
+def terraform_run(environ: dict | None = None) -> bool:
+    """Whether this build deploys with Terraform. main() writes the resolved mode
+    back to IDP_IAC, so this reads the environment only."""
+    env = os.environ if environ is None else environ
+    return str(env.get(IAC_VARIABLE, "")).strip().lower() == IAC_TERRAFORM
+
+
+def terraform_unsupported_reason(environ: dict | None = None) -> str | None:
+    """Why this build cannot run in Terraform mode, or None when it can.
+
+    The variant probes deploy their own stacks with CloudFormation parameters
+    and the weekly region runs have no published Terraform module path tested
+    outside PRIMARY_CI_REGION, so both stay CloudFormation-only. Combining
+    either with Terraform is refused rather than half-honoured: running the
+    CloudFormation probes beside a Terraform primary would label a mixed run as
+    one or the other.
+    """
+    env = os.environ if environ is None else environ
+    if variant_probe_run(env) or (
+        str(env.get("IDP_TEST_APIGW_HOSTING", "false")).strip().lower() == "true"
+    ):
+        return (
+            f"{IAC_VARIABLE}=terraform cannot run the deployment-variant probes: "
+            "they deploy through CloudFormation only. Run the probes on their "
+            "own schedule, or unset IDP_RUN_PROBES / IDP_TEST_APIGW_HOSTING."
+        )
+    region = region_run(env)
+    if region is not None:
+        return (
+            f"{IAC_VARIABLE}=terraform runs in {PRIMARY_CI_REGION} only; this "
+            f"build is in {region}, a weekly region run, which stays CloudFormation."
+        )
+    return None
+
+
+def terraform_work_directory(stack_name: str, environ: dict | None = None) -> str:
+    """The absolute ``--terraform-dir`` for this run's deployment."""
+    env = os.environ if environ is None else environ
+    root = env.get(TERRAFORM_WORK_ROOT_VARIABLE) or os.path.join(
+        os.path.expanduser("~"), ".idp-terraform-runs"
+    )
+    return os.path.abspath(os.path.join(root, stack_name))
+
+
+def _terraform_platform(machine: str | None = None) -> str:
+    import platform
+
+    machine = (machine or platform.machine()).lower()
+    arch = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+    if sys.platform != "linux" or machine not in arch:
+        raise RuntimeError(
+            f"no pinned Terraform build for {sys.platform}/{machine}; put a "
+            f"terraform binary on PATH or name one with {TERRAFORM_BIN_VARIABLE}"
+        )
+    return f"linux_{arch[machine]}"
+
+
+def _download(url: str) -> bytes:
+    import urllib.request
+
+    # nosec B310 - a fixed https URL on releases.hashicorp.com; the bytes are
+    # checked against a pinned SHA-256 before anything is extracted.
+    with urllib.request.urlopen(url, timeout=300) as response:  # noqa: S310  # nosec B310
+        return response.read()
+
+
+def ensure_terraform_binary(
+    environ: dict | None = None,
+    *,
+    fetch: Callable[[str], bytes] = _download,
+    platform_name: str | None = None,
+) -> str:
+    """The absolute path of the Terraform binary this run uses.
+
+    ``IDP_TERRAFORM_BIN`` (default ``terraform``) found on PATH is used as is. The
+    default not on PATH, which is the CodeBuild image, gets TERRAFORM_VERSION
+    installed under the work root, after the archive's SHA-256 matches
+    TERRAFORM_SHA256; a mismatch raises and nothing is extracted. A binary named
+    explicitly and not found raises too, because installing a different one in
+    its place would test something nobody asked for.
+    """
+    import io
+    import zipfile
+
+    env = os.environ if environ is None else environ
+    wanted = env.get(TERRAFORM_BIN_VARIABLE) or "terraform"
+    found = shutil.which(wanted)
+    if found:
+        return os.path.abspath(found)
+    if wanted != "terraform":
+        raise RuntimeError(
+            f"{TERRAFORM_BIN_VARIABLE}={wanted!r} was not found on PATH or as a path"
+        )
+    plat = platform_name or _terraform_platform()
+    expected = TERRAFORM_SHA256.get(plat)
+    if not expected:
+        raise RuntimeError(
+            f"no pinned Terraform {TERRAFORM_VERSION} checksum for {plat}"
+        )
+    target_dir = os.path.join(
+        os.path.dirname(terraform_work_directory("x", env)),
+        "bin",
+        f"terraform-{TERRAFORM_VERSION}-{plat}",
+    )
+    target = os.path.join(target_dir, "terraform")
+    if os.path.isfile(target) and os.access(target, os.X_OK):
+        return target
+    url = TERRAFORM_RELEASE_URL.format(version=TERRAFORM_VERSION, platform=plat)
+    print(f"📥 Installing Terraform {TERRAFORM_VERSION} ({plat}) from {url}")
+    archive = fetch(url)
+    actual = hashlib.sha256(archive).hexdigest()
+    if actual != expected:
+        raise RuntimeError(
+            f"Terraform archive checksum mismatch for {url}: expected {expected}, "
+            f"got {actual}. Refusing to install it."
+        )
+    os.makedirs(target_dir, exist_ok=True)
+    with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+        with bundle.open("terraform") as src, open(target, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+    os.chmod(target, 0o755)  # nosec B103 - an executable in this run's own work root
+    print(f"✅ Terraform {TERRAFORM_VERSION} installed at {target} (sha256 verified)")
+    return target
+
+
+def install_terraform_stack_hook():
+    """Route this process's CloudFormation resource lookups through the label stack.
+
+    Several steps and the teardown read the stack's resources with boto3 here,
+    not through `idp-cli`. For a Terraform deployment CloudFormation itself knows
+    only the label's one resource; the hook (the one `import idp_sdk` installs)
+    answers ListStackResources, DescribeStackResource(s) and nested DescribeStacks
+    from the resource directory instead, and passes every other call and every
+    CloudFormation stack through unchanged. It attaches to clients created after
+    this call, so main() calls it before the first CloudFormation client.
+    """
+    from idp_common.utils.terraform_stack import install
+
+    install()
+
+
+def _primary_param_pairs(permissions_boundary_arn, malware_mode):
+    """The `--parameters` pairs both deploy paths pass, in one place, so the
+    Terraform deploy carries exactly the CloudFormation deploy's parameters."""
+    return [
+        # Must equal the service role's CreatedRolePermissionsBoundaryArn.
+        f"PermissionsBoundaryArn={permissions_boundary_arn}",
+        f"MalwareScanning={malware_mode}",
+    ]
+
+
+def build_terraform_deploy_command(stack_name, admin_email, terraform, param_pairs):
+    """`idp-cli deploy --terraform`, with the pairs as ONE quoted `--parameters`
+    value for the reason the CloudFormation deploy gives (issue #1371).
+
+    No `--role-arn`: that is the CloudFormation service role, which CloudFormation
+    assumes to create the stack's resources. Terraform has no equivalent; it
+    creates them with the build's own credentials, so the service role is unused
+    in this mode (it is still created, with the boundary, by create_iam_resources,
+    and torn down with it). No `--wait` either: the Terraform deploy always waits.
+    """
+    return (
+        f"idp-cli deploy --terraform --stack-name {shlex.quote(stack_name)}"
+        f" --admin-email {shlex.quote(admin_email)}"
+        f" --terraform-module-url {shlex.quote(terraform.module_url)}"
+        f" --terraform-dir {shlex.quote(terraform.directory)}"
+        f" --terraform-bin {shlex.quote(terraform.binary)}"
+        f' --parameters "{",".join(param_pairs)}"'
+    )
+
+
+def build_terraform_delete_command(stack_name, terraform):
+    """`idp-cli delete --terraform`. `--force-delete-all` is refused with
+    `--terraform`, so what it retains is swept by cleanup_terraform_deployment."""
+    return (
+        f"idp-cli delete --terraform --stack-name {shlex.quote(stack_name)}"
+        f" --terraform-dir {shlex.quote(terraform.directory)}"
+        f" --terraform-bin {shlex.quote(terraform.binary)} --force"
+    )
+
+
+def judge_terraform_health(label_stdout, output_returncode):
+    """(healthy, detail) for a Terraform deployment.
+
+    Healthy means the CloudFormation label stack exists in a COMPLETE state with
+    a description carrying ``(Terraform)``, and `terraform output` succeeded. A
+    stack of that name WITHOUT the marker is a CloudFormation stack, which a
+    Terraform deploy must never be reported as having produced.
+    """
+    from idp_common.utils.terraform_stack import TERRAFORM_SUFFIX
+
+    text = (label_stdout or "").strip()
+    status, _, description = text.partition("\t")
+    if not text or "does not exist" in text:
+        return False, "the label stack does not exist"
+    if "COMPLETE" not in status or "ROLLBACK" in status:
+        return False, f"the label stack is {status or 'in an unknown state'}"
+    if TERRAFORM_SUFFIX not in description:
+        return False, (
+            f"the stack's description carries no {TERRAFORM_SUFFIX} marker, so it "
+            "is not a Terraform deployment's label stack"
+        )
+    if output_returncode != 0:
+        return False, f"`terraform output` exited {output_returncode}"
+    return True, f"label stack {status}, terraform output readable"
+
+
+def _write_terraform_log(directory, name, result):
+    """Keep one `idp-cli` command's output beside its state. Best effort."""
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, name), "w", encoding="utf-8") as handle:
+            handle.write(f"$ {result.args}\n")
+            handle.write(result.stdout or "")
+            handle.write(result.stderr or "")
+            handle.write(f"\n[exit {result.returncode}]\n")
+    except OSError as e:
+        print(f"⚠️ Could not write {name}: {e}")
+
+
+def terraform_log_tail(directory, lines=TERRAFORM_LOG_TAIL_LINES):
+    """The last ``lines`` of the run's Terraform logs, newest command last.
+
+    This is the Terraform run's failure evidence: there are no stack events, and
+    `apply` names the failing resource and the provider's error in its output.
+    """
+    chunks = []
+    for name in (TERRAFORM_DEPLOY_LOG, TERRAFORM_DELETE_LOG):
+        path = os.path.join(directory, name)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                chunks.append(
+                    f"--- {name} ---\n" + "".join(handle.readlines()[-lines:])
+                )
+        except OSError:
+            continue
+    return "\n".join(chunks) or f"(no Terraform log found under {directory})"
+
+
+def _deploy_primary_terraform_attempt(stack_name, admin_email, terraform):
+    """One Terraform deploy + health check of the primary stack.
+
+    The same IAM pre-stack and boundary as the CloudFormation attempt, the same
+    parameters, then `idp-cli deploy --terraform`. On failure the result carries
+    the Terraform log tail where the CloudFormation attempt carries `cf_events`.
+    """
+    result = {
+        "stack_name": stack_name,
+        "success": False,
+        "failure_type": "deploy",
+        "iac": IAC_TERRAFORM,
+    }
+    print("Step 0: Creating IAM resources...")
+    role_arn, permissions_boundary_arn = create_iam_resources(stack_name)
+    if not role_arn or not permissions_boundary_arn:
+        result["error"] = "Failed to create required IAM resources"
+        return result
+
+    print("Step 1: Deploying with Terraform...")
+    param_pairs = _primary_param_pairs(
+        permissions_boundary_arn, _integration_malware_mode()
+    )
+    cmd = build_terraform_deploy_command(
+        stack_name, admin_email, terraform, param_pairs
+    )
+    deploy = run_command(cmd, check=False, timeout=3 * 3600)
+    _write_terraform_log(terraform.directory, TERRAFORM_DEPLOY_LOG, deploy)
+
+    print("Step 2: Verifying the Terraform deployment...")
+    label = run_command(
+        f"aws cloudformation describe-stacks --stack-name {shlex.quote(stack_name)} "
+        "--query 'Stacks[0].[StackStatus,Description]' --output text",
+        check=False,
+    )
+    output = run_command(
+        f"{shlex.quote(terraform.binary)} -chdir={shlex.quote(terraform.directory)} "
+        # Only the exit status is wanted. `output -json` prints sensitive outputs
+        # in clear, and run_command echoes stdout into the build log.
+        "output -json >/dev/null",
+        check=False,
+    )
+    healthy, detail = judge_terraform_health(
+        label.stdout if label.returncode == 0 else label.stderr, output.returncode
+    )
+    if deploy.returncode == 0 and healthy:
+        print(f"✅ Terraform deployment completed ({detail})")
+        return {"stack_name": stack_name, "success": True, "iac": IAC_TERRAFORM}
+
+    detail = (
+        f"idp-cli deploy --terraform exit {deploy.returncode}; {detail}"
+        if deploy.returncode != 0
+        else detail
+    )
+    print(f"❌ Terraform deployment unhealthy: {detail}")
+    result["error"] = f"Terraform deployment failed: {detail}"
+    result["terraform_log_tail"] = terraform_log_tail(terraform.directory)
+    return result
+
+
+def _terraform_retained_resources(terraform):
+    """What `idp-cli delete --terraform` will leave standing, read BEFORE it runs.
+
+    The delete removes the retained resources from the state and then destroys
+    the rest, so afterwards the state no longer names them. The same SDK helpers
+    the delete uses compute the list here, from the state and the module's
+    manifest. Returns None when it cannot be read, which the caller reports.
+    """
+    # Private SDK module on purpose: these are the helpers `delete --terraform`
+    # itself uses, and no public API returns the retained list before the delete.
+    from idp_sdk._core import terraform_deploy as tf  # noqa: TID251
+
+    runner = tf.TerraformRunner(terraform.binary, Path(terraform.directory))
+    manifest = tf.read_manifest_from_dir(Path(terraform.directory))
+    state = runner.show_state()
+    remove, _absent = tf.retained_state_addresses(
+        manifest.get("retainedAddresses") or [], runner.state_list()
+    )
+    return tf.retained_report(state, remove)
+
+
+def _sweep_terraform_retained(stack_name, retained, deployer=None):
+    """Delete what the Terraform delete retained, as `--force-delete-all` does for
+    a CloudFormation stack: tables, then log groups (plus those Lambda created on
+    its own under the stack's prefix), then buckets with the logging bucket last.
+
+    Returns the resources that could not be deleted, as strings.
+    """
+    if deployer is None:
+        # The deleters `--force-delete-all` uses, which no public API exposes
+        # for resources that are no longer part of any stack.
+        from idp_sdk._core.stack import StackDeployer  # noqa: TID251
+
+        deployer = StackDeployer(region=ci_region())
+    errors = []
+    retained = retained or {}
+    for table in retained.get("dynamodb_tables", []):
+        try:
+            deployer._delete_dynamodb_table(table["physical_id"])
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"DynamoDB table {table['physical_id']}: {e}")
+    log_groups = [lg["physical_id"] for lg in retained.get("log_groups", [])]
+    try:
+        log_groups += [
+            name
+            for name in deployer._discover_auto_created_log_groups(stack_name)
+            if name not in log_groups
+        ]
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"auto-created log groups of {stack_name} not listed: {e}")
+    for name in log_groups:
+        try:
+            deployer._delete_log_group(name)
+        except Exception as e:  # noqa: BLE001
+            if "ResourceNotFound" not in str(e):
+                errors.append(f"log group {name}: {e}")
+    buckets = sorted(
+        retained.get("s3_buckets", []),
+        key=lambda b: "logging" in str(b.get("logical_id", "")).lower(),
+    )
+    for bucket in buckets:
+        try:
+            deployer._empty_and_delete_bucket(bucket["physical_id"])
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"S3 bucket {bucket['physical_id']}: {e}")
+    return errors
+
+
+def cleanup_terraform_deployment(result, terraform):
+    """Destroy this run's Terraform deployment, its retained resources, then IAM.
+
+    Returns findings in cleanup_stack's sense: empty means verified. Unlike the
+    CloudFormation path, a failed destroy IS a finding. The state is local to this
+    build's work directory and is gone when the build ends, so nothing can
+    destroy the deployment later; the startup stack reaper would delete only the
+    label stack and leave every resource behind it.
+
+    CloudFormation-only steps are skipped with a note: there are no stack events
+    to read, and no nested stacks whose status to report.
+    """
+    stack_name = result.get("stack_name")
+    findings = []
+    print(f"🧹 Starting Terraform cleanup for deployment: {stack_name}")
+    print(
+        f"[{stack_name}] ℹ️  Terraform mode: the stack-status read and stack "
+        "events are CloudFormation-only and not read here"
+    )
+    try:
+        cancel_bedrock_ingestion_jobs(stack_name)
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️ Ingestion-job cancel failed: {e}")
+
+    retained = None
+    try:
+        retained = _terraform_retained_resources(terraform)
+    except Exception as e:  # noqa: BLE001
+        print(f"[{stack_name}] ⚠️ Could not read what the delete will retain: {e}")
+
+    delete = run_command(
+        build_terraform_delete_command(stack_name, terraform),
+        check=False,
+        timeout=3 * 3600,
+    )
+    _write_terraform_log(terraform.directory, TERRAFORM_DELETE_LOG, delete)
+    if delete.returncode != 0:
+        findings.append(
+            f"idp-cli delete --terraform exited {delete.returncode}; the "
+            f"deployment's state in {terraform.directory} does not outlive this "
+            "build, so its resources need deleting by hand"
+        )
+    else:
+        print(f"[{stack_name}] ✅ Terraform destroy completed")
+
+    if retained is None:
+        findings.append(
+            "the Terraform state could not be read before the delete, so the "
+            "resources it retains were not swept"
+        )
+    else:
+        for error in _sweep_terraform_retained(stack_name, retained):
+            print(f"[{stack_name}] ⚠️ retained resource not deleted: {error}")
+            findings.append(f"retained resource not deleted: {error}")
+
+    return findings + cleanup_iam_resources(stack_name)
+
+
 def _deploy_primary_stack_attempt(stack_name, admin_email, template_url):
     """One deploy+health-check attempt for the primary shared stack.
 
@@ -4392,11 +4959,7 @@ def _deploy_primary_stack_attempt(stack_name, admin_email, template_url):
     # a pair boundary, so the grammar is not what rejected the broken command —
     # Click did, before the grammar was ever reached. A test that exercises only
     # the grammar passes on the broken form.
-    param_pairs = [
-        # Must equal the service role's CreatedRolePermissionsBoundaryArn.
-        f"PermissionsBoundaryArn={permissions_boundary_arn}",
-        f"MalwareScanning={malware_mode}",
-    ]
+    param_pairs = _primary_param_pairs(permissions_boundary_arn, malware_mode)
     cmd += f' --parameters "{",".join(param_pairs)}"'
     # Full nested-stack creation can legitimately run long; don't let the default
     # test-command timeout kill a healthy in-progress deploy. check=False so a
@@ -4423,8 +4986,13 @@ def _deploy_primary_stack_attempt(stack_name, admin_email, template_url):
     return result
 
 
-def deploy_and_test_stack(stack_name, admin_email, template_url, progress_cb=None):
+def deploy_and_test_stack(
+    stack_name, admin_email, template_url, progress_cb=None, terraform=None
+):
     """Deploy and test the unified IDP stack.
+
+    terraform, a TerraformRun, deploys it with Terraform instead of
+    CloudFormation (IDP_IAC=terraform). The steps are the same either way.
 
     progress_cb, if given, is called with the current step_results dict at each
     milestone (after the parallel pool drains, and after each sequential step).
@@ -4454,6 +5022,15 @@ def deploy_and_test_stack(stack_name, admin_email, template_url, progress_cb=Non
         # immediately (no retry) so real regressions surface fast.
         deploy_result = None
         for attempt in range(1, PROBE_TRANSIENT_MAX_ATTEMPTS + 1):
+            if terraform is not None:
+                # No retry: the transient race is classified from CloudFormation
+                # events, which a Terraform apply does not produce, and a failed
+                # apply is not rolled back, so a second apply would resume the
+                # first rather than test a clean deploy.
+                deploy_result = _deploy_primary_terraform_attempt(
+                    stack_name, admin_email, terraform
+                )
+                break
             deploy_result = _deploy_primary_stack_attempt(
                 stack_name, admin_email, template_url
             )
@@ -5544,6 +6121,54 @@ def _invoke_bedrock(prompt):
     )
 
 
+def terraform_failure_prompt(result, stack_name):
+    """The analysis prompt for a failed Terraform deploy.
+
+    The CloudFormation prompt's evidence (stack events, nested CodeBuild builds,
+    the stack's recovery command) does not exist for a Terraform deployment, so
+    this one is built from the Terraform log tail instead. `apply` prints the
+    failing resource address and the provider's error, which is what the stack
+    events carry for CloudFormation.
+    """
+    log_tail = result.get("terraform_log_tail") or "(no Terraform log captured)"
+    return dedent(f"""
+    A Terraform deployment of the IDP accelerator (`idp-cli deploy --terraform`)
+    failed. Analyze the Terraform output to determine the root cause.
+
+    Deployment name: {stack_name}
+
+    Deployment error:
+    {result.get("error", "")}
+
+    Tail of the Terraform log (init and apply output):
+    {log_tail}
+
+    GROUNDING RULES — follow strictly:
+    • Base the root cause ONLY on an `Error:` block or a concrete line actually
+      present above, and name the resource address it is reported against.
+    • A failed apply is NOT rolled back; resources created before the error
+      remain until the run's teardown destroys them. Do not describe a rollback.
+    • If no error is present in the log, say the root cause was NOT captured.
+      Do NOT guess at IAM/quota/API-limit causes with no evidence.
+
+    Provide analysis in this format:
+
+    🚀 DEPLOYMENT RESULT
+
+    📋 Status: {stack_name} FAILED (Terraform) - [one-line root cause, or "root cause not captured"]
+
+    🔍 Root Cause:
+    • Quote the exact error and the resource address it names
+    • If nothing concrete was captured, say so explicitly
+
+    💡 Fix Guidance:
+    • Only suggest fixes that follow from the evidence above
+
+    Keep each bullet point under 75 characters.
+    Respond ONLY with the format above, no other text.
+    """)
+
+
 def generate_deployment_summary(result, stack_name, template_url):
     """Generate deployment summary using Bedrock API.
 
@@ -5617,6 +6242,11 @@ def generate_deployment_summary(result, stack_name, template_url):
         # failure is classified in deploy_and_test_stack; "deploy" is also the
         # safe default when the field is missing (e.g. exception result dicts
         # built in main), since CF-event analysis degrades gracefully.
+        if (
+            result.get("failure_type", "deploy") != "test"
+            and result.get("iac") == IAC_TERRAFORM
+        ):
+            return _invoke_bedrock(terraform_failure_prompt(result, stack_name))
         if result.get("failure_type", "deploy") != "test":
             # Use pre-captured events when the caller saved them before the
             # stack was torn down (the APIGW/VPC hosting test deletes its
@@ -5975,7 +6605,7 @@ def cleanup_stack(result):
     return cleanup_iam_resources(stack_name)
 
 
-def teardown_primary_stack(result, stack_name):
+def teardown_primary_stack(result, stack_name, terraform=None):
     """Tear this run's resources down, or retain them deliberately and say so.
 
     Returns {"retained": bool, "findings": [str, ...]}. An empty `findings` on
@@ -5995,7 +6625,23 @@ def teardown_primary_stack(result, stack_name):
     deleted cleanly. What changed is that the retention is reported as the
     deferral it is, and `cleanup_stale_idp_policies` reaps the policy once the
     run has no stacks left.
+
+    With ``terraform`` (a TerraformRun) a failed deployment is never retained.
+    Its state is local to this build and ends with it, and the reapers that take
+    a retained stack later delete CloudFormation stacks, which for a Terraform
+    deployment is only the label; everything behind it would leak. The evidence
+    a retained stack would offer is collected before this runs instead.
     """
+    if terraform is not None:
+        if not result.get("success"):
+            print(
+                f"[{stack_name}] ℹ️  Terraform mode: the failed deployment is torn "
+                "down, not retained — its state does not outlive this build"
+            )
+        return {
+            "retained": False,
+            "findings": cleanup_terraform_deployment(result, terraform),
+        }
     if not result.get("success") and retain_failed_stack(stack_name):
         print(f"[{stack_name}] ⏸️  teardown skipped — stack retained for inspection")
         print(
@@ -6510,6 +7156,13 @@ def collect_failure_evidence(stack_name, result):
         or get_workflow_failure_details(stack_name),
         "execution_inventory": snapshot_execution_inventory(stack_name),
         "tracking_rows": snapshot_tracking_rows(stack_name),
+        # Terraform runs only: there are no stack events, and the deploy's own
+        # output is the record of what was created and what failed.
+        **(
+            {"terraform_log_tail": result.get("terraform_log_tail")}
+            if result.get("iac") == IAC_TERRAFORM
+            else {}
+        ),
     }
 
 
@@ -9088,6 +9741,10 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
     A weekly region run leaves it alone too. Its options say ``region_run``, and
     the build itself is outside PRIMARY_CI_REGION, where the review stack is not.
     Either is enough.
+
+    So does a Terraform run (options ``iac``, or IDP_IAC in the build's
+    environment): it is a scheduled run of develop too, and the review stack is a
+    CloudFormation stack the nightly moves.
     """
     env = os.environ if environ is None else environ
     switch = str(env.get(UX_NIGHTLY_DISABLE_ENV, "true")).strip().lower()
@@ -9100,6 +9757,8 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
         and options.get("variant_probes") is not True
         and not options.get("region_run")
         and region_run(env) is None
+        and str(options.get("iac") or "").strip().lower() != IAC_TERRAFORM
+        and not terraform_run(env)
     )
 
 
@@ -9523,9 +10182,24 @@ def label_region_run(summary_text: str, environ: dict | None = None) -> str:
     )
 
 
+def label_terraform_run(summary_text: str, environ: dict | None = None) -> str:
+    """The summary, headed with TERRAFORM_RUN_LABEL on a Terraform run."""
+    if not terraform_run(environ):
+        return summary_text
+    return (
+        f"🧱 {TERRAFORM_RUN_LABEL} — the primary suite ran against a Terraform "
+        "deployment of the accelerator. This is not the nightly result.\n\n"
+        + summary_text
+    )
+
+
 def label_ci_run(summary_text: str, environ: dict | None = None) -> str:
-    """The summary with every label that applies: probe run, region run, both."""
-    return label_region_run(label_variant_probe_run(summary_text, environ), environ)
+    """The summary with every label that applies: probe run, region run,
+    Terraform run."""
+    return label_terraform_run(
+        label_region_run(label_variant_probe_run(summary_text, environ), environ),
+        environ,
+    )
 
 
 def failure_subject(stack_name: str, environ: dict | None = None) -> str:
@@ -9536,6 +10210,8 @@ def failure_subject(stack_name: str, environ: dict | None = None) -> str:
     region = region_run(environ)
     if region is not None:
         labels.append(f"{REGION_RUN_LABEL.lower()} · {region}")
+    if terraform_run(environ):
+        labels.append(TERRAFORM_RUN_LABEL.lower())
     if not labels:
         return f"IDP CI failure: {stack_name}"
     return f"IDP CI failure ({'; '.join(labels)}): {stack_name}"
@@ -9778,6 +10454,38 @@ def main():
     # is actionable even if the AI summary generation itself breaks.
     failure_reason = ""
 
+    # How the primary stack is deployed (IDP_IAC, or the schedule's choice in
+    # ci_run_options.json). Resolved before anything touches the account, and
+    # written back to the environment so the labels and every subprocess read
+    # the same answer. A value this build cannot honour ends the run here, red,
+    # before a sweep or a deploy.
+    run_options = read_ci_run_options()
+    terraform = None
+    try:
+        iac = iac_mode(options=run_options)
+        os.environ[IAC_VARIABLE] = iac
+        if iac == IAC_TERRAFORM:
+            refusal = terraform_unsupported_reason()
+            if refusal:
+                raise ValueError(refusal)
+            print(
+                f"🧱 IaC: Terraform (work directory {terraform_work_directory(stack_name)})"
+            )
+            install_terraform_stack_hook()
+            terraform_bin = ensure_terraform_binary()
+        else:
+            print("IaC: CloudFormation")
+    except Exception as e:  # noqa: BLE001
+        refusal_text = label_ci_run(f"❌ Run refused before deploying anything: {e}")
+        print(refusal_text)
+        publish_summary_to_s3(refusal_text)
+        send_failure_notification(
+            failure_subject(stack_name), f"Stack: {stack_name}\n\n{refusal_text}"
+        )
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(1)
+
     # Step 0: Clean up stale resources leaked by PRIOR runs whose own cleanup
     # was interrupted (creds expiring mid-teardown is the usual cause). These
     # startup reapers converge the account back to clean regardless — otherwise
@@ -9828,7 +10536,7 @@ def main():
         "cleanup_stale_ci_diagnostics": diagnostics_sweep_findings,
     }
 
-    ux_nightly_requested = ux_nightly_update_requested(read_ci_run_options())
+    ux_nightly_requested = ux_nightly_update_requested(run_options)
     ux_nightly_outcome = (
         {"state": "not_started"} if ux_nightly_requested else {"state": "not_requested"}
     )
@@ -9837,8 +10545,15 @@ def main():
 
     # Step 1: Publish templates to S3
     try:
-        template_url = publish_templates()
+        artifacts = publish_artifacts(iac)
+        template_url = artifacts["template_url"]
         print(f"Publish script ran successfully template url {template_url}")
+        if iac == IAC_TERRAFORM:
+            terraform = TerraformRun(
+                module_url=artifacts["terraform_module_url"],
+                directory=terraform_work_directory(stack_name),
+                binary=terraform_bin,
+            )
         publish_success = True
     except Exception as e:
         print(f"❌ Publish failed: {e}")
@@ -9970,7 +10685,11 @@ def main():
 
         try:
             result = deploy_and_test_stack(
-                stack_name, admin_email, template_url, progress_cb=_publish_progress
+                stack_name,
+                admin_email,
+                template_url,
+                progress_cb=_publish_progress,
+                terraform=terraform,
             )
             if not result["success"]:
                 print(f"[{stack_name}] ❌ Failed")
@@ -9982,8 +10701,13 @@ def main():
             # Add failed result for exception cases
             result = {"stack_name": stack_name, "success": False, "error": str(e)}
 
+        result.setdefault("iac", iac)
         if not result["success"]:
             failure_reason = result.get("error", "Unknown error")
+            if terraform is not None:
+                result.setdefault(
+                    "terraform_log_tail", terraform_log_tail(terraform.directory)
+                )
 
         # Step 3: Generate deployment summary using Bedrock (but don't print
         # yet). Must run before cleanup_stack so CF events still exist for
@@ -10017,7 +10741,9 @@ def main():
         #
         # Reached on BOTH the success and the failure path, and the result is a
         # verification read back off the account rather than a cleanup message.
-        result["teardown"] = teardown_primary_stack(result, stack_name)
+        result["teardown"] = teardown_primary_stack(
+            result, stack_name, terraform=terraform
+        )
 
         if diagnostics_uri:
             ai_summary = f"{ai_summary}\n\n📦 Evidence bundle: {diagnostics_uri}"
@@ -10114,9 +10840,12 @@ def main():
     if teardown_findings:
         stack_success = False
         detail = "; ".join(teardown_findings)
-        print(f"[{stack_name}] ❌ IAM teardown NOT verified: {detail}")
+        # A Terraform teardown's findings include the destroy and the retained-
+        # resource sweep, not only IAM, so its line says teardown.
+        what = "Teardown" if terraform is not None else "IAM teardown"
+        print(f"[{stack_name}] ❌ {what} NOT verified: {detail}")
         if not failure_reason:
-            failure_reason = f"IAM teardown not verified: {detail}"
+            failure_reason = f"{what} not verified: {detail}"
 
     # Fold the Step 0 sweeps into the verdict, on the same terms as the teardown
     # above: a sweep that could not enumerate reaps nothing on *every* run and

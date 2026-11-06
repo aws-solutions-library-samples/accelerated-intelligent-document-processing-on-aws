@@ -98,7 +98,8 @@ payload-robustness corpus covers that goal directly. See
 
 The GitLab pipeline's stages are below. Every gate a merge request runs is in the
 first one; the two deploy stages are **scheduled plus a manual button** (the nightly runs
-the primary suite, a separate weekly schedule the probes), and the
+the primary suite, separate weekly schedules the probes, the other regions and
+the Terraform deployment), and the
 advisory `ux_review` stage runs only on a merge request that changes `src/ui/` or
 `CHANGELOG.md`. The advisory `ux_nightly` stage comes last, after `notify`, on the
 nightly schedule or on request.
@@ -259,6 +260,77 @@ For whoever operates the CI account, in this order: grant the GitLab role
 subscription, then create the region's schedule carrying `IDP_TEST_REGION`.
 Add the region to both `REGION_RUN_REGIONS` and `CI_INFRA_REGIONS`;
 `test_weekly_region_runs.py` fails if the two disagree.
+
+### Weekly Terraform run: the primary suite against a Terraform deployment
+
+Every other run deploys the accelerator as a CloudFormation stack. One more weekly
+schedule, while it is active, deploys it with Terraform instead, from the module the
+same build publishes (`idp-cli publish --terraform`), and runs the **primary suite**
+against that deployment unchanged. The schedule carries `IDP_IAC=terraform`, and
+`iac_requested` in `scripts/sdlc/integration_test_deployment.py` honours it only on a
+scheduled pipeline. Any other value on a schedule **fails the job**, and so does
+`IDP_IAC=terraform` combined with `IDP_RUN_PROBES=true` or `IDP_TEST_REGION`, because
+the probes and the region runs deploy through CloudFormation only. The schedule is a
+GitLab project setting like the others, so until somebody creates it with that
+variable, no Terraform run happens.
+
+| Pipeline | `IDP_IAC` | Runs |
+|---|---|---|
+| Nightly, probe run, region runs, buttons | not set (ignored off a schedule) | CloudFormation |
+| Weekly Terraform schedule | `terraform` | primary suite against a Terraform deployment in `us-east-1`; labelled `WEEKLY TERRAFORM RUN` in the summary, the failure email and Slack; leaves the UX review stack and the nightly story jobs alone |
+
+It is the same `integration_tests` job, distinguished by the variable, as the probe
+and region runs are, so it holds the same `integration_deploy` resource group and
+`nightly_notification` covers it unchanged. It is not a merge gate and is in neither
+CI's gate set; there is no GitHub equivalent, because integration runs are
+GitLab-only.
+
+What the build (`scripts/sdlc/codebuild_deployment.py`) does differently:
+
+- **The mode reaches the build in `ci_run_options.json`** as `iac`, because CodeBuild
+  sees the zip and not the GitLab job's environment. `IDP_IAC` set in the build's own
+  environment wins over the file, which is how a run started by hand selects it.
+- **Terraform is installed by the build**, not by the GitLab job, because CodeBuild is
+  where it runs. `ensure_terraform_binary` uses `IDP_TERRAFORM_BIN` (default
+  `terraform`) when it is on `PATH`, and otherwise downloads the release pinned in
+  `TERRAFORM_VERSION` and refuses it unless its SHA-256 matches `TERRAFORM_SHA256`.
+- **Publish** adds `--terraform` and takes the module URL from the output. A
+  Terraform run with no module URL fails at publish rather than deploying the latest
+  *published* module, which is not the code under test.
+- **Deploy** is `idp-cli deploy --terraform` with the CloudFormation deploy's
+  `--parameters` (the same `PermissionsBoundaryArn` and `MalwareScanning` pairs) and
+  the same IAM pre-stack and boundary. There is no `--role-arn`: Terraform creates the
+  resources with the build's own credentials, so the CloudFormation service role the
+  pre-stack creates goes unused. The root configuration and local state live under
+  `IDP_TERRAFORM_WORK_ROOT` (default `~/.idp-terraform-runs/<stack>`), outside the
+  checkout. There is no transient-race retry: that classifier reads CloudFormation
+  events.
+- **Healthy** means the CloudFormation label stack exists in a `COMPLETE` state with
+  `(Terraform)` in its description, and `terraform output` succeeds.
+- **The steps** run unchanged. They address the deployment by its name, and the SDK's
+  hook answers their CloudFormation resource lookups from the label stack's resource
+  directory; the build installs the same hook in its own process before its first
+  CloudFormation client, because several steps and the teardown call boto3 directly.
+- **Teardown** is `idp-cli delete --terraform`, then the sweep of what it retains
+  (the resources whose `DeletionPolicy` keeps them, listed from the state *before* the
+  delete, plus the log groups Lambda created under the stack's prefix), then the IAM
+  pre-stack and boundary as usual. The CloudFormation stack-status read and stack
+  events are skipped with a printed note. A failed destroy or an unswept retained
+  resource is a **teardown finding** and fails the run, unlike the CloudFormation
+  path, because the state does not outlive the build.
+- **A failed deployment is never retained.** `IDP_KEEP_FAILED_STACK` does not apply:
+  the state would end with the build, and the startup stack reaper deletes
+  CloudFormation stacks, which for a Terraform deployment is only the label.
+- **Failure evidence** is the tail of the Terraform log (`idp-cli-deploy.log` and
+  `idp-cli-delete.log` in the work directory) instead of stack events, and the
+  failure analysis uses a Terraform prompt built from it.
+
+⚠️ **A build killed before its teardown leaks the deployment.** The state is local to
+the build, so nothing can destroy the resources afterwards. The startup sweeps reap
+what they reap for any run (stacks, buckets, IAM roles and policies by name and age),
+but the startup stack reaper would delete only the label stack, and resources it has
+no sweep for (Lambda functions, tables, queues, state machines) stay. A remote state
+backend would close that gap; it is not configured.
 
 ### Why fast_checks is seven jobs
 

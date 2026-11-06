@@ -174,6 +174,54 @@ def region_env_lines(environ: dict | None = None) -> list[str]:
     ]
 
 
+#: The pipeline variable that selects how the run deploys the accelerator. The
+#: same name codebuild_deployment.py reads (iac_mode); the value reaches the build
+#: in ci_run_options.json as ``iac``, because CodeBuild sees the zip and not the
+#: GitLab job's environment.
+IAC_VARIABLE = "IDP_IAC"
+IAC_CLOUDFORMATION = "cloudformation"
+IAC_TERRAFORM = "terraform"
+IAC_MODES = (IAC_CLOUDFORMATION, IAC_TERRAFORM)
+
+
+def iac_requested(environ: dict | None = None) -> str:
+    """How this run deploys: ``cloudformation`` (the default) or ``terraform``.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives: a project-level variable or the "Run pipeline" form must not turn a
+    deploy somebody clicked to check a merge request into a Terraform one. The
+    Terraform run is a schedule of its own carrying ``IDP_IAC=terraform``.
+
+    Raises ValueError on a schedule for a value outside IAC_MODES, and for a
+    Terraform schedule that also asks for the variant probes or a region run:
+    both of those deploy through CloudFormation only, and running the Terraform
+    suite in their place would report a result for a run that never happened.
+    """
+    env = os.environ if environ is None else environ
+    value = str(env.get(IAC_VARIABLE, "")).strip().lower()
+    if not value or env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return IAC_CLOUDFORMATION
+    if value not in IAC_MODES:
+        raise ValueError(
+            f"{IAC_VARIABLE}={value!r} is not a deployment mode; expected one of "
+            f"{', '.join(IAC_MODES)}"
+        )
+    if value == IAC_TERRAFORM:
+        if variant_probes_requested(env):
+            raise ValueError(
+                f"{IAC_VARIABLE}=terraform cannot be combined with "
+                f"{VARIANT_PROBES_VARIABLE}=true: the deployment-variant probes "
+                "deploy through CloudFormation only. Put them on their own schedule."
+            )
+        if region_run_requested(env):
+            raise ValueError(
+                f"{IAC_VARIABLE}=terraform cannot be combined with "
+                f"{REGION_RUN_VARIABLE}: the Terraform run deploys in "
+                f"{PRIMARY_CI_REGION} only."
+            )
+    return value
+
+
 def upload_to_s3(bucket_name):
     """Upload code package to S3 and return version ID"""
     print(f"Uploading to S3 bucket: {bucket_name}")
@@ -493,7 +541,8 @@ def write_ci_run_options(
     job's environment, so the two facts travel inside it. ``variant_probes`` says
     whether this is the weekly variant-probe run (variant_probes_requested), which
     leaves the review stack alone: that stack moves once a night, on the nightly
-    run. This is a correctness guard, not a security control: an MR-button run
+    run. ``iac`` says how the build deploys (iac_requested); a Terraform run
+    leaves the review stack alone too. This is a correctness guard, not a security control: an MR-button run
     executes the MR's own codebuild_deployment.py, which reads or ignores this file
     however its author wrote it. What it does prevent is the ordinary mistake, a button press moving
     the shared review stack onto an unmerged template.
@@ -512,6 +561,7 @@ def write_ci_run_options(
         "pipeline_id": env.get("CI_PIPELINE_ID", ""),
         "variant_probes": variant_probes_requested(env),
         "region_run": region_run_requested(env) or "",
+        "iac": iac_requested(env),
     }
     try:
         pathlib.Path(path).write_text(
@@ -903,6 +953,20 @@ def main():
             f"⚠️ {REGION_RUN_VARIABLE} is set, but this is a {source} pipeline: "
             f"region runs happen only on a scheduled one, so this run stays in "
             f"{region}."
+        )
+    try:
+        iac = iac_requested()
+    except ValueError as e:
+        print(f"❌ {e}")
+        sys.exit(1)
+    if iac == IAC_TERRAFORM:
+        print("🧱 Weekly Terraform run — deploying the accelerator with Terraform")
+    elif os.environ.get(IAC_VARIABLE, "").strip():
+        source = os.environ.get("CI_PIPELINE_SOURCE") or "non-CI"
+        print(
+            f"⚠️ {IAC_VARIABLE} is set, but this is a {source} pipeline: the "
+            "Terraform run happens only on a scheduled one, so this run deploys "
+            "with CloudFormation."
         )
     print(f"Bucket: {bucket_name}")
     print(f"Pipeline: {pipeline_name}")
