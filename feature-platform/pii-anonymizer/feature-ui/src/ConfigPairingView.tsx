@@ -14,7 +14,7 @@
  *       is processed under this profile.
  *
  * Both are written NON-ACTIVE via the host updateConfiguration mutation. The
- * admin then activates the initiating version (optionally in one click here).
+ * admin then activates the initiating profile (optionally in one click here).
  *
  * This keeps the customer's real extraction settings authoritative and layers
  * redaction on top, instead of forking a whole config they must keep in sync.
@@ -322,9 +322,9 @@ const ConfigPairingView: React.FC<{ enabled: boolean; hookFunctionArn: string | 
                     <b>{result.companion}</b>
                   </div>
                   <Box>
-                    Activate the initiating version to start redacting. Documents
+                    Activate the initiating profile to start redacting. Documents
                     uploaded under it are redacted first; the redacted copy is
-                    processed under the companion version.
+                    processed under the companion profile.
                   </Box>
                   <Button onClick={activate} loading={busy}>
                     Activate {result.initiating}

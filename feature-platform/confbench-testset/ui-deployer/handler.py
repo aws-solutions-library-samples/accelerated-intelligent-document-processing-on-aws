@@ -237,7 +237,9 @@ def _apply_config_preset() -> None:
         },
     )
     logger.info(
-        "Applied config preset as version %s: %s", config_version_name(), result
+        "Applied config preset as configuration profile %s: %s",
+        config_version_name(),
+        result,
     )
 
 

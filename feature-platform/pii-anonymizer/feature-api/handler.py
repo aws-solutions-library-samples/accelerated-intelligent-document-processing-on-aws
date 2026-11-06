@@ -11,7 +11,7 @@ GET /report?window=7d              | Same, filtered to rows created in the windo
 GET /report/{docId}                | A single audit row
 
 The audit rows are metadata ONLY — pii_count, mode, source/redacted keys,
-companion version, timestamps. NO PII is ever stored or returned. The table is
+companion profile, timestamps. NO PII is ever stored or returned. The table is
 OWNED by this feature and populated by the preprocessing hook (hook/handler.py).
 
 The HTTP API Gateway (template.yaml) is fronted by a Cognito JWT authorizer

@@ -4,7 +4,7 @@
 /**
  * Redaction Report — a metadata-only audit view of documents the preprocessing
  * hook has redacted. NO PII is shown (the audit table stores none): per-document
- * PII count, mode, source/redacted keys, companion version, timestamp.
+ * PII count, mode, source/redacted keys, companion profile, timestamp.
  *
  * Table UX mirrors the host Document List: resizable columns, pagination,
  * column selection + page-size preferences (persisted in localStorage), text
