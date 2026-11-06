@@ -90,6 +90,7 @@ class TestDeployTerraform:
             "terraform_dir": None,
             "terraform_bin": "terraform",
             "assume_role_arn": None,
+            "allow_replace_retained": False,
         }
         client.stack.deploy.assert_not_called()
         assert "https://app.example.com" in result.output
@@ -120,6 +121,25 @@ class TestDeployTerraform:
         assert kwargs["pointer_url"] is None
         assert kwargs["terraform_dir"] == "here"
         assert kwargs["terraform_bin"] == "tofu"
+
+    def test_the_retained_resource_guard_is_overridden_only_by_its_flag(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    "--terraform-allow-replace-retained",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        kwargs = client.stack.deploy_terraform.call_args.kwargs
+        assert kwargs["allow_replace_retained"] is True
 
     def test_a_region_with_no_published_module_needs_a_url(self, runner):
         client = _client()

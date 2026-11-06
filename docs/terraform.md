@@ -59,7 +59,9 @@ You need the following before you deploy:
   `DeleteResource`, `ListResources` and `GetResourceRequestStatus`) in addition to the
   permissions of the underlying services. The module also creates one CloudFormation
   stack (the label stack described below), which needs `cloudformation:CreateStack`
-  and its related actions unless you turn the label off.
+  and its related actions unless you turn the label off. A deploying role that is
+  scoped rather than administrator-level is described under
+  [Deploying with a scoped role](#deploying-with-a-scoped-role).
 - Terraform 1.7 or later, or OpenTofu 1.7 or later, on your path.
 - Access to the Amazon Bedrock models the solution uses, as listed in the
   [Deployment Guide](./deployment.md).
@@ -68,6 +70,37 @@ You need the following before you deploy:
   exactly as the CloudFormation template does.
 - For the `idp-cli` route, `idp-cli` installed from a checkout of this repository, as
   described in [IDP CLI](./idp-cli.md#installation).
+
+### Deploying with a scoped role
+
+A Terraform deployment has no CloudFormation service role: every call is made with
+the credentials Terraform runs with, so those credentials need everything a
+CloudFormation service role for the solution needs. A role modelled on the example in
+[`iam-roles/cloudformation-management/`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/tree/develop/iam-roles/cloudformation-management)
+needs the following:
+
+- The service-wide grants that role holds for the services the solution uses. The
+  `aws` provider reads back more of each resource than CloudFormation does (every
+  configuration of a bucket, for example), and a grant narrowed to the actions
+  CloudFormation calls refuses those reads.
+- The Cloud Control actions listed above, which are in the `cloudformation:`
+  namespace and so are covered by that role's `cloudformation:*`.
+- IAM writes on the roles the module creates. Every role is named after the
+  deployment, as CloudFormation names an unnamed role: `<stack>-<LogicalId>-<hash>`,
+  cut to IAM's 64 characters, and `<stack>-CfnBridge-<hash>` for the
+  custom-resource bridge's role. A role CloudFormation retains also ends in its
+  creation time, so deploying the same stack name again after a delete does not
+  collide with the role the delete kept. A grant of `iam:CreateRole`, `iam:PassRole` and the
+  role-policy actions on `role/<stack prefix>*` therefore covers them, provided the
+  stack name starts with that prefix.
+- If the role allows creating roles only with a given permissions boundary (the
+  example role's `iam:PermissionsBoundary` condition), pass that boundary as
+  `PermissionsBoundaryArn`. The module applies it to every role it creates, the
+  bridge's role included, the way the template's `HasPermissionsBoundary` condition
+  does.
+
+A complete deployment with such a role has not been run; the list above follows
+from what the module creates, not from a measured run.
 
 Plan where Terraform state will live before the first apply. The state holds every
 setting you pass, including sensitive ones, and some of the module's outputs are
@@ -163,7 +196,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 6.0, < 7.0"
+      version = ">= 6.72.0, < 7.0.0"
     }
     awscc = {
       source  = "hashicorp/awscc"
@@ -238,8 +271,26 @@ idp-cli deploy --terraform \
 
 The command writes a directory, `./idp-terraform/<stack-name>` by default, containing
 a `main.tf` with the `aws` and `awscc` providers configured for the Region and a
-`module "idp"` block, plus a `terraform.tfvars` holding your settings. It then runs
-`terraform init` and `terraform apply` in that directory. The options are:
+`module "idp"` block, plus a `terraform.tfvars` holding your settings and an
+`idp-cli-parameters.json` recording them by CloudFormation parameter name. Both files
+can hold sensitive values and are created readable by their owner only. It then runs,
+in that directory:
+
+1. `terraform init`, with `-upgrade` only when the module source differs from the one
+   the directory was last initialised with. Otherwise the providers stay at the
+   versions recorded in `.terraform.lock.hcl` instead of moving to the newest release
+   the module allows on every deploy.
+2. `terraform plan -out=<file>`, then `terraform show -json` on that plan.
+3. A check of the plan. If any change deletes or replaces a resource that
+   CloudFormation would have retained (`DeletionPolicy: Retain`, listed as
+   `retainedAddresses` in the module's `idp-terraform.json`, for the installed module
+   and the new one), the command stops, lists those addresses, and applies nothing.
+   Losing a retained bucket or table loses its data, which CloudFormation never does
+   on an update. `--terraform-allow-replace-retained` applies such a plan anyway.
+4. `terraform apply` of exactly that saved plan. The plan file is removed afterwards,
+   because it holds your settings too.
+
+The options are:
 
 | Option | Meaning |
 |---|---|
@@ -251,7 +302,8 @@ a `main.tf` with the `aws` and `awscc` providers configured for the Region and a
 | `--headless` / `--govcloud` | use the latest headless or GovCloud module instead of the standard one; they cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless` |
 | `--terraform-dir DIR` | the directory to write, instead of `./idp-terraform/<stack-name>` |
 | `--terraform-bin` | `terraform` or `tofu` |
-| `--terraform-assume-role-arn ARN` | an IAM role both providers assume, written as an `assume_role` block in the `aws` and `awscc` provider blocks of `main.tf`, so the resources are created as that role instead of as you. You need `sts:AssumeRole` on it. The role needs permission to create, change and delete every resource the deployment creates, including `cloudcontrol:*` for the `awscc` resources and `iam:CreateRole`/`iam:PassRole` on the roles the module creates, whose names start with the deployment name (`stack_name`). If its role creation is conditioned on a permissions boundary, as the [CloudFormation service role](../iam-roles/cloudformation-management/README.md)'s is, pass that boundary as `PermissionsBoundaryArn` in `--parameters` so the module attaches it to every role it creates |
+| `--terraform-assume-role-arn ARN` | an IAM role both providers assume, written into the `aws` and `awscc` provider blocks of `main.tf` in each provider's own `assume_role` syntax (a block for `aws`, an attribute for `awscc`), so the resources are created as that role instead of as you. You need `sts:AssumeRole` on it. The role needs permission to create, change and delete every resource the deployment creates, including `cloudcontrol:*` for the `awscc` resources and `iam:CreateRole`/`iam:PassRole` on the roles the module creates, whose names start with the deployment name (`stack_name`). If its role creation is conditioned on a permissions boundary, as the [CloudFormation service role](../iam-roles/cloudformation-management/README.md)'s is, pass that boundary as `PermissionsBoundaryArn` in `--parameters` so the module attaches it to every role it creates |
+| `--terraform-allow-replace-retained` | apply even if the plan deletes or replaces a resource CloudFormation would retain, losing its data; without it such a plan is refused and nothing is applied |
 | `--wait` | accepted as on the CloudFormation path |
 
 `--parameters` takes CloudFormation names, not Terraform variable names. The CLI maps
@@ -416,8 +468,22 @@ To upgrade, point the module at the new release's URL and apply:
 
 The label stack's description and metadata move to the new version in the same apply.
 With `idp-cli`, run `idp-cli deploy --terraform` again with the same `--stack-name`
-and `--terraform-dir`, the new `--terraform-module-url` (or none, for the latest), and
-the same `--parameters` you deployed with.
+and `--terraform-dir`, and the new `--terraform-module-url` (or none, for the latest).
+You do not need to repeat `--parameters`: `idp-cli` remembers the values of the
+previous deploy, by CloudFormation parameter name, in `idp-cli-parameters.json` in that
+directory, and applies only the parameters you pass over them, as a CloudFormation
+update keeps the parameters it is not given. A remembered parameter the new module no
+longer has is dropped with a warning. The deploy runs `init -upgrade` because the
+module source changed, and refuses the plan if it would delete or replace a retained
+resource (see [With `idp-cli deploy --terraform`](#with-idp-cli-deploy---terraform)).
+
+A deployment generated before the module named its IAM roles has roles named
+`terraform-<timestamp>`. The first upgrade to a module that names them replaces those
+roles: the new role is created first, functions and other resources that use it switch
+to it in place, and the old role is deleted last. For the seconds between the old
+role's policies being removed and a function switching to the new role, calls that
+function makes with the old role can be refused, so run that upgrade when the
+deployment is idle. Retained roles keep their existing names and are not replaced.
 
 Read the release's `CHANGELOG.md` entries and any migration guide for the release
 before upgrading, as for a CloudFormation stack: configuration changes and upgrade
@@ -456,9 +522,9 @@ CloudFormation deployment of the same version, but these things differ:
   with its template and resource directory in that bucket, and the IAM-propagation
   waits.
 - A failed apply is not rolled back, as described under [Deploying](#deploying).
-- The full stack has been applied with Terraform. OpenTofu has been validated against
-  the generated module and used to plan against Terraform-written state, but a full
-  deployment with OpenTofu has not been run yet.
+- The full stack has been applied, re-planned with no changes, and destroyed with both
+  Terraform and OpenTofu, in a development account. The headless and GovCloud
+  modules are validated offline on every pull request, but neither has been applied.
 - `terraform validate` and `plan` print deprecation warnings for `hash_key` and
   `range_key` on the DynamoDB tables. They are warnings from version 6 of the `aws`
   provider and do not affect the deployment.

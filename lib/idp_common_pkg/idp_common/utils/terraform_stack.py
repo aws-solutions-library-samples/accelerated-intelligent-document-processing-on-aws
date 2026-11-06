@@ -35,8 +35,9 @@ logger = logging.getLogger(__name__)
 
 TERRAFORM_SUFFIX = "(Terraform)"
 # Set by the generated Terraform module on the functions that walk the stack
-# tree at run time (the data-mart rollup, the error-analyzer agent): the S3 URL
-# of this deployment's resource directory. Its presence is what says the
+# tree at run time, which are the ones the translator lists in
+# TERRAFORM_DIRECTORY_READERS (terraform/translator/idp_tf/translate.py; the
+# data-mart rollup): the S3 URL of this deployment's resource directory. Its presence is what says the
 # deployment is a Terraform one; a CloudFormation deployment never has it.
 DIRECTORY_ENV = "IDP_TF_RESOURCE_DIRECTORY"
 DIRECTORY_OUTPUT = "TerraformResourceDirectory"
@@ -53,6 +54,8 @@ _roots: dict[tuple[str, str], dict[str, Any] | None] = {}
 # (region, synthetic nested stack name) -> nested directory node
 _nested: dict[tuple[str, str], dict[str, Any]] = {}
 _installed = False
+# botocore's own Session.create_client, kept so uninstall() can restore it.
+_original_create_client: Any = None
 # Set while this module creates its own clients, which must not be hooked.
 _tls = threading.local()
 
@@ -260,10 +263,11 @@ def attach(client: Any) -> None:
 
 def install() -> None:
     """Attach the hook to every CloudFormation client created from now on."""
-    global _installed
+    global _installed, _original_create_client
     if _installed:
         return
     original = botocore.session.Session.create_client
+    _original_create_client = original
 
     def create_client(self, service_name, *args, **kwargs):
         client = original(self, service_name, *args, **kwargs)
@@ -273,6 +277,17 @@ def install() -> None:
 
     botocore.session.Session.create_client = create_client  # type: ignore[method-assign]
     _installed = True
+
+
+def uninstall() -> None:
+    """Restore botocore's ``create_client``. Clients already created keep the
+    hook; only clients created afterwards are unhooked. For tests."""
+    global _installed, _original_create_client
+    if not _installed:
+        return
+    botocore.session.Session.create_client = _original_create_client  # type: ignore[method-assign]
+    _original_create_client = None
+    _installed = False
 
 
 def install_if_terraform() -> None:

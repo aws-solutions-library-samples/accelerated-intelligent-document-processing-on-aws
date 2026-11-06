@@ -721,7 +721,7 @@ class TestDeployOperation:
 
         monkeypatch.setattr(tf, "fetch_url", fetch)
         monkeypatch.setattr(tf.shutil, "which", lambda b: f"/usr/bin/{b}")
-        calls = _Calls()
+        calls = _Calls({SHOW_PLAN: json.dumps({"resource_changes": []})})
         monkeypatch.setattr(tf.subprocess, "run", calls)
         client = IDPClient(stack_name="tfidp", region=REGION)
         result = client.stack.deploy_terraform(
@@ -733,7 +733,9 @@ class TestDeployOperation:
         assert fetched[-1] == MODULE_URL
         assert calls.cmds == [
             ["init", "-input=false", "-upgrade"],
-            ["apply", "-auto-approve", "-input=false"],
+            ["plan", "-input=false", f"-out={tf.PLAN_FILE}"],
+            ["show", "-json", tf.PLAN_FILE],
+            ["apply", "-input=false", tf.PLAN_FILE],
         ]
         assert result.success and result.operation == "CREATE"
         assert (
@@ -781,6 +783,191 @@ class TestDeployOperation:
             )
 
 
+SHOW_PLAN = f"show -json {tf.PLAN_FILE}"
+
+
+def _change(address, *actions):
+    return {"address": address, "change": {"actions": list(actions)}}
+
+
+class TestRetainedResourceGuard:
+    """`deploy --terraform` applies a saved plan only after checking it does not
+    delete what CloudFormation would have kept."""
+
+    def test_deletes_and_replaces_of_retained_resources_are_found(self):
+        plan = {
+            "resource_changes": [
+                _change("module.idp.aws_s3_bucket.logging_bucket", "delete", "create"),
+                _change(
+                    'module.idp.module.patternstack.aws_dynamodb_table.tracking["a"]',
+                    "delete",
+                ),
+                _change(
+                    "module.idp.module.patternstack.aws_dynamodb_table.tracking[1]",
+                    "create",
+                    "delete",
+                ),
+                # Updated in place, created, or not retained: none is refused.
+                _change("module.idp.aws_s3_bucket.logging_bucket", "update"),
+                _change("module.idp.aws_cloudwatch_log_group.never_created", "create"),
+                _change("module.idp.aws_s3_bucket.input_bucket", "delete"),
+                _change("module.idp.aws_s3_bucket.logging_bucket", "no-op"),
+                _change("module.idp.aws_s3_bucket.logging_bucket", "read"),
+            ]
+        }
+        assert tf.retained_deletions(plan, MANIFEST["retainedAddresses"]) == [
+            "module.idp.aws_s3_bucket.logging_bucket (replace)",
+            'module.idp.module.patternstack.aws_dynamodb_table.tracking["a"]',
+            "module.idp.module.patternstack.aws_dynamodb_table.tracking[1] (replace)",
+        ]
+
+    def test_an_address_outside_the_module_is_not_matched(self):
+        plan = {"resource_changes": [_change("aws_s3_bucket.logging_bucket", "delete")]}
+        assert tf.retained_deletions(plan, MANIFEST["retainedAddresses"]) == []
+
+    def _deploy(self, monkeypatch, tmp_path, plan, **kwargs):
+        monkeypatch.setattr(tf, "fetch_url", lambda url, s3_factory=None: _module_zip())
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        calls = _Calls({SHOW_PLAN: json.dumps(plan)})
+        real_run = calls.__call__
+
+        def run(cmd, **kw):
+            # Terraform writes the plan file; the SDK must remove it afterwards.
+            if cmd[1] == "plan":
+                (tmp_path / tf.PLAN_FILE).write_text("plan")
+            return real_run(cmd, **kw)
+
+        monkeypatch.setattr(tf.subprocess, "run", run)
+        client = IDPClient(stack_name="tfidp", region=REGION)
+        return calls, lambda: client.stack.deploy_terraform(
+            admin_email="a@example.com",
+            module_url=MODULE_URL,
+            terraform_dir=str(tmp_path),
+            **kwargs,
+        )
+
+    def test_a_plan_replacing_a_retained_bucket_is_refused_and_not_applied(
+        self, monkeypatch, tmp_path, no_cfn_stack
+    ):
+        plan = {
+            "resource_changes": [
+                _change("module.idp.aws_s3_bucket.logging_bucket", "delete", "create")
+            ]
+        }
+        calls, deploy = self._deploy(monkeypatch, tmp_path, plan)
+        with pytest.raises(IDPStackError) as err:
+            deploy()
+        message = str(err.value)
+        assert "module.idp.aws_s3_bucket.logging_bucket (replace)" in message
+        assert "Nothing was applied" in message
+        assert "--terraform-allow-replace-retained" in message
+        assert not any(c[0] == "apply" for c in calls.cmds)
+        assert not (tmp_path / tf.PLAN_FILE).exists()
+
+    def test_the_flag_applies_the_checked_plan(
+        self, monkeypatch, tmp_path, no_cfn_stack
+    ):
+        plan = {
+            "resource_changes": [
+                _change("module.idp.aws_s3_bucket.logging_bucket", "delete")
+            ]
+        }
+        calls, deploy = self._deploy(
+            monkeypatch, tmp_path, plan, allow_replace_retained=True
+        )
+        assert deploy().success
+        assert calls.cmds[-1] == ["apply", "-input=false", tf.PLAN_FILE]
+        assert not (tmp_path / tf.PLAN_FILE).exists()
+
+    def test_a_resource_only_the_previous_module_retained_is_guarded_too(
+        self, monkeypatch, tmp_path, no_cfn_stack
+    ):
+        """The new module may stop declaring a retained resource; the plan then
+        deletes it, and only the installed module's manifest still names it."""
+        installed = tmp_path / ".terraform" / "modules" / "idp"
+        installed.mkdir(parents=True)
+        (installed / tf.MANIFEST_NAME).write_text(
+            json.dumps({**MANIFEST, "retainedAddresses": ["aws_s3_bucket.old_kept"]})
+        )
+        (tmp_path / ".terraform" / "modules" / "modules.json").write_text(
+            json.dumps({"Modules": [{"Key": "idp", "Dir": ".terraform/modules/idp"}]})
+        )
+        plan = {
+            "resource_changes": [_change("module.idp.aws_s3_bucket.old_kept", "delete")]
+        }
+        _, deploy = self._deploy(monkeypatch, tmp_path, plan)
+        with pytest.raises(IDPStackError, match="old_kept"):
+            deploy()
+
+
+class TestInitUpgrade:
+    """Providers float to a newer release only when the module changes."""
+
+    def _deploy(self, monkeypatch, tmp_path, module_url):
+        monkeypatch.setattr(tf, "fetch_url", lambda url, s3_factory=None: _module_zip())
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        calls = _Calls({SHOW_PLAN: json.dumps({"resource_changes": []})})
+        monkeypatch.setattr(tf.subprocess, "run", calls)
+        IDPClient(stack_name="tfidp", region=REGION).stack.deploy_terraform(
+            admin_email="a@example.com",
+            module_url=module_url,
+            terraform_dir=str(tmp_path),
+        )
+        return calls.cmds[0]
+
+    def test_init_upgrades_on_the_first_deploy_and_when_the_module_changes(
+        self, monkeypatch, tmp_path, no_cfn_stack
+    ):
+        upgrade = ["init", "-input=false", "-upgrade"]
+        plain = ["init", "-input=false"]
+        assert self._deploy(monkeypatch, tmp_path, MODULE_URL) == upgrade
+        assert self._deploy(monkeypatch, tmp_path, MODULE_URL) == plain
+        other = MODULE_URL.replace("/1/", "/2/")
+        assert self._deploy(monkeypatch, tmp_path, other) == upgrade
+        assert self._deploy(monkeypatch, tmp_path, other) == plain
+
+    def test_a_failed_init_is_not_recorded(self, monkeypatch, tmp_path, no_cfn_stack):
+        monkeypatch.setattr(tf, "fetch_url", lambda url, s3_factory=None: _module_zip())
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        monkeypatch.setattr(
+            tf.subprocess,
+            "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", ""),
+        )
+        with pytest.raises(IDPStackError, match="init"):
+            IDPClient(stack_name="tfidp", region=REGION).stack.deploy_terraform(
+                admin_email="a@example.com",
+                module_url=MODULE_URL,
+                terraform_dir=str(tmp_path),
+            )
+        assert tf.needs_upgrade(tmp_path, MODULE_URL)
+
+
+class TestPrivateFiles:
+    def test_values_files_are_created_owner_only(self, monkeypatch, tmp_path):
+        """Created 0600 by os.open, not narrowed after being written."""
+        modes = {}
+        real_open = os.open
+
+        def recording_open(path, flags, mode=0o777, *a, **kw):
+            modes[Path(path).name] = mode
+            return real_open(path, flags, mode, *a, **kw)
+
+        monkeypatch.setattr(tf.os, "open", recording_open)
+        _write(tmp_path, parameters={"ApiKey": "secret"})
+        assert modes == {"terraform.tfvars": 0o600, tf.PARAMETERS_FILE: 0o600}
+        for name in modes:
+            assert (tmp_path / name).stat().st_mode & 0o077 == 0
+
+    def test_an_existing_wider_file_is_narrowed(self, tmp_path):
+        path = tmp_path / "f"
+        path.write_text("old")
+        path.chmod(0o644)
+        tf.write_private(path, "new")
+        assert path.read_text() == "new"
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
 class TestDeleteOperation:
     def _initialised(self, directory: Path) -> None:
         _write(directory)
@@ -811,7 +998,7 @@ class TestDeleteOperation:
         client = IDPClient(stack_name="tfidp", region=REGION)
         result = client.stack.delete_terraform(terraform_dir=str(tmp_path))
         assert calls.cmds == [
-            ["init", "-input=false", "-upgrade"],
+            ["init", "-input=false"],
             ["show", "-json"],
             ["state", "list"],
             [

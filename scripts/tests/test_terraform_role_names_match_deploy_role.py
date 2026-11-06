@@ -98,17 +98,75 @@ def _top_level_attribute(body: str, name: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def _interpolation_end(text: str, start: int) -> int:
+    """Index just past the ``}`` closing the ``${`` at ``start``, skipping quoted
+    strings (which may hold interpolations of their own)."""
+    depth, i, quoted = 0, start + 2, False
+    while i < len(text):
+        ch = text[i]
+        if quoted:
+            if ch == "\\":
+                i += 1
+            elif ch == '"':
+                quoted = False
+            elif text.startswith("${", i):
+                i = _interpolation_end(text, i) - 1
+        elif ch == '"':
+            quoted = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            if depth == 0:
+                return i + 1
+            depth -= 1
+        i += 1
+    raise ValueError(f"unterminated interpolation in {text!r}")
+
+
+_SUBSTR = re.compile(r'^substr\("(?P<inner>.*)", 0, (?P<length>\d+)\)$', re.S)
+
+
+def _render_template(literal: str) -> tuple[str, bool]:
+    """(rendered text, complete) for an HCL template body, CI stack name filled in.
+
+    Understands the two interpolations the translator writes at the start of a
+    role name: ``${var.stack_name}`` and ``${substr("<template>", 0, N)}``. At
+    any other interpolation the rendering stops there and ``complete`` is False:
+    what follows (a hash, a timestamp suffix) can only make the name longer, not
+    change how it starts.
+    """
+    out, i = [], 0
+    while i < len(literal):
+        if literal.startswith("${", i):
+            end = _interpolation_end(literal, i)
+            body = literal[i + 2 : end - 1].strip()
+            if body == "var.stack_name":
+                out.append(CI_STACK)
+            elif match := _SUBSTR.match(body):
+                inner, complete = _render_template(match.group("inner"))
+                length = int(match.group("length"))
+                if not complete and len(inner) < length:
+                    out.append(inner)
+                    return "".join(out), False
+                out.append(inner[:length])
+            else:
+                return "".join(out), False
+            i = end
+        else:
+            out.append(literal[i])
+            i += 1
+    return "".join(out), True
+
+
 def _rendered_prefix(expression: str) -> str | None:
-    """The literal start of a name expression, with the stack name filled in.
+    """The literal start of a name expression, rendered for the CI stack name.
 
     Only a quoted template is read; anything else (a function call, a bare
     reference) returns None, which the test reports rather than guesses at.
     """
-    if not expression.startswith('"'):
+    if not (expression.startswith('"') and expression.endswith('"')):
         return None
-    literal = expression[1 : expression.rfind('"')]
-    literal = re.sub(r"\$\{[^}]*stack_name[^}]*\}", CI_STACK, literal)
-    return literal.split("${", 1)[0]
+    return _render_template(expression[1:-1])[0]
 
 
 @pytest.fixture(scope="module")
@@ -143,15 +201,6 @@ def module_roles(tmp_path_factory):
     return roles
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "PR A (the translator fix) names unnamed roles <stack_name>-<LogicalId>-<hash> "
-        "and gives the bridge roles stack-prefixed names and the boundary; until it "
-        "is merged into this branch, those roles fall outside the deploy role's "
-        "patterns. Remove this marker after that merge."
-    ),
-)
 def test_every_module_role_is_one_the_deploy_role_may_create_and_pass(module_roles):
     create = _role_name_globs("iam:CreateRole")
     pass_ = _role_name_globs("iam:PassRole")
@@ -178,6 +227,29 @@ def test_every_module_role_is_one_the_deploy_role_may_create_and_pass(module_rol
                 f"{where}: no permissions boundary from the stack parameter"
             )
     assert not problems, "\n".join(problems)
+
+
+@pytest.mark.parametrize(
+    ("expression", "prefix"),
+    [
+        ('"${var.stack_name}BastionHost-Role"', f"{CI_STACK}BastionHost-Role"),
+        (
+            '"${substr("${var.stack_name}-CfnBridge", 0, 55)}-'
+            '${substr(md5("${var.stack_name}-CfnBridge"), 0, 8)}"',
+            f"{CI_STACK}-CfnBridge-",
+        ),
+        (
+            '"${substr("${var.stack_name}-SomeLongLogicalIdRole", 0, 20)}-x"',
+            f"{CI_STACK}-Some"[:20] + "-x",
+        ),
+        ('"cfnbridge-"', "cfnbridge-"),
+        ('"${local.prefix}-x"', ""),
+        ('format("%s", var.stack_name)', None),
+    ],
+)
+def test_the_name_renderer(expression, prefix):
+    """The renderer the check above relies on, against the shapes it reads."""
+    assert _rendered_prefix(expression) == prefix
 
 
 def test_the_patterns_are_read_from_the_deploy_role():

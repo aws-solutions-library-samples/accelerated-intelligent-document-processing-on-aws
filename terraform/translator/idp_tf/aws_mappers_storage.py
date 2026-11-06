@@ -200,9 +200,13 @@ class S3BucketMapper:
         }[attr]
 
     def plan(self, tr: Translator, plan: Plan) -> None:
+        # Exactly the resources emit() writes: one per branch that has a value.
+        # A property that resolves to AWS::NoValue (the GovCloud transform sets
+        # WebsiteConfiguration to it) has no leaves and so writes nothing; a
+        # dependency on it would name an undeclared resource.
         for prop, (tf_type, suffix, _) in S3_SUBRESOURCES.items():
             if prop in plan.props:
-                n = max(1, len(_if_leaves(tr, plan.props[prop], [])))
+                n = len(_if_leaves(tr, plan.props[prop], []))
                 for j in range(n):
                     label = f"{plan.name}_{suffix}" + (f"_{j}" if n > 1 else "")
                     plan.extra_deps.append(f"{tf_type}.{label}")

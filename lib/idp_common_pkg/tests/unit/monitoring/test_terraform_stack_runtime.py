@@ -66,8 +66,14 @@ def env(monkeypatch):
     monkeypatch.setenv("STACK_NAME", "stk")
     monkeypatch.setattr(ts, "_raw_clients", lambda region: (_NoDescribe(), _FakeS3()))
     ts.reset_cache()
+    installed_before = ts._installed
     yield monkeypatch
     ts.reset_cache()
+    # The hook patches botocore's Session.create_client process-wide; leaving
+    # it in place would hook every CloudFormation client later tests create.
+    # One installed before this test (importing idp_sdk installs it) stays.
+    if not installed_before:
+        ts.uninstall()
 
 
 @pytest.mark.unit
@@ -88,3 +94,17 @@ def test_nothing_is_installed_without_the_directory_env(env, monkeypatch):
     env.delenv(ts.DIRECTORY_ENV, raising=False)
     ts.install_if_terraform()
     assert calls == []
+
+
+@pytest.mark.unit
+def test_uninstall_restores_botocore(env):
+    import botocore.session
+
+    if ts._installed:
+        pytest.skip("installed by an earlier import of idp_sdk in this process")
+    original = botocore.session.Session.create_client
+    env.setenv(ts.DIRECTORY_ENV, "s3://bridge/terraform/cfn-resource-directory.json")
+    ts.install_if_terraform()
+    assert botocore.session.Session.create_client is not original
+    ts.uninstall()
+    assert botocore.session.Session.create_client is original

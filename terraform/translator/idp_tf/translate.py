@@ -45,6 +45,9 @@ RESOURCE_KEYS = {
     "Version",
 }
 STACK_NAME_VAR = "stack_name"
+#: The parameter every IDP template uses for an optional IAM permissions
+#: boundary; the bridge role the translator adds honours it too.
+PERMISSIONS_BOUNDARY_PARAMETER = "PermissionsBoundaryArn"
 # A module variable carrying a plan-time-known stand-in for a parameter that a
 # condition reads. Resource attributes are replaced by a non-empty placeholder,
 # which is exactly what CloudFormation's condition sees: a resource id is never
@@ -1006,6 +1009,12 @@ class Translator:
         for name, child in self.children.items():
             out.extend(f"module.{name}.{a}" for a in child.retained_addresses())
         return sorted(set(out))
+
+    def permissions_boundary_variable(self) -> str | None:
+        """The variable for this template's ``PermissionsBoundaryArn``, if any."""
+        if PERMISSIONS_BOUNDARY_PARAMETER in self.params:
+            return variable_name(PERMISSIONS_BOUNDARY_PARAMETER)
+        return None
 
     def parameter_map(self) -> dict[str, dict[str, Any]]:
         """CloudFormation parameter name -> Terraform variable and type, for

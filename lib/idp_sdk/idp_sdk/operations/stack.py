@@ -139,6 +139,9 @@ class StackOperation:
                     cfn_bucket_basename,
                     cfn_prefix,
                     self._client._region or "us-west-2",
+                    # A direct publish.py run also publishes the Terraform
+                    # module, which a CloudFormation deployment never reads.
+                    "--no-terraform",
                 ]
                 result = subprocess.run(
                     cmd, cwd=from_code, capture_output=True, text=True
@@ -259,16 +262,22 @@ class StackOperation:
         terraform_dir: Optional[str] = None,
         terraform_bin: str = "terraform",
         assume_role_arn: Optional[str] = None,
+        allow_replace_retained: bool = False,
     ) -> StackDeploymentResult:
         """Deploy or update the accelerator with Terraform (or OpenTofu).
 
         Writes a root configuration into ``terraform_dir`` (default
         ``./idp-terraform/<stack_name>``) — ``main.tf`` calling the published
         module as ``module "idp"`` with the aws and awscc providers in the
-        client's region, and ``terraform.tfvars`` — then runs ``init`` and
-        ``apply -auto-approve``, streaming their output to stderr. State is
-        local in that directory unless a backend is configured in another file
-        there. Always waits.
+        client's region, and ``terraform.tfvars`` — then runs ``init``
+        (``-upgrade`` only when the module source changed since the last
+        deploy from this directory), ``plan -out``, checks the saved plan, and
+        applies exactly that plan, streaming output to stderr. The check
+        refuses a plan that deletes or replaces a resource CloudFormation
+        retains (the module's ``retainedAddresses``, old and new module both)
+        unless ``allow_replace_retained`` is set. State is local in that
+        directory unless a backend is configured in another file there.
+        Always waits.
 
         Args:
             stack_name: Deployment name (the label stack's name, at most 25
@@ -281,10 +290,13 @@ class StackOperation:
             pointer_url: URL of an ``idp-terraform-latest.json`` pointer.
             terraform_dir: Root configuration directory.
             terraform_bin: ``terraform``, ``tofu`` or a path to either.
-            assume_role_arn: An IAM role both providers assume (an
-                ``assume_role`` block in each provider block of ``main.tf``), so
-                the resources are created as that role rather than as the
-                caller. The caller needs ``sts:AssumeRole`` on it.
+            assume_role_arn: An IAM role both providers assume (written into
+                each provider block of ``main.tf``, in that provider's own
+                ``assume_role`` syntax), so the resources are created as that
+                role rather than as the caller. The caller needs
+                ``sts:AssumeRole`` on it.
+            allow_replace_retained: Apply even when the plan deletes or
+                replaces a retained resource (its data is lost).
 
         Returns:
             StackDeploymentResult with operation ``APPLY`` and the label stack's
@@ -293,7 +305,9 @@ class StackOperation:
         Raises:
             IDPConfigurationError: Binary missing, bad parameters, a foreign
                 ``main.tf``, or a CloudFormation stack of that name.
-            IDPStackError: ``init`` or ``apply`` failed.
+            IDPStackError: ``init``, ``plan`` or ``apply`` failed, or the plan
+                deletes a retained resource and ``allow_replace_retained`` is
+                not set (nothing is applied).
         """
         from pathlib import Path
 
@@ -326,6 +340,12 @@ class StackOperation:
             pointer = json.loads(tf.fetch_url(pointer_url))
             module_url, sha = tf.resolve_pointer(pointer)
         manifest = tf.load_module_manifest(module_url, sha)
+        # The module installed before this deploy: a resource it retains that
+        # the new module drops is deleted by the plan too.
+        try:
+            previous_manifest = tf.read_manifest_from_dir(directory)
+        except IDPConfigurationError:
+            previous_manifest = {}
         tf.write_root_config(
             directory,
             region=region,
@@ -337,8 +357,24 @@ class StackOperation:
             assume_role_arn=assume_role_arn,
         )
         operation = "UPDATE" if (directory / "terraform.tfstate").exists() else "CREATE"
-        runner.init()
-        runner.apply()
+        runner.init(upgrade=tf.needs_upgrade(directory, module_url))
+        tf.record_module_source(directory, module_url)
+        retained = set(manifest.get("retainedAddresses") or []) | set(
+            previous_manifest.get("retainedAddresses") or []
+        )
+        plan_path = directory / tf.PLAN_FILE
+        try:
+            runner.plan(tf.PLAN_FILE)
+            blocked = tf.retained_deletions(runner.show_plan(tf.PLAN_FILE), retained)
+            if blocked and not allow_replace_retained:
+                tf.refuse_retained_deletions(blocked, directory)
+            for address in blocked:
+                logger.warning(
+                    "Deleting retained resource %s (allow_replace_retained)", address
+                )
+            runner.apply_plan(tf.PLAN_FILE)
+        finally:
+            plan_path.unlink(missing_ok=True)
 
         outputs: Dict[str, str] = {}
         stack = self._describe_stack(deployer, name)
@@ -405,6 +441,8 @@ class StackOperation:
         role = tf.check_assume_role_arn(assume_role_arn)
         if role:
             tf.set_assume_role(directory / "main.tf", role, self._client._region)
+        # Plain init: the module and providers are the ones the deployment was
+        # applied with, recorded in the lock file; nothing should float here.
         runner.init()
         manifest = tf.read_manifest_from_dir(directory)
         state = runner.show_state()
