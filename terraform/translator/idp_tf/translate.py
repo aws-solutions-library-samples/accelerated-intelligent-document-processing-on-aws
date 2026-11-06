@@ -76,11 +76,10 @@ AWSCC_PROPERTY_FIXUPS: dict[tuple[str, str], str] = {
 # Functions that walk the stack tree at run time. Under Terraform they get the
 # resource directory's location (IDP_TF_RESOURCE_DIRECTORY) and read access to
 # it, so idp_common's hook answers their CloudFormation lookups. Logical id ->
-# what walks. A name that is not in the main template fails the translation.
+# what walks. tests/test_offline_templates.py fails if a name is not a function
+# in the standard template.
 TERRAFORM_DIRECTORY_READERS: dict[str, str] = {
     "DataMartRollupFunction": "data_mart_rollup enumerates the stack tree",
-    "AgentProcessorFunction": "the error-analyzer agent lists stack resources",
-    "AgentChatProcessorFunction": "the error-analyzer agent lists stack resources",
 }
 DIRECTORY_PSEUDO = "IDP::TerraformResourceDirectory"
 DIRECTORY_KEY = "terraform/cfn-resource-directory.json"
@@ -775,8 +774,9 @@ class Translator:
     def _inject_directory_readers(self) -> list[str]:
         """Give each TERRAFORM_DIRECTORY_READERS function the directory URL and
         read access to it. Root module only; returns the extra resources."""
-        # A variant (headless) may remove a reader; the standard template must
-        # have them all, which tests/test_offline_templates.py asserts.
+        # A variant may remove a reader, so a missing one is skipped here; the
+        # standard template must have them all, which
+        # tests/test_offline_templates.py asserts.
         extra = []
         for lid in TERRAFORM_DIRECTORY_READERS:
             plan = self.plans.get(lid)

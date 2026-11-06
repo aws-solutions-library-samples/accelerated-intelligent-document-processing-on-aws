@@ -458,6 +458,10 @@ def missing_required(values: Dict[str, Any], manifest: Dict[str, Any]) -> List[s
     )
 
 
+# The deployment's parameter values by CloudFormation name, beside tfvars.
+PARAMETERS_FILE = "idp-cli-parameters.json"
+
+
 def variable_specs(manifest: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """Terraform variable name -> {type, sensitive}, including ``stack_name``."""
     specs: Dict[str, Dict[str, Any]] = {
@@ -648,7 +652,32 @@ def write_root_config(
                 f"{tfvars} exists and was not written by idp-cli; refusing to "
                 "overwrite it."
             )
-        previous = {k: v for k, v in parse_tfvars(text).items() if k in specs}
+        previous_vars = parse_tfvars(text)
+        # Earlier values are remembered by CloudFormation parameter name, which
+        # is stable; a Terraform variable name can change between module
+        # versions, and keying on it would drop the value without a word.
+        remembered = directory / PARAMETERS_FILE
+        if remembered.exists():
+            by_name = json.loads(remembered.read_text())
+            known = manifest.get("parameters") or {}
+            previous = {"stack_name": previous_vars.get("stack_name")}
+            for name, value in by_name.items():
+                if name in known:
+                    previous[known[name]["variable"]] = value
+                else:
+                    logger.warning(
+                        "Parameter %s from the previous deploy is not in this "
+                        "module and was dropped",
+                        name,
+                    )
+        else:
+            previous = {k: v for k, v in previous_vars.items() if k in specs}
+            for k in sorted(set(previous_vars) - set(specs)):
+                logger.warning(
+                    "Variable %s from the previous deploy is not in this module "
+                    "and was dropped",
+                    k,
+                )
     if previous.get("stack_name") not in (None, stack_name):
         raise IDPConfigurationError(
             f"{directory} holds the deployment {previous['stack_name']!r}, not "
@@ -677,8 +706,22 @@ def write_root_config(
         )
     )
     tfvars.write_text(render_tfvars(values))
+    by_variable = {
+        spec["variable"]: name
+        for name, spec in (manifest.get("parameters") or {}).items()
+    }
+    remembered = directory / PARAMETERS_FILE
+    remembered.write_text(
+        json.dumps(
+            {by_variable[k]: v for k, v in values.items() if k in by_variable},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     # The values can include NoEcho parameters.
     os.chmod(tfvars, 0o600)
+    os.chmod(remembered, 0o600)
     return values
 
 
@@ -851,7 +894,9 @@ class TerraformRunner:
         return proc.stdout or ""
 
     def init(self) -> None:
-        self.run("init", "-input=false")
+        # -upgrade: a newer module can raise a provider floor (the vendored
+        # awscc schema moves), which the existing lock file would refuse.
+        self.run("init", "-input=false", "-upgrade")
 
     def apply(self) -> None:
         self.run("apply", "-auto-approve", "-input=false")

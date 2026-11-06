@@ -332,3 +332,33 @@ def test_variable_names_keep_mixed_case_acronyms_whole():
     assert variable_name("WAFAllowedIPv4Ranges") == "waf_allowed_ipv4_ranges"
     assert variable_name("ExternalIdPOIDCClientId") == "external_idp_oidc_client_id"
     assert variable_name("AdminEmail") == "admin_email"
+
+
+def test_every_function_carries_the_idp_stack_name_tag(schema):
+    """Run-time code finds a deployment's functions by stack-name tag;
+    CloudFormation's own key is reserved, so the module sets idp:stack-name."""
+    t = {"Resources": {"F": lambda_fn(Tags=[{"Key": "a", "Value": "b"}])}}
+    out = render(t, schema)["main.tf"]
+    assert '"idp:stack-name" = var.stack_name' in out
+    assert '"a" = "b"' in out
+
+
+def test_a_retained_unnamed_table_gets_a_stable_suffix(schema):
+    t = {
+        "Resources": {
+            "T": {
+                "Type": "AWS::DynamoDB::Table",
+                "DeletionPolicy": "Retain",
+                "Properties": {
+                    "KeySchema": [{"AttributeName": "k", "KeyType": "HASH"}],
+                    "AttributeDefinitions": [
+                        {"AttributeName": "k", "AttributeType": "S"}
+                    ],
+                    "BillingMode": "PAY_PER_REQUEST",
+                },
+            }
+        }
+    }
+    out = render(t, schema)["main.tf"]
+    assert 'resource "time_static" "t_name_suffix"' in out
+    assert "time_static.t_name_suffix.unix" in out
