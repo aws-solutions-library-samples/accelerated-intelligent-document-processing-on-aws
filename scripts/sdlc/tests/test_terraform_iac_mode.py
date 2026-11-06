@@ -253,7 +253,7 @@ def test_publish_adds_terraform_only_in_terraform_mode(cbd):
     assert shlex.split(tf) == shlex.split(cfn) + ["--terraform"]
 
 
-def _real_publish_output(capsys, *, terraform_module_url=None):
+def _real_publish_output(capsys, *, terraform_module_url=None, variants=None):
     """What `idp-cli publish` prints, produced by the SDK's own printer."""
     from idp_sdk import IDPClient
 
@@ -261,6 +261,7 @@ def _real_publish_output(capsys, *, terraform_module_url=None):
         template_url=TEMPLATE_URL,
         region="us-east-1",
         terraform_module_url=terraform_module_url,
+        terraform_variant_modules=variants,
         terraform_pointer_url=(
             TEMPLATE_URL.rsplit("/", 1)[0] + "/terraform/idp-terraform-latest.json"
             if terraform_module_url
@@ -277,6 +278,21 @@ def test_publish_output_yields_the_module_url(cbd, capsys):
         "template_url": TEMPLATE_URL,
         "terraform_module_url": MODULE_URL,
     }
+
+
+def test_the_main_module_is_picked_beside_the_variant_modules(cbd, capsys):
+    variant = MODULE_URL.replace(
+        "idp-terraform-0.6.14", "idp-terraform-headless-0.6.14"
+    )
+    out = _real_publish_output(
+        capsys,
+        terraform_module_url=MODULE_URL,
+        variants={"aaa-headless": {"moduleUrl": variant}},
+    )
+    assert variant in out
+    assert cbd.parse_publish_output(out, "terraform")["terraform_module_url"] == (
+        MODULE_URL
+    )
 
 
 def test_a_terraform_publish_without_a_module_url_fails(cbd, capsys):

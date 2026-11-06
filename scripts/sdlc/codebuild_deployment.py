@@ -822,6 +822,10 @@ _TERRAFORM_MODULE_URL_PATTERN = (
 )
 
 
+#: The heading `print_deployment_urls` prints above the main module's URL.
+_TERRAFORM_MAIN_MODULE_HEADING = "🧱 Terraform module source:"
+
+
 def build_publish_command(bucket_basename, prefix, region, iac=None):
     """`idp-cli publish`, with `--terraform` on a Terraform run so the same build
     also translates and uploads the module the deploy will use."""
@@ -851,17 +855,17 @@ def parse_publish_output(stdout, iac=None):
         "terraform_module_url": None,
     }
     if (iac or IAC_CLOUDFORMATION) == IAC_TERRAFORM:
-        # Searched per line, so a template URL earlier on the joined text cannot
-        # become the start of the match.
-        module_match = next(
-            (
-                m
-                for line in (stdout or "").splitlines()
-                for m in [re.search(_TERRAFORM_MODULE_URL_PATTERN, line)]
-                if m
-            ),
-            None,
-        )
+        # The URL on the line after the MAIN module's heading. A publish that also
+        # built the headless or GovCloud module prints those under headings of
+        # their own ("Terraform <variant> module source:"), and their zips match
+        # the same pattern, so the first matching URL is not necessarily it.
+        lines = (stdout or "").splitlines()
+        module_match = None
+        for index, line in enumerate(lines):
+            if line.strip().endswith(_TERRAFORM_MAIN_MODULE_HEADING):
+                following = next((n for n in lines[index + 1 :] if n.strip()), "")
+                module_match = re.search(_TERRAFORM_MODULE_URL_PATTERN, following)
+                break
         if not module_match:
             raise Exception(
                 "Failed to extract the Terraform module URL from publish output"
