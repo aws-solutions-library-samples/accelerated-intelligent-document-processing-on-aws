@@ -12,7 +12,15 @@ import datetime
 from pathlib import Path
 from typing import Any
 
-from samtranslator.translator.transform import transform  # type: ignore[import-untyped]
+import boto3
+from samtranslator.parser.parser import Parser  # type: ignore[import-untyped]
+from samtranslator.translator.translator import (  # type: ignore[import-untyped]
+    Translator,
+)
+from samtranslator.utils.py27hash_fix import (  # type: ignore[import-untyped]
+    to_py27_compatible_template,
+    undo_mark_unicode_str_in_template,
+)
 from samtranslator.yaml_helper import yaml_parse  # type: ignore[import-untyped]
 
 SAM_TRANSFORM = "AWS::Serverless-2016-10-31"
@@ -94,6 +102,10 @@ def load_template(path: Path) -> dict[str, Any]:
     return _normalise(template)
 
 
+#: The region SAM's session is given; see :func:`expand`.
+SAM_REGION = "us-east-1"
+
+
 def expand(template: dict[str, Any]) -> dict[str, Any]:
     """Return a plain CloudFormation template with the SAM transform applied."""
     transforms = template.get("Transform")
@@ -105,6 +117,24 @@ def expand(template: dict[str, Any]) -> dict[str, Any]:
     unsupported = [t for t in transforms if t != SAM_TRANSFORM]
     if unsupported:
         raise ValueError(f"unsupported template transform(s): {unsupported}")
-    expanded = transform(copy.deepcopy(template), {}, _NoManagedPolicies())
+    # SAM fills AWS::Region and AWS::Partition from a boto3 session and refuses
+    # to run without a region. The output carries those pseudo-parameters as
+    # references, not values (measured: identical across us-east-1, us-west-2
+    # and us-gov-west-1), so a fixed region makes the translation independent of
+    # the environment; CI's hermetic runs have none.
+    # The rest is samtranslator.translator.transform.transform(), which takes
+    # no session.
+    source = copy.deepcopy(template)
+    parameters: dict[str, Any] = {}
+    to_py27_compatible_template(source, parameters)
+    expanded = undo_mark_unicode_str_in_template(
+        Translator(
+            None, Parser(), boto_session=boto3.session.Session(region_name=SAM_REGION)
+        ).translate(
+            source,
+            parameter_values=parameters,
+            get_managed_policy_map=_NoManagedPolicies().load,
+        )
+    )
     expanded.pop("Transform", None)
     return _sam_shape_fixups(_partition_safe(_normalise(expanded)))

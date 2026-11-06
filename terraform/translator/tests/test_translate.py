@@ -387,3 +387,30 @@ def test_generated_names_of_stateful_resources_survive_a_change_in_derivation(sc
     assert "ignore_changes = [bucket_prefix]" in out
     named = out[out.index('resource "aws_s3_bucket" "n"') :]
     assert "ignore_changes" not in named[: named.index("\n}")]
+
+
+def test_sam_expansion_needs_no_region_in_the_environment(monkeypatch, tmp_path):
+    """CI's hermetic runs carry no AWS region, and SAM refuses to run without
+    one unless it is given a session; the expansion must not depend on either."""
+    from idp_tf.expand import expand
+
+    for var in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "none"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "none"))
+    out = expand(
+        {
+            "Transform": "AWS::Serverless-2016-10-31",
+            "Resources": {
+                "Fn": {
+                    "Type": "AWS::Serverless::Function",
+                    "Properties": {
+                        "Runtime": "python3.12",
+                        "Handler": "index.handler",
+                        "CodeUri": "s3://bucket/key.zip",
+                    },
+                }
+            },
+        }
+    )
+    assert out["Resources"]["Fn"]["Type"] == "AWS::Lambda::Function"
