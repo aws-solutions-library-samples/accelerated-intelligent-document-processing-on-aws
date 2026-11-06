@@ -895,6 +895,9 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running feature platform tests..."
 	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
+	@echo "Running Terraform translator and bridge tests..."
+	cd terraform/translator && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
+	cd terraform/bridge && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
 	cd feature-platform/feature-template/feature-api && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
 	@# These three ran in NO CI gate until #974. `make test` picked them up via
@@ -1254,7 +1257,7 @@ ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make ux-test STACK_NAME=<stack-name> [REGION=... GROUP=...])
 endif
 	@echo "Creating a throwaway UX-test session for $(STACK_NAME)..."
-	@$(PYTHON) scripts/ux_test_session.py setup $(STACK_NAME) \
+	@$(RUN_FIRST_PARTY) scripts/ux_test_session.py setup $(STACK_NAME) \
 	    --group $(if $(GROUP),$(GROUP),Admin) \
 	    $(if $(REGION),--region $(REGION),)
 	@echo -e "$(YELLOW)Now drive the flows in scripts/ux_flows.yaml — see .claude/skills/ux-test.md$(NC)"
