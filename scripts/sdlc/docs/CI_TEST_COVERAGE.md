@@ -105,7 +105,7 @@ nightly schedule or on request.
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
-| **fast_checks** | Seven **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
+| **fast_checks** | Eight **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `terraform_checks` (offline Terraform translation, then `init`/`validate` under each pinned Terraform and OpenTofu), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack**. The deployment-variant probes run here only on the **weekly variant-probe schedule** — see below. | Yes (deploys) | ~1 hour; longer with the probes |
 | **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/`; `ai_ux_test_stories` (advisory first-time-user stories)⁴, only on non-Draft MRs to `develop` that change `CHANGELOG.md` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only; the stories job stops at its precheck in about a minute on most CHANGELOG MRs, and otherwise keeps to the catalogue's deadline inside a 60-minute job |
@@ -260,7 +260,7 @@ subscription, then create the region's schedule carrying `IDP_TEST_REGION`.
 Add the region to both `REGION_RUN_REGIONS` and `CI_INFRA_REGIONS`;
 `test_weekly_region_runs.py` fails if the two disagree.
 
-### Why fast_checks is seven jobs
+### Why fast_checks is eight jobs
 
 It was one `static_checks` job that ran lint, typecheck and every pytest suite in
 sequence, and it took **45 minutes** — of which 80% was pytest. Two independent
@@ -347,16 +347,16 @@ required-but-never-reported (a renamed job) or reported-but-not-required (a new
 gate).
 
 GitHub can only require job-level contexts — never individual steps — so the
-mapping from gates to contexts is decided by how the jobs are arranged. Ten of
-the twelve shared gates live in `developer-tests.yml` (four jobs) and the other two in
-`security-checks.yml` (two jobs), which is how twelve gates produce
-six requireable contexts.
+mapping from gates to contexts is decided by how the jobs are arranged.
+Eleven of the thirteen shared gates live in `developer-tests.yml` (five jobs) and the other two in
+`security-checks.yml` (two jobs), which is how thirteen gates produce
+seven requireable contexts.
 
-Splitting `developer-tests.yml` into four parallel jobs **improved** this. It used
-to be one job holding ten of the twelve shared gates, which collapsed those ten
+Splitting `developer-tests.yml` into parallel jobs **improved** this. It used
+to be one job holding most of the shared gates, which collapsed them
 into a single requireable context: they shared one red mark, so a required-check
-failure did not say which of them had failed. They are now four contexts, so a red
-mark names the half of the work that broke.
+failure did not say which of them had failed. Each job is now its own context, so a red
+mark names the part of the work that broke.
 
 ⚠️ **One consequence to act on if branch protection is ever enabled:** requiring
 only the lint context is now strictly weaker than requiring the old single job was,
@@ -1084,7 +1084,7 @@ run, in Docker, as a dry run; see
 [docs/testing.md](../../../docs/testing.md#first-time-user-stories).
 
 Notes:
-- **Every push runs fast_checks** (all seven jobs), so lint/typecheck/unit and
+- **Every push runs fast_checks** (all eight jobs), so lint/typecheck/unit and
   security feedback is immediate on any branch — **including doc-only commits**
   (fast_checks has no changes: filter). GitLab emails the committer on failure.
 - The **~1h integration deploy runs on the nightly schedule**, plus a manual play

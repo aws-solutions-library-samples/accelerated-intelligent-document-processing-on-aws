@@ -93,7 +93,8 @@ EXPECTED = ["Dependency Audit (SCA)", "Static Checks (lint, types, scans)"]
 # UI tests along with it. It is now four independent jobs and each is its own
 # context, so requiring only the lint one would leave every test suite advisory —
 # a strictly weaker gate than before the split, reached by a change that looks like
-# a speedup. Naming them here is what makes that regression fail.
+# a speedup. Naming them here is what makes that regression fail. The Terraform
+# offline gate is its own job for the same reason, so it is listed too.
 MUST_BE_REQUIRED = {
     "Static Checks (lint, types, scans)": "make lint-cicd",
     "Unit Tests (idp_common)": "make test-cicd",
@@ -101,6 +102,7 @@ MUST_BE_REQUIRED = {
     "UI Unit Tests": "npx vitest run",
     "SRT Security Review": "make srt-scan",
     "Dependency Audit (SCA)": "scripts/security/dep_audit.py",
+    "Terraform Checks (offline translate + validate)": "make terraform-check",
 }
 
 # The mirror image: contexts this repo does produce, but not on every pull
