@@ -1,9 +1,11 @@
 # Internationalization
 
 Developer notes for `src/ui/src/i18n/`: how the web UI shows a language other than English,
-how a message is declared, and what the gates around it check. What users see is described in
-[docs/web-ui.md](../../../../docs/web-ui.md). The series of pull requests that builds this out is
-tracked in [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
+how a message is declared, and what the gates around it check. Nothing here is visible to a user
+yet (only `en` is enabled); the user-facing description goes into
+[docs/web-ui.md](../../../../docs/web-ui.md) with the pull request that enables `fr-CA`. The series
+of pull requests that builds this out is tracked in
+[issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
 
 ## What this is
 

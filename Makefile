@@ -200,8 +200,8 @@ setup-venv: lock-constraints ## Create .venv and install all packages into it, c
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, UI message catalog and string debt, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint check-ui-i18n-catalog check-ui-string-debt codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, then the UI message catalog and string debt, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint: lint without ui-lint, cfn-lint and codegen-check. The two UI i18n gates still run when src/ui/node_modules exists; without it they print a visible SKIP (not a pass)
 
 # Pin the linter, for the same reason spelled out at CFN_LINT_VERSION below: an
 # UNPINNED tool on a blocking gate is the one realistic way this red-lines the
@@ -1522,7 +1522,7 @@ ui-i18n-extract: ## Re-extract the UI's English message catalog into src/ui/src/
 # `make ui-i18n-coverage UI_I18N_COVERAGE_ARGS=--json` (nothing else is printed,
 # so the output is the JSON) or `UI_I18N_COVERAGE_ARGS="--locale fr-CA"`.
 UI_I18N_COVERAGE_ARGS ?=
-ui-i18n-coverage: ## Report fr-CA translation coverage: missing, stale (English changed since translation) and invalid entries per locale catalog; advisory, never fails (issue #1770)
+ui-i18n-coverage: ## Report translation coverage for each locale catalog present in src/ui/src/i18n: missing, stale (English changed since translation) and invalid entries; advisory, never fails (issue #1770)
 	@# It runs node out of src/ui/node_modules, so it takes the same lock as the UI
 	@# targets (issue #1447). Off CI without node_modules it prints a SKIP (not a
 	@# report); in CI that is an error. Exit 2 only when no report could be made.
