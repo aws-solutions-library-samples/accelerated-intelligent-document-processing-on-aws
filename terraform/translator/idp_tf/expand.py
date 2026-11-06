@@ -48,6 +48,23 @@ def _partition_safe(value: Any) -> Any:
     return value
 
 
+def _sam_shape_fixups(template: dict[str, Any]) -> dict[str, Any]:
+    """Shapes SAM passes through that the target resource type defines
+    differently. Each fixup names one property of one type."""
+    for res in template.get("Resources", {}).values():
+        if res.get("Type") == "AWS::StepFunctions::StateMachine":
+            logging = (res.get("Properties") or {}).get("LoggingConfiguration") or {}
+            for dest in logging.get("Destinations", []) or []:
+                group = dest.get("CloudWatchLogsLogGroup")
+                # SAM accepts the log group ARN directly; the resource type
+                # wants {"LogGroupArn": ...}.
+                if group is not None and not (
+                    isinstance(group, dict) and "LogGroupArn" in group
+                ):
+                    dest["CloudWatchLogsLogGroup"] = {"LogGroupArn": group}
+    return template
+
+
 def load_template(path: Path) -> dict[str, Any]:
     template = yaml_parse(path.read_text())
     return _normalise(template)
@@ -66,4 +83,4 @@ def expand(template: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"unsupported template transform(s): {unsupported}")
     expanded = transform(copy.deepcopy(template), {}, _NoManagedPolicies())
     expanded.pop("Transform", None)
-    return _partition_safe(_normalise(expanded))
+    return _sam_shape_fixups(_partition_safe(_normalise(expanded)))

@@ -7,6 +7,7 @@ property fails the translation instead of being dropped.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -57,6 +58,17 @@ def render_spec(tr: Translator, spec: Spec, props: dict[str, Any], where: str):
             set_attrs.add(entry[1])
         if kind == "attr":
             lines.append(f"{entry[1]} = {tr.expr(v)}")
+        elif kind == "role_arn":
+            # CloudFormation accepts a role name here; the provider wants an ARN.
+            target = (
+                tr.plans.get(v["Ref"])
+                if isinstance(v, dict) and set(v) == {"Ref"}
+                else None
+            )
+            if target is not None and target.cfn_type == "AWS::IAM::Role":
+                lines.append(f"{entry[1]} = {tr.getatt(v['Ref'], 'Arn')}")
+            else:
+                lines.append(f"{entry[1]} = {tr.expr(v)}")
         elif kind == "json":
             if isinstance(v, str) or is_intrinsic(v) and "Fn::Sub" in v:
                 lines.append(f"{entry[1]} = {tr.expr(v)}")
@@ -119,13 +131,14 @@ def _block(tr: Translator, name: str, spec: Spec, v: Any, where: str) -> str:
 
 
 def default_name(logical_id: str, limit: int) -> str:
-    """Deterministic name for a type whose Terraform resource requires one."""
-    keep = limit - 21 - 9
-    short = logical_id[:keep]
-    return (
-        f'"${{substr(var.{STACK_NAME_VAR}, 0, 20)}}-{short}-'
-        f'${{substr(md5("${{var.{STACK_NAME_VAR}}}-{logical_id}"), 0, 8)}}"'
-    )
+    """Deterministic name for a type whose Terraform resource requires one.
+
+    ``<stack>-<LogicalId>`` cut to fit, then an 8-character hash of the full
+    pair. The stack name stays a prefix, as in CloudFormation's generated names,
+    because templates grant access by it (``function:${AWS::StackName}*``).
+    """
+    pair = f"${{var.{STACK_NAME_VAR}}}-{logical_id}"
+    return f'"${{substr("{pair}", 0, {limit - 9})}}-${{substr(md5("{pair}"), 0, 8)}}"'
 
 
 @dataclass
@@ -270,14 +283,31 @@ class LambdaMapper(SpecMapper):
         else:
             raise TranslationError(f"{plan.logical_id}: ZipFile for runtime {runtime}")
         zip_name = f"{plan.name}_zipfile"
+        source = code["ZipFile"]
+        sources = [
+            hcl.block(
+                "source",
+                [f"content = {tr.expr(source)}", f'filename = "{fname}"'],
+            ).rstrip()
+        ]
+        # CloudFormation makes `cfnresponse` importable by inline Python code;
+        # package the stand-in so the same source runs under Terraform.
+        if fname == "index.py" and "cfnresponse" in json.dumps(source):
+            sources.append(
+                hcl.block(
+                    "source",
+                    [
+                        'content = file("${path.module}/bridge/cfnresponse.py")',
+                        'filename = "cfnresponse.py"',
+                    ],
+                ).rstrip()
+            )
+            tr.needs_cfnresponse = True
         data = hcl.block(
             f'data "archive_file" "{zip_name}"',
-            [
-                'type = "zip"',
-                f"source_content = {tr.expr(code['ZipFile'])}",
-                f'source_content_filename = "{fname}"',
-                f'output_path = "${{path.module}}/.build/{zip_name}.zip"',
-            ],
+            ['type = "zip"']
+            + sources
+            + [f'output_path = "${{path.module}}/.build/{zip_name}.zip"'],
         )
         plan.props = {k: v for k, v in plan.props.items() if k != "Code"}
         try:
@@ -382,7 +412,7 @@ CODEBUILD = SpecMapper(
     spec={
         "Name": ("attr", "name"),
         "Description": ("attr", "description"),
-        "ServiceRole": ("attr", "service_role"),
+        "ServiceRole": ("role_arn", "service_role"),
         "TimeoutInMinutes": ("attr", "build_timeout"),
         "QueuedTimeoutInMinutes": ("attr", "queued_timeout"),
         "EncryptionKey": ("attr", "encryption_key"),
@@ -472,20 +502,43 @@ class PerTargetPolicyMapper:
 
     ref_attr = "id"
 
-    def __init__(self, tf_type: str, targets: dict[str, tuple[str, str]], name_prop):
+    def __init__(
+        self,
+        tf_type: str,
+        targets: dict[str, tuple[str, str]],
+        name_prop,
+        default_version: str | None = None,
+    ):
         self.tf_type = tf_type
         self.targets = targets  # cfn prop -> (tf type, tf target attr)
         self.name_prop = name_prop
+        # The Version a service stores when a policy omits it. The provider
+        # waits until the stored policy matches the configured one, so an
+        # omitted Version never matches and the apply waits forever.
+        self.default_version = default_version
 
     def getatt(self, attr: str) -> Any:
         raise TranslationError(f"{self.tf_type}: unmapped GetAtt {attr}")
 
     def plan(self, tr: Translator, plan: Plan) -> None:
-        return None
+        plan.virtual = True
+        for prop, (tf_type, _) in self.targets.items():
+            items = plan.props.get(prop, [])
+            if is_intrinsic(items):
+                continue
+            for i, _ in enumerate(items):
+                plan.extra_deps.append(f"{tf_type}.{plan.name}_{prop.lower()}_{i}")
 
     def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
         props = dict(plan.props)
         doc = props.pop("PolicyDocument")
+        if (
+            self.default_version
+            and isinstance(doc, dict)
+            and not is_intrinsic(doc)
+            and "Version" not in doc
+        ):
+            doc = {"Version": self.default_version, **doc}
         name = props.pop(self.name_prop, None) if self.name_prop else None
         policy = (
             tr.expr(doc)
@@ -513,9 +566,459 @@ class PerTargetPolicyMapper:
         return "\n".join(out)
 
 
+class NoOpMapper:
+    """``AWS::CloudFormation::WaitConditionHandle`` creates nothing; templates
+    use it only as a dependency anchor."""
+
+    tf_type = "terraform_data"
+    ref_attr = "id"
+
+    def getatt(self, attr: str) -> Any:
+        raise TranslationError(f"WaitConditionHandle has no attribute {attr}")
+
+    def plan(self, tr: Translator, plan: Plan) -> None:
+        return None
+
+    def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
+        if plan.props:
+            raise TranslationError(f"{plan.logical_id}: unexpected properties")
+        head, tail = tr.meta_lines(plan, res)
+        return hcl.block(f'resource "terraform_data" "{plan.name}"', head + tail)
+
+
+class EcrRepositoryMapper:
+    """One repository becomes the repository, its lifecycle policy and its
+    repository policy. ``EmptyOnDelete`` must be honoured on destroy, which the
+    Cloud Control path does not do (see terraform/prototype/RESULTS.md)."""
+
+    tf_type = "aws_ecr_repository"
+    ref_attr = "name"
+    spec: Spec = {
+        "RepositoryName": ("attr", "name"),
+        "EmptyOnDelete": ("attr", "force_delete"),
+        "ImageTagMutability": ("attr", "image_tag_mutability"),
+        "Tags": ("tags", "tags"),
+        "ImageScanningConfiguration": (
+            "block",
+            "image_scanning_configuration",
+            {"ScanOnPush": ("attr", "scan_on_push")},
+        ),
+        "EncryptionConfiguration": (
+            "block",
+            "encryption_configuration",
+            {
+                "EncryptionType": ("attr", "encryption_type"),
+                "KmsKey": ("attr", "kms_key"),
+            },
+        ),
+    }
+
+    def getatt(self, attr: str) -> Any:
+        return {"Arn": "arn", "RepositoryUri": "repository_url"}[attr]
+
+    def plan(self, tr: Translator, plan: Plan) -> None:
+        for prop, suffix in (
+            ("LifecyclePolicy", "lifecycle"),
+            ("RepositoryPolicyText", "policy"),
+        ):
+            if prop in plan.props:
+                plan.extra_deps.append(
+                    f"aws_ecr_{suffix}_policy.{plan.name}"
+                    if suffix == "lifecycle"
+                    else f"aws_ecr_repository_policy.{plan.name}"
+                )
+
+    def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
+        props = {
+            k: v
+            for k, v in plan.props.items()
+            if k not in ("LifecyclePolicy", "RepositoryPolicyText")
+        }
+        lines = render_spec(tr, self.spec, props, plan.logical_id)
+        if "RepositoryName" not in props:
+            lines.insert(0, f"name = lower({default_name(plan.logical_id, 256)})")
+        head, tail = tr.meta_lines(plan, res)
+        out = [
+            hcl.block(
+                f'resource "aws_ecr_repository" "{plan.name}"', head + lines + tail
+            )
+        ]
+        repo = f"aws_ecr_repository.{plan.name}{'[0]' if plan.condition else ''}.name"
+        count = (
+            [f"count = {tr.cond_ref(plan.condition)} ? 1 : 0"] if plan.condition else []
+        )
+        lp = plan.props.get("LifecyclePolicy")
+        if lp is not None:
+            extra = set(lp) - {"LifecyclePolicyText", "RegistryId"}
+            if extra:
+                raise TranslationError(f"{plan.logical_id}.LifecyclePolicy: {extra}")
+            out.append(
+                hcl.block(
+                    f'resource "aws_ecr_lifecycle_policy" "{plan.name}"',
+                    count
+                    + [
+                        f"repository = {repo}",
+                        f"policy = {tr.expr(lp['LifecyclePolicyText'])}",
+                    ],
+                )
+            )
+        rp = plan.props.get("RepositoryPolicyText")
+        if rp is not None:
+            policy = (
+                tr.expr(rp)
+                if isinstance(rp, str) or is_intrinsic(rp)
+                else f"jsonencode({tr.expr(rp, json_ctx=True)})"
+            )
+            out.append(
+                hcl.block(
+                    f'resource "aws_ecr_repository_policy" "{plan.name}"',
+                    count + [f"repository = {repo}", f"policy = {policy}"],
+                )
+            )
+        return "\n".join(out)
+
+
+VISIBILITY: Spec = {
+    "CloudWatchMetricsEnabled": ("attr", "cloudwatch_metrics_enabled"),
+    "MetricName": ("attr", "metric_name"),
+    "SampledRequestsEnabled": ("attr", "sampled_requests_enabled"),
+}
+# WAF actions are written as empty objects: {"Allow": {}}.
+WAF_ACTION: Spec = {
+    "Allow": ("block", "allow", {}),
+    "Block": ("block", "block", {}),
+    "Count": ("block", "count", {}),
+}
+
+WAF_WEB_ACL = SpecMapper(
+    tf_type="aws_wafv2_web_acl",
+    ref_attr="id",
+    attrs={"Arn": "arn", "Id": "id"},
+    spec={
+        "Name": ("attr", "name"),
+        "Description": ("attr", "description"),
+        "Scope": ("attr", "scope"),
+        "Tags": ("tags", "tags"),
+        "DefaultAction": ("block", "default_action", WAF_ACTION),
+        "VisibilityConfig": ("block", "visibility_config", VISIBILITY),
+        "Rules": (
+            "blocks",
+            "rule",
+            {
+                "Name": ("attr", "name"),
+                "Priority": ("attr", "priority"),
+                "Action": ("block", "action", WAF_ACTION),
+                "OverrideAction": (
+                    "block",
+                    "override_action",
+                    {"None": ("block", "none", {}), "Count": ("block", "count", {})},
+                ),
+                "Statement": (
+                    "block",
+                    "statement",
+                    {
+                        "IPSetReferenceStatement": (
+                            "block",
+                            "ip_set_reference_statement",
+                            {"Arn": ("attr", "arn")},
+                        ),
+                        "ManagedRuleGroupStatement": (
+                            "block",
+                            "managed_rule_group_statement",
+                            {
+                                "Name": ("attr", "name"),
+                                "VendorName": ("attr", "vendor_name"),
+                            },
+                        ),
+                        "RateBasedStatement": (
+                            "block",
+                            "rate_based_statement",
+                            {
+                                "Limit": ("attr", "limit"),
+                                "AggregateKeyType": ("attr", "aggregate_key_type"),
+                            },
+                        ),
+                    },
+                ),
+                "VisibilityConfig": ("block", "visibility_config", VISIBILITY),
+            },
+        ),
+    },
+)
+
+COGNITO_USER_POOL = SpecMapper(
+    tf_type="aws_cognito_user_pool",
+    ref_attr="id",
+    attrs={
+        "Arn": "arn",
+        "UserPoolId": "id",
+        "ProviderName": "endpoint",
+        "ProviderURL": ("endpoint", '"https://${%s}"'),
+    },
+    spec={
+        "UserPoolName": ("attr", "name"),
+        "AutoVerifiedAttributes": ("attr", "auto_verified_attributes"),
+        "AliasAttributes": ("attr", "alias_attributes"),
+        "UsernameAttributes": ("attr", "username_attributes"),
+        "EmailVerificationMessage": ("attr", "email_verification_message"),
+        "EmailVerificationSubject": ("attr", "email_verification_subject"),
+        "MfaConfiguration": ("attr", "mfa_configuration"),
+        "DeletionProtection": ("attr", "deletion_protection"),
+        "UserPoolTags": ("map", "tags"),
+        "AdminCreateUserConfig": (
+            "block",
+            "admin_create_user_config",
+            {
+                "AllowAdminCreateUserOnly": ("attr", "allow_admin_create_user_only"),
+                "InviteMessageTemplate": (
+                    "block",
+                    "invite_message_template",
+                    {
+                        "EmailMessage": ("attr", "email_message"),
+                        "EmailSubject": ("attr", "email_subject"),
+                        "SMSMessage": ("attr", "sms_message"),
+                    },
+                ),
+            },
+        ),
+        "EmailConfiguration": (
+            "block",
+            "email_configuration",
+            {
+                "EmailSendingAccount": ("attr", "email_sending_account"),
+                "SourceArn": ("attr", "source_arn"),
+                "From": ("attr", "from_email_address"),
+                "ReplyToEmailAddress": ("attr", "reply_to_email_address"),
+                "ConfigurationSet": ("attr", "configuration_set"),
+            },
+        ),
+        "LambdaConfig": (
+            "block",
+            "lambda_config",
+            {
+                "PreAuthentication": ("attr", "pre_authentication"),
+                "PreSignUp": ("attr", "pre_sign_up"),
+                "PreTokenGeneration": ("attr", "pre_token_generation"),
+                "PostAuthentication": ("attr", "post_authentication"),
+                "PostConfirmation": ("attr", "post_confirmation"),
+                "CustomMessage": ("attr", "custom_message"),
+                "DefineAuthChallenge": ("attr", "define_auth_challenge"),
+                "CreateAuthChallenge": ("attr", "create_auth_challenge"),
+                "VerifyAuthChallengeResponse": (
+                    "attr",
+                    "verify_auth_challenge_response",
+                ),
+                "UserMigration": ("attr", "user_migration"),
+            },
+        ),
+        "Policies": (
+            "flatten",
+            {
+                "PasswordPolicy": (
+                    "block",
+                    "password_policy",
+                    {
+                        "MinimumLength": ("attr", "minimum_length"),
+                        "RequireLowercase": ("attr", "require_lowercase"),
+                        "RequireNumbers": ("attr", "require_numbers"),
+                        "RequireSymbols": ("attr", "require_symbols"),
+                        "RequireUppercase": ("attr", "require_uppercase"),
+                        "TemporaryPasswordValidityDays": (
+                            "attr",
+                            "temporary_password_validity_days",
+                        ),
+                    },
+                ),
+            },
+        ),
+        "Schema": (
+            "blocks",
+            "schema",
+            {
+                "AttributeDataType": ("attr", "attribute_data_type"),
+                "Mutable": ("attr", "mutable"),
+                "Name": ("attr", "name"),
+                "Required": ("attr", "required"),
+                "DeveloperOnlyAttribute": ("attr", "developer_only_attribute"),
+                "StringAttributeConstraints": (
+                    "block",
+                    "string_attribute_constraints",
+                    {
+                        "MaxLength": ("attr", "max_length"),
+                        "MinLength": ("attr", "min_length"),
+                    },
+                ),
+            },
+        ),
+        "UserAttributeUpdateSettings": (
+            "block",
+            "user_attribute_update_settings",
+            {
+                "AttributesRequireVerificationBeforeUpdate": (
+                    "attr",
+                    "attributes_require_verification_before_update",
+                ),
+            },
+        ),
+        "UsernameConfiguration": (
+            "block",
+            "username_configuration",
+            {"CaseSensitive": ("attr", "case_sensitive")},
+        ),
+        "AccountRecoverySetting": (
+            "block",
+            "account_recovery_setting",
+            {
+                "RecoveryMechanisms": (
+                    "blocks",
+                    "recovery_mechanism",
+                    {"Name": ("attr", "name"), "Priority": ("attr", "priority")},
+                ),
+            },
+        ),
+    },
+)
+
+CACHE_BEHAVIOR: Spec = {
+    "AllowedMethods": ("attr", "allowed_methods"),
+    "CachedMethods": ("attr", "cached_methods"),
+    "Compress": ("attr", "compress"),
+    "DefaultTTL": ("attr", "default_ttl"),
+    "MaxTTL": ("attr", "max_ttl"),
+    "MinTTL": ("attr", "min_ttl"),
+    "TargetOriginId": ("attr", "target_origin_id"),
+    "ViewerProtocolPolicy": ("attr", "viewer_protocol_policy"),
+    "ResponseHeadersPolicyId": ("attr", "response_headers_policy_id"),
+    "CachePolicyId": ("attr", "cache_policy_id"),
+    "OriginRequestPolicyId": ("attr", "origin_request_policy_id"),
+    "PathPattern": ("attr", "path_pattern"),
+    "ForwardedValues": (
+        "block",
+        "forwarded_values",
+        {
+            "QueryString": ("attr", "query_string"),
+            "Headers": ("attr", "headers"),
+            "QueryStringCacheKeys": ("attr", "query_string_cache_keys"),
+            "Cookies": (
+                "block",
+                "cookies",
+                {
+                    "Forward": ("attr", "forward"),
+                    "WhitelistedNames": ("attr", "whitelisted_names"),
+                },
+            ),
+        },
+    ),
+    # CloudFormation defaults CachedMethods to GET, HEAD; the provider requires it.
+    DEFAULTS: ("defaults", {"cached_methods": '["GET", "HEAD"]'}),
+}
+
+CLOUDFRONT_DISTRIBUTION = SpecMapper(
+    tf_type="aws_cloudfront_distribution",
+    ref_attr="id",
+    attrs={"DomainName": "domain_name", "Id": "id"},
+    spec={
+        "Tags": ("tags", "tags"),
+        "DistributionConfig": (
+            "flatten",
+            {
+                "Comment": ("attr", "comment"),
+                "DefaultRootObject": ("attr", "default_root_object"),
+                "Enabled": ("attr", "enabled"),
+                "HttpVersion": ("attr", "http_version"),
+                "IPV6Enabled": ("attr", "is_ipv6_enabled"),
+                "PriceClass": ("attr", "price_class"),
+                "Aliases": ("attr", "aliases"),
+                "WebACLId": ("attr", "web_acl_id"),
+                "CustomErrorResponses": (
+                    "blocks",
+                    "custom_error_response",
+                    {
+                        "ErrorCachingMinTTL": ("attr", "error_caching_min_ttl"),
+                        "ErrorCode": ("attr", "error_code"),
+                        "ResponseCode": ("attr", "response_code"),
+                        "ResponsePagePath": ("attr", "response_page_path"),
+                    },
+                ),
+                "DefaultCacheBehavior": (
+                    "block",
+                    "default_cache_behavior",
+                    CACHE_BEHAVIOR,
+                ),
+                "CacheBehaviors": ("blocks", "ordered_cache_behavior", CACHE_BEHAVIOR),
+                "Logging": (
+                    "block",
+                    "logging_config",
+                    {
+                        "Bucket": ("attr", "bucket"),
+                        "IncludeCookies": ("attr", "include_cookies"),
+                        "Prefix": ("attr", "prefix"),
+                    },
+                ),
+                "Origins": (
+                    "blocks",
+                    "origin",
+                    {
+                        "DomainName": ("attr", "domain_name"),
+                        "Id": ("attr", "origin_id"),
+                        "OriginPath": ("attr", "origin_path"),
+                        "OriginAccessControlId": ("attr", "origin_access_control_id"),
+                        "S3OriginConfig": (
+                            "block",
+                            "s3_origin_config",
+                            {
+                                "OriginAccessIdentity": (
+                                    "attr",
+                                    "origin_access_identity",
+                                )
+                            },
+                        ),
+                    },
+                ),
+                "Restrictions": (
+                    "block",
+                    "restrictions",
+                    {
+                        "GeoRestriction": (
+                            "block",
+                            "geo_restriction",
+                            {
+                                "RestrictionType": ("attr", "restriction_type"),
+                                "Locations": ("attr", "locations"),
+                            },
+                        ),
+                    },
+                ),
+                "ViewerCertificate": (
+                    "block",
+                    "viewer_certificate",
+                    {
+                        "CloudFrontDefaultCertificate": (
+                            "attr",
+                            "cloudfront_default_certificate",
+                        ),
+                        "MinimumProtocolVersion": ("attr", "minimum_protocol_version"),
+                        "AcmCertificateArn": ("attr", "acm_certificate_arn"),
+                        "SslSupportMethod": ("attr", "ssl_support_method"),
+                    },
+                ),
+            },
+        ),
+    },
+)
+
+
 MAPPERS: dict[str, Any] = {
+    "AWS::WAFv2::WebACL": WAF_WEB_ACL,
+    "AWS::Cognito::UserPool": COGNITO_USER_POOL,
+    "AWS::CloudFront::Distribution": CLOUDFRONT_DISTRIBUTION,
+    "AWS::CloudFormation::WaitConditionHandle": NoOpMapper(),
+    "AWS::ECR::Repository": EcrRepositoryMapper(),
     "AWS::SQS::QueuePolicy": PerTargetPolicyMapper(
-        "aws_sqs_queue_policy", {"Queues": ("aws_sqs_queue_policy", "queue_url")}, None
+        "aws_sqs_queue_policy",
+        {"Queues": ("aws_sqs_queue_policy", "queue_url")},
+        None,
+        default_version="2008-10-17",
     ),
     "AWS::IAM::Policy": PerTargetPolicyMapper(
         "aws_iam_role_policy",
@@ -534,5 +1037,10 @@ MAPPERS: dict[str, Any] = {
 
 # Types emitted as hashicorp/aws in hybrid mode even though awscc has them.
 HYBRID_TYPES = frozenset(
-    {"AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup"}
+    {
+        "AWS::IAM::Role",
+        "AWS::Lambda::Function",
+        "AWS::Logs::LogGroup",
+        "AWS::ECR::Repository",
+    }
 )

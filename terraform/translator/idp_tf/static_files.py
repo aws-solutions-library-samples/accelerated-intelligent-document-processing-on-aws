@@ -25,13 +25,12 @@ VERSIONS_TF = """terraform {
 """
 
 
-def bridge_tf(service_tokens: list[str]) -> str:
+def bridge_tf() -> str:
     """Bridge Lambda, its role and its response bucket.
 
-    ``service_tokens`` are the HCL expressions of every custom-resource
-    handler the module invokes; the bridge may invoke exactly those.
+    The bridge's own policy grants no ``lambda:InvokeFunction``: each handler
+    grants it through an ``aws_lambda_permission`` naming the bridge role.
     """
-    tokens = hcl.lst(sorted(set(service_tokens)))
     return f"""# Runs CloudFormation custom-resource handlers for Terraform. See
 # terraform/bridge/index.py in the source repository.
 
@@ -93,7 +92,7 @@ resource "aws_iam_role" "cfn_bridge" {{
     Version = "2012-10-17"
     Statement = [{{
       Effect    = "Allow"
-      Principal = {{ Service = "lambda.${{data.aws_partition.current.dns_suffix}}" }}
+      Principal = {{ Service = "lambda.${{local.pseudo.dns_suffix}}" }}
       Action    = "sts:AssumeRole"
     }}]
   }})
@@ -115,11 +114,6 @@ resource "aws_iam_role_policy" "cfn_bridge" {{
         Effect   = "Allow"
         Action   = "s3:ListBucket"
         Resource = aws_s3_bucket.cfn_bridge.arn
-      }},
-      {{
-        Effect   = "Allow"
-        Action   = "lambda:InvokeFunction"
-        Resource = {tokens}
       }},
       {{
         Effect   = "Allow"
@@ -167,7 +161,10 @@ def label_tf(description: str, version: str) -> str:
     """CloudFormation stack that labels this Terraform deployment.
 
     It manages no resources. It exists so a Terraform deployment and its
-    published version appear in CloudFormation, for cross-referencing.
+    published version appear in CloudFormation, for cross-referencing. It is
+    named exactly like the deployment and carries the main template's outputs
+    plus the location of the resource directory, so ``idp-cli --stack-name``
+    and the SDK work against a Terraform deployment unchanged.
     """
     desc = f"{description} (Terraform)"
     purpose = (
@@ -178,18 +175,50 @@ def label_tf(description: str, version: str) -> str:
   type        = bool
   default     = true
   description = <<-EOT
-    Create a small CloudFormation stack, named <stack_name>-tf-label, that
-    labels this Terraform deployment and its published version so it can be
+    Create a small CloudFormation stack, named <stack_name>, that labels this
+    Terraform deployment and its published version so it can be
     cross-referenced in CloudFormation. The stack manages no resources (it holds
     one AWS::CloudFormation::WaitConditionHandle, which creates nothing) and
-    costs nothing. Set to false to skip it, for example where the deploying
-    role may not use CloudFormation.
+    costs nothing. It also carries the deployment's outputs and the location of
+    its resource directory, which is how idp-cli and the SDK find a Terraform
+    deployment's resources by --stack-name. Set to false to skip it, for
+    example where the deploying role may not use CloudFormation; idp-cli then
+    cannot address this deployment.
   EOT
+}}
+
+resource "aws_s3_object" "cfn_resource_directory" {{
+  bucket       = aws_s3_bucket.cfn_bridge.id
+  key          = "terraform/cfn-resource-directory.json"
+  content      = jsonencode(local.cfn_resource_directory_root)
+  content_type = "application/json"
+}}
+
+locals {{
+  cfn_resource_directory_root = {{
+    version   = 1
+    stackName = var.{STACK_NAME_VAR}
+    root      = local.cfn_resource_directory_self
+  }}
+  cfn_label_outputs = merge(
+    {{
+      for k, v in local.cfn_resource_directory_self.outputs :
+      k => {{ Value = v }} if v != null && v != ""
+    }},
+    {{
+      TerraformResourceDirectory = {{
+        Value = "s3://${{aws_s3_bucket.cfn_bridge.id}}/${{aws_s3_object.cfn_resource_directory.key}}"
+      }}
+      TerraformResourceDirectoryVersion = {{
+        Value = aws_s3_object.cfn_resource_directory.etag
+      }}
+    }},
+  )
 }}
 
 resource "aws_cloudformation_stack" "tf_label" {{
   count = var.enable_cfn_stack_label ? 1 : 0
-  name  = "${{var.{STACK_NAME_VAR}}}-tf-label"
+  name  = var.{STACK_NAME_VAR}
   template_body = jsonencode({{
     AWSTemplateFormatVersion = "2010-09-09"
     Description              = {hcl.string(desc)}
@@ -203,6 +232,7 @@ resource "aws_cloudformation_stack" "tf_label" {{
         }}
       }}
     }}
+    Outputs = local.cfn_label_outputs
   }})
 }}
 """

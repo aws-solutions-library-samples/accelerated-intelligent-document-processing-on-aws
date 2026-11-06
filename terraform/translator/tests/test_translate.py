@@ -265,8 +265,17 @@ def test_inline_zipfile_becomes_archive_file(schema):
     t = {"Resources": {"F": lambda_fn(Runtime="python3.12", Code={"ZipFile": "x=1"})}}
     out = render(t, schema)["main.tf"]
     assert 'data "archive_file" "f_zipfile"' in out
-    assert 'source_content_filename = "index.py"' in out
+    assert 'filename = "index.py"' in out
     assert "filename = data.archive_file.f_zipfile.output_path" in out
+
+
+def test_inline_code_importing_cfnresponse_gets_the_stand_in(schema):
+    code = {"ZipFile": "import cfnresponse\ndef handler(e, c): pass"}
+    t = {"Resources": {"F": lambda_fn(Runtime="python3.12", Code=code)}}
+    tr = Translator(t, schema)
+    out = tr.render()["main.tf"]
+    assert 'filename = "cfnresponse.py"' in out
+    assert tr.needs_cfnresponse
 
 
 def test_json_text_literal_is_minified_in_source_order(schema):

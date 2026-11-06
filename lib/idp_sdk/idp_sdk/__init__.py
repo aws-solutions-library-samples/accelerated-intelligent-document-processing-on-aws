@@ -23,6 +23,7 @@ Example:
     >>> client.config.create(features="min", output="config.yaml")
 """
 
+from ._core import terraform_stack as _terraform_stack
 from .client import IDPClient
 from .exceptions import (
     IDPConfigurationError,
@@ -274,3 +275,7 @@ __all__ = [
     "TenantUserGrant",
     "TenantVerifyResult",
 ]
+
+# Lets every CloudFormation lookup by --stack-name resolve a Terraform
+# deployment through its label stack. See _core/terraform_stack.py.
+_terraform_stack.install()

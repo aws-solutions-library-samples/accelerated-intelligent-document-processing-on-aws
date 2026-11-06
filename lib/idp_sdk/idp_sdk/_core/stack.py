@@ -124,6 +124,7 @@ class StackDeployer:
             Dictionary with deployment result
         """
         logger.info(f"Deploying stack: {stack_name}")
+        self._refuse_terraform_stack(stack_name, "deploy")
 
         if not template_path and not template_url:
             raise ValueError("Either template_path or template_url must be provided")
@@ -295,6 +296,24 @@ class StackDeployer:
         except Exception as e:
             logger.error(f"Error deploying stack: {e}")
             raise
+
+    def _refuse_terraform_stack(self, stack_name: str, action: str) -> None:
+        """A Terraform deployment has a CloudFormation label stack of the same
+        name. Deploying or deleting through CloudFormation would act on the
+        label, not on the deployment, so refuse and say what to run instead."""
+        from .terraform_stack import is_terraform_stack
+
+        try:
+            stack = self.cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
+        except Exception:  # noqa: BLE001 - no such stack: nothing to refuse
+            return
+        if is_terraform_stack(stack.get("Description")):
+            verb = "terraform apply" if action == "deploy" else "terraform destroy"
+            raise ValueError(
+                f"{stack_name} is a Terraform deployment. Its CloudFormation stack "
+                f"is only a label, so `idp-cli {action}` cannot manage it; run "
+                f"`{verb}` in the Terraform configuration that deployed it."
+            )
 
     def _read_template(self, template_path: str) -> str:
         """Read CloudFormation template file"""
@@ -997,6 +1016,7 @@ class StackDeployer:
             Dictionary with deletion result including stack_id
         """
         logger.info(f"Deleting stack: {stack_name}")
+        self._refuse_terraform_stack(stack_name, "delete")
 
         # Check if stack exists
         if not self._stack_exists(stack_name):

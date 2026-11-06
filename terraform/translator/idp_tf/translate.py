@@ -45,6 +45,11 @@ RESOURCE_KEYS = {
     "Version",
 }
 STACK_NAME_VAR = "stack_name"
+# A module variable carrying a plan-time-known stand-in for a parameter that a
+# condition reads. Resource attributes are replaced by a non-empty placeholder,
+# which is exactly what CloudFormation's condition sees: a resource id is never
+# empty and never equals a literal the template compares it with.
+COND_SUFFIX = "__cond"
 CUSTOM_TYPES = ("Custom::", "AWS::CloudFormation::CustomResource")
 
 # CloudFormation `Ref` returns something other than the Cloud Control
@@ -85,6 +90,9 @@ class Plan:
     ref_attr: str = "id"
     getatt: Callable[[str], Any] | None = None
     extra_deps: list[str] = field(default_factory=list)
+    # True when no Terraform resource has this plan's address (the CloudFormation
+    # resource became several); dependants then use ``extra_deps`` only.
+    virtual: bool = False
 
     @property
     def address(self) -> str:
@@ -108,6 +116,7 @@ class Translator:
         mode: str = "hybrid",
         aws_mapped: frozenset[str] | None = None,
         survey: bool = False,
+        nested_loader: Callable[[str], dict[str, Any]] | None = None,
     ):
         from . import aws_mappers
 
@@ -132,6 +141,21 @@ class Translator:
         # run lists everything a template needs.
         self.survey = survey
         self.errors: list[str] = []
+        self.nested_loader = nested_loader
+        self.children: dict[str, Translator] = {}
+        # Parameters a condition reads. Across a module boundary their values
+        # can be resource attributes, unknown until apply, while count must be
+        # known at plan; see emit_module and COND_SUFFIX.
+        self.cond_params: set[str] = set()
+        self._collect_cond_params(self.conditions)
+        self._in_conditions = False
+        self._opaque = False
+        # Only the root reads the pseudo-parameters from data sources. A data
+        # source inside a module that has depends_on is deferred to apply, which
+        # would make every condition reading it unknown at plan time.
+        self.is_root = True
+        # Set when an inline function imports CloudFormation's cfnresponse.
+        self.needs_cfnresponse = False
         self.plans: dict[str, Plan] = {}
         self._refs: set[str] = set()
         self._current: str = ""
@@ -151,6 +175,9 @@ class Translator:
                 plan = Plan(
                     lid, rtype, "custom", "aws_lambda_invocation", name, cond, props
                 )
+            elif rtype == "AWS::CloudFormation::Stack":
+                plan = Plan(lid, rtype, "module", "module", name, cond, props)
+                self._plan_module(plan)
             elif (
                 self.mode == "hybrid" and rtype in self.aws_mapped
             ) or not self.schema.has(rtype):
@@ -186,6 +213,42 @@ class Translator:
             if plan.kind == "aws":
                 self.mappers[plan.cfn_type].plan(self, plan)
 
+    def _collect_cond_params(self, node: Any) -> None:
+        if isinstance(node, dict):
+            if set(node) == {"Ref"} and node["Ref"] in self.params:
+                self.cond_params.add(node["Ref"])
+            for v in node.values():
+                self._collect_cond_params(v)
+        elif isinstance(node, list):
+            for v in node:
+                self._collect_cond_params(v)
+
+    def _plan_module(self, plan: Plan) -> None:
+        if self.nested_loader is None:
+            raise TranslationError(
+                f"{plan.logical_id}: nested stack needs a template loader"
+            )
+        url = plan.props["TemplateURL"]
+        if not isinstance(url, str):
+            raise TranslationError(f"{plan.logical_id}: TemplateURL must be literal")
+        child = Translator(
+            self.nested_loader(url),
+            self.schema,
+            mode=self.mode,
+            aws_mapped=self.aws_mapped,
+            survey=self.survey,
+            nested_loader=self.nested_loader,
+        )
+        child.is_root = False
+        self.children[plan.name] = child
+        # CloudFormation makes anything that references a nested stack wait for
+        # the whole stack. A reference to one module output waits only for what
+        # feeds that output, and for nothing when the output is computed from
+        # the stack name, so depend on the whole module instead.
+        plan.extra_deps.append(plan.address)
+        if self.survey:
+            self.errors.extend(f"{plan.logical_id}/{e}" for e in child.errors)
+
     # ----------------------------------------------------------- references
     def cond_ref(self, name: str) -> str:
         if name not in self.conditions:
@@ -200,10 +263,10 @@ class Translator:
 
     def ref(self, name: str) -> str:
         pseudo = {
-            "AWS::Region": "data.aws_region.current.region",
-            "AWS::AccountId": "data.aws_caller_identity.current.account_id",
-            "AWS::Partition": "data.aws_partition.current.partition",
-            "AWS::URLSuffix": "data.aws_partition.current.dns_suffix",
+            "AWS::Region": "local.pseudo.region",
+            "AWS::AccountId": "local.pseudo.account_id",
+            "AWS::Partition": "local.pseudo.partition",
+            "AWS::URLSuffix": "local.pseudo.dns_suffix",
             "AWS::StackName": f"var.{STACK_NAME_VAR}",
             "AWS::NoValue": "null",
         }
@@ -211,14 +274,20 @@ class Translator:
             return pseudo[name]
         if name == "AWS::StackId":
             return (
-                '"arn:${data.aws_partition.current.partition}:cloudformation:'
-                "${data.aws_region.current.region}:"
-                "${data.aws_caller_identity.current.account_id}:stack/"
+                '"arn:${local.pseudo.partition}:cloudformation:'
+                "${local.pseudo.region}:"
+                "${local.pseudo.account_id}:stack/"
                 f'${{var.{STACK_NAME_VAR}}}/terraform"'
             )
         if name in self.param_vars:
-            return "var." + self.param_vars[name]
+            var = "var." + self.param_vars[name]
+            if self._in_conditions and name in self.cond_params:
+                cvar = var + COND_SUFFIX
+                return f"({cvar} != null ? {cvar} : {var})"
+            return var
         plan = self.plans.get(name)
+        if self._opaque and plan is not None:
+            return hcl.string(f"opaque-{name}")
         if plan is None:
             raise TranslationError(f"{self._current}: Ref to unknown name {name}")
         if plan.kind == "custom":
@@ -229,12 +298,23 @@ class Translator:
 
     def getatt(self, name: str, attr: str) -> str:
         plan = self.plans.get(name)
+        if self._opaque and plan is not None:
+            return hcl.string(f"opaque-{name}-{attr}")
         if plan is None:
             raise TranslationError(f"{self._current}: GetAtt on unknown {name}")
         if plan.kind == "custom":
             self._refs.add(name)
             idx = "[0]" if plan.condition else ""
             return f"jsondecode({plan.address}{idx}.result).Data.{attr}"
+        if plan.kind == "module":
+            if not attr.startswith("Outputs."):
+                raise TranslationError(f"{self._current}: GetAtt {name}.{attr}")
+            out = attr[len("Outputs.") :]
+            if out not in self.children[plan.name].t.get("Outputs", {}):
+                raise TranslationError(
+                    f"{self._current}: nested stack {name} has no output {out}"
+                )
+            return self._wrap(plan, out)
         if plan.kind == "aws":
             assert plan.getatt is not None
             got = plan.getatt(attr)
@@ -278,6 +358,10 @@ class Translator:
                 return hcl.string(json.dumps(parsed, separators=(",", ":")))
             return hcl.string(v)
         if isinstance(v, list):
+            if hint.kind == "str" and not json_ctx:
+                # awscc types some polymorphic properties (DynamoDB KeySchema)
+                # as a JSON string.
+                return "jsonencode(" + self.expr(v, ANY, json_ctx=True) + ")"
             el = hint.el if hint.kind in ("list", "set") and hint.el else ANY
             return self._list(v, el, json_ctx)
         if isinstance(v, dict):
@@ -440,7 +524,8 @@ class Translator:
         addrs: list[str] = []
         for d in deps:
             target = self.plans[d]
-            addrs.append(target.address)
+            if not target.virtual:
+                addrs.append(target.address)
             addrs.extend(target.extra_deps)
         for r in sorted(self._refs):
             if r != plan.logical_id:
@@ -451,12 +536,14 @@ class Translator:
                 seen.append(a)
         return seen
 
-    def meta_lines(self, plan: Plan, res: dict[str, Any]) -> tuple[list, list]:
+    def meta_lines(
+        self, plan: Plan, res: dict[str, Any], extra_deps: list[str] | None = None
+    ) -> tuple[list, list]:
         head = []
         if plan.condition:
             head.append(f"count = {self.cond_ref(plan.condition)} ? 1 : 0")
         tail = []
-        deps = self.depends_on(plan, res)
+        deps = list(extra_deps or []) + self.depends_on(plan, res)
         if deps:
             tail.append("depends_on = " + hcl.lst(deps))
         return head, tail
@@ -490,16 +577,85 @@ class Translator:
             "ResourceProperties": dict(props, ServiceToken=token),
         }
         body = self.expr(payload, ANY, json_ctx=True)
+        token_expr = self.expr(token)
+        deps_line = f"aws_lambda_permission.{plan.name}_bridge"
+        head, tail = self.meta_lines(plan, res, [deps_line])
+        # The handler grants the bridge permission to invoke it, rather than the
+        # bridge's own policy listing every handler: that would make the bridge
+        # depend on every handler, and some handlers depend on custom resources.
+        permission = hcl.block(
+            f'resource "aws_lambda_permission" "{plan.name}_bridge"',
+            head
+            + [
+                f'statement_id = "cfnbridge-{plan.logical_id}"',
+                'action = "lambda:InvokeFunction"',
+                f"function_name = {token_expr}",
+                "principal = aws_iam_role.cfn_bridge.arn",
+            ],
+        )
         lines = [
             "function_name = aws_lambda_function.cfn_bridge.function_name",
             'lifecycle_scope = "CRUD"',
-            f"input = jsonencode(merge({body}, {{ StackName = var.{STACK_NAME_VAR} }}))",
+            "input = jsonencode(merge("
+            + body
+            + f", {{ StackName = var.{STACK_NAME_VAR} }}))",
         ]
-        head, tail = self.meta_lines(plan, res)
-        self.custom_tokens.append(self.expr(token))
-        return hcl.block(
+        self.custom_tokens.append(token_expr)
+        invocation = hcl.block(
             f'resource "aws_lambda_invocation" "{plan.name}"', head + lines + tail
         )
+        return permission + "\n" + invocation
+
+    def emit_module(self, plan: Plan, res: dict[str, Any]) -> str:
+        child = self.children[plan.name]
+        props = dict(plan.props)
+        props.pop("TemplateURL")
+        props.pop("TimeoutInMinutes", None)
+        params = props.pop("Parameters", {}) or {}
+        if props:
+            raise TranslationError(
+                f"{plan.logical_id}: unsupported nested stack properties {set(props)}"
+            )
+        lines = [
+            f'source = "./modules/{plan.name}"',
+            "pseudo = local.pseudo",
+            # CloudFormation names a nested stack <parent>-<LogicalId>-<random>.
+            f'{STACK_NAME_VAR} = "${{var.{STACK_NAME_VAR}}}-{plan.logical_id}"',
+        ]
+        for p, value in params.items():
+            if p not in child.param_vars:
+                raise TranslationError(
+                    f"{plan.logical_id}: parameter {p} is not declared by the "
+                    "nested template"
+                )
+            expr = self.expr(value)
+            ptype = child.params[p].get("Type", "String")
+            already_list = isinstance(value, list) or (
+                isinstance(value, dict)
+                and set(value) == {"Ref"}
+                and str(
+                    self.params.get(value["Ref"], {}).get("Type", "String")
+                ).startswith(("List<", "CommaDelimitedList"))
+            )
+            if (
+                ptype.startswith("List<") or ptype == "CommaDelimitedList"
+            ) and not already_list:
+                # CloudFormation passes every parameter as text.
+                expr = f'compact(split(",", {expr}))'
+            lines.append(f"{child.param_vars[p]} = {expr}")
+            if p in child.cond_params:
+                self._opaque = True
+                try:
+                    known = self.expr(value)
+                finally:
+                    self._opaque = False
+                if (
+                    ptype.startswith("List<") or ptype == "CommaDelimitedList"
+                ) and not already_list:
+                    known = f'compact(split(",", {known}))'
+                lines.append(f"{child.param_vars[p]}{COND_SUFFIX} = {known}")
+        head, tail = self.meta_lines(plan, res)
+        return hcl.block(f'module "{plan.name}"', head + lines + tail)
 
     def render(self) -> dict[str, str]:
         self.custom_tokens: list[str] = []
@@ -514,6 +670,8 @@ class Translator:
                     resources.append(self.emit_awscc(plan, res))
                 elif plan.kind == "custom":
                     resources.append(self.emit_custom(plan, res))
+                elif plan.kind == "module":
+                    resources.append(self.emit_module(plan, res))
                 else:
                     resources.append(self.mappers[plan.cfn_type].emit(self, plan, res))
             except (TranslationError, KeyError) as exc:
@@ -576,26 +734,62 @@ class Translator:
                     ).rstrip()
                 )
             out.append(hcl.block(f'variable "{self.param_vars[p]}"', lines))
+            if p in self.cond_params:
+                vtype = lines[0]
+                out.append(
+                    hcl.block(
+                        f'variable "{self.param_vars[p]}{COND_SUFFIX}"',
+                        [
+                            vtype,
+                            "default = null",
+                            'description = "Plan-time stand-in for the parameter '
+                            "of the same name, read only by conditions. Set by the "
+                            'parent module."',
+                        ],
+                    )
+                )
         return "\n".join(out)
 
     def _locals(self) -> str:
         lines = []
-        for name, c in self.conditions.items():
-            self.begin(f"Conditions.{name}")
-            lines.append(f"c_{hcl.snake(name)} = {self.expr(c)}")
+        self._in_conditions = True
+        try:
+            for name, c in self.conditions.items():
+                self.begin(f"Conditions.{name}")
+                lines.append(f"c_{hcl.snake(name)} = {self.expr(c)}")
+        finally:
+            self._in_conditions = False
         if self.mappings:
             lines.append(f"mappings = {self.expr(self.mappings, ANY, json_ctx=True)}")
-        data = (
-            'data "aws_region" "current" {}\n'
-            'data "aws_partition" "current" {}\n'
-            'data "aws_caller_identity" "current" {}\n'
-        )
-        if not lines:
-            return data
-        return data + "\n" + hcl.block("locals", lines)
+        if self.is_root:
+            data = (
+                'data "aws_region" "current" {}\n'
+                'data "aws_partition" "current" {}\n'
+                'data "aws_caller_identity" "current" {}\n'
+            )
+            pseudo = (
+                "pseudo = {\n"
+                "  region     = data.aws_region.current.region\n"
+                "  partition  = data.aws_partition.current.partition\n"
+                "  dns_suffix = data.aws_partition.current.dns_suffix\n"
+                "  account_id = data.aws_caller_identity.current.account_id\n"
+                "}"
+            )
+        else:
+            data = (
+                'variable "pseudo" {\n'
+                '  description = "Region, partition, URL suffix and account, '
+                'passed from the root module."\n'
+                "  type = object({ region = string, partition = string, "
+                "dns_suffix = string, account_id = string })\n"
+                "}\n"
+            )
+            pseudo = "pseudo = var.pseudo"
+        return data + "\n" + hcl.block("locals", [pseudo] + lines)
 
     def _outputs(self) -> str:
         out = []
+        self._output_values: dict[str, str] = {}
         for name, spec in self.t.get("Outputs", {}).items():
             self.begin(f"Outputs.{name}")
             try:
@@ -607,11 +801,78 @@ class Translator:
                 continue
             if spec.get("Condition"):
                 value = f"{self.cond_ref(spec['Condition'])} ? {value} : null"
+            self._output_values[name] = value
             lines = [f"value = {value}"]
             if "Description" in spec:
                 lines.append(f"description = {hcl.string(str(spec['Description']))}")
             out.append(hcl.block(f'output "{name}"', lines))
+        out.append(self._directory())
         return "\n".join(out)
+
+    def _directory(self) -> str:
+        """A CloudFormation-shaped view of this module: every resource's logical
+        id, type and physical id (the value CloudFormation's Ref returns), the
+        outputs, and the same for each nested module. Tools that look resources
+        up through CloudFormation read this instead for a Terraform deployment."""
+        entries = []
+        for lid, plan in self.plans.items():
+            self.begin(f"directory.{lid}")
+            if plan.kind == "module":
+                physical = (
+                    '"arn:${local.pseudo.partition}:cloudformation:'
+                    "${local.pseudo.region}:${local.pseudo.account_id}:stack/"
+                    f'${{var.{STACK_NAME_VAR}}}-{lid}/terraform"'
+                )
+                if plan.condition:
+                    physical = f"({self.cond_ref(plan.condition)} ? {physical} : null)"
+            elif plan.virtual:
+                continue
+            else:
+                try:
+                    physical = self.ref(lid)
+                except (TranslationError, KeyError):
+                    continue
+            entries.append(
+                hcl.obj(
+                    [
+                        ("LogicalResourceId", hcl.string(lid)),
+                        ("ResourceType", hcl.string(plan.cfn_type)),
+                        ("PhysicalResourceId", f"try(tostring({physical}), null)"),
+                    ]
+                )
+            )
+        outputs = []
+        for name, value in self._output_values.items():
+            outputs.append((name, f"try(tostring({value}), null)"))
+        nested = []
+        for lid, plan in self.plans.items():
+            if plan.kind != "module":
+                continue
+            ref = f"module.{plan.name}"
+            value = (
+                f"one({ref}[*].cfn_resource_directory)"
+                if plan.condition
+                else f"{ref}.cfn_resource_directory"
+            )
+            nested.append((lid, value))
+        body = [
+            "resources = [for e in "
+            + hcl.lst(entries)
+            + " : e if e.PhysicalResourceId != null]",
+            "outputs = " + hcl.obj(outputs, quote_keys=True),
+            "nested = " + hcl.obj(nested, quote_keys=True),
+        ]
+        value = hcl.obj([(b.split(" = ", 1)[0], b.split(" = ", 1)[1]) for b in body])
+        return hcl.block(
+            "locals", [f"cfn_resource_directory_self = {value}"]
+        ) + hcl.block(
+            'output "cfn_resource_directory"',
+            [
+                'description = "CloudFormation-shaped resource directory, read by '
+                'idp-cli and the SDK for a Terraform deployment."',
+                "value = local.cfn_resource_directory_self",
+            ],
+        )
 
 
 def report_json(tr: Translator) -> str:
