@@ -14,6 +14,12 @@ creates without the boundary, is refused at apply time in CI.
 So the module is translated offline from `template.yaml`, the way the publish
 does it, and every `aws_iam_role` is held to the patterns read from the derived
 deploy-role template itself, for a stack named the way CI names one.
+
+What this covers is a NEW deployment, which is what every CI run makes. The module
+keeps a role's generated name for the role's lifetime (`ignore_changes` on `name`
+and `name_prefix`, because renaming a role replaced resources that reference it),
+so an existing deployment upgraded to this module keeps whatever names its roles
+were created with, Terraform's `terraform-<timestamp>` names included.
 """
 
 from __future__ import annotations

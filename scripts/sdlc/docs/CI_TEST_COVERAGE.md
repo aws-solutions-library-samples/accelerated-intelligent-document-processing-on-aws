@@ -325,7 +325,9 @@ What the build (`scripts/sdlc/codebuild_deployment.py`) does differently:
   which the CI stack names begin with) and carry the run's permissions boundary.
   `scripts/tests/test_terraform_role_names_match_deploy_role.py` translates
   `template.yaml` offline and holds every generated `aws_iam_role` to those patterns,
-  read off the derived role.
+  read off the derived role. That holds for a new deployment, which every CI run is;
+  the module keeps a role's generated name for the role's lifetime, so a deployment
+  first applied with an earlier module keeps the names it was created with.
 - **Terraform and its providers are pinned** by the offline Terraform gate's own
   installer and lock file (`scripts/terraform_check.py`,
   `scripts/terraform_binaries.lock.json`): the build installs
