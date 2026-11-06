@@ -362,3 +362,28 @@ def test_a_retained_unnamed_table_gets_a_stable_suffix(schema):
     out = render(t, schema)["main.tf"]
     assert 'resource "time_static" "t_name_suffix"' in out
     assert "time_static.t_name_suffix.unix" in out
+
+
+def test_generated_names_of_stateful_resources_survive_a_change_in_derivation(schema):
+    """A generated table name or bucket prefix forces replacement when it
+    changes; replacement would delete an existing deployment's data."""
+    t = {
+        "Resources": {
+            "T": {
+                "Type": "AWS::DynamoDB::Table",
+                "Properties": {
+                    "KeySchema": [{"AttributeName": "k", "KeyType": "HASH"}],
+                    "AttributeDefinitions": [
+                        {"AttributeName": "k", "AttributeType": "S"}
+                    ],
+                },
+            },
+            "B": {"Type": "AWS::S3::Bucket", "Properties": {}},
+            "N": {"Type": "AWS::S3::Bucket", "Properties": {"BucketName": "fixed"}},
+        }
+    }
+    out = render(t, schema)["main.tf"]
+    assert "ignore_changes = [name]" in out
+    assert "ignore_changes = [bucket_prefix]" in out
+    named = out[out.index('resource "aws_s3_bucket" "n"') :]
+    assert "ignore_changes" not in named[: named.index("\n}")]
