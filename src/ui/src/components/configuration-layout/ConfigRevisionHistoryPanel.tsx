@@ -20,6 +20,7 @@ import {
 import useConfigProfileRevisions, { ConfigProfileRevision } from '../../hooks/use-config-profile-revisions';
 import useUserRole from '../../hooks/use-user-role';
 import ConfigurationComparison from './ConfigurationComparison';
+import ResizableModal from '../common/ResizableModal';
 import UnrecordedChangesAlert from '../common/UnrecordedChangesAlert';
 
 interface ConfigRevisionHistoryPanelProps {
@@ -292,10 +293,9 @@ const ConfigRevisionHistoryPanel = ({
 
       {/* Comparison in its own modal: with a long history the diff would
           otherwise sit below a table the user has to scroll past to reach it. */}
-      <Modal
+      <ResizableModal
         visible={comparing || compareConfigs !== null}
         onDismiss={() => setCompareConfigs(null)}
-        size="max"
         header={
           compareVersionKeys.length === 2
             ? `Compare ${compareVersionKeys[0]} → ${compareVersionKeys[1]} — ${profileName}`
@@ -313,7 +313,7 @@ const ConfigRevisionHistoryPanel = ({
         {!comparing && compareConfigs && compareVersionKeys.length === 2 && (
           <ConfigurationComparison versions={compareVersionKeys} configs={compareConfigs} />
         )}
-      </Modal>
+      </ResizableModal>
 
       {/* Restore confirmation */}
       <Modal
