@@ -58,6 +58,19 @@ def render_spec(tr: Translator, spec: Spec, props: dict[str, Any], where: str):
             set_attrs.add(entry[1])
         if kind == "attr":
             lines.append(f"{entry[1]} = {tr.expr(v)}")
+        elif kind == "kms_alias_arn":
+            # CodeBuild returns a short alias ("alias/aws/s3") as its full ARN.
+            if isinstance(v, str) and v.startswith("alias/"):
+                lines.append(
+                    f'{entry[1]} = "arn:${{local.pseudo.partition}}:kms:'
+                    f'${{local.pseudo.region}}:${{local.pseudo.account_id}}:{v}"'
+                )
+            else:
+                lines.append(f"{entry[1]} = {tr.expr(v)}")
+        elif kind == "state":
+            # The provider names DISABLED/ENABLED the same way; a bare
+            # ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS passes through.
+            lines.append(f"{entry[1]} = {tr.expr(v)}")
         elif kind == "role_arn":
             # CloudFormation accepts a role name here; the provider wants an ARN.
             target = (
@@ -415,7 +428,7 @@ CODEBUILD = SpecMapper(
         "ServiceRole": ("role_arn", "service_role"),
         "TimeoutInMinutes": ("attr", "build_timeout"),
         "QueuedTimeoutInMinutes": ("attr", "queued_timeout"),
-        "EncryptionKey": ("attr", "encryption_key"),
+        "EncryptionKey": ("kms_alias_arn", "encryption_key"),
         "ConcurrentBuildLimit": ("attr", "concurrent_build_limit"),
         "Tags": ("tags", "tags"),
         "Artifacts": (
@@ -563,6 +576,120 @@ class PerTargetPolicyMapper:
                     lines.insert(len(head), f"name = {tr.expr(name)}")
                 label = f"{plan.name}_{prop.lower()}_{i}"
                 out.append(hcl.block(f'resource "{tf_type}" "{label}"', lines + tail))
+        return "\n".join(out)
+
+
+class EventsRuleMapper:
+    """A rule becomes ``aws_cloudwatch_event_rule`` plus one
+    ``aws_cloudwatch_event_target`` per target. (Cloud Control's create for
+    ``AWS::Events::Rule`` fails with an internal error for these rules.)"""
+
+    tf_type = "aws_cloudwatch_event_rule"
+    ref_attr = "name"
+    spec: Spec = {
+        "Name": ("attr", "name"),
+        "Description": ("attr", "description"),
+        "ScheduleExpression": ("attr", "schedule_expression"),
+        "EventPattern": ("json", "event_pattern"),
+        "EventBusName": ("attr", "event_bus_name"),
+        "State": ("state", "state"),
+        "RoleArn": ("attr", "role_arn"),
+    }
+    target_spec: Spec = {
+        "Id": ("attr", "target_id"),
+        "Arn": ("attr", "arn"),
+        "RoleArn": ("attr", "role_arn"),
+        "Input": ("attr", "input"),
+        "InputPath": ("attr", "input_path"),
+        "InputTransformer": (
+            "block",
+            "input_transformer",
+            {
+                "InputPathsMap": ("map", "input_paths"),
+                "InputTemplate": ("attr", "input_template"),
+            },
+        ),
+        "DeadLetterConfig": ("block", "dead_letter_config", {"Arn": ("attr", "arn")}),
+        "RetryPolicy": (
+            "block",
+            "retry_policy",
+            {
+                "MaximumEventAgeInSeconds": ("attr", "maximum_event_age_in_seconds"),
+                "MaximumRetryAttempts": ("attr", "maximum_retry_attempts"),
+                # The provider sends 0 for an unset member, which EventBridge
+                # rejects; these are the service defaults.
+                DEFAULTS: (
+                    "defaults",
+                    {
+                        "maximum_event_age_in_seconds": "86400",
+                        "maximum_retry_attempts": "185",
+                    },
+                ),
+            },
+        ),
+        "SqsParameters": (
+            "block",
+            "sqs_target",
+            {"MessageGroupId": ("attr", "message_group_id")},
+        ),
+    }
+
+    def getatt(self, attr: str) -> Any:
+        return {"Arn": "arn"}[attr]
+
+    def _targets(self, tr: Translator, plan: Plan) -> list[tuple[str, str, Any]]:
+        """(label, guard, target) per target; a conditional target is guarded."""
+        targets = plan.props.get("Targets", [])
+        if is_intrinsic(targets):
+            raise TranslationError(f"{plan.logical_id}: Targets must be literal")
+        out = []
+        for i, target in enumerate(targets):
+            leaves = _if_leaves(tr, target, [])
+            for j, (guard, value) in enumerate(leaves):
+                label = (
+                    f"{plan.name}_{i}" if len(leaves) == 1 else f"{plan.name}_{i}_{j}"
+                )
+                out.append((label, guard, value))
+        return out
+
+    def plan(self, tr: Translator, plan: Plan) -> None:
+        targets = plan.props.get("Targets", [])
+        if not is_intrinsic(targets):
+            for i, target in enumerate(targets):
+                n = max(1, len(_if_leaves(tr, target, [])))
+                for j in range(n):
+                    label = f"{plan.name}_{i}" if n == 1 else f"{plan.name}_{i}_{j}"
+                    plan.extra_deps.append(f"aws_cloudwatch_event_target.{label}")
+
+    def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
+        props = {k: v for k, v in plan.props.items() if k != "Targets"}
+        lines = render_spec(tr, self.spec, props, plan.logical_id)
+        if "Name" not in props:
+            lines.insert(0, f"name = {default_name(plan.logical_id, 64)}")
+        head, tail = tr.meta_lines(plan, res)
+        out = [
+            hcl.block(f'resource "{self.tf_type}" "{plan.name}"', head + lines + tail)
+        ]
+        idx = "[0]" if plan.condition else ""
+        for label, guard, target in self._targets(tr, plan):
+            body = render_spec(
+                tr, self.target_spec, target, f"{plan.logical_id}.{label}"
+            )
+            guards = [g for g in (guard if guard != "true" else None,) if g]
+            if plan.condition:
+                guards.insert(0, tr.cond_ref(plan.condition))
+            count = [f"count = ({' && '.join(guards)}) ? 1 : 0"] if guards else []
+            rule = [f"rule = aws_cloudwatch_event_rule.{plan.name}{idx}.name"]
+            if "EventBusName" in props:
+                rule.append(
+                    f"event_bus_name = aws_cloudwatch_event_rule.{plan.name}{idx}.event_bus_name"
+                )
+            out.append(
+                hcl.block(
+                    f'resource "aws_cloudwatch_event_target" "{label}"',
+                    count + rule + body,
+                )
+            )
         return "\n".join(out)
 
 
@@ -777,6 +904,15 @@ COGNITO_USER_POOL = SpecMapper(
                         "EmailMessage": ("attr", "email_message"),
                         "EmailSubject": ("attr", "email_subject"),
                         "SMSMessage": ("attr", "sms_message"),
+                        # The provider sends "" when this is unset, which
+                        # Cognito rejects; this is Cognito's own default text.
+                        DEFAULTS: (
+                            "defaults",
+                            {
+                                "sms_message": '"Your username is {username} and '
+                                'temporary password is {####}."'
+                            },
+                        ),
                     },
                 ),
             },
@@ -913,7 +1049,34 @@ CACHE_BEHAVIOR: Spec = {
     DEFAULTS: ("defaults", {"cached_methods": '["GET", "HEAD"]'}),
 }
 
-CLOUDFRONT_DISTRIBUTION = SpecMapper(
+
+class CloudFrontMapper(SpecMapper):
+    """An origin using origin access control carries
+    ``S3OriginConfig: {OriginAccessIdentity: ""}`` in CloudFormation; the
+    provider stores no ``s3_origin_config`` for it, so the empty block would
+    read as a change on every plan."""
+
+    def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
+        cfg = plan.props.get("DistributionConfig", {})
+        origins = cfg.get("Origins") if isinstance(cfg, dict) else None
+        if isinstance(origins, list):
+            fixed = []
+            for o in origins:
+                if isinstance(o, dict) and o.get("S3OriginConfig") == {
+                    "OriginAccessIdentity": ""
+                }:
+                    o = {k: v for k, v in o.items() if k != "S3OriginConfig"}
+                fixed.append(o)
+            original = plan.props
+            plan.props = dict(original, DistributionConfig=dict(cfg, Origins=fixed))
+            try:
+                return super().emit(tr, plan, res)
+            finally:
+                plan.props = original
+        return super().emit(tr, plan, res)
+
+
+CLOUDFRONT_DISTRIBUTION = CloudFrontMapper(
     tf_type="aws_cloudfront_distribution",
     ref_attr="id",
     attrs={"DomainName": "domain_name", "Id": "id"},
@@ -1009,6 +1172,7 @@ CLOUDFRONT_DISTRIBUTION = SpecMapper(
 
 
 MAPPERS: dict[str, Any] = {
+    "AWS::Events::Rule": EventsRuleMapper(),
     "AWS::WAFv2::WebACL": WAF_WEB_ACL,
     "AWS::Cognito::UserPool": COGNITO_USER_POOL,
     "AWS::CloudFront::Distribution": CLOUDFRONT_DISTRIBUTION,
@@ -1042,5 +1206,11 @@ HYBRID_TYPES = frozenset(
         "AWS::Lambda::Function",
         "AWS::Logs::LogGroup",
         "AWS::ECR::Repository",
+        "AWS::Events::Rule",
+        "AWS::S3::Bucket",
+        "AWS::S3::BucketPolicy",
+        "AWS::DynamoDB::Table",
+        "AWS::Lambda::Permission",
+        "AWS::Lambda::EventSourceMapping",
     }
 )

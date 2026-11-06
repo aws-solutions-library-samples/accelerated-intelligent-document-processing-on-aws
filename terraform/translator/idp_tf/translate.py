@@ -53,8 +53,35 @@ COND_SUFFIX = "__cond"
 CUSTOM_TYPES = ("Custom::", "AWS::CloudFormation::CustomResource")
 
 # CloudFormation `Ref` returns something other than the Cloud Control
-# identifier (awscc `id`) for these types.
-AWSCC_REF_ATTR: dict[str, str] = {}
+# identifier (awscc `id`) for these types. Each has a composite
+# primaryIdentifier in the CloudFormation registry, which awscc joins with "|",
+# while Ref returns one member of it. Read from `describe-type` per type; a type
+# with a composite identifier that is not listed here keeps `id`, which is
+# right only where Ref also returns the joined value (WAFv2::IPSet,
+# Bedrock::DataSource).
+# Properties where awscc stores what the service returns, and the service
+# returns a different spelling of the same value than templates write.
+# (type, property) -> rewrite applied to the value before rendering.
+AWSCC_PROPERTY_FIXUPS: dict[tuple[str, str], str] = {
+    # The template gives the role ARN; Glue returns the role name.
+    ("AWS::Glue::Crawler", "Role"): "role_name",
+}
+
+AWSCC_REF_ATTR: dict[str, str] = {
+    "AWS::ApiGateway::Authorizer": "authorizer_id",
+    "AWS::ApiGateway::Deployment": "deployment_id",
+    "AWS::ApiGateway::Resource": "resource_id",
+    "AWS::ApiGateway::Stage": "stage_name",
+    "AWS::Cognito::UserPoolClient": "client_id",
+    "AWS::Cognito::UserPoolDomain": "domain",
+    "AWS::Cognito::UserPoolGroup": "group_name",
+    "AWS::Cognito::UserPoolIdentityProvider": "provider_name",
+    "AWS::Cognito::UserPoolResourceServer": "identifier",
+    "AWS::Cognito::UserPoolUser": "username",
+    "AWS::Glue::Table": "name",
+    "AWS::OpenSearchServerless::AccessPolicy": "name",
+    "AWS::OpenSearchServerless::SecurityPolicy": "name",
+}
 
 
 class TranslationError(Exception):
@@ -118,12 +145,12 @@ class Translator:
         survey: bool = False,
         nested_loader: Callable[[str], dict[str, Any]] | None = None,
     ):
-        from . import aws_mappers
+        from . import aws_mappers, aws_mappers_storage
 
         self.t = template
         self.schema = schema
         self.mode = mode
-        self.mappers = aws_mappers.MAPPERS
+        self.mappers = {**aws_mappers.MAPPERS, **aws_mappers_storage.STORAGE_MAPPERS}
         self.aws_mapped = (
             aws_mapped if aws_mapped is not None else aws_mappers.HYBRID_TYPES
         )
@@ -154,6 +181,9 @@ class Translator:
         # source inside a module that has depends_on is deferred to apply, which
         # would make every condition reading it unknown at plan time.
         self.is_root = True
+        # True while writing the resource directory, which keeps CloudFormation's
+        # Ref semantics exactly.
+        self._directory_mode = False
         # Set when an inline function imports CloudFormation's cfnresponse.
         self.needs_cfnresponse = False
         self.plans: dict[str, Plan] = {}
@@ -559,11 +589,22 @@ class Translator:
                     f"awscc attribute in {plan.tf_type}"
                 )
             tf_name, child = found
+            if AWSCC_PROPERTY_FIXUPS.get((plan.cfn_type, k)) == "role_name":
+                x = self._role_name(x)
             lines.append(f"{tf_name} = {self.expr(x, child)}")
         head, tail = self.meta_lines(plan, res)
         return hcl.block(
             f'resource "{plan.tf_type}" "{plan.name}"', head + lines + tail
         )
+
+    def _role_name(self, v: Any) -> Any:
+        if isinstance(v, dict) and set(v) == {"Fn::GetAtt"}:
+            arg = v["Fn::GetAtt"]
+            name, attr = arg.split(".", 1) if isinstance(arg, str) else arg
+            target = self.plans.get(name)
+            if attr == "Arn" and target and target.cfn_type == "AWS::IAM::Role":
+                return {"Ref": name}
+        return v
 
     def emit_custom(self, plan: Plan, res: dict[str, Any]) -> str:
         props = dict(plan.props)
@@ -828,10 +869,13 @@ class Translator:
             elif plan.virtual:
                 continue
             else:
+                self._directory_mode = True
                 try:
                     physical = self.ref(lid)
                 except (TranslationError, KeyError):
                     continue
+                finally:
+                    self._directory_mode = False
             entries.append(
                 hcl.obj(
                     [

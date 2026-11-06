@@ -18,6 +18,14 @@ variable "stack_name" {
   default = "tfidp1"
 }
 variable "admin_email" { type = string }
+variable "permissions_boundary_arn" {
+  type    = string
+  default = ""
+}
+variable "malware_scanning" {
+  type    = string
+  default = "DISABLED"
+}
 variable "parameters" {
   description = "Extra stack parameters, by Terraform variable name."
   type        = map(string)
@@ -35,6 +43,9 @@ module "idp" {
   source      = "../../build/full"
   stack_name  = var.stack_name
   admin_email = var.admin_email
+
+  permissions_boundary_arn = var.permissions_boundary_arn
+  malware_scanning         = var.malware_scanning
 }
 
 output "label_stack" {
