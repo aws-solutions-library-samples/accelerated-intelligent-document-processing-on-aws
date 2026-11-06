@@ -413,6 +413,7 @@ def _deploy_terraform(
     unsupported: List[str],
     headless: bool = False,
     govcloud: bool = False,
+    assume_role_arn: Optional[str] = None,
 ) -> None:
     """`idp-cli deploy --terraform`. The work is in the SDK's
     `client.stack.deploy_terraform`; this resolves the default module the way
@@ -481,6 +482,7 @@ def _deploy_terraform(
             pointer_url=pointer_url,
             terraform_dir=terraform_dir,
             terraform_bin=terraform_bin,
+            assume_role_arn=assume_role_arn,
         )
         console.print(f"\n[green]✓ Terraform {result.operation} complete![/green]\n")
         outputs = result.outputs
@@ -527,6 +529,7 @@ def _delete_terraform(
     terraform_dir: Optional[str],
     terraform_bin: str,
     force: bool,
+    assume_role_arn: Optional[str] = None,
 ) -> None:
     """`idp-cli delete --terraform`; the work is `client.stack.delete_terraform`."""
     try:
@@ -550,6 +553,7 @@ def _delete_terraform(
             stack_name=stack_name,
             terraform_dir=terraform_dir,
             terraform_bin=terraform_bin,
+            assume_role_arn=assume_role_arn,
         )
         console.print("\n[green]✓ Deployment destroyed![/green]")
         console.print(f"Deployment: {stack_name}")
@@ -833,6 +837,14 @@ def cli():
     show_default=True,
     help="Terraform binary: terraform, tofu, or a path (used with --terraform)",
 )
+@click.option(
+    "--terraform-assume-role-arn",
+    default=None,
+    help=(
+        "IAM role both Terraform providers assume, so the deployment's resources "
+        "are created as that role (used with --terraform)"
+    ),
+)
 def deploy(
     stack_name: str,
     admin_email: Optional[str],
@@ -861,6 +873,7 @@ def deploy(
     terraform_module_url: Optional[str],
     terraform_dir: Optional[str],
     terraform_bin: str,
+    terraform_assume_role_arn: Optional[str],
 ):
     """
     Deploy or update IDP stack from command line
@@ -921,8 +934,16 @@ def deploy(
             unsupported=[k for k, v in ignored.items() if v],
             headless=headless,
             govcloud=govcloud,
+            assume_role_arn=terraform_assume_role_arn,
         )
         return
+    if terraform_assume_role_arn:
+        console.print(
+            "[red]✗ Error: --terraform-assume-role-arn is used with --terraform; "
+            "for a CloudFormation deploy, pass the service role with --role-arn."
+            "[/red]"
+        )
+        sys.exit(1)
     try:
         # Validate mutually exclusive options
         exclusive_count = sum(1 for x in [from_code, template_url, template_file] if x)
@@ -1384,6 +1405,14 @@ def deploy(
     show_default=True,
     help="Terraform binary: terraform, tofu, or a path (used with --terraform)",
 )
+@click.option(
+    "--terraform-assume-role-arn",
+    default=None,
+    help=(
+        "IAM role both Terraform providers assume, so the deployment's resources "
+        "are created as that role (used with --terraform)"
+    ),
+)
 def delete(
     stack_name: str,
     force: bool,
@@ -1394,6 +1423,7 @@ def delete(
     terraform: bool,
     terraform_dir: Optional[str],
     terraform_bin: str,
+    terraform_assume_role_arn: Optional[str],
 ):
     """
     Delete an IDP CloudFormation stack
@@ -1437,8 +1467,14 @@ def delete(
             terraform_dir=terraform_dir,
             terraform_bin=terraform_bin,
             force=force,
+            assume_role_arn=terraform_assume_role_arn,
         )
         return
+    if terraform_assume_role_arn:
+        console.print(
+            "[red]✗ Error: --terraform-assume-role-arn is used with --terraform.[/red]"
+        )
+        sys.exit(1)
     try:
         client = IDPClient(stack_name=stack_name, region=region)
 

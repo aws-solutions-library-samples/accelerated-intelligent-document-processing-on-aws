@@ -277,60 +277,109 @@ variable, no Terraform run happens.
 | Pipeline | `IDP_IAC` | Runs |
 |---|---|---|
 | Nightly, probe run, region runs, buttons | not set (ignored off a schedule) | CloudFormation |
-| Weekly Terraform schedule | `terraform` | primary suite against a Terraform deployment in `us-east-1`; labelled `WEEKLY TERRAFORM RUN` in the summary, the failure email and Slack; leaves the UX review stack and the nightly story jobs alone |
+| Weekly Terraform schedule | `terraform` | primary suite against a Terraform deployment in `us-east-1`; labelled `WEEKLY TERRAFORM RUN` in the summary, the failure email and both Slack posts; leaves the UX review stack and the nightly story jobs alone |
+| Any schedule, with `IDP_IAC=terraform` set as a **project or group** CI/CD variable | `terraform`, inherited | every schedule becomes a Terraform run, the nightly included. Set the variable on the Terraform schedule only |
 
 It is the same `integration_tests` job, distinguished by the variable, as the probe
-and region runs are, so it holds the same `integration_deploy` resource group and
-`nightly_notification` covers it unchanged. It is not a merge gate and is in neither
-CI's gate set; there is no GitHub equivalent, because integration runs are
-GitLab-only.
+and region runs are, so it holds the same `integration_deploy` resource group.
+`nightly_notification` covers it as it covers every schedule, with one change: its
+fallback post carries the same `WEEKLY TERRAFORM RUN` label as the job's own post. It
+is not a merge gate and is in neither CI's gate set; there is no GitHub equivalent,
+because integration runs are GitLab-only.
+
+⚠️ **Order: update the `genaiic-sdlc-codepipeline` stack, then turn the Terraform
+schedule on.** The CodeBuild role needs the `AssumePerRunTerraformDeployRole`
+statement in `scripts/sdlc/cfn/codepipeline-s3.yml` to assume the per-run deploy role
+described below. Until the stack is updated to that template, the assume rests on
+the deploy role's trust policy alone, which names the CodeBuild role; whether that is
+enough without the identity-side grant has not been verified against the CI account.
+If it is not, the run stops before `init` (`_wait_until_assumable` gives up) and
+tears down.
 
 What the build (`scripts/sdlc/codebuild_deployment.py`) does differently:
 
 - **The mode reaches the build in `ci_run_options.json`** as `iac`, because CodeBuild
   sees the zip and not the GitLab job's environment. `IDP_IAC` set in the build's own
-  environment wins over the file, which is how a run started by hand selects it.
-- **Terraform is installed by the build**, not by the GitLab job, because CodeBuild is
-  where it runs. `ensure_terraform_binary` uses `IDP_TERRAFORM_BIN` (default
-  `terraform`) when it is on `PATH`, and otherwise downloads the release pinned in
-  `TERRAFORM_VERSION` and refuses it unless its SHA-256 matches `TERRAFORM_SHA256`.
+  environment wins over the file, which is how a run started by hand selects it. On a
+  Terraform schedule a failed write of that file fails the GitLab job, because the
+  build reads a missing file as CloudFormation.
+- **Credentials.** The CloudFormation path creates the stack's resources as the
+  per-run CloudFormation service role, which only CloudFormation can assume. The
+  CodeBuild role itself lacks most of what the deployment creates (Cloud Control
+  among it), and it is deliberately not widened, because a merge-request button runs
+  the MR's own code under it. So the run's `-iam` pre-stack gains a sibling role,
+  `<stack>-iam-TFDeployRole`, built by `terraform_deploy_role_template` from the
+  customer service-role template at run time: the service role's own inline policies
+  by value, `cloudcontrol:*`, a Deny on changing itself, and a trust policy admitting
+  only the principal the build runs as. The customer template, and the service role's
+  trust, are unchanged. Both providers assume that role through
+  `idp-cli deploy --terraform --terraform-assume-role-arn`, and the CodeBuild role may
+  assume only roles named `idp-*-TFDeployRole`.
+- **Terraform and its providers are pinned** by the offline Terraform gate's own
+  installer and lock file (`scripts/terraform_check.py`,
+  `scripts/terraform_binaries.lock.json`): the build installs
+  `TERRAFORM_BINARY_SPEC` when `IDP_TERRAFORM_BIN` (default `terraform`) is not on
+  `PATH`, refuses an archive whose checksum is not the locked one, and writes the
+  gate's provider-override file before `init`. The GitLab job installs nothing,
+  because CodeBuild is where Terraform runs.
 - **Publish** adds `--terraform` and takes the module URL from the output. A
   Terraform run with no module URL fails at publish rather than deploying the latest
   *published* module, which is not the code under test.
+- **State is durable.** Before `init`, the build writes the root configuration, an
+  S3 backend (`backend.tf`, encrypted, keyed `terraform-runs/<stack>/terraform.tfstate`
+  in the CI source bucket) and the provider pins, and copies them, with a
+  `run.json` naming the module and the role, to that prefix. The teardown removes
+  the prefix once the deployment is destroyed.
 - **Deploy** is `idp-cli deploy --terraform` with the CloudFormation deploy's
-  `--parameters` (the same `PermissionsBoundaryArn` and `MalwareScanning` pairs) and
-  the same IAM pre-stack and boundary. There is no `--role-arn`: Terraform creates the
-  resources with the build's own credentials, so the CloudFormation service role the
-  pre-stack creates goes unused. The root configuration and local state live under
-  `IDP_TERRAFORM_WORK_ROOT` (default `~/.idp-terraform-runs/<stack>`), outside the
-  checkout. There is no transient-race retry: that classifier reads CloudFormation
-  events.
+  `--parameters` (the same `PermissionsBoundaryArn` and `MalwareScanning` pairs).
+  There is no transient-race retry: that classifier reads CloudFormation events.
 - **Healthy** means the CloudFormation label stack exists in a `COMPLETE` state with
   `(Terraform)` in its description, and `terraform output` succeeds.
+- **A time reserve.** Before the steps, the build reads its own CodeBuild timeout and
+  refuses to start them, and tears down, unless what publish and deploy left still
+  holds `TERRAFORM_SUITE_ALLOWANCE_SECONDS` for the suite plus
+  `TERRAFORM_TEARDOWN_RESERVE_SECONDS` for the destroy. Both are estimates, not
+  measurements of a Terraform run.
 - **The steps** run unchanged. They address the deployment by its name, and the SDK's
   hook answers their CloudFormation resource lookups from the label stack's resource
   directory; the build installs the same hook in its own process before its first
-  CloudFormation client, because several steps and the teardown call boto3 directly.
-- **Teardown** is `idp-cli delete --terraform`, then the sweep of what it retains
-  (the resources whose `DeletionPolicy` keeps them, listed from the state *before* the
-  delete, plus the log groups Lambda created under the stack's prefix), then the IAM
-  pre-stack and boundary as usual. The CloudFormation stack-status read and stack
-  events are skipped with a printed note. A failed destroy or an unswept retained
-  resource is a **teardown finding** and fails the run, unlike the CloudFormation
-  path, because the state does not outlive the build.
+  CloudFormation client.
+- **Teardown** is `idp-cli delete --terraform` as the deploy role, then the sweep of
+  what it retains (the resources whose `DeletionPolicy` keeps them, listed from the
+  state *before* the delete, plus the log groups Lambda created under the stack's
+  prefix), run as the deploy role too, then the IAM pre-stack and boundary as usual.
+  The CloudFormation stack-status read and stack events are skipped with a printed
+  note. A failed destroy, an unswept retained resource, and a retained resource of a
+  kind the sweep does not delete are **teardown findings** and fail the run.
 - **A failed deployment is never retained.** `IDP_KEEP_FAILED_STACK` does not apply:
-  the state would end with the build, and the startup stack reaper deletes
-  CloudFormation stacks, which for a Terraform deployment is only the label.
+  the retention markers and their reaper delete CloudFormation stacks, which for a
+  Terraform deployment is only the label.
 - **Failure evidence** is the tail of the Terraform log (`idp-cli-deploy.log` and
   `idp-cli-delete.log` in the work directory) instead of stack events, and the
-  failure analysis uses a Terraform prompt built from it.
+  failure analysis uses a Terraform prompt built from it. The advisory failure agent
+  (`scripts/sdlc/failure_agent.py`) is not Terraform-aware: its CloudFormation reads
+  see only the label stack.
 
-⚠️ **A build killed before its teardown leaks the deployment.** The state is local to
-the build, so nothing can destroy the resources afterwards. The startup sweeps reap
-what they reap for any run (stacks, buckets, IAM roles and policies by name and age),
-but the startup stack reaper would delete only the label stack, and resources it has
-no sweep for (Lambda functions, tables, queues, state machines) stay. A remote state
-backend would close that gap; it is not configured.
+**Dead runs.** `cleanup_stale_terraform_deployments`, a fatal Step 0 sweep run before
+the stack sweep in every build (whatever its mode), destroys a deployment whose state
+prefix is older than the stack sweep's age gate: it downloads the saved root
+configuration and runs the same teardown as the run's deploy role. Every stack of a
+run whose state is still in the bucket afterwards, its label and `-iam` pre-stack
+included, is kept by `cleanup_stale_idp_stacks`, so a failed attempt can be retried
+by the next build; if the state listing itself fails, every Terraform-labelled run is
+kept. A stale label stack with **no** state behind it (a run from before the state
+backend, or a prefix removed by hand) has its resource directory swept before the
+label is deleted: buckets, tables, Lambda functions and state machines are deleted,
+and every other resource it names is reported as a finding.
+
+⚠️ **What is still unprotected.** A run killed after the role exists but before the
+configuration is staged leaves no state and, if `apply` had not yet created the
+label, no resource directory either; the resources `apply` created in that window are
+found only by the name-and-age sweeps (stacks, buckets, IAM roles and policies), and
+the rest stay. A stale label swept from its directory leaves standing every type the
+directory sweep does not delete (queues, log groups, Cognito pools, KMS keys and so
+on), named in the finding but not removed. A dead run's destroy needs its `-iam`
+pre-stack's role, which the stack sweep keeps only while the state prefix exists.
 
 ### Why fast_checks is eight jobs
 

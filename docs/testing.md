@@ -501,7 +501,8 @@ same Slack channel. A weekly Terraform schedule, while it is active (carrying
 [Terraform deployment](./terraform.md) of the accelerator instead of a
 CloudFormation stack, labelled `WEEKLY TERRAFORM RUN`. To run that mode by hand, set
 `IDP_IAC=terraform` for the deploy driver, `scripts/sdlc/codebuild_deployment.py`;
-how it differs from the CloudFormation run is in the coverage document below.
+how it differs from the CloudFormation run, and the CI pipeline-stack update it
+needs before the schedule is turned on, are in the coverage document below.
 
 Two things follow. **Click the button before merging anything that touches the
 deploy path** — `template.yaml`, `publish.py`, `patterns/`, `nested/`, `src/`,

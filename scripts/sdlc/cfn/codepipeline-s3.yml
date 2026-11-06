@@ -580,6 +580,19 @@ Resources:
                 Action:
                   - sts:AssumeRole
                 Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*-failure-agent'
+              # A Terraform integration run (IDP_IAC=terraform) creates its
+              # resources as a per-run role, not as this one: Terraform has no
+              # equivalent of passing CloudFormation a service role, and this role
+              # lacks most of what the deployment creates (Cloud Control among
+              # it). The role is a sibling of the CloudFormation service role in
+              # the run's `-iam` pre-stack, with that role's boundary-scoped
+              # permissions, trusting only this role (terraform_deploy_role_template
+              # in scripts/sdlc/codebuild_deployment.py). Scoped to that name.
+              - Sid: AssumePerRunTerraformDeployRole
+                Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/idp-*-TFDeployRole'
         - PolicyName: CloudWatchLogsAccess
           PolicyDocument:
             Version: '2012-10-17'

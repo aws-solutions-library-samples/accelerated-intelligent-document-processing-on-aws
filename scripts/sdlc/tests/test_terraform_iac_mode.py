@@ -19,15 +19,17 @@ against it unchanged. What is pinned here, offline:
 
 from __future__ import annotations
 
-import hashlib
 import io
+import json
 import os
+import re
 import shlex
 import subprocess
 import sys
-import zipfile
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import yaml
@@ -42,6 +44,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CI_CONFIG = REPO_ROOT / ".gitlab-ci.yml"
 BOUNDARY_ARN = "arn:aws:iam::1:policy/stk-PermissionsBoundary"
 ROLE_ARN = "arn:aws:iam::1:role/idp-sdlc-service-role"
+TF_ROLE_ARN = "arn:aws:iam::123456789012:role/stk-iam-TFDeployRole"
+DEPLOYER_ARN = "arn:aws:iam::1:role/codebuild-role"
 MODULE_URL = (
     "https://s3.us-east-1.amazonaws.com/genaiic-sdlc-sourcecode-1-us-east-1/"
     "codebuild-20261106-010203/0.6.14/terraform/idp-terraform-0.6.14.zip"
@@ -139,7 +143,12 @@ def test_the_work_directory_is_absolute_and_outside_the_checkout(cbd):
     )
 
 
-def test_main_refuses_before_any_sweep_or_deploy(cbd, monkeypatch):
+class _RanPastTheRefusal(BaseException):
+    """BaseException, so no `except Exception` in main() can swallow it: a stub
+    raising this fails the test wherever the refusal has moved to."""
+
+
+def test_main_refuses_before_any_sweep_publish_or_deploy(cbd, monkeypatch):
     """A refused combination must not cost a sweep, a publish or a deploy."""
     monkeypatch.setenv("IDP_IAC", "terraform")
     monkeypatch.setenv("IDP_RUN_PROBES", "true")
@@ -150,9 +159,16 @@ def test_main_refuses_before_any_sweep_or_deploy(cbd, monkeypatch):
     monkeypatch.setattr(cbd, "send_failure_notification", lambda *a: notified.append(a))
 
     def _must_not_run(*_a, **_k):
-        raise AssertionError("ran past the refusal")
+        raise _RanPastTheRefusal()
 
-    for name in ("cleanup_stale_bda_blueprints", "publish_artifacts"):
+    stubbed = [sweep.func for sweep in cbd.STARTUP_SWEEPS] + [
+        "publish_artifacts",
+        "publish_templates",
+        "deploy_and_test_stack",
+        "create_iam_resources",
+        "ensure_terraform_binary",
+    ]
+    for name in stubbed:
         monkeypatch.setattr(cbd, name, _must_not_run)
 
     class _Exit(Exception):
@@ -312,15 +328,28 @@ def test_a_terraform_publish_without_a_module_url_fails(cbd, capsys):
 @pytest.fixture
 def faked_deploy(cbd, monkeypatch):
     """Fake IAM and every command; answer the health reads as healthy."""
-    monkeypatch.setattr(
-        cbd, "create_iam_resources", lambda *a, **k: (ROLE_ARN, BOUNDARY_ARN)
-    )
-    monkeypatch.delenv("IDP_INTEGRATION_MALWARE_MODE", raising=False)
     state = {
-        "commands": [],
+        "iam_calls": [],
+        "staged": [],
         "deploy_rc": 0,
         "label": "CREATE_COMPLETE\tIDP (v1) (Terraform) read-only",
+        "commands": [],
     }
+
+    def _iam(stack_name, *a, **k):
+        state["iam_calls"].append(k)
+        role = TF_ROLE_ARN if k.get("terraform_deployer_arn") else ROLE_ARN
+        return role, BOUNDARY_ARN
+
+    monkeypatch.setattr(cbd, "create_iam_resources", _iam)
+    monkeypatch.setattr(cbd, "_caller_principal_arn", lambda: DEPLOYER_ARN)
+    monkeypatch.setattr(cbd, "_wait_until_assumable", lambda arn: True)
+    monkeypatch.setattr(
+        cbd,
+        "stage_terraform_root",
+        lambda *a: state["staged"].append((a[2].role_arn, list(a[3]))),
+    )
+    monkeypatch.delenv("IDP_INTEGRATION_MALWARE_MODE", raising=False)
 
     def _run(cmd, *a, **k):
         state["commands"].append(cmd)
@@ -366,9 +395,19 @@ def test_the_terraform_command_parses_as_a_terraform_deploy(cbd, faked_deploy, r
     assert params["terraform_module_url"] == MODULE_URL
     assert params["terraform_dir"] == run.directory
     assert params["terraform_bin"] == run.binary
-    # The CloudFormation service role does not apply to Terraform.
+    # The CloudFormation service role does not apply to Terraform; the providers
+    # assume the run's Terraform deploy role, created for this build's principal.
     assert not params.get("role_arn")
     assert not params.get("template_url")
+    assert params["terraform_assume_role_arn"] == TF_ROLE_ARN
+    assert faked_deploy["iam_calls"] == [{"terraform_deployer_arn": DEPLOYER_ARN}]
+    # Staged with the role and the same pairs, before the deploy runs.
+    assert faked_deploy["staged"] == [
+        (
+            TF_ROLE_ARN,
+            [f"PermissionsBoundaryArn={BOUNDARY_ARN}", "MalwareScanning=CREATE_PLAN"],
+        )
+    ]
 
 
 def test_the_cloudformation_command_is_unchanged(cbd, faked_deploy):
@@ -560,6 +599,69 @@ def test_an_unread_state_is_a_finding_not_a_skipped_sweep(cbd, faked_cleanup, ru
     assert faked_cleanup["swept"] == []
 
 
+def test_a_retained_resource_of_another_kind_is_a_finding(cbd, faked_cleanup, run):
+    faked_cleanup["retained"] = {
+        "other": [{"type": "aws_kms_key", "physical_id": "k-1", "logical_id": "x"}]
+    }
+    findings = cbd.cleanup_terraform_deployment({"stack_name": "stk"}, run)
+    assert any("aws_kms_key k-1" in f for f in findings)
+
+
+def test_the_state_is_removed_only_after_a_clean_destroy(
+    cbd, faked_cleanup, run, monkeypatch
+):
+    removed = []
+    monkeypatch.setattr(
+        cbd, "remove_terraform_state", lambda s, t: removed.append(s) or None
+    )
+    run.state_bucket = "ci-bucket"
+    cbd.cleanup_terraform_deployment({"stack_name": "stk"}, run)
+    assert removed == ["stk"]
+    faked_cleanup["delete_rc"] = 1
+    findings = cbd.cleanup_terraform_deployment({"stack_name": "stk"}, run)
+    assert removed == ["stk"]
+    assert any("cleanup_stale_terraform_deployments" in f for f in findings)
+
+
+def test_the_reaper_leaves_iam_to_the_stack_sweep(cbd, faked_cleanup, run):
+    assert cbd.cleanup_terraform_deployment({"stack_name": "stk"}, run, iam=False) == []
+
+
+def test_the_sweep_runs_as_the_deploy_role(cbd, faked_cleanup, run, monkeypatch):
+    roles = []
+
+    class _Session:
+        def __init__(self, role_arn):
+            roles.append(role_arn)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cbd, "_assumed_role_default_session", _Session)
+    run.role_arn = TF_ROLE_ARN
+    cbd.cleanup_terraform_deployment({"stack_name": "stk"}, run)
+    assert roles == [TF_ROLE_ARN]
+    assert f"--terraform-assume-role-arn {TF_ROLE_ARN}" in faked_cleanup["commands"][0]
+
+
+def test_stackdeployer_still_has_what_the_sweeps_call():
+    """The sweeps call these private StackDeployer methods (no public API deletes
+    a resource outside a stack). A rename in the SDK must fail here, not as an
+    AttributeError in a CI teardown that then leaks the resources."""
+    from idp_sdk._core.stack import StackDeployer
+
+    for name in (
+        "_delete_dynamodb_table",
+        "_delete_log_group",
+        "_empty_and_delete_bucket",
+        "_discover_auto_created_log_groups",
+    ):
+        assert callable(getattr(StackDeployer, name, None)), name
+
+
 def test_an_unswept_retained_resource_is_a_finding(cbd, faked_cleanup, run):
     faked_cleanup["sweep_errors"] = ["S3 bucket b: AccessDenied"]
     findings = cbd.cleanup_terraform_deployment({"stack_name": "stk"}, run)
@@ -731,13 +833,6 @@ def test_the_evidence_bundle_carries_the_log_tail(cbd, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _fake_release():
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("terraform", "#!/bin/sh\necho Terraform v0\n")
-    return buf.getvalue()
-
-
 @pytest.fixture
 def no_terraform_on_path(monkeypatch, tmp_path):
     empty = tmp_path / "empty-bin"
@@ -753,11 +848,11 @@ def test_a_binary_on_path_is_used_as_is(cbd, monkeypatch, tmp_path):
     binary.chmod(0o755)
     monkeypatch.setenv("PATH", str(binary.parent))
 
-    def _no_download(_url):
-        raise AssertionError("downloaded although a binary was named")
+    def _no_install(*_a):
+        raise AssertionError("installed although a binary was named")
 
     found = cbd.ensure_terraform_binary(
-        {"IDP_TERRAFORM_BIN": "tofu"}, fetch=_no_download
+        {"IDP_TERRAFORM_BIN": "tofu"}, installer=_no_install
     )
     assert found == str(binary)
 
@@ -769,62 +864,55 @@ def test_a_named_binary_that_is_missing_is_refused(cbd, no_terraform_on_path):
         )
 
 
-def test_the_pinned_release_is_installed_when_its_checksum_matches(
-    cbd, monkeypatch, no_terraform_on_path
-):
-    archive = _fake_release()
-    monkeypatch.setitem(
-        cbd.TERRAFORM_SHA256, "linux_amd64", hashlib.sha256(archive).hexdigest()
-    )
-    urls = []
+def test_the_default_is_installed_by_the_gates_installer(cbd, no_terraform_on_path):
+    calls = []
     path = cbd.ensure_terraform_binary(
         no_terraform_on_path,
-        fetch=lambda url: urls.append(url) or archive,
-        platform_name="linux_amd64",
+        installer=lambda binary, cache, plat: (
+            calls.append((str(binary), cache, plat)) or Path("/x/terraform")
+        ),
     )
-    assert urls == [
-        f"https://releases.hashicorp.com/terraform/{cbd.TERRAFORM_VERSION}/"
-        f"terraform_{cbd.TERRAFORM_VERSION}_linux_amd64.zip"
-    ]
-    assert os.access(path, os.X_OK)
-    assert subprocess.run([path], capture_output=True, text=True).stdout.startswith(
-        "Terraform"
+    assert path == "/x/terraform"
+    ((spec, cache, _plat),) = calls
+    assert spec == cbd.TERRAFORM_BINARY_SPEC
+    assert cache == Path(no_terraform_on_path["IDP_TERRAFORM_WORK_ROOT"]) / "tools"
+
+
+def test_an_installer_refusal_is_raised(cbd, no_terraform_on_path):
+    check = cbd._terraform_check()
+
+    def _refuse(*_a):
+        raise check.GateError("downloaded archive hashes to x, expected y")
+
+    with pytest.raises(RuntimeError, match="hashes to x"):
+        cbd.ensure_terraform_binary(no_terraform_on_path, installer=_refuse)
+
+
+def test_the_pinned_binary_is_in_the_lock_for_every_linux_platform(cbd):
+    check = cbd._terraform_check()
+    binary = check.Binary.parse(cbd.TERRAFORM_BINARY_SPEC)
+    for plat in ("linux_amd64", "linux_arm64"):
+        assert len(check.locked_sha(binary, plat)) == 64
+
+
+def test_the_provider_pins_are_the_gates(cbd, tmp_path):
+    check = cbd._terraform_check()
+    path = Path(cbd.write_terraform_pins(str(tmp_path)))
+    assert path.name == check.OVERRIDE_FILE
+    text = path.read_text()
+    assert text == check.override_tf(check.gate_providers([]))
+    for source, version in check.gate_providers([]).items():
+        assert f'source  = "{source}"' in text and f'"= {version}"' in text
+
+
+def test_the_backend_is_s3_encrypted_and_keyed_by_stack(cbd, run):
+    text = cbd.render_terraform_backend(
+        "ci-bucket", run.state_prefix("stk") + cbd.TERRAFORM_STATE_KEY, "us-east-1"
     )
-    # Installed once; a second call reuses it.
-    assert (
-        cbd.ensure_terraform_binary(
-            no_terraform_on_path,
-            fetch=lambda u: pytest.fail(u),
-            platform_name="linux_amd64",
-        )
-        == path
-    )
-
-
-def test_an_archive_with_another_checksum_is_refused(cbd, no_terraform_on_path):
-    with pytest.raises(RuntimeError, match="checksum mismatch"):
-        cbd.ensure_terraform_binary(
-            no_terraform_on_path,
-            fetch=lambda u: _fake_release(),
-            platform_name="linux_amd64",
-        )
-    assert not list(
-        Path(no_terraform_on_path["IDP_TERRAFORM_WORK_ROOT"]).rglob("terraform")
-    )
-
-
-def test_every_pinned_checksum_is_a_sha256(cbd):
-    assert set(cbd.TERRAFORM_SHA256) == {"linux_amd64", "linux_arm64"}
-    for value in cbd.TERRAFORM_SHA256.values():
-        assert len(value) == 64 and int(value, 16) >= 0
-
-
-@pytest.mark.parametrize(
-    ("machine", "expected"), [("x86_64", "linux_amd64"), ("aarch64", "linux_arm64")]
-)
-def test_the_platform_is_mapped(cbd, monkeypatch, machine, expected):
-    monkeypatch.setattr(sys, "platform", "linux")
-    assert cbd._terraform_platform(machine) == expected
+    assert 'backend "s3"' in text
+    assert 'bucket  = "ci-bucket"' in text
+    assert 'key     = "terraform-runs/stk/terraform.tfstate"' in text
+    assert "encrypt = true" in text
 
 
 # ---------------------------------------------------------------------------
@@ -879,11 +967,90 @@ def _script_text(job):
     return "\n".join(str(p) for p in parts)
 
 
-@pytest.mark.parametrize("job", ["integration_tests", "nightly_notification"])
-def test_both_slack_posts_label_the_terraform_run(config, job):
-    body = _script_text(config[job])
-    assert 'os.environ.get("IDP_IAC", "").strip().lower() == "terraform"' in body
-    assert "WEEKLY TERRAFORM RUN" in body
+def _after_script_payload(config, tmp_path, environ):
+    """Run integration_tests' Slack payload builder as the job runs it."""
+    body = next(
+        line
+        for line in config["integration_tests"]["after_script"]
+        if isinstance(line, str) and "slack-payload.json" in line
+    )
+    code = textwrap.dedent(re.search(r"<<'PY'\n(.*?)\n\s*PY\n", body, re.S).group(1))
+    (tmp_path / "deployment_summary.txt").write_text("all good")
+    env = {"PATH": os.environ.get("PATH", ""), **environ}
+    out = subprocess.run(
+        [sys.executable, "-", "success", "https://job.example/1", "a" * 40],
+        input=code,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+        check=True,
+    )
+    return json.loads(out.stdout)
+
+
+@pytest.mark.parametrize(
+    ("environ", "labelled"),
+    [
+        ({"CI_PIPELINE_SOURCE": "schedule", "IDP_IAC": " Terraform "}, True),
+        ({"CI_PIPELINE_SOURCE": "schedule"}, False),
+        ({"CI_PIPELINE_SOURCE": "web", "IDP_IAC": "terraform"}, False),
+    ],
+)
+def test_the_job_post_renders_the_terraform_label(config, tmp_path, environ, labelled):
+    status = _after_script_payload(config, tmp_path, environ)["status"]
+    assert status.startswith("🧱 WEEKLY TERRAFORM RUN · ") is labelled, status
+
+
+@pytest.mark.parametrize(
+    ("environ", "labelled"),
+    [
+        ({"CI_PIPELINE_SOURCE": "schedule", "IDP_IAC": "terraform"}, True),
+        ({"CI_PIPELINE_SOURCE": "schedule"}, False),
+    ],
+)
+def test_the_fallback_post_renders_the_terraform_label(
+    config, tmp_path, monkeypatch, environ, labelled
+):
+    script = config["nightly_notification"]["script"][0]
+    code = textwrap.dedent(
+        re.search(r"<<'PY'\n(.*?)\n\s*PY\s*$", script, re.S).group(1)
+    )
+    namespace: dict[str, Any] = {"__name__": "nightly_notification"}
+    exec(compile(code, "nightly_notification", "exec"), namespace)  # noqa: S102  # nosec B102 - this repo's own CI script under test
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "deployment_summary.txt").write_text("summary")
+    for name in ("IDP_IAC", "IDP_RUN_PROBES", "IDP_TEST_REGION", "GITLAB_REVIEW_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    for key, value in environ.items():
+        monkeypatch.setenv(key, value)
+    sent = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    import urllib.request
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda req, timeout=None: sent.append(req) or _Response(),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["x", "https://pipeline.example/1", "a" * 40, "https://hook.example"],
+    )
+    namespace["main"]()
+    (request,) = sent
+    status = json.loads(request.data)["status"]
+    assert status.startswith("🧱 WEEKLY TERRAFORM RUN · ") is labelled, status
 
 
 def test_no_new_job_is_added_for_it(config):
@@ -898,3 +1065,560 @@ def test_no_new_job_is_added_for_it(config):
         and "integration_test_deployment.py" in _script_text(job)
     ]
     assert deploy_jobs == ["integration_tests"]
+
+
+# ---------------------------------------------------------------------------
+# The per-run Terraform deploy role
+# ---------------------------------------------------------------------------
+
+SERVICE_ROLE_TEMPLATE = (
+    REPO_ROOT
+    / "iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml"
+)
+
+
+@pytest.fixture
+def role_template(cbd):
+    text = SERVICE_ROLE_TEMPLATE.read_text(encoding="utf-8")
+    return cbd.terraform_deploy_role_template(text), yaml.load(
+        text, Loader=cbd._CfnLongFormLoader
+    )
+
+
+def test_the_customer_template_is_kept_whole(role_template):
+    derived, original = role_template
+    assert (
+        derived["Resources"]["CloudFormationServiceRole"]
+        == (original["Resources"]["CloudFormationServiceRole"])
+    )
+    assert (
+        derived["Resources"]["PassRolePolicy"]
+        == original["Resources"]["PassRolePolicy"]
+    )
+    for name, output in original["Outputs"].items():
+        assert derived["Outputs"][name] == output
+
+
+def test_the_deploy_role_has_the_service_roles_policies_and_cloud_control(
+    cbd, role_template
+):
+    derived, original = role_template
+    service = original["Resources"]["CloudFormationServiceRole"]["Properties"]
+    role = derived["Resources"]["TerraformDeployRole"]["Properties"]
+    # By value: every policy the service role has, unchanged, first.
+    assert role["Policies"][: len(service["Policies"])] == service["Policies"]
+    (extra,) = role["Policies"][len(service["Policies"]) :]
+    statements = {st["Sid"]: st for st in extra["PolicyDocument"]["Statement"]}
+    assert statements["TerraformCloudControl"]["Action"] == ["cloudcontrol:*"]
+    deny = statements["DenyModifyingThisTerraformDeployRole"]
+    assert deny["Effect"] == "Deny"
+    assert "iam:UpdateAssumeRolePolicy" in deny["Action"]
+    assert deny["Resource"]["Fn::Sub"].endswith("${AWS::StackName}-TFDeployRole")
+    assert role["RoleName"] == {"Fn::Sub": "${AWS::StackName}-TFDeployRole"}
+    # The same own-boundary choice as the service role.
+    assert role["PermissionsBoundary"] == service["PermissionsBoundary"]
+
+
+def test_the_deploy_role_trusts_only_the_named_principal(role_template):
+    derived, _ = role_template
+    trust = derived["Resources"]["TerraformDeployRole"]["Properties"][
+        "AssumeRolePolicyDocument"
+    ]
+    assert trust["Statement"] == [
+        {
+            "Sid": "AllowOnlyThisRunsTerraformDeployer",
+            "Effect": "Allow",
+            "Principal": {"AWS": {"Ref": "TerraformDeployerPrincipalArn"}},
+            "Action": "sts:AssumeRole",
+        }
+    ]
+    assert "TerraformDeployerPrincipalArn" in derived["Parameters"]
+    assert derived["Outputs"]["TerraformDeployRoleArn"]["Value"] == {
+        "Fn::GetAtt": ["TerraformDeployRole", "Arn"]
+    }
+
+
+def test_the_derived_template_fits_a_template_body(cbd):
+    body = json.dumps(
+        cbd.terraform_deploy_role_template(SERVICE_ROLE_TEMPLATE.read_text())
+    )
+    assert len(body.encode()) < 51_200
+    assert "!Sub" not in body and "!Ref" not in body
+
+
+def test_the_codebuild_role_may_assume_only_that_role_name(cbd):
+    text = (REPO_ROOT / "scripts/sdlc/cfn/codepipeline-s3.yml").read_text()
+    block = text[text.index("Sid: AssumePerRunTerraformDeployRole") :][:400]
+    assert "sts:AssumeRole" in block
+    assert f"role/idp-*{cbd.TERRAFORM_DEPLOY_ROLE_SUFFIX}'" in block
+
+
+@pytest.mark.parametrize(
+    ("arn", "principal"),
+    [
+        (
+            "arn:aws:sts::123456789012:assumed-role/codebuild-role/AWSCodeBuild-x",
+            "arn:aws:iam::123456789012:role/codebuild-role",
+        ),
+        ("arn:aws:iam::123456789012:user/dev", "arn:aws:iam::123456789012:user/dev"),
+    ],
+)
+def test_the_caller_principal(cbd, arn, principal):
+    sts = SimpleNamespace(get_caller_identity=lambda: {"Arn": arn})
+    assert cbd._caller_principal_arn(sts) == principal
+
+
+def test_the_terraform_pre_stack_uses_the_derived_template(cbd, monkeypatch, tmp_path):
+    monkeypatch.chdir(REPO_ROOT)
+    created = {}
+
+    class _Cfn:
+        class exceptions:
+            AlreadyExistsException = type("AlreadyExists", (Exception,), {})
+
+        def create_stack(self, **kw):
+            created.update(kw)
+
+        def get_waiter(self, _name):
+            return SimpleNamespace(wait=lambda **kw: None)
+
+        def describe_stacks(self, **kw):
+            return {
+                "Stacks": [
+                    {
+                        "Outputs": [
+                            {"OutputKey": "ServiceRoleArn", "OutputValue": ROLE_ARN},
+                            {
+                                "OutputKey": "TerraformDeployRoleArn",
+                                "OutputValue": TF_ROLE_ARN,
+                            },
+                        ]
+                    }
+                ]
+            }
+
+    clients = {
+        "cloudformation": _Cfn(),
+        "iam": object(),
+        "sts": SimpleNamespace(get_caller_identity=lambda: {"Account": "1"}),
+    }
+    monkeypatch.setattr(cbd.boto3, "client", lambda name, **kw: clients[name])
+    monkeypatch.setattr(cbd, "_ensure_boundary_policy", lambda *a: BOUNDARY_ARN)
+    assert cbd.create_iam_resources("stk", terraform_deployer_arn=DEPLOYER_ARN) == (
+        TF_ROLE_ARN,
+        BOUNDARY_ARN,
+    )
+    body = json.loads(created["TemplateBody"])
+    assert "TerraformDeployRole" in body["Resources"]
+    assert {
+        "ParameterKey": "TerraformDeployerPrincipalArn",
+        "ParameterValue": DEPLOYER_ARN,
+    } in created["Parameters"]
+    created.clear()
+    assert cbd.create_iam_resources("stk") == (ROLE_ARN, BOUNDARY_ARN)
+    assert created["TemplateBody"] == SERVICE_ROLE_TEMPLATE.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Durable state: staging, removal, and the startup reaper
+# ---------------------------------------------------------------------------
+
+MANIFEST = {
+    "formatVersion": 1,
+    "parameters": {
+        "AdminEmail": {"variable": "admin_email", "type": "String", "required": True},
+        "PermissionsBoundaryArn": {
+            "variable": "permissions_boundary_arn",
+            "type": "String",
+        },
+        "MalwareScanning": {"variable": "malware_scanning", "type": "String"},
+    },
+    "retainedAddresses": [],
+}
+
+
+class _FakeS3:
+    def __init__(self, objects=None):
+        self.objects = dict(objects or {})
+        self.puts = []
+        self.deleted = []
+
+    def put_object(self, **kw):
+        self.puts.append(kw)
+        self.objects[kw["Key"]] = kw["Body"]
+
+    def get_object(self, Bucket, Key):
+        return {"Body": io.BytesIO(self.objects[Key])}
+
+    def delete_object(self, **kw):
+        self.deleted.append((kw["Key"], kw.get("VersionId")))
+
+    def get_paginator(self, name):
+        objects = self.objects
+
+        class _P:
+            def paginate(self, Bucket, Prefix):
+                keys = [
+                    k for k in objects if isinstance(k, str) and k.startswith(Prefix)
+                ]
+                if name == "list_object_versions":
+                    yield {"Versions": [{"Key": k, "VersionId": "v1"} for k in keys]}
+                else:
+                    yield {
+                        "Contents": [
+                            {"Key": k, "LastModified": objects.get(("mtime", k))}
+                            for k in keys
+                        ]
+                    }
+
+        return _P()
+
+
+def test_the_root_is_staged_beside_the_state_before_init(cbd, monkeypatch, run):
+    from idp_sdk._core import terraform_deploy as tf
+
+    monkeypatch.setattr(tf, "load_module_manifest", lambda url: MANIFEST)
+    run.state_bucket = "ci-bucket"
+    run.role_arn = TF_ROLE_ARN
+    s3 = _FakeS3()
+    cbd.stage_terraform_root(
+        "stk",
+        "a@example.test",
+        run,
+        [f"PermissionsBoundaryArn={BOUNDARY_ARN}", "MalwareScanning=GATE_ONLY"],
+        s3=s3,
+    )
+    keys = {put["Key"] for put in s3.puts}
+    check = cbd._terraform_check()
+    assert keys == {
+        f"terraform-runs/stk/{name}"
+        for name in (*cbd.TERRAFORM_ROOT_FILES, check.OVERRIDE_FILE, "run.json")
+    }
+    assert all(put["ServerSideEncryption"] == "AES256" for put in s3.puts)
+    main = Path(run.directory, "main.tf").read_text()
+    assert main.count(TF_ROLE_ARN) == 2
+    tfvars = Path(run.directory, "terraform.tfvars").read_text()
+    assert BOUNDARY_ARN in tfvars and "GATE_ONLY" in tfvars
+    record = json.loads(s3.objects["terraform-runs/stk/run.json"])
+    assert record["role_arn"] == TF_ROLE_ARN and record["module_url"] == MODULE_URL
+
+
+def test_removing_the_state_deletes_every_version(cbd, run):
+    run.state_bucket = "ci-bucket"
+    s3 = _FakeS3(
+        {"terraform-runs/stk/terraform.tfstate": b"{}", "terraform-runs/other/x": b""}
+    )
+    assert cbd.remove_terraform_state("stk", run, s3=s3) is None
+    assert s3.deleted == [("terraform-runs/stk/terraform.tfstate", "v1")]
+
+
+def _aged(hours):
+    from datetime import datetime, timedelta, timezone
+
+    return datetime.now(tz=timezone.utc) - timedelta(hours=hours)
+
+
+@pytest.fixture
+def reaper(cbd, monkeypatch):
+    objects = {
+        "terraform-runs/idp-0101-000000/terraform.tfstate": b"{}",
+        ("mtime", "terraform-runs/idp-0101-000000/terraform.tfstate"): _aged(5),
+        "terraform-runs/idp-0101-000000/main.tf": b"# main",
+        ("mtime", "terraform-runs/idp-0101-000000/main.tf"): _aged(5),
+        "terraform-runs/idp-0202-000000/terraform.tfstate": b"{}",
+        ("mtime", "terraform-runs/idp-0202-000000/terraform.tfstate"): _aged(0.5),
+    }
+    s3 = _FakeS3(objects)
+    s3.objects = {k: v for k, v in objects.items()}
+    monkeypatch.setattr(cbd.boto3, "client", lambda name, **kw: s3)
+    monkeypatch.setattr(cbd, "_terraform_state_bucket", lambda: "ci-bucket")
+    state = {"reaped": [], "result": []}
+
+    def _reap(stack_name, bucket, keys, s3=None):
+        state["reaped"].append(stack_name)
+        return list(state["result"])
+
+    monkeypatch.setattr(cbd, "_reap_terraform_run", _reap)
+    return state
+
+
+def test_only_a_stale_run_is_reaped_and_a_young_one_is_kept(cbd, reaper):
+    pending = set()
+    assert cbd.cleanup_stale_terraform_deployments(pending) == []
+    assert reaper["reaped"] == ["idp-0101-000000"]
+    assert pending == {"idp-0202-000000"}
+
+
+def test_a_failed_reap_is_a_finding_and_its_stacks_are_kept(cbd, reaper):
+    reaper["result"] = ["idp-0101-000000: destroy failed"]
+    pending = set()
+    findings = cbd.cleanup_stale_terraform_deployments(pending)
+    assert findings and findings[0].startswith(cbd.SWEEP_NOT_COMPLETED)
+    assert pending == {"idp-0101-000000", "idp-0202-000000"}
+
+
+def test_an_unlisted_state_bucket_is_a_finding(cbd, monkeypatch):
+    def _boom():
+        raise RuntimeError("AccessDenied")
+
+    monkeypatch.setattr(cbd, "_terraform_state_bucket", _boom)
+    findings = cbd.cleanup_stale_terraform_deployments(set())
+    assert findings and "AccessDenied" in findings[0]
+
+
+def test_the_reaper_is_a_registered_fatal_sweep_before_the_stack_sweep(cbd):
+    names = [sweep.func for sweep in cbd.STARTUP_SWEEPS]
+    assert names.index("cleanup_stale_terraform_deployments") < names.index(
+        "cleanup_stale_idp_stacks"
+    )
+    (row,) = [
+        s for s in cbd.STARTUP_SWEEPS if s.func == "cleanup_stale_terraform_deployments"
+    ]
+    assert row.fails_run is True
+
+
+def test_main_runs_the_reaper_first_and_hands_its_runs_to_the_stack_sweep():
+    text = (REPO_ROOT / "scripts/sdlc/codebuild_deployment.py").read_text()
+    main = text[text.index("\ndef main():") :]
+    reap = main.index("cleanup_stale_terraform_deployments(terraform_runs_left)")
+    stacks = main.index("cleanup_stale_idp_stacks(terraform_runs=terraform_runs_left)")
+    assert reap < stacks
+
+
+def test_a_dead_run_is_destroyed_from_its_saved_configuration(cbd, monkeypatch):
+    s3 = _FakeS3(
+        {
+            "terraform-runs/stk/main.tf": b"# main",
+            "terraform-runs/stk/terraform.tfvars": b"x = 1",
+            "terraform-runs/stk/terraform.tfstate": b"{}",
+            "terraform-runs/stk/run.json": json.dumps(
+                {"module_url": MODULE_URL, "role_arn": TF_ROLE_ARN}
+            ).encode(),
+        }
+    )
+    monkeypatch.setattr(cbd, "ensure_terraform_binary", lambda: "/bin/terraform")
+    seen = {}
+
+    def _run(cmd, *a, **k):
+        seen["init"] = cmd
+        return _Result(cmd, 0)
+
+    def _cleanup(result, terraform, iam=True):
+        seen["files"] = sorted(p.name for p in Path(terraform.directory).iterdir())
+        seen["role"], seen["iam"] = terraform.role_arn, iam
+        return []
+
+    monkeypatch.setattr(cbd, "run_command", _run)
+    monkeypatch.setattr(cbd, "cleanup_terraform_deployment", _cleanup)
+    keys = [k for k in s3.objects if isinstance(k, str)]
+    assert cbd._reap_terraform_run("stk", "ci-bucket", keys, s3=s3) == []
+    assert seen["files"] == ["main.tf", "terraform.tfvars"]
+    assert seen["role"] == TF_ROLE_ARN and seen["iam"] is False
+    assert " init " in seen["init"]
+
+
+def test_a_dead_run_without_its_configuration_is_a_finding(cbd):
+    s3 = _FakeS3({"terraform-runs/stk/terraform.tfstate": b"{}"})
+    findings = cbd._reap_terraform_run(
+        "stk", "ci-bucket", ["terraform-runs/stk/terraform.tfstate"], s3=s3
+    )
+    assert findings and "no main.tf" in findings[0]
+
+
+class _StackListing:
+    def __init__(self, summaries, outputs=None):
+        self.summaries = summaries
+        self.deleted = []
+        self.outputs = outputs or {}
+
+    def get_paginator(self, _name):
+        summaries = self.summaries
+
+        class _P:
+            def paginate(self, **kw):
+                yield {"StackSummaries": summaries}
+
+        return _P()
+
+    def delete_stack(self, StackName):
+        self.deleted.append(StackName)
+
+    def describe_stacks(self, StackName):
+        return {"Stacks": [{"Outputs": self.outputs.get(StackName, [])}]}
+
+
+def _summary(name, hours, description="IDP"):
+    return {
+        "StackName": name,
+        "CreationTime": _aged(hours),
+        "TemplateDescription": description,
+    }
+
+
+@pytest.fixture
+def stack_sweep(cbd, monkeypatch):
+    def _install(summaries):
+        cf = _StackListing(summaries)
+        monkeypatch.setattr(cbd.boto3, "client", lambda name, **kw: cf)
+        monkeypatch.setattr(cbd, "_diagnostics_bucket", lambda: None)
+        return cf
+
+    return _install
+
+
+def test_the_stack_sweep_keeps_every_stack_of_a_run_with_state(cbd, stack_sweep):
+    cf = stack_sweep(
+        [
+            _summary("idp-0101-000000", 5, "IDP (v1) (Terraform) label"),
+            _summary("idp-0101-000000-iam", 5),
+            _summary("idp-0303-000000", 5),
+        ]
+    )
+    assert cbd.cleanup_stale_idp_stacks(terraform_runs={"idp-0101-000000"}) == []
+    assert cf.deleted == ["idp-0303-000000"]
+
+
+def test_an_unknown_state_listing_keeps_every_labelled_run(cbd, stack_sweep):
+    cf = stack_sweep(
+        [
+            _summary("idp-0101-000000", 5, "IDP (v1) (Terraform) label"),
+            _summary("idp-0101-000000-iam", 5),
+        ]
+    )
+    assert cbd.cleanup_stale_idp_stacks(terraform_runs=None) == []
+    assert cf.deleted == []
+
+
+def test_a_stateless_label_is_swept_from_its_directory_first(
+    cbd, stack_sweep, monkeypatch
+):
+    cf = stack_sweep([_summary("idp-0101-000000", 5, "IDP (v1) (Terraform) label")])
+    order = []
+    monkeypatch.setattr(
+        cbd,
+        "_sweep_terraform_resource_directory",
+        lambda c, name: order.append(("sweep", name)) or ["AWS::SQS::Queue q"],
+    )
+    original = cf.delete_stack
+    cf.delete_stack = lambda StackName: (
+        order.append(("delete", StackName)) or original(StackName)
+    )
+    findings = cbd.cleanup_stale_idp_stacks(terraform_runs=set())
+    assert order == [("sweep", "idp-0101-000000"), ("delete", "idp-0101-000000")]
+    assert findings and "AWS::SQS::Queue q" in findings[0]
+
+
+def test_the_directory_sweep_deletes_what_it_can_and_names_the_rest(cbd):
+    directory = {
+        "root": {
+            "resources": [
+                {"ResourceType": "AWS::S3::Bucket", "PhysicalResourceId": "b"},
+                {"ResourceType": "AWS::SQS::Queue", "PhysicalResourceId": "q"},
+                {
+                    "ResourceType": "AWS::CloudFormation::Stack",
+                    "PhysicalResourceId": "n",
+                },
+            ],
+            "nested": {
+                "N": {
+                    "resources": [
+                        {
+                            "ResourceType": "AWS::Lambda::Function",
+                            "PhysicalResourceId": "f",
+                        }
+                    ]
+                }
+            },
+        }
+    }
+    cf = _StackListing(
+        [],
+        outputs={
+            "lbl": [
+                {
+                    "OutputKey": "TerraformResourceDirectory",
+                    "OutputValue": "s3://bk/dir.json",
+                }
+            ]
+        },
+    )
+    s3 = _FakeS3({"dir.json": json.dumps(directory).encode()})
+    deleted = []
+    deployer = SimpleNamespace(
+        _empty_and_delete_bucket=lambda n: deleted.append(("bucket", n)),
+        _delete_dynamodb_table=lambda n: deleted.append(("table", n)),
+    )
+    lam = SimpleNamespace(
+        delete_function=lambda FunctionName: deleted.append(("fn", FunctionName))
+    )
+    left = cbd._sweep_terraform_resource_directory(
+        cf,
+        "lbl",
+        deployer,
+        clients={"s3": s3, "lambda": lam, "stepfunctions": object()},
+    )
+    assert deleted == [("bucket", "b"), ("fn", "f")]
+    assert left == ["AWS::SQS::Queue q"]
+
+
+# ---------------------------------------------------------------------------
+# The teardown time reserve
+# ---------------------------------------------------------------------------
+
+
+def _codebuild(minutes):
+    return SimpleNamespace(
+        batch_get_builds=lambda ids: {"builds": [{"timeoutInMinutes": minutes}]}
+    )
+
+
+def test_enough_time_left_starts_the_steps(cbd, monkeypatch):
+    monkeypatch.setenv("CODEBUILD_BUILD_ID", "b:1")
+    assert cbd.terraform_suite_time_shortfall(0, _codebuild(180), now=60 * 60) is None
+
+
+def test_too_little_time_left_is_refused(cbd, monkeypatch):
+    monkeypatch.setenv("CODEBUILD_BUILD_ID", "b:1")
+    reason = cbd.terraform_suite_time_shortfall(0, _codebuild(180), now=90 * 60)
+    assert reason and "90 min" in reason
+
+
+def test_an_unreadable_timeout_is_not_a_shortfall(cbd, monkeypatch):
+    monkeypatch.delenv("CODEBUILD_BUILD_ID", raising=False)
+    assert cbd.terraform_suite_time_shortfall(0, _codebuild(1), now=10**6) is None
+
+
+def test_a_shortfall_stops_before_the_steps(cbd, monkeypatch, run):
+    monkeypatch.setattr(
+        cbd,
+        "_deploy_primary_terraform_attempt",
+        lambda *a: {"stack_name": "stk", "success": True, "iac": "terraform"},
+    )
+    monkeypatch.setattr(
+        cbd, "terraform_suite_time_shortfall", lambda started: "no time"
+    )
+
+    def _step(_stack):
+        raise AssertionError("a step ran")
+
+    monkeypatch.setattr(cbd, "PARALLEL_TEST_STEPS", [(_step, "Step 3", "x", "d")])
+    result = cbd.deploy_and_test_stack(
+        "stk", "a@example.test", TEMPLATE_URL, terraform=run
+    )
+    assert result["success"] is False and "no time" in result["error"]
+
+
+def test_the_options_write_is_fatal_on_a_terraform_schedule(itd, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CI_PIPELINE_SOURCE", "schedule")
+    monkeypatch.setenv("IDP_IAC", "terraform")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setattr(itd, "write_ci_run_options", lambda *a, **k: {})
+
+    def _must_not_run(*_a, **_k):
+        raise AssertionError("packaged a run the build would read as CloudFormation")
+
+    monkeypatch.setattr(itd, "create_deployment_package", _must_not_run)
+    with pytest.raises(SystemExit) as excinfo:
+        itd.main()
+    assert excinfo.value.code == 1

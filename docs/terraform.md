@@ -246,6 +246,7 @@ a `main.tf` with the `aws` and `awscc` providers configured for the Region and a
 | `--headless` / `--govcloud` | use the latest headless or GovCloud module instead of the standard one; they cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless` |
 | `--terraform-dir DIR` | the directory to write, instead of `./idp-terraform/<stack-name>` |
 | `--terraform-bin` | `terraform` or `tofu` |
+| `--terraform-assume-role-arn ARN` | an IAM role both providers assume, written as an `assume_role` block in the `aws` and `awscc` provider blocks of `main.tf`, so the resources are created as that role instead of as you. You need `sts:AssumeRole` on it, and the role needs what the deployment creates (the CloudFormation service role's permissions, plus `cloudcontrol:*` for the `awscc` resources) |
 | `--wait` | accepted as on the CloudFormation path |
 
 `--parameters` takes CloudFormation names, not Terraform variable names. The CLI maps
@@ -363,7 +364,10 @@ idp-cli delete --terraform --stack-name idp-tf
 ```
 
 Add `--terraform-dir DIR` if you deployed with a directory other than the default, and
-`--force` to skip the confirmation. The command empties the deployment's buckets the
+`--force` to skip the confirmation. A deployment applied with
+`--terraform-assume-role-arn` keeps that role in `main.tf`, so the delete uses it
+too; pass `--terraform-assume-role-arn` to the delete to set or change it, which
+rewrites the two provider blocks before `init`. The command empties the deployment's buckets the
 way the CloudFormation delete path does, then removes from Terraform state every
 resource whose CloudFormation `DeletionPolicy` keeps it (`Retain` or
 `RetainExceptOnCreate`), and then runs `terraform destroy`. Removing a resource from

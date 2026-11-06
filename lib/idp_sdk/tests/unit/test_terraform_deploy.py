@@ -14,6 +14,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import zipfile
 from pathlib import Path
@@ -403,6 +404,7 @@ class TestParameterMapping:
 # --------------------------------------------------------------------------------------
 
 MODULE_URL = f"https://s3.us-west-2.amazonaws.com/{BUCKET}/p/1/terraform/m.zip"
+ROLE = "arn:aws:iam::123456789012:role/idp-tf-deployer"
 
 
 def _write(directory, **kw):
@@ -477,6 +479,43 @@ class TestRootConfig:
         with pytest.raises(IDPConfigurationError, match="Bogus"):
             _write(tmp_path, parameters={"Bogus": "1"})
         assert not (tmp_path / "main.tf").exists()
+
+    def test_no_role_writes_no_assume_role_block(self, tmp_path):
+        _write(tmp_path)
+        assert "assume_role" not in (tmp_path / "main.tf").read_text()
+
+    def test_a_role_goes_into_both_provider_blocks(self, tmp_path):
+        _write(tmp_path, assume_role_arn=ROLE)
+        main = (tmp_path / "main.tf").read_text()
+        for name in ("aws", "awscc"):
+            assert (
+                f'provider "{name}" {{\n  region = "us-west-2"\n  assume_role {{\n'
+                f'    role_arn = "{ROLE}"\n  }}\n}}'
+            ) in main
+        assert main.count("assume_role {") == 2
+
+    def test_a_malformed_role_is_refused_and_writes_nothing(self, tmp_path):
+        with pytest.raises(IDPConfigurationError, match="not an IAM role ARN"):
+            _write(tmp_path, assume_role_arn="arn:aws:iam::123456789012:user/x")
+        assert not (tmp_path / "main.tf").exists()
+
+    def test_set_assume_role_rewrites_only_the_provider_blocks(self, tmp_path):
+        _write(tmp_path)
+        before = (tmp_path / "main.tf").read_text()
+        tf.set_assume_role(tmp_path / "main.tf", REGION, ROLE)
+        after = (tmp_path / "main.tf").read_text()
+        assert after.count(f'role_arn = "{ROLE}"') == 2
+        strip = lambda t: re.sub(r"  assume_role \{\n.*?\n  \}\n", "", t, flags=re.S)  # noqa: E731
+        assert strip(after) == before
+        # Idempotent, and replaceable by another role.
+        tf.set_assume_role(tmp_path / "main.tf", REGION, ROLE + "2")
+        assert (tmp_path / "main.tf").read_text().count("assume_role {") == 2
+        assert f'"{ROLE}2"' in (tmp_path / "main.tf").read_text()
+
+    def test_set_assume_role_refuses_a_foreign_main_tf(self, tmp_path):
+        (tmp_path / "main.tf").write_text('provider "aws" {}\n')
+        with pytest.raises(IDPConfigurationError, match="not written by idp-cli"):
+            tf.set_assume_role(tmp_path / "main.tf", REGION, ROLE)
 
     def test_another_deployments_directory_is_refused(self, tmp_path):
         _write(tmp_path)
@@ -742,6 +781,25 @@ class TestDeleteOperation:
         assert [r["physical_id"] for r in result.retained_resources["s3_buckets"]] == [
             "tfidp-logging"
         ]
+
+    def test_a_role_is_written_into_main_tf_before_init(self, monkeypatch, tmp_path):
+        from idp_sdk._core.stack import StackDeployer
+
+        self._initialised(tmp_path)
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        seen = []
+
+        def _run(cmd, **kw):
+            if cmd[1:2] == ["init"]:
+                seen.append((tmp_path / "main.tf").read_text().count(ROLE))
+            out = {"show": json.dumps(STATE), "state": "\n".join(STATE_LIST)}
+            return subprocess.CompletedProcess(cmd, 0, out.get(cmd[1], ""), "")
+
+        monkeypatch.setattr(tf.subprocess, "run", _run)
+        monkeypatch.setattr(StackDeployer, "_empty_buckets", lambda self, info: None)
+        client = IDPClient(stack_name="tfidp", region=REGION)
+        client.stack.delete_terraform(terraform_dir=str(tmp_path), assume_role_arn=ROLE)
+        assert seen == [2]
 
     def test_missing_directory_is_refused(self, tmp_path):
         client = IDPClient(stack_name="tfidp", region=REGION)

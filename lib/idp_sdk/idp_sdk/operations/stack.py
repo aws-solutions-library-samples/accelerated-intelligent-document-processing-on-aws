@@ -258,6 +258,7 @@ class StackOperation:
         pointer_url: Optional[str] = None,
         terraform_dir: Optional[str] = None,
         terraform_bin: str = "terraform",
+        assume_role_arn: Optional[str] = None,
     ) -> StackDeploymentResult:
         """Deploy or update the accelerator with Terraform (or OpenTofu).
 
@@ -280,6 +281,10 @@ class StackOperation:
             pointer_url: URL of an ``idp-terraform-latest.json`` pointer.
             terraform_dir: Root configuration directory.
             terraform_bin: ``terraform``, ``tofu`` or a path to either.
+            assume_role_arn: An IAM role both providers assume (an
+                ``assume_role`` block in each provider block of ``main.tf``), so
+                the resources are created as that role rather than as the
+                caller. The caller needs ``sts:AssumeRole`` on it.
 
         Returns:
             StackDeploymentResult with operation ``APPLY`` and the label stack's
@@ -329,6 +334,7 @@ class StackOperation:
             admin_email=admin_email,
             parameters=parameters or {},
             manifest=manifest,
+            assume_role_arn=assume_role_arn,
         )
         operation = "UPDATE" if (directory / "terraform.tfstate").exists() else "CREATE"
         runner.init()
@@ -353,6 +359,7 @@ class StackOperation:
         *,
         terraform_dir: Optional[str] = None,
         terraform_bin: str = "terraform",
+        assume_role_arn: Optional[str] = None,
     ) -> StackDeletionResult:
         """Destroy a Terraform deployment, keeping what CloudFormation retains.
 
@@ -361,6 +368,10 @@ class StackOperation:
         with the helper the CloudFormation delete uses; removes every address in
         the module's ``retainedAddresses`` (as ``module.idp.<address>``) from
         the state, skipping any not in it; then runs ``destroy -auto-approve``.
+
+        With ``assume_role_arn``, the provider blocks of the idp-cli ``main.tf``
+        in the directory are rewritten to assume that role first; without it
+        they are left as the deploy wrote them.
 
         Returns:
             StackDeletionResult whose ``retained_resources`` lists what was left,
@@ -391,6 +402,14 @@ class StackOperation:
                     f"{directory} holds the deployment {recorded!r}, not {name!r}"
                 )
 
+        role = tf.check_assume_role_arn(assume_role_arn)
+        if role:
+            region = self._client._region
+            if not region:
+                raise IDPConfigurationError(
+                    "a region is required to set the role a Terraform delete assumes"
+                )
+            tf.set_assume_role(directory / "main.tf", region, role)
         runner.init()
         manifest = tf.read_manifest_from_dir(directory)
         state = runner.show_state()

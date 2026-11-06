@@ -22,11 +22,13 @@ from collections import namedtuple
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from textwrap import dedent
 
 import boto3
+import yaml
 from botocore.config import Config as _BotoConfig
 
 # Sibling module — CodeBuild runs this as `python3 scripts/sdlc/...`, so the
@@ -472,6 +474,20 @@ STARTUP_SWEEPS = (
         ),
     ),
     StartupSweep(
+        func="cleanup_stale_terraform_deployments",
+        label="Dead-run Terraform deployment sweep",
+        fails_run=True,
+        why=(
+            "Fatal, for the stack sweep's reason one level down. A Terraform "
+            "deployment is not a CloudFormation stack, so nothing else in this "
+            "list can delete it: the stack sweep sees only its label, and keeps "
+            "every stack of a run whose state this sweep could not consider. An "
+            "inert sweep therefore leaves a whole deployment standing — every "
+            "Lambda, table, queue and role behind the label — until somebody "
+            "destroys it by hand."
+        ),
+    ),
+    StartupSweep(
         func="cleanup_stale_idp_stacks",
         label="Stale idp- stack sweep",
         fails_run=True,
@@ -874,12 +890,18 @@ def parse_publish_output(stdout, iac=None):
     return artifacts
 
 
+def ci_account_id(environ: dict | None = None) -> str:
+    """The CI account: IDP_ACCOUNT_ID, defaulting to the shared CI account."""
+    env = os.environ if environ is None else environ
+    return env.get("IDP_ACCOUNT_ID", "020432867916")
+
+
 def publish_artifacts(iac=None):
     """Run `idp-cli publish` and return what it uploaded (parse_publish_output)."""
     print("📦 Publishing templates to S3...")
 
     # Get AWS account ID and region
-    account_id = get_env_var("IDP_ACCOUNT_ID", "020432867916")
+    account_id = ci_account_id()
     region = get_env_var("AWS_DEFAULT_REGION", "us-east-1")
 
     # Generate bucket name and prefix
@@ -1185,7 +1207,9 @@ def _ensure_boundary_policy(iam_client, account_id, policy_name):
     return boundary_arn
 
 
-def create_iam_resources(stack_name, shared_boundary=False):
+def create_iam_resources(
+    stack_name, shared_boundary=False, terraform_deployer_arn=None
+):
     """Create the permissions boundary, then the CFN service role that requires it.
 
     That order is a hard requirement, not a preference. The service-role
@@ -1208,6 +1232,12 @@ def create_iam_resources(stack_name, shared_boundary=False):
     shared_boundary=True (manual probes, transform deploy tests): the shared
     account-wide policy, so a concurrent sweep adds no iam:CreatePolicy calls to
     the burst.
+
+    terraform_deployer_arn (Terraform runs): the pre-stack is
+    terraform_deploy_role_template's, the customer service-role template plus a
+    sibling role trusting that principal, and the role returned is that sibling,
+    which Terraform's providers assume. The customer template is read, never
+    changed.
 
     Returns (role_arn, boundary_arn), or (None, None) on failure.
     """
@@ -1234,25 +1264,36 @@ def create_iam_resources(stack_name, shared_boundary=False):
             "r",
         ) as f:
             template_body = f.read()
+        parameters = [
+            {
+                "ParameterKey": "CreatedRolePermissionsBoundaryArn",
+                "ParameterValue": boundary_arn,
+            },
+            # Passed explicitly rather than relying on the template's
+            # default, so a change to that default cannot silently
+            # narrow which stacks this role may deploy.
+            {
+                "ParameterKey": "ManagedStackNamePrefix",
+                "ParameterValue": MANAGED_STACK_NAME_PREFIX,
+            },
+        ]
+        output_key = "ServiceRoleArn"
+        if terraform_deployer_arn:
+            template_body = json.dumps(terraform_deploy_role_template(template_body))
+            parameters.append(
+                {
+                    "ParameterKey": "TerraformDeployerPrincipalArn",
+                    "ParameterValue": terraform_deployer_arn,
+                }
+            )
+            output_key = TERRAFORM_DEPLOY_ROLE_OUTPUT
 
         try:
             cf_client.create_stack(
                 StackName=iam_stack_name,
                 TemplateBody=template_body,
                 Capabilities=["CAPABILITY_NAMED_IAM"],
-                Parameters=[
-                    {
-                        "ParameterKey": "CreatedRolePermissionsBoundaryArn",
-                        "ParameterValue": boundary_arn,
-                    },
-                    # Passed explicitly rather than relying on the template's
-                    # default, so a change to that default cannot silently
-                    # narrow which stacks this role may deploy.
-                    {
-                        "ParameterKey": "ManagedStackNamePrefix",
-                        "ParameterValue": MANAGED_STACK_NAME_PREFIX,
-                    },
-                ],
+                Parameters=parameters,
             )
 
             # Wait for stack creation to complete
@@ -1272,12 +1313,12 @@ def create_iam_resources(stack_name, shared_boundary=False):
 
         role_arn = None
         for output in outputs:
-            if output["OutputKey"] == "ServiceRoleArn":
+            if output["OutputKey"] == output_key:
                 role_arn = output["OutputValue"]
                 break
 
         if not role_arn:
-            raise Exception("Could not find ServiceRoleArn in stack outputs")
+            raise Exception(f"Could not find {output_key} in stack outputs")
 
         return role_arn, boundary_arn
 
@@ -1599,7 +1640,9 @@ def cleanup_iam_resources(stack_name):
     boundary_name = f"{stack_name}-PermissionsBoundary"
     try:
         iam_client = boto3.client("iam", config=_THROTTLE_RETRY_CONFIG)
-        account_id = boto3.client("sts").get_caller_identity()["Account"]
+        account_id = boto3.client(
+            "sts", config=_THROTTLE_RETRY_CONFIG
+        ).get_caller_identity()["Account"]
         boundary_arn = f"arn:aws:iam::{account_id}:policy/{boundary_name}"
         # ⚠️ The boundary cannot be deleted while any role still NAMES it as a
         # boundary, and this deploy leaves two that do, on purpose.
@@ -4409,20 +4452,49 @@ TERRAFORM_BIN_VARIABLE = "IDP_TERRAFORM_BIN"
 #: gates walk the checkout (basedpyright reads gitignored trees too).
 TERRAFORM_WORK_ROOT_VARIABLE = "IDP_TERRAFORM_WORK_ROOT"
 
-#: The Terraform release a run installs when none is on PATH. 1.13.4 is one of
-#: the releases the module is validated against (terraform/README.md). The
-#: checksums are from that release's SHA256SUMS file, whose signature verifies
-#: against HashiCorp's release key; a downloaded archive that does not match is
-#: refused, so changing the version means changing the checksums with it.
-TERRAFORM_VERSION = "1.13.4"
-TERRAFORM_SHA256 = {
-    "linux_amd64": "98aa516201e948306698efd9954ab4cc0d1227c2578ba56245898b5f679e590b",
-    "linux_arm64": "a17bde150a4d6c9e7ece063ab634c07723b8242e078f3ae9017486277d6690c4",
-}
-TERRAFORM_RELEASE_URL = (
-    "https://releases.hashicorp.com/terraform/{version}/"
-    "terraform_{version}_{platform}.zip"
-)
+#: The Terraform release a run installs when none is on PATH, by the installer
+#: and lock file the offline Terraform gate uses (scripts/terraform_check.py and
+#: scripts/terraform_binaries.lock.json): the archive is installed only when its
+#: SHA-256 equals both the vendor's published SHA256SUMS entry and the committed
+#: one. Must be a `terraform@<version>` entry in that lock file.
+TERRAFORM_BINARY_SPEC = "terraform@1.17.1"
+
+#: Where the run's Terraform state lives, under the CI source bucket: one prefix
+#: per deployment, holding the state (S3 backend), the root configuration the
+#: deploy runs from, and `run.json`. The startup reaper
+#: (cleanup_stale_terraform_deployments) destroys from it when a build died
+#: before its own teardown.
+TERRAFORM_STATE_PREFIX = "terraform-runs/"
+TERRAFORM_STATE_KEY = "terraform.tfstate"
+TERRAFORM_RUN_RECORD = "run.json"
+#: The root-configuration files kept beside the state, so a later run can destroy
+#: the deployment without this build's work directory.
+TERRAFORM_ROOT_FILES = ("main.tf", "terraform.tfvars", "backend.tf")
+TERRAFORM_BACKEND_FILE = "backend.tf"
+
+#: The marker every Terraform label stack's description carries
+#: (idp_common.utils.terraform_stack.TERRAFORM_SUFFIX, not imported here because
+#: the stack sweep runs in every build).
+_TERRAFORM_LABEL_MARKER = "(Terraform)"
+
+#: The per-run role Terraform's providers assume: a sibling of the CloudFormation
+#: service role in the run's `-iam` pre-stack, with that role's permissions plus
+#: Cloud Control, trusting only the identity this build runs as. See
+#: terraform_deploy_role_template. Named so the CodeBuild role's
+#: `sts:AssumeRole` grant (scripts/sdlc/cfn/codepipeline-s3.yml) can be scoped to
+#: `role/idp-*-TFDeployRole`.
+TERRAFORM_DEPLOY_ROLE_SUFFIX = "-TFDeployRole"
+TERRAFORM_DEPLOY_ROLE_OUTPUT = "TerraformDeployRoleArn"
+
+#: What the build keeps back for the suite and the teardown, out of the
+#: CodeBuild project's timeout, before it starts the steps. Both are estimates,
+#: not measurements of this run: the primary suite has taken about an hour, and a
+#: Terraform destroy of the whole stack plus the retained-resource sweep is
+#: budgeted at 40 minutes. A Terraform run that does not have both left after
+#: publish and deploy is refused, and torn down, rather than killed mid-destroy by
+#: the project timeout with its resources standing.
+TERRAFORM_SUITE_ALLOWANCE_SECONDS = 60 * 60
+TERRAFORM_TEARDOWN_RESERVE_SECONDS = 40 * 60
 
 #: Files in the run's Terraform directory holding each `idp-cli` command's
 #: output. `idp-cli deploy --terraform` streams `init` and `apply` to stderr, so
@@ -4435,8 +4507,23 @@ TERRAFORM_LOG_TAIL_LINES = 120
 #: Terraform run, so its result is never read as the nightly's.
 TERRAFORM_RUN_LABEL = "WEEKLY TERRAFORM RUN"
 
-#: What a Terraform deploy of the primary stack needs beside the stack name.
-TerraformRun = namedtuple("TerraformRun", ["module_url", "directory", "binary"])
+
+@dataclass
+class TerraformRun:
+    """What a Terraform deploy of the primary stack needs beside the stack name.
+
+    ``role_arn`` is filled in by the deploy attempt, once the run's `-iam`
+    pre-stack has created the role; the teardown reads it from here.
+    """
+
+    module_url: str
+    directory: str
+    binary: str
+    state_bucket: str = ""
+    role_arn: str | None = None
+
+    def state_prefix(self, stack_name: str) -> str:
+        return f"{TERRAFORM_STATE_PREFIX}{stack_name}/"
 
 
 def iac_mode(environ: dict | None = None, options: dict | None = None) -> str:
@@ -4506,46 +4593,26 @@ def terraform_work_directory(stack_name: str, environ: dict | None = None) -> st
     return os.path.abspath(os.path.join(root, stack_name))
 
 
-def _terraform_platform(machine: str | None = None) -> str:
-    import platform
+def _terraform_check():
+    """scripts/terraform_check.py, the offline gate's installer and pins."""
+    scripts_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import terraform_check
 
-    machine = (machine or platform.machine()).lower()
-    arch = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
-    if sys.platform != "linux" or machine not in arch:
-        raise RuntimeError(
-            f"no pinned Terraform build for {sys.platform}/{machine}; put a "
-            f"terraform binary on PATH or name one with {TERRAFORM_BIN_VARIABLE}"
-        )
-    return f"linux_{arch[machine]}"
+    return terraform_check
 
 
-def _download(url: str) -> bytes:
-    import urllib.request
-
-    # nosec B310 - a fixed https URL on releases.hashicorp.com; the bytes are
-    # checked against a pinned SHA-256 before anything is extracted.
-    with urllib.request.urlopen(url, timeout=300) as response:  # noqa: S310  # nosec B310
-        return response.read()
-
-
-def ensure_terraform_binary(
-    environ: dict | None = None,
-    *,
-    fetch: Callable[[str], bytes] = _download,
-    platform_name: str | None = None,
-) -> str:
+def ensure_terraform_binary(environ: dict | None = None, *, installer=None) -> str:
     """The absolute path of the Terraform binary this run uses.
 
     ``IDP_TERRAFORM_BIN`` (default ``terraform``) found on PATH is used as is. The
-    default not on PATH, which is the CodeBuild image, gets TERRAFORM_VERSION
-    installed under the work root, after the archive's SHA-256 matches
-    TERRAFORM_SHA256; a mismatch raises and nothing is extracted. A binary named
-    explicitly and not found raises too, because installing a different one in
-    its place would test something nobody asked for.
+    default not on PATH, which is the CodeBuild image, gets TERRAFORM_BINARY_SPEC
+    from terraform_check's installer, which refuses an archive whose checksum is
+    not the locked one. A binary named explicitly and not found raises, because
+    installing a different one in its place would test something nobody asked
+    for.
     """
-    import io
-    import zipfile
-
     env = os.environ if environ is None else environ
     wanted = env.get(TERRAFORM_BIN_VARIABLE) or "terraform"
     found = shutil.which(wanted)
@@ -4555,36 +4622,233 @@ def ensure_terraform_binary(
         raise RuntimeError(
             f"{TERRAFORM_BIN_VARIABLE}={wanted!r} was not found on PATH or as a path"
         )
-    plat = platform_name or _terraform_platform()
-    expected = TERRAFORM_SHA256.get(plat)
-    if not expected:
-        raise RuntimeError(
-            f"no pinned Terraform {TERRAFORM_VERSION} checksum for {plat}"
-        )
-    target_dir = os.path.join(
-        os.path.dirname(terraform_work_directory("x", env)),
-        "bin",
-        f"terraform-{TERRAFORM_VERSION}-{plat}",
+    check = _terraform_check()
+    binary = check.Binary.parse(TERRAFORM_BINARY_SPEC)
+    cache = Path(os.path.dirname(terraform_work_directory("x", env))) / "tools"
+    plat = check.current_platform()
+    print(f"📥 Installing {binary} ({plat}) with scripts/terraform_check.py")
+    try:
+        path = (installer or check.install)(binary, cache, plat)
+    except check.GateError as e:
+        raise RuntimeError(str(e)) from None
+    print(f"✅ {binary} installed at {path} (checksum matches the lock file)")
+    return str(path)
+
+
+def write_terraform_pins(directory: str) -> str:
+    """Write the offline gate's provider-override file into ``directory``.
+
+    The same file, from the same function, that scripts/terraform_check.py writes
+    before its `init`: exact versions for the aws, awscc and time providers, from
+    scripts/terraform_binaries.lock.json and the vendored awscc schema. Without it
+    `init` would take the newest provider releases on the day.
+    """
+    check = _terraform_check()
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, check.OVERRIDE_FILE)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(check.override_tf(check.gate_providers([])))
+    return path
+
+
+def render_terraform_backend(bucket: str, key: str, region: str) -> str:
+    """An S3 backend block: the state in the CI bucket, encrypted at rest."""
+    return "\n".join(
+        [
+            "# Written by scripts/sdlc/codebuild_deployment.py: this run's state,",
+            "# kept in the CI bucket so a later run can destroy the deployment.",
+            "terraform {",
+            '  backend "s3" {',
+            f"    bucket  = {json.dumps(bucket)}",
+            f"    key     = {json.dumps(key)}",
+            f"    region  = {json.dumps(region)}",
+            "    encrypt = true",
+            "  }",
+            "}",
+            "",
+        ]
     )
-    target = os.path.join(target_dir, "terraform")
-    if os.path.isfile(target) and os.access(target, os.X_OK):
-        return target
-    url = TERRAFORM_RELEASE_URL.format(version=TERRAFORM_VERSION, platform=plat)
-    print(f"📥 Installing Terraform {TERRAFORM_VERSION} ({plat}) from {url}")
-    archive = fetch(url)
-    actual = hashlib.sha256(archive).hexdigest()
-    if actual != expected:
-        raise RuntimeError(
-            f"Terraform archive checksum mismatch for {url}: expected {expected}, "
-            f"got {actual}. Refusing to install it."
+
+
+def _terraform_state_bucket(environ: dict | None = None) -> str:
+    """The CI source bucket, which publish already uploads to and the build role
+    holds `s3:*` on."""
+    env = os.environ if environ is None else environ
+    return f"genaiic-sdlc-sourcecode-{ci_account_id(env)}-{ci_region(env)}"
+
+
+def _caller_principal_arn(sts=None) -> str:
+    """The IAM principal this build runs as, for the deploy role's trust policy.
+
+    An assumed-role session ARN (`arn:...:sts::<acct>:assumed-role/<role>/<session>`)
+    names the role, which is what a trust policy takes. The role path is not in
+    the session ARN; the CodeBuild role is created without one.
+    """
+    arn = (sts or boto3.client("sts")).get_caller_identity()["Arn"]
+    match = re.match(r"^arn:([^:]+):sts::(\d{12}):assumed-role/([^/]+)/", arn)
+    if match:
+        partition, account, role = match.groups()
+        return f"arn:{partition}:iam::{account}:role/{role}"
+    return arn
+
+
+class _CfnLongFormLoader(yaml.SafeLoader):
+    """Reads a CloudFormation template with short-form intrinsics rewritten to
+    long form (`!Sub x` → `{"Fn::Sub": x}`), so it can be re-emitted as JSON.
+    A SafeLoader whose one addition returns plain data."""
+
+
+def _cfn_long_form(loader, suffix, node):
+    if isinstance(node, yaml.ScalarNode):
+        value = loader.construct_scalar(node)
+    elif isinstance(node, yaml.SequenceNode):
+        value = loader.construct_sequence(node, deep=True)
+    else:
+        value = loader.construct_mapping(node, deep=True)
+    if suffix == "Ref":
+        return {"Ref": value}
+    if suffix == "GetAtt" and isinstance(value, str):
+        value = value.split(".", 1)
+    return {f"Fn::{suffix}": value}
+
+
+_CfnLongFormLoader.add_multi_constructor("!", _cfn_long_form)
+
+
+def terraform_deploy_role_template(service_role_template_text: str) -> dict:
+    """The CI pre-stack for a Terraform run: the customer service-role template
+    plus a sibling role Terraform assumes.
+
+    Derived, not copied, so the two cannot drift: the sibling carries the service
+    role's own inline policies by value — every scoping it has (the boundary
+    condition on role creation, the name-prefix limits, the denies) — plus
+    `cloudcontrol:*` for the awscc resources, and a Deny on changing itself
+    mirroring the one that protects the service role. Its trust admits only the
+    principal passed as TerraformDeployerPrincipalArn (this build's role), not
+    the CloudFormation service: CloudFormation assumes the service role, and the
+    customer-published template, whose trust is unchanged here, is not edited.
+    """
+    import copy
+
+    doc = yaml.load(service_role_template_text, Loader=_CfnLongFormLoader)  # nosec B506 - SafeLoader subclass
+    service = doc["Resources"]["CloudFormationServiceRole"]
+    role = copy.deepcopy(service)
+    props = role["Properties"]
+    props["RoleName"] = {"Fn::Sub": "${AWS::StackName}" + TERRAFORM_DEPLOY_ROLE_SUFFIX}
+    props["AssumeRolePolicyDocument"] = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "AllowOnlyThisRunsTerraformDeployer",
+                "Effect": "Allow",
+                "Principal": {"AWS": {"Ref": "TerraformDeployerPrincipalArn"}},
+                "Action": "sts:AssumeRole",
+            }
+        ],
+    }
+    deny_self = None
+    for policy in props.get("Policies", []):
+        for statement in policy["PolicyDocument"]["Statement"]:
+            if statement.get("Sid") == "DenyModifyingThisServiceRole":
+                deny_self = copy.deepcopy(statement)
+    if deny_self is None:
+        raise ValueError(
+            "the service-role template has no DenyModifyingThisServiceRole "
+            "statement to mirror onto the Terraform deploy role"
         )
-    os.makedirs(target_dir, exist_ok=True)
-    with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-        with bundle.open("terraform") as src, open(target, "wb") as dst:
-            shutil.copyfileobj(src, dst)
-    os.chmod(target, 0o755)  # nosec B103 - an executable in this run's own work root
-    print(f"✅ Terraform {TERRAFORM_VERSION} installed at {target} (sha256 verified)")
-    return target
+    deny_self["Sid"] = "DenyModifyingThisTerraformDeployRole"
+    deny_self["Resource"] = {
+        "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/"
+        "${AWS::StackName}" + TERRAFORM_DEPLOY_ROLE_SUFFIX
+    }
+    props["Policies"].append(
+        {
+            "PolicyName": "TerraformDeployAdditions",
+            "PolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        # The awscc provider creates resources through Cloud
+                        # Control, which then calls each service as this role, so
+                        # the service grants above still decide what it can do.
+                        "Sid": "TerraformCloudControl",
+                        "Effect": "Allow",
+                        "Action": ["cloudcontrol:*"],
+                        "Resource": "*",
+                    },
+                    deny_self,
+                ],
+            },
+        }
+    )
+    doc["Parameters"]["TerraformDeployerPrincipalArn"] = {
+        "Type": "String",
+        "Description": "The IAM principal allowed to assume the Terraform deploy role.",
+        "AllowedPattern": r"^arn:[a-z0-9-]+:iam::\d{12}:(role|user)/.+$",
+    }
+    doc["Resources"]["TerraformDeployRole"] = role
+    doc.setdefault("Outputs", {})[TERRAFORM_DEPLOY_ROLE_OUTPUT] = {
+        "Description": "ARN of the role Terraform's providers assume for this run",
+        "Value": {"Fn::GetAtt": ["TerraformDeployRole", "Arn"]},
+    }
+    return doc
+
+
+def _wait_until_assumable(role_arn, sts=None, attempts=12, delay=10):
+    """Wait out IAM propagation of a role this run just created.
+
+    A new role's trust policy can refuse sts:AssumeRole for some seconds after
+    CreateRole returns, and `init` would then fail the whole deploy on it.
+    """
+    client = sts or boto3.client("sts")
+    for attempt in range(1, attempts + 1):
+        try:
+            client.assume_role(
+                RoleArn=role_arn,
+                RoleSessionName="idp-tf-propagation",
+                DurationSeconds=900,
+            )
+            return True
+        except Exception as e:  # noqa: BLE001
+            if attempt == attempts:
+                print(f"⚠️ {role_arn} still not assumable: {e}")
+                return False
+            time.sleep(delay)
+    return False
+
+
+class _assumed_role_default_session:
+    """Run boto3's default session as ``role_arn`` for the duration.
+
+    The retained-resource sweep deletes log groups and other resources the build
+    role has no grant on; the Terraform deploy role created them and can delete
+    them. Switches boto3.DEFAULT_SESSION, which every `boto3.client(...)` in the
+    SDK helpers reads, and restores it on exit. Only used on the main thread
+    after the suite, when no other thread is making calls that matter.
+    """
+
+    def __init__(self, role_arn):
+        self.role_arn = role_arn
+        self._saved = None
+
+    def __enter__(self):
+        self._saved = boto3.DEFAULT_SESSION
+        if not self.role_arn:
+            return self
+        creds = boto3.client("sts").assume_role(
+            RoleArn=self.role_arn, RoleSessionName="idp-tf-sweep", DurationSeconds=3600
+        )["Credentials"]
+        boto3.setup_default_session(
+            aws_access_key_id=creds["AccessKeyId"],
+            aws_secret_access_key=creds["SecretAccessKey"],
+            aws_session_token=creds["SessionToken"],
+            region_name=ci_region(),
+        )
+        return self
+
+    def __exit__(self, *exc):
+        boto3.DEFAULT_SESSION = self._saved
+        return False
 
 
 def install_terraform_stack_hook():
@@ -4617,30 +4881,34 @@ def build_terraform_deploy_command(stack_name, admin_email, terraform, param_pai
     """`idp-cli deploy --terraform`, with the pairs as ONE quoted `--parameters`
     value for the reason the CloudFormation deploy gives (issue #1371).
 
-    No `--role-arn`: that is the CloudFormation service role, which CloudFormation
-    assumes to create the stack's resources. Terraform has no equivalent; it
-    creates them with the build's own credentials, so the service role is unused
-    in this mode (it is still created, with the boundary, by create_iam_resources,
-    and torn down with it). No `--wait` either: the Terraform deploy always waits.
+    No `--role-arn`: that is the CloudFormation service role, which only
+    CloudFormation can assume. Terraform's providers assume the run's Terraform
+    deploy role instead (`--terraform-assume-role-arn`), a sibling of the service
+    role with the same scoping. No `--wait`: the Terraform deploy always waits.
     """
-    return (
+    cmd = (
         f"idp-cli deploy --terraform --stack-name {shlex.quote(stack_name)}"
         f" --admin-email {shlex.quote(admin_email)}"
         f" --terraform-module-url {shlex.quote(terraform.module_url)}"
         f" --terraform-dir {shlex.quote(terraform.directory)}"
         f" --terraform-bin {shlex.quote(terraform.binary)}"
-        f' --parameters "{",".join(param_pairs)}"'
     )
+    if terraform.role_arn:
+        cmd += f" --terraform-assume-role-arn {shlex.quote(terraform.role_arn)}"
+    return cmd + f' --parameters "{",".join(param_pairs)}"'
 
 
 def build_terraform_delete_command(stack_name, terraform):
     """`idp-cli delete --terraform`. `--force-delete-all` is refused with
     `--terraform`, so what it retains is swept by cleanup_terraform_deployment."""
-    return (
+    cmd = (
         f"idp-cli delete --terraform --stack-name {shlex.quote(stack_name)}"
         f" --terraform-dir {shlex.quote(terraform.directory)}"
-        f" --terraform-bin {shlex.quote(terraform.binary)} --force"
+        f" --terraform-bin {shlex.quote(terraform.binary)}"
     )
+    if terraform.role_arn:
+        cmd += f" --terraform-assume-role-arn {shlex.quote(terraform.role_arn)}"
+    return cmd + " --force"
 
 
 def judge_terraform_health(label_stdout, output_returncode):
@@ -4701,12 +4969,207 @@ def terraform_log_tail(directory, lines=TERRAFORM_LOG_TAIL_LINES):
     return "\n".join(chunks) or f"(no Terraform log found under {directory})"
 
 
+def stage_terraform_root(stack_name, admin_email, terraform, param_pairs, s3=None):
+    """Write the root configuration, backend and provider pins, and copy them to
+    the state prefix, BEFORE `init`.
+
+    `idp-cli deploy --terraform` would write main.tf and terraform.tfvars itself,
+    but only once it starts; a build killed during the apply would then leave
+    state in S3 with nothing to destroy it from. Writing them first with the
+    SDK's own writer (the deploy rewrites the same content, and keeps the
+    tfvars) and copying them up means the reaper always has the configuration
+    the state belongs to. `run.json` records what it needs beside them.
+    """
+    # Private SDK module on purpose: the writer `deploy --terraform` itself uses.
+    from idp_sdk._core import terraform_deploy as tf  # noqa: TID251
+
+    region = ci_region()
+    directory = Path(terraform.directory)
+    manifest = tf.load_module_manifest(terraform.module_url)
+    parameters = dict(pair.split("=", 1) for pair in param_pairs)
+    tf.write_root_config(
+        directory,
+        region=region,
+        module_url=terraform.module_url,
+        stack_name=stack_name,
+        admin_email=admin_email,
+        parameters=parameters,
+        manifest=manifest,
+        assume_role_arn=terraform.role_arn,
+    )
+    prefix = terraform.state_prefix(stack_name)
+    (directory / TERRAFORM_BACKEND_FILE).write_text(
+        render_terraform_backend(
+            terraform.state_bucket, prefix + TERRAFORM_STATE_KEY, region
+        )
+    )
+    pins = write_terraform_pins(str(directory))
+    client = s3 or boto3.client("s3", config=_THROTTLE_RETRY_CONFIG)
+    for name in (*TERRAFORM_ROOT_FILES, os.path.basename(pins)):
+        client.put_object(
+            Bucket=terraform.state_bucket,
+            Key=prefix + name,
+            Body=(directory / name).read_bytes(),
+            ServerSideEncryption="AES256",
+        )
+    record = {
+        "stack_name": stack_name,
+        "region": region,
+        "module_url": terraform.module_url,
+        "role_arn": terraform.role_arn,
+        "terraform": TERRAFORM_BINARY_SPEC,
+        "build_id": os.environ.get("CODEBUILD_BUILD_ID", ""),
+        "staged_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+    client.put_object(
+        Bucket=terraform.state_bucket,
+        Key=prefix + TERRAFORM_RUN_RECORD,
+        Body=json.dumps(record, indent=2).encode(),
+        ServerSideEncryption="AES256",
+    )
+    print(
+        f"[{stack_name}] 🗄️  state and configuration in s3://{terraform.state_bucket}/{prefix}"
+    )
+
+
+def remove_terraform_state(stack_name, terraform, s3=None):
+    """Delete the state prefix once the deployment is destroyed, so the reaper
+    does not try again. Returns a finding string, or None."""
+    client = s3 or boto3.client("s3", config=_THROTTLE_RETRY_CONFIG)
+    prefix = terraform.state_prefix(stack_name)
+    try:
+        paginator = client.get_paginator("list_object_versions")
+        for page in paginator.paginate(Bucket=terraform.state_bucket, Prefix=prefix):
+            for item in page.get("Versions", []) + page.get("DeleteMarkers", []):
+                client.delete_object(
+                    Bucket=terraform.state_bucket,
+                    Key=item["Key"],
+                    VersionId=item["VersionId"],
+                )
+    except Exception as e:  # noqa: BLE001
+        return f"state prefix s3://{terraform.state_bucket}/{prefix} not removed: {e}"
+    return None
+
+
+def terraform_suite_time_shortfall(started, codebuild=None, now=None):
+    """Why this Terraform run cannot start the steps, or None.
+
+    Mirrors probe_run_timeout_shortfall: the build's own timeout, read from
+    CodeBuild, less what publish and deploy have already used, must still hold
+    the suite allowance AND the teardown reserve. A Terraform deployment killed
+    mid-destroy by the project timeout leaves its resources standing until the
+    startup reaper of a later run, so the steps are not started into that.
+    Unreadable (no build id, no permission) is None: a known shortfall is
+    refused, an unknown one is not.
+    """
+    build_id = os.environ.get("CODEBUILD_BUILD_ID", "")
+    if not build_id:
+        return None
+    try:
+        client = codebuild or boto3.client("codebuild")
+        minutes = int(
+            client.batch_get_builds(ids=[build_id])["builds"][0]["timeoutInMinutes"]
+        )
+    except Exception as error:  # noqa: BLE001
+        print(f"⚠️ Could not read this build's timeout ({error}); not checking it")
+        return None
+    elapsed = (time.monotonic() if now is None else now) - started
+    remaining = minutes * 60 - elapsed
+    needed = TERRAFORM_SUITE_ALLOWANCE_SECONDS + TERRAFORM_TEARDOWN_RESERVE_SECONDS
+    if remaining >= needed:
+        return None
+    return (
+        f"publish and deploy left {int(remaining // 60)} min of this build's "
+        f"{minutes}-min timeout, and a Terraform run keeps "
+        f"{TERRAFORM_SUITE_ALLOWANCE_SECONDS // 60} min for the suite plus "
+        f"{TERRAFORM_TEARDOWN_RESERVE_SECONDS // 60} min for the destroy; the "
+        "steps were not started, so the teardown has time to finish"
+    )
+
+
+#: What _sweep_terraform_resource_directory deletes, by type, with the build's own
+#: grants (scripts/sdlc/cfn/codepipeline-s3.yml gives it these on `idp-*`). Every
+#: other type in the directory is reported as left behind.
+_DIRECTORY_SWEEP_TYPES = (
+    "AWS::S3::Bucket",
+    "AWS::DynamoDB::Table",
+    "AWS::Lambda::Function",
+    "AWS::StepFunctions::StateMachine",
+)
+
+
+def _directory_entries(node):
+    for entry in node.get("resources", []) or []:
+        yield entry
+    for child in (node.get("nested") or {}).values():
+        yield from _directory_entries(child)
+
+
+def _sweep_terraform_resource_directory(cf, stack_name, deployer=None, clients=None):
+    """Delete what a label stack's resource directory names, before the label goes.
+
+    For a Terraform deployment with NO state left to destroy it from (its build
+    died before the state backend existed, or the prefix was removed by hand):
+    the label stack is the last record of what the deployment created, and the
+    stack reaper deleting it would leave everything behind it unfindable. This
+    deletes the types in _DIRECTORY_SWEEP_TYPES and returns the rest, as
+    `<type> <physical id>` strings, for the caller to report.
+    """
+    outputs = {
+        o["OutputKey"]: o["OutputValue"]
+        for o in cf.describe_stacks(StackName=stack_name)["Stacks"][0].get(
+            "Outputs", []
+        )
+    }
+    url = outputs.get("TerraformResourceDirectory", "")
+    if not url.startswith("s3://"):
+        return [f"{stack_name}: label stack names no resource directory"]
+    clients = clients or {}
+    s3 = clients.get("s3") or boto3.client("s3", config=_THROTTLE_RETRY_CONFIG)
+    bucket, _, key = url[len("s3://") :].partition("/")
+    root = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())["root"]
+    if deployer is None:
+        # The deleters `--force-delete-all` uses (see _sweep_terraform_retained).
+        from idp_sdk._core.stack import StackDeployer  # noqa: TID251
+
+        deployer = StackDeployer(region=ci_region())
+    lam = clients.get("lambda") or boto3.client("lambda", config=_THROTTLE_RETRY_CONFIG)
+    sfn = clients.get("stepfunctions") or boto3.client(
+        "stepfunctions", config=_THROTTLE_RETRY_CONFIG
+    )
+    delete = {
+        "AWS::S3::Bucket": deployer._empty_and_delete_bucket,
+        "AWS::DynamoDB::Table": deployer._delete_dynamodb_table,
+        "AWS::Lambda::Function": lambda p: lam.delete_function(FunctionName=p),
+        "AWS::StepFunctions::StateMachine": lambda p: sfn.delete_state_machine(
+            stateMachineArn=p
+        ),
+    }
+    left = []
+    for entry in _directory_entries(root):
+        kind = entry.get("ResourceType", "")
+        physical = entry.get("PhysicalResourceId", "")
+        if kind in delete and physical:
+            try:
+                delete[kind](physical)
+                continue
+            except Exception as e:  # noqa: BLE001
+                left.append(f"{kind} {physical} ({e})")
+                continue
+        if kind != "AWS::CloudFormation::Stack":
+            left.append(f"{kind} {physical}")
+    return left
+
+
 def _deploy_primary_terraform_attempt(stack_name, admin_email, terraform):
     """One Terraform deploy + health check of the primary stack.
 
-    The same IAM pre-stack and boundary as the CloudFormation attempt, the same
-    parameters, then `idp-cli deploy --terraform`. On failure the result carries
-    the Terraform log tail where the CloudFormation attempt carries `cf_events`.
+    The same boundary as the CloudFormation attempt and the same parameters. The
+    `-iam` pre-stack also carries the run's Terraform deploy role, which both
+    providers assume; the root configuration, S3 backend and provider pins are
+    written and copied beside the state before `idp-cli deploy --terraform` runs
+    `init`. On failure the result carries the Terraform log tail where the
+    CloudFormation attempt carries `cf_events`.
     """
     result = {
         "stack_name": stack_name,
@@ -4715,15 +5178,26 @@ def _deploy_primary_terraform_attempt(stack_name, admin_email, terraform):
         "iac": IAC_TERRAFORM,
     }
     print("Step 0: Creating IAM resources...")
-    role_arn, permissions_boundary_arn = create_iam_resources(stack_name)
+    role_arn, permissions_boundary_arn = create_iam_resources(
+        stack_name, terraform_deployer_arn=_caller_principal_arn()
+    )
     if not role_arn or not permissions_boundary_arn:
         result["error"] = "Failed to create required IAM resources"
+        return result
+    terraform.role_arn = role_arn
+    if not _wait_until_assumable(role_arn):
+        result["error"] = f"the Terraform deploy role {role_arn} never became assumable"
         return result
 
     print("Step 1: Deploying with Terraform...")
     param_pairs = _primary_param_pairs(
         permissions_boundary_arn, _integration_malware_mode()
     )
+    try:
+        stage_terraform_root(stack_name, admin_email, terraform, param_pairs)
+    except Exception as e:  # noqa: BLE001
+        result["error"] = f"could not stage the Terraform root configuration: {e}"
+        return result
     cmd = build_terraform_deploy_command(
         stack_name, admin_email, terraform, param_pairs
     )
@@ -4829,17 +5303,18 @@ def _sweep_terraform_retained(stack_name, retained, deployer=None):
     return errors
 
 
-def cleanup_terraform_deployment(result, terraform):
+def cleanup_terraform_deployment(result, terraform, iam=True):
     """Destroy this run's Terraform deployment, its retained resources, then IAM.
 
     Returns findings in cleanup_stack's sense: empty means verified. Unlike the
-    CloudFormation path, a failed destroy IS a finding. The state is local to this
-    build's work directory and is gone when the build ends, so nothing can
-    destroy the deployment later; the startup stack reaper would delete only the
-    label stack and leave every resource behind it.
+    CloudFormation path, a failed destroy IS a finding: the state stays in the CI
+    bucket, so cleanup_stale_terraform_deployments in a later run retries it,
+    but until then every resource of the deployment is standing.
 
     CloudFormation-only steps are skipped with a note: there are no stack events
-    to read, and no nested stacks whose status to report.
+    to read, and no nested stacks whose status to report. ``iam=False`` is the
+    startup reaper's call, which leaves the dead run's `-iam` pre-stack to the
+    stack sweep.
     """
     stack_name = result.get("stack_name")
     findings = []
@@ -4865,11 +5340,13 @@ def cleanup_terraform_deployment(result, terraform):
         timeout=3 * 3600,
     )
     _write_terraform_log(terraform.directory, TERRAFORM_DELETE_LOG, delete)
-    if delete.returncode != 0:
+    destroyed = delete.returncode == 0
+    if not destroyed:
         findings.append(
-            f"idp-cli delete --terraform exited {delete.returncode}; the "
-            f"deployment's state in {terraform.directory} does not outlive this "
-            "build, so its resources need deleting by hand"
+            f"idp-cli delete --terraform exited {delete.returncode}; the state "
+            f"stays in s3://{terraform.state_bucket}/{terraform.state_prefix(stack_name)} "
+            "for a later run's cleanup_stale_terraform_deployments, and the "
+            "deployment's resources stand until then"
         )
     else:
         print(f"[{stack_name}] ✅ Terraform destroy completed")
@@ -4880,11 +5357,158 @@ def cleanup_terraform_deployment(result, terraform):
             "resources it retains were not swept"
         )
     else:
-        for error in _sweep_terraform_retained(stack_name, retained):
+        # The sweep deletes as the deploy role, which created them and holds the
+        # grants (log groups among them) the build role does not.
+        try:
+            with _assumed_role_default_session(terraform.role_arn):
+                errors = _sweep_terraform_retained(stack_name, retained)
+        except Exception as e:  # noqa: BLE001
+            errors = [f"could not assume {terraform.role_arn} for the sweep: {e}"]
+        for error in errors:
             print(f"[{stack_name}] ⚠️ retained resource not deleted: {error}")
             findings.append(f"retained resource not deleted: {error}")
+        for other in retained.get("other") or []:
+            # The categories the sweep cannot delete. Retained by design, but
+            # this run created them and nothing else will remove them.
+            findings.append(
+                f"retained resource of a kind the sweep does not delete: "
+                f"{other.get('type')} {other.get('physical_id') or other.get('logical_id')}"
+            )
 
-    return findings + cleanup_iam_resources(stack_name)
+    if destroyed and terraform.state_bucket:
+        gone = remove_terraform_state(stack_name, terraform)
+        if gone:
+            findings.append(gone)
+
+    return findings + (cleanup_iam_resources(stack_name) if iam else [])
+
+
+def _terraform_state_listing(bucket, s3=None):
+    """{stack_name: {"keys": [...], "newest": datetime | None}} under the state
+    prefix. Raises when the listing does not complete."""
+    client = s3 or boto3.client("s3", config=_THROTTLE_RETRY_CONFIG)
+    runs = {}
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=TERRAFORM_STATE_PREFIX):
+        for item in page.get("Contents", []):
+            rest = item["Key"][len(TERRAFORM_STATE_PREFIX) :]
+            stack_name, sep, name = rest.partition("/")
+            if not sep or not name:
+                continue
+            run = runs.setdefault(stack_name, {"keys": [], "newest": None})
+            run["keys"].append(item["Key"])
+            modified = item.get("LastModified")
+            if modified and (run["newest"] is None or modified > run["newest"]):
+                run["newest"] = modified
+    return runs
+
+
+def _reap_terraform_run(stack_name, bucket, keys, s3=None):
+    """Destroy one dead run's Terraform deployment from its state prefix.
+
+    Downloads the root configuration beside the state into a scratch directory,
+    then does what this run's own teardown does: read the retained list, run
+    `idp-cli delete --terraform` as the run's deploy role, sweep what it retained,
+    and remove the prefix. Returns findings; empty means destroyed.
+    """
+    client = s3 or boto3.client("s3", config=_THROTTLE_RETRY_CONFIG)
+    prefix = f"{TERRAFORM_STATE_PREFIX}{stack_name}/"
+    with tempfile.TemporaryDirectory(prefix="idp-tf-reap-") as tmp:
+        record = {}
+        for key in keys:
+            name = key[len(prefix) :]
+            if name == TERRAFORM_STATE_KEY or "/" in name:
+                continue
+            body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+            if name == TERRAFORM_RUN_RECORD:
+                record = json.loads(body)
+            else:
+                Path(tmp, name).write_bytes(body)
+        if not Path(tmp, "main.tf").is_file():
+            return [
+                f"{stack_name}: state in s3://{bucket}/{prefix} has no main.tf "
+                "beside it, so it cannot be destroyed from there; destroy it by hand"
+            ]
+        terraform = TerraformRun(
+            module_url=record.get("module_url", ""),
+            directory=tmp,
+            binary=ensure_terraform_binary(),
+            state_bucket=bucket,
+            role_arn=record.get("role_arn"),
+        )
+        init = run_command(
+            f"{shlex.quote(terraform.binary)} -chdir={shlex.quote(tmp)} init -input=false",
+            check=False,
+            timeout=1800,
+        )
+        if init.returncode != 0:
+            return [f"{stack_name}: terraform init from the saved state failed"]
+        findings = cleanup_terraform_deployment(
+            {"stack_name": stack_name}, terraform, iam=False
+        )
+        return [f"{stack_name}: {f}" for f in findings]
+
+
+def cleanup_stale_terraform_deployments(pending: set | None = None):
+    """Destroy Terraform deployments a dead build left behind (Step 0 sweep).
+
+    A Terraform run keeps its state, and the configuration that state belongs
+    to, under TERRAFORM_STATE_PREFIX in the CI bucket, and removes the prefix
+    once its own teardown has destroyed the deployment. A prefix still there
+    later is a run whose build died first. Stale by the stack reaper's rule
+    (IDP_STACK_STALE_AGE_SECONDS since the prefix was last written; a run still
+    in flight writes its state within that), it is destroyed here as its own
+    teardown would have done it.
+
+    ``pending`` receives every run with a state prefix still standing after this
+    sweep, young or not; cleanup_stale_idp_stacks keeps those runs' stacks, so
+    the `-iam` pre-stack holding the deploy role, and the label, outlive the
+    attempt and a later run can try again.
+
+    Runs before the stack sweep, because the label stack and the deploy role are
+    what this needs. Returns findings in the Step 0 contract.
+    """
+    print("🧹 Destroying Terraform deployments left by dead builds...")
+    try:
+        bucket = _terraform_state_bucket()
+        runs = _terraform_state_listing(bucket)
+    except Exception as e:  # noqa: BLE001
+        return _sweep_finding(
+            "could not list the Terraform state prefixes, so no dead run's "
+            f"deployment was considered: {e}"
+        )
+    now = datetime.now(tz=timezone.utc)
+    findings = []
+    age_unestablishable = []
+    for stack_name, run in sorted(runs.items()):
+        if pending is not None:
+            pending.add(stack_name)
+        age = _listing_age_seconds(run["newest"], now)
+        if age is None:
+            age_unestablishable.append(stack_name)
+            continue
+        if age < IDP_STACK_STALE_AGE_SECONDS:
+            print(
+                f"  [{stack_name}] state younger than the age gate — may be in flight"
+            )
+            continue
+        print(f"[{stack_name}] destroying a dead run's Terraform deployment...")
+        try:
+            run_findings = _reap_terraform_run(stack_name, bucket, run["keys"])
+        except Exception as e:  # noqa: BLE001
+            run_findings = [f"{stack_name}: reap failed: {e}"]
+        if run_findings:
+            findings.extend(run_findings)
+        elif pending is not None:
+            pending.discard(stack_name)
+    _report_age_unestablishable(
+        age_unestablishable,
+        "the age gate cannot be satisfied, and this path runs terraform destroy on "
+        "a deployment that may still be under test",
+    )
+    if not runs:
+        print("✅ No Terraform state left by a dead run")
+    return [_sweep_finding(f)[0] for f in findings] if findings else []
 
 
 def _deploy_primary_stack_attempt(stack_name, admin_email, template_url):
@@ -4991,7 +5615,12 @@ def _deploy_primary_stack_attempt(stack_name, admin_email, template_url):
 
 
 def deploy_and_test_stack(
-    stack_name, admin_email, template_url, progress_cb=None, terraform=None
+    stack_name,
+    admin_email,
+    template_url,
+    progress_cb=None,
+    terraform=None,
+    run_started=None,
 ):
     """Deploy and test the unified IDP stack.
 
@@ -5065,6 +5694,20 @@ def deploy_and_test_stack(
             return deploy_result
 
         print("✅ Stack is healthy")
+
+        if terraform is not None:
+            shortfall = terraform_suite_time_shortfall(
+                time.monotonic() if run_started is None else run_started
+            )
+            if shortfall:
+                print(f"❌ Not starting the steps: {shortfall}")
+                return {
+                    "stack_name": stack_name,
+                    "success": False,
+                    "failure_type": "deploy",
+                    "iac": IAC_TERRAFORM,
+                    "error": f"Terraform run refused before the steps: {shortfall}",
+                }
 
         # Run tests 3-10 in parallel (Step 4 BDA now uses config-sync-bda + --config-version, no activation race)
         print(f"\n{'=' * 80}")
@@ -6486,8 +7129,8 @@ def cancel_bedrock_ingestion_jobs(stack_name):
     print(f"[{stack_name}] Checking for running Bedrock ingestion jobs...")
 
     try:
-        cf_client = boto3.client("cloudformation")
-        bedrock_agent = boto3.client("bedrock-agent")
+        cf_client = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
+        bedrock_agent = boto3.client("bedrock-agent", config=_THROTTLE_RETRY_CONFIG)
 
         # Get all resources from main stack and nested stacks
         stacks_to_check = [stack_name]
@@ -7463,8 +8106,18 @@ def cleanup_stale_ci_diagnostics():
 IDP_STACK_STALE_AGE_SECONDS = 3 * 3600  # 3h
 
 
-def cleanup_stale_idp_stacks():
+def cleanup_stale_idp_stacks(terraform_runs=None):
     """Reap OLD leftover idp- test stacks so their IAM roles don't leak (defense in depth).
+
+    Terraform runs: ``terraform_runs`` is the set of runs whose Terraform state
+    is still in the CI bucket (cleanup_stale_terraform_deployments fills it), and
+    every stack of such a run is kept, because its `-iam` pre-stack holds the
+    role the state can be destroyed with and its label stack is the record of
+    what was created. A stale label stack with NO state left has its resource
+    directory swept (_sweep_terraform_resource_directory) before it is deleted,
+    and what that sweep could not delete is a finding. With ``terraform_runs``
+    None (the state listing failed) every run with a Terraform label stack is
+    kept, since whether its state survives is unknown.
 
     Every run's cleanup_stack/cleanup_iam_resources deletes its own stacks, but
     if that cleanup is interrupted (creds expire mid-teardown, job killed), the
@@ -7557,60 +8210,88 @@ def cleanup_stale_idp_stacks():
                 print(f"     {name} until {until}")
 
         paginator = cf.get_paginator("list_stacks")
-        for page in paginator.paginate(
-            StackStatusFilter=[
-                "CREATE_COMPLETE",
-                "CREATE_FAILED",
-                "ROLLBACK_COMPLETE",
-                "ROLLBACK_FAILED",
-                "DELETE_FAILED",
-                "UPDATE_COMPLETE",
-                "UPDATE_ROLLBACK_COMPLETE",
-            ]
-        ):
-            for s in page.get("StackSummaries", []):
-                name = s.get("StackName", "")
-                # Only our timestamped test stacks (idp-MMDD-HHMMSS[...]). The
-                # apigw-vpc reaper owns *-apigw-vpc; skip those here.
-                if not name.startswith("idp-") or name.endswith("-apigw-vpc"):
-                    continue
-                # Only reap TOP-LEVEL stacks: nested stacks (RootId set) are
-                # deleted by their parent, and deleting a parent cascades.
-                if s.get("RootId") or s.get("ParentId"):
-                    continue
-                if _is_exempt_stack_or_pre_stack(name):
-                    skipped_long_lived += 1
-                    continue
-                match = _IDP_RUN_PREFIX_RE.match(name)
-                run_prefix = match.group(1) if match else name
-                if run_prefix in protected:
-                    skipped_retained += 1
-                    continue
-                # Before the age gate AND before the expiry override: the read
-                # of this run's marker did not answer, so whether the run asked
-                # for the stack to be kept is unknown. Keeping it costs a
-                # retention slot until the next run re-reads the marker, which
-                # is the same call and converges; reaping it destroys the
-                # evidence a failed run deliberately preserved (#1445).
-                if run_prefix in unreadable:
-                    markers_unreadable[run_prefix] = unreadable[run_prefix]
-                    continue
-                age = _listing_age_seconds(s.get("CreationTime"), now)
-                # An expired marker overrides the age gate: the run that wrote it
-                # asked for the stack to be kept until a deadline that has now
-                # passed, which is a stronger statement than "too young to be a
-                # leak" and is the only thing that frees up a retention slot.
-                if run_prefix in expired:
-                    stale.append(name)
-                elif age is None:
-                    # Fails CLOSED, with its own counter: the listing carried no
-                    # usable `CreationTime`, so the age gate cannot be satisfied,
-                    # and this path deletes a run's stacks.
-                    age_unestablishable.append(name)
-                elif age >= IDP_STACK_STALE_AGE_SECONDS:
-                    stale.append(name)
-                else:
-                    skipped_young += 1
+        summaries = [
+            summary
+            for page in paginator.paginate(
+                StackStatusFilter=[
+                    "CREATE_COMPLETE",
+                    "CREATE_FAILED",
+                    "ROLLBACK_COMPLETE",
+                    "ROLLBACK_FAILED",
+                    "DELETE_FAILED",
+                    "UPDATE_COMPLETE",
+                    "UPDATE_ROLLBACK_COMPLETE",
+                ]
+            )
+            for summary in page.get("StackSummaries", [])
+        ]
+        # Terraform label stacks, by the marker in their description. Listed
+        # first so a run's `-iam` pre-stack can be kept with its label.
+        labels = {
+            summary.get("StackName", "")
+            for summary in summaries
+            if _TERRAFORM_LABEL_MARKER in (summary.get("TemplateDescription") or "")
+        }
+        kept_terraform_runs = set(terraform_runs or ())
+        if terraform_runs is None:
+            for label in labels:
+                label_match = _IDP_RUN_PREFIX_RE.match(label)
+                kept_terraform_runs.add(label_match.group(1) if label_match else label)
+        skipped_terraform = 0
+        directory_sweeps = []
+        for s in summaries:
+            name = s.get("StackName", "")
+            # Only our timestamped test stacks (idp-MMDD-HHMMSS[...]). The
+            # apigw-vpc reaper owns *-apigw-vpc; skip those here.
+            if not name.startswith("idp-") or name.endswith("-apigw-vpc"):
+                continue
+            # Only reap TOP-LEVEL stacks: nested stacks (RootId set) are
+            # deleted by their parent, and deleting a parent cascades.
+            if s.get("RootId") or s.get("ParentId"):
+                continue
+            if _is_exempt_stack_or_pre_stack(name):
+                skipped_long_lived += 1
+                continue
+            match = _IDP_RUN_PREFIX_RE.match(name)
+            run_prefix = match.group(1) if match else name
+            if run_prefix in kept_terraform_runs:
+                skipped_terraform += 1
+                continue
+            if run_prefix in protected:
+                skipped_retained += 1
+                continue
+            # Before the age gate AND before the expiry override: the read
+            # of this run's marker did not answer, so whether the run asked
+            # for the stack to be kept is unknown. Keeping it costs a
+            # retention slot until the next run re-reads the marker, which
+            # is the same call and converges; reaping it destroys the
+            # evidence a failed run deliberately preserved (#1445).
+            if run_prefix in unreadable:
+                markers_unreadable[run_prefix] = unreadable[run_prefix]
+                continue
+            age = _listing_age_seconds(s.get("CreationTime"), now)
+            # An expired marker overrides the age gate: the run that wrote it
+            # asked for the stack to be kept until a deadline that has now
+            # passed, which is a stronger statement than "too young to be a
+            # leak" and is the only thing that frees up a retention slot.
+            if run_prefix in expired:
+                stale.append(name)
+            elif (
+                age is not None
+                and age >= IDP_STACK_STALE_AGE_SECONDS
+                and (name in labels)
+            ):
+                stale.append(name)
+                directory_sweeps.append(name)
+            elif age is None:
+                # Fails CLOSED, with its own counter: the listing carried no
+                # usable `CreationTime`, so the age gate cannot be satisfied,
+                # and this path deletes a run's stacks.
+                age_unestablishable.append(name)
+            elif age >= IDP_STACK_STALE_AGE_SECONDS:
+                stale.append(name)
+            else:
+                skipped_young += 1
     except Exception as e:  # noqa: BLE001
         return _sweep_finding(
             "did not get through the account's CloudFormation stacks, so an "
@@ -7623,6 +8304,11 @@ def cleanup_stale_idp_stacks():
             print(f"  ({skipped_retained} retained idp- stack(s) skipped)")
         if skipped_young:
             print(f"  ({skipped_young} young idp- stack(s) skipped — may be in-flight)")
+        if skipped_terraform:
+            print(
+                f"  ({skipped_terraform} stack(s) of Terraform runs with state still "
+                "in the CI bucket kept for cleanup_stale_terraform_deployments)"
+            )
         if skipped_long_lived:
             print(
                 f"  ({skipped_long_lived} named for a long-lived stack, not examined)"
@@ -7653,6 +8339,17 @@ def cleanup_stale_idp_stacks():
         # main stack isn't stranded when its service role is deleted first.
         non_iam = [n for n in stale if not n.endswith("-iam")]
         iam_stacks = [n for n in stale if n.endswith("-iam")]
+        # A Terraform label stack with no state behind it: sweep what its
+        # resource directory names first, since deleting the label deletes the
+        # last record of them.
+        left_behind = []
+        for name in directory_sweeps:
+            try:
+                left = _sweep_terraform_resource_directory(cf, name)
+            except Exception as e:  # noqa: BLE001
+                left = [f"resource directory not read: {e}"]
+            if left:
+                left_behind.append(f"{name}: {len(left)} left ({'; '.join(left[:5])})")
         for name in non_iam + iam_stacks:
             try:
                 print(f"[{name}] reaping stale idp- stack...")
@@ -7671,6 +8368,12 @@ def cleanup_stale_idp_stacks():
         if bucket:
             for name in expired:
                 _drop_retention_marker(bucket, name)
+        if left_behind:
+            return _sweep_finding(
+                "deleted Terraform label stack(s) with no state left, and their "
+                "resource directories named resources this sweep cannot delete, "
+                "which now have no record: " + " | ".join(left_behind)
+            )
         return []
     except Exception as e:  # noqa: BLE001
         # Not a per-stack delete failure — those are caught in the loop above.
@@ -9716,8 +10419,13 @@ def read_ci_run_options(path: str = CI_RUN_OPTIONS_FILE) -> dict:
 
     Fail-closed by construction. A missing, unreadable or malformed file, or one
     holding anything but a JSON object, reads as no options, and no options is a
-    run that leaves the review stack alone. The file decides only whether an
-    advisory update happens, so the default that changes nothing is the safe one.
+    run that leaves the review stack alone.
+
+    The file also carries ``iac``, which selects a Terraform run (iac_mode), and
+    for that field no options means CloudFormation. That default is safe only
+    because the GitLab job makes a failed write fatal on a Terraform schedule
+    (integration_test_deployment.main): a Terraform schedule whose file went
+    missing would otherwise run, and report, the CloudFormation suite.
     """
     try:
         with open(path, encoding="utf-8") as handle:
@@ -10506,7 +11214,16 @@ def main():
     # against the `fails_run` judgement in STARTUP_SWEEPS.
     bda_sweep_findings = cleanup_stale_bda_blueprints()
     apigw_vpc_sweep_findings = cleanup_stale_apigw_test_vpcs()
-    stale_stack_findings = cleanup_stale_idp_stacks()
+    # Before the stack sweep: a dead Terraform run's label stack and its `-iam`
+    # pre-stack (which holds the role its state is destroyed with) must still be
+    # standing when it is destroyed, and the stack sweep keeps every stack of a
+    # run whose state is still in the bucket afterwards. None when the listing
+    # failed, which the stack sweep reads as "keep every Terraform-labelled run".
+    terraform_runs_left: set | None = set()
+    terraform_sweep_findings = cleanup_stale_terraform_deployments(terraform_runs_left)
+    if terraform_sweep_findings and not terraform_runs_left:
+        terraform_runs_left = None
+    stale_stack_findings = cleanup_stale_idp_stacks(terraform_runs=terraform_runs_left)
     # Buckets last: a stack the reaper above just deleted frees its buckets for
     # reaping here (CloudFormation can't delete a non-empty bucket, so they'd
     # otherwise leak — thousands accumulated this way).
@@ -10533,6 +11250,7 @@ def main():
     startup_sweep_findings = {
         "cleanup_stale_bda_blueprints": bda_sweep_findings,
         "cleanup_stale_apigw_test_vpcs": apigw_vpc_sweep_findings,
+        "cleanup_stale_terraform_deployments": terraform_sweep_findings,
         "cleanup_stale_idp_stacks": stale_stack_findings,
         "cleanup_stale_idp_buckets": stale_bucket_findings,
         "cleanup_stale_idp_roles": stale_role_findings,
@@ -10557,6 +11275,7 @@ def main():
                 module_url=artifacts["terraform_module_url"],
                 directory=terraform_work_directory(stack_name),
                 binary=terraform_bin,
+                state_bucket=_terraform_state_bucket(),
             )
         publish_success = True
     except Exception as e:
@@ -10694,6 +11413,7 @@ def main():
                 template_url,
                 progress_cb=_publish_progress,
                 terraform=terraform,
+                run_started=main_started,
             )
             if not result["success"]:
                 print(f"[{stack_name}] ❌ Failed")
@@ -10868,6 +11588,12 @@ def main():
     # row and no verdict flip; writing those decisions as one loop over the
     # registry would read as one rule applied to six lookalikes, which is the
     # defect this fix is the second half of.
+    if terraform_sweep_findings:
+        stack_success = False
+        reason = _report_sweep_not_completed(
+            "cleanup_stale_terraform_deployments", terraform_sweep_findings
+        )
+        failure_reason = _first_failure_reason(failure_reason, reason)
     if stale_stack_findings:
         stack_success = False
         reason = _report_sweep_not_completed(

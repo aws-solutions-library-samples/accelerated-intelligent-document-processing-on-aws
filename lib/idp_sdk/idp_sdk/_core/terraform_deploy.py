@@ -502,17 +502,82 @@ def parse_tfvars(text: str) -> Dict[str, Any]:
     return out
 
 
+_ROLE_ARN = re.compile(r"^arn:[a-z0-9-]+:iam::\d{12}:role/[\w+=,.@/-]+$")
+
+
+def check_assume_role_arn(role_arn: Optional[str]) -> Optional[str]:
+    """``role_arn`` if it is an IAM role ARN (or empty), else refuse it."""
+    if not role_arn:
+        return None
+    if not _ROLE_ARN.match(role_arn):
+        raise IDPConfigurationError(
+            f"--terraform-assume-role-arn {role_arn!r} is not an IAM role ARN "
+            "(arn:<partition>:iam::<account>:role/<name>)"
+        )
+    return role_arn
+
+
+def render_provider_blocks(region: str, assume_role_arn: Optional[str] = None) -> str:
+    """The ``aws`` and ``awscc`` provider blocks, both in ``region``, and both
+    assuming ``assume_role_arn`` when it is given. The two must agree: the module
+    creates resources through both, and a role on one alone splits the
+    deployment across two identities."""
+    lines: List[str] = []
+    for name in ("aws", "awscc"):
+        lines.append(f'provider "{name}" {{')
+        lines.append(f"  region = {json.dumps(region)}")
+        if assume_role_arn:
+            lines.append("  assume_role {")
+            lines.append(f"    role_arn = {json.dumps(assume_role_arn)}")
+            lines.append("  }")
+        lines.append("}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+_PROVIDER_BLOCKS = re.compile(
+    r'provider "aws" \{\n.*?\n\}\n\nprovider "awscc" \{\n.*?\n\}\n\n', re.S
+)
+
+
+def set_assume_role(main_tf: Path, region: str, assume_role_arn: str) -> None:
+    """Rewrite the provider blocks of an idp-cli ``main.tf`` to assume a role.
+
+    For ``delete --terraform``, which has no parameters to regenerate the whole
+    file from. Refuses a ``main.tf`` idp-cli did not write, or one whose provider
+    blocks are not in the shape :func:`render_main_tf` writes.
+    """
+    text = main_tf.read_text()
+    if ROOT_MARKER not in text:
+        raise IDPConfigurationError(
+            f"{main_tf} was not written by idp-cli; add the assume_role block to "
+            "its providers yourself"
+        )
+    new, count = _PROVIDER_BLOCKS.subn(
+        lambda _m: render_provider_blocks(region, assume_role_arn) + "\n", text, count=1
+    )
+    if count != 1:
+        raise IDPConfigurationError(
+            f"cannot find the aws and awscc provider blocks idp-cli writes in "
+            f"{main_tf}; add the assume_role block to them yourself"
+        )
+    main_tf.write_text(new)
+
+
 def render_main_tf(
     region: str,
     module_url: str,
     values: Dict[str, Any],
     specs: Dict[str, Dict[str, Any]],
+    assume_role_arn: Optional[str] = None,
 ) -> str:
     """Root configuration: providers in the region and ``module "idp"``.
 
     Only variables with a value are declared and passed; every other module
     variable keeps its default. No backend block is written, so state is local
-    in the directory unless the user adds a backend in another file.
+    in the directory unless the user adds a backend in another file. With
+    ``assume_role_arn`` both providers assume that role, so Terraform creates the
+    deployment's resources as the role rather than as the caller.
     """
     source = terraform_module_source(module_url)
     blocks = [
@@ -527,14 +592,7 @@ def render_main_tf(
         "  }",
         "}",
         "",
-        'provider "aws" {',
-        f"  region = {json.dumps(region)}",
-        "}",
-        "",
-        'provider "awscc" {',
-        f"  region = {json.dumps(region)}",
-        "}",
-        "",
+        render_provider_blocks(region, assume_role_arn),
     ]
     names = sorted(values)
     for name in names:
@@ -562,8 +620,11 @@ def write_root_config(
     admin_email: Optional[str],
     parameters: Dict[str, str],
     manifest: Dict[str, Any],
+    assume_role_arn: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Write ``main.tf`` and ``terraform.tfvars`` into ``directory``.
+
+    ``assume_role_arn`` puts an ``assume_role`` block in both provider blocks.
 
     Refuses a ``main.tf`` that idp-cli did not write. On a later deploy the
     values from the previous ``terraform.tfvars`` are kept and the new ones
@@ -610,7 +671,11 @@ def write_root_config(
         raise IDPConfigurationError(
             "required parameter(s) have no value: " + ", ".join(missing) + hint
         )
-    main_tf.write_text(render_main_tf(region, module_url, values, specs))
+    main_tf.write_text(
+        render_main_tf(
+            region, module_url, values, specs, check_assume_role_arn(assume_role_arn)
+        )
+    )
     tfvars.write_text(render_tfvars(values))
     # The values can include NoEcho parameters.
     os.chmod(tfvars, 0o600)

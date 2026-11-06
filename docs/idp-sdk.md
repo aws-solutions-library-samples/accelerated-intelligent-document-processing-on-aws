@@ -1163,8 +1163,9 @@ print(f"Status: {result.status}")
 
 Deploy or destroy the accelerator with Terraform or OpenTofu, from a module published by `publish.build(terraform=True)`. These are what `idp-cli deploy --terraform` and `idp-cli delete --terraform` call; see [Terraform deployments](./idp-cli.md#terraform-deployments) for the behaviour.
 
-- `deploy_terraform(stack_name=None, admin_email=None, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform")` returns a `StackDeploymentResult` (`status="APPLY_COMPLETE"`, the label stack's outputs). With no `module_url`, `pointer_url` names an `idp-terraform-latest.json`; `default_terraform_pointer_url(template_url, variant=None)` derives it from a default template URL, for the standard module or the `headless`/`govcloud` one.
-- `delete_terraform(stack_name=None, *, terraform_dir=None, terraform_bin="terraform")` returns a `StackDeletionResult` whose `retained_resources` lists the resources left in place, categorized as `dynamodb_tables`, `log_groups`, `s3_buckets` and `other`.
+- `deploy_terraform(stack_name=None, admin_email=None, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` returns a `StackDeploymentResult` (`status="APPLY_COMPLETE"`, the label stack's outputs). With no `module_url`, `pointer_url` names an `idp-terraform-latest.json`; `default_terraform_pointer_url(template_url, variant=None)` derives it from a default template URL, for the standard module or the `headless`/`govcloud` one.
+- `assume_role_arn` (both) is an IAM role the `aws` and `awscc` providers assume: `deploy_terraform` writes it into `main.tf`, and `delete_terraform` rewrites the provider blocks of an idp-cli `main.tf` with it before `init`.
+- `delete_terraform(stack_name=None, *, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` returns a `StackDeletionResult` whose `retained_resources` lists the resources left in place, categorized as `dynamodb_tables`, `log_groups`, `s3_buckets` and `other`.
 
 Both raise `IDPConfigurationError` when the binary is missing or the inputs are invalid, and `IDPStackError` when a Terraform command fails.
 

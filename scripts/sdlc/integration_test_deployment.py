@@ -973,6 +973,15 @@ def main():
 
     # Execute deployment steps
     write_ci_run_options()
+    if iac == IAC_TERRAFORM and not pathlib.Path(CI_RUN_OPTIONS_FILE).is_file():
+        # The file is the only way the choice reaches CodeBuild, which reads no
+        # file as CloudFormation. Running on would deploy and report the
+        # CloudFormation suite under a Terraform schedule.
+        print(
+            f"❌ {CI_RUN_OPTIONS_FILE} could not be written, and on a Terraform "
+            "schedule it is what tells the build to deploy with Terraform"
+        )
+        sys.exit(1)
     create_deployment_package()
     version_id = upload_to_s3(bucket_name)
 

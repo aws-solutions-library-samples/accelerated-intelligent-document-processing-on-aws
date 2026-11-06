@@ -89,6 +89,7 @@ class TestDeployTerraform:
             ),
             "terraform_dir": None,
             "terraform_bin": "terraform",
+            "assume_role_arn": None,
         }
         client.stack.deploy.assert_not_called()
         assert "https://app.example.com" in result.output
@@ -284,7 +285,10 @@ class TestDeleteTerraform:
             )
         assert result.exit_code == 0, result.output
         client.stack.delete_terraform.assert_called_once_with(
-            stack_name="tfidp", terraform_dir="here", terraform_bin="terraform"
+            stack_name="tfidp",
+            terraform_dir="here",
+            terraform_bin="terraform",
+            assume_role_arn=None,
         )
         client.stack.delete.assert_not_called()
         assert "tfidp-logging" in result.output
@@ -373,3 +377,71 @@ class TestTheGuardIsUntouched:
         }
         with pytest.raises(ValueError, match="is a Terraform deployment"):
             deployer._stack_exists("tfidp", action=action)
+
+
+ROLE = "arn:aws:iam::123456789012:role/idp-tf-deployer"
+
+
+class TestAssumeRole:
+    def test_deploy_passes_the_role_to_the_sdk(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--stack-name",
+                    "tfidp",
+                    "--admin-email",
+                    "a@example.com",
+                    "--region",
+                    "us-west-2",
+                    "--terraform-assume-role-arn",
+                    ROLE,
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert client.stack.deploy_terraform.call_args.kwargs["assume_role_arn"] == ROLE
+
+    def test_delete_passes_the_role_to_the_sdk(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "delete",
+                    "--terraform",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    "--force",
+                    "--terraform-assume-role-arn",
+                    ROLE,
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert client.stack.delete_terraform.call_args.kwargs["assume_role_arn"] == ROLE
+
+    @pytest.mark.parametrize("command", ["deploy", "delete"])
+    def test_without_terraform_the_role_is_refused(self, runner, command):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    command,
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    "--force" if command == "delete" else "--wait",
+                    "--terraform-assume-role-arn",
+                    ROLE,
+                ],
+            )
+        assert result.exit_code == 1
+        assert "--terraform-assume-role-arn" in result.output
+        client.stack.deploy.assert_not_called()
+        client.stack.delete.assert_not_called()
