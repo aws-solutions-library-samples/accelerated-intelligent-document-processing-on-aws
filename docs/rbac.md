@@ -505,6 +505,29 @@ number with no indication. Narrow the date range if a scoped count looks wrong.
 | **Profile Dropdowns** (UI) | `useConfigurationVersions` hook filters profiles client-side for immediate UX |
 | **Default Profile Selection** (UI) | Profile pickers and the View/Edit Configuration page select the active profile when it is in scope, otherwise the first scoped one. A scoped user is never sent to `default` unless their scope admits it |
 
+**What the static scan checks for the server-side rows.** Every operation that
+`scripts/api_rbac_expectations.yaml` flags `scope_checked` or `scope_filtered` is
+held by check **S4** of `make api-test-static`
+([`scripts/sdlc/scan_api_rbac.py`](../scripts/sdlc/scan_api_rbac.py)) to two rules, both read from the code the operation itself can
+reach (its dispatch branch or dispatch-table entry, and that code's call closure):
+
+- **It refers to the caller's scope.** The reachable code names the scope or calls
+  the shared matcher, so a sibling operation in the same module cannot satisfy it.
+- **A `scope_filtered` operation filters each item it returns** (finding kind
+  `S4-per-item`, a FAIL). Following calls from the resolver into `idp_common`,
+  the reachable code must call a recognised per-item scope predicate inside an
+  iteration over results — a comprehension, a loop body or a `filter(...)`
+  predicate — or a whole-list scope filter, and that predicate must itself bottom
+  out at `idp_common.config_scope.scope_allows`. The recognised names are
+  `SCOPE_ITEM_PREDICATES` and `SCOPE_LIST_FILTERS` in the scanner. This is what
+  covers listings served by a library service, such as the review-queue
+  operations, whose filter lives in `ReviewQueueService` rather than in the
+  resolver.
+
+Both are structural checks, not dataflow: they cannot show that the filtered
+collection is the one returned, or that the scope value came from the UsersTable.
+The per-site unit suites and the live scope suite in `make api-test` cover those.
+
 ### Affected UI Components
 
 All pages with configuration profile selectors automatically respect scope:

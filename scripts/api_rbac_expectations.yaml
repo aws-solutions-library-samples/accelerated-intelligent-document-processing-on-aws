@@ -53,7 +53,13 @@
 #                  of scope. Static scan requires 'allowedConfigVersions' (or
 #                  allowed_config_versions) to appear in enforced_in.
 #   scope_filtered: true -> op returns lists row-filtered by the caller's
-#                  allowedConfigVersions / reviewer status instead of 403.
+#                  allowedConfigVersions / reviewer status instead of 403. Static
+#                  scan (S4-per-item) also requires the code this op reaches,
+#                  following calls into idp_common, to call a recognised per-item
+#                  scope predicate inside an iteration over its results (see
+#                  SCOPE_ITEM_PREDICATES in scan_api_rbac.py). scope_enforced_in
+#                  does not change where that search starts: it starts at the
+#                  op's own dispatch.
 #   scope_enforced_in: OPTIONAL function name, for a scope_checked/scope_filtered
 #                  op whose module has no dispatch S4 can find on the op's name.
 #                  S4 reads only the code THIS op can reach — its dispatch branch
@@ -603,10 +609,10 @@ operations:
     groups: [Admin, Author]
     kind: read
     # scope_FILTERED, not scope_checked: this operation returns 200 with every
-    # naming field nulled for an out-of-scope destination, and never 403s. The two
-    # flags are indistinguishable to scan_api_rbac's S4 check (it tests
-    # `scope_checked or scope_filtered`) and to the dynamic driver, so nothing would
-    # have caught the wrong one -- but they feed different published figures, so
+    # naming field nulled for an out-of-scope destination, and never 403s. The
+    # dynamic driver cannot tell the two flags apart, and scan_api_rbac's S4 adds
+    # only a per-item filter requirement for scope_filtered, which a refusing op
+    # with a loop could also meet -- but they feed different published figures, so
     # declaring the refusing kind here moved one operation from the filtering tally
     # to the verifying one and published both wrong. No figure is restated here on
     # purpose: test_api_policy_counts_in_docs.py reads these declarations back and

@@ -48,7 +48,13 @@ CHECKS
       its enforcement point is the dispatcher's generated manifest, which S1 and
       the manifest drift guard already require to exist for every routable op.
   S4  Scope enforcement — ops flagged `scope_checked`/`scope_filtered` must
-      reference allowedConfigVersions in their enforced_in file.
+      reference the caller's config-version scope in the code the operation
+      itself can reach (its dispatch branch and that branch's call closure).
+      A `scope_filtered` op must also filter what it returns item by item
+      (finding kind `S4-per-item`): somewhere in the code it reaches, following
+      calls into `idp_common`, a recognised per-item scope predicate is called
+      inside an iteration over results, or a whole-list scope filter is called,
+      and that predicate bottoms out at `scope_allows`.
   S5  Template auth — every API Gateway Method is COGNITO_USER_POOLS except the
       allowlisted CORS (OPTIONS) and static-SPA (GET) routes.
   S6  Function URL universe — every AWS::Lambda::Url in template.yaml is
@@ -300,9 +306,11 @@ SCOPE_PATTERNS = (
     # claiming otherwise: these are substring matches over unparsed source, so a
     # docstring, a function name or an unused parameter mentioning one of them
     # satisfies S4 just as a real call does. Two such benign mentions already exist in
-    # `list_documents_gsi_resolver/index.py`. S4 establishes that an operation's own
-    # code path *refers* to the scope; the per-site unit suites establish that it
-    # enforces it.
+    # `list_documents_gsi_resolver/index.py`. This half of S4 establishes that an
+    # operation's own code path *refers* to the scope. For a `scope_filtered`
+    # operation the per-item half (`op_per_item_scope_filter`) also requires a
+    # scope predicate applied to each returned item; the per-site unit suites
+    # establish that the value being matched is the caller's real scope.
     "scope_allows",
     # The shared single-document form of the rule, `idp_common.document_scope`.
     # Its entry points resolve the caller's scope and apply `scope_allows` inside the
@@ -921,8 +929,10 @@ def enforced_group_names(text: str) -> set[str] | None:
 # operation that kept `scope_allows(allowed_versions, ...)` while `allowed_versions`
 # became a hardcoded `None` still passes. That shape is what the per-site unit
 # suites assert (a DynamoDB error must deny, an out-of-scope document must not be
-# returned), and no static rule over one module substitutes for them. What S4 does
-# catch, and did, is an operation that refers to the scope **nowhere**.
+# returned), and no static rule over one module substitutes for them. What this
+# reference check catches is an operation that refers to the scope **nowhere**;
+# the per-item rule below (`op_per_item_scope_filter`) additionally catches a
+# `scope_filtered` operation that refers to the scope but filters no item by it.
 
 
 class _CallCollector(ast.NodeVisitor):
@@ -1105,6 +1115,347 @@ def op_scope_source(
         pending.extend(_called_names(target))
 
     return None, "\n".join(ast.unparse(node) for node in reachable)
+
+
+# --- S4 per-item: a scope-filtered result must be filtered item by item -------
+#
+# The reference check above establishes that an operation's code mentions the
+# scope. For a `scope_filtered` operation that is not enough: the operation
+# returns a COLLECTION, and the property it declares is that every member of that
+# collection was admitted by the caller's scope. So for those operations S4 also
+# requires, in the code the operation can reach, at least one call to a recognised
+# per-item scope predicate made inside an iteration — a comprehension's element or
+# condition, the body of a `for`/`while` loop, or the predicate given to
+# `filter(...)` — or a call to a recognised whole-list scope filter.
+#
+# Reach follows calls OUT of the resolver module into first-party `idp_common`
+# modules, because a resolver that is a thin dispatcher over a library service
+# applies its filter in the service, not in the resolver. Calls are resolved per
+# module: a name against the module's own functions and then its `idp_common`
+# imports, an attribute call (`self.x()`, `_SERVICE.x()`) against the module's own
+# functions and then the functions of the `idp_common` modules it imports.
+#
+# A predicate counts only if its definition, where the scanner can resolve one,
+# itself bottoms out at `scope_allows` — so a recognised helper renamed onto a
+# function that no longer consults the scope stops satisfying the rule.
+#
+# What this still does not prove: that the filtered collection is the one
+# returned (a filter over a copy that is discarded passes), or that the scope
+# value was resolved from the UsersTable. Those remain the per-site unit suites'.
+
+#: Per-ITEM scope predicates: each answers "does the caller's scope admit this one
+#: item?" and so counts only when called inside an iteration over results.
+SCOPE_ITEM_PREDICATES: dict[str, str] = {
+    # idp_common.config_scope — the canonical matcher every consumer shares:
+    # does this scope admit this profile name?
+    "scope_allows": "canonical scope matcher",
+    # ReviewQueueService — may this caller see this review item? (Admin, or
+    # `_admits` on the item's profile)
+    "_sees": "review item visibility",
+    # ReviewQueueService — Admin, or `scope_allows` on a bare profile name
+    "_admits": "review profile admission",
+    # list_documents_gsi_resolver — `scope_allows` on a tracking row's ConfigVersion
+    "_item_in_config_scope": "document-list row filter",
+    # list_documents_range_resolver — the per-document RBAC filter, scope first
+    "_should_include_document": "document-range row filter",
+}
+#: Whole-LIST scope filters: each takes a collection and returns the admitted
+#: subset, so a call to one is a per-item filter wherever it appears.
+SCOPE_LIST_FILTERS: dict[str, str] = {
+    # idp_common.config_scope — the scope's admitted subset of a list of names
+    "filter_profiles": "admitted subset of profile names",
+}
+_CANONICAL_SCOPE_MATCHER = "scope_allows"
+_FIRST_PARTY_PACKAGE = "idp_common"
+
+
+class _SourceModule:
+    """One parsed module and the first-party names it imports."""
+
+    def __init__(self, dotted: str | None, path: Path, tree: ast.Module):
+        self.dotted = dotted
+        self.path = path
+        self.functions = _module_functions(tree)
+        # local name -> (module dotted name, attribute or None for a module alias)
+        self.name_imports: dict[str, tuple[str, str | None]] = {}
+        self.imported_modules: list[str] = []
+        self.tree = tree
+
+
+class _FirstPartyIndex:
+    """Parses `idp_common` modules on demand from ``<root>/idp_common/...``."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self._cache: dict[str, _SourceModule | None] = {}
+
+    def file_for(self, dotted: str) -> Path | None:
+        parts = dotted.split(".")
+        if parts[0] != _FIRST_PARTY_PACKAGE:
+            return None
+        base = self.root.joinpath(*parts)
+        for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def module(self, dotted: str) -> _SourceModule | None:
+        if dotted not in self._cache:
+            self._cache[dotted] = None  # guards an import cycle while parsing
+            path = self.file_for(dotted)
+            if path is not None:
+                try:
+                    tree = ast.parse(path.read_text())
+                except (OSError, SyntaxError):
+                    tree = None
+                if tree is not None:
+                    self._cache[dotted] = self.link(dotted, path, tree)
+        return self._cache[dotted]
+
+    def link(self, dotted: str | None, path: Path, tree: ast.Module) -> _SourceModule:
+        mod = _SourceModule(dotted, path, tree)
+        is_package = path.name == "__init__.py"
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    if not dotted:
+                        continue
+                    package = dotted.split(".")
+                    if not is_package:
+                        package = package[:-1]
+                    package = package[: len(package) - (node.level - 1)]
+                    base = ".".join(package + ([base] if base else []))
+                if base.split(".")[0] != _FIRST_PARTY_PACKAGE:
+                    continue
+                for alias in node.names:
+                    local = alias.asname or alias.name
+                    submodule = f"{base}.{alias.name}"
+                    if self.file_for(submodule) is not None:
+                        mod.name_imports[local] = (submodule, None)
+                        mod.imported_modules.append(submodule)
+                    else:
+                        mod.name_imports[local] = (base, alias.name)
+                        if base not in mod.imported_modules:
+                            mod.imported_modules.append(base)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] == _FIRST_PARTY_PACKAGE:
+                        mod.imported_modules.append(alias.name)
+        return mod
+
+    def lookup(
+        self, dotted: str, name: str, depth: int = 0
+    ) -> tuple[_SourceModule, ast.AST] | None:
+        """``name`` as defined in ``dotted``, following a package re-export."""
+        mod = self.module(dotted)
+        if mod is None or depth > 3:
+            return None
+        if name in mod.functions:
+            return mod, mod.functions[name]
+        imported = mod.name_imports.get(name)
+        if imported and imported[1]:
+            return self.lookup(imported[0], imported[1], depth + 1)
+        return None
+
+
+def _call_name(call: ast.Call) -> str | None:
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _resolve_call(
+    index: _FirstPartyIndex, mod: _SourceModule, call: ast.Call
+) -> tuple[_SourceModule, ast.AST] | None:
+    func = call.func
+    name = _call_name(call)
+    if name is None:
+        return None
+    if name in mod.functions:
+        return mod, mod.functions[name]
+    if isinstance(func, ast.Name):
+        imported = mod.name_imports.get(name)
+        if imported and imported[1]:
+            return index.lookup(imported[0], imported[1])
+        return None
+    # Attribute call. A module alias names its module exactly; anything else
+    # (`self.store.x`, `_SERVICE.x`) is looked up in the modules this one imports.
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        alias = mod.name_imports.get(func.value.id)
+        if alias and alias[1] is None:
+            return index.lookup(alias[0], name)
+    for dotted in mod.imported_modules:
+        found = index.lookup(dotted, name)
+        if found is not None:
+            return found
+    return None
+
+
+def _item_dispatch_entries(tree: ast.Module, op: str) -> list[ast.AST]:
+    """The code an operation's own dispatch selects: `if` branches and dict tables.
+
+    Adds the table form (`{"op": handler_fn, ...}`) to `_dispatch_branches`,
+    because a resolver dispatching through a dict names the operation nowhere in
+    an `if` test. Only a value naming a function the module defines counts, so a
+    groups table keyed by the same names contributes nothing.
+    """
+    entries: list[ast.AST] = list(_dispatch_branches(tree, op))
+    functions = _module_functions(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if (
+                isinstance(key, ast.Constant)
+                and key.value == op
+                and isinstance(value, ast.Name)
+                and value.id in functions
+            ):
+                entries.append(functions[value.id])
+    return entries
+
+
+def _predicate_credited(
+    index: _FirstPartyIndex,
+    mod: _SourceModule,
+    call: ast.Call,
+    seen: set[int] | None = None,
+) -> bool:
+    """Whether this call is a recognised scope predicate that consults the scope."""
+    name = _call_name(call)
+    if name not in SCOPE_ITEM_PREDICATES and name not in SCOPE_LIST_FILTERS:
+        return False
+    if name == _CANONICAL_SCOPE_MATCHER:
+        return True
+    resolved = _resolve_call(index, mod, call)
+    if resolved is None:
+        return False
+    def_mod, definition = resolved
+    seen = set() if seen is None else seen
+    if id(definition) in seen:
+        return False
+    seen.add(id(definition))
+    return any(
+        _predicate_credited(index, def_mod, inner, seen)
+        for inner in ast.walk(definition)
+        if isinstance(inner, ast.Call)
+    )
+
+
+def _per_item_filter_sites(
+    index: _FirstPartyIndex, mod: _SourceModule, fn: ast.AST
+) -> list[str]:
+    """Each recognised per-item scope filter in ``fn``, as ``predicate`` names."""
+    sites: list[str] = []
+
+    def credited_calls(nodes) -> list[str]:
+        out = []
+        for root in nodes:
+            for node in ast.walk(root):
+                if isinstance(node, ast.Call) and _call_name(node) in (
+                    SCOPE_ITEM_PREDICATES
+                ):
+                    if _predicate_credited(index, mod, node):
+                        out.append(_call_name(node) or "")
+        return out
+
+    for node in ast.walk(fn):
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            parts = [node.elt] + [c for g in node.generators for c in g.ifs]
+            sites.extend(credited_calls(parts))
+        elif isinstance(node, ast.DictComp):
+            parts = [node.key, node.value] + [c for g in node.generators for c in g.ifs]
+            sites.extend(credited_calls(parts))
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            sites.extend(credited_calls(node.body))
+        elif isinstance(node, ast.Call):
+            name = _call_name(node)
+            if name in SCOPE_LIST_FILTERS and _predicate_credited(index, mod, node):
+                sites.append(name or "")
+            elif (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "filter"
+                and node.args
+            ):
+                predicate = node.args[0]
+                if isinstance(predicate, (ast.Name, ast.Attribute)):
+                    probe = ast.Call(func=predicate, args=[], keywords=[])
+                    if _call_name(probe) in SCOPE_ITEM_PREDICATES and (
+                        _predicate_credited(index, mod, probe)
+                    ):
+                        sites.append(_call_name(probe) or "")
+                else:
+                    sites.extend(credited_calls([predicate]))
+    return sites
+
+
+def op_per_item_scope_filter(
+    text: str,
+    op: str,
+    *,
+    sole_op: bool,
+    first_party_root: Path,
+    source_path: Path | None = None,
+) -> tuple[str | None, list[str]]:
+    """The recognised per-item scope filters a `scope_filtered` operation reaches.
+
+    Returns ``(error, sites)``: ``error`` when the operation's own entry cannot be
+    found (a finding in itself), else the list of ``module:function:predicate``
+    sites. An empty list is the finding this check exists for.
+
+    The entry is the operation's own dispatch — never `scope_enforced_in`, which
+    names where the scope is *resolved*, typically a shared caller-context helper
+    that iterates over nothing.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as exc:
+        return f"could not parse {op}'s enforced_in file: {exc}", []
+    index = _FirstPartyIndex(first_party_root)
+    resolver = index.link(None, source_path or Path("<resolver>"), tree)
+
+    entries = _item_dispatch_entries(tree, op)
+    if not entries:
+        if not sole_op:
+            return (
+                "no per-operation dispatch on this name (an `if` test or a "
+                "dispatch-table entry) could be found, and this file is the "
+                "enforced_in for more than one operation, so the code that builds "
+                "this operation's result cannot be isolated",
+                [],
+            )
+        entries = [
+            resolver.functions.get("handler")
+            or resolver.functions.get("lambda_handler")
+            or tree
+        ]
+
+    reachable: list[tuple[_SourceModule, ast.AST]] = [(resolver, e) for e in entries]
+    seen: set[int] = {id(e) for e in entries}
+    pending = list(reachable)
+    while pending:
+        mod, node = pending.pop()
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            target = _resolve_call(index, mod, call)
+            if target is None or id(target[1]) in seen:
+                continue
+            seen.add(id(target[1]))
+            reachable.append(target)
+            pending.append(target)
+
+    sites = []
+    for mod, node in reachable:
+        where = f"{mod.dotted or 'resolver'}:{getattr(node, 'name', '<module>')}"
+        sites.extend(
+            f"{where}:{p}" for p in _per_item_filter_sites(index, mod, node)
+        )
+    return None, sites
 
 
 # --- checks ------------------------------------------------------------------
@@ -1369,6 +1720,29 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 f"in {o['enforced_in']} references allowedConfigVersions — a "
                 "sibling operation's reference in the same module does not "
                 "enforce anything here",
+            )
+            continue
+        if not o.get("scope_filtered"):
+            continue
+        # A filtered listing must filter each item — see `op_per_item_scope_filter`.
+        error, sites = op_per_item_scope_filter(
+            src.read_text(),
+            op,
+            sole_op=ops_per_file[o["enforced_in"]] == 1,
+            first_party_root=repo / "lib" / "idp_common_pkg",
+            source_path=src,
+        )
+        if error:
+            gap_or_fail(op, "S4-per-item", f"{error} ({o['enforced_in']})")
+        elif not sites:
+            gap_or_fail(
+                op, "S4-per-item",
+                "declared scope_filtered, but no code this operation can reach "
+                f"from {o['enforced_in']} (following calls into idp_common) "
+                "applies a per-item scope check to what it returns: expected a "
+                f"call to one of {sorted(SCOPE_ITEM_PREDICATES)} inside an "
+                "iteration over the results, or to one of "
+                f"{sorted(SCOPE_LIST_FILTERS)}",
             )
 
     # --- S5: template method auth ------------------------------------------
