@@ -48,18 +48,30 @@ def main() -> int:
             if name in resources:
                 wanted.add(name)
 
-    def strip(node):
-        # Descriptions are prose the translator never reads; dropping them keeps
-        # the file small and free of the documentation's example ARNs.
-        if isinstance(node, dict):
-            return {
-                k: strip(v)
-                for k, v in node.items()
-                if k not in ("description", "description_kind", "deprecated")
+    doc_keys = ("description", "description_kind", "deprecated")
+
+    def strip_spec(spec):
+        """An attribute or block spec, without its documentation fields. Only
+        the spec's own keys are dropped: an attribute can itself be named
+        `description`, and that must stay."""
+        out = {k: v for k, v in spec.items() if k not in doc_keys}
+        if "nested_type" in out:
+            out["nested_type"] = strip_block(out["nested_type"])
+        return out
+
+    def strip_block(block):
+        out = {k: v for k, v in block.items() if k not in doc_keys}
+        if "attributes" in out:
+            out["attributes"] = {n: strip_spec(a) for n, a in out["attributes"].items()}
+        if "block_types" in out:
+            out["block_types"] = {
+                n: dict(strip_spec(b), block=strip_block(b.get("block", {})))
+                for n, b in out["block_types"].items()
             }
-        if isinstance(node, list):
-            return [strip(v) for v in node]
-        return node
+        return out
+
+    def strip(resource):
+        return dict(resource, block=strip_block(resource.get("block", {})))
 
     subset = {
         "format_version": full.get("format_version", "1.0"),

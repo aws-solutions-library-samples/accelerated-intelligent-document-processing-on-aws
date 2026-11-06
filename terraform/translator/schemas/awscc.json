@@ -123,6 +123,11 @@
         "computed": true,
         "type": "string"
        },
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "id": {
         "computed": true,
         "type": "string"
@@ -215,6 +220,11 @@
            "computed": true,
            "optional": true,
            "type": "bool"
+          },
+          "description": {
+           "computed": true,
+           "optional": true,
+           "type": "string"
           },
           "documentation_version": {
            "computed": true,
@@ -707,6 +717,11 @@
         "optional": true,
         "type": "string"
        },
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "disable_execute_api_endpoint": {
         "computed": true,
         "optional": true,
@@ -892,6 +907,11 @@
         "type": "string"
        },
        "deployment_id": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
+       "description": {
         "computed": true,
         "optional": true,
         "type": "string"
@@ -1615,6 +1635,11 @@
         "computed": true,
         "type": "string"
        },
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "failure_reasons": {
         "computed": true,
         "type": [
@@ -1927,6 +1952,11 @@
       "attributes": {
        "created_at": {
         "computed": true,
+        "type": "string"
+       },
+       "description": {
+        "computed": true,
+        "optional": true,
         "type": "string"
        },
        "failure_reasons": {
@@ -2243,6 +2273,11 @@
                           "computed": true,
                           "nested_type": {
                            "attributes": {
+                            "description": {
+                             "computed": true,
+                             "optional": true,
+                             "type": "string"
+                            },
                             "inclusion": {
                              "computed": true,
                              "optional": true,
@@ -2257,6 +2292,11 @@
                            "nesting_mode": "list"
                           },
                           "optional": true
+                         },
+                         "description": {
+                          "computed": true,
+                          "optional": true,
+                          "type": "string"
                          },
                          "inclusion": {
                           "computed": true,
@@ -2869,6 +2909,11 @@
         "computed": true,
         "type": "string"
        },
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "disable_rollback": {
         "computed": true,
         "optional": true,
@@ -2899,6 +2944,10 @@
         "computed": true,
         "nested_type": {
          "attributes": {
+          "description": {
+           "computed": true,
+           "type": "string"
+          },
           "export_name": {
            "computed": true,
            "type": "string"
@@ -3011,6 +3060,11 @@
        "origin_access_control_config": {
         "nested_type": {
          "attributes": {
+          "description": {
+           "computed": true,
+           "optional": true,
+           "type": "string"
+          },
           "name": {
            "required": true,
            "type": "string"
@@ -4345,6 +4399,11 @@
     "awscc_cognito_user_pool_group": {
      "block": {
       "attributes": {
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "group_name": {
         "computed": true,
         "optional": true,
@@ -5558,6 +5617,11 @@
            "optional": true,
            "type": "bool"
           },
+          "description": {
+           "computed": true,
+           "optional": true,
+           "type": "string"
+          },
           "device_index": {
            "computed": true,
            "optional": true,
@@ -6616,6 +6680,11 @@
               "optional": true,
               "type": "bool"
              },
+             "description": {
+              "computed": true,
+              "optional": true,
+              "type": "string"
+             },
              "device_index": {
               "computed": true,
               "optional": true,
@@ -7000,6 +7069,11 @@
            "optional": true,
            "type": "string"
           },
+          "description": {
+           "computed": true,
+           "optional": true,
+           "type": "string"
+          },
           "destination_prefix_list_id": {
            "computed": true,
            "optional": true,
@@ -7044,6 +7118,11 @@
            "type": "string"
           },
           "cidr_ipv_6": {
+           "computed": true,
+           "optional": true,
+           "type": "string"
+          },
+          "description": {
            "computed": true,
            "optional": true,
            "type": "string"
@@ -7250,6 +7329,11 @@
       "attributes": {
        "arn": {
         "computed": true,
+        "type": "string"
+       },
+       "description": {
+        "computed": true,
+        "optional": true,
         "type": "string"
        },
        "event_bus_name": {
@@ -7830,6 +7914,11 @@
         "optional": true,
         "type": "string"
        },
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "id": {
         "computed": true,
         "type": "string"
@@ -8231,6 +8320,11 @@
            },
            "optional": true
           },
+          "description": {
+           "computed": true,
+           "optional": true,
+           "type": "string"
+          },
           "federated_database": {
            "computed": true,
            "nested_type": {
@@ -8608,6 +8702,11 @@
         "computed": true,
         "nested_type": {
          "attributes": {
+          "description": {
+           "computed": true,
+           "optional": true,
+           "type": "string"
+          },
           "name": {
            "computed": true,
            "optional": true,
@@ -9123,6 +9222,11 @@
         "computed": true,
         "type": "string"
        },
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "groups": {
         "computed": true,
         "optional": true,
@@ -9198,6 +9302,11 @@
        },
        "assume_role_policy_document": {
         "required": true,
+        "type": "string"
+       },
+       "description": {
+        "computed": true,
+        "optional": true,
         "type": "string"
        },
        "id": {
@@ -9308,6 +9417,11 @@
         "computed": true,
         "optional": true,
         "type": "bool"
+       },
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
        },
        "enable_key_rotation": {
         "computed": true,
@@ -10008,6 +10122,11 @@
         },
         "optional": true
        },
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "durable_config": {
         "computed": true,
         "nested_type": {
@@ -10396,6 +10515,11 @@
         },
         "required": true
        },
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "id": {
         "computed": true,
         "type": "string"
@@ -10625,6 +10749,11 @@
     "awscc_opensearchserverless_access_policy": {
      "block": {
       "attributes": {
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "id": {
         "computed": true,
         "type": "string"
@@ -10670,6 +10799,11 @@
         "type": "string"
        },
        "deletion_protection": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
+       "description": {
         "computed": true,
         "optional": true,
         "type": "string"
@@ -10771,6 +10905,11 @@
     "awscc_opensearchserverless_security_policy": {
      "block": {
       "attributes": {
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "id": {
         "computed": true,
         "type": "string"
@@ -12457,6 +12596,11 @@
         "computed": true,
         "type": "string"
        },
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "end_date": {
         "computed": true,
         "optional": true,
@@ -12819,6 +12963,11 @@
     "awscc_secretsmanager_secret": {
      "block": {
       "attributes": {
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "generate_secret_string": {
         "computed": true,
         "nested_type": {
@@ -13283,6 +13432,11 @@
         "optional": true,
         "type": "string"
        },
+       "description": {
+        "computed": true,
+        "optional": true,
+        "type": "string"
+       },
        "id": {
         "computed": true,
         "type": "string"
@@ -13484,6 +13638,11 @@
        },
        "arn": {
         "computed": true,
+        "type": "string"
+       },
+       "description": {
+        "computed": true,
+        "optional": true,
         "type": "string"
        },
        "id": {
