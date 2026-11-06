@@ -6,12 +6,12 @@
  *
  * An admin picks an EXISTING working configuration profile and a mode; the wizard
  * derives a matched PAIR by cloning that base:
- *   - initiating version  (<base>__pii_redacted_only | <base>__pii_both):
+ *   - initiating profile  (<base>__pii_stop | <base>__pii_go):
  *       a copy of the base + a `preprocessing` block (mode, model, redaction,
  *       companion pointer) and this feature's preprocessing.preHook entry.
- *   - companion version   (<base>__standard):
+ *   - companion profile   (<base>__pii_target):
  *       a copy of the base with NO preprocessing block/hook — the redacted copy
- *       is processed under this version.
+ *       is processed under this profile.
  *
  * Both are written NON-ACTIVE via the host updateConfiguration mutation. The
  * admin then activates the initiating version (optionally in one click here).

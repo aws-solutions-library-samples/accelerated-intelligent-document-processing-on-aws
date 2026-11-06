@@ -2224,21 +2224,21 @@ process under that revision
 # Attempt 1: upload, then process under the revision it printed (here r1)
 idp-cli config-upload --stack-name my-stack --config-file ./attempt-1.yaml \
     --config-profile tuning --revision-notes "baseline prompts"
-idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id config-v1 \
+idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id tuning-r1 \
     --config-profile tuning --config-revision 1 --monitor
 
 # Download and analyze results
-idp-cli download-results --stack-name my-stack --batch-id config-v1 --output-dir ./results-v1/
+idp-cli download-results --stack-name my-stack --batch-id tuning-r1 --output-dir ./results-r1/
 
 # Attempt 2: upload the change to the same profile, then process under its revision (here r2)
 idp-cli config-upload --stack-name my-stack --config-file ./attempt-2.yaml \
     --config-profile tuning --revision-notes "improved extraction prompt"
-idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id config-v2 \
+idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id tuning-r2 \
     --config-profile tuning --config-revision 2 --monitor
 
 # Compare in Athena
 # SELECT batch_id, AVG(overall_accuracy) FROM evaluation_results 
-# WHERE batch_id IN ('config-v1', 'config-v2') GROUP BY batch_id;
+# WHERE batch_id IN ('tuning-r1', 'tuning-r2') GROUP BY batch_id;
 ```
 
 ### Large-Scale Batch Processing

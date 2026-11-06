@@ -17,7 +17,7 @@ description: |
   stored results operate only on de-identified content. (The detection pass
   itself uses a Bedrock model, which does see the original.) A preprocessing
   hook writes a de-identified copy of each source document and re-submits it
-  under a companion config version.
+  under a companion configuration profile.
 
   EXPERIMENTAL and unproven — validate the output yourself; not a sole PII
   control. Feedback welcome via GitHub issues.
@@ -42,7 +42,7 @@ ui:
       argv: ["npm", "run", "build"]
 # Minimal preset carrying the `preprocessing` section defaults + hook entry
 # (hook ARN injected at install by the ui-deployer). Installed NON-ACTIVE as
-# `pii-anonymizer-v<version>`. The in-UI Config Pairing wizard is the primary
+# the `pii-anonymizer` profile (each release is a new revision of it). The in-UI Config Pairing wizard is the primary
 # path (clones an admin's existing working config into a matched pair).
 configPreset:
   path: config-preset/pii-preprocessing.yaml

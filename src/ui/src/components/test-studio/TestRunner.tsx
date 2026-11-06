@@ -280,9 +280,9 @@ const TestRunner = ({
               //
               //   1. `configVersion` declared ON the test set record. Lets a test
               //      set name its own config explicitly — required for test sets
-              //      deployed by an extension, whose config presets are named
-              //      `<featureId>-v<version>` by the Feature Platform and so can
-              //      never equal the test set id.
+              //      deployed by an extension, whose preset profiles the Feature
+              //      Platform names after the feature id, which need not equal
+              //      the test set id.
               //   2. A configuration profile whose name EQUALS the test set id. The
               //      convention the stack-managed benchmark sets rely on
               //      (e.g. "fake-w2", "docsplit").
