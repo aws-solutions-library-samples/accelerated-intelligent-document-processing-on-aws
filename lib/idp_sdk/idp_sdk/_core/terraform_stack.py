@@ -147,7 +147,14 @@ def _serve(op: str, params: dict[str, Any], region: str) -> dict[str, Any] | Non
     stack = params.get("StackName")
     if not stack:
         return None
-    node, is_root = _node_for(region, str(stack))
+    stack = str(stack)
+    if op == "DescribeStacks":
+        # Only a synthetic nested stack is answered here; the label stack and
+        # every CloudFormation stack are real, so do not look the root up.
+        known = (region, stack) in _nested
+        if not (known or (stack.startswith("arn:") and stack.endswith("/terraform"))):
+            return None
+    node, is_root = _node_for(region, stack)
     if node is None:
         return None
     if op == "DescribeStacks":

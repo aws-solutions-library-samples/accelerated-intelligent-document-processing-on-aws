@@ -140,3 +140,37 @@ def test_terraform_description_marker():
     )
     assert not ts.is_terraform_stack("AWS GenAI IDP Accelerator (SO9027) (v0.6.13)")
     assert not ts.is_terraform_stack(None)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("action", ["deploy", "delete"])
+def test_deploy_and_delete_refuse_a_terraform_labelled_stack(monkeypatch, action):
+    from idp_sdk._core.stack import StackDeployer
+
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+    monkeypatch.setenv(
+        "AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    )
+    deployer = StackDeployer(region=REGION)
+    stub = Stubber(deployer.cfn)
+    stub.add_response(
+        "describe_stacks",
+        {
+            "Stacks": [
+                {
+                    "StackName": ROOT,
+                    "CreationTime": "2026-01-01T00:00:00Z",
+                    "StackStatus": "CREATE_COMPLETE",
+                    "Description": "AWS GenAI IDP Accelerator (v0.6.13) (Terraform)",
+                }
+            ]
+        },
+        {"StackName": ROOT},
+    )
+    with stub, pytest.raises(ValueError, match="Terraform deployment"):
+        if action == "deploy":
+            deployer.deploy_stack(
+                stack_name=ROOT, template_url="https://example/t.yaml"
+            )
+        else:
+            deployer.delete_stack(stack_name=ROOT)

@@ -124,7 +124,6 @@ class StackDeployer:
             Dictionary with deployment result
         """
         logger.info(f"Deploying stack: {stack_name}")
-        self._refuse_terraform_stack(stack_name, "deploy")
 
         if not template_path and not template_url:
             raise ValueError("Either template_path or template_url must be provided")
@@ -150,7 +149,7 @@ class StackDeployer:
                 template_param = {"TemplateBody": template_body}
 
         # Check if stack exists
-        stack_exists = self._stack_exists(stack_name)
+        stack_exists = self._stack_exists(stack_name, action="deploy")
 
         # Build CloudFormation parameters based on operation type
         if stack_exists:
@@ -297,24 +296,6 @@ class StackDeployer:
             logger.error(f"Error deploying stack: {e}")
             raise
 
-    def _refuse_terraform_stack(self, stack_name: str, action: str) -> None:
-        """A Terraform deployment has a CloudFormation label stack of the same
-        name. Deploying or deleting through CloudFormation would act on the
-        label, not on the deployment, so refuse and say what to run instead."""
-        from .terraform_stack import is_terraform_stack
-
-        try:
-            stack = self.cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
-        except Exception:  # noqa: BLE001 - no such stack: nothing to refuse
-            return
-        if is_terraform_stack(stack.get("Description")):
-            verb = "terraform apply" if action == "deploy" else "terraform destroy"
-            raise ValueError(
-                f"{stack_name} is a Terraform deployment. Its CloudFormation stack "
-                f"is only a label, so `idp-cli {action}` cannot manage it; run "
-                f"`{verb}` in the Terraform configuration that deployed it."
-            )
-
     def _read_template(self, template_path: str) -> str:
         """Read CloudFormation template file"""
         template_file = Path(template_path)
@@ -349,15 +330,33 @@ class StackDeployer:
         # Return S3 URL
         return f"https://s3.{self.region}.amazonaws.com/{bucket_name}/{s3_key}"
 
-    def _stack_exists(self, stack_name: str) -> bool:
-        """Check if stack exists"""
+    def _stack_exists(self, stack_name: str, action: Optional[str] = None) -> bool:
+        """Check if stack exists.
+
+        With ``action`` ("deploy" or "delete"), also refuse a Terraform
+        deployment: its CloudFormation stack of the same name is only a label,
+        so a CloudFormation deploy or delete would act on the label, not on the
+        deployment. The check reads the same DescribeStacks response.
+        """
         try:
-            self.cfn.describe_stacks(StackName=stack_name)
-            return True
+            response = self.cfn.describe_stacks(StackName=stack_name)
         except self.cfn.exceptions.ClientError as e:
             if "does not exist" in str(e):
                 return False
             raise
+        if action:
+            from .terraform_stack import is_terraform_stack
+
+            stacks = response.get("Stacks") or [{}]
+            if is_terraform_stack(stacks[0].get("Description")):
+                verb = "terraform apply" if action == "deploy" else "terraform destroy"
+                raise ValueError(
+                    f"{stack_name} is a Terraform deployment. Its CloudFormation "
+                    f"stack is only a label, so `idp-cli {action}` cannot manage "
+                    f"it; run `{verb}` in the Terraform configuration that "
+                    "deployed it."
+                )
+        return True
 
     def _get_stack_status(self, stack_name: str) -> Optional[str]:
         """
@@ -1016,10 +1015,9 @@ class StackDeployer:
             Dictionary with deletion result including stack_id
         """
         logger.info(f"Deleting stack: {stack_name}")
-        self._refuse_terraform_stack(stack_name, "delete")
 
         # Check if stack exists
-        if not self._stack_exists(stack_name):
+        if not self._stack_exists(stack_name, action="delete"):
             raise ValueError(f"Stack '{stack_name}' does not exist")
 
         # Get stack ID before deletion (needed for querying deleted stacks)
