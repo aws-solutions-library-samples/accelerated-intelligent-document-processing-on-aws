@@ -14,7 +14,6 @@ import hashlib
 import io
 import json
 import os
-import re
 import subprocess
 import zipfile
 from pathlib import Path
@@ -512,15 +511,19 @@ class TestRootConfig:
         _write(tmp_path)
         assert "assume_role" not in (tmp_path / "main.tf").read_text()
 
-    def test_a_role_goes_into_both_provider_blocks(self, tmp_path):
+    def test_a_role_goes_into_both_providers_in_each_ones_syntax(self, tmp_path):
+        """A block for aws, an object attribute for awscc. The real-validate
+        check of this text is scripts/tests/test_terraform_assume_role_validate.py."""
         _write(tmp_path, assume_role_arn=ROLE)
         main = (tmp_path / "main.tf").read_text()
-        for name in ("aws", "awscc"):
-            assert (
-                f'provider "{name}" {{\n  region = "us-west-2"\n  assume_role {{\n'
-                f'    role_arn = "{ROLE}"\n  }}\n}}'
-            ) in main
-        assert main.count("assume_role {") == 2
+        assert (
+            'provider "aws" {\n  region = "us-west-2"\n  assume_role {\n'
+            f'    role_arn = "{ROLE}"\n  }}\n}}'
+        ) in main
+        assert (
+            'provider "awscc" {\n  region = "us-west-2"\n  assume_role = {\n'
+            f'    role_arn = "{ROLE}"\n  }}\n}}'
+        ) in main
 
     def test_a_malformed_role_is_refused_and_writes_nothing(self, tmp_path):
         with pytest.raises(IDPConfigurationError, match="not an IAM role ARN"):
@@ -530,20 +533,37 @@ class TestRootConfig:
     def test_set_assume_role_rewrites_only_the_provider_blocks(self, tmp_path):
         _write(tmp_path)
         before = (tmp_path / "main.tf").read_text()
-        tf.set_assume_role(tmp_path / "main.tf", REGION, ROLE)
+        tf.set_assume_role(tmp_path / "main.tf", ROLE, REGION)
         after = (tmp_path / "main.tf").read_text()
+        assert after == before.replace(
+            tf.render_provider_blocks(REGION), tf.render_provider_blocks(REGION, ROLE)
+        )
         assert after.count(f'role_arn = "{ROLE}"') == 2
-        strip = lambda t: re.sub(r"  assume_role \{\n.*?\n  \}\n", "", t, flags=re.S)  # noqa: E731
-        assert strip(after) == before
         # Idempotent, and replaceable by another role.
-        tf.set_assume_role(tmp_path / "main.tf", REGION, ROLE + "2")
-        assert (tmp_path / "main.tf").read_text().count("assume_role {") == 2
-        assert f'"{ROLE}2"' in (tmp_path / "main.tf").read_text()
+        tf.set_assume_role(tmp_path / "main.tf", ROLE + "2", REGION)
+        again = (tmp_path / "main.tf").read_text()
+        assert again == before.replace(
+            tf.render_provider_blocks(REGION),
+            tf.render_provider_blocks(REGION, ROLE + "2"),
+        )
+
+    def test_set_assume_role_keeps_the_recorded_region(self, tmp_path):
+        _write(tmp_path)
+        tf.set_assume_role(tmp_path / "main.tf", ROLE)
+        main = (tmp_path / "main.tf").read_text()
+        assert main.count(f"region = {json.dumps(REGION)}") == 2
+
+    def test_set_assume_role_refuses_another_region(self, tmp_path):
+        _write(tmp_path)
+        before = (tmp_path / "main.tf").read_text()
+        with pytest.raises(IDPConfigurationError, match=f"deploys to {REGION}"):
+            tf.set_assume_role(tmp_path / "main.tf", ROLE, "eu-central-1")
+        assert (tmp_path / "main.tf").read_text() == before
 
     def test_set_assume_role_refuses_a_foreign_main_tf(self, tmp_path):
         (tmp_path / "main.tf").write_text('provider "aws" {}\n')
         with pytest.raises(IDPConfigurationError, match="not written by idp-cli"):
-            tf.set_assume_role(tmp_path / "main.tf", REGION, ROLE)
+            tf.set_assume_role(tmp_path / "main.tf", ROLE, REGION)
 
     def test_another_deployments_directory_is_refused(self, tmp_path):
         _write(tmp_path)
@@ -828,6 +848,20 @@ class TestDeleteOperation:
         client = IDPClient(stack_name="tfidp", region=REGION)
         client.stack.delete_terraform(terraform_dir=str(tmp_path), assume_role_arn=ROLE)
         assert seen == [2]
+
+    def test_a_role_with_another_region_is_refused_before_init(
+        self, monkeypatch, tmp_path
+    ):
+        self._initialised(tmp_path)
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        calls = _Calls()
+        monkeypatch.setattr(tf.subprocess, "run", calls)
+        client = IDPClient(stack_name="tfidp", region="eu-central-1")
+        with pytest.raises(IDPConfigurationError, match="--region us-west-2"):
+            client.stack.delete_terraform(
+                terraform_dir=str(tmp_path), assume_role_arn=ROLE
+            )
+        assert calls.cmds == []
 
     def test_missing_directory_is_refused(self, tmp_path):
         client = IDPClient(stack_name="tfidp", region=REGION)

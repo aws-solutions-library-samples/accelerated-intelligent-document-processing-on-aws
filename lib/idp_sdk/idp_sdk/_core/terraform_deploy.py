@@ -525,13 +525,19 @@ def render_provider_blocks(region: str, assume_role_arn: Optional[str] = None) -
     """The ``aws`` and ``awscc`` provider blocks, both in ``region``, and both
     assuming ``assume_role_arn`` when it is given. The two must agree: the module
     creates resources through both, and a role on one alone splits the
-    deployment across two identities."""
+    deployment across two identities.
+
+    The two providers spell it differently, and the wrong spelling fails
+    ``validate`` with "Unsupported block type": in ``hashicorp/aws`` it is a
+    nested block (``assume_role { role_arn = ... }``), in ``hashicorp/awscc`` an
+    object attribute (``assume_role = { role_arn = ... }``).
+    """
     lines: List[str] = []
-    for name in ("aws", "awscc"):
+    for name, opener in (("aws", "  assume_role {"), ("awscc", "  assume_role = {")):
         lines.append(f'provider "{name}" {{')
         lines.append(f"  region = {json.dumps(region)}")
         if assume_role_arn:
-            lines.append("  assume_role {")
+            lines.append(opener)
             lines.append(f"    role_arn = {json.dumps(assume_role_arn)}")
             lines.append("  }")
         lines.append("}")
@@ -540,31 +546,48 @@ def render_provider_blocks(region: str, assume_role_arn: Optional[str] = None) -
 
 
 _PROVIDER_BLOCKS = re.compile(
-    r'provider "aws" \{\n.*?\n\}\n\nprovider "awscc" \{\n.*?\n\}\n\n', re.S
+    r'provider "aws" \{\n(?P<aws>.*?)\n\}\n\nprovider "awscc" \{\n.*?\n\}\n\n', re.S
 )
+_REGION_LINE = re.compile(r'^  region = ("(?:[^"\\]|\\.)*")$', re.M)
 
 
-def set_assume_role(main_tf: Path, region: str, assume_role_arn: str) -> None:
+def set_assume_role(
+    main_tf: Path, assume_role_arn: str, region: Optional[str] = None
+) -> None:
     """Rewrite the provider blocks of an idp-cli ``main.tf`` to assume a role.
 
     For ``delete --terraform``, which has no parameters to regenerate the whole
-    file from. Refuses a ``main.tf`` idp-cli did not write, or one whose provider
-    blocks are not in the shape :func:`render_main_tf` writes.
+    file from. The region the deploy recorded in the file is kept: the state's
+    resources are in that region, and a delete pointed at another would destroy
+    nothing there. ``region``, when given, must equal it, or this refuses.
+    Refuses a ``main.tf`` idp-cli did not write, or one whose provider blocks are
+    not in the shape :func:`render_main_tf` writes.
     """
     text = main_tf.read_text()
     if ROOT_MARKER not in text:
         raise IDPConfigurationError(
-            f"{main_tf} was not written by idp-cli; add the assume_role block to "
-            "its providers yourself"
+            f"{main_tf} was not written by idp-cli; add assume_role to its "
+            "providers yourself"
         )
-    new, count = _PROVIDER_BLOCKS.subn(
-        lambda _m: render_provider_blocks(region, assume_role_arn) + "\n", text, count=1
-    )
-    if count != 1:
+    match = _PROVIDER_BLOCKS.search(text)
+    recorded = _REGION_LINE.search(match.group("aws")) if match else None
+    if not match or not recorded:
         raise IDPConfigurationError(
             f"cannot find the aws and awscc provider blocks idp-cli writes in "
-            f"{main_tf}; add the assume_role block to them yourself"
+            f"{main_tf}; add assume_role to them yourself"
         )
+    recorded_region = json.loads(recorded.group(1))
+    if region and region != recorded_region:
+        raise IDPConfigurationError(
+            f"{main_tf} deploys to {recorded_region}, not {region}; run the delete "
+            f"with --region {recorded_region}"
+        )
+    new = (
+        text[: match.start()]
+        + render_provider_blocks(recorded_region, assume_role_arn)
+        + "\n"
+        + text[match.end() :]
+    )
     main_tf.write_text(new)
 
 

@@ -404,12 +404,7 @@ class StackOperation:
 
         role = tf.check_assume_role_arn(assume_role_arn)
         if role:
-            region = self._client._region
-            if not region:
-                raise IDPConfigurationError(
-                    "a region is required to set the role a Terraform delete assumes"
-                )
-            tf.set_assume_role(directory / "main.tf", region, role)
+            tf.set_assume_role(directory / "main.tf", role, self._client._region)
         runner.init()
         manifest = tf.read_manifest_from_dir(directory)
         state = runner.show_state()

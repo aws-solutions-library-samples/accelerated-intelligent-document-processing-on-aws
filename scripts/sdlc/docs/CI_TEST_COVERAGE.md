@@ -306,15 +306,26 @@ What the build (`scripts/sdlc/codebuild_deployment.py`) does differently:
 - **Credentials.** The CloudFormation path creates the stack's resources as the
   per-run CloudFormation service role, which only CloudFormation can assume. The
   CodeBuild role itself lacks most of what the deployment creates (Cloud Control
-  among it), and it is deliberately not widened, because a merge-request button runs
-  the MR's own code under it. So the run's `-iam` pre-stack gains a sibling role,
+  among it), and those service grants are not added to it, because a merge-request
+  button runs the MR's own code under it. So the run's `-iam` pre-stack gains a
+  sibling role,
   `<stack>-iam-TFDeployRole`, built by `terraform_deploy_role_template` from the
   customer service-role template at run time: the service role's own inline policies
   by value, `cloudcontrol:*`, a Deny on changing itself, and a trust policy admitting
   only the principal the build runs as. The customer template, and the service role's
   trust, are unchanged. Both providers assume that role through
-  `idp-cli deploy --terraform --terraform-assume-role-arn`, and the CodeBuild role may
-  assume only roles named `idp-*-TFDeployRole`.
+  `idp-cli deploy --terraform --terraform-assume-role-arn`. The CodeBuild role's new
+  `sts:AssumeRole` grant names only `idp-*-TFDeployRole`, but that bounds nothing:
+  the same role already holds `iam:*` on `role/idp-*`, so it could already rewrite
+  such a role's trust and assume it. The grant shortens that existing path to one
+  call; it does not contain it, and removing that `iam:*` grant is outside this
+  change.
+- **What the deploy role can create.** It carries the service role's IAM scoping,
+  so every role the module creates must be named with the managed prefix (`idp`,
+  which the CI stack names begin with) and carry the run's permissions boundary.
+  `scripts/tests/test_terraform_role_names_match_deploy_role.py` translates
+  `template.yaml` offline and holds every generated `aws_iam_role` to those patterns,
+  read off the derived role.
 - **Terraform and its providers are pinned** by the offline Terraform gate's own
   installer and lock file (`scripts/terraform_check.py`,
   `scripts/terraform_binaries.lock.json`): the build installs
@@ -326,7 +337,8 @@ What the build (`scripts/sdlc/codebuild_deployment.py`) does differently:
   Terraform run with no module URL fails at publish rather than deploying the latest
   *published* module, which is not the code under test.
 - **State is durable.** Before `init`, the build writes the root configuration, an
-  S3 backend (`backend.tf`, encrypted, keyed `terraform-runs/<stack>/terraform.tfstate`
+  S3 backend (`backend.tf`, encrypted, with S3-native locking (`use_lockfile`), keyed
+  `terraform-runs/<stack>/terraform.tfstate`
   in the CI source bucket) and the provider pins, and copies them, with a
   `run.json` naming the module and the role, to that prefix. The teardown removes
   the prefix once the deployment is destroyed.
@@ -367,7 +379,14 @@ configuration and runs the same teardown as the run's deploy role. Every stack o
 run whose state is still in the bucket afterwards, its label and `-iam` pre-stack
 included, is kept by `cleanup_stale_idp_stacks`, so a failed attempt can be retried
 by the next build; if the state listing itself fails, every Terraform-labelled run is
-kept. A stale label stack with **no** state behind it (a run from before the state
+kept. A dead run's destroy is bounded by `TERRAFORM_REAP_TIMEOUT_SECONDS`, and each
+failed reap is counted beside its state (`reap-attempts.json`). A failure is fatal
+only while the run is still worth retrying: from the `TERRAFORM_REAP_MAX_ATTEMPTS`-th
+failure on, or on a destroy that times out again after a first attempt, the build
+stops retrying it and reports it, non-fatally, in the summary under "Terraform
+deployments needing a manual destroy", with the prefix and the commands to run. Its
+stacks stay kept. Without that bound, one deployment that cannot be destroyed would
+fail every later build, the CloudFormation nightlies included. A stale label stack with **no** state behind it (a run from before the state
 backend, or a prefix removed by hand) has its resource directory swept before the
 label is deleted: buckets, tables, Lambda functions and state machines are deleted,
 and every other resource it names is reported as a finding.

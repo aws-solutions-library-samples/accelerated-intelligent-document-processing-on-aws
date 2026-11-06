@@ -19,6 +19,7 @@ against it unchanged. What is pinned here, offline:
 
 from __future__ import annotations
 
+import fnmatch
 import io
 import json
 import os
@@ -913,6 +914,7 @@ def test_the_backend_is_s3_encrypted_and_keyed_by_stack(cbd, run):
     assert 'bucket  = "ci-bucket"' in text
     assert 'key     = "terraform-runs/stk/terraform.tfstate"' in text
     assert "encrypt = true" in text
+    assert "use_lockfile = true" in text
 
 
 # ---------------------------------------------------------------------------
@@ -1146,11 +1148,43 @@ def test_the_derived_template_fits_a_template_body(cbd):
     assert "!Sub" not in body and "!Ref" not in body
 
 
-def test_the_codebuild_role_may_assume_only_that_role_name(cbd):
-    text = (REPO_ROOT / "scripts/sdlc/cfn/codepipeline-s3.yml").read_text()
-    block = text[text.index("Sid: AssumePerRunTerraformDeployRole") :][:400]
-    assert "sts:AssumeRole" in block
-    assert f"role/idp-*{cbd.TERRAFORM_DEPLOY_ROLE_SUFFIX}'" in block
+def test_the_codebuild_role_may_assume_the_run_role_and_no_other(cbd):
+    """Read the grant as IAM would: resolve the template's ARN pattern, then match
+    the role name the pre-stack creates for a CI run against it."""
+    template = yaml.load(
+        (REPO_ROOT / "scripts/sdlc/cfn/codepipeline-s3.yml").read_text(),
+        Loader=cbd._CfnLongFormLoader,
+    )
+    statements = [
+        statement
+        for policy in template["Resources"]["CodeBuildRole"]["Properties"]["Policies"]
+        # A conditional policy (Fn::If) is a VPC network grant, not an assume.
+        if "PolicyDocument" in policy
+        for statement in policy["PolicyDocument"]["Statement"]
+        if "sts:AssumeRole" in statement.get("Action", [])
+    ]
+    patterns = [
+        st["Resource"]["Fn::Sub"]
+        .replace("${AWS::Partition}", "aws")
+        .replace("${AWS::AccountId}", "123456789012")
+        for st in statements
+    ]
+    derived = cbd.terraform_deploy_role_template(SERVICE_ROLE_TEMPLATE.read_text())
+    role_name = derived["Resources"]["TerraformDeployRole"]["Properties"]["RoleName"][
+        "Fn::Sub"
+    ].replace("${AWS::StackName}", "idp-0101-000000-iam")
+    arn = f"arn:aws:iam::123456789012:role/{role_name}"
+
+    def allowed(candidate):
+        return any(fnmatch.fnmatchcase(candidate, p) for p in patterns)
+
+    assert allowed(arn)
+    for other in (
+        "idp-0101-000000-iam-CFServiceRole",
+        "idp-0101-000000-OCRFunctionRole-abc",
+        "admin-TFDeployRole",
+    ):
+        assert not allowed(f"arn:aws:iam::123456789012:role/{other}"), other
 
 
 @pytest.mark.parametrize(
@@ -1332,14 +1366,71 @@ def reaper(cbd, monkeypatch):
     s3.objects = {k: v for k, v in objects.items()}
     monkeypatch.setattr(cbd.boto3, "client", lambda name, **kw: s3)
     monkeypatch.setattr(cbd, "_terraform_state_bucket", lambda: "ci-bucket")
-    state = {"reaped": [], "result": []}
+    state = {"reaped": [], "result": [], "timed_out": False, "s3": s3}
 
     def _reap(stack_name, bucket, keys, s3=None):
         state["reaped"].append(stack_name)
-        return list(state["result"])
+        return {"findings": list(state["result"]), "timed_out": state["timed_out"]}
 
     monkeypatch.setattr(cbd, "_reap_terraform_run", _reap)
     return state
+
+
+ATTEMPTS = "terraform-runs/idp-0101-000000/reap-attempts.json"
+
+
+def _set_attempts(reaper, failures):
+    reaper["s3"].objects[ATTEMPTS] = json.dumps({"failures": failures}).encode()
+    # An attempt record is written later than the state, and must not make the
+    # prefix look young.
+    reaper["s3"].objects[("mtime", ATTEMPTS)] = _aged(0.1)
+
+
+def test_a_failed_reap_below_the_threshold_is_fatal_and_counted(cbd, reaper):
+    reaper["result"] = ["idp-0101-000000: destroy failed"]
+    _set_attempts(reaper, cbd.TERRAFORM_REAP_MAX_ATTEMPTS - 2)
+    abandoned = []
+    findings = cbd.cleanup_stale_terraform_deployments(set(), abandoned)
+    assert findings and abandoned == []
+    assert reaper["reaped"] == ["idp-0101-000000"]
+    recorded = json.loads(reaper["s3"].objects[ATTEMPTS])
+    assert recorded["failures"] == cbd.TERRAFORM_REAP_MAX_ATTEMPTS - 1
+
+
+def test_the_failure_that_reaches_the_threshold_is_not_fatal(cbd, reaper):
+    reaper["result"] = ["idp-0101-000000: destroy failed"]
+    _set_attempts(reaper, cbd.TERRAFORM_REAP_MAX_ATTEMPTS - 1)
+    abandoned, pending = [], set()
+    assert cbd.cleanup_stale_terraform_deployments(pending, abandoned) == []
+    (note,) = abandoned
+    assert "s3://ci-bucket/terraform-runs/idp-0101-000000/" in note
+    assert "idp-cli delete --terraform --stack-name idp-0101-000000" in note
+    assert "idp-0101-000000" in pending  # its stacks are still kept
+
+
+def test_a_run_past_the_threshold_is_not_retried(cbd, reaper):
+    _set_attempts(reaper, cbd.TERRAFORM_REAP_MAX_ATTEMPTS)
+    abandoned = []
+    assert cbd.cleanup_stale_terraform_deployments(set(), abandoned) == []
+    assert reaper["reaped"] == []
+    assert len(abandoned) == 1
+
+
+def test_a_first_timeout_is_fatal_and_a_repeated_one_is_not(cbd, reaper):
+    reaper["result"] = ["idp-0101-000000: idp-cli delete --terraform exited -1"]
+    reaper["timed_out"] = True
+    abandoned = []
+    assert cbd.cleanup_stale_terraform_deployments(set(), abandoned)
+    assert abandoned == []
+    # The first failure was recorded, so the next build's timeout is the second.
+    assert cbd.cleanup_stale_terraform_deployments(set(), abandoned) == []
+    assert len(abandoned) == 1
+
+
+def test_the_attempt_record_does_not_reset_the_age_gate(cbd, reaper):
+    _set_attempts(reaper, 1)
+    cbd.cleanup_stale_terraform_deployments(set(), [])
+    assert reaper["reaped"] == ["idp-0101-000000"]
 
 
 def test_only_a_stale_run_is_reaped_and_a_young_one_is_kept(cbd, reaper):
@@ -1377,12 +1468,66 @@ def test_the_reaper_is_a_registered_fatal_sweep_before_the_stack_sweep(cbd):
     assert row.fails_run is True
 
 
-def test_main_runs_the_reaper_first_and_hands_its_runs_to_the_stack_sweep():
-    text = (REPO_ROOT / "scripts/sdlc/codebuild_deployment.py").read_text()
-    main = text[text.index("\ndef main():") :]
-    reap = main.index("cleanup_stale_terraform_deployments(terraform_runs_left)")
-    stacks = main.index("cleanup_stale_idp_stacks(terraform_runs=terraform_runs_left)")
-    assert reap < stacks
+class _StopAfterTheSweeps(BaseException):
+    pass
+
+
+def test_main_runs_the_reaper_first_and_hands_its_runs_to_the_stack_sweep(
+    cbd, monkeypatch
+):
+    monkeypatch.setattr(cbd, "install_suite_transcript", lambda: None)
+    monkeypatch.setattr(cbd, "read_ci_run_options", lambda *a: {})
+    calls = []
+    for sweep in cbd.STARTUP_SWEEPS:
+        monkeypatch.setattr(
+            cbd,
+            sweep.func,
+            lambda *a, _n=sweep.func, **k: calls.append((_n, a, k)) or [],
+        )
+
+    def _reaper(pending, abandoned):
+        calls.append(("cleanup_stale_terraform_deployments", (pending,), {}))
+        pending.add("idp-0101-000000")
+        return []
+
+    monkeypatch.setattr(cbd, "cleanup_stale_terraform_deployments", _reaper)
+
+    def _stop(*_a, **_k):
+        raise _StopAfterTheSweeps()
+
+    monkeypatch.setattr(cbd, "publish_artifacts", _stop)
+    with pytest.raises(_StopAfterTheSweeps):
+        cbd.main()
+    names = [name for name, _, _ in calls]
+    assert names.index("cleanup_stale_terraform_deployments") < names.index(
+        "cleanup_stale_idp_stacks"
+    )
+    (_, _, kwargs) = calls[names.index("cleanup_stale_idp_stacks")]
+    assert kwargs == {"terraform_runs": {"idp-0101-000000"}}
+
+
+def test_a_failed_state_listing_reaches_the_stack_sweep_as_unknown(cbd, monkeypatch):
+    monkeypatch.setattr(cbd, "install_suite_transcript", lambda: None)
+    monkeypatch.setattr(cbd, "read_ci_run_options", lambda *a: {})
+    seen = {}
+    for sweep in cbd.STARTUP_SWEEPS:
+        monkeypatch.setattr(cbd, sweep.func, lambda *a, **k: [])
+    monkeypatch.setattr(
+        cbd,
+        "cleanup_stale_terraform_deployments",
+        lambda p, a: ["SWEEP NOT COMPLETED: x"],
+    )
+    monkeypatch.setattr(
+        cbd, "cleanup_stale_idp_stacks", lambda **k: seen.update(k) or []
+    )
+
+    def _stop(*_a, **_k):
+        raise _StopAfterTheSweeps()
+
+    monkeypatch.setattr(cbd, "publish_artifacts", _stop)
+    with pytest.raises(_StopAfterTheSweeps):
+        cbd.main()
+    assert seen == {"terraform_runs": None}
 
 
 def test_a_dead_run_is_destroyed_from_its_saved_configuration(cbd, monkeypatch):
@@ -1403,26 +1548,38 @@ def test_a_dead_run_is_destroyed_from_its_saved_configuration(cbd, monkeypatch):
         seen["init"] = cmd
         return _Result(cmd, 0)
 
-    def _cleanup(result, terraform, iam=True):
+    def _cleanup(result, terraform, iam=True, delete_timeout=None):
         seen["files"] = sorted(p.name for p in Path(terraform.directory).iterdir())
         seen["role"], seen["iam"] = terraform.role_arn, iam
-        return []
+        seen["timeout"] = delete_timeout
+        result["delete_returncode"] = seen.get("delete_rc", 0)
+        return [] if not seen.get("delete_rc") else ["destroy failed"]
 
     monkeypatch.setattr(cbd, "run_command", _run)
     monkeypatch.setattr(cbd, "cleanup_terraform_deployment", _cleanup)
     keys = [k for k in s3.objects if isinstance(k, str)]
-    assert cbd._reap_terraform_run("stk", "ci-bucket", keys, s3=s3) == []
+    assert cbd._reap_terraform_run("stk", "ci-bucket", keys, s3=s3) == {
+        "findings": [],
+        "timed_out": False,
+    }
     assert seen["files"] == ["main.tf", "terraform.tfvars"]
     assert seen["role"] == TF_ROLE_ARN and seen["iam"] is False
     assert " init " in seen["init"]
+    # The destroy is bounded well under the build budget.
+    assert seen["timeout"] == cbd.TERRAFORM_REAP_TIMEOUT_SECONDS
+    assert cbd.TERRAFORM_REAP_TIMEOUT_SECONDS <= 45 * 60
+    # A destroy killed at that bound (run_command's -1) is reported as a timeout.
+    seen["delete_rc"] = -1
+    outcome = cbd._reap_terraform_run("stk", "ci-bucket", keys, s3=s3)
+    assert outcome["timed_out"] is True and outcome["findings"]
 
 
 def test_a_dead_run_without_its_configuration_is_a_finding(cbd):
     s3 = _FakeS3({"terraform-runs/stk/terraform.tfstate": b"{}"})
-    findings = cbd._reap_terraform_run(
+    outcome = cbd._reap_terraform_run(
         "stk", "ci-bucket", ["terraform-runs/stk/terraform.tfstate"], s3=s3
     )
-    assert findings and "no main.tf" in findings[0]
+    assert outcome["findings"] and "no main.tf" in outcome["findings"][0]
 
 
 class _StackListing:

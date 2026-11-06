@@ -4471,6 +4471,19 @@ TERRAFORM_RUN_RECORD = "run.json"
 #: the deployment without this build's work directory.
 TERRAFORM_ROOT_FILES = ("main.tf", "terraform.tfvars", "backend.tf")
 TERRAFORM_BACKEND_FILE = "backend.tf"
+#: Beside the state: how many times the startup reaper has failed to destroy
+#: this run. Not counted toward the prefix's age, so recording an attempt does
+#: not reset the age gate.
+TERRAFORM_REAP_ATTEMPTS_KEY = "reap-attempts.json"
+#: Failed reaps of one run after which the reaper stops failing builds over it
+#: and reports it, non-fatally, for a person to destroy by hand. Every build runs
+#: the reaper, so without this one undestroyable deployment would fail every
+#: later build, the CloudFormation nightlies included.
+TERRAFORM_REAP_MAX_ATTEMPTS = 3
+#: The reaper's bound on one dead run's destroy, well under the 180-minute build
+#: budget so a stuck destroy cannot take a build's own suite with it. A destroy
+#: that times out again after a first attempt is reported, not fatal.
+TERRAFORM_REAP_TIMEOUT_SECONDS = 30 * 60
 
 #: The marker every Terraform label stack's description carries
 #: (idp_common.utils.terraform_stack.TERRAFORM_SUFFIX, not imported here because
@@ -4663,6 +4676,10 @@ def render_terraform_backend(bucket: str, key: str, region: str) -> str:
             f"    key     = {json.dumps(key)}",
             f"    region  = {json.dumps(region)}",
             "    encrypt = true",
+            # S3-native state locking (Terraform 1.10 and later; the pinned
+            # TERRAFORM_BINARY_SPEC is newer), so the reaper of a later build and
+            # a run still destroying cannot write the same state at once.
+            "    use_lockfile = true",
             "  }",
             "}",
             "",
@@ -5303,7 +5320,7 @@ def _sweep_terraform_retained(stack_name, retained, deployer=None):
     return errors
 
 
-def cleanup_terraform_deployment(result, terraform, iam=True):
+def cleanup_terraform_deployment(result, terraform, iam=True, delete_timeout=3 * 3600):
     """Destroy this run's Terraform deployment, its retained resources, then IAM.
 
     Returns findings in cleanup_stack's sense: empty means verified. Unlike the
@@ -5337,9 +5354,11 @@ def cleanup_terraform_deployment(result, terraform, iam=True):
     delete = run_command(
         build_terraform_delete_command(stack_name, terraform),
         check=False,
-        timeout=3 * 3600,
+        timeout=delete_timeout,
     )
     _write_terraform_log(terraform.directory, TERRAFORM_DELETE_LOG, delete)
+    # run_command reports a timeout as returncode -1; the reaper reads this.
+    result["delete_returncode"] = delete.returncode
     destroyed = delete.returncode == 0
     if not destroyed:
         findings.append(
@@ -5397,6 +5416,8 @@ def _terraform_state_listing(bucket, s3=None):
                 continue
             run = runs.setdefault(stack_name, {"keys": [], "newest": None})
             run["keys"].append(item["Key"])
+            if name == TERRAFORM_REAP_ATTEMPTS_KEY:
+                continue
             modified = item.get("LastModified")
             if modified and (run["newest"] is None or modified > run["newest"]):
                 run["newest"] = modified
@@ -5408,8 +5429,10 @@ def _reap_terraform_run(stack_name, bucket, keys, s3=None):
 
     Downloads the root configuration beside the state into a scratch directory,
     then does what this run's own teardown does: read the retained list, run
-    `idp-cli delete --terraform` as the run's deploy role, sweep what it retained,
-    and remove the prefix. Returns findings; empty means destroyed.
+    `idp-cli delete --terraform` as the run's deploy role (bounded by
+    TERRAFORM_REAP_TIMEOUT_SECONDS), sweep what it retained, and remove the
+    prefix. Returns ``{"findings": [...], "timed_out": bool}``; no findings
+    means destroyed.
     """
     client = s3 or boto3.client("s3", config=_THROTTLE_RETRY_CONFIG)
     prefix = f"{TERRAFORM_STATE_PREFIX}{stack_name}/"
@@ -5417,7 +5440,10 @@ def _reap_terraform_run(stack_name, bucket, keys, s3=None):
         record = {}
         for key in keys:
             name = key[len(prefix) :]
-            if name == TERRAFORM_STATE_KEY or "/" in name:
+            if (
+                name in (TERRAFORM_STATE_KEY, TERRAFORM_REAP_ATTEMPTS_KEY)
+                or "/" in name
+            ):
                 continue
             body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
             if name == TERRAFORM_RUN_RECORD:
@@ -5425,10 +5451,14 @@ def _reap_terraform_run(stack_name, bucket, keys, s3=None):
             else:
                 Path(tmp, name).write_bytes(body)
         if not Path(tmp, "main.tf").is_file():
-            return [
-                f"{stack_name}: state in s3://{bucket}/{prefix} has no main.tf "
-                "beside it, so it cannot be destroyed from there; destroy it by hand"
-            ]
+            return {
+                "findings": [
+                    f"{stack_name}: state in s3://{bucket}/{prefix} has no main.tf "
+                    "beside it, so it cannot be destroyed from there; destroy it "
+                    "by hand"
+                ],
+                "timed_out": False,
+            }
         terraform = TerraformRun(
             module_url=record.get("module_url", ""),
             directory=tmp,
@@ -5442,14 +5472,74 @@ def _reap_terraform_run(stack_name, bucket, keys, s3=None):
             timeout=1800,
         )
         if init.returncode != 0:
-            return [f"{stack_name}: terraform init from the saved state failed"]
+            return {
+                "findings": [
+                    f"{stack_name}: terraform init from the saved state failed"
+                ],
+                "timed_out": init.returncode == -1,
+            }
+        outcome = {"stack_name": stack_name}
         findings = cleanup_terraform_deployment(
-            {"stack_name": stack_name}, terraform, iam=False
+            outcome,
+            terraform,
+            iam=False,
+            delete_timeout=TERRAFORM_REAP_TIMEOUT_SECONDS,
         )
-        return [f"{stack_name}: {f}" for f in findings]
+        return {
+            "findings": [f"{stack_name}: {f}" for f in findings],
+            "timed_out": outcome.get("delete_returncode") == -1,
+        }
 
 
-def cleanup_stale_terraform_deployments(pending: set | None = None):
+def _reap_attempts(client, bucket, prefix, keys):
+    """The failed-reap count recorded beside a run's state, 0 when none."""
+    key = prefix + TERRAFORM_REAP_ATTEMPTS_KEY
+    if key not in keys:
+        return 0
+    try:
+        body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+        return int(json.loads(body).get("failures", 0))
+    except Exception:  # noqa: BLE001
+        # Unreadable counts as one: retried, and still bounded.
+        return 1
+
+
+def _record_reap_failure(client, bucket, prefix, failures, findings):
+    try:
+        client.put_object(
+            Bucket=bucket,
+            Key=prefix + TERRAFORM_REAP_ATTEMPTS_KEY,
+            Body=json.dumps(
+                {
+                    "failures": failures,
+                    "last_failed_at": datetime.now(tz=timezone.utc).isoformat(),
+                    "last_findings": findings[:5],
+                },
+                indent=2,
+            ).encode(),
+            ServerSideEncryption="AES256",
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️ could not record the failed reap at s3://{bucket}/{prefix}: {e}")
+
+
+def _manual_destroy_note(stack_name, bucket, failures):
+    prefix = f"{TERRAFORM_STATE_PREFIX}{stack_name}/"
+    return (
+        f"Terraform deployment {stack_name} could not be destroyed by "
+        f"{failures} reap attempt(s) and is no longer retried by builds. Its state "
+        f"and configuration are in s3://{bucket}/{prefix}. To destroy it by hand: "
+        f"`aws s3 cp --recursive s3://{bucket}/{prefix} <dir>` (then delete the "
+        f"copied terraform.tfstate and {TERRAFORM_REAP_ATTEMPTS_KEY}, since the "
+        "backend holds the state), `terraform -chdir=<dir> init`, "
+        f"`idp-cli delete --terraform --stack-name {stack_name} --terraform-dir "
+        f"<dir> --force`, then `aws s3 rm --recursive s3://{bucket}/{prefix}`."
+    )
+
+
+def cleanup_stale_terraform_deployments(
+    pending: set | None = None, abandoned: list | None = None
+):
     """Destroy Terraform deployments a dead build left behind (Step 0 sweep).
 
     A Terraform run keeps its state, and the configuration that state belongs
@@ -5467,6 +5557,14 @@ def cleanup_stale_terraform_deployments(pending: set | None = None):
 
     Runs before the stack sweep, because the label stack and the deploy role are
     what this needs. Returns findings in the Step 0 contract.
+
+    A failed reap is fatal only while it is still worth retrying: each failure is
+    counted beside the state (TERRAFORM_REAP_ATTEMPTS_KEY), and from the
+    TERRAFORM_REAP_MAX_ATTEMPTS-th on, or on a destroy that times out again after
+    a first attempt, the run goes to ``abandoned`` instead: a note naming the
+    prefix and the commands to run by hand, which main() prints and puts in the
+    summary without failing the build. The run's stacks stay kept, so a person
+    still has what the destroy needs.
     """
     print("🧹 Destroying Terraform deployments left by dead builds...")
     try:
@@ -5492,15 +5590,38 @@ def cleanup_stale_terraform_deployments(pending: set | None = None):
                 f"  [{stack_name}] state younger than the age gate — may be in flight"
             )
             continue
+        client = boto3.client("s3", config=_THROTTLE_RETRY_CONFIG)
+        prefix = f"{TERRAFORM_STATE_PREFIX}{stack_name}/"
+        prior = _reap_attempts(client, bucket, prefix, run["keys"])
+        if prior >= TERRAFORM_REAP_MAX_ATTEMPTS:
+            note = _manual_destroy_note(stack_name, bucket, prior)
+            print(f"⚠️ {note}")
+            if abandoned is not None:
+                abandoned.append(note)
+            continue
         print(f"[{stack_name}] destroying a dead run's Terraform deployment...")
         try:
-            run_findings = _reap_terraform_run(stack_name, bucket, run["keys"])
+            outcome = _reap_terraform_run(stack_name, bucket, run["keys"])
         except Exception as e:  # noqa: BLE001
-            run_findings = [f"{stack_name}: reap failed: {e}"]
-        if run_findings:
-            findings.extend(run_findings)
-        elif pending is not None:
-            pending.discard(stack_name)
+            outcome = {
+                "findings": [f"{stack_name}: reap failed: {e}"],
+                "timed_out": False,
+            }
+        if not outcome["findings"]:
+            if pending is not None:
+                pending.discard(stack_name)
+            continue
+        failures = prior + 1
+        _record_reap_failure(client, bucket, prefix, failures, outcome["findings"])
+        if failures >= TERRAFORM_REAP_MAX_ATTEMPTS or (
+            outcome["timed_out"] and prior >= 1
+        ):
+            note = _manual_destroy_note(stack_name, bucket, failures)
+            print(f"⚠️ {note}")
+            if abandoned is not None:
+                abandoned.append(note)
+        else:
+            findings.extend(outcome["findings"])
     _report_age_unestablishable(
         age_unestablishable,
         "the age gate cannot be satisfied, and this path runs terraform destroy on "
@@ -11220,7 +11341,10 @@ def main():
     # run whose state is still in the bucket afterwards. None when the listing
     # failed, which the stack sweep reads as "keep every Terraform-labelled run".
     terraform_runs_left: set | None = set()
-    terraform_sweep_findings = cleanup_stale_terraform_deployments(terraform_runs_left)
+    terraform_reaps_abandoned: list[str] = []
+    terraform_sweep_findings = cleanup_stale_terraform_deployments(
+        terraform_runs_left, terraform_reaps_abandoned
+    )
     if terraform_sweep_findings and not terraform_runs_left:
         terraform_runs_left = None
     stale_stack_findings = cleanup_stale_idp_stacks(terraform_runs=terraform_runs_left)
@@ -11638,6 +11762,12 @@ def main():
         ux_nightly_update=ux_nightly_outcome,
     )
     consolidated = label_ci_run(consolidated)
+    if terraform_reaps_abandoned:
+        # Not fatal by design (TERRAFORM_REAP_MAX_ATTEMPTS), so it is said here,
+        # in the summary every reader gets, rather than only in the build log.
+        consolidated += "\n\n⚠️ TERRAFORM DEPLOYMENTS NEEDING A MANUAL DESTROY\n" + (
+            "\n".join(f"• {note}" for note in terraform_reaps_abandoned)
+        )
     print(f"\n{consolidated}\n")
 
     print("\n🤖 Generating deployment summary with Bedrock...")

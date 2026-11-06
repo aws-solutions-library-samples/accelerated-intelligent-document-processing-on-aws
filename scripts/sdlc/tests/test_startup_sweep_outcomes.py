@@ -530,7 +530,7 @@ def _install(
 
     def _reap_terraform_run(name, _bucket, _keys, s3=None):
         aws.deleted.append(name)
-        return []
+        return {"findings": [], "timed_out": False}
 
     monkeypatch.setattr(cbd, "delete_apigw_test_vpc", _reap_vpc)
     monkeypatch.setattr(cbd, "_reap_terraform_run", _reap_terraform_run)
