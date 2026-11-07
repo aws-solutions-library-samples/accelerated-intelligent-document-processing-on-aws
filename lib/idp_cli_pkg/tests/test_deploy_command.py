@@ -1946,6 +1946,7 @@ class TestTheCommandSurface:
             "terraform_module_url",
             "terraform_dir",
             "terraform_bin",
+            "terraform_assume_role_arn",
             "terraform_allow_replace_retained",
         }
 

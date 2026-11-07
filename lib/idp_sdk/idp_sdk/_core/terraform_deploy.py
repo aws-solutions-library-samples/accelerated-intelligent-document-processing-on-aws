@@ -532,17 +532,105 @@ def parse_tfvars(text: str) -> Dict[str, Any]:
     return out
 
 
+_ROLE_ARN = re.compile(r"^arn:[a-z0-9-]+:iam::\d{12}:role/[\w+=,.@/-]+$")
+
+
+def check_assume_role_arn(role_arn: Optional[str]) -> Optional[str]:
+    """``role_arn`` if it is an IAM role ARN (or empty), else refuse it."""
+    if not role_arn:
+        return None
+    if not _ROLE_ARN.match(role_arn):
+        raise IDPConfigurationError(
+            f"--terraform-assume-role-arn {role_arn!r} is not an IAM role ARN "
+            "(arn:<partition>:iam::<account>:role/<name>)"
+        )
+    return role_arn
+
+
+def render_provider_blocks(region: str, assume_role_arn: Optional[str] = None) -> str:
+    """The ``aws`` and ``awscc`` provider blocks, both in ``region``, and both
+    assuming ``assume_role_arn`` when it is given. The two must agree: the module
+    creates resources through both, and a role on one alone splits the
+    deployment across two identities.
+
+    The two providers spell it differently, and the wrong spelling fails
+    ``validate`` with "Unsupported block type": in ``hashicorp/aws`` it is a
+    nested block (``assume_role { role_arn = ... }``), in ``hashicorp/awscc`` an
+    object attribute (``assume_role = { role_arn = ... }``).
+    """
+    lines: List[str] = []
+    for name, opener in (("aws", "  assume_role {"), ("awscc", "  assume_role = {")):
+        lines.append(f'provider "{name}" {{')
+        lines.append(f"  region = {json.dumps(region)}")
+        if assume_role_arn:
+            lines.append(opener)
+            lines.append(f"    role_arn = {json.dumps(assume_role_arn)}")
+            lines.append("  }")
+        lines.append("}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+_PROVIDER_BLOCKS = re.compile(
+    r'provider "aws" \{\n(?P<aws>.*?)\n\}\n\nprovider "awscc" \{\n.*?\n\}\n\n', re.S
+)
+_REGION_LINE = re.compile(r'^  region = ("(?:[^"\\]|\\.)*")$', re.M)
+
+
+def set_assume_role(
+    main_tf: Path, assume_role_arn: str, region: Optional[str] = None
+) -> None:
+    """Rewrite the provider blocks of an idp-cli ``main.tf`` to assume a role.
+
+    For ``delete --terraform``, which has no parameters to regenerate the whole
+    file from. The region the deploy recorded in the file is kept: the state's
+    resources are in that region, and a delete pointed at another would destroy
+    nothing there. ``region``, when given, must equal it, or this refuses.
+    Refuses a ``main.tf`` idp-cli did not write, or one whose provider blocks are
+    not in the shape :func:`render_main_tf` writes.
+    """
+    text = main_tf.read_text()
+    if ROOT_MARKER not in text:
+        raise IDPConfigurationError(
+            f"{main_tf} was not written by idp-cli; add assume_role to its "
+            "providers yourself"
+        )
+    match = _PROVIDER_BLOCKS.search(text)
+    recorded = _REGION_LINE.search(match.group("aws")) if match else None
+    if not match or not recorded:
+        raise IDPConfigurationError(
+            f"cannot find the aws and awscc provider blocks idp-cli writes in "
+            f"{main_tf}; add assume_role to them yourself"
+        )
+    recorded_region = json.loads(recorded.group(1))
+    if region and region != recorded_region:
+        raise IDPConfigurationError(
+            f"{main_tf} deploys to {recorded_region}, not {region}; run the delete "
+            f"with --region {recorded_region}"
+        )
+    new = (
+        text[: match.start()]
+        + render_provider_blocks(recorded_region, assume_role_arn)
+        + "\n"
+        + text[match.end() :]
+    )
+    main_tf.write_text(new)
+
+
 def render_main_tf(
     region: str,
     module_url: str,
     values: Dict[str, Any],
     specs: Dict[str, Dict[str, Any]],
+    assume_role_arn: Optional[str] = None,
 ) -> str:
     """Root configuration: providers in the region and ``module "idp"``.
 
     Only variables with a value are declared and passed; every other module
     variable keeps its default. No backend block is written, so state is local
-    in the directory unless the user adds a backend in another file.
+    in the directory unless the user adds a backend in another file. With
+    ``assume_role_arn`` both providers assume that role, so Terraform creates the
+    deployment's resources as the role rather than as the caller.
     """
     source = terraform_module_source(module_url)
     blocks = [
@@ -557,14 +645,7 @@ def render_main_tf(
         "  }",
         "}",
         "",
-        'provider "aws" {',
-        f"  region = {json.dumps(region)}",
-        "}",
-        "",
-        'provider "awscc" {',
-        f"  region = {json.dumps(region)}",
-        "}",
-        "",
+        render_provider_blocks(region, assume_role_arn),
     ]
     names = sorted(values)
     for name in names:
@@ -592,8 +673,11 @@ def write_root_config(
     admin_email: Optional[str],
     parameters: Dict[str, str],
     manifest: Dict[str, Any],
+    assume_role_arn: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Write ``main.tf`` and ``terraform.tfvars`` into ``directory``.
+
+    ``assume_role_arn`` puts ``assume_role`` in both provider blocks.
 
     Refuses a ``main.tf`` that idp-cli did not write. On a later deploy the
     values from the previous ``terraform.tfvars`` are kept and the new ones
@@ -665,7 +749,11 @@ def write_root_config(
         raise IDPConfigurationError(
             "required parameter(s) have no value: " + ", ".join(missing) + hint
         )
-    main_tf.write_text(render_main_tf(region, module_url, values, specs))
+    main_tf.write_text(
+        render_main_tf(
+            region, module_url, values, specs, check_assume_role_arn(assume_role_arn)
+        )
+    )
     # The values can include NoEcho parameters.
     write_private(tfvars, render_tfvars(values))
     by_variable = {
@@ -837,6 +925,10 @@ def retained_report(state: Dict[str, Any], removed: Iterable[str]) -> Dict[str, 
     wanted = set(removed)
     for res in _state_resources(state):
         if res.get("address") not in wanted:
+            continue
+        if str(res.get("type", "")).startswith(("aws_s3_bucket_", "time_static")):
+            # A retained bucket's settings (encryption, versioning, ...) are
+            # separate Terraform resources kept with it; report the bucket once.
             continue
         vals = res.get("values") or {}
         physical = next((vals[a] for a in _PHYSICAL_ATTRS if vals.get(a)), None)

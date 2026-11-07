@@ -261,6 +261,7 @@ class StackOperation:
         pointer_url: Optional[str] = None,
         terraform_dir: Optional[str] = None,
         terraform_bin: str = "terraform",
+        assume_role_arn: Optional[str] = None,
         allow_replace_retained: bool = False,
     ) -> StackDeploymentResult:
         """Deploy or update the accelerator with Terraform (or OpenTofu).
@@ -289,6 +290,11 @@ class StackOperation:
             pointer_url: URL of an ``idp-terraform-latest.json`` pointer.
             terraform_dir: Root configuration directory.
             terraform_bin: ``terraform``, ``tofu`` or a path to either.
+            assume_role_arn: An IAM role both providers assume (written into
+                each provider block of ``main.tf``, in that provider's own
+                ``assume_role`` syntax), so the resources are created as that
+                role rather than as the caller. The caller needs
+                ``sts:AssumeRole`` on it.
             allow_replace_retained: Apply even when the plan deletes or
                 replaces a retained resource (its data is lost).
 
@@ -348,6 +354,7 @@ class StackOperation:
             admin_email=admin_email,
             parameters=parameters or {},
             manifest=manifest,
+            assume_role_arn=assume_role_arn,
         )
         operation = "UPDATE" if (directory / "terraform.tfstate").exists() else "CREATE"
         runner.init(upgrade=tf.needs_upgrade(directory, module_url))
@@ -388,6 +395,7 @@ class StackOperation:
         *,
         terraform_dir: Optional[str] = None,
         terraform_bin: str = "terraform",
+        assume_role_arn: Optional[str] = None,
     ) -> StackDeletionResult:
         """Destroy a Terraform deployment, keeping what CloudFormation retains.
 
@@ -396,6 +404,10 @@ class StackOperation:
         with the helper the CloudFormation delete uses; removes every address in
         the module's ``retainedAddresses`` (as ``module.idp.<address>``) from
         the state, skipping any not in it; then runs ``destroy -auto-approve``.
+
+        With ``assume_role_arn``, the provider blocks of the idp-cli ``main.tf``
+        in the directory are rewritten to assume that role first; without it
+        they are left as the deploy wrote them.
 
         Returns:
             StackDeletionResult whose ``retained_resources`` lists what was left,
@@ -426,6 +438,9 @@ class StackOperation:
                     f"{directory} holds the deployment {recorded!r}, not {name!r}"
                 )
 
+        role = tf.check_assume_role_arn(assume_role_arn)
+        if role:
+            tf.set_assume_role(directory / "main.tf", role, self._client._region)
         # Plain init: the module and providers are the ones the deployment was
         # applied with, recorded in the lock file; nothing should float here.
         runner.init()

@@ -403,6 +403,7 @@ class TestParameterMapping:
 # --------------------------------------------------------------------------------------
 
 MODULE_URL = f"https://s3.us-west-2.amazonaws.com/{BUCKET}/p/1/terraform/m.zip"
+ROLE = "arn:aws:iam::123456789012:role/idp-tf-deployer"
 
 
 def _write(directory, **kw):
@@ -505,6 +506,64 @@ class TestRootConfig:
         with pytest.raises(IDPConfigurationError, match="Bogus"):
             _write(tmp_path, parameters={"Bogus": "1"})
         assert not (tmp_path / "main.tf").exists()
+
+    def test_no_role_writes_no_assume_role_block(self, tmp_path):
+        _write(tmp_path)
+        assert "assume_role" not in (tmp_path / "main.tf").read_text()
+
+    def test_a_role_goes_into_both_providers_in_each_ones_syntax(self, tmp_path):
+        """A block for aws, an object attribute for awscc. The real-validate
+        check of this text is scripts/tests/test_terraform_assume_role_validate.py."""
+        _write(tmp_path, assume_role_arn=ROLE)
+        main = (tmp_path / "main.tf").read_text()
+        assert (
+            'provider "aws" {\n  region = "us-west-2"\n  assume_role {\n'
+            f'    role_arn = "{ROLE}"\n  }}\n}}'
+        ) in main
+        assert (
+            'provider "awscc" {\n  region = "us-west-2"\n  assume_role = {\n'
+            f'    role_arn = "{ROLE}"\n  }}\n}}'
+        ) in main
+
+    def test_a_malformed_role_is_refused_and_writes_nothing(self, tmp_path):
+        with pytest.raises(IDPConfigurationError, match="not an IAM role ARN"):
+            _write(tmp_path, assume_role_arn="arn:aws:iam::123456789012:user/x")
+        assert not (tmp_path / "main.tf").exists()
+
+    def test_set_assume_role_rewrites_only_the_provider_blocks(self, tmp_path):
+        _write(tmp_path)
+        before = (tmp_path / "main.tf").read_text()
+        tf.set_assume_role(tmp_path / "main.tf", ROLE, REGION)
+        after = (tmp_path / "main.tf").read_text()
+        assert after == before.replace(
+            tf.render_provider_blocks(REGION), tf.render_provider_blocks(REGION, ROLE)
+        )
+        assert after.count(f'role_arn = "{ROLE}"') == 2
+        # Idempotent, and replaceable by another role.
+        tf.set_assume_role(tmp_path / "main.tf", ROLE + "2", REGION)
+        again = (tmp_path / "main.tf").read_text()
+        assert again == before.replace(
+            tf.render_provider_blocks(REGION),
+            tf.render_provider_blocks(REGION, ROLE + "2"),
+        )
+
+    def test_set_assume_role_keeps_the_recorded_region(self, tmp_path):
+        _write(tmp_path)
+        tf.set_assume_role(tmp_path / "main.tf", ROLE)
+        main = (tmp_path / "main.tf").read_text()
+        assert main.count(f"region = {json.dumps(REGION)}") == 2
+
+    def test_set_assume_role_refuses_another_region(self, tmp_path):
+        _write(tmp_path)
+        before = (tmp_path / "main.tf").read_text()
+        with pytest.raises(IDPConfigurationError, match=f"deploys to {REGION}"):
+            tf.set_assume_role(tmp_path / "main.tf", ROLE, "eu-central-1")
+        assert (tmp_path / "main.tf").read_text() == before
+
+    def test_set_assume_role_refuses_a_foreign_main_tf(self, tmp_path):
+        (tmp_path / "main.tf").write_text('provider "aws" {}\n')
+        with pytest.raises(IDPConfigurationError, match="not written by idp-cli"):
+            tf.set_assume_role(tmp_path / "main.tf", ROLE, REGION)
 
     def test_another_deployments_directory_is_refused(self, tmp_path):
         _write(tmp_path)
@@ -1081,6 +1140,39 @@ class TestDeleteOperation:
             "tfidp-logging"
         ]
 
+    def test_a_role_is_written_into_main_tf_before_init(self, monkeypatch, tmp_path):
+        from idp_sdk._core.stack import StackDeployer
+
+        self._initialised(tmp_path)
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        seen = []
+
+        def _run(cmd, **kw):
+            if cmd[1:2] == ["init"]:
+                seen.append((tmp_path / "main.tf").read_text().count(ROLE))
+            out = {"show": json.dumps(STATE), "state": "\n".join(STATE_LIST)}
+            return subprocess.CompletedProcess(cmd, 0, out.get(cmd[1], ""), "")
+
+        monkeypatch.setattr(tf.subprocess, "run", _run)
+        monkeypatch.setattr(StackDeployer, "_empty_buckets", lambda self, info: None)
+        client = IDPClient(stack_name="tfidp", region=REGION)
+        client.stack.delete_terraform(terraform_dir=str(tmp_path), assume_role_arn=ROLE)
+        assert seen == [2]
+
+    def test_a_role_with_another_region_is_refused_before_init(
+        self, monkeypatch, tmp_path
+    ):
+        self._initialised(tmp_path)
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        calls = _Calls()
+        monkeypatch.setattr(tf.subprocess, "run", calls)
+        client = IDPClient(stack_name="tfidp", region="eu-central-1")
+        with pytest.raises(IDPConfigurationError, match="--region us-west-2"):
+            client.stack.delete_terraform(
+                terraform_dir=str(tmp_path), assume_role_arn=ROLE
+            )
+        assert calls.cmds == []
+
     def test_missing_directory_is_refused(self, tmp_path):
         client = IDPClient(stack_name="tfidp", region=REGION)
         with pytest.raises(IDPConfigurationError, match="no Terraform configuration"):
@@ -1383,3 +1475,38 @@ class TestFetch:
     def test_a_non_https_url_is_refused(self):
         with pytest.raises(IDPConfigurationError, match="HTTPS"):
             tf.fetch_url("http://example.com/m.zip")
+
+
+def test_a_retained_buckets_settings_are_reported_with_the_bucket_not_as_other():
+    state = {
+        "values": {
+            "root_module": {
+                "child_modules": [
+                    {
+                        "address": "module.idp",
+                        "resources": [
+                            {
+                                "address": "module.idp.aws_s3_bucket.b",
+                                "type": "aws_s3_bucket",
+                                "values": {"bucket": "stk-b-1"},
+                            },
+                            {
+                                "address": "module.idp.aws_s3_bucket_versioning.b_versioning",
+                                "type": "aws_s3_bucket_versioning",
+                                "values": {"bucket": "stk-b-1"},
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+    report = tf.retained_report(
+        state,
+        [
+            "module.idp.aws_s3_bucket.b",
+            "module.idp.aws_s3_bucket_versioning.b_versioning",
+        ],
+    )
+    assert [r["physical_id"] for r in report["s3_buckets"]] == ["stk-b-1"]
+    assert report["other"] == []
