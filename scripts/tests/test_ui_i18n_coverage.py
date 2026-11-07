@@ -256,11 +256,19 @@ def test_an_absent_toolchain_skips_off_ci_and_says_so(tmp_path, monkeypatch, cap
     _point_at(monkeypatch, tmp_path)
     calls = _fake_run(monkeypatch)
     assert MODULE.main([]) == 0
-    out = capsys.readouterr().out
-    assert "⏭️  ui-i18n-coverage SKIPPED (not a pass: run make ui-lint first)" in out
-    assert "src/ui/node_modules/@formatjs/icu-messageformat-parser is missing" in out
-    assert "✅" not in out
-    assert "source key" not in out, "a skip must not look like a report"
+    captured = capsys.readouterr()
+    assert (
+        "⏭️  ui-i18n-coverage SKIPPED (not a pass: run make ui-lint first)"
+        in captured.err
+    )
+    assert (
+        "src/ui/node_modules/@formatjs/icu-messageformat-parser is missing"
+        in captured.err
+    )
+    assert captured.out == "", (
+        "a skip must write nothing to stdout: a caller piping the report (or --json) "
+        f"must not receive a notice in its place:\n{captured.out}"
+    )
     assert calls == []
 
 

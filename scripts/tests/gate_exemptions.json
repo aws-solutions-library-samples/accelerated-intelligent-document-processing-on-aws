@@ -1171,7 +1171,7 @@
       ],
       "crossReferences": [],
       "issues": [
-        "1770"
+        1770
       ]
     },
     "scripts/run_all_tests.py::PRUNE_DIR_MARKERS": {

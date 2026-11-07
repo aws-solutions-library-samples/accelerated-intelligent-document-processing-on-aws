@@ -183,8 +183,15 @@ def main(argv: list[str] | None = None) -> int:
                 f"this to a skip."
             )
             return TOOL_ERROR
-        print(f"⏭️  {TOOL} SKIPPED (not a pass: run make ui-lint first)")
-        print(f"   {where} is missing, so no translation catalog was measured.")
+        # On stderr like every other non-report path here: a caller piping stdout for
+        # the report (or its --json form) must get nothing, not a human notice.
+        print(
+            f"⏭️  {TOOL} SKIPPED (not a pass: run make ui-lint first)", file=sys.stderr
+        )
+        print(
+            f"   {where} is missing, so no translation catalog was measured.",
+            file=sys.stderr,
+        )
         return 0
 
     return report(layout, as_json=args.json, locale=args.locale)
