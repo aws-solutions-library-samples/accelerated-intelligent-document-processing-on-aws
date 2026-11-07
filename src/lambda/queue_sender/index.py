@@ -35,6 +35,7 @@ from datetime import datetime, timedelta, timezone
 
 import boto3
 from aws_xray_sdk.core import patch_all, xray_recorder
+from botocore.exceptions import ClientError
 
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.prefix_mappings import (
@@ -240,7 +241,44 @@ class ScanVerdictBeforeIngestError(Exception):
     delays happen. Creating the row here instead would race the upload path into
     overwriting a terminal status with ``MALWARE_SCANNING``, which hangs the
     document for good.
+
+    Also raised when the row EXISTS but still describes an earlier upload of the
+    same key — a previous run's terminal state, or a gate still waiting on an
+    older version — while the verdict is for the version the bucket holds now.
+    That is the same race on a reused key: the upload event for this version has
+    not rewritten the row yet. See :func:`_handle_verdict_condition_failure`.
     """
+
+
+#: S3 error codes meaning the key holds no current object at all (deleted, or a
+#: delete marker is current). Not a transient fault: no verdict can describe the
+#: current bytes of a key that has none.
+_NO_CURRENT_OBJECT_ERROR_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
+
+
+def current_object_version(bucket: str, object_key: str, kind: str) -> str:
+    """The discriminator of the object currently stored at ``bucket/object_key``.
+
+    Returned in the same form :func:`object_version_of` gives an event, and in
+    the requested KIND (``"v"`` or ``"e"``), so it compares directly with a
+    verdict's discriminator. Building it from only the field of that kind matters:
+    a versioned bucket's ``HeadObject`` returns both a version id and an ETag, and
+    ``object_version_of`` prefers the version id, so a verdict carrying only an
+    ETag would otherwise never compare equal to the current object.
+
+    Returns ``""`` when the key has no current object. Any other failure is
+    raised to the caller, which decides what an unanswerable question means.
+    """
+    try:
+        head = s3.head_object(Bucket=bucket, Key=object_key)
+    except ClientError as e:
+        code = str(e.response.get("Error", {}).get("Code", ""))
+        if code in _NO_CURRENT_OBJECT_ERROR_CODES:
+            return ""
+        raise
+    if kind == "v":
+        return object_version_of({"versionId": head.get("VersionId")})
+    return object_version_of({"eTag": head.get("ETag")})
 
 
 def _put_metric(name: str, value: float = 1.0) -> None:
@@ -1132,7 +1170,7 @@ def handle_scan_result(event):
         if getattr(e, "error_code", "") != "ConditionalCheckFailedException":
             raise
         return _handle_verdict_condition_failure(
-            document, object_key, new_status, reason, verdict_version
+            document, bucket, object_key, new_status, reason, verdict_version
         )
 
     if new_status == Status.QUEUED:
@@ -1258,13 +1296,16 @@ def _verdict_attributes(document):
 
 
 def _handle_verdict_condition_failure(
-    document, object_key, new_status, reason, verdict_version
+    document, bucket, object_key, new_status, reason, verdict_version
 ):
-    """The compare-and-set lost. Work out which of the three reasons it was.
+    """The compare-and-set lost. Work out why: each cause needs its own response.
 
-    The condition has two clauses, so a failure has three distinct causes and they
-    call for three different responses — collapsing them would either drop a
-    verdict that should be retried or re-apply one that should be ignored.
+    No row yet, or a row still describing an earlier upload while the verdict is
+    for the object the bucket holds now: retried. A verdict for an object the key
+    no longer holds: discarded as superseded. A row that has left the gate for
+    this same upload: a duplicate, or a refusal that must still be applied.
+    Collapsing any of these would either drop a verdict that should be retried or
+    re-apply one that should be ignored.
     """
     existing = None
     try:
@@ -1282,23 +1323,85 @@ def _handle_verdict_condition_failure(
     current = getattr(existing.status, "value", existing.status)
     stored_version = existing.malware_scan_version_id or ""
 
-    # SUPERSEDED: the row is still waiting, but for a different upload. Dropped
-    # deliberately — this verdict describes bytes that are no longer in the
-    # bucket, and applying it would admit or refuse the wrong ones. The document
-    # keeps waiting for the verdict belonging to the version actually stored, and
-    # the unapplied-verdict alarm covers the case where that never arrives.
+    # A VERSION MISMATCH: the row describes a different upload of this key than
+    # the verdict does. That alone does not say which of the two is stale, and
+    # assuming the verdict is would be wrong on a reused key: the verdict for a
+    # NEW upload can arrive before that upload's own Object Created event has
+    # rewritten the row, so the row still holds the previous run's terminal state,
+    # or a gate still waiting on an older version. Discarding the verdict then
+    # strands the document, because once the upload event lands and parks the row
+    # at MALWARE_SCANNING for the new version, no further verdict for it is coming.
+    #
+    # So the bucket is asked which version is current, and that decides it:
+    #
+    #   * verdict == current: the ROW is stale. Raise, so the verdict is
+    #     re-delivered once the upload event has caught up, exactly as when no
+    #     row exists at all. This holds whatever status the stale row is in.
+    #   * verdict != current: the verdict is genuinely superseded — it describes
+    #     bytes the key no longer holds — and is discarded. This covers a
+    #     terminal row too: a refusal for bytes that neither the row nor the
+    #     bucket holds has nothing to refuse, and a clean one nothing to admit.
+    #
+    # Only reached when the two discriminators are comparable and differ, so the
+    # true at-least-once duplicate (same version, already applied) and the
+    # kind-mismatch fallback both keep the paths below.
     if (
-        current == Status.MALWARE_SCANNING.value
-        and version_kinds_are_comparable(verdict_version, stored_version)
+        version_kinds_are_comparable(verdict_version, stored_version)
         and stored_version != verdict_version
     ):
+        try:
+            current_version = current_object_version(
+                bucket, object_key, verdict_version.split(":", 1)[0]
+            )
+        except Exception:
+            # ⚠️ Raised, not discarded. If the bucket cannot be asked, this
+            # verdict may be the only one the current upload will ever get, and
+            # dropping it is the permanent-stall shape this branch exists to
+            # remove; a re-delivery costs one more invocation. The
+            # opposite failure — re-delivering a verdict that really was
+            # superseded — is bounded by the retry budget and ends in the
+            # verdict dead-letter path, which is visible.
+            logger.error(
+                "Could not read the current version of %s to decide whether its "
+                "malware verdict (version %r, row holds %r) is current; raising "
+                "so it is re-delivered rather than dropped",
+                object_key,
+                verdict_version,
+                stored_version,
+                exc_info=True,
+            )
+            raise
+        if current_version == verdict_version:
+            logger.warning(
+                "Malware verdict for %s describes the current version %r, but the "
+                "row still holds version %r (status %s): the upload event for "
+                "this version has not landed yet. Raising so it is re-delivered.",
+                object_key,
+                verdict_version,
+                stored_version,
+                current,
+            )
+            _put_metric(METRIC_SCAN_VERDICT_BEFORE_INGEST)
+            raise ScanVerdictBeforeIngestError(
+                f"Malware verdict for {object_key} (version {verdict_version!r}) "
+                f"arrived before its upload event rewrote the document row, which "
+                f"still holds version {stored_version!r}; relying on re-delivery"
+            )
+        # SUPERSEDED: dropped deliberately — this verdict describes bytes that
+        # are no longer in the bucket, and applying it would admit or refuse the
+        # wrong ones. The document keeps waiting for the verdict belonging to the
+        # version actually stored, and the unapplied-verdict alarm covers the
+        # case where that never arrives.
         logger.warning(
             "Superseded malware verdict for %s: it describes version %r but the "
-            "document is now waiting on version %r (the key was re-uploaded). "
-            "Discarding it; the newer upload's own verdict decides.",
+            "key now holds version %r and the document row version %r (status "
+            "%s; the key was re-uploaded). Discarding it; the newer upload's own "
+            "verdict decides.",
             object_key,
             verdict_version,
+            current_version or "<none>",
             stored_version,
+            current,
         )
         _put_metric(METRIC_SCAN_VERDICT_SUPERSEDED)
         return {

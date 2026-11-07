@@ -1611,7 +1611,7 @@ class TestSameKeyReuploadRace:
             patch.object(index, "sns") as mock_sns,
             patch.object(index, "cloudwatch") as mock_cw,
             patch.object(index, "document_service") as mock_doc_service,
-            patch.object(index, "s3"),
+            patch.object(index, "s3") as mock_s3,
             patch.object(
                 index,
                 "malware_policy_for",
@@ -1620,6 +1620,12 @@ class TestSameKeyReuploadRace:
             patch.object(index, "job_service", MagicMock()),
             patch.object(index.xray_recorder, "current_segment", return_value=None),
         ):
+            # The bucket holds the version the row is waiting on, which is what
+            # makes the verdict superseded rather than early. The opposite case
+            # is TestReusedKeyVerdictOrdering.
+            mock_s3.head_object.return_value = {
+                "VersionId": stored_version.split(":", 1)[1]
+            }
             # A new object per call: the handler mutates the document it loaded,
             # and DynamoDB would not hand back that mutation on a re-read.
             mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
@@ -1677,7 +1683,7 @@ class TestSameKeyReuploadRace:
             patch.object(index, "sns") as mock_sns,
             patch.object(index, "cloudwatch"),
             patch.object(index, "document_service") as mock_doc_service,
-            patch.object(index, "s3"),
+            patch.object(index, "s3") as mock_s3,
             patch.object(
                 index,
                 "malware_policy_for",
@@ -1686,6 +1692,8 @@ class TestSameKeyReuploadRace:
             patch.object(index, "job_service", MagicMock()),
             patch.object(index.xray_recorder, "current_segment", return_value=None),
         ):
+            # The bucket holds v2, the clean replacement.
+            mock_s3.head_object.return_value = {"VersionId": "v2"}
             mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
             mock_doc_service.update_document_status.side_effect = (
                 ConditionalCheckFailed()
@@ -2206,7 +2214,7 @@ class TestTheStallSignal:
             patch.object(index, "sns"),
             patch.object(index, "cloudwatch") as mock_cw,
             patch.object(index, "document_service") as mock_doc_service,
-            patch.object(index, "s3"),
+            patch.object(index, "s3") as mock_s3,
             patch.object(
                 index,
                 "malware_policy_for",
@@ -2215,6 +2223,8 @@ class TestTheStallSignal:
             patch.object(index, "job_service", MagicMock()),
             patch.object(index.xray_recorder, "current_segment", return_value=None),
         ):
+            # The bucket holds v2, so the v1 verdict is superseded, not early.
+            mock_s3.head_object.return_value = {"VersionId": "v2"}
             mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
             mock_doc_service.update_document_status.side_effect = (
                 ConditionalCheckFailed()
@@ -3004,3 +3014,284 @@ class TestStrictTenantIsolationAtTheVerdict:
         )
         assert doc.status == Status.QUEUED
         assert store.return_value.list.call_count == 0
+
+
+class _FakeTrackingRow:
+    """One tracking-table row, with the gate's compare-and-set evaluated for real.
+
+    The verdict path's decision depends on what the row says *and* on whether the
+    conditional write holds against it, so the two are modelled together: the
+    write succeeds exactly when the row is ``MALWARE_SCANNING`` and holds the
+    verdict's version, which is the condition `handle_scan_result` sends. A test
+    can then move the row the way the upload path would (`rewrite_for_upload`)
+    and deliver the same verdict again, which is the re-delivery the fix relies on.
+    """
+
+    def __init__(self, status, version):
+        self.status = status
+        self.version = version
+        self.writes = []
+
+    def get_document(self, *_a, **_k):
+        # A new object per read, as DynamoDB would return: the handler mutates
+        # the document it loaded.
+        d = _mock_document("report.pdf")
+        d.status = self.status
+        d.malware_scan_version_id = self.version
+        return d
+
+    def update_document_status(self, key, status, **kwargs):
+        self.writes.append((key, status, kwargs))
+        values = kwargs.get("extra_attributes") or {}
+        condition = kwargs.get("condition_expression")
+        if condition:
+            if self.status != Status.MALWARE_SCANNING:
+                raise ConditionalCheckFailed()
+            if ":verdict_version" in values and values[":verdict_version"] != (
+                self.version
+            ):
+                raise ConditionalCheckFailed()
+        self.status = status
+
+    def rewrite_for_upload(self, version):
+        """What `handle_object_created` does to the row for a new upload."""
+        self.status = Status.MALWARE_SCANNING
+        self.version = version
+
+
+@pytest.mark.unit
+class TestReusedKeyVerdictOrdering:
+    """A verdict for the NEWEST upload of a reused key must not be dropped.
+
+    GuardDuty's verdict and the upload's own Object Created event reach this
+    function independently, and on a reused key the verdict can win: the row then
+    still describes an EARLIER upload — the previous run's terminal state, or a
+    gate waiting on an older version — and its version does not match the
+    verdict's. Reading that mismatch as "this verdict is stale" dropped it as a
+    duplicate or as superseded; the upload event then parked the row at
+    MALWARE_SCANNING for the new version, and no verdict for it was ever coming
+    again, so the document stayed in MALWARE_SCANNING for good.
+
+    The handler now asks the bucket which version is current. These tests run
+    that question against a real versioned bucket (moto), so the version ids and
+    the HeadObject response shape are the service's, not hand-written strings.
+    """
+
+    KEY = "report.pdf"
+    BUCKET = "test-input-bucket"
+
+    @pytest.fixture(autouse=True)
+    def versioned_bucket(self):
+        import boto3
+        from moto import mock_aws
+
+        with mock_aws():
+            client = boto3.client("s3", region_name="us-east-1")
+            client.create_bucket(Bucket=self.BUCKET)
+            client.put_bucket_versioning(
+                Bucket=self.BUCKET,
+                VersioningConfiguration={"Status": "Enabled"},
+            )
+            old = client.put_object(Bucket=self.BUCKET, Key=self.KEY, Body=b"run 1")
+            new = client.put_object(Bucket=self.BUCKET, Key=self.KEY, Body=b"run 2")
+            self.s3 = client
+            self.old_vid = old["VersionId"]
+            self.new_vid = new["VersionId"]
+            self.new_etag = new["ETag"]
+            assert self.old_vid != self.new_vid
+            yield
+
+    def _deliver(self, row, verdict_vid, result_status="NO_THREATS_FOUND", s3=None):
+        """Deliver one verdict for `verdict_vid` against `row`.
+
+        Returns ``(response, raised, mocks)``: exactly one of the first two is set,
+        so a caller asserting on one cannot silently get the other.
+        """
+        import index
+
+        threats = (
+            [{"name": "EICAR-Test-File (not a virus)"}]
+            if result_status == "THREATS_FOUND"
+            else None
+        )
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", self.BUCKET),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns") as mock_sns,
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3", s3 or self.s3),
+            patch.object(
+                index,
+                "current_object_version",
+                wraps=index.current_object_version,
+            ) as spy,
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index, "job_service", MagicMock()),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.side_effect = row.get_document
+            mock_doc_service.update_document_status.side_effect = (
+                row.update_document_status
+            )
+            event = make_scan_result_event(
+                key=self.KEY, result_status=result_status, threats=threats
+            )
+            if verdict_vid is None:
+                del event["detail"]["s3ObjectDetails"]["versionId"]
+            else:
+                event["detail"]["s3ObjectDetails"]["versionId"] = verdict_vid
+            event["detail"]["s3ObjectDetails"]["eTag"] = self.new_etag
+            response, raised = None, None
+            try:
+                response = index.handler(event, None)
+            except Exception as e:  # noqa: BLE001 - returned to the caller to assert
+                raised = e
+        metrics = str(mock_cw.put_metric_data.call_args_list)
+        return response, raised, (mock_sqs, mock_sns, metrics, spy)
+
+    # (a) ------------------------------------------------------------------------
+    def test_a_current_verdict_against_a_previous_terminal_run_is_redelivered(self):
+        """Observed live: the row still held the previous run's COMPLETED state,
+        so the new upload's clean verdict was taken as a duplicate and dropped."""
+        import index
+
+        row = _FakeTrackingRow(Status.COMPLETED, f"v:{self.old_vid}")
+        response, raised, (mock_sqs, _, metrics, spy) = self._deliver(row, self.new_vid)
+
+        assert response is None
+        assert isinstance(raised, index.ScanVerdictBeforeIngestError)
+        assert "MalwareScanVerdictBeforeIngest" in metrics
+        assert "MalwareScanVerdictDuplicate" not in metrics
+        # The mechanism: the bucket was asked, and in the verdict's own kind.
+        spy.assert_called_once_with(self.BUCKET, self.KEY, "v")
+        mock_sqs.send_message.assert_not_called()
+        assert row.status == Status.COMPLETED
+
+    def test_a_current_refusal_against_a_terminal_run_is_redelivered_not_applied(
+        self,
+    ):
+        """The refusing variant must not take the late-refusal path either: it
+        would quarantine the row and the upload event would then reset it to
+        MALWARE_SCANNING, losing the detection and stranding the document."""
+        import index
+
+        row = _FakeTrackingRow(Status.COMPLETED, f"v:{self.old_vid}")
+        _, raised, (_, mock_sns, metrics, _) = self._deliver(
+            row, self.new_vid, result_status="THREATS_FOUND"
+        )
+
+        assert isinstance(raised, index.ScanVerdictBeforeIngestError)
+        assert "MalwareScanVerdictUnappliedRefusal" not in metrics
+        mock_sns.publish.assert_not_called()
+        # Only the compare-and-set was attempted; no unconditional write.
+        assert [w[2].get("condition_expression") is not None for w in row.writes] == [
+            True
+        ]
+
+    # (b) ------------------------------------------------------------------------
+    def test_a_current_verdict_while_the_gate_waits_on_an_older_version_is_redelivered(
+        self,
+    ):
+        """Observed live: logged as superseded ("describes version v:<new> but
+        the document is now waiting on version v:<old>") and dropped."""
+        import index
+
+        row = _FakeTrackingRow(Status.MALWARE_SCANNING, f"v:{self.old_vid}")
+        response, raised, (mock_sqs, _, metrics, _) = self._deliver(row, self.new_vid)
+
+        assert response is None
+        assert isinstance(raised, index.ScanVerdictBeforeIngestError)
+        assert "MalwareScanVerdictSuperseded" not in metrics
+        assert "MalwareScanVerdictBeforeIngest" in metrics
+        mock_sqs.send_message.assert_not_called()
+
+    def test_the_redelivery_is_admitted_once_the_upload_event_lands(self):
+        """The point of raising: the same verdict, delivered again after the
+        upload path rewrote the row, now satisfies the compare-and-set."""
+        import index
+
+        row = _FakeTrackingRow(Status.COMPLETED, f"v:{self.old_vid}")
+        _, raised, _ = self._deliver(row, self.new_vid)
+        assert isinstance(raised, index.ScanVerdictBeforeIngestError)
+
+        row.rewrite_for_upload(f"v:{self.new_vid}")
+        response, raised, (mock_sqs, _, _, _) = self._deliver(row, self.new_vid)
+
+        assert raised is None
+        assert response["queued"] is True
+        assert row.status == Status.QUEUED
+        mock_sqs.send_message.assert_called_once()
+
+    # (c) ------------------------------------------------------------------------
+    def test_an_older_verdict_while_the_gate_waits_on_the_current_one_is_superseded(
+        self,
+    ):
+        row = _FakeTrackingRow(Status.MALWARE_SCANNING, f"v:{self.new_vid}")
+        response, raised, (mock_sqs, _, metrics, spy) = self._deliver(row, self.old_vid)
+
+        assert raised is None
+        assert response["superseded"] is True
+        assert "MalwareScanVerdictSuperseded" in metrics
+        assert "MalwareScanVerdictBeforeIngest" not in metrics
+        spy.assert_called_once()
+        mock_sqs.send_message.assert_not_called()
+        assert row.status == Status.MALWARE_SCANNING
+
+    def test_a_verdict_for_a_deleted_key_is_superseded(self):
+        """No current object means no verdict can describe the current bytes."""
+        self.s3.delete_object(Bucket=self.BUCKET, Key=self.KEY)
+        row = _FakeTrackingRow(Status.MALWARE_SCANNING, f"v:{self.old_vid}")
+        response, raised, _ = self._deliver(row, self.new_vid)
+
+        assert raised is None
+        assert response["superseded"] is True
+
+    # (d) ------------------------------------------------------------------------
+    def test_a_same_version_duplicate_is_still_a_duplicate_and_reads_nothing(self):
+        row = _FakeTrackingRow(Status.QUEUED, f"v:{self.new_vid}")
+        response, raised, (mock_sqs, _, metrics, spy) = self._deliver(row, self.new_vid)
+
+        assert raised is None
+        assert response["duplicate"] is True
+        assert "MalwareScanVerdictDuplicate" in metrics
+        mock_sqs.send_message.assert_not_called()
+        # Routine at-least-once redelivery costs no S3 call.
+        spy.assert_not_called()
+
+    # Failure to ask ---------------------------------------------------------------
+    def test_an_unreadable_bucket_raises_rather_than_discarding(self):
+        """If the bucket cannot be asked, this verdict may be the only one the
+        current upload gets, so it is re-delivered rather than dropped."""
+        from botocore.exceptions import ClientError
+
+        failing = MagicMock()
+        failing.head_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "HeadObject"
+        )
+        row = _FakeTrackingRow(Status.COMPLETED, f"v:{self.old_vid}")
+        response, raised, (_, _, metrics, _) = self._deliver(
+            row, self.new_vid, s3=failing
+        )
+
+        assert response is None
+        assert isinstance(raised, ClientError)
+        assert "MalwareScanVerdictDuplicate" not in metrics
+        assert "MalwareScanVerdictSuperseded" not in metrics
+
+    def test_an_etag_only_verdict_is_compared_in_its_own_kind(self):
+        """HeadObject on a versioned bucket returns both a version id and an
+        ETag. A verdict carrying only the ETag must be compared against the ETag,
+        or it would never equal the current object and would always be dropped."""
+        import index
+
+        row = _FakeTrackingRow(Status.COMPLETED, "e:some-earlier-etag")
+        _, raised, (_, _, _, spy) = self._deliver(row, None)
+
+        assert isinstance(raised, index.ScanVerdictBeforeIngestError)
+        spy.assert_called_once_with(self.BUCKET, self.KEY, "e")

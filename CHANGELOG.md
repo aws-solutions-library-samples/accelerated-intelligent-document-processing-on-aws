@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **A re-uploaded file no longer stays in "malware scanning" forever.** With malware scanning enabled, uploading a file under a key that had been processed before could leave the new document stuck in `MALWARE_SCANNING`: when GuardDuty's verdict for the new upload arrived before the upload itself had been recorded, the gate mistook it for a repeat or an outdated verdict and discarded it, and no other verdict was coming. The gate now checks which version the input bucket currently holds and retries a verdict for that version until the upload is recorded, while still discarding verdicts for versions that have since been replaced. **Action:** none; a document already stuck this way is recovered by uploading the file again. See [Malware scanning](docs/malware-scanning.md).
+
 ## [0.6.14]
 
 ### Added
