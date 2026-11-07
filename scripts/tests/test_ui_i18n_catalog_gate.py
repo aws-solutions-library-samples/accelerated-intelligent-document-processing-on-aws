@@ -97,18 +97,30 @@ def _tree(
     return layout
 
 
+#: What `formatjs` 6.16.36 prints on a platform it ships no native binary for (an Intel
+#: Mac, say): the wrapper is installed, so the toolchain check passes, and this is the
+#: first thing that fails. Verbatim from `loadNative()` in its `bin/formatjs`.
+NO_NATIVE_BINARY = (
+    "Error: Native @formatjs/cli-lib binding is unavailable.\n"
+    "@formatjs/cli-native-darwin-x64: Cannot find module '@formatjs/cli-native-darwin-x64'"
+)
+
+
 def _fake_run(
     monkeypatch,
     *,
     extracted: str = EN_JSON,
     extract_rc: int = 0,
+    extract_stderr: str = 'Error: [FormatJS CLI] Duplicate message id: "i18n.switcher.label"',
     broken: dict[str, str] | None = None,
+    node_missing: bool = False,
 ) -> list[list[str]]:
     """Replace the module's subprocess runner; returns the list of commands it was given.
 
     The extraction fake writes ``extracted`` to the ``--out-file`` the gate chose (or
-    fails with ``extract_rc``); the catalog fake fails for every locale in ``broken``
-    with that locale's text as its output.
+    fails with ``extract_rc`` and ``extract_stderr``); the catalog fake fails for every
+    locale in ``broken`` with that locale's text as its output, or raises the
+    ``FileNotFoundError`` a missing ``node`` raises when ``node_missing`` is set.
     """
     calls: list[list[str]] = []
     broken = broken or {}
@@ -122,12 +134,11 @@ def _fake_run(
                 )
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
             return subprocess.CompletedProcess(
-                command,
-                extract_rc,
-                stdout="",
-                stderr='Error: [FormatJS CLI] Duplicate message id: "i18n.switcher.label"',
+                command, extract_rc, stdout="", stderr=extract_stderr
             )
         if command[0] == "node":
+            if node_missing:
+                raise FileNotFoundError(2, "No such file or directory", "node")
             locale = command[2]
             if locale in broken:
                 return subprocess.CompletedProcess(
@@ -331,6 +342,75 @@ def test_an_absent_toolchain_fails_in_ci(tmp_path, monkeypatch, capsys, variable
     assert "❌ check-ui-i18n-catalog" in out
     assert "src/ui/node_modules/.bin/formatjs is missing" in out
     assert "SKIPPED" not in out
+
+
+def test_a_toolchain_with_no_native_binary_skips_off_ci_and_names_the_platform(
+    tmp_path, monkeypatch, capsys
+):
+    """The wrapper is installed, so the toolchain check passes; the extraction then fails
+    with the CLI's own text. That is neither a stale catalog nor something re-extracting
+    fixes, so off CI it is the same visible skip as an absent toolchain."""
+    _tree(tmp_path)
+    monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
+    _without_ci(monkeypatch)
+    _fake_run(monkeypatch, extract_rc=1, extract_stderr=NO_NATIVE_BINARY)
+    assert MODULE.main([]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "⏭️  check-ui-i18n-catalog SKIPPED (not a pass: this platform cannot run it)"
+        in out
+    )
+    assert "ships no native binary for" in out
+    assert "@formatjs/cli-native-darwin-x64" in out, "the CLI's own output is shown"
+    assert "✅" not in out
+    assert "is stale" not in out and "formatjs extract` failed" not in out, (
+        "a platform that cannot run the tool must not be reported as a catalog problem"
+    )
+
+
+@pytest.mark.parametrize("variable", ["CI", "GITHUB_ACTIONS", "GITLAB_CI"])
+def test_a_toolchain_with_no_native_binary_fails_in_ci(
+    tmp_path, monkeypatch, capsys, variable
+):
+    _tree(tmp_path)
+    monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
+    _without_ci(monkeypatch)
+    monkeypatch.setenv(variable, "true")
+    _fake_run(monkeypatch, extract_rc=1, extract_stderr=NO_NATIVE_BINARY)
+    assert MODULE.main([]) == 1
+    out = capsys.readouterr().out
+    assert "❌ check-ui-i18n-catalog" in out
+    assert "no native binary for this runner" in out
+    assert "SKIPPED" not in out
+
+
+def test_any_other_extraction_failure_still_fails_with_its_output(
+    tmp_path, monkeypatch, capsys
+):
+    """The skip is keyed on the CLI's native-binding text and nothing wider: a CLI that
+    fails for any other reason, or words a future binding failure differently, is a
+    hard failure carrying its output, never a pass."""
+    _tree(tmp_path)
+    monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
+    _without_ci(monkeypatch)
+    _fake_run(
+        monkeypatch, extract_rc=1, extract_stderr="Error: something else entirely"
+    )
+    assert MODULE.main([]) == 1
+    out = capsys.readouterr().out
+    assert "`formatjs extract` failed (exit 1)" in out
+    assert "something else entirely" in out
+    assert "SKIPPED" not in out
+
+
+def test_an_absent_node_is_reported_rather_than_raised(tmp_path, monkeypatch):
+    """`node` runs by name from PATH; without it the catalog compile is a named failure,
+    not a traceback, and the English check before it still reports normally."""
+    layout = _tree(tmp_path, catalogs={"fr-CA.json": "{}"})
+    _fake_run(monkeypatch, node_missing=True)
+    (failure,) = _check(layout)
+    assert failure.startswith("node could not be started")
+    assert "src/ui/src/i18n/fr-CA.json was not compiled" in failure
 
 
 def test_main_reports_a_pass_and_a_failure_with_the_right_exit_codes(

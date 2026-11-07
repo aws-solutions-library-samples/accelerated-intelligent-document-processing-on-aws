@@ -39,10 +39,23 @@ runs this gate installs the dependencies first (``make lint-cicd`` runs it right
 after ``ui-lint``), and it fails. Same rule, and the same reason, as
 ``_require_node`` in ``scripts/tests/test_ui_test_discovery.py``.
 
+The same rule covers a toolchain that is installed but cannot run here.
+``formatjs`` is a JS wrapper over a native binary that npm installs as an optional
+dependency per platform; on a platform the pinned ``@formatjs/cli`` ships no binary
+for, the wrapper is present, so the first check above does not fire, and the
+extraction fails with the CLI's own "Native @formatjs/cli-lib binding is
+unavailable". That is not a stale catalog and not something the developer can fix
+by re-extracting, so off CI it is reported as the same ``⏭️  SKIPPED`` (the tree is
+measured in CI, which runs on a platform that has the binary); in CI it fails like
+any other missing toolchain. ``node`` itself is run by name from ``PATH`` (the
+runtime the developer or the job already has; never ``npx``, never the network), and
+its absence is reported as a failure that names it.
+
 Exit codes:
-    0 — en.json is current and every translation catalog compiles (or skipped off CI)
+    0 — en.json is current and every translation catalog compiles (or skipped off CI:
+        no toolchain, or a toolchain with no native binary for this platform)
     1 — en.json is stale, a translation catalog has a problem, the extraction failed,
-        or the toolchain is missing in CI
+        node could not be started, or the toolchain is missing or cannot run in CI
 """
 
 from __future__ import annotations
@@ -51,6 +64,7 @@ import argparse
 import difflib
 import json
 import os
+import platform
 import re
 import shlex
 import subprocess
@@ -75,8 +89,20 @@ CATALOG_FILE = re.compile(
 
 GATE = "check-ui-i18n-catalog"
 
+#: What the ``formatjs`` wrapper prints when the pinned ``@formatjs/cli`` ships no native
+#: binary for this platform (``loadNative()`` in its ``bin/formatjs``; the text is the
+#: same whether the load failed just now or earlier in the process). Keyed on the CLI's
+#: own message because nothing else distinguishes "the tool cannot run here" from "the
+#: tool ran and found a problem" after the fact; if a later CLI words it differently,
+#: the gate degrades to today's hard failure with the CLI's output, never to a pass.
+NATIVE_BINDING_UNAVAILABLE = "Native @formatjs/cli-lib binding is unavailable"
+
 #: Indirection for the tests, which replace it rather than running node.
 run = subprocess.run
+
+
+class ToolchainCannotRunHere(Exception):
+    """The installed FormatJS CLI has no native binary for this platform."""
 
 
 def in_ci() -> bool:
@@ -186,10 +212,12 @@ def check_english_catalog(layout: Layout, report: Report) -> None:
             command, cwd=layout.ui_root, capture_output=True, text=True, check=False
         )
         if result.returncode != 0 or not out_file.is_file():
+            output = (result.stdout + result.stderr).strip()
+            if NATIVE_BINDING_UNAVAILABLE in output:
+                raise ToolchainCannotRunHere(output)
             report.failures.append(
                 f"`formatjs extract` failed (exit {result.returncode}); the English "
-                f"catalog could not be re-measured. Its output:\n"
-                f"{(result.stdout + result.stderr).strip()}"
+                f"catalog could not be re-measured. Its output:\n{output}"
             )
             return
         fresh = out_file.read_text(encoding="utf-8")
@@ -222,10 +250,21 @@ def check_translation_catalogs(layout: Layout, report: Report) -> None:
         report.notes.append("no translation catalogs yet; only en.json exists")
         return
     for locale in locales:
+        # `node` by name from PATH, as `scripts/ui_i18n_coverage.py` runs it: the runtime
+        # the developer or the job already has, never `npx`; the checker itself is by path.
         command = ["node", str(layout.check_catalog), locale]
-        result = run(
-            command, cwd=layout.ui_root, capture_output=True, text=True, check=False
-        )
+        try:
+            result = run(
+                command, cwd=layout.ui_root, capture_output=True, text=True, check=False
+            )
+        except FileNotFoundError as exc:
+            report.failures.append(
+                f"node could not be started ({exc}), so "
+                f"{layout.relative(layout.catalog_dir / f'{locale}.json')} was not "
+                f"compiled. Install Node (the version in src/ui/package.json's "
+                f"`engines`) or put it on PATH."
+            )
+            return
         output = (result.stdout + result.stderr).strip()
         if result.returncode != 0:
             report.failures.append(
@@ -270,6 +309,26 @@ def main(argv: list[str] | None = None) -> int:
     report = Report()
     try:
         check(layout, report)
+    except ToolchainCannotRunHere as exc:
+        host = f"{sys.platform}-{platform.machine()}"
+        if in_ci():
+            print(
+                f"❌ {GATE}: the installed @formatjs/cli has no native binary for this "
+                f"runner ({host}), so the English catalog cannot be re-measured. In CI "
+                f"this is a job-configuration failure, not a reason to skip: give the "
+                f"job a platform the pinned CLI ships a binary for, or bump the pin to "
+                f"one that ships it for this one. The CLI said:\n{exc}"
+            )
+            return 1
+        print(f"⏭️  {GATE} SKIPPED (not a pass: this platform cannot run it)")
+        print(
+            f"   The installed @formatjs/cli ships no native binary for {host}, so the "
+            f"English catalog was not re-measured here; CI measures it. A CLI version "
+            f"that ships a binary for this platform makes the gate run locally again "
+            f"(see src/ui/src/i18n/README.md, dependency pins). The CLI said:\n   "
+            + str(exc).replace("\n", "\n   ")
+        )
+        return 0
     except (OSError, ValueError, KeyError) as exc:
         report.failures.append(str(exc))
     if args.verbose:
