@@ -111,13 +111,17 @@ def test_marker_is_ignored_by_the_ui_gitignore():
 
 
 def test_publish_zip_carries_the_marker_and_still_drops_env_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     ui = _synthetic_ui(tmp_path)
     (ui / ".pseudo-locale").touch()
     monkeypatch.chdir(tmp_path)
 
     _publisher(monkeypatch).package_ui()
+    assert "src/ui/.pseudo-locale is present" in capsys.readouterr().out, (
+        "the publisher must say the marker is riding along: the recipe's `rm` is the only "
+        "thing keeping en-XA out of the next stack deployed from this checkout"
+    )
 
     zips = sorted((tmp_path / ".aws-sam").glob("src-*.zip"))
     assert len(zips) == 1, zips
