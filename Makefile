@@ -1347,17 +1347,20 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 
 ##@ UI Development
 
-# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND SEVEN OF THEM
-# WIPE IT. `npm ci` deletes node_modules before rebuilding it, by design. Each of
-# those targets then runs a node tool out of that same tree. So two UI targets at
-# once in ONE checkout corrupt each other, and the loser does not report
-# contention — it reports a missing or half-deleted module from whatever package
-# the other lane was unpacking (issue #1447).
+# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND EVERY ONE WHOSE
+# RECIPE RUNS $(NPM_CI) WIPES IT. `npm ci` deletes node_modules before rebuilding it,
+# by design. Each of those targets then runs a node tool out of that same tree. So
+# two UI targets at once in ONE checkout corrupt each other, and the loser does not
+# report contention — it reports a missing or half-deleted module from whatever
+# package the other lane was unpacking (issue #1447). The set of targets is pinned
+# by UI_TARGETS in scripts/tests/test_ui_deps_lock.py, which fails when one joins or
+# leaves; no count is written here for that reason.
 #
-# `make lint-cicd` performs five of them itself (ui-lint, check-ui-i18n-catalog,
-# check-ui-string-debt, ui-build-only, codegen-check), so lint-cicd PLUS ANY ONE UI
-# TARGET is enough to collide. The realistic composition is "lint in one lane, UI tests in another",
-# which looks like two unrelated things and is not.
+# `make lint-cicd` performs some of them itself (ui-lint, check-ui-i18n-catalog,
+# check-ui-string-debt, ui-build-only, codegen-check — pinned as
+# TARGETS_LINT_CICD_PERFORMS in the same test), so lint-cicd PLUS ANY ONE UI TARGET
+# is enough to collide. The realistic composition is "lint in one lane, UI tests in
+# another", which looks like two unrelated things and is not.
 #
 # $(UI_DEPS_LOCK) is why that is now safe rather than merely documented: it holds
 # an exclusive lock for the whole command, so a second UI target waits instead of

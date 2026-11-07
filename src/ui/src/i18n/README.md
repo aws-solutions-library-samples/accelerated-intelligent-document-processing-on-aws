@@ -274,7 +274,8 @@ forever, the rule is run as a measurement and ratcheted: per file, the count may
   content stays English */` block.
 
 **Known gaps, stated with numbers** (measured 2026-11-05 on the tree the baseline was written
-against):
+against; nothing re-measures them until the follow-up gate below, so each comes with the way to
+re-measure it, and the figures will shrink as the conversion PRs land):
 
 1. **ALL-CAPS constants.** `eslint-plugin-i18next` skips every string inside a
    `const ALL_CAPS = ...` declaration unconditionally (not an option): **679 strings in 184
@@ -285,13 +286,19 @@ against):
    folders along with the visible strings, the everyday-screen folders must be at zero before
    `fr-CA` is enabled, and a supplementary count for strings under ALL-CAPS names is a committed
    follow-up to this gate right after that. The coverage report cannot see these strings either:
-   a string never declared through `defineMessages` has no id in `en.json`.
+   a string never declared through `defineMessages` has no id in `en.json`. To re-measure: run
+   `npm run i18n:lint` once as committed and once with the plugin's `isUpperCase` test (in its
+   `VariableDeclarator` visitor, `node_modules/eslint-plugin-i18next/lib/rules/no-literal-string.js`)
+   made to return `false`; the findings only the second run reports are this gap.
 2. **`new Error('...')` texts** are not counted, by design (`Error` and every `*Error`
    constructor are excluded callees): those messages reach users through `.message` paths that
    the stable-error-code work addresses separately.
 3. **Single lowercase tokens** (`[a-z][a-zA-Z0-9]*`, about 1,300 strings such as `'error'`,
    `'link'`, `'primary'`) are treated as technical. The one known user-facing miss is the wizard's
    `optional: 'optional'` in [`CreateTestSetWizard.tsx`](../components/test-studio/CreateTestSetWizard.tsx).
+   To re-measure: remove that pattern from `WORDS` in `eslint.i18n.config.js`, run
+   `npm run i18n:lint`, and count the findings it adds (then restore the pattern: the gate pins
+   the configuration's hash).
 
 ## Coverage
 

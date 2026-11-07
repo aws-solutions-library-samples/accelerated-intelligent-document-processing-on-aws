@@ -3,13 +3,15 @@
 
 """Pin the guard that stops two UI make targets corrupting src/ui/node_modules.
 
-Eleven `make` targets run a node tool out of `src/ui/node_modules`, and seven of them
-reinstall it with `npm ci` first — which deletes the tree before rebuilding it, by
-design. Two of those targets at once in ONE checkout therefore corrupt each other,
-and the loser reports a missing or half-deleted module from whatever package the
-other lane was unpacking rather than anything resembling contention. `make
-lint-cicd` performs five of them itself, so lint-cicd plus any one UI target is
-enough (issue #1447).
+Every target in :data:`UI_TARGETS` runs a node tool out of `src/ui/node_modules`, and
+those whose recipe runs `$(NPM_CI)` reinstall it first — which deletes the tree before
+rebuilding it, by design. Two of those targets at once in ONE checkout therefore
+corrupt each other, and the loser reports a missing or half-deleted module from
+whatever package the other lane was unpacking rather than anything resembling
+contention. `make lint-cicd` performs :data:`TARGETS_LINT_CICD_PERFORMS` itself, so
+lint-cicd plus any one UI target is enough (issue #1447). Both tuples are the pinned
+record of those sets — a target that joins or leaves either fails here — which is why
+no count is written into this prose.
 
 `scripts/ui_deps_lock.sh` makes that impossible rather than documented. These tests
 cover both halves of the claim:
@@ -76,7 +78,7 @@ UI_TARGETS = (
     "check-ui-string-debt",
 )
 
-#: The five ``lint-cicd`` performs itself, which is why one other UI target in a
+#: The targets ``lint-cicd`` performs itself, which is why one other UI target in a
 #: second lane is sufficient to collide.
 TARGETS_LINT_CICD_PERFORMS = (
     "ui-lint",
@@ -239,17 +241,17 @@ def test_ui_lint_records_no_checksum_for_a_lint_that_did_not_run() -> None:
 def test_lint_cicd_does_not_hold_the_lock_itself() -> None:
     """The anti-deadlock property, asserted where it is decided.
 
-    ``lint-cicd`` invokes three of these targets in sequence. Each takes and
-    releases the lock on its own; if ``lint-cicd`` also held it, those three would
-    wait on a lock their own parent holds and the gate would stall until the bound
-    expired. Nesting is additionally made safe inside the script (``UI_DEPS_LOCK_HELD``,
+    ``lint-cicd`` invokes the targets in :data:`TARGETS_LINT_CICD_PERFORMS` in
+    sequence. Each takes and releases the lock on its own; if ``lint-cicd`` also held
+    it, they would wait on a lock their own parent holds and the gate would stall until
+    the bound expired. Nesting is additionally made safe inside the script (``UI_DEPS_LOCK_HELD``,
     covered below), so this is the first of two independent reasons it cannot happen.
     """
     recipe = _recipe_text("lint-cicd")
     for marker in (LOCK_VARIABLE, LOCK_MARKER):
         assert marker not in recipe, (
             "lint-cicd now takes the src/ui node_modules lock itself, and it invokes "
-            "three targets that each take it. Hold the lock in the leaf targets only."
+            "targets that each take it. Hold the lock in the leaf targets only."
         )
     for target in TARGETS_LINT_CICD_PERFORMS:
         assert f"make {target}" in recipe, (

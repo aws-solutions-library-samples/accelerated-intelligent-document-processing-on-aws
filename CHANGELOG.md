@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Internationalization foundation for the web UI, with nothing visible yet.** The UI now runs on `react-intl`, with its English inline as each message's `defaultMessage`; only English is enabled, so no screen, label or format changes. For contributors, new gates run in `make lint`, `make fastlint` and `make lint-cicd`: `check-ui-i18n-catalog` fails when the committed English catalog (`src/ui/src/i18n/en.json`) is stale against the UI's messages (`make ui-i18n-extract` rewrites it), and `check-ui-string-debt` fails when a UI file gains a hardcoded user-facing string or a new file carries one (declare it with `defineMessages` instead). `make ui-i18n-coverage` reports translation coverage per locale catalog and never fails. How to declare a message and what each gate checks: `src/ui/src/i18n/README.md` ([#1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770)).
+
 ## [0.6.14]
 
 ### Added
