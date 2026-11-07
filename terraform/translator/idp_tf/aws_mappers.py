@@ -161,6 +161,9 @@ class SpecMapper:
     attrs: dict[str, Any]
     required_name: tuple[str, str, int] | None = None  # (cfn prop, tf attr, max)
     extra: Callable[[Translator, Plan, dict[str, Any]], list[str]] | None = None
+    #: CloudFormation property paths the provider replaces the resource for,
+    #: beyond the registry's createOnlyProperties (see idp_tf.create_only).
+    force_new: tuple[str, ...] = ()
 
     def getatt(self, attr: str) -> Any:
         if attr not in self.attrs:
@@ -707,6 +710,8 @@ class EventsRuleMapper:
 
     tf_type = "aws_cloudwatch_event_rule"
     ref_attr = "name"
+    #: The provider replaces a rule moved to another bus.
+    force_new = ("EventBusName",)
     spec: Spec = {
         "Name": ("attr", "name"),
         "Description": ("attr", "description"),
@@ -998,6 +1003,9 @@ WAF_WEB_ACL = SpecMapper(
 COGNITO_USER_POOL = SpecMapper(
     tf_type="aws_cognito_user_pool",
     ref_attr="id",
+    # The registry marks none of these create-only; the provider documents each
+    # as forcing a new resource, because Cognito's UpdateUserPool takes none.
+    force_new=("UserPoolName", "AliasAttributes", "UsernameAttributes"),
     attrs={
         "Arn": "arn",
         "UserPoolId": "id",

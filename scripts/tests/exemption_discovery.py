@@ -106,6 +106,9 @@ PYTHON_PATHSPECS = (
     # reviewer learns to rubber-stamp it. The wider glob is worth doing; it is its
     # own change.
     "lib/*/idp_common/metering_units.py",
+    # The CloudFormation -> Terraform translator's own checks (the completeness
+    # check's not-applicable list) live in its package, not under scripts/.
+    "terraform/translator/idp_tf/*.py",
 )
 
 #: Non-Python files that carry exemptions, and the pattern that finds one in each.
