@@ -742,9 +742,23 @@ TERRAFORM_CHECK_BINARIES ?= terraform@$(TERRAFORM_FLOOR_VERSION) terraform@$(TER
 # CI points it at a cached directory.
 TERRAFORM_CHECK_CACHE ?= $(HOME)/.cache/idp-terraform-check
 
-terraform-check: ## Translate template.yaml to Terraform offline, then init + validate it with each pinned Terraform/OpenTofu (needs network for binaries and providers)
+terraform-check: ## Translate template.yaml to Terraform offline, then init + validate it with each pinned Terraform/OpenTofu, then diff a static scan of both (needs network for binaries, providers and checkov)
 	@$(PYTHON) scripts/terraform_check.py \
 		--binaries "$(TERRAFORM_CHECK_BINARIES)" \
+		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
+	@$(MAKE) --no-print-directory terraform-scan-diff
+
+# The static-scan diff: checkov over the CloudFormation templates and over the
+# Terraform generated from them, failing when the Terraform side has a finding the
+# CloudFormation side does not (softer than upstream), beyond the explained entries
+# in scripts/terraform_scan_baseline.json. Pinned for the reason CFN_LINT_VERSION is:
+# a scanner release adds rules, and an unpinned one changes the verdict with no code
+# change. checkov is installed into its own venv under TERRAFORM_CHECK_CACHE. See
+# scripts/terraform_scan_diff.py for what it does and does not prove.
+CHECKOV_VERSION := 3.4.0
+terraform-scan-diff: ## Diff a pinned checkov scan of the CloudFormation templates against the generated Terraform; fail on a Terraform-only finding not in the baseline
+	@$(PYTHON) scripts/terraform_scan_diff.py \
+		--checkov-version "$(CHECKOV_VERSION)" \
 		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
 
 # Deliberately NOT part of `lint`, `fastlint` or `lint-cicd`, and deliberately NOT

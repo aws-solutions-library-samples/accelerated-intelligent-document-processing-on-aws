@@ -3288,6 +3288,17 @@
       "ratchet": "staleness",
       "ratchetEvidence": "terraform/translator/tests/test_upgrade_safety.py",
       "reason": "Each entry says why that property's value legitimately does not appear in the HCL: it is encoded in an attribute name (DynamoDB KeyType becomes hash_key/range_key), it is the only value the mapper accepts and is the provider default (S3 AccessControl Private, DynamoDB SSEType KMS, each refused by the mapper otherwise), or it is written to a file instead (inline Lambda ZipFile). Why JUDGEMENT: whether a value is represented elsewhere is a reading of the mapper, not a property of the member. An entry that matches nothing in the standard template is reported stale by tree_checks, and test_no_declaration_is_stale_for_the_standard_template fails on it."
+    },
+    "scripts/terraform_scan_baseline.json::terraform_scan_baseline.json": {
+      "kind": "exemption",
+      "memberKind": "a (checkov check id, resource) pair, plus one pinned count",
+      "turnsOff": "make terraform-scan-diff, for one checkov check on one resource of the generated Terraform that the CloudFormation side does not fail",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/terraform_scan_diff.py",
+      "reason": "Each entry names one check on one resource of the custom-resource bridge the translator adds (the bridge has no CloudFormation counterpart, because CloudFormation runs custom resources inside the service) and says why that check does not apply to it or that it is a known gap, in which case the entry says what removes it. Why JUDGEMENT: whether a scanner rule applies to a generated resource is a reading of what the resource does. An entry matching no finding fails the gate as stale, and notEvaluatedCount is count-pinned: a change in the number of findings on conditional resources the CloudFormation scan skips fails the gate until it is re-read."
     }
   }
 }
