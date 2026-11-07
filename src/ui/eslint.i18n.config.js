@@ -32,7 +32,10 @@
 //     arguments would otherwise vanish from the count;
 //   * full-match WORD patterns for technical tokens (punctuation, separators, units,
 //     kebab/snake/dotted ids, URLs, MIME types, CSS values, emoji).
-// Every string pattern is anchored by the plugin (`^...$`); a RegExp is used as is,
+// Every string pattern is anchored by the plugin as `^` + pattern + `$`, with no grouping
+// of its own, so an alternation has to be grouped here: a bare `a|b` becomes `^a|b$`,
+// "starts with a OR ends with b", and excuses every string that merely starts with `a`
+// (`eslint-i18n-config.test.ts` fails on a top-level `|`). A RegExp is used as is,
 // which is why the emoji pattern is a RegExp with the `u` flag (as a string it would
 // lose the flag and miss `✏️`-style sequences with a variation selector).
 //
@@ -349,8 +352,9 @@ const CSS_LENGTH = '\\d+(\\.\\d+)?\\s*(px|em|rem|%|ms|s|vh|vw|fr|pt|deg)';
 
 /**
  * Whole strings that are technical tokens wherever they appear. Each string pattern must
- * match the WHOLE trimmed value; the two leading entries are the plugin's own defaults,
- * restated because supplying `words` replaces them.
+ * match the WHOLE trimmed value, so any alternation in it is grouped (`(?:a|b)`, see the
+ * header); the two leading entries are the plugin's own defaults, restated because
+ * supplying `words` replaces them.
  */
 const WORDS = [
   '[0-9!-/:-@[-`{-~]+',
@@ -400,9 +404,9 @@ const WORDS = [
   '(true|false|null|undefined|NaN|Infinity)',
   '(_blank|_self|_parent|_top|noopener noreferrer|noopener,noreferrer|noreferrer|noopener|off|on|numeric|decimal|email|tel|url|search)',
   'Bearer .*',
-  'utf-?8|UTF-?8',
+  '(?:utf-?8|UTF-?8)',
   // Locale tags.
-  'en(-[A-Z]{2})?|fr(-[A-Z]{2})?',
+  '(?:en(-[A-Z]{2})?|fr(-[A-Z]{2})?)',
   // PascalCase identifiers and product names (`FormattedMessage`, `GuardDuty`).
   '[A-Z][a-z]+([A-Z][a-z0-9]*)+',
   // `scheme:token` pairs.

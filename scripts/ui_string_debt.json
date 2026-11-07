@@ -20,15 +20,16 @@
   ],
   "generator": "python3 scripts/check_ui_string_debt.py --write",
   "eslintConfig": "src/ui/eslint.i18n.config.js",
-  "configSha256": "4157fece8f36f82b4d9e9d172e6aa8f1b7c0d754120c242045bcd1b53df07710",
+  "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
     "files": 259,
-    "findings": 6447
+    "findings": 6449
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
     "upstream develop 98c63087b..a4ad2e90b (merged 2026-11-05, before this PR): the Review Studio and Test Studio work (feature/review-studio merges, GitLab develop syncs) added strings to 9 existing files and 2 new ones; code written before the gate existed, converted with its screens in PRs 5c/5d and the Test Studio phase (#1770)",
-    "2026-11-06: upstream 3eb9b3a6e (PR #1803, develop merged into this branch) added src/ui/src/components/common/ResizableModal.tsx with 3 hardcoded strings (a resize-handle aria-label and its description, plus a '[role=\"dialog\"]' selector the counter cannot tell from text). Recorded rather than converted here: the foundation PR converts no screens; this component belongs to the configuration editor (follow-up PR 10) and is converted with the first conversion PR that touches components/common."
+    "2026-11-06: upstream 3eb9b3a6e (PR #1803, develop merged into this branch) added src/ui/src/components/common/ResizableModal.tsx with 3 hardcoded strings (a resize-handle aria-label and its description, plus a '[role=\"dialog\"]' selector the counter cannot tell from text). Recorded rather than converted here: the foundation PR converts no screens; this component belongs to the configuration editor (follow-up PR 10) and is converted with the first conversion PR that touches components/common.",
+    "2026-11-07: a fix to the counting configuration, not new strings. Two WORDS entries ('utf-?8|UTF-?8' and 'en(-[A-Z]{2})?|fr(-[A-Z]{2})?') carried a top-level '|', which under the plugin's ^...$ anchoring reads as 'starts with a OR ends with b' and excused every string starting with lowercase 'en' or 'utf-8', or ending with 'fr'/'UTF-8'. Grouped as (?:...), the two strings that had slipped past are counted: components/step-function-flow/StepDetails.tsx ('enabled: false') and components/user-management/UserManagementLayout.tsx ('entitlement push'); 6,447 -> 6,449. eslint-i18n-config.test.ts now fails on any top-level '|' in WORDS."
   ],
   "stringDebt": {
     "src/ui/src/api/presign-batch.ts": 1,
@@ -223,7 +224,7 @@
     "src/ui/src/components/review-queues/work-items.ts": 5,
     "src/ui/src/components/sections-panel/SectionsPanel.tsx": 33,
     "src/ui/src/components/step-function-flow/FlowDiagram.tsx": 9,
-    "src/ui/src/components/step-function-flow/StepDetails.tsx": 24,
+    "src/ui/src/components/step-function-flow/StepDetails.tsx": 25,
     "src/ui/src/components/step-function-flow/StepFunctionFlowViewer.tsx": 30,
     "src/ui/src/components/test-studio/AbortTestModal.tsx": 8,
     "src/ui/src/components/test-studio/AddDocumentsModals.tsx": 41,
@@ -259,7 +260,7 @@
     "src/ui/src/components/upload-document/UploadDocumentPanel.tsx": 52,
     "src/ui/src/components/upload-document/breadcrumbs.tsx": 4,
     "src/ui/src/components/upload-document/tools-panel.tsx": 10,
-    "src/ui/src/components/user-management/UserManagementLayout.tsx": 97,
+    "src/ui/src/components/user-management/UserManagementLayout.tsx": 98,
     "src/ui/src/components/user-management/tools-panel.tsx": 11,
     "src/ui/src/components/welcome/WelcomeContent.tsx": 20,
     "src/ui/src/contexts/guidedTour.tsx": 42,

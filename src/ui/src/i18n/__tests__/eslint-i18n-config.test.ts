@@ -79,6 +79,49 @@ describe('eslint.i18n.config.js, the counting rule of the UI string-debt ratchet
     ]);
   });
 
+  it('groups every alternation in its word list, so the plugin’s ^…$ anchoring applies to the whole pattern', async () => {
+    // The plugin builds `new RegExp('^' + pattern + '$')` with no grouping of its own, and
+    // `|` binds looser than the anchors: a bare `a|b` is "starts with a OR ends with b".
+    // Two entries were written that way and excused every string starting with lowercase
+    // `en` (`'entitlement push'`) or `utf-8`, and every string ending with `fr`, from the
+    // count. Read off the resolved configuration, not a copy of the list.
+    const config = await eslint.calculateConfigForFile(join(UI_ROOT, 'src/probe/Probe.tsx'));
+    const [, options] = config.rules?.[RULE] as [unknown, { words: { exclude: ReadonlyArray<string | RegExp> } }];
+    const topLevelAlternation = (pattern: string): boolean => {
+      let depth = 0;
+      let inClass = false;
+      for (let i = 0; i < pattern.length; i += 1) {
+        const c = pattern[i];
+        if (c === '\\') i += 1;
+        else if (inClass) inClass = c !== ']';
+        else if (c === '[') inClass = true;
+        else if (c === '(') depth += 1;
+        else if (c === ')') depth -= 1;
+        else if (c === '|' && depth === 0) return true;
+      }
+      return false;
+    };
+    const ungrouped = options.words.exclude.filter((p): p is string => typeof p === 'string' && topLevelAlternation(p));
+    expect(ungrouped, 'WORDS entries with a top-level `|`: wrap each as (?:…)').toEqual([]);
+    // Guard the guard: the detector sees a bare `|` and ignores a grouped one or one in a class.
+    expect(topLevelAlternation('en|fr')).toBe(true);
+    expect(topLevelAlternation('(?:en|fr)')).toBe(false);
+    expect(topLevelAlternation('[|]')).toBe(false);
+    expect(topLevelAlternation('a\\|b')).toBe(false);
+  });
+
+  it('excuses a locale tag or a charset as a whole string, but counts a label that merely starts like one', async () => {
+    const ts = [
+      "export const technical = { lang: 'en', region: 'fr-CA', charset: 'utf-8', upper: 'UTF-8' };",
+      "export const label = 'entitlement push';",
+      "export const trailing = 'Document is in fr';",
+    ].join('\n');
+    expect(await count(ts, 'src/probe/tokens.ts')).toEqual([
+      "2: export const label = 'entitlement push';",
+      "3: export const trailing = 'Document is in fr';",
+    ]);
+  });
+
   it('names the fix in its message', async () => {
     const [result] = await eslint.lintText("export const labels = { a: 'Hello' };\n", { filePath: 'src/probe/message.ts' });
     expect(result.messages).toHaveLength(1);
