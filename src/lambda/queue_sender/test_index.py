@@ -1114,7 +1114,7 @@ class TestVerdictDeliveredMoreThanOnce:
     def test_a_verdict_arriving_before_the_upload_event_raises_for_retry(self):
         """Creating the row here instead would race the upload path into
         overwriting a terminal status with MALWARE_SCANNING, hanging the document
-        for good. Raising hands it to the rule's RetryPolicy."""
+        for good. Raising hands it to Lambda's asynchronous retry."""
         error, mock_sqs, mock_cw = self._expect_raise()
 
         assert "before its document row existed" in str(error)
@@ -3295,3 +3295,118 @@ class TestReusedKeyVerdictOrdering:
 
         assert isinstance(raised, index.ScanVerdictBeforeIngestError)
         spy.assert_called_once_with(self.BUCKET, self.KEY, "e")
+
+    # The upload lands between the compare-and-set and the re-read ---------------
+    #
+    # Observed live on a reused key, three times in six runs: the verdict's
+    # compare-and-set ran against the previous run's row and failed, the upload
+    # event then finished rewriting the row to MALWARE_SCANNING for the verdict's
+    # own version, and the failure handler's re-read saw that row. It is not a
+    # version mismatch, so it fell through to the duplicate path, which returned
+    # 200 — nothing re-delivered, and the document waited at the gate for good.
+    def _row_rewritten_after_the_condition(self, *, failures=1, rewrite=True):
+        """A row the upload event rewrites just after a compare-and-set fails.
+
+        ``failures`` conditional writes fail; with ``rewrite`` the first of them
+        leaves the row at MALWARE_SCANNING for the verdict's version, as the
+        upload event does. Each generation carries its own upload time, so a test
+        can tell which row the document handed to the pipeline was built from.
+        """
+        test = self
+
+        class _Row(_FakeTrackingRow):
+            failures_left = failures
+
+            def get_document(self, *_a, **_k):
+                d = super().get_document()
+                d.initial_event_time = self.initial_event_time
+                d.queued_time = self.initial_event_time
+                d.trace_id = None
+                d.submission_source = None
+                d.test_set_id = None
+                return d
+
+            def update_document_status(self, key, status, **kwargs):
+                if kwargs.get("condition_expression") and self.failures_left > 0:
+                    self.failures_left -= 1
+                    self.writes.append((key, status, kwargs))
+                    if rewrite:
+                        self.rewrite_for_upload(f"v:{test.new_vid}")
+                        self.initial_event_time = "2026-11-07T22:47:50Z"
+                    raise ConditionalCheckFailed()
+                return super().update_document_status(key, status, **kwargs)
+
+        row = _Row(Status.COMPLETED, f"v:{self.old_vid}")
+        row.initial_event_time = "2026-11-07T22:42:28Z"
+        return row
+
+    def test_a_verdict_whose_row_is_rewritten_after_the_condition_is_applied(self):
+        """The observed interleaving: applied, not dropped as a duplicate."""
+        row = self._row_rewritten_after_the_condition()
+        response, raised, (mock_sqs, _, metrics, _) = self._deliver(row, self.new_vid)
+
+        assert raised is None
+        assert response is not None
+        assert response.get("queued") is True
+        assert "duplicate" not in response
+        assert row.status == Status.QUEUED
+        mock_sqs.send_message.assert_called_once()
+        assert "MalwareScanVerdictApplied" in metrics
+        assert "MalwareScanVerdictDuplicate" not in metrics
+        assert "MalwareScanVerdictBeforeIngest" not in metrics
+        # Two compare-and-sets: the one that lost, and the one that landed.
+        assert [w[2].get("condition_expression") is not None for w in row.writes] == [
+            True,
+            True,
+        ]
+
+    def test_the_rerun_builds_the_document_from_the_rewritten_row(self):
+        """Retrying the same write would have handed the pipeline a document
+        overlaid from the PREVIOUS upload's row; the re-run reads the new one."""
+        import index
+
+        row = self._row_rewritten_after_the_condition()
+        _, raised, (mock_sqs, _, _, _) = self._deliver(row, self.new_vid)
+
+        assert raised is None
+        mock_sqs.send_message.assert_called_once()
+        # `Document` is a MagicMock in this suite and `from_s3_event` returns the
+        # same object on every call, so this reads what the LAST overlay wrote
+        # onto the document that was enqueued. Retrying the write in place would
+        # leave the previous upload's time here.
+        enqueued = index.Document.from_s3_event.return_value
+        assert enqueued.initial_event_time == "2026-11-07T22:47:50Z"
+        assert enqueued.queued_time == "2026-11-07T22:47:50Z"
+
+    def test_a_refusal_whose_row_is_rewritten_after_the_condition_is_applied(self):
+        """The refusing variant goes through the compare-and-set too, rather than
+        the unconditional late-refusal write meant for a row that left the gate."""
+        row = self._row_rewritten_after_the_condition()
+        response, raised, (mock_sqs, _, metrics, _) = self._deliver(
+            row, self.new_vid, result_status="THREATS_FOUND"
+        )
+
+        assert raised is None
+        assert response is not None
+        assert response.get("queued") is False
+        assert row.status == Status.QUARANTINED
+        mock_sqs.send_message.assert_not_called()
+        assert "MalwareScanThreatsFound" in metrics
+        assert "MalwareScanVerdictUnappliedRefusal" not in metrics
+        assert "MalwareScanVerdictDuplicate" not in metrics
+        assert all(w[2].get("condition_expression") for w in row.writes[:2])
+
+    def test_a_row_that_keeps_moving_is_redelivered_after_one_rerun(self):
+        """Bounded: one re-run, then raise for Lambda's asynchronous retry rather
+        than loop, and never report it as a duplicate."""
+        import index
+
+        row = self._row_rewritten_after_the_condition(failures=5)
+        response, raised, (mock_sqs, _, metrics, _) = self._deliver(row, self.new_vid)
+
+        assert response is None
+        assert isinstance(raised, index.ScanVerdictBeforeIngestError)
+        assert "MalwareScanVerdictBeforeIngest" in metrics
+        assert "MalwareScanVerdictDuplicate" not in metrics
+        mock_sqs.send_message.assert_not_called()
+        assert len(row.writes) == 2
