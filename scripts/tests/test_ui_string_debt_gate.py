@@ -48,6 +48,9 @@ LINT_SCRIPT = (
 
 CONFIG_TEXT = "export default [{ rules: { 'i18next/no-literal-string': 'error' } }];\n"
 
+#: The counting plugin's pin in the synthetic manifest; part of the recorded hash.
+PLUGIN_PIN = "6.1.5"
+
 RULE = "i18next/no-literal-string"
 
 
@@ -79,12 +82,17 @@ def _tree(
     toolchain: bool = True,
     script: str | None = LINT_SCRIPT,
     config: str = CONFIG_TEXT,
+    plugin_pin: str | None = PLUGIN_PIN,
 ):
-    """A checkout: src/ui with package.json, the counting config, the sources and, optionally, eslint."""
+    """A checkout: src/ui with package.json (the lint script and the counting plugin's pin),
+    the counting config, the sources and, optionally, eslint."""
     layout = MODULE.Layout(tmp_path)
     layout.ui_root.mkdir(parents=True)
     scripts = {} if script is None else {"i18n:lint": script}
-    layout.package_json.write_text(json.dumps({"scripts": scripts}), encoding="utf-8")
+    manifest = {"scripts": scripts}
+    if plugin_pin is not None:
+        manifest["devDependencies"] = {"eslint-plugin-i18next": plugin_pin}
+    layout.package_json.write_text(json.dumps(manifest), encoding="utf-8")
     (layout.ui_root / "eslint.i18n.config.js").write_text(config, encoding="utf-8")
     for rel in sources:
         path = tmp_path / rel
@@ -97,10 +105,12 @@ def _tree(
     return layout
 
 
-def _sha(layout) -> str:
-    return hashlib.sha256(
-        (layout.ui_root / "eslint.i18n.config.js").read_bytes()
-    ).hexdigest()
+def _sha(layout, plugin_pin: str = PLUGIN_PIN) -> str:
+    """The hash the gate records, computed independently: the config file's bytes, then
+    the pinned counting plugin as ``<name>@<version>`` on a line of its own."""
+    digest = hashlib.sha256((layout.ui_root / "eslint.i18n.config.js").read_bytes())
+    digest.update(f"\neslint-plugin-i18next@{plugin_pin}".encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _baseline(
@@ -330,6 +340,33 @@ def test_an_edited_counting_configuration_fails_until_re_recorded(
     assert "src/ui/eslint.i18n.config.js" in message
     assert "is not the counting configuration" in message
     assert "--write" in message
+
+
+def test_a_bumped_counting_plugin_fails_until_re_recorded(tmp_path, monkeypatch):
+    """The rule's behaviour (what it reaches, what it skips) is the plugin's, so its pinned
+    version is part of the configuration the counts were measured with: a bump re-records
+    the baseline as visibly as an edited exclude list does, and the message names it."""
+    layout = _tree(tmp_path, sources=("src/ui/src/a.tsx",))
+    _baseline(layout, {"src/ui/src/a.tsx": 1})
+    manifest = json.loads(layout.package_json.read_text(encoding="utf-8"))
+    manifest["devDependencies"]["eslint-plugin-i18next"] = "6.2.0"
+    layout.package_json.write_text(json.dumps(manifest), encoding="utf-8")
+    _fake_run(monkeypatch, layout, {"src/ui/src/a.tsx": ["Hello"]})
+    message = _only(_check(layout))
+    assert "eslint-plugin-i18next@6.2.0" in message
+    assert "is not the counting configuration" in message
+    assert "a bumped eslint-plugin-i18next" in message
+    assert _sha(layout, "6.2.0") != _sha(layout), "the pin is part of the hash"
+
+
+def test_a_manifest_without_the_counting_plugin_pin_is_refused(tmp_path, monkeypatch):
+    """A count whose rule is unpinned is a count nobody can reproduce."""
+    layout = _tree(tmp_path, sources=("src/ui/src/a.tsx",), plugin_pin=None)
+    layout.baseline.write_text("{}", encoding="utf-8")
+    _fake_run(monkeypatch, layout, {})
+    with pytest.raises(ValueError) as excinfo:
+        _check(layout)
+    assert "does not pin eslint-plugin-i18next" in str(excinfo.value)
 
 
 def test_a_baseline_naming_another_configuration_fails(tmp_path, monkeypatch):

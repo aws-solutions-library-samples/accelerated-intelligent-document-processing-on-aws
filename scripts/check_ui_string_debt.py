@@ -20,6 +20,10 @@ read by nobody. So the rule is run as a *measurement* and the result is ratchete
 * ``scripts/ui_string_debt.json`` is the baseline: for every file with at least one
   finding, the number of findings **pinned** for it when the baseline was written,
   plus the sha256 of the counting configuration those numbers were measured with.
+  That configuration is the config file AND the pinned ``eslint-plugin-i18next``
+  version from ``src/ui/package.json``: what the rule counts and skips (the
+  ``const ALL_CAPS`` skip below is the plugin's, not the config's) changes with the
+  plugin, so a bump re-records the baseline the way an edited exclude list does.
 
 The gate re-measures the tree and fails when
 
@@ -32,8 +36,9 @@ The gate re-measures the tree and fails when
    being allowed to drift back up to its old count;
 4. a listed path no longer exists on disk — a stale entry hides the next real one;
 5. the counting configuration's sha256 differs from the one recorded — a widened
-   exclude list silently lowers every count, so it has to be a visible ``--write``
-   in the same change, reviewable beside the edit that caused it;
+   exclude list, or a bumped ``eslint-plugin-i18next``, silently changes every count,
+   so it has to be a visible ``--write`` in the same change, reviewable beside the
+   edit that caused it;
 6. the recorded ``highWaterMark`` does not match the list it describes — the list is
    generated, and growth of the list must show up as a diff on two numbered lines.
 
@@ -250,9 +255,38 @@ def lint_command(layout: Layout) -> tuple[list[str], str]:
     return words, config
 
 
+#: The plugin whose rule does the counting. Its pinned version is part of the counting
+#: configuration the baseline is measured with: the rule's own behaviour (what it
+#: reaches, what it skips unconditionally) changes between versions, so a bump has to
+#: re-record the baseline as visibly as an edited exclude list does.
+COUNTING_PLUGIN = "eslint-plugin-i18next"
+
+
+def counting_plugin_pin(layout: Layout) -> str:
+    """The version ``src/ui/package.json`` pins for the counting plugin.
+
+    Read from the committed manifest rather than from ``node_modules``, so the hash is a
+    function of the tree and not of what happens to be installed; refused when absent,
+    because a count whose rule is unpinned is a count nobody can reproduce.
+    """
+    package = json.loads(layout.package_json.read_text(encoding="utf-8"))
+    for section in ("devDependencies", "dependencies"):
+        pin = package.get(section, {}).get(COUNTING_PLUGIN)
+        if pin:
+            return str(pin)
+    raise ValueError(
+        f"{layout.relative(layout.package_json)} does not pin {COUNTING_PLUGIN}, whose "
+        f"rule does the counting; the baseline cannot record a counting configuration "
+        f"without its version"
+    )
+
+
 def config_sha256(layout: Layout, config: str) -> str:
-    """The sha256 of the counting configuration (repo-relative), as the baseline records it."""
-    return hashlib.sha256((layout.repo_root / config).read_bytes()).hexdigest()
+    """The sha256 the baseline records: the counting configuration file (repo-relative)
+    followed by the pinned counting plugin, ``<name>@<version>``, on a line of its own."""
+    digest = hashlib.sha256((layout.repo_root / config).read_bytes())
+    digest.update(f"\n{COUNTING_PLUGIN}@{counting_plugin_pin(layout)}".encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _excerpt(source: str, message: dict) -> str:
@@ -345,6 +379,7 @@ BASELINE_COMMENT = [
     "mode all) and fails when a listed file carries more findings than recorded here,",
     "when an unlisted file carries any, when a listed file is at zero (delete the",
     "entry), when a listed path is gone, or when the counting configuration's sha256",
+    "(the config file plus the eslint-plugin-i18next version src/ui/package.json pins)",
     "no longer matches configSha256. Issue #1770.",
     "",
     "GENERATED. `stringDebt`, `highWaterMark` and `configSha256` are written by",
@@ -405,12 +440,13 @@ def check(layout: Layout, report: Report) -> None:
     actual_sha = config_sha256(layout, config)
     if baseline.get("eslintConfig") != config or recorded_sha != actual_sha:
         report.failures.append(
-            f"{config} (sha256 {actual_sha[:12]}...) is not the counting configuration "
+            f"{config} with {COUNTING_PLUGIN}@{counting_plugin_pin(layout)} (sha256 "
+            f"{actual_sha[:12]}...) is not the counting configuration "
             f"{layout.relative(layout.baseline)} was measured with "
-            f"({str(recorded_sha)[:12]}...). A changed exclude list changes every count "
-            f"below it, so re-record in the same change — "
-            f"python3 scripts/check_ui_string_debt.py --write — and review the baseline "
-            f"diff beside the configuration diff."
+            f"({str(recorded_sha)[:12]}...). A changed exclude list, or a bumped "
+            f"{COUNTING_PLUGIN}, changes every count below it, so re-record in the same "
+            f"change — python3 scripts/check_ui_string_debt.py --write — and review the "
+            f"baseline diff beside the configuration or dependency diff."
         )
     else:
         report.notes.append(f"{config} matches configSha256")

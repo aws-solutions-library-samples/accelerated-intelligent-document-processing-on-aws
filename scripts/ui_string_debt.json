@@ -6,6 +6,7 @@
     "mode all) and fails when a listed file carries more findings than recorded here,",
     "when an unlisted file carries any, when a listed file is at zero (delete the",
     "entry), when a listed path is gone, or when the counting configuration's sha256",
+    "(the config file plus the eslint-plugin-i18next version src/ui/package.json pins)",
     "no longer matches configSha256. Issue #1770.",
     "",
     "GENERATED. `stringDebt`, `highWaterMark` and `configSha256` are written by",
@@ -19,7 +20,7 @@
   ],
   "generator": "python3 scripts/check_ui_string_debt.py --write",
   "eslintConfig": "src/ui/eslint.i18n.config.js",
-  "configSha256": "37a9be9345410ca2ece47f02bf612e8ca56853d3a653841407eec6f7a7aa1638",
+  "configSha256": "4157fece8f36f82b4d9e9d172e6aa8f1b7c0d754120c242045bcd1b53df07710",
   "highWaterMark": {
     "files": 259,
     "findings": 6447
