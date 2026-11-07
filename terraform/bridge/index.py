@@ -44,7 +44,7 @@ s3 = boto3.client(
     endpoint_url=f"https://s3.{REGION}.{_SUFFIX}",
     config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
 )
-lam = boto3.client("lambda")
+lam = boto3.client("lambda", region_name=REGION)
 
 
 def _stringify(value: Any) -> Any:
@@ -68,6 +68,7 @@ def _state_key(stack: str, logical_id: str) -> str:
 # IAM is eventually consistent, so a first call can be refused for a while.
 IAM_PROPAGATION_SECONDS = 60
 IAM_RETRY_SECONDS = 30
+IAM_RETRIES = 3
 
 
 def _get(key: str) -> bytes | None:
@@ -167,14 +168,21 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             return {"PhysicalResourceId": "", "Data": {}}
 
     response = _call(cfn_event, token, context)
-    if (
-        response.get("Status") != "SUCCESS"
-        and "AccessDenied" in str(response.get("Reason", ""))
-        and context.get_remaining_time_in_millis() / 1000 > IAM_RETRY_SECONDS * 3
-    ):
-        # A handler's role and its policy can be created or changed in the same
-        # apply as the call, and IAM is eventually consistent. Retry once.
-        logger.info("%s: AccessDenied, retrying once after IAM settles", logical_id)
+    for attempt in range(IAM_RETRIES):
+        if not (
+            response.get("Status") != "SUCCESS"
+            and "AccessDenied" in str(response.get("Reason", ""))
+            and context.get_remaining_time_in_millis() / 1000 > IAM_RETRY_SECONDS * 3
+        ):
+            break
+        # A handler's role and its policies can be created or changed in the
+        # same apply as the call, and IAM is eventually consistent.
+        logger.info(
+            "%s: AccessDenied, retry %d of %d after IAM settles",
+            logical_id,
+            attempt + 1,
+            IAM_RETRIES,
+        )
         time.sleep(IAM_RETRY_SECONDS)
         cfn_event["RequestId"] = str(uuid.uuid4())
         response = _call(cfn_event, token, context)

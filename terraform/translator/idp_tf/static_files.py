@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from . import hcl
+from .aws_mappers import GENERATED_NAME_ROLE_LIFECYCLE, default_name
 from .translate import STACK_NAME_VAR
 
 VERSIONS_TF = """terraform {
@@ -10,27 +11,46 @@ VERSIONS_TF = """terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 6.0"
+      # The release the generated modules were validated and deployed with.
+      version = ">= 6.72.0, < 7.0.0"
     }
     awscc = {
-      source  = "hashicorp/awscc"
-      version = ">= 1.50"
+      source = "hashicorp/awscc"
+      # The translator reads this provider's schema (vendored, see
+      # terraform/translator/schemas/awscc.json), so the floor is that version.
+      version = ">= AWSCC_VERSION, < 2.0.0"
     }
     time = {
       source  = "hashicorp/time"
-      version = ">= 0.9"
+      version = ">= 0.9, < 1.0"
     }
   }
 }
 """
 
 
-def bridge_tf() -> str:
+def bridge_tf(boundary_var: str | None = None) -> str:
     """Bridge Lambda, its role and its response bucket.
 
     The bridge's own policy grants no ``lambda:InvokeFunction``: each handler
     grants it through an ``aws_lambda_permission`` naming the bridge role.
+
+    The role is named like the template's roles (``<stack>-CfnBridge-<hash>``)
+    so a deploying role scoped to ``role/<stack prefix>*`` can create it, and
+    ``boundary_var`` (the module's ``PermissionsBoundaryArn`` variable, when it
+    has one) is applied as its permissions boundary when set, as the template's
+    ``HasPermissionsBoundary`` condition does for every other role.
     """
+    role_lines = [f"name = {default_name('CfnBridge', 64)}"]
+    if boundary_var:
+        v = f"var.{boundary_var}"
+        role_lines.append(
+            f'permissions_boundary = {v} == null ? null : ({v} == "" ? null : {v})'
+        )
+    role_head = "\n".join(f"  {line}" for line in role_lines)
+    role_lifecycle = "\n".join(
+        f"  {line}" for line in GENERATED_NAME_ROLE_LIFECYCLE.splitlines()
+    )
     return f"""# Runs CloudFormation custom-resource handlers for Terraform. See
 # terraform/bridge/index.py in the source repository.
 
@@ -87,7 +107,7 @@ resource "aws_s3_bucket_policy" "cfn_bridge" {{
 }}
 
 resource "aws_iam_role" "cfn_bridge" {{
-  name_prefix = "cfnbridge-"
+{role_head}
   assume_role_policy = jsonencode({{
     Version = "2012-10-17"
     Statement = [{{
@@ -96,6 +116,7 @@ resource "aws_iam_role" "cfn_bridge" {{
       Action    = "sts:AssumeRole"
     }}]
   }})
+{role_lifecycle}
 }}
 
 resource "aws_iam_role_policy" "cfn_bridge" {{

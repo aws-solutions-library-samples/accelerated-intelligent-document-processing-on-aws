@@ -26,6 +26,9 @@ if TYPE_CHECKING:
     from .translate import Plan, Translator
 
 
+GENERATED_NAME_LIFECYCLE = "lifecycle {{\n  ignore_changes = [{attrs}]\n}}"
+
+
 def _kms_arn(tr: Translator, v: Any) -> str:
     """A key reference as an ARN: the provider takes only ARNs here."""
     if isinstance(v, dict) and set(v) == {"Ref"}:
@@ -197,9 +200,13 @@ class S3BucketMapper:
         }[attr]
 
     def plan(self, tr: Translator, plan: Plan) -> None:
+        # Exactly the resources emit() writes: one per branch that has a value.
+        # A property that resolves to AWS::NoValue (the GovCloud transform sets
+        # WebsiteConfiguration to it) has no leaves and so writes nothing; a
+        # dependency on it would name an undeclared resource.
         for prop, (tf_type, suffix, _) in S3_SUBRESOURCES.items():
             if prop in plan.props:
-                n = max(1, len(_if_leaves(tr, plan.props[prop], [])))
+                n = len(_if_leaves(tr, plan.props[prop], []))
                 for j in range(n):
                     label = f"{plan.name}_{suffix}" + (f"_{j}" if n > 1 else "")
                     plan.extra_deps.append(f"{tf_type}.{label}")
@@ -210,6 +217,7 @@ class S3BucketMapper:
         if acl != "Private":
             raise TranslationError(f"{plan.logical_id}: AccessControl {acl!r}")
         lines = []
+        generated_name = False
         if "BucketName" in props:
             lines.append(f"bucket = {tr.expr(props.pop('BucketName'))}")
         else:
@@ -217,6 +225,7 @@ class S3BucketMapper:
             # CloudFormation does, after the stack-name prefix.
             prefix = f"${{var.{STACK_NAME_VAR}}}-{plan.logical_id}"
             lines.append(f'bucket_prefix = lower(substr("{prefix}", 0, 36))')
+            generated_name = True
         if "Tags" in props:
             from .aws_mappers import _tags
 
@@ -225,6 +234,10 @@ class S3BucketMapper:
         if props:
             raise TranslationError(f"{plan.logical_id}: unmapped {set(props)}")
         head, tail = tr.meta_lines(plan, res)
+        if generated_name:
+            # As for tables: keep the name a bucket was created with if a later
+            # version derives the prefix differently, rather than replacing it.
+            tail = tail + [GENERATED_NAME_LIFECYCLE.format(attrs="bucket_prefix")]
         out = [
             hcl.block(f'resource "aws_s3_bucket" "{plan.name}"', head + lines + tail)
         ]
@@ -332,9 +345,28 @@ class DynamoDbTableMapper:
         where = plan.logical_id
         lines = []
         name = props.pop("TableName", None)
-        lines.append(
-            f"name = {tr.expr(name) if name is not None else default_name(where, 255)}"
-        )
+        suffix_blocks: list[str] = []
+        if name is not None:
+            lines.append(f"name = {tr.expr(name)}")
+        elif plan.logical_id in tr.retained:
+            # A delete keeps this table, and CloudFormation would give the next
+            # deployment of the same name a new random name. A deterministic
+            # name would collide with the kept table on redeploy, so add a
+            # suffix fixed when the table is first created.
+            stamp = f"{plan.name}_name_suffix"
+            count = (
+                [f"count = {tr.cond_ref(plan.condition)} ? 1 : 0"]
+                if plan.condition
+                else []
+            )
+            suffix_blocks.append(hcl.block(f'resource "time_static" "{stamp}"', count))
+            idx = "[0]" if plan.condition else ""
+            lines.append(
+                f'name = "${{substr("${{var.{STACK_NAME_VAR}}}-{where}", 0, 240)}}-'
+                f'${{time_static.{stamp}{idx}.unix}}"'
+            )
+        else:
+            lines.append(f"name = {default_name(where, 255)}")
         lines += self._keys(tr, props.pop("KeySchema"), where)
         for a in props.pop("AttributeDefinitions", []):
             lines.append(
@@ -410,9 +442,15 @@ class DynamoDbTableMapper:
             lines.append(f"tags = {_tags(tr, props.pop('Tags'))}")
         lines += render_spec(tr, self.spec, props, where)
         head, tail = tr.meta_lines(plan, res)
-        return hcl.block(
+        if name is None:
+            # The translator chose this name, and a later version may choose it
+            # differently. A table's name forces replacement, which would delete
+            # an existing deployment's data, so keep the name it was created with.
+            tail = tail + [GENERATED_NAME_LIFECYCLE.format(attrs="name")]
+        table = hcl.block(
             f'resource "aws_dynamodb_table" "{plan.name}"', head + lines + tail
         )
+        return "\n".join(suffix_blocks + [table])
 
 
 BUCKET_POLICY = SpecMapper(

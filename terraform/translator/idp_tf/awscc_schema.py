@@ -80,7 +80,7 @@ class AwsccSchema:
         providers = data["provider_schemas"]
         key = next(k for k in providers if k.endswith("/awscc"))
         self._resources = providers[key]["resource_schemas"]
-        self.version = data.get("format_version", "")
+        self.version = data.get("awscc_version", "")
         self._cache: dict[str, Hint] = {}
 
     def has(self, cfn_type: str) -> bool:

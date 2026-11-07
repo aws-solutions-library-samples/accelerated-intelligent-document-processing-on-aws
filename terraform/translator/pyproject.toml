@@ -13,6 +13,3 @@ idp-tf = "idp_tf.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["idp_tf*"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

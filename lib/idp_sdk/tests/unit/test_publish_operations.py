@@ -1005,3 +1005,59 @@ class TestPrintDeploymentUrls:
         # addition, and keeps the base name.
         assert "stackName=IDP-Headless" in out
         assert f"templateURL={quote(govcloud_url, safe=":/?#[]@!$&'()*+,;=")}" in out
+
+    def test_no_terraform_section_is_printed_when_no_module_was_published(self, capsys):
+        IDPClient().publish.print_deployment_urls(MAIN_URL, REGION)
+
+        assert "Terraform" not in capsys.readouterr().out
+
+    def test_the_terraform_module_and_its_pointer_are_printed(self, capsys):
+        module = f"https://s3.{REGION}.amazonaws.com/{BUCKET_FULL}/p/1/terraform/m.zip"
+        pointer = f"https://s3.{REGION}.amazonaws.com/{BUCKET_FULL}/p/terraform/l.json"
+
+        IDPClient().publish.print_deployment_urls(
+            MAIN_URL,
+            REGION,
+            terraform_module_url=module,
+            terraform_pointer_url=pointer,
+        )
+
+        out = capsys.readouterr().out
+        section = out[out.index("Terraform module source") :]
+        assert section.index(module) < section.index("Latest pointer")
+        assert section.index("Latest pointer") < section.index(pointer)
+
+    def test_a_module_without_a_pointer_prints_no_pointer_line(self, capsys):
+        module = f"https://s3.{REGION}.amazonaws.com/{BUCKET_FULL}/p/1/terraform/m.zip"
+
+        IDPClient().publish.print_deployment_urls(
+            MAIN_URL, REGION, terraform_module_url=module
+        )
+
+        out = capsys.readouterr().out
+        assert module in out
+        assert "Latest pointer" not in out
+
+    def test_each_variant_module_is_printed_in_name_order(self, capsys):
+        """Variants are sorted so the output is the same however the build
+        happened to finish them; a variant without a pointer prints none."""
+        variants = {
+            "headless": {"moduleUrl": "https://x.test/headless.zip"},
+            "govcloud": {
+                "moduleUrl": "https://x.test/govcloud.zip",
+                "pointerUrl": "https://x.test/govcloud-latest.json",
+            },
+        }
+
+        IDPClient().publish.print_deployment_urls(
+            MAIN_URL, REGION, terraform_variant_modules=variants
+        )
+
+        out = capsys.readouterr().out
+        gov = out.index("Terraform govcloud module source")
+        head = out.index("Terraform headless module source")
+        assert gov < head
+        assert out.index("https://x.test/govcloud.zip") > gov
+        assert gov < out.index("https://x.test/govcloud-latest.json") < head
+        assert out.count("Latest pointer") == 1
+        assert out.index("https://x.test/headless.zip") > head

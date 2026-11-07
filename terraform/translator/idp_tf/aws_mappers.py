@@ -183,6 +183,27 @@ class SpecMapper:
 
 
 # --------------------------------------------------------------- IAM role
+#: A role whose template name changes is replaced. Functions and other
+#: dependants take the role by ARN and update in place, so creating the new role
+#: first means none of them is ever left pointing at a deleted role. Only a
+#: change of ``path`` with the name unchanged would collide under this ordering,
+#: and no template sets ``Path``.
+ROLE_LIFECYCLE = "lifecycle {\n  create_before_destroy = true\n}"
+#: A role the template leaves unnamed gets a name the translator generates, and
+#: that name is kept for the life of the role, as CloudFormation keeps the name
+#: it generated. Renaming it would replace the role, and a replaced role is not
+#: contained: every custom resource taking the role's ARN as a property is
+#: updated, its outputs are unknown until apply, and a resource taking one of
+#: them as a create-only property is replaced with it. Measured on a live
+#: upgrade, that replaced the knowledge base's data source.
+GENERATED_NAME_ROLE_LIFECYCLE = (
+    "lifecycle {\n"
+    "  create_before_destroy = true\n"
+    "  ignore_changes = [name, name_prefix]\n"
+    "}"
+)
+
+
 class IamRoleMapper:
     """One CloudFormation role becomes a role, its inline policies and its
     managed-policy attachments. Anything referencing the role also waits for
@@ -216,12 +237,37 @@ class IamRoleMapper:
         # without permissions. CloudFormation absorbs this with internal retries.
         plan.extra_deps.append(f"time_sleep.{plan.name}_iam")
 
+    @staticmethod
+    def _retained_name(tr: Translator, plan: Plan) -> tuple[str, list[str]]:
+        """A retained role's name, with a suffix fixed when it is first created.
+
+        A delete keeps this role, so a deterministic name would collide with it
+        when the same stack is deployed again; CloudFormation's random suffix
+        never does. ``<stack>-<LogicalId>`` cut to fit, the 8-character hash
+        ``default_name`` uses, then the creation time: 44 + 1 + 8 + 1 + 10 = 64.
+        """
+        stamp = f"{plan.name}_name_suffix"
+        count = (
+            [f"count = {tr.cond_ref(plan.condition)} ? 1 : 0"] if plan.condition else []
+        )
+        idx = "[0]" if plan.condition else ""
+        pair = f"${{var.{STACK_NAME_VAR}}}-{plan.logical_id}"
+        name = (
+            f'"${{substr("{pair}", 0, 44)}}-${{substr(md5("{pair}"), 0, 8)}}-'
+            f'${{time_static.{stamp}{idx}.unix}}"'
+        )
+        return name, [hcl.block(f'resource "time_static" "{stamp}"', count)]
+
+    @staticmethod
+    def _has_managed(plan: Plan) -> bool:
+        return plan.props.get("ManagedPolicyArns", NO_VALUE) != NO_VALUE
+
     def _policy_addresses(self, plan: Plan) -> list[str]:
         out = [
             f"aws_iam_role_policy.{plan.name}_{i}"
             for i, _ in enumerate(self._policies(plan))
         ]
-        if "ManagedPolicyArns" in plan.props:
+        if self._has_managed(plan):
             out.append(f"aws_iam_role_policy_attachment.{plan.name}")
         return out
 
@@ -232,8 +278,28 @@ class IamRoleMapper:
             if k not in ("Policies", "ManagedPolicyArns")
         }
         lines = render_spec(tr, self.spec, props, plan.logical_id)
+        stamp_blocks: list[str] = []
+        lifecycle = ROLE_LIFECYCLE
+        if "RoleName" not in props:
+            # CloudFormation names an unnamed role <stack>-<LogicalId>-<random>,
+            # and a deploying role scoped the usual way may create and pass only
+            # roles under role/<stack prefix>*. Left unnamed, the provider would
+            # pick terraform-<timestamp>, outside that scope. The name is
+            # deterministic, so a re-plan is empty; it is unique across nested
+            # modules because a module's stack name carries its parent's.
+            if plan.logical_id in tr.retained:
+                name, stamp_blocks = self._retained_name(tr, plan)
+                # A retained role's name also carries a creation timestamp, so
+                # a redeploy after a delete cannot collide with the kept role.
+            else:
+                name = default_name(plan.logical_id, 64)
+            lifecycle = GENERATED_NAME_ROLE_LIFECYCLE
+            lines.insert(0, f"name = {name}")
         head, tail = tr.meta_lines(plan, res)
-        out = [hcl.block(f'resource "aws_iam_role" "{plan.name}"', head + lines + tail)]
+        tail = tail + [lifecycle]
+        out = stamp_blocks + [
+            hcl.block(f'resource "aws_iam_role" "{plan.name}"', head + lines + tail)
+        ]
         role = f"aws_iam_role.{plan.name}{'[0]' if plan.condition else ''}.name"
         for i, p in enumerate(self._policies(plan)):
             cond_lines = []
@@ -269,6 +335,20 @@ class IamRoleMapper:
                 )
             )
         sleep_deps = [f"aws_iam_role.{plan.name}"] + self._policy_addresses(plan)
+        idx = "[0]" if plan.condition else ""
+        inline = [
+            f"aws_iam_role_policy.{plan.name}_{i}"
+            for i, p in enumerate(self._policies(plan))
+            if not (isinstance(p, dict) and set(p) == {"Fn::If"})
+        ]
+        # Re-wait when a grant changes on an upgrade, not only on create.
+        trigger = (
+            "triggers = { policies = sha1(jsonencode(["
+            + ", ".join(f"{a}{idx}.policy" for a in inline)
+            + "])) }"
+            if inline
+            else None
+        )
         out.append(
             hcl.block(
                 f'resource "time_sleep" "{plan.name}_iam"',
@@ -277,10 +357,12 @@ class IamRoleMapper:
                     if plan.condition
                     else []
                 )
-                + ['create_duration = "10s"', "depends_on = " + hcl.lst(sleep_deps)],
+                + ['create_duration = "10s"']
+                + ([trigger] if trigger else [])
+                + ["depends_on = " + hcl.lst(sleep_deps)],
             )
         )
-        if "ManagedPolicyArns" in plan.props:
+        if self._has_managed(plan):
             arns = tr.expr(plan.props["ManagedPolicyArns"])
             each = f"{{ for i, a in {arns} : tostring(i) => a }}"
             if plan.condition:
@@ -304,6 +386,25 @@ class LambdaMapper(SpecMapper):
     uses (``index.py`` / ``index.js``)."""
 
     def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
+        # CloudFormation tags every function aws:cloudformation:stack-name, and
+        # run-time code finds the deployment's functions by it. That key is
+        # reserved, so a Terraform deployment uses idp:stack-name, with the same
+        # values (see data_mart_rollup).
+        tags = plan.props.get("Tags")
+        if tags is None or isinstance(tags, list):
+            original = plan.props
+            plan.props = dict(
+                original,
+                Tags=list(tags or [])
+                + [{"Key": "idp:stack-name", "Value": {"Ref": "AWS::StackName"}}],
+            )
+            try:
+                return self._emit(tr, plan, res)
+            finally:
+                plan.props = original
+        return self._emit(tr, plan, res)
+
+    def _emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
         code = plan.props.get("Code", {})
         if not (isinstance(code, dict) and "ZipFile" in code):
             return super().emit(tr, plan, res)
@@ -548,6 +649,10 @@ class PerTargetPolicyMapper:
                 continue
             for i, _ in enumerate(items):
                 plan.extra_deps.append(f"{tf_type}.{plan.name}_{prop.lower()}_{i}")
+        if self.tf_type.startswith("aws_iam_"):
+            # A new IAM grant takes seconds to propagate; a dependant (often a
+            # custom resource) that uses it at once is otherwise refused.
+            plan.extra_deps.append(f"time_sleep.{plan.name}_iam")
 
     def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
         props = dict(plan.props)
@@ -583,6 +688,15 @@ class PerTargetPolicyMapper:
                     lines.insert(len(head), f"name = {tr.expr(name)}")
                 label = f"{plan.name}_{prop.lower()}_{i}"
                 out.append(hcl.block(f'resource "{tf_type}" "{label}"', lines + tail))
+        if self.tf_type.startswith("aws_iam_"):
+            created = [a for a in plan.extra_deps if not a.startswith("time_sleep.")]
+            out.append(
+                hcl.block(
+                    f'resource "time_sleep" "{plan.name}_iam"',
+                    head
+                    + ['create_duration = "15s"', "depends_on = " + hcl.lst(created)],
+                )
+            )
         return "\n".join(out)
 
 
@@ -663,7 +777,8 @@ class EventsRuleMapper:
         targets = plan.props.get("Targets", [])
         if not is_intrinsic(targets):
             for i, target in enumerate(targets):
-                n = max(1, len(_if_leaves(tr, target, [])))
+                # As many as _targets() emits: none for a NoValue target.
+                n = len(_if_leaves(tr, target, []))
                 for j in range(n):
                     label = f"{plan.name}_{i}" if n == 1 else f"{plan.name}_{i}_{j}"
                     plan.extra_deps.append(f"aws_cloudwatch_event_target.{label}")
@@ -755,7 +870,7 @@ class EcrRepositoryMapper:
             ("LifecyclePolicy", "lifecycle"),
             ("RepositoryPolicyText", "policy"),
         ):
-            if prop in plan.props:
+            if plan.props.get(prop, NO_VALUE) != NO_VALUE:
                 plan.extra_deps.append(
                     f"aws_ecr_{suffix}_policy.{plan.name}"
                     if suffix == "lifecycle"
@@ -782,7 +897,7 @@ class EcrRepositoryMapper:
             [f"count = {tr.cond_ref(plan.condition)} ? 1 : 0"] if plan.condition else []
         )
         lp = plan.props.get("LifecyclePolicy")
-        if lp is not None:
+        if lp is not None and lp != NO_VALUE:
             extra = set(lp) - {"LifecyclePolicyText", "RegistryId"}
             if extra:
                 raise TranslationError(f"{plan.logical_id}.LifecyclePolicy: {extra}")
@@ -797,7 +912,7 @@ class EcrRepositoryMapper:
                 )
             )
         rp = plan.props.get("RepositoryPolicyText")
-        if rp is not None:
+        if rp is not None and rp != NO_VALUE:
             policy = (
                 tr.expr(rp)
                 if isinstance(rp, str) or is_intrinsic(rp)

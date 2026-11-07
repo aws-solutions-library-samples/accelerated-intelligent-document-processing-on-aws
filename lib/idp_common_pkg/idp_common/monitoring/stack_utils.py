@@ -43,6 +43,11 @@ def _get_cf_client() -> Any:
     """Return (and lazily create) a module-level CloudFormation boto3 client."""
     global _cf_client
     if _cf_client is None:
+        # Under Terraform the stack is a label; the hook answers resource
+        # lookups from the deployment's resource directory.
+        from idp_common.utils.terraform_stack import install_if_terraform
+
+        install_if_terraform()
         _cf_client = boto3.client("cloudformation")
     return _cf_client
 

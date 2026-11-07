@@ -324,3 +324,93 @@ def test_survey_mode_collects_every_failure(schema):
     tr = Translator(t, schema, survey=True)
     tr.render()
     assert len(tr.errors) == 2
+
+
+def test_variable_names_keep_mixed_case_acronyms_whole():
+    from idp_tf.translate import variable_name
+
+    assert variable_name("WAFAllowedIPv4Ranges") == "waf_allowed_ipv4_ranges"
+    assert variable_name("ExternalIdPOIDCClientId") == "external_idp_oidc_client_id"
+    assert variable_name("AdminEmail") == "admin_email"
+
+
+def test_every_function_carries_the_idp_stack_name_tag(schema):
+    """Run-time code finds a deployment's functions by stack-name tag;
+    CloudFormation's own key is reserved, so the module sets idp:stack-name."""
+    t = {"Resources": {"F": lambda_fn(Tags=[{"Key": "a", "Value": "b"}])}}
+    out = render(t, schema)["main.tf"]
+    assert '"idp:stack-name" = var.stack_name' in out
+    assert '"a" = "b"' in out
+
+
+def test_a_retained_unnamed_table_gets_a_stable_suffix(schema):
+    t = {
+        "Resources": {
+            "T": {
+                "Type": "AWS::DynamoDB::Table",
+                "DeletionPolicy": "Retain",
+                "Properties": {
+                    "KeySchema": [{"AttributeName": "k", "KeyType": "HASH"}],
+                    "AttributeDefinitions": [
+                        {"AttributeName": "k", "AttributeType": "S"}
+                    ],
+                    "BillingMode": "PAY_PER_REQUEST",
+                },
+            }
+        }
+    }
+    out = render(t, schema)["main.tf"]
+    assert 'resource "time_static" "t_name_suffix"' in out
+    assert "time_static.t_name_suffix.unix" in out
+
+
+def test_generated_names_of_stateful_resources_survive_a_change_in_derivation(schema):
+    """A generated table name or bucket prefix forces replacement when it
+    changes; replacement would delete an existing deployment's data."""
+    t = {
+        "Resources": {
+            "T": {
+                "Type": "AWS::DynamoDB::Table",
+                "Properties": {
+                    "KeySchema": [{"AttributeName": "k", "KeyType": "HASH"}],
+                    "AttributeDefinitions": [
+                        {"AttributeName": "k", "AttributeType": "S"}
+                    ],
+                },
+            },
+            "B": {"Type": "AWS::S3::Bucket", "Properties": {}},
+            "N": {"Type": "AWS::S3::Bucket", "Properties": {"BucketName": "fixed"}},
+        }
+    }
+    out = render(t, schema)["main.tf"]
+    assert "ignore_changes = [name]" in out
+    assert "ignore_changes = [bucket_prefix]" in out
+    named = out[out.index('resource "aws_s3_bucket" "n"') :]
+    assert "ignore_changes" not in named[: named.index("\n}")]
+
+
+def test_sam_expansion_needs_no_region_in_the_environment(monkeypatch, tmp_path):
+    """CI's hermetic runs carry no AWS region, and SAM refuses to run without
+    one unless it is given a session; the expansion must not depend on either."""
+    from idp_tf.expand import expand
+
+    for var in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "none"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "none"))
+    out = expand(
+        {
+            "Transform": "AWS::Serverless-2016-10-31",
+            "Resources": {
+                "Fn": {
+                    "Type": "AWS::Serverless::Function",
+                    "Properties": {
+                        "Runtime": "python3.12",
+                        "Handler": "index.handler",
+                        "CodeUri": "s3://bucket/key.zip",
+                    },
+                }
+            },
+        }
+    )
+    assert out["Resources"]["Fn"]["Type"] == "AWS::Lambda::Function"

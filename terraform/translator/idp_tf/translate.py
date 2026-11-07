@@ -45,6 +45,9 @@ RESOURCE_KEYS = {
     "Version",
 }
 STACK_NAME_VAR = "stack_name"
+#: The parameter every IDP template uses for an optional IAM permissions
+#: boundary; the bridge role the translator adds honours it too.
+PERMISSIONS_BOUNDARY_PARAMETER = "PermissionsBoundaryArn"
 # A module variable carrying a plan-time-known stand-in for a parameter that a
 # condition reads. Resource attributes are replaced by a non-empty placeholder,
 # which is exactly what CloudFormation's condition sees: a resource id is never
@@ -73,6 +76,17 @@ AWSCC_PROPERTY_FIXUPS: dict[tuple[str, str], str] = {
     ("AWS::ApiGateway::Method", "Integration"): "drop_empty_templates",
 }
 
+# Functions that walk the stack tree at run time. Under Terraform they get the
+# resource directory's location (IDP_TF_RESOURCE_DIRECTORY) and read access to
+# it, so idp_common's hook answers their CloudFormation lookups. Logical id ->
+# what walks. tests/test_offline_templates.py fails if a name is not a function
+# in the standard template.
+TERRAFORM_DIRECTORY_READERS: dict[str, str] = {
+    "DataMartRollupFunction": "data_mart_rollup enumerates the stack tree",
+}
+DIRECTORY_PSEUDO = "IDP::TerraformResourceDirectory"
+DIRECTORY_KEY = "terraform/cfn-resource-directory.json"
+
 # Resources a second writer owns at deploy time, so Terraform must not treat the
 # difference as drift. Keyed by (type, logical id); each needs its reason, and a
 # key that no longer names a resource in the template fails the translation.
@@ -99,6 +113,25 @@ AWSCC_REF_ATTR: dict[str, str] = {
     "AWS::OpenSearchServerless::AccessPolicy": "name",
     "AWS::OpenSearchServerless::SecurityPolicy": "name",
 }
+
+
+# Mixed-case acronyms in parameter names, written as one word before the
+# snake_case conversion: otherwise IPv4 reads as I-Pv4 (`i_pv4`) and IdPOIDC as
+# Id-POIDC. Applied to variable names only; resource addresses keep hcl.snake.
+_ACRONYMS = (
+    ("IPv4", "Ipv4"),
+    ("IPv6", "Ipv6"),
+    ("IdP", "Idp"),
+    ("XRay", "Xray"),
+    ("MLflow", "Mlflow"),
+    ("CloudFront", "Cloudfront"),
+)
+
+
+def variable_name(parameter: str) -> str:
+    for acronym, word in _ACRONYMS:
+        parameter = parameter.replace(acronym, word)
+    return hcl.snake(parameter)
 
 
 class TranslationError(Exception):
@@ -174,13 +207,14 @@ class Translator:
         self.params: dict[str, dict[str, Any]] = template.get("Parameters", {})
         self.param_vars: dict[str, str] = {}
         for p in self.params:
-            v = hcl.snake(p)
+            v = variable_name(p)
             if v == STACK_NAME_VAR:
                 v = "param_" + v
             self.param_vars[p] = v
         self.conditions: dict[str, Any] = template.get("Conditions", {})
         self.mappings: dict[str, Any] = template.get("Mappings", {})
         self.report = Report()
+        self.retained: list[str] = []
         # In survey mode every failure is collected instead of raised, so one
         # run lists everything a template needs.
         self.survey = survey
@@ -198,6 +232,8 @@ class Translator:
         # source inside a module that has depends_on is deferred to apply, which
         # would make every condition reading it unknown at plan time.
         self.is_root = True
+        # Off for unit tests on fragments; the CLI turns it on for a real tree.
+        self.directory_readers = False
         # True while writing the resource directory, which keeps CloudFormation's
         # Ref semantics exactly.
         self._directory_mode = False
@@ -231,8 +267,10 @@ class Translator:
                 mapper = self.mappers.get(rtype)
                 if mapper is None:
                     msg = (
-                        f"{lid}: {rtype} has no awscc resource and no "
-                        "hashicorp/aws mapping"
+                        f"{lid}: {rtype} has no hashicorp/aws mapping and is not in "
+                        "the vendored awscc schema. Add a mapping in aws_mappers, or "
+                        "run terraform/translator/scripts/refresh_awscc_schema.py "
+                        "if awscc supports it"
                     )
                     if not self.survey:
                         raise TranslationError(msg)
@@ -252,10 +290,10 @@ class Translator:
             )
             policy = res.get("DeletionPolicy")
             if policy and policy.lower() != "delete":
-                self.report.warn(
-                    f"{lid}: DeletionPolicy {policy} has no Terraform equivalent; "
-                    "terraform destroy deletes it"
-                )
+                # Terraform has no DeletionPolicy. `idp-cli delete --terraform`
+                # removes these from state before destroying, so they are left
+                # in place as CloudFormation leaves them.
+                self.retained.append(lid)
         for plan in self.plans.values():
             if plan.kind == "aws":
                 self.mappers[plan.cfn_type].plan(self, plan)
@@ -321,6 +359,8 @@ class Translator:
         }
         if name in pseudo:
             return pseudo[name]
+        if name == DIRECTORY_PSEUDO:
+            return f'"s3://${{aws_s3_bucket.cfn_bridge.id}}/{DIRECTORY_KEY}"'
         if name == "AWS::StackId":
             return (
                 '"arn:${local.pseudo.partition}:cloudformation:'
@@ -663,7 +703,11 @@ class Translator:
             f'resource "aws_lambda_permission" "{plan.name}_bridge"',
             head
             + [
-                f'statement_id = "cfnbridge-{plan.logical_id}"',
+                # A prefix, not a fixed id: when the bridge role is replaced
+                # (create_before_destroy), the new permission is created while
+                # the old one still holds its statement id, and a fixed id is
+                # refused with 409. 100 characters at most, 26 of them Terraform's.
+                f'statement_id_prefix = "cfnbridge-{plan.logical_id[:60]}-"',
                 'action = "lambda:InvokeFunction"',
                 f"function_name = {token_expr}",
                 "principal = aws_iam_role.cfn_bridge.arn",
@@ -734,9 +778,63 @@ class Translator:
         head, tail = self.meta_lines(plan, res)
         return hcl.block(f'module "{plan.name}"', head + lines + tail)
 
+    def _inject_directory_readers(self) -> list[str]:
+        """Give each TERRAFORM_DIRECTORY_READERS function the directory URL and
+        read access to it. Root module only; returns the extra resources."""
+        # A variant may remove a reader, so a missing one is skipped here; the
+        # standard template must have them all, which
+        # tests/test_offline_templates.py asserts.
+        extra = []
+        for lid in TERRAFORM_DIRECTORY_READERS:
+            plan = self.plans.get(lid)
+            if plan is None:
+                continue
+            env = dict(plan.props.get("Environment") or {})
+            variables = env.get("Variables") or {}
+            if is_intrinsic(variables):
+                raise TranslationError(f"{lid}: Environment.Variables must be literal")
+            env["Variables"] = dict(
+                variables, IDP_TF_RESOURCE_DIRECTORY={"Ref": DIRECTORY_PSEUDO}
+            )
+            plan.props = dict(plan.props, Environment=env)
+            role = plan.props.get("Role")
+            if not (isinstance(role, dict) and set(role) == {"Fn::GetAtt"}):
+                raise TranslationError(f"{lid}: Role must be GetAtt <role>.Arn")
+            arg = role["Fn::GetAtt"]
+            role_lid = arg.split(".")[0] if isinstance(arg, str) else arg[0]
+            role_plan = self.plans[role_lid]
+            count = (
+                [f"count = {self.cond_ref(role_plan.condition)} ? 1 : 0"]
+                if role_plan.condition
+                else []
+            )
+            idx = "[0]" if role_plan.condition else ""
+            extra.append(
+                hcl.block(
+                    f'resource "aws_iam_role_policy" "{role_plan.name}_tf_directory"',
+                    count
+                    + [
+                        f"# {TERRAFORM_DIRECTORY_READERS[lid]}",
+                        f"role = {role_plan.address}{idx}.name",
+                        'name = "terraform-resource-directory-read"',
+                        "policy = jsonencode({\n"
+                        '  Version = "2012-10-17"\n'
+                        "  Statement = [{\n"
+                        '    Effect = "Allow"\n'
+                        '    Action = "s3:GetObject"\n'
+                        f'    Resource = "${{aws_s3_bucket.cfn_bridge.arn}}/{DIRECTORY_KEY}"\n'
+                        "  }]\n"
+                        "})",
+                    ],
+                )
+            )
+        return extra
+
     def render(self) -> dict[str, str]:
         self.custom_tokens: list[str] = []
         resources: list[str] = []
+        if self.is_root and self.directory_readers:
+            resources.extend(self._inject_directory_readers())
         for lid, res in self.t.get("Resources", {}).items():
             plan = self.plans.get(lid)
             if plan is None:
@@ -769,9 +867,39 @@ class Translator:
                 f'variable "{STACK_NAME_VAR}"',
                 [
                     "type = string",
-                    'description = "Name used where CloudFormation would use '
-                    'the stack name."',
-                ],
+                    'description = "Name of this deployment. It is the name of the '
+                    "CloudFormation label stack, the value of every AWS::StackName "
+                    "in the templates, and the prefix of generated resource names; "
+                    'nested modules use <stack_name>-<LogicalId>."',
+                ]
+                + (
+                    [
+                        hcl.block(
+                            "validation",
+                            [
+                                # The main template's IsStacknameLengthOK refuses
+                                # more than 25; caught here at plan instead of
+                                # part-way through an apply.
+                                f"condition = length(var.{STACK_NAME_VAR}) <= 25",
+                                'error_message = "stack_name must be at most 25 '
+                                'characters."',
+                            ],
+                        ).rstrip(),
+                        hcl.block(
+                            "validation",
+                            [
+                                "condition = can(regex("
+                                '"^[A-Za-z][A-Za-z0-9-]*$", '
+                                f"var.{STACK_NAME_VAR}))",
+                                'error_message = "stack_name must start with a '
+                                "letter and contain only letters, digits and "
+                                'hyphens (a CloudFormation stack name)."',
+                            ],
+                        ).rstrip(),
+                    ]
+                    if self.is_root
+                    else []
+                ),
             )
         ]
         for p, spec in self.params.items():
@@ -870,6 +998,40 @@ class Translator:
                 ).rstrip()
             )
         return lines
+
+    def retained_addresses(self) -> list[str]:
+        """Terraform addresses (without instance keys) of every resource whose
+        CloudFormation DeletionPolicy keeps it, with the resources it became."""
+        out = []
+        for lid in self.retained:
+            plan = self.plans.get(lid)
+            if plan is None:
+                continue
+            if not plan.virtual:
+                out.append(plan.address)
+            out.extend(a for a in plan.extra_deps if not a.startswith("time_sleep."))
+        for name, child in self.children.items():
+            out.extend(f"module.{name}.{a}" for a in child.retained_addresses())
+        return sorted(set(out))
+
+    def permissions_boundary_variable(self) -> str | None:
+        """The variable for this template's ``PermissionsBoundaryArn``, if any."""
+        if PERMISSIONS_BOUNDARY_PARAMETER in self.params:
+            return variable_name(PERMISSIONS_BOUNDARY_PARAMETER)
+        return None
+
+    def parameter_map(self) -> dict[str, dict[str, Any]]:
+        """CloudFormation parameter name -> Terraform variable and type, for
+        tools that take CloudFormation-style parameters (idp-cli deploy)."""
+        return {
+            p: {
+                "variable": self.param_vars[p],
+                "type": str(spec.get("Type", "String")),
+                "required": "Default" not in spec,
+                "sensitive": bool(spec.get("NoEcho")),
+            }
+            for p, spec in self.params.items()
+        }
 
     def label_parameters(self) -> list[tuple[str, str, str]]:
         """(CloudFormation name, HCL value as text, description) per parameter
