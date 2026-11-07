@@ -47,7 +47,10 @@ extraction fails with the CLI's own "Native @formatjs/cli-lib binding is
 unavailable". That is not a stale catalog and not something the developer can fix
 by re-extracting, so off CI it is reported as the same ``⏭️  SKIPPED`` (the tree is
 measured in CI, which runs on a platform that has the binary); in CI it fails like
-any other missing toolchain. ``node`` itself is run by name from ``PATH`` (the
+any other missing toolchain. Only the English half is affected: the translation
+catalogs compile through ``node`` and need no binary, so on such a platform they are
+still checked, still fail on a problem, and the skip line says which half it covers.
+``node`` itself is run by name from ``PATH`` (the
 runtime the developer or the job already has; never ``npx``, never the network), and
 its absence is reported as a failure that names it.
 
@@ -156,6 +159,10 @@ class Layout:
 class Report:
     failures: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: The CLI's own text when the English re-extraction could not run on this platform
+    #: (no native binary). Only that half is affected: the translation catalogs compile
+    #: through ``node`` and need no binary, so they are still checked and still fail.
+    english_not_measured: str | None = None
 
 
 def extract_command(layout: Layout, out_file: Path) -> list[str]:
@@ -276,7 +283,14 @@ def check_translation_catalogs(layout: Layout, report: Report) -> None:
 
 
 def check(layout: Layout, report: Report) -> None:
-    check_english_catalog(layout, report)
+    # The two halves need different tools. Only the English re-extraction runs the
+    # FormatJS CLI's native binary; when that cannot run here, the translation catalogs
+    # (compiled by `node` alone) are still checked, so a platform without the binary
+    # keeps the ICU-parity check that is this gate's main purpose once catalogs exist.
+    try:
+        check_english_catalog(layout, report)
+    except ToolchainCannotRunHere as exc:
+        report.english_not_measured = str(exc)
     check_translation_catalogs(layout, report)
 
 
@@ -309,41 +323,57 @@ def main(argv: list[str] | None = None) -> int:
     report = Report()
     try:
         check(layout, report)
-    except ToolchainCannotRunHere as exc:
-        host = f"{sys.platform}-{platform.machine()}"
-        if in_ci():
-            print(
-                f"❌ {GATE}: the installed @formatjs/cli has no native binary for this "
-                f"runner ({host}), so the English catalog cannot be re-measured. In CI "
-                f"this is a job-configuration failure, not a reason to skip: give the "
-                f"job a platform the pinned CLI ships a binary for, or bump the pin to "
-                f"one that ships it for this one. The CLI said:\n{exc}"
-            )
-            return 1
-        print(f"⏭️  {GATE} SKIPPED (not a pass: this platform cannot run it)")
-        print(
-            f"   The installed @formatjs/cli ships no native binary for {host}, so the "
-            f"English catalog was not re-measured here; CI measures it. A CLI version "
-            f"that ships a binary for this platform makes the gate run locally again "
-            f"(see src/ui/src/i18n/README.md, dependency pins). The CLI said:\n   "
-            + str(exc).replace("\n", "\n   ")
-        )
-        return 0
     except (OSError, ValueError, KeyError) as exc:
         report.failures.append(str(exc))
     if args.verbose:
         for note in report.notes:
             print(f"  · {note}")
+    translations = [loc for loc in catalog_locales(layout) if loc != SOURCE_LOCALE]
+    if report.english_not_measured is not None and in_ci():
+        host = f"{sys.platform}-{platform.machine()}"
+        print(
+            f"❌ {GATE}: the installed @formatjs/cli has no native binary for this "
+            f"runner ({host}), so the English catalog cannot be re-measured. In CI "
+            f"this is a job-configuration failure, not a reason to skip: give the "
+            f"job a platform the pinned CLI ships a binary for, or bump the pin to "
+            f"one that ships it for this one. The CLI said:\n"
+            f"{report.english_not_measured}"
+        )
+        for failure in report.failures:
+            print(f"\n  - {failure}")
+        return 1
     if report.failures:
         print(f"❌ {GATE}: {len(report.failures)} problem(s)\n")
         for failure in report.failures:
             print(f"  - {failure}\n")
+        if report.english_not_measured is not None:
+            print(
+                f"  (and the English catalog was not re-measured: the installed "
+                f"@formatjs/cli ships no native binary for "
+                f"{sys.platform}-{platform.machine()}; CI measures it)\n"
+            )
         print(
             "See scripts/check_ui_i18n_catalog.py's module docstring and issue #1770 "
             "for what this gate is protecting."
         )
         return 1
-    translations = [loc for loc in catalog_locales(layout) if loc != SOURCE_LOCALE]
+    if report.english_not_measured is not None:
+        host = f"{sys.platform}-{platform.machine()}"
+        compiled = (
+            f"the {len(translations)} translation catalog(s) compile against it"
+            if translations
+            else "there is no translation catalog to compile yet"
+        )
+        print(f"⏭️  {GATE} SKIPPED (not a pass: this platform cannot run it)")
+        print(
+            f"   The installed @formatjs/cli ships no native binary for {host}, so the "
+            f"English catalog was not re-measured here; CI measures it. Only that half "
+            f"was skipped: {compiled}. A CLI version that ships a binary for this "
+            f"platform makes the whole gate run locally again (see "
+            f"src/ui/src/i18n/README.md, dependency pins). The CLI said:\n   "
+            + report.english_not_measured.replace("\n", "\n   ")
+        )
+        return 0
     print(
         f"✅ {GATE}: {layout.relative(layout.en_catalog)} matches a fresh extraction "
         f"and {len(translations)} translation catalog(s) compile against it"

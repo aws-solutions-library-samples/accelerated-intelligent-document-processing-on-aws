@@ -349,11 +349,13 @@ def test_a_toolchain_with_no_native_binary_skips_off_ci_and_names_the_platform(
 ):
     """The wrapper is installed, so the toolchain check passes; the extraction then fails
     with the CLI's own text. That is neither a stale catalog nor something re-extracting
-    fixes, so off CI it is the same visible skip as an absent toolchain."""
-    _tree(tmp_path)
+    fixes, so off CI it is the same visible skip as an absent toolchain -- for the English
+    half only: the translation catalogs compile through `node`, need no binary, and are
+    still checked, and the skip line says so."""
+    _tree(tmp_path, catalogs={"fr-CA.json": "{}"})
     monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
     _without_ci(monkeypatch)
-    _fake_run(monkeypatch, extract_rc=1, extract_stderr=NO_NATIVE_BINARY)
+    calls = _fake_run(monkeypatch, extract_rc=1, extract_stderr=NO_NATIVE_BINARY)
     assert MODULE.main([]) == 0
     out = capsys.readouterr().out
     assert (
@@ -362,10 +364,37 @@ def test_a_toolchain_with_no_native_binary_skips_off_ci_and_names_the_platform(
     )
     assert "ships no native binary for" in out
     assert "@formatjs/cli-native-darwin-x64" in out, "the CLI's own output is shown"
+    assert "Only that half was skipped: the 1 translation catalog(s) compile" in out
     assert "✅" not in out
     assert "is stale" not in out and "formatjs extract` failed" not in out, (
         "a platform that cannot run the tool must not be reported as a catalog problem"
     )
+    assert [c[0] for c in calls][-1] == "node", (
+        "the translation catalog must still be compiled when only the CLI cannot run"
+    )
+
+
+def test_a_broken_translation_still_fails_where_the_cli_cannot_run(
+    tmp_path, monkeypatch, capsys
+):
+    """The ICU-parity check is the gate's main purpose once catalogs exist; a platform
+    without the CLI's binary must not lose it. The failure is reported, exit 1, with a
+    note that the English half was not measured."""
+    _tree(tmp_path, catalogs={"fr-CA.json": "{}"})
+    monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
+    _without_ci(monkeypatch)
+    _fake_run(
+        monkeypatch,
+        extract_rc=1,
+        extract_stderr=NO_NATIVE_BINARY,
+        broken={"fr-CA": "fr-CA.json: i18n.switcher.label: does not parse as ICU"},
+    )
+    assert MODULE.main([]) == 1
+    out = capsys.readouterr().out
+    assert "❌ check-ui-i18n-catalog: 1 problem(s)" in out
+    assert "src/ui/src/i18n/fr-CA.json would fail the UI build" in out
+    assert "the English catalog was not re-measured" in out
+    assert "SKIPPED" not in out, "a real failure is a failure, not a skip"
 
 
 @pytest.mark.parametrize("variable", ["CI", "GITHUB_ACTIONS", "GITLAB_CI"])

@@ -138,8 +138,9 @@ that takes a `locale` prop directly.
   copied to the clipboard, or compared or sorted as text keeps locale-neutral formatting
   (`toFixed`, `String`, `JSON.stringify`): `1 234,50` round-trips through `parseFloat` as `1`,
   and `US$0.0123` through `replace('$', '')` as `NaN`.
-- In `fr-CA`, ICU emits U+00A0 (no-break space) as the group separator and before `%` and `US$`,
-  so tests match those positions with `\s`. jsdom's `Intl` follows the process locale, so every
+- In `fr-CA`, ICU emits a no-break space as the group separator and before `%` and `US$`; which
+  one (U+00A0, or the narrow U+202F) has changed between ICU releases, so tests match those
+  positions with `\s` and never name a codepoint. jsdom's `Intl` follows the process locale, so every
   formatting test passes an explicit locale rather than relying on the machine's default.
 
 Nothing calls the helpers yet; PR 2 of the series moves the existing `toLocaleString`, `toFixed`

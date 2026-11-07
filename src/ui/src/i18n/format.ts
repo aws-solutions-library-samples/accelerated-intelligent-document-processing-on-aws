@@ -101,9 +101,10 @@ export interface PercentOptions {
 }
 
 /**
- * A percentage from a RATIO: `0.125` → `12.5%` (en), `12,5 %` (fr-CA, narrow no-break space
- * before the sign). `Intl` does the ×100, so a site that computes `(x * 100).toFixed(1) + '%'`
- * today passes `x`, not `x * 100`, with `{ fractionDigits: 1 }`. Display only.
+ * A percentage from a RATIO: `0.125` → `12.5%` (en), `12,5 %` (fr-CA, a no-break space before
+ * the sign; which codepoint varies between ICU releases, so tests match it with `\s`). `Intl`
+ * does the ×100, so a site that computes `(x * 100).toFixed(1) + '%'` today passes `x`, not
+ * `x * 100`, with `{ fractionDigits: 1 }`. Display only.
  */
 export const formatPercent = (ratio: number, locale: Locale, { fractionDigits }: PercentOptions): string =>
   new Intl.NumberFormat(formattingLocale(locale), { style: 'percent', ...fractionDigitsOptions(fractionDigits) }).format(ratio);

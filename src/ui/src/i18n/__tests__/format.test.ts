@@ -5,8 +5,9 @@
  * ICU and follows the process locale (`C.UTF-8` in CI, possibly `fr-CA` on a developer's machine),
  * so every pinned string here passes an explicit locale and the `en` path is asserted against the
  * bare built-in it must reproduce, which holds on any machine. Where ICU emits a space whose code
- * point has changed between releases (the narrow no-break space in `12,5 %`, the space before
- * `PM`), the assertion matches `\s` rather than one code point.
+ * point has changed between releases (the no-break space in `12,5 %`, U+00A0 or the narrow
+ * U+202F depending on the release; the space before `PM`), the assertion matches `\s` rather
+ * than one code point.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
