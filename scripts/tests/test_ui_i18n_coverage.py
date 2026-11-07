@@ -279,10 +279,17 @@ def test_an_absent_toolchain_fails_in_ci(tmp_path, monkeypatch, capsys, variable
     monkeypatch.setenv(variable, "true")
     calls = _fake_run(monkeypatch)
     assert MODULE.main([]) == 2
-    out = capsys.readouterr().out
-    assert "❌ ui-i18n-coverage" in out
-    assert "src/ui/node_modules/@formatjs/icu-messageformat-parser is missing" in out
-    assert "SKIPPED" not in out
+    captured = capsys.readouterr()
+    assert "❌ ui-i18n-coverage" in captured.err
+    assert (
+        "src/ui/node_modules/@formatjs/icu-messageformat-parser is missing"
+        in captured.err
+    )
+    assert "SKIPPED" not in captured.err
+    assert captured.out == "", (
+        "the CI failure must write nothing to stdout either: a caller piping the report "
+        f"(or --json) gets the exit code and an empty stream, never prose:\n{captured.out}"
+    )
     assert calls == []
 
 

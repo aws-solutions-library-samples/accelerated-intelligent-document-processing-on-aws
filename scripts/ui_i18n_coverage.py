@@ -174,17 +174,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if not layout.parser_package.is_dir():
         where = layout.relative(layout.parser_package)
+        # Both notices below go to stderr, like every other non-report path here: a
+        # caller piping stdout for the report (or its --json form) must get nothing,
+        # not a human notice, whichever way the missing toolchain is reported.
         if in_ci():
             print(
                 f"❌ {TOOL}: {where} is missing, so no translation can be measured "
                 f"against the English. In CI this is a job-configuration failure, not "
                 f"a reason to skip: every job that runs this installs the UI's npm "
                 f"dependencies first. Give the job the dependencies; do not relax "
-                f"this to a skip."
+                f"this to a skip.",
+                file=sys.stderr,
             )
             return TOOL_ERROR
-        # On stderr like every other non-report path here: a caller piping stdout for
-        # the report (or its --json form) must get nothing, not a human notice.
         print(
             f"⏭️  {TOOL} SKIPPED (not a pass: run make ui-lint first)", file=sys.stderr
         )
