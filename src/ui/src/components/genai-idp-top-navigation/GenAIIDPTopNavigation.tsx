@@ -11,6 +11,7 @@ import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import useUserDisplayName from '../../hooks/use-user-display-name';
 import useDeploymentContext from '../../hooks/use-deployment-context';
+import { useLanguageSwitcherUtility } from '../../i18n/LanguageSwitcher';
 import { useInboxBellUtility } from '../inbox/inbox-bell';
 import { buildBugReportUrl, buildFeatureRequestUrl } from '../../utils/github-feedback';
 import { GITHUB_ISSUES_URL } from '../../constants/github';
@@ -71,6 +72,8 @@ const GenAIIDPTopNavigation = (): React.JSX.Element => {
   const { displayName } = useUserDisplayName();
   const deploymentContext = useDeploymentContext();
   const inboxUtility = useInboxBellUtility();
+  // null while only one locale is enabled, so nothing is added to the utilities.
+  const languageSwitcherUtility = useLanguageSwitcherUtility();
   const userId = displayName || user?.username || 'user';
   const [isSignOutModalVisible, setIsSignOutModalVisiblesetVisible] = useState(false);
 
@@ -126,6 +129,8 @@ const GenAIIDPTopNavigation = (): React.JSX.Element => {
             inboxUtility,
             // An Annotator-only user's shell is Home and the notifications bell.
             ...(isAnnotatorOnly ? [] : [feedbackUtility]),
+            // The language menu, present only once a second locale is enabled.
+            ...(languageSwitcherUtility ? [languageSwitcherUtility] : []),
             {
               type: 'menu-dropdown',
               text: userDisplayText,
