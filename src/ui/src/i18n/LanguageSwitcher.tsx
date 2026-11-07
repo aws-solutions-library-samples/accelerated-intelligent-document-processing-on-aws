@@ -31,8 +31,10 @@ export const messages = defineMessages<{
 
 /**
  * The language menu of the top navigation: one item per enabled locale, each labelled in its
- * own language, choosing one calls `setLocale`. Returns `null` while fewer than two locales are
- * enabled, so the caller adds nothing to its utilities and the English shell is unchanged.
+ * own language and the current one checked (Cloudscape's checkbox item, so the mark sits where
+ * a user looks while choosing, not only in the trigger's text); choosing one calls `setLocale`.
+ * Returns `null` while fewer than two locales are enabled, so the caller adds nothing to its
+ * utilities and the English shell is unchanged.
  */
 export const useLanguageSwitcherUtility = (): TopNavigationProps.Utility | null => {
   const intl = useIntl();
@@ -45,7 +47,12 @@ export const useLanguageSwitcherUtility = (): TopNavigationProps.Utility | null 
     text: current,
     title: intl.formatMessage(messages.label),
     ariaLabel: intl.formatMessage(messages.ariaLabel, { language: current }),
-    items: enabledLocales.map((candidate) => ({ id: candidate, text: LOCALE_DISPLAY_NAMES[candidate] })),
+    items: enabledLocales.map((candidate) => ({
+      id: candidate,
+      text: LOCALE_DISPLAY_NAMES[candidate],
+      itemType: 'checkbox' as const,
+      checked: candidate === locale,
+    })),
     onItemClick: ({ detail }) => setLocale(detail.id),
   };
 };

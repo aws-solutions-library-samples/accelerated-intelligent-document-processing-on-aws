@@ -9,7 +9,7 @@ import React from 'react';
 import { join } from 'node:path';
 import { TopNavigation } from '@cloudscape-design/components';
 import type { TopNavigationProps } from '@cloudscape-design/components';
-import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileCatalog, readCatalog, sourceHash } from '../../../scripts/i18n/catalog.mjs';
 import { messages, useLanguageSwitcherUtility } from '../LanguageSwitcher';
@@ -85,7 +85,7 @@ describe('useLanguageSwitcherUtility', () => {
     expect(result.current).toBeNull();
   });
 
-  it('is a dropdown of the enabled locales by their own names, showing the current one', () => {
+  it('is a dropdown of the enabled locales by their own names, with the current one checked', () => {
     const { result } = renderHook(() => useLanguageSwitcherUtility(), { wrapper: wrapper(EN_FR) });
     const utility = menu(result.current);
     expect(utility.text).toBe('English');
@@ -93,17 +93,21 @@ describe('useLanguageSwitcherUtility', () => {
     expect(utility.title).toBe('Language');
     expect(utility.ariaLabel).toBe('Language, currently English');
     expect(utility.items).toEqual([
-      { id: 'en', text: LOCALE_DISPLAY_NAMES.en },
-      { id: 'fr-CA', text: LOCALE_DISPLAY_NAMES['fr-CA'] },
+      { id: 'en', text: LOCALE_DISPLAY_NAMES.en, itemType: 'checkbox', checked: true },
+      { id: 'fr-CA', text: LOCALE_DISPLAY_NAMES['fr-CA'], itemType: 'checkbox', checked: false },
     ]);
   });
 
-  it('choosing an item calls setLocale: the choice persists and the dropdown follows it', async () => {
+  it('choosing an item calls setLocale: the choice persists, the dropdown and its check mark follow it', async () => {
     const { result } = renderHook(() => useLanguageSwitcherUtility(), { wrapper: wrapper(EN_FR) });
     choose(menu(result.current), 'fr-CA');
     expect(window.localStorage.getItem(LOCALE_STORAGE_KEY)).toBe('fr-CA');
     expect(document.documentElement.lang).toBe('fr-CA');
     expect(menu(result.current).text).toBe('Français (Canada)');
+    expect(menu(result.current).items.map((item) => [item.id, 'checked' in item && item.checked])).toEqual([
+      ['en', false],
+      ['fr-CA', true],
+    ]);
     // Its own strings come from the catalog once it has loaded.
     await waitFor(() => expect(menu(result.current).title).toBe('Langue'));
     expect(menu(result.current).ariaLabel).toBe('Langue, actuellement Français (Canada)');
@@ -136,6 +140,15 @@ describe('useLanguageSwitcherUtility', () => {
     expect(screen.getAllByLabelText('Language, currently Français (Canada)').length).toBeGreaterThan(0);
     await waitFor(() => expect(screen.getAllByLabelText('Langue, actuellement Français (Canada)').length).toBeGreaterThan(0));
     expect(screen.queryAllByLabelText('Language, currently Français (Canada)')).toEqual([]);
+
+    // Open the menu: the current locale is the checked item, where a user looks while choosing.
+    // `hidden: true` because, unmeasured under jsdom, the top navigation keeps both of its
+    // responsive variants aria-hidden; the roles and states are rendered all the same.
+    const trigger = screen.getAllByRole('button', { name: 'Langue, actuellement Français (Canada)', hidden: true })[0];
+    fireEvent.click(trigger);
+    const french = await screen.findByRole('menuitemcheckbox', { name: 'Français (Canada)', hidden: true });
+    expect(french).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('menuitemcheckbox', { name: 'English', hidden: true })).toHaveAttribute('aria-checked', 'false');
   });
 
   it('declares its messages with stable dotted ids, literal English and a description, as extracted into en.json', () => {

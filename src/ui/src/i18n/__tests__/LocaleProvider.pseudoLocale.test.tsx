@@ -119,8 +119,8 @@ describe('the pseudo-locale on a flagged build', () => {
     const utility = menu(result.current);
     expect(utility.text).toBe('English');
     expect(utility.items).toEqual([
-      { id: 'en', text: 'English' },
-      { id: 'en-XA', text: 'Pseudo-locale (test)' },
+      { id: 'en', text: 'English', itemType: 'checkbox', checked: true },
+      { id: 'en-XA', text: 'Pseudo-locale (test)', itemType: 'checkbox', checked: false },
     ]);
 
     act(() => {
