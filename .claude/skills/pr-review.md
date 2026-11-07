@@ -118,6 +118,55 @@ documentation, testing, code-review).
 - Error handling uses explicit exceptions (no bare `except:`), with `exc_info=True`
 - No removal of observability (X-Ray `patch_all`, structured logging)
 
+#### Terraform parity
+
+Every release also ships a Terraform module generated from the CloudFormation
+templates (`terraform/translator/`, documented in `docs/terraform.md` and
+`terraform/README.md`), so a template change is a Terraform change too. Check
+this whenever the PR touches `template.yaml`, `nested/**`, `patterns/**`
+templates, `terraform/**`, the Terraform paths of `idp_sdk`/`idp_cli`, or
+runtime code that looks resources up through CloudFormation.
+
+- **The `Terraform Checks` CI context is green.** It translates every template
+  variant offline and validates the module on every pinned Terraform and
+  OpenTofu version. If it has not run yet, run `make terraform-check` on the PR
+  head; it needs no AWS credentials.
+- **A new resource type, or a property shape the translator does not handle,**
+  fails that gate on purpose. The fix belongs in the translator (a mapping in
+  `aws_mappers*.py` or the vendored `awscc` schema subset, refreshed with
+  `scripts/refresh_awscc_schema.py`), with a translator test. Flag an entry
+  added to `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES` or
+  `TERRAFORM_DIRECTORY_READERS` in `translate.py` without a written reason and
+  a test: each one is a place where Terraform deliberately differs from
+  CloudFormation.
+- **Upgrade safety.** A Terraform upgrade replaces a resource wherever
+  CloudFormation would, and in a few places CloudFormation would not. Flag as
+  🔴 for a stateful resource (table, bucket, user pool, KMS key, knowledge base
+  or data source) any of these:
+  - a renamed logical ID;
+  - a resource moved between the main stack and a nested stack;
+  - a changed create-only property (a name, a key schema, an encryption key);
+  - a create-only property that takes its value from a custom resource's
+    output. Terraform cannot see that output until apply, so updating the
+    custom resource replaces the consumer, which CloudFormation does not do.
+
+  Ask how existing Terraform deployments upgrade. `idp-cli deploy --terraform`
+  refuses a plan that deletes or replaces a retained resource; anything else is
+  replaced silently.
+- **Runtime lookups through CloudFormation.** Code calling
+  `DescribeStacks`/`ListStackResources`/`DescribeStackResource(s)`, or filtering on
+  the `aws:cloudformation:stack-name` tag, gets no answer from a Terraform
+  deployment unless it goes through `idp_common.utils.terraform_stack`
+  (`install_if_terraform()`), its function is listed in
+  `TERRAFORM_DIRECTORY_READERS`, and it filters on `idp:stack-name` when
+  `IDP_TF_RESOURCE_DIRECTORY` is set (see `src/lambda/data_mart_rollup/`).
+- **New stack parameters** become Terraform variables with the same
+  constraints and appear read-only on the label stack. `NoEcho` parameters must
+  stay `NoEcho`, which keeps them off the label stack.
+- **Docs.** If the change makes a Terraform deployment behave differently from a
+  CloudFormation one, `docs/terraform.md` says so (its "Differences from
+  CloudFormation" section).
+
 ### 3. Good UX?
 - **Frontend** (`src/ui/`):
   - Cloudscape Design System components (not MUI / AntD / Bootstrap)
@@ -266,3 +315,10 @@ Flag these immediately when seen in any diff:
 - `Document` model field removed or renamed without a migration path
 - Wildcards in S3 bucket/object ARNs without `reason:` metadata
 - New/edited SRT suppressions in `scripts/srt/issues.json` without justification
+- A template change that renames a logical ID, moves a resource between nested
+  stacks, or changes a create-only property of a stateful resource, with nothing
+  said about upgrading existing Terraform deployments
+- A new `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES` or
+  `TERRAFORM_DIRECTORY_READERS` entry without a reason and a test
+- Runtime code that walks the stack through CloudFormation APIs or the
+  `aws:cloudformation:stack-name` tag without the Terraform resource-directory path
