@@ -51,7 +51,7 @@ the dashboard widget.
 | `MalwareScanUnscannableBlocked` | Refused because no verdict was obtainable |
 | `MalwareScanUnscannableAllowed` | Admitted *without* a verdict, under the configured policy — worth watching, because these documents were not scanned |
 | `MalwareScanVerdictSuperseded` | The key was re-uploaded mid-scan, so the verdict described bytes no longer in the bucket and was discarded. Self-healing: the newer upload's own verdict decides |
-| `MalwareScanVerdictBeforeIngest` | A verdict outran the upload event and the delivery was retried. A few are normal; a sustained rate means verdicts are beating EventBridge |
+| `MalwareScanVerdictBeforeIngest` | A verdict outran the upload event — for a new key, or for a new upload of an existing key — and the delivery was retried. A few are normal; a sustained rate means verdicts are beating EventBridge |
 | `MalwareScanVerdictDuplicate` | GuardDuty re-delivered a verdict already applied. Expected — delivery is at-least-once — and harmless |
 | `MalwareScanJobFinalizeFailed` | A refused `/Jobs` API document could not be marked terminal in its job, so that batch may hang |
 
