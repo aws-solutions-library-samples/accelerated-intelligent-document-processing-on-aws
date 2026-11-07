@@ -75,7 +75,7 @@ describe('Cloudscape built-in messages', () => {
     document.documentElement.lang = '';
   });
 
-  it('under en, imports no bundle and renders built-ins byte-identically to no provider at all', () => {
+  it('under en, imports no bundle and renders built-ins identically to no provider at all, apart from per-render ids', () => {
     setBrowserLanguages(['en-US']);
     const bare = render(<Builtins />);
     const bareHtml = bare.container.innerHTML;

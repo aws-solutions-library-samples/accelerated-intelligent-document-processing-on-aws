@@ -11,9 +11,9 @@
  * hand-rolled wrapper per test file.
  *
  * When not to use it. English tests keep plain `render`: English is inline (`defaultMessage`),
- * and `LocaleProvider` under `en` adds nothing to the markup, byte for byte (asserted in this
- * helper's tests). A test moves to `renderWithIntl` when it renders another locale or its
- * component reads `useLocale()`.
+ * and `LocaleProvider` under `en` adds nothing to the markup (asserted in this helper's tests:
+ * identical apart from per-render generated ids, which they normalise first). A test moves to
+ * `renderWithIntl` when it renders another locale or its component reads `useLocale()`.
  *
  * Fixture catalogs. Catalogs are a build artefact (`virtual:i18n-catalogs`), so a test that
  * passes `messages` mocks that module once, at the top of the file:

@@ -102,8 +102,8 @@ export interface LocaleProviderProps {
  * it with a validated `setLocale`, keeps `<html lang>` in step, points Amplify UI at it, and
  * mounts react-intl's `IntlProvider` (with the locale's compiled catalog) and Cloudscape's
  * `I18nProvider`. `textComponent` is left at its default (`React.Fragment`), and under `en`
- * neither provider gets any messages, so English output is byte-identical to the pre-i18n
- * markup.
+ * neither provider gets any messages, so English output is the pre-i18n markup (identical apart
+ * from per-render generated ids; the tests normalise those before comparing).
  */
 export const LocaleProvider = ({ children, enabledLocales = ENABLED_LOCALES }: LocaleProviderProps): React.JSX.Element => {
   const [locale, setLocaleState] = useState<Locale>(() => {

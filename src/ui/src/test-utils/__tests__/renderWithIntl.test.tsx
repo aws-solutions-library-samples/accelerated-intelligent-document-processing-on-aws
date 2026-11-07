@@ -214,7 +214,7 @@ describe('renderWithIntl under en, against plain render', () => {
   const row = (objectKey: string, overrides: Partial<MappedDocument> = {}): MappedDocument =>
     ({ objectKey, objectStatus: 'COMPLETED', evaluationStatus: 'NOT_EVALUATED', ...overrides }) as MappedDocument;
 
-  it('renders the document-list header byte-identically', () => {
+  it('renders the document-list header identically, apart from per-render generated ids', () => {
     // The render of DocumentsCommonHeader.test.tsx: a Cloudscape Header with its action
     // buttons, a disabled-with-reason set, and the Download menu.
     const header = (

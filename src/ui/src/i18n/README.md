@@ -16,7 +16,8 @@ module follows:
 
 - **English inline, stable ids.** Each message is declared next to the component that renders it,
   with an explicit dotted `id` and the English as `defaultMessage`. There is no English catalog to
-  load: `en` renders the inline text, byte-identical to the markup before i18n existed.
+  load: `en` renders the inline text, and the markup is the one from before i18n existed (identical
+  apart from per-render generated ids, which the tests normalise before comparing).
 - **English fallback, never a broken screen.** A key the active catalog lacks renders its
   `defaultMessage`. [`LocaleProvider.tsx`](LocaleProvider.tsx) swallows react-intl's
   `MISSING_TRANSLATION` (the coverage report, not the console, tracks the gaps) and logs every
@@ -160,7 +161,9 @@ replays the `i18n:extract` script from `package.json` into a temporary file, by 
 `src/ui/node_modules` (never `npx`), and fails with a diff when `en.json` is stale ("Run `make
 ui-i18n-extract` and commit"); it then compiles every other catalog and fails on any problem a
 build would hit. Check-only; part of `lint`, `fastlint` and `lint-cicd`. Off CI without
-`src/ui/node_modules` it prints `⏭️ SKIPPED` (a skip, never a pass); in CI that is an error.
+`src/ui/node_modules`, or on a machine the installed `@formatjs/cli` ships no native binary for
+(the wrapper is installed everywhere, the binary per platform), it prints `⏭️ SKIPPED` (a skip,
+never a pass, naming the cause); in CI either is an error.
 
 What compiling checks: every entry must be present in `en.json` (an id the English no longer has
 is a dead translation and fails the build), be the `{ message, sourceHash }` shape with a
@@ -326,8 +329,10 @@ candidate (it is never a file). Once `fr-CA` ships, this is the figure quoted in
   `waitFor`. Misuse throws rather than quietly rendering English: `messages` without the mock
   line, `messages` for `en`, or a `locale` outside `enabledLocales`.
 - **English tests keep plain `render`.** English is inline and `LocaleProvider` under `en` adds
-  nothing to the markup (asserted byte for byte against the document-list header). A test moves
-  to `renderWithIntl` when it renders another locale or its component reads `useLocale()`.
+  nothing to the markup: the document-list header and a set of Cloudscape built-ins render
+  identically with and without it, apart from the per-render generated ids (React `useId`
+  values, Cloudscape's performance marks) that the assertions normalise first. A test moves to
+  `renderWithIntl` when it renders another locale or its component reads `useLocale()`.
 - **Hygiene**: a file that switches locales resets `localStorage`, `document.documentElement.lang`
   and Amplify's global `I18n` language in `afterEach`, as the files under `__tests__/` do. Tests
   that pass fixtures through `vi.mock` see `ENABLED_LOCALES` derived from the mocked
@@ -359,13 +364,15 @@ candidate (it is never a file). Once `fr-CA` ships, this is the figure quoted in
   `import-x/no-unresolved` ignores `^virtual:` for the catalog modules.
 - The five i18n dependencies are exact pins (`react-intl` 12.1.6, `@formatjs/cli` 6.16.36,
   `@formatjs/icu-messageformat-parser` 3.5.22, `eslint-plugin-formatjs` 8.1.2,
-  `eslint-plugin-i18next` 6.1.5). The CLI and plugin pins are the newest that satisfied
-  [`.npmrc`](../../.npmrc)'s `min-release-age=7` when added; they are bumped to 6.18.0 / 8.1.3
-  once those clear the window, which also brings the CLI's Intel-Mac (`darwin-x64`) and
-  Windows-ARM native binaries (6.16.36 has none, so `formatjs` cannot run locally on those two
-  platforms until then; Linux and Apple Silicon are unaffected). Never override `min-release-age`
-  to take a newer version. Two copies of `intl-messageformat` are bundled (Cloudscape's v10 and
-  react-intl's v12, about 11 KB each); unavoidable.
+  `eslint-plugin-i18next` 6.1.5). Every pin is the newest version that satisfied
+  [`.npmrc`](../../.npmrc)'s `min-release-age=7` when it was added, and pins move the way every
+  other UI dependency's does; never override `min-release-age` to take a newer version. The CLI
+  is a JS wrapper over a native binary installed per platform, and a version may ship no binary
+  for yours (6.16.36 has none for Intel Macs or Windows on ARM): `formatjs` then cannot run
+  locally, `make check-ui-i18n-catalog` reports that as a visible skip rather than a failure, and
+  CI measures the tree. A newer CLI that ships the binary makes the gate run locally again. Two
+  copies of `intl-messageformat` are bundled (Cloudscape's v10 and react-intl's v12, about 11 KB
+  each); unavoidable.
 
 ## What stays English for now
 
