@@ -1,0 +1,211 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  GENAIIDP-arabic-ocr-hook: OCR Lambda Hook for Arabic/English documents. Keeps
+  the IDP's full-page Bedrock transcription unchanged and adds Textract-format
+  LINE bounding boxes - PaddleOCR (PP-OCRv5, Arabic recognizer) for Arabic
+  text, Amazon Textract for English/Latin text - so the Visual Editor can
+  highlight Arabic fields. Container image (x86_64).
+
+Parameters:
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: >
+      Days to retain this sample hook's CloudWatch logs. Without an explicit
+      log group, Lambda auto-creates one with NO retention and the logs are
+      billed indefinitely — these hooks run per page, so that adds up
+      (issue #826).
+    AllowedValues:
+      [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+
+  IDPWorkingBucket:
+    Type: String
+    MinLength: 3
+    MaxLength: 63
+    AllowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    ConstraintDescription: Must be a valid S3 bucket name (3-63 lowercase alphanumeric characters, dots, or hyphens).
+    Description: >
+      Name of the IDP stack's working S3 bucket. Required for reading images
+      that are uploaded as S3 references in the LambdaHook payload.
+
+  CustomerManagedEncryptionKeyArn:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^arn:aws[a-z-]*:kms:[a-z0-9-]+:\d{12}:key/.+$'
+    ConstraintDescription: >-
+      Must be empty or a valid KMS key ARN
+      (arn:<partition>:kms:<region>:<account-id>:key/<key-id>).
+    Description: >
+      ARN of the KMS key that encrypts the IDP working bucket. Required for
+      GenAI IDP Accelerator stacks, whose working bucket always uses SSE-KMS
+      with a stack-created customer-managed key; without it every page fails
+      with AccessDenied. Use the IDP stack's CustomerManagedEncryptionKeyArn
+      output. Leave empty only if your bucket does not use a customer-managed
+      KMS key.
+
+  ReaderModelId:
+    Type: String
+    Default: eu.anthropic.claude-sonnet-5-5
+    AllowedValues:
+      - us.anthropic.claude-sonnet-5
+      - us.anthropic.claude-sonnet-5-5
+      - eu.anthropic.claude-sonnet-5
+      - eu.anthropic.claude-sonnet-5-5
+      - global.anthropic.claude-sonnet-5
+      - global.anthropic.claude-sonnet-5-5
+    Description: >
+      Bedrock inference profile for the full-page transcription call. Pick the
+      geography that matches the Region you deploy in (us. for US Regions, eu.
+      for EU Regions). global. profiles may process data in any commercial
+      Region - do not use them when data must stay in one geography.
+
+  ReadMethod:
+    Type: String
+    Default: M0
+    AllowedValues:
+      - M0
+      - M1
+      - M2
+      - M3
+    Description: >
+      How each box gets its text. M0 (recommended): from the detectors that
+      found the box - PaddleOCR for Arabic, with digits restored and
+      Textract-read Latin words added only where they also occur in the
+      transcription, and Textract for English/Latin. No extra Bedrock call,
+      and text always stays on its own box. M1/M2 re-read the boxes with one
+      extra Bedrock call per page and M3 with one call per 8 boxes; they can
+      attach text to a neighbouring box, so a field highlights in the wrong
+      place.
+
+  ReaderEffort:
+    Type: String
+    Default: medium
+    AllowedValues:
+      - none
+      - low
+      - medium
+      - high
+    Description: >
+      Reasoning effort (output_config.effort) sent with the full-page
+      transcription call. Every ReaderModelId above accepts it; "none" omits
+      the field.
+
+Conditions:
+  HasKMSKey: !Not [!Equals [!Ref CustomerManagedEncryptionKeyArn, ""]]
+
+Resources:
+  ArabicOcrHookFunction:
+    Type: AWS::Serverless::Function
+    # checkov:skip=CKV_AWS_173: "Environment variables contain non-sensitive configuration values (model id, method, effort)"
+    # checkov:skip=CKV_AWS_116: "DLQ not required for sample Lambda hook function - errors handled by IDP pipeline"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access - it only calls Textract/Bedrock/S3 over AWS APIs"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency - sample function for demonstration purposes"
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: .
+      DockerTag: arabic-ocr-hook-v1
+    Properties:
+      FunctionName: GENAIIDP-arabic-ocr-hook
+      Description: >
+        Arabic/English OCR hook: Bedrock full-page transcription plus
+        PaddleOCR/Textract line bounding boxes.
+      PackageType: Image
+      Architectures:
+        - x86_64
+      MemorySize: 8192
+      # 780s, not the 900s Lambda maximum: the IDP's LambdaHook client waits
+      # read_timeout=840 with a single attempt
+      # (lib/idp_common_pkg/idp_common/bedrock/client.py), so a runaway
+      # invocation surfaces as a clean error inside the caller instead of the
+      # caller's read timing out first. SAFETY_MARGIN_S (default 60) reserves
+      # the last 60s of this function's 780s for returning the fallback
+      # response.
+      Timeout: 780
+      EphemeralStorage:
+        Size: 2048
+      Environment:
+        Variables:
+          READER_MODEL_ID: !Ref ReaderModelId
+          READER_EFFORT: !Ref ReaderEffort
+          READ_METHOD: !Ref ReadMethod
+      Policies:
+        - Statement:
+            - Sid: ReadWorkingBucketHookImages
+              Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${IDPWorkingBucket}/temp/lambdahook/*"
+            - Sid: DetectDocumentText
+              Effect: Allow
+              Action:
+                - textract:DetectDocumentText
+              # Textract has no resource-level ARN for this action.
+              Resource: "*"
+            - Sid: InvokeReaderModel
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              # The selected inference profile plus the exact foundation model
+              # behind it (profile id minus its geography prefix). The model is
+              # named exactly, not with a trailing "*", so claude-sonnet-5 does
+              # not also grant claude-sonnet-5-5. The region-less ARN is the
+              # form global.* profiles route through.
+              Resource:
+                - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/${ReaderModelId}"
+                - !Sub
+                  - "arn:${AWS::Partition}:bedrock:*::foundation-model/${ModelName}"
+                  - ModelName: !Join
+                      - "."
+                      - - !Select [1, !Split [".", !Ref ReaderModelId]]
+                        - !Select [2, !Split [".", !Ref ReaderModelId]]
+                - !Sub
+                  - "arn:${AWS::Partition}:bedrock:::foundation-model/${ModelName}"
+                  - ModelName: !Join
+                      - "."
+                      - - !Select [1, !Split [".", !Ref ReaderModelId]]
+                        - !Select [2, !Split [".", !Ref ReaderModelId]]
+            - !If
+              - HasKMSKey
+              - Sid: DecryptWorkingBucketObjects
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !Ref CustomerManagedEncryptionKeyArn
+                # Only for S3 reads of the working bucket, not for the other
+                # data (tables, topics, logs) the IDP key also protects.
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub "s3.${AWS::Region}.${AWS::URLSuffix}"
+              - !Ref AWS::NoValue
+      Tags:
+        Project: genaiidp-arabic-ocr-hook
+        Component: arabic-ocr-hook
+      LoggingConfig:
+        LogGroup: !Ref ArabicOcrHookFunctionLogGroup
+
+  ArabicOcrHookFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    # Encrypted with the host's CMK when one was supplied.
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/ArabicOcrHookFunction"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !If [HasKMSKey, !Ref CustomerManagedEncryptionKeyArn, !Ref 'AWS::NoValue']
+      Tags:
+        - Key: Project
+          Value: genaiidp-arabic-ocr-hook
+        - Key: Component
+          Value: arabic-ocr-hook
+
+Outputs:
+  ArabicOcrHookFunctionArn:
+    Description: ARN of the Arabic OCR hook function
+    Value: !GetAtt ArabicOcrHookFunction.Arn
+
+  Usage:
+    Description: How to use in IDP configuration
+    Value: !Sub |
+      Set ocr.backend to "bedrock", ocr.model_id to "LambdaHook", and
+      ocr.model_lambda_hook_arn to "${ArabicOcrHookFunction.Arn}".
+      The ocr.task_prompt must contain {DOCUMENT_IMAGE}. See README.md.

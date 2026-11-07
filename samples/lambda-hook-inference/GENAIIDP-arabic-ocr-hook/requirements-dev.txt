@@ -1,0 +1,7 @@
+# Unit-test dependencies only. The PaddleOCR stack in requirements.txt is not
+# needed: tests that use the real engine are marked integration and skip
+# without it.
+pytest==8.3.5
+boto3>=1.40
+numpy==2.3.5
+pillow==13.0.0

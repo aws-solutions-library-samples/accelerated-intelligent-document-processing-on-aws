@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Arabic OCR LambdaHook: highlight Arabic fields in the Visual Editor.** The new sample hook in `samples/lambda-hook-inference/GENAIIDP-arabic-ocr-hook/` keeps the Bedrock OCR backend's full-page transcription unchanged and adds Textract-format LINE bounding boxes: PaddleOCR (PP-OCRv5, Arabic recognizer, running in the container) for Arabic lines and Amazon Textract for English/Latin lines. Rows that are mainly Arabic are ordered right to left, digits PaddleOCR drops are restored from the transcription, and Latin words on mixed rows are kept, both only where the transcription confirms them. A tested [`config.yaml`](samples/lambda-hook-inference/GENAIIDP-arabic-ocr-hook/config.yaml) overlay sets the OCR backend, prompts and extraction model. If the box pipeline fails, the page keeps its text with no boxes, the same result as the plain Bedrock backend. ⚠️ **No confidence scores**, so `{OCR_TEXT_CONFIDENCE}` reads `N/A`. Container image (x86_64, 8 GB); deploy it in the IDP stack's account and Region, with a `ReaderModelId` whose prefix matches that Region. See [the sample README](samples/lambda-hook-inference/GENAIIDP-arabic-ocr-hook/README.md).
+
 ## [0.6.14]
 
 ### Added

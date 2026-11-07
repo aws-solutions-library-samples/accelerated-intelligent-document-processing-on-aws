@@ -1,0 +1,34 @@
+# Configuration overlay for Arabic and mixed Arabic/English documents.
+#
+# Merge these sections into your configuration profile (keep your own
+# `classes`), replace the ARN with the stack's ArabicOcrHookFunctionArn
+# output, then upload:
+#
+#   idp-cli config-upload --stack-name <idp-stack> \
+#     --config-file my-profile.yaml --config-profile arabic-ocr
+#
+# The hook transcribes each page with its ReaderModelId (default
+# eu.anthropic.claude-sonnet-5-5) and adds PaddleOCR/Textract line boxes.
+# Extraction uses the same model family. Use us.* model ids in US Regions.
+ocr:
+  backend: bedrock
+  model_id: LambdaHook
+  model_lambda_hook_arn: "<ArabicOcrHookFunctionArn stack output>"
+  system_prompt: >-
+    You are an expert OCR system for bilingual Arabic/English documents.
+    Transcribe all text from the provided image exactly as printed,
+    preserving the original script. Never transliterate Arabic into Latin
+    characters and never translate. Preserve reading order and layout,
+    including paragraphs, tables, and headings.
+  task_prompt: >-
+    Transcribe all text from this document image verbatim. Return Arabic text
+    in Arabic script and English text in Latin script, exactly as printed.
+    For a right-to-left Arabic block, transcribe it in its natural reading
+    order. Preserve layout structure: keep paragraphs separate, render tables
+    as rows, and keep headings on their own lines. Do not summarise,
+    translate, transliterate, or add commentary - output only the transcribed
+    text.
+    {DOCUMENT_IMAGE}
+
+extraction:
+  model: eu.anthropic.claude-sonnet-5-5

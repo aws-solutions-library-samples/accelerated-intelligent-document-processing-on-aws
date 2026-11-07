@@ -199,6 +199,8 @@ RUN_ROOTS = [
     "nested/bedrockkb/src/start_ingestion_job_custom_resource",
     "samples/lambda-hook-inference/GENAIIDP-cohere-parse-hook",
     "samples/lambda-hook-inference/GENAIIDP-mistral-ocr-hook",
+    # Arabic/English OCR hook; its real-PaddleOCR test is marked integration.
+    "samples/lambda-hook-inference/GENAIIDP-arabic-ocr-hook",
     # Registered rather than quarantined: it was excluded on the stated ground
     # that "test_local.py is a manual local-run script; collects zero pytest
     # tests", which is false -- it collects 6 and all 6 pass. The real

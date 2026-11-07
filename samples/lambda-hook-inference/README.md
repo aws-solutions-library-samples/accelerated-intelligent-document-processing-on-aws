@@ -15,6 +15,7 @@ See [docs/lambda-hook-inference.md](../../docs/lambda-hook-inference.md) for ful
 | **GENAIIDP-chandra-ocr-hook** | Calls the [Chandra OCR 2](https://github.com/datalab-to/chandra) hosted API for high-quality OCR. Converts page images to structured Markdown, JSON, or HTML. |
 | **GENAIIDP-mistral-ocr-hook** | Calls the hosted [Mistral OCR](https://mistral.ai/news/ocr-4/) API for high-quality OCR. Returns Markdown **plus per-word confidence scores and bounding-box geometry** (in Amazon Textract format) so extraction confidence and spatial localization work in Assessment and the UI. Fully serverless — no SageMaker/GPU. |
 | **GENAIIDP-cohere-parse-hook** | Calls the hosted [Cohere Parse](https://cohere.com/blog/parse) API for low-cost OCR ($1.50 / 1,000 pages). Converts Cohere's HTML tables to Markdown pipe tables and returns **bounding boxes for tables and figures**. **No confidence scores** — Cohere Parse does not provide them. Fully serverless. |
+| **GENAIIDP-arabic-ocr-hook** | Arabic/English OCR hook: keeps the full-page Bedrock transcription unchanged and adds **Textract-format line bounding boxes** from PaddleOCR (Arabic) and Amazon Textract (English/Latin), so the Visual Editor can highlight Arabic text. No confidence scores. Container image (x86_64); deployed with its own `sam deploy`, not the root sample template. |
 | **GENAIIDP-w2-copy-consistency** | **Assessment** hook (not OCR): deterministically flags Form-W2 fields that disagree across duplicate copies of the same employee on one page (hand-filled Copy B vs Copy C). Pure Python comparison — no LLM call, no added inference cost. No-op passthrough for every other document class. |
 
 ## Naming Convention
@@ -23,7 +24,7 @@ All Lambda hook function names **must start with `GENAIIDP-`**. This enables sec
 
 ## Deployment
 
-Each sample is independently deployable using its own SAM template. You can also deploy all samples together using the root template.
+Each sample is independently deployable using its own SAM template. You can also deploy all samples together using the root template. The exception is **GENAIIDP-arabic-ocr-hook**, a container-image function that is not in the root template and deploys only on its own.
 
 ### Deploy a Single Sample
 
@@ -87,6 +88,20 @@ sam deploy --guided \
     IDPWorkingBucket=<your-idp-working-bucket-name> \
     CustomerManagedEncryptionKeyArn=<your-kms-key-arn> \
     CohereApiKey=<your-cohere-api-key>
+```
+
+```bash
+# Deploy the Arabic/English OCR hook sample (container image: needs Docker;
+# deploy in the IDP stack's account and Region, with a ReaderModelId whose
+# geography prefix matches that Region)
+cd samples/lambda-hook-inference/GENAIIDP-arabic-ocr-hook
+sam build
+sam deploy --guided --resolve-image-repos \
+  --stack-name GENAIIDP-arabic-ocr-hook \
+  --parameter-overrides \
+    IDPWorkingBucket=<your-idp-working-bucket-name> \
+    CustomerManagedEncryptionKeyArn=<your-kms-key-arn> \
+    ReaderModelId=eu.anthropic.claude-sonnet-5-5
 ```
 
 ```bash

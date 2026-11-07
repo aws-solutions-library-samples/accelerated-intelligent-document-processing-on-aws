@@ -1,0 +1,11 @@
+.venv
+tests
+bench
+__pycache__
+.pytest_cache
+*.pyc
+.git
+.gitignore
+README.md
+template.yaml
+.aws-sam

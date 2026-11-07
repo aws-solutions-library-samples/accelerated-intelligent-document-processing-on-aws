@@ -217,6 +217,7 @@ Ready-to-deploy sample Lambda hook functions are provided in [`samples/lambda-ho
 | **GENAIIDP-chandra-ocr-hook** | Calls the [Datalab Chandra OCR 2](https://github.com/datalab-to/chandra) hosted API for high-quality OCR — converts page images to structured Markdown, JSON, or HTML |
 | **GENAIIDP-mistral-ocr-hook** | Calls the hosted [Mistral OCR](https://mistral.ai/news/ocr-4/) API for high-quality OCR — returns Markdown **plus per-word confidence and bounding-box geometry** (Textract format) for explainability, with per-page cost metering. Fully serverless |
 | **GENAIIDP-cohere-parse-hook** | Calls the hosted [Cohere Parse](https://cohere.com/blog/parse) API for low-cost OCR ($1.50 / 1,000 pages) — converts Cohere's HTML tables to Markdown pipe tables and returns **table/figure bounding boxes**, but **no confidence scores** (Parse provides none). Fully serverless |
+| **GENAIIDP-arabic-ocr-hook** | Arabic/English OCR hook: keeps the full-page Bedrock transcription unchanged and adds **Textract-format line bounding boxes** from PaddleOCR (Arabic) and Amazon Textract (English/Latin), so the Visual Editor can highlight Arabic text. No confidence scores. Container image (x86_64); deployed with its own `sam deploy`, not the root sample template. |
 
 Each sample includes:
 - Well-commented Python code with clearly marked customization points
