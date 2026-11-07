@@ -281,12 +281,17 @@ in that directory:
    versions recorded in `.terraform.lock.hcl` instead of moving to the newest release
    the module allows on every deploy.
 2. `terraform plan -out=<file>`, then `terraform show -json` on that plan.
-3. A check of the plan. If any change deletes or replaces a resource that
-   CloudFormation would have retained (`DeletionPolicy: Retain`, listed as
-   `retainedAddresses` in the module's `idp-terraform.json`, for the installed module
-   and the new one), the command stops, lists those addresses, and applies nothing.
-   Losing a retained bucket or table loses its data, which CloudFormation never does
-   on an update. `--terraform-allow-replace-retained` applies such a plan anyway.
+3. A check of the plan. If any change deletes or replaces a resource that holds data
+   or that CloudFormation would have retained, the command stops, lists those
+   addresses, and applies nothing. The module's `idp-terraform.json` lists both,
+   for the installed module and the new one: `statefulAddresses` is every bucket,
+   table, user pool, KMS key, knowledge base and data source, OpenSearch Serverless
+   collection, secret and vector-store resource, and `retainedAddresses` every
+   resource with `DeletionPolicy: Retain`. Replacing one of these loses its data.
+   The check is stricter than CloudFormation in one case: a parameter change that
+   turns off a feature deletes that feature's tables or buckets under
+   CloudFormation, and is refused here until you confirm it.
+   `--terraform-allow-replace-stateful` applies such a plan anyway.
 4. `terraform apply` of exactly that saved plan. The plan file is removed afterwards,
    because it holds your settings too.
 
@@ -303,7 +308,7 @@ The options are:
 | `--terraform-dir DIR` | the directory to write, instead of `./idp-terraform/<stack-name>` |
 | `--terraform-bin` | `terraform` or `tofu` |
 | `--terraform-assume-role-arn ARN` | an IAM role both providers assume, written into the `aws` and `awscc` provider blocks of `main.tf` in each provider's own `assume_role` syntax (a block for `aws`, an attribute for `awscc`), so the resources are created as that role instead of as you. You need `sts:AssumeRole` on it. The role needs permission to create, change and delete every resource the deployment creates, including `cloudcontrol:*` for the `awscc` resources and `iam:CreateRole`/`iam:PassRole` on the roles the module creates. A new deployment names every role starting with the deployment name (`stack_name`); a deployment first applied with an earlier module keeps the names its roles were created with (Terraform's generated `terraform-<timestamp>` names among them), because an upgrade does not rename a role, so a role scoped to a name prefix must also cover those. If its role creation is conditioned on a permissions boundary, as the [CloudFormation service role](../iam-roles/cloudformation-management/README.md)'s is, pass that boundary as `PermissionsBoundaryArn` in `--parameters` so the module attaches it to every role it creates |
-| `--terraform-allow-replace-retained` | apply even if the plan deletes or replaces a resource CloudFormation would retain, losing its data; without it such a plan is refused and nothing is applied |
+| `--terraform-allow-replace-stateful` | apply even if the plan deletes or replaces a resource that holds data or that CloudFormation would retain, losing its data; without it such a plan is refused and nothing is applied. `--terraform-allow-replace-retained` is the earlier name and still works |
 | `--wait` | accepted as on the CloudFormation path |
 
 `--parameters` takes CloudFormation names, not Terraform variable names. The CLI maps
@@ -463,7 +468,9 @@ To upgrade, point the module at the new release's URL and apply:
 2. Run `terraform init`, which downloads the new module. Terraform refuses to plan
    with a changed module source until you do.
 3. Run `terraform plan` and read it. Replacements of stateful resources (buckets,
-   tables, the user pool) deserve a close look before you apply.
+   tables, the user pool, keys, the knowledge base) deserve a close look before you
+   apply; `jq -r '.statefulAddresses[]'
+   .terraform/modules/idp/idp-terraform.json` lists them.
 4. Run `terraform apply`.
 
 The label stack's description and metadata move to the new version in the same apply.
@@ -474,8 +481,36 @@ previous deploy, by CloudFormation parameter name, in `idp-cli-parameters.json` 
 directory, and applies only the parameters you pass over them, as a CloudFormation
 update keeps the parameters it is not given. A remembered parameter the new module no
 longer has is dropped with a warning. The deploy runs `init -upgrade` because the
-module source changed, and refuses the plan if it would delete or replace a retained
-resource (see [With `idp-cli deploy --terraform`](#with-idp-cli-deploy---terraform)).
+module source changed, and refuses the plan if it would delete or replace a stateful
+or retained resource (see
+[With `idp-cli deploy --terraform`](#with-idp-cli-deploy---terraform)).
+
+### What keeps an upgrade from replacing a resource
+
+Three things in the module do what CloudFormation does implicitly on an update:
+
+- **`moved` blocks.** When a release renames a resource or moves it between nested
+  stacks, its Terraform address changes, and without help Terraform would destroy
+  the old resource and create a new one. Each release's module carries a `moved.tf`
+  with a block for every address that changed since the previous release, and for
+  every earlier release, so an upgrade that skips releases is covered too.
+  Terraform applies them as part of the plan; there is nothing to run.
+- **Generated names are kept.** A name the module chose (a table's, a bucket's
+  prefix, a role's) is kept for the life of the resource, as CloudFormation keeps a
+  name it generated, so a later release that would derive it differently does not
+  replace the resource.
+- **Values that only a custom resource knows.** Some properties are filled from a
+  custom resource's result, which Terraform cannot know until apply whenever that
+  custom resource's inputs change. For a property that cannot change in place, such
+  as the knowledge base id of the knowledge base's data source, Terraform would
+  plan a replacement where CloudFormation, which sees the result, changes nothing.
+  Where the result is known to be stable, the module keeps the stored value and
+  replaces the resource only when one of its other inputs changes, which is when
+  CloudFormation would.
+
+The plan check in `idp-cli deploy --terraform` is the backstop for anything these
+miss. If you deploy the module from your own configuration, read the plan for
+deletions of the addresses in `statefulAddresses` before applying.
 
 A role the template leaves unnamed keeps the name it was created with for the life of
 the deployment, as CloudFormation keeps a name it generated. So a deployment created
@@ -483,12 +518,28 @@ from a module that predates stack-prefixed role names keeps its `terraform-<time
 role names across upgrades; only a new deployment gets names a scoped deploying role
 can create (see [Deploying with a scoped role](#deploying-with-a-scoped-role)).
 Replacing a role is not contained to the role: custom resources that take its ARN are
-updated, and a resource that takes one of their outputs as a create-only property is
-replaced with them.
+updated, and their results are unknown until apply, which is the case the previous
+section's third item handles.
 
 Read the release's `CHANGELOG.md` entries and any migration guide for the release
 before upgrading, as for a CloudFormation stack: configuration changes and upgrade
 actions apply to both.
+
+## How the translation is checked
+
+A translation from CloudFormation to Terraform cannot be proved equivalent by
+reading it, so three independent checks look at different things:
+
+| Check | When it runs | What it shows |
+|---|---|---|
+| The translator's own checks and `terraform validate` on every pinned Terraform and OpenTofu release | every pull request | every type, property and value in the templates is translated and reaches the Terraform; no data-holding resource depends on a value Terraform cannot know at plan time without a declared reason; the module loads and type-checks |
+| A static security scan of both, compared resource by resource | every pull request | no Terraform resource fails a security rule that its CloudFormation source passes, beyond a short list of explained exceptions (all on the custom-resource bridge the module adds) |
+| A property comparison of a Terraform deployment with a CloudFormation deployment of the same release and parameters, every resource of both read back from AWS | release validation | the two deployments store the same configuration, beyond explained differences |
+
+None of the three plans or applies on a pull request. The full stack has been
+applied, re-planned and destroyed in a development account (see the developer
+notes linked below); the property comparison has been run on one nested stack and
+not yet on the full stack.
 
 ## Differences from CloudFormation and current limitations
 

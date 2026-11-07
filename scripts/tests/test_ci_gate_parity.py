@@ -199,6 +199,11 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "runs `ruff format --check` instead — see CHECK_ONLY_EQUIVALENTS."
     ),
     # --- reporting variants of a gate that does run ----------------------------
+    "terraform-parity": (
+        "Reads two live deployments of the same release, one CloudFormation and one "
+        "Terraform, through Cloud Control: it needs AWS credentials and both stacks, "
+        "so it is a release-validation tier (release-validation.md), not a gate."
+    ),
     "terraform-scan-diff": (
         "The second step of `make terraform-check` (in SHARED_GATES), which runs "
         "this same target, so both CIs run it there. Named on its own only so the "

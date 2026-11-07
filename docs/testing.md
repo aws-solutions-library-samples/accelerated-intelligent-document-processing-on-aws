@@ -315,7 +315,7 @@ running basedpyright, not by inspecting the JSON.
 
 `make terraform-check` is a static gate that is not part of `make lint`, because it
 needs network access and about two gigabytes of cache. Each CI runs it as its own job,
-`terraform_checks`. It works in three steps:
+`terraform_checks`. It works in four steps:
 
 1. It translates `template.yaml`, with the nested templates read from source, into a
    temporary directory using `terraform/translator` in `--offline` mode. No AWS call
@@ -329,6 +329,10 @@ needs network access and about two gigabytes of cache. Each CI runs it as its ow
    binary. Provider versions are pinned exactly through an override file: `aws` and
    `time` from the lock file, and `awscc` to the vendored schema's version. Errors
    fail the gate. Warnings are counted and printed but do not fail it.
+4. It runs `make terraform-scan-diff`: a pinned `checkov` (`CHECKOV_VERSION` in the
+   `Makefile`) over the CloudFormation templates and over the generated module,
+   failing on a Terraform finding the CloudFormation side does not have unless
+   `scripts/terraform_scan_baseline.json` explains it.
 
 The gate proves that the generated HCL parses, that its references resolve, and that
 every resource and attribute type-checks against the pinned provider schemas, on the
@@ -547,6 +551,7 @@ the rows run only when a person asks.
 | Deploy variants (also on the weekly probe schedule, while it is active) | that each hosting/parameter combination actually creates and serves | `make stacktest-hosting-global` · `make stacktest-waf` · `make stacktest-hosting-private` (VPC) · `make stacktest-jobsapi` (VPC) — list them with `make stacktest-list` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Template transforms | that a **transformed** template deploys and processes a real document — the only tier that can | `make transform-deploy-test-headless` · `make transform-deploy-test-govcloud` · both: `make transform-deploy-test-all` | [`transform-deploy-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/transform-deploy-test.md) |
 | Seller Entitlement Service e2e | that the service deploys into a seller account, grants correctly, and **refuses** correctly | `make stacktest-seller` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
+| Terraform property parity | that a Terraform deployment of the release stores the same configuration as a CloudFormation deployment of it with the same parameters, every resource of the main and nested stacks read back through Cloud Control, beyond the explained differences in `terraform/tools/parity_baseline.json`. Read-only; needs both deployments | `make terraform-parity CFN_STACK=… TF_STACK=…` | [`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation.md) (tier I) |
 | In-place upgrade (X→Y) | that an existing customer stack survives `update-stack` without rollback **and still works afterwards** | `make stacktest-upgrade` (pointer) | [`test-upgrade`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/test-upgrade.md) |
 
 ### The UX review, and recording it

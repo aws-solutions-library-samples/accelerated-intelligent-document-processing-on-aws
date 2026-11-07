@@ -127,32 +127,61 @@ this whenever the PR touches `template.yaml`, `nested/**`, `patterns/**`
 templates, `terraform/**`, the Terraform paths of `idp_sdk`/`idp_cli`, or
 runtime code that looks resources up through CloudFormation.
 
-- **The `Terraform Checks` CI context is green.** It translates every template
-  variant offline and validates the module on every pinned Terraform and
-  OpenTofu version. If it has not run yet, run `make terraform-check` on the PR
-  head; it needs no AWS credentials.
+- **The `Terraform Checks` CI context is green.** `make terraform-check`
+  translates every template variant offline, validates the module on every
+  pinned Terraform and OpenTofu version, then runs `make terraform-scan-diff`
+  (below). If it has not run yet, run it on the PR head; it needs no AWS
+  credentials. The translator's own checks run in `make test` (the
+  `terraform/translator` suite) and fail the PR on any of the cases in the next
+  bullets.
 - **A new resource type, or a property shape the translator does not handle,**
   fails that gate on purpose. The fix belongs in the translator (a mapping in
   `aws_mappers*.py` or the vendored `awscc` schema subset, refreshed with
-  `scripts/refresh_awscc_schema.py`), with a translator test. Flag an entry
-  added to `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES` or
-  `TERRAFORM_DIRECTORY_READERS` in `translate.py` without a written reason and
-  a test: each one is a place where Terraform deliberately differs from
-  CloudFormation.
+  `scripts/refresh_awscc_schema.py`, and the create-only list, refreshed with
+  `scripts/refresh_create_only.py`), with a translator test. Flag an entry
+  added to `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES`,
+  `STABLE_CUSTOM_OUTPUTS`, `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS`
+  in `translate.py`, or to `completeness.NOT_APPLICABLE`, without a written
+  reason and a test: each one is a place where Terraform deliberately differs
+  from CloudFormation.
+- **A property value that does not reach the Terraform.** The completeness check
+  (`idp_tf/completeness.py`) fails when a value in the template appears nowhere
+  in the HCL emitted for its resource, which is how a hardening setting is lost
+  silently. The right fix is almost always the mapper; a `NOT_APPLICABLE` entry
+  must say where the value went instead.
 - **Upgrade safety.** A Terraform upgrade replaces a resource wherever
-  CloudFormation would, and in a few places CloudFormation would not. Flag as
-  🔴 for a stateful resource (table, bucket, user pool, KMS key, knowledge base
-  or data source) any of these:
-  - a renamed logical ID;
-  - a resource moved between the main stack and a nested stack;
-  - a changed create-only property (a name, a key schema, an encryption key);
-  - a create-only property that takes its value from a custom resource's
-    output. Terraform cannot see that output until apply, so updating the
-    custom resource replaces the consumer, which CloudFormation does not do.
+  CloudFormation would, and in a few places CloudFormation would not. For a
+  stateful resource (every type in `idp_tf/safety.py`'s `STATEFUL_TYPES`:
+  tables, buckets, user pools, KMS keys, knowledge bases and data sources, the
+  OpenSearch collection, the secret, the vector-store custom resources, and a
+  parameter with a second writer) check each of these and flag a 🔴 where the
+  PR does not handle it:
+  - **a renamed logical ID or nested stack** needs an entry in
+    `terraform/translator/renames.yaml` (`from`, `to`, `since`, `reason`), from
+    which the release's translation writes a `moved` block. A resource moved
+    between nested stacks with its logical ID unchanged is inferred, unless
+    the same logical ID and type exist elsewhere; then it needs an entry too;
+  - **a changed create-only property** (a name, a key schema, an encryption
+    key) replaces the resource under CloudFormation too: ask what happens to the
+    data on upgrade;
+  - **a create-only property fed by a custom resource's output**, directly or
+    through parameters, outputs or another resource. The translator lists every
+    such edge (`customOutputEdges` in `idp-terraform.json`, and a
+    `custom-output edge:` line in its output) and fails on one into a stateful
+    resource unless `STABLE_CUSTOM_OUTPUTS` says why the handler returns the
+    same value on every Update. Read that reason against the handler: it is a
+    claim about the handler's code.
 
-  Ask how existing Terraform deployments upgrade. `idp-cli deploy --terraform`
-  refuses a plan that deletes or replaces a retained resource; anything else is
-  replaced silently.
+  `idp-cli deploy --terraform` refuses a plan that deletes or replaces any
+  stateful or retained address (`statefulAddresses` and `retainedAddresses`),
+  so a missed case is refused at deploy rather than lost; that is a backstop,
+  and an upgrade a user has to override with
+  `--terraform-allow-replace-stateful` is still a defect in the PR.
+- **Softer than CloudFormation.** `make terraform-scan-diff` runs a pinned
+  `checkov` over the CloudFormation templates and the generated module and fails
+  on a Terraform finding the CloudFormation side does not have. A new entry in
+  `scripts/terraform_scan_baseline.json` needs a reason for that one check on
+  that one resource; prefer fixing the translation.
 - **Runtime lookups through CloudFormation.** Code calling
   `DescribeStacks`/`ListStackResources`/`DescribeStackResource(s)`, or filtering on
   the `aws:cloudformation:stack-name` tag, gets no answer from a Terraform
@@ -315,10 +344,13 @@ Flag these immediately when seen in any diff:
 - `Document` model field removed or renamed without a migration path
 - Wildcards in S3 bucket/object ARNs without `reason:` metadata
 - New/edited SRT suppressions in `scripts/srt/issues.json` without justification
-- A template change that renames a logical ID, moves a resource between nested
-  stacks, or changes a create-only property of a stateful resource, with nothing
-  said about upgrading existing Terraform deployments
-- A new `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES` or
-  `TERRAFORM_DIRECTORY_READERS` entry without a reason and a test
+- A template change that renames a logical ID or nested stack of a stateful
+  resource without a `terraform/translator/renames.yaml` entry, or changes a
+  create-only property of one with nothing said about upgrading existing
+  Terraform deployments
+- A new `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES`, `STABLE_CUSTOM_OUTPUTS`,
+  `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS` entry, or a
+  `completeness.NOT_APPLICABLE` or `scripts/terraform_scan_baseline.json` entry,
+  without a reason and a test
 - Runtime code that walks the stack through CloudFormation APIs or the
   `aws:cloudformation:stack-name` tag without the Terraform resource-directory path

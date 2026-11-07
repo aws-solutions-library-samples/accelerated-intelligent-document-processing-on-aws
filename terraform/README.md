@@ -11,8 +11,13 @@ tier of the Terraform documentation; the user guide is
 | `translator/schemas/awscc.json` | the vendored subset of the `hashicorp/awscc` provider schema the translator reads |
 | `translator/scripts/refresh_awscc_schema.py` | regenerates that subset |
 | `translator/tests/` | unit tests and the offline per-template gate |
+| `translator/schemas/create_only.json` | the CloudFormation registry's create-only properties for each type the templates use, read from `cfn-lint` |
+| `translator/scripts/refresh_create_only.py` | regenerates that list |
+| `translator/renames.yaml` | logical-id and nested-stack renames, from which a release writes `moved` blocks |
 | `bridge/` | the Lambda function that runs CloudFormation custom-resource handlers for Terraform |
-| `prototype/` | root-module fixtures and a property comparison script used for live validation, and the raw notes of those runs (`RESULTS.md`) |
+| `tools/parity.py` | the release-time property comparison of a Terraform deployment with its CloudFormation twin (`make terraform-parity`), and its explained differences, `tools/parity_baseline.json` |
+| `tools/replay_releases.py` | replays the current translator over the templates of past release tags |
+| `prototype/` | root-module fixtures used for live validation, and the raw notes of those runs (`RESULTS.md`) |
 
 ## How the translator works
 
@@ -50,12 +55,25 @@ tier of the Terraform documentation; the user guide is
 5. **Write.** `cli.write_module` writes the tree: the root module, `modules/<nested>/`
    per nested stack, `versions.tf`, `bridge.tf` when the template has custom
    resources, `label.tf` when `--label-template` and `--version` are given,
-   deterministic zips under `zips/`, a `translation-report.json`, and at the root
-   `idp-terraform.json`. That last file is the contract with `idp-cli`:
-   `{formatVersion, version, parameters: {<CfnName>: {variable, type, required,
-   sensitive}}, retainedAddresses: [...]}`, the parameter-name-to-variable map
-   `idp-cli deploy --terraform --parameters` uses and the addresses
-   `idp-cli delete --terraform` removes from state before destroying.
+   deterministic zips under `zips/`, a `translation-report.json`, `moved.tf` when
+   the previous release's manifest was given and an address changed (see
+   [Upgrade safety](#upgrade-safety)), and at the root `idp-terraform.json`. That
+   last file is the contract with `idp-cli` and with the next release's
+   translation. Format version 2 has these keys:
+
+   | Key | Read by | What it is |
+   |---|---|---|
+   | `parameters` | `idp-cli deploy --terraform --parameters` | `{<CfnName>: {variable, type, required, sensitive}}` |
+   | `retainedAddresses` | `idp-cli delete --terraform`, and the deploy's plan guard | addresses of resources with a `DeletionPolicy` other than `Delete`, removed from state before destroying |
+   | `statefulAddresses` | the deploy's plan guard | addresses of every resource of a stateful type |
+   | `customOutputEdges` | reviewers | every create-only property fed by a custom resource's output, and whether it is handled |
+   | `resources` | the next release's translation | each resource's nested-stack path, logical id, type and every address it became |
+   | `moves` | the next release's translation | every `moved` block written so far |
+
+   Version 1 had only the first two; `idp-cli` reads either.
+6. **Check.** `cli.tree_checks` runs the whole-tree checks described under
+   [Upgrade safety](#upgrade-safety) and [Completeness](#completeness), and any
+   failure fails the run.
 
 There is no best-effort path. A type, property, resource key or intrinsic the
 translator does not understand raises `TranslationError` naming the resource and the
@@ -171,6 +189,118 @@ lookups through `boto3` for that reason. `StackDeployer._stack_exists` in
 `lib/idp_sdk/idp_sdk/_core/stack.py` refuses a CloudFormation deploy or delete of a
 label stack.
 
+## Upgrade safety
+
+A Terraform upgrade replaces a resource whenever its address changes or a
+property it cannot change in place does, and CloudFormation's semantics do not
+protect it: there is no `DeletionPolicy`, and a value CloudFormation reads at
+deploy time can be unknown to Terraform at plan time. Three mechanisms keep an
+upgrade from losing data, and the plan guard in `idp-cli` backs them up.
+
+### Stateful addresses and the plan guard
+
+`idp_tf/safety.py` declares `STATEFUL_TYPES`, every type whose replacement or
+deletion loses something the template cannot recreate, each with what is lost,
+and `NOT_STATEFUL`, the types a reader might expect there with the reason each is
+not. An `AWS::SSM::Parameter` with a `LIFECYCLE_OVERRIDES` entry is stateful too,
+because a second writer owns its value. The translator computes
+`statefulAddresses` from those lists; nothing is listed by hand.
+`idp-cli deploy --terraform` refuses a plan that deletes or replaces any address in
+`statefulAddresses` or `retainedAddresses`, of the installed module or the new one
+(`protected_deletions` in `lib/idp_sdk/idp_sdk/_core/terraform_deploy.py`), unless
+given `--terraform-allow-replace-stateful` (the earlier name,
+`--terraform-allow-replace-retained`, still works). A deletion of an old address
+whose resource moved without a `moved` block is refused the same way.
+
+### Create-only properties fed by a custom resource
+
+A custom resource is an `aws_lambda_invocation`. When any of its inputs changes,
+its `result` is unknown until apply, so a property that reads it is unknown at plan,
+and if that property cannot change in place Terraform plans a replacement.
+CloudFormation sees the handler's actual answer and updates nothing. Measured on a
+live upgrade: renaming the roles updated the custom resource that creates the S3
+Vectors knowledge base, and the knowledge base's data source, whose
+`KnowledgeBaseId` is create-only, was replaced.
+
+`safety.custom_output_edges` finds every such edge at translation time. It
+propagates "may be unknown" from each custom resource's outputs through
+parameters, nested-stack outputs and other resources (a resource whose create-only
+property is tainted is replaced, so its identity is tainted too; any attribute of
+a resource with a tainted input is treated as tainted), and reports each
+create-only property it reaches. Create-only comes from
+`schemas/create_only.json`, the registry's `createOnlyProperties` for each type
+(the `awscc` provider is generated from the same registry), plus each hand
+mapper's `force_new` list where the `hashicorp/aws` provider replaces on more
+properties than the registry lists (a DynamoDB key schema, a user pool's name and
+alias attributes, a rule's event bus). The edges are printed
+(`custom-output edge: ...`) and written to `customOutputEdges`.
+
+An edge into a stateful resource fails the translation unless
+`STABLE_CUSTOM_OUTPUTS` in `translate.py` says why the handler returns the same
+value on every Update. For each entry the attribute is emitted with
+`ignore_changes`, plus `replace_triggered_by` a `terraform_data` holding the same
+value with every custom-resource output replaced by that resource's name, so a
+change in anything else the value is made of still replaces the resource, as it
+would under CloudFormation. `PASS_THROUGH_ATTRS` lets that key read through a
+resource that only carries a value on (an SSM parameter's `Value`). Both
+behaviours were checked offline with `terraform_data` on Terraform 1.7.5 and
+OpenTofu 1.7.10: creating the key resource on the upgrade that introduces it does
+not trigger a replacement, and changing its input does.
+
+### `moved` blocks and the rename table
+
+The translator takes `--previous-manifest <path or https URL>`, the previous
+release's `idp-terraform.json`, and pairs each of its `resources` with the current
+tree (`idp_tf/moved.py`): by identity (nested-stack path and logical id), through
+`renames.yaml` for a logical-id or nested-stack rename, or by inference when a
+logical id and type left one nested stack and appear in exactly one other. Each
+pair whose addresses differ becomes a `moved` block in `moved.tf`, for the main
+resource and every companion it became (a bucket's configuration resources, a
+role's policies). A renamed nested stack moves as one `module` block. Moves are
+kept in `moves` and written again by every later release, so a deployment that
+skips releases still follows them. A resource whose Terraform type changed cannot
+be moved and is reported. The publish path (`idp-cli publish --terraform`, and
+`publish.py`) reads the previous manifest from the module the bucket's
+`idp-terraform-latest.json` pointer names before uploading the new one.
+
+To rename a logical id or a nested stack of a resource that exists in released
+templates, add an entry to `renames.yaml` in the same pull request:
+
+```yaml
+renames:
+  - from: PATTERNSTACK/OldBucket
+    to: PATTERNSTACK/NewBucket
+    since: 0.7.0
+    reason: why it was renamed
+```
+
+The translation fails if `to` names nothing, or if `from` still exists. Leave
+entries in place after the release that needed them.
+
+## Completeness
+
+`idp_tf/completeness.py` checks that every property value in the template reaches
+the HCL emitted for its resource: each non-empty literal appears as HCL would
+spell it, each `Ref` to a parameter appears as its variable, each reference to a
+resource or nested stack names it, each condition appears as its local, and the
+literal text of an `Fn::Sub` appears around its references. Nested-stack
+parameters are checked on the `module` block. A value found nowhere fails the
+translation: that is how a setting is lost silently, a guardrail wired to an empty
+string being the example that prompted the check. It is a presence check; a value
+that lands in the wrong attribute passes it.
+
+A value that legitimately does not appear has an entry in `NOT_APPLICABLE`, keyed
+by type and property path, saying where it went (a DynamoDB key type is the
+attribute name `hash_key`; inline Lambda source is a zip). Measured on 2026-11-07
+against the standard template, the check found 53 values, all on DynamoDB tables
+and in three classes: the key type of a table's and of a GSI's `KeySchema`, and
+`SSESpecification.SSEType`. All three are declared, and the mapper now refuses
+any `SSEType` but `KMS`. Writing the check also showed that the table mapper read
+`PointInTimeRecoverySpecification`, `StreamSpecification`,
+`TimeToLiveSpecification` and a GSI's `Projection` key by key and dropped any other
+key without a word; it now refuses one, and maps `RecoveryPeriodInDays`. No
+template sets such a key today.
+
 ## When the gate fails: adding a hand mapping
 
 `translator/tests/test_offline_templates.py` translates every main template variant in
@@ -204,6 +334,19 @@ Each failure line names the resource and what is missing. The usual cases:
 - **A type that translates but will not re-plan clean or destroy clean on `awscc`.**
   Hand-map it and add it to `HYBRID_TYPES`. This is found only by a live deploy (see
   [Testing live](#testing-live)).
+- **A type missing from `create_only.json`.** Run
+  `python3 terraform/translator/scripts/refresh_create_only.py` with the pinned
+  `cfn-lint` installed, and commit the file.
+- **A stateful custom-output edge** (`a stateful resource takes a custom
+  resource's output as a create-only property`). Read the handler. If it returns
+  the same value on every Update, add the property to `STABLE_CUSTOM_OUTPUTS`
+  with that reason; otherwise the template change replaces the resource on
+  upgrade and needs a different design.
+- **A value not in the emitted Terraform.** Fix the mapper so the value is
+  written. Declare it in `completeness.NOT_APPLICABLE` only when it is represented
+  some other way, and say how.
+- **A `renames.yaml` entry naming nothing.** The `to` side was renamed or removed
+  again; update or remove the entry.
 
 Add a test in `translator/tests/test_translate.py` for the mapping, and run the suites:
 
@@ -212,9 +355,8 @@ cd terraform/translator && python3 -m pytest -q
 cd terraform/bridge && python3 -m pytest -q tests
 ```
 
-Both suites are registered in `scripts/run_all_tests.py`, so `make test` runs them. As
-of 2026-11-06 neither CI configuration runs them; check the `test-packages-cicd`
-target in the `Makefile` for the current state.
+Both suites are registered in `scripts/run_all_tests.py`, so `make test` runs them,
+and the `test-packages-cicd` target runs them in both CIs.
 
 ## Refreshing the awscc schema
 
@@ -243,8 +385,11 @@ live deploy.
 
 ## Declared overrides
 
-Four tables in `translator/idp_tf/translate.py` record the places where a mechanical
-translation is wrong or incomplete. Each entry is keyed narrowly and carries its reason.
+These tables in `translator/idp_tf/translate.py` record the places where a mechanical
+translation is wrong or incomplete. Each entry is keyed narrowly and carries its
+reason. `STABLE_CUSTOM_OUTPUTS` and `PASS_THROUGH_ATTRS` are described under
+[Upgrade safety](#upgrade-safety), and `completeness.NOT_APPLICABLE` under
+[Completeness](#completeness).
 
 - **`AWSCC_PROPERTY_FIXUPS`**, keyed by `(type, property)`. For properties where
   `awscc` stores what the service returns and the service returns a different spelling
@@ -263,8 +408,9 @@ translation is wrong or incomplete. Each entry is keyed narrowly and carries its
   notices that a resource has a second writer; Terraform does, and reverts it. Each
   entry gives the attributes for `lifecycle { ignore_changes = [...] }` and the reason.
   The one entry today is `SettingsParameter`, whose value the `UpdateSettings` custom
-  resource rewrites at deploy time. The translator fails if an entry names a resource
-  the template no longer has, so an override cannot outlive what it described.
+  resource rewrites at deploy time. An entry naming a resource the standard template
+  no longer has is reported, and `tests/test_upgrade_safety.py` fails on it, so an
+  override cannot outlive what it described.
 - **`TERRAFORM_DIRECTORY_READERS`**, keyed by function logical ID. These functions walk
   the stack tree at run time through CloudFormation; today that is
   `DataMartRollupFunction` alone. In the root module each gets
@@ -308,12 +454,16 @@ the validation below is:
 5. Run the integration steps of `scripts/sdlc/codebuild_deployment.py` against the
    deployment name, with `idp-cli` and the SDK installed from the same checkout so the
    SDK's hook is in place.
-6. Optionally compare properties with a CloudFormation twin deployed from the same
-   template with the same parameters:
-   `python prototype/compare.py --cfn-stack <name> --tf-dir <dir> --module <module.tf>
-   --report translation-report.json` reads both copies of each resource through Cloud
-   Control and diffs them, with the expected differences excluded by name, one entry
-   per property.
+6. Compare properties with a CloudFormation twin deployed from the same template with
+   the same parameters: `make terraform-parity CFN_STACK=<name> TF_STACK=<name>
+   [REGION=<region>]` (`tools/parity.py`). It reads every resource of both, main and
+   nested stacks, the Terraform side through the label stack's resource directory,
+   through Cloud Control (functions also through the Lambda API), and diffs them
+   after replacing the names that necessarily differ. A difference fails it unless
+   `tools/parity_baseline.json` explains it, one entry per type and property path
+   with its reason; so does a resource on one side only and an entry that explained
+   nothing. It is a release-validation tier
+   (`.claude/skills/release-validation.md`).
 7. `terraform destroy`, and check for leftovers: CodeBuild creates
    `/aws/codebuild/<project>` log groups itself, on both the Terraform and the
    CloudFormation side.
@@ -395,11 +545,100 @@ between the two runs.
 `govcloud` variants (the translator's `TEMPLATE_VARIANTS`) and runs `init` and
 `validate` on each under every Terraform and OpenTofu release it pins
 (`TERRAFORM_CHECK_BINARIES` in the `Makefile`: the oldest release `versions.tf` admits
-and a recent one, of each). It plans and applies nothing.
+and a recent one, of each). It plans and applies nothing. It then runs
+`make terraform-scan-diff`, below.
+
+### Three ways the translation is checked
+
+No offline check proves a translation equivalent; every defect found so far was
+found by a live deploy, a re-plan or a CI run. Three checks look at different
+things, and none subsumes another:
+
+| Check | Runs | What it catches | What it cannot see |
+|---|---|---|---|
+| Translator checks and `terraform validate` (`make test`, `make terraform-check`) | every pull request | unmapped types and properties, values that do not reach the HCL, stateful custom-output edges, malformed HCL | anything AWS decides at apply time |
+| Static scan diff (`make terraform-scan-diff`) | every pull request, inside `make terraform-check` | a Terraform resource softer than its CloudFormation source under a rule both scanners share | what no `checkov` rule looks at (an empty guardrail id) |
+| Property parity (`make terraform-parity`) | release validation, by hand | any property the two deployments store differently | resources Cloud Control cannot read, and behaviour |
+
+### The static scan diff
+
+`scripts/terraform_scan_diff.py` runs a pinned `checkov` (`CHECKOV_VERSION` in the
+`Makefile`, installed into its own venv under the Terraform check cache) over the
+source templates, which carry the review's `# checkov:skip` comments, over the same
+templates SAM-expanded, and over the module generated offline from the standard
+template. Each failed Terraform check is reduced to (resource identity, check id),
+the identity coming from the manifest's `resources`, and compared only for checks
+`checkov` implements for both frameworks. A finding the CloudFormation side passes
+(softer), one on a resource the translator adds, or one with no counterpart fails
+the gate unless `scripts/terraform_scan_baseline.json` has an entry for that check
+on that resource with its reason. Findings on conditional resources the
+CloudFormation scan skips (it evaluates conditions at the parameter defaults) are
+counted, and the count is pinned. An entry that matches nothing fails.
+
+Measured on 2026-11-07 with `checkov` 3.4.0 on the standard template:
+
+| Class of failed Terraform check | Findings |
+|---|---|
+| the CloudFormation side fails or skips the same check on the same resource | 449 |
+| softer than CloudFormation | 0 |
+| on the custom-resource bridge the translator adds | 28 (7 checks, on each of 4 bridges) |
+| no counterpart | 0 |
+| on a conditional resource the CloudFormation scan skipped | 25 |
+| on a check only the Terraform framework has (not compared) | 381 |
+
+The 28 bridge findings are the baseline's entries. Two of them are gaps rather than
+decisions, and the entries say so: the bridge's log group is not encrypted with
+the deployment's customer-managed key, and its bucket has no access logging.
+
+### Replay over past releases
+
+`tools/replay_releases.py` extracts each release tag's templates with
+`git archive`, following the nested `TemplateURL`s, and translates them with the
+current translator `--offline --survey`. Measured on 2026-11-07, translator at this
+branch:
+
+| Release | Types | New AWS types | New properties on hand-mapped types | Unmapped types | Failures |
+|---|---|---|---|---|---|
+| v0.5.0 | 75 | - | - | 5 | 212 |
+| v0.5.3 | 86 | `Cognito::UserPoolResourceServer`, and 7 for ALB hosting (EC2 security group and egress rule, VPC endpoint, four ELBv2 types) | - | 11 | 242 |
+| v0.5.6 | 89 | `Cognito::UserPoolIdentityProvider` | `Function.VpcConfig` | 11 | 259 |
+| v0.5.9 | 95 | `ApiGateway::{Deployment,RestApi,Stage}`, `EC2::{Instance,LaunchTemplate}`, `IAM::InstanceProfile` | `Project.VpcConfig` | 11 | 263 |
+| v0.5.12 | 98 | `EC2::SecurityGroupIngress` (and `SNS::Subscription` in 0.5.10) | - | 12 | 292 |
+| v0.5.16 | 98 | `CloudFront::OriginAccessControl` | - | 11 | 335 |
+| v0.6.0 | 90 | `ApiGateway::{Account,Authorizer,GatewayResponse,Method,Resource}`, `Lambda::Url` | `Permission.FunctionUrlAuthType` | 0 | 0 |
+| v0.6.1 | 91 | - | `UserPoolUser.MessageAction` | 0 | 0 |
+| v0.6.2 | 91 | - | `Repository.RepositoryPolicyText` | 0 | 0 |
+| v0.6.3 – v0.6.6 | 91 | - | - | 0 | 0 |
+| v0.6.7 | 93 | `Lambda::EventInvokeConfig` | `Function.ReservedConcurrentExecutions` | 0 | 0 |
+| v0.6.8 | 93 | - | `UserPool.UserAttributeUpdateSettings` | 0 | 0 |
+| v0.6.9 – v0.6.11 | 94 | - | - | 0 | 0 |
+| v0.6.12 | 95 | `GuardDuty::MalwareProtectionPlan` | - | 0 | 0 |
+| v0.6.13, v0.6.14 | 95 | - | - | 0 | 0 |
+
+Rows for 0.5.x releases that added nothing are omitted; their failure counts sit
+between the neighbouring rows'. Custom-resource types, which need no mapping, are
+not counted as new types. Every 0.5.x template was read; none failed for a reason
+other than mapping.
+
+What it shows about per-release cost: across the fifteen 0.6 releases the templates
+added two AWS resource types, both translated through the vendored `awscc` schema
+with no hand mapping, and five properties on hand-mapped types, four of them a
+spec entry and one (an ECR repository policy) a separate resource; every 0.6
+release translates with no failure. The cost concentrates at
+architectural changes: every 0.5 release fails on the same twelve types, the
+AppSync API and the ALB hosting option that 0.6 removed (each failure line is a
+resource of one of those types, or a reference to one). Those types are absent from
+the vendored `awscc` subset, so the least they would need is a schema refresh;
+whether they would then deploy is not known, because only a live run says that.
+Two limits: the translator was written against 0.6.13 and 0.6.14, so a clean 0.6
+row shows coverage, not what each release would have cost at the time; and a
+translation that passes offline is not a deployment that passes.
 
 ### Not yet covered
 
-- Neither CI runs a live Terraform tier.
+- Neither CI runs a live Terraform tier, and `make terraform-parity` has not yet
+  been run against the full stack; the parity numbers above are from the
+  prototype run on one nested stack.
 - An apply of the `--headless` and `--govcloud` modules; they are validated offline
   only. The feature-platform extensions install as their own CloudFormation stacks.
 - An apply with a deploying role scoped to a role-name prefix and a required

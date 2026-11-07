@@ -3299,6 +3299,17 @@
       "ratchet": "staleness",
       "ratchetEvidence": "scripts/terraform_scan_diff.py",
       "reason": "Each entry names one check on one resource of the custom-resource bridge the translator adds (the bridge has no CloudFormation counterpart, because CloudFormation runs custom resources inside the service) and says why that check does not apply to it or that it is a known gap, in which case the entry says what removes it. Why JUDGEMENT: whether a scanner rule applies to a generated resource is a reading of what the resource does. An entry matching no finding fails the gate as stale, and notEvaluatedCount is count-pinned: a change in the number of findings on conditional resources the CloudFormation scan skips fails the gate until it is re-read."
+    },
+    "terraform/tools/parity_baseline.json::parity_baseline.json": {
+      "kind": "exemption",
+      "memberKind": "a (CloudFormation type, property path) pair",
+      "turnsOff": "make terraform-parity's property comparison, for that property path (and everything below it) of every resource of that type",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "terraform/tools/parity.py",
+      "reason": "Each entry is a property one deployment stores and the other does not because of how the writer behaves (the hashicorp/aws provider writing CodeBuild's service defaults explicitly), with the measurement it came from. Why JUDGEMENT: whether a stored default is the same configuration as an absent value is a reading of the service's behaviour. The tier is live and manual, so the ratchet runs when it does: an entry that explained no difference in a run is reported stale and fails that run."
     }
   }
 }

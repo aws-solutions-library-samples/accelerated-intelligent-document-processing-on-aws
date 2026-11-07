@@ -761,6 +761,15 @@ terraform-scan-diff: ## Diff a pinned checkov scan of the CloudFormation templat
 		--checkov-version "$(CHECKOV_VERSION)" \
 		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
 
+# Release-time property parity between a CloudFormation stack and a Terraform
+# deployment of the same release with the same parameters: every resource of both,
+# main and nested stacks, read through Cloud Control and diffed, with explained
+# differences in terraform/tools/parity_baseline.json. Read-only, but it needs AWS
+# credentials and both deployments, so it is a release-validation tier, not a CI gate.
+terraform-parity: ## Compare every resource of a Terraform deployment with its CloudFormation twin (CFN_STACK=<name> TF_STACK=<label stack>; needs AWS)
+	@test -n "$(CFN_STACK)" -a -n "$(TF_STACK)" || { echo "usage: make terraform-parity CFN_STACK=<name> TF_STACK=<name> [REGION=<region>]"; exit 2; }
+	@$(PYTHON) terraform/tools/parity.py --cfn-stack "$(CFN_STACK)" --tf-stack "$(TF_STACK)" $(if $(REGION),--region "$(REGION)")
+
 # Deliberately NOT part of `lint`, `fastlint` or `lint-cicd`, and deliberately NOT
 # in test_ci_gate_parity.py's SHARED_GATES. It needs network access and a token
 # with administration:read, and on this repository it reports "not protected" on
