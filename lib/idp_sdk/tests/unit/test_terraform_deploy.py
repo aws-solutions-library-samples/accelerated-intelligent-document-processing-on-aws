@@ -723,6 +723,129 @@ class TestDeployOperation:
                 terraform_dir=str(tmp_path),
             )
 
+    def test_no_region_is_refused_before_terraform_runs(self, monkeypatch, tmp_path):
+        """The root config pins the providers to the client's region; without
+        one there is nothing to write, so nothing is written or run."""
+        ran = []
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        monkeypatch.setattr(tf.subprocess, "run", lambda cmd, **kw: ran.append(cmd))
+        client = IDPClient(stack_name="tfidp", region=REGION)
+        client._region = None
+        with pytest.raises(IDPConfigurationError, match="region is required"):
+            client.stack.deploy_terraform(
+                admin_email="a@example.com",
+                module_url=MODULE_URL,
+                terraform_dir=str(tmp_path),
+            )
+        assert ran == []
+        assert list(tmp_path.iterdir()) == []
+
+    def test_neither_a_module_nor_a_pointer_url_is_refused(
+        self, monkeypatch, tmp_path, no_cfn_stack
+    ):
+        fetched = []
+        monkeypatch.setattr(
+            tf, "fetch_url", lambda url, s3_factory=None: fetched.append(url)
+        )
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        client = IDPClient(stack_name="tfidp", region=REGION)
+        with pytest.raises(IDPConfigurationError, match="module_url or pointer_url"):
+            client.stack.deploy_terraform(
+                admin_email="a@example.com", terraform_dir=str(tmp_path)
+            )
+        assert fetched == []
+        assert not (tmp_path / "main.tf").exists()
+
+    def test_an_existing_deployment_updates_and_returns_the_label_stack_outputs(
+        self, monkeypatch, tmp_path
+    ):
+        """A label stack of the name is this deployment's own, so it is not
+        refused; after the apply its outputs and id are the result's."""
+        from idp_sdk.operations.stack import StackOperation
+
+        label = {
+            "StackId": "arn:aws:cloudformation:us-west-2:111122223333:stack/tfidp/x",
+            "Description": "IDP (Terraform) read-only",
+            "Outputs": [
+                {"OutputKey": "ApplicationWebURL", "OutputValue": "https://ui.test"},
+                {"OutputKey": "S3InputBucketName", "OutputValue": "tfidp-input"},
+            ],
+        }
+        monkeypatch.setattr(
+            StackOperation, "_describe_stack", staticmethod(lambda d, n: label)
+        )
+        monkeypatch.setattr(tf, "fetch_url", lambda url, s3_factory=None: _module_zip())
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        calls = _Calls({SHOW_PLAN: json.dumps({"resource_changes": []})})
+        monkeypatch.setattr(tf.subprocess, "run", calls)
+        (tmp_path / "terraform.tfstate").write_text("{}")
+        result = IDPClient(stack_name="tfidp", region=REGION).stack.deploy_terraform(
+            admin_email="a@example.com",
+            module_url=MODULE_URL,
+            terraform_dir=str(tmp_path),
+        )
+        assert result.operation == "UPDATE"
+        assert result.status == "APPLY_COMPLETE"
+        assert result.stack_id == label["StackId"]
+        assert result.outputs == {
+            "ApplicationWebURL": "https://ui.test",
+            "S3InputBucketName": "tfidp-input",
+        }
+
+
+class TestDescribeStack:
+    """`_describe_stack` turns "no such stack" into ``None`` and nothing else."""
+
+    def _deployer(self):
+        import boto3
+        from botocore.stub import Stubber
+
+        class _Deployer:
+            cfn = boto3.client("cloudformation", region_name=REGION)
+
+        deployer = _Deployer()
+        return deployer, Stubber(deployer.cfn)
+
+    def _describe(self, deployer, name="tfidp"):
+        from idp_sdk.operations.stack import StackOperation
+
+        return StackOperation._describe_stack(deployer, name)
+
+    def test_a_stack_that_does_not_exist_is_none(self):
+        deployer, stub = self._deployer()
+        stub.add_client_error(
+            "describe_stacks",
+            service_error_code="ValidationError",
+            service_message="Stack with id tfidp does not exist",
+        )
+        with stub:
+            assert self._describe(deployer) is None
+
+    def test_any_other_error_is_raised(self):
+        deployer, stub = self._deployer()
+        stub.add_client_error(
+            "describe_stacks",
+            service_error_code="AccessDenied",
+            service_message="not authorized to perform cloudformation:DescribeStacks",
+        )
+        with stub, pytest.raises(deployer.cfn.exceptions.ClientError):
+            self._describe(deployer)
+
+    def test_the_first_stack_is_returned_and_an_empty_answer_is_none(self):
+        deployer, stub = self._deployer()
+        stack = {
+            "StackName": "tfidp",
+            "StackStatus": "CREATE_COMPLETE",
+            "CreationTime": "2026-01-01T00:00:00Z",
+        }
+        stub.add_response(
+            "describe_stacks", {"Stacks": [stack]}, {"StackName": "tfidp"}
+        )
+        stub.add_response("describe_stacks", {"Stacks": []}, {"StackName": "tfidp"})
+        with stub:
+            assert self._describe(deployer)["StackName"] == "tfidp"
+            assert self._describe(deployer) is None
+
 
 SHOW_PLAN = f"show -json {tf.PLAN_FILE}"
 
@@ -963,6 +1086,20 @@ class TestDeleteOperation:
         with pytest.raises(IDPConfigurationError, match="no Terraform configuration"):
             client.stack.delete_terraform(terraform_dir=str(tmp_path / "none"))
 
+    def test_another_deployments_directory_is_refused_before_terraform_runs(
+        self, monkeypatch, tmp_path
+    ):
+        """Destroying from a directory holding a different deployment would
+        destroy that one; the recorded name is checked before `init`."""
+        self._initialised(tmp_path)
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        calls = _Calls()
+        monkeypatch.setattr(tf.subprocess, "run", calls)
+        client = IDPClient(stack_name="otheridp", region=REGION)
+        with pytest.raises(IDPConfigurationError, match="'tfidp', not 'otheridp'"):
+            client.stack.delete_terraform(terraform_dir=str(tmp_path))
+        assert calls.cmds == []
+
 
 class TestPublishOperation:
     def test_build_publishes_the_module_after_the_templates(
@@ -1147,6 +1284,60 @@ class TestPublishOperation:
         work = tmp_path / ".aws-sam" / "terraform" / "govcloud"
         assert translated == [(str(work / "idp-govcloud.yaml"), str(work))]
         assert uploaded["variant"] == "govcloud"
+
+    def test_publish_terraform_refuses_an_empty_version(self, monkeypatch, tmp_path):
+        """The version names the zip and labels the deployment; without one
+        nothing is read from S3."""
+        from idp_sdk.operations import publish as pub
+
+        s3 = MagicMock()
+        monkeypatch.setattr(pub.boto3, "client", lambda *a, **k: s3)
+        with pytest.raises(IDPConfigurationError, match="a version is required"):
+            IDPClient(region=REGION).publish.publish_terraform(
+                str(tmp_path), "b-us-west-2", "p", REGION, ""
+            )
+        s3.download_file.assert_not_called()
+
+    def test_an_unreadable_published_template_is_named_and_not_translated(
+        self, monkeypatch, tmp_path
+    ):
+        from idp_sdk.operations import publish as pub
+
+        s3 = MagicMock()
+        s3.download_file.side_effect = RuntimeError("403 Forbidden")
+        monkeypatch.setattr(pub.boto3, "client", lambda *a, **k: s3)
+        translated = []
+        monkeypatch.setattr(
+            tf,
+            "translate_published_template",
+            lambda *a: translated.append(a) or Path(a[2]),
+        )
+        with pytest.raises(IDPStackError) as err:
+            IDPClient(region=REGION).publish.publish_terraform(
+                str(tmp_path), "b-us-west-2", "p", REGION, "1"
+            )
+        assert "s3://b-us-west-2/p/idp-main.yaml" in str(err.value)
+        assert "403 Forbidden" in str(err.value)
+        assert translated == []
+
+    def test_a_failed_module_upload_is_raised_as_a_stack_error(
+        self, monkeypatch, tmp_path
+    ):
+        from idp_sdk.operations import publish as pub
+
+        monkeypatch.setattr(pub.boto3, "client", lambda *a, **k: MagicMock())
+        monkeypatch.setattr(
+            tf, "translate_published_template", lambda src, tpl, work, ver: Path(work)
+        )
+
+        def upload(s3c, **kw):
+            raise OSError("connection reset")
+
+        monkeypatch.setattr(tf, "upload_module", upload)
+        with pytest.raises(IDPStackError, match="upload failed: connection reset"):
+            IDPClient(region=REGION).publish.publish_terraform(
+                str(tmp_path), "b-us-west-2", "p", REGION, "1"
+            )
 
     def test_publish_terraform_refuses_an_unknown_variant(self, tmp_path):
         with pytest.raises(IDPConfigurationError, match="unknown Terraform"):
