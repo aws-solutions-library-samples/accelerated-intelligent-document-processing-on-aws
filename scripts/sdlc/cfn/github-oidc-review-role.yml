@@ -45,11 +45,13 @@ Parameters:
     Type: String
     Description: >-
       The repository's DEFAULT branch, which is the ref a scheduled or manually
-      dispatched workflow run reports in its OIDC token. This is `main` here, NOT
-      the `develop` branch that pull requests target - a scheduled run always
-      takes the workflow file and the ref from the default branch.
+      dispatched workflow run reports in its OIDC token. This is `develop` here.
+      A scheduled run always takes the workflow file and the ref from the default
+      branch, so if the repository's default branch changes, this parameter must
+      change with it or every scheduled and dispatched run fails at the credential
+      step.
     AllowedPattern: .+
-    Default: main
+    Default: develop
   ExistingOidcProviderArn:
     Type: String
     Description: >-
