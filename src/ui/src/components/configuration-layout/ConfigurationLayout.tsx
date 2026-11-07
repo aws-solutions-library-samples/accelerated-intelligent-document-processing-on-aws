@@ -40,6 +40,7 @@ import ConfigRevisionHistoryPanel from './ConfigRevisionHistoryPanel';
 import UnrecordedChangesAlert from '../common/UnrecordedChangesAlert';
 import useConfigProfileRevisions from '../../hooks/use-config-profile-revisions';
 import ConfigurationComparison from './ConfigurationComparison';
+import ResizableModal from '../common/ResizableModal';
 import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
 import NoConfigProfilesInScopeAlert from '../common/NoConfigProfilesInScopeAlert';
 import { deepMerge } from '../../utils/configUtils';
@@ -2999,11 +3000,10 @@ const ConfigurationLayout = (): React.JSX.Element => {
       </Modal>
 
       {/* Configuration Comparison Modal */}
-      <Modal
+      <ResizableModal
         visible={showCompareModal}
         onDismiss={() => setShowCompareModal(false)}
         header="Configuration Comparison"
-        size="max"
         footer={
           <Box float="right">
             <Button onClick={() => setShowCompareModal(false)}>Close</Button>
@@ -3011,7 +3011,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
         }
       >
         {showCompareModal && compareData && <ConfigurationComparison versions={compareData.versions} configs={compareData.configs} />}
-      </Modal>
+      </ResizableModal>
 
       {/* Sync to BDA Project Selection Modal */}
       <Modal

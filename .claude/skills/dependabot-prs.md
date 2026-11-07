@@ -6,8 +6,11 @@ bumps if safe").
 
 Three invariants — never skip any of them:
 
-1. **Always retarget to `develop`.** Dependabot opens PRs against `main` (the
-   repo default branch), but all work in this repo merges to `develop` first.
+1. **The base must be `develop`.** Dependabot opens PRs against the repository's
+   default branch, which is `develop`, so a new PR already targets it. A PR with
+   any other base (an older one opened against `main`, or one moved to another
+   branch) is retargeted before anything else, because all work in this repo
+   merges to `develop` first.
 2. **Always assess risk per PR** before merging (see checklist below). Never
    bulk-merge on green CI alone.
 3. **Always run tests after merging** to validate `develop` (see Post-merge
@@ -22,8 +25,8 @@ gh pr list --author "app/dependabot" --state open \
 
 ## Step 2 — Redundancy check against develop
 
-Dependabot diffs against `main`, so a bump may already exist on `develop`
-(e.g. done manually in a feature branch). Check before reviewing:
+A bump may already exist on `develop` (e.g. done manually in a feature branch,
+or the same bump from an older PR against another base). Check before reviewing:
 
 ```bash
 git fetch origin main develop --quiet
@@ -61,7 +64,7 @@ Assess:
 Safe-to-merge bar: patch/minor bump, no breaking changes affecting our usage,
 CI green. Anything else → report to the user instead of merging.
 
-## Step 4 — Retarget to develop
+## Step 4 — Retarget to develop (only if the base is not `develop`)
 
 ```bash
 gh pr edit <NN> --base develop
@@ -74,11 +77,11 @@ seconds):
 gh pr view <NN> --json mergeable,mergeStateStatus,baseRefName
 ```
 
-- `CONFLICTING` / `DIRTY`: the branch was cut from `main` and conflicts with
+- `CONFLICTING` / `DIRTY`: the branch was cut from another base and conflicts with
   `develop`. Comment `@dependabot rebase` on the PR and poll until Dependabot
   force-pushes a rebased head (~1–2 min), which also restarts CI.
 - **Gotcha (this has bitten us):** Dependabot's rebase/recreate can RESET the
-  base branch back to `main`, silently undoing your retarget. After any
+  base branch back to the one it was opened against, silently undoing your retarget. After any
   Dependabot rebase, re-run `gh pr view <NN> --json baseRefName` and re-edit
   the base if needed — and re-verify `baseRefName == develop` immediately
   before every merge.

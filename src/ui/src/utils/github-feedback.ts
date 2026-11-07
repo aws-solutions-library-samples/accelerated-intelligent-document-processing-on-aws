@@ -22,9 +22,9 @@
  * loses the content, a 404 loses the whole report — so `FORM_FIELDS` is
  * asserted against the YAML in this util's tests rather than trusted.
  *
- * The forms are read from the repository's DEFAULT branch, not from the branch
- * a deployment was built from, so a field added on `develop` is not addressable
- * until it reaches `main`.
+ * The forms are read from the repository's DEFAULT branch (`develop`), not from
+ * the branch a deployment was built from, so a field added on a feature branch is
+ * not addressable until it reaches `develop`.
  *
  * `title` is sent alongside `template`. GitHub documents `title` with `body`,
  * `labels` and `projects` but never says how it interacts with a form's own
