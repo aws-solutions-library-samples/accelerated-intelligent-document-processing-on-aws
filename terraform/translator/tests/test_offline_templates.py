@@ -370,3 +370,58 @@ def test_a_permission_granted_to_a_role_survives_the_role_being_replaced(
             ):
                 problems.append(f"{module.name}: {m.group(1)}")
     assert not problems, problems[:20]
+
+
+# ------------------------------------------------- partition independence
+@pytest.mark.parametrize("variant", [None, "headless", "govcloud"])
+def test_the_module_does_not_depend_on_the_region_sam_is_given(
+    variant, tmp_path, monkeypatch
+):
+    """SAM is handed a fixed session region because it refuses to run without
+    one. Nothing it emits may depend on which: a module built with a
+    commercial region must be byte-identical to one built with a GovCloud
+    region, or the GovCloud module carries commercial ARNs and policies."""
+    import idp_tf.expand as expand
+
+    built = {}
+    for region in ("us-east-1", "us-gov-west-1"):
+        monkeypatch.setattr(expand, "SAM_REGION", region)
+        built[region] = _translate(tmp_path / region, variant)
+    a, b = built["us-east-1"], built["us-gov-west-1"]
+    files_a = sorted(p.relative_to(a) for p in a.rglob("*") if p.is_file())
+    files_b = sorted(p.relative_to(b) for p in b.rglob("*") if p.is_file())
+    assert files_a == files_b
+    differing = [
+        str(f) for f in files_a if (a / f).read_bytes() != (b / f).read_bytes()
+    ]
+    assert not differing, differing
+
+
+_SOURCE_TEMPLATES = [
+    REPO / "template.yaml",
+    *sorted(REPO.glob("nested/*/template.yaml")),
+    *sorted(REPO.glob("patterns/*/template.yaml")),
+]
+_PARTITION_SUFFIX = re.compile(r"\.amazonaws\.com(?!\.cn)\b")
+_HCL_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+@pytest.mark.parametrize("variant", [None, "headless", "govcloud"])
+def test_the_generated_module_names_no_partition(variant, tmp_path):
+    """The generated counterpart of `make check-arn-partitions`, which reads only
+    the CloudFormation templates. No `arn:aws:` may appear at all; an
+    `amazonaws.com` literal may appear only where the template author wrote that
+    exact string (the per-partition Cognito principals, the content security
+    policy), which the template gate already rules on."""
+    authored = "\n".join(p.read_text() for p in _SOURCE_TEMPLATES)
+    root = _translate(tmp_path / "m", variant)
+    problems = []
+    for f in sorted(root.rglob("*.tf")):
+        for n, line in enumerate(f.read_text().splitlines(), 1):
+            where = f"{f.relative_to(root)}:{n}"
+            if "arn:aws:" in line:
+                problems.append(f"{where}: arn:aws: literal")
+            for literal in _HCL_STRING.findall(line):
+                if _PARTITION_SUFFIX.search(literal) and literal not in authored:
+                    problems.append(f"{where}: {literal[:80]}")
+    assert not problems, problems[:20]
