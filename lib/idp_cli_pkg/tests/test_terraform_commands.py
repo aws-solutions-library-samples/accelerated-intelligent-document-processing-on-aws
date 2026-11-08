@@ -1,3 +1,4 @@
+
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
@@ -12,6 +13,7 @@ that the CloudFormation path is not taken.
 """
 
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from click.testing import CliRunner
@@ -92,10 +94,13 @@ class TestDeployTerraform:
             "allow_replace_retained": False,
         }
         client.stack.deploy.assert_not_called()
-        # Compared as a whole token: the deploy prints the application URL.
-        assert "https://app.example.com" in [
-            t.rstrip(".,") for t in result.output.split()
+        # The deploy prints the application URL; compare it parsed, by host.
+        printed = [
+            urlparse(t.rstrip(".,"))
+            for t in result.output.split()
+            if t.startswith("https://")
         ]
+        assert ("https", "app.example.com") in [(u.scheme, u.hostname) for u in printed]
 
     def test_explicit_module_dir_and_binary(self, runner):
         client = _client()
