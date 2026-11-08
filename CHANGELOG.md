@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **A re-uploaded file no longer stays in "malware scanning" forever.** With malware scanning enabled, uploading a file under a key that had been processed before could leave the new document stuck in `MALWARE_SCANNING`: when GuardDuty's verdict for the new upload arrived before the upload itself had been recorded, the gate mistook it for a repeat or an outdated verdict and discarded it, and no other verdict was coming. The same symptom had a second cause: when the upload was recorded in the instant between the gate's check and its re-read of the document, the gate reported the verdict as a repeat delivery. The gate now checks which version the input bucket currently holds and retries a verdict for that version until the upload is recorded, applies a verdict whose document was updated under it, and still discards verdicts for versions that have since been replaced. A retried verdict is re-delivered by Lambda's asynchronous retries (two, about one and two minutes apart, then the queue sender's dead-letter queue), not by the verdict rule's retry policy, which covers delivery only. The template now states that retry count explicitly on `QueueSender`, with the same value as Lambda's default, and the documentation and alarm text say which dead-letter queue a stuck verdict ends up in. **Action:** none; a document already stuck this way is recovered by uploading the file again. See [Malware scanning](docs/malware-scanning.md).
+
 ## [0.6.14]
 
 ### Added
