@@ -30,7 +30,7 @@ on:
 permissions:
   contents: read
 
-# ⚠️ WHY THIS IS FOUR JOBS. It was one `developer_tests` job running lint,
+# ⚠️ WHY THIS IS SEVERAL JOBS. It was one `developer_tests` job running lint,
 # typecheck and every pytest suite in sequence, and it took 34-46 minutes of which
 # 88% was pytest (`test-packages-cicd` 942s, `test-cicd -C lib/idp_common_pkg`
 # 783s, UI 94s, against 106s of lint and 50s of typecheck). Splitting it is worth
@@ -44,14 +44,14 @@ permissions:
 # checkout, which each does for itself.
 #
 # ⚠️ Splitting changed how many requireable status-check CONTEXTS the shared gates
-# produce — it was one job holding eight of them, and is now four. That number is
+# produce — it was one job holding eight of them, and is now one per job. That number is
 # derived and asserted by scripts/tests/test_documented_counts.py, which fails any
 # document stating a stale figure, and the branch-protection checker in
 # scripts/sdlc/ reads the job names out of this file to build its expected
 # required-check list. Adding or renaming a job here moves both; it is not a local
 # edit.
 #
-# Four parallel jobs on a free-for-public-repos runner pool cost nothing extra
+# Parallel jobs on a free-for-public-repos runner pool cost nothing extra
 # here, which is the one way this is cheaper than the GitLab equivalent.
 jobs:
   # Lint, format, types, and the static scans. Everything that reads the tree
@@ -369,3 +369,56 @@ jobs:
         id: run-ui-tests
         run: cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent
         continue-on-error: false
+
+  # The Terraform offline gate: translate template.yaml with terraform/translator,
+  # then `init -backend=false` and `validate` the generated module with every pinned
+  # Terraform and OpenTofu release. It deploys nothing and needs no AWS credentials;
+  # it does need network access, for the binaries (verified against the published
+  # SHA256SUMS and the hashes committed in scripts/terraform_binaries.lock.json) and
+  # the providers. See scripts/terraform_check.py for what it does and does not prove.
+  #
+  # Its own job rather than a step in `static_checks` so that a release host or
+  # registry outage reds this context alone, by a name that says what it was.
+  terraform_checks:
+    name: Terraform Checks (offline translate + validate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+
+    container:
+      image: python:3.13-bookworm
+
+    env:
+      # Keep in step with TERRAFORM_*_VERSION / OPENTOFU_*_VERSION in the Makefile;
+      # scripts/tests/test_ci_gate_parity.py fails if this, .gitlab-ci.yml and the
+      # Makefile disagree.
+      TERRAFORM_CHECK_BINARIES: "terraform@1.7.5 terraform@1.17.1 tofu@1.7.10 tofu@1.13.9"
+      TERRAFORM_CHECK_CACHE: .cache/idp-terraform-check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: Set up Git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # The translator needs only aws-sam-translator and PyYAML, both in the lock;
+      # the shared action is used anyway so this job's environment is the locked
+      # one every other job here builds.
+      - name: Set up the Python environment
+        uses: ./.github/actions/python-env
+
+      # Verified binaries plus the provider plugin cache (~430 MB compressed).
+      # Keyed on the file that pins both, and on the vendored awscc schema whose
+      # version the gate pins that provider to. No restore-keys: a pin change
+      # starts a clean cache rather than carrying every superseded release forward.
+      - name: Cache Terraform binaries and providers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .cache/idp-terraform-check
+          key: terraform-check-${{ runner.arch }}-${{ hashFiles('scripts/terraform_binaries.lock.json', 'terraform/translator/schemas/awscc.json') }}
+
+      - name: Translate offline, then init and validate with each binary
+        run: make terraform-check
