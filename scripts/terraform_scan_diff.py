@@ -79,8 +79,13 @@ class GateError(Exception):
 
 # ------------------------------------------------------------------ checkov
 def checkov_binary(version: str, cache: Path) -> Path:
-    """``checkov`` at exactly ``version``, installed once into ``cache``."""
-    venv = cache / f"checkov-{version}"
+    """``checkov`` at exactly ``version``, installed once into ``cache``.
+
+    The path returned is absolute: CI passes the cache as a relative path
+    (``.cache/idp-terraform-check`` on GitHub), and checkov is then run from
+    other working directories, where a relative executable path names nothing.
+    """
+    venv = cache.resolve() / f"checkov-{version}"
     exe = venv / "bin" / "checkov"
     marker = venv / ".installed"
     if exe.is_file() and marker.is_file() and marker.read_text() == version:

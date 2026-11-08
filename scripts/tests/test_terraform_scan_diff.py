@@ -197,3 +197,21 @@ def test_terraform_check_runs_the_scan_diff():
     makefile = (REPO_ROOT / "Makefile").read_text()
     recipe = makefile.split("\nterraform-check:", 1)[1].split("\n\n", 1)[0]
     assert "$(MAKE) --no-print-directory terraform-scan-diff" in recipe
+
+
+def test_a_relative_cache_dir_gives_an_absolute_checkov(gate, tmp_path, monkeypatch):
+    """GitHub's job sets TERRAFORM_CHECK_CACHE=.cache/idp-terraform-check, and the
+    scans run from other directories; a relative executable failed the second
+    scan with FileNotFoundError."""
+    monkeypatch.chdir(tmp_path)
+    venv = Path(".cache/idp-terraform-check/checkov-9.9.9")
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "checkov").write_text("")
+    (venv / ".installed").write_text("9.9.9")
+    exe = gate.checkov_binary("9.9.9", Path(".cache/idp-terraform-check"))
+    assert exe.is_absolute()
+    assert exe == (tmp_path / venv / "bin" / "checkov")
+    elsewhere = tmp_path / "module"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert exe.is_file()
