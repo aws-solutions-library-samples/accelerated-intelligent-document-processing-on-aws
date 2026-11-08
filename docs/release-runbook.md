@@ -25,7 +25,7 @@ that region:
 
 ```bash
 idp-cli publish --source-dir . --bucket-basename <basename> --prefix <prefix> \
-  --region <region> --public
+  --region <region> --public --terraform
 ```
 
 - `--region` is the region the release is built for and published to.
@@ -39,6 +39,11 @@ idp-cli publish --source-dir . --bucket-basename <basename> --prefix <prefix> \
   template variants written by `--headless` and `--govcloud` are uploaded without a
   public ACL, so on a public release they are not anonymously readable unless your bucket
   policy grants anonymous read.
+- `--terraform` also generates the release's Terraform module from the templates just
+  published and uploads it beside them under `<prefix>/<version>/terraform/`, with its
+  checksum, and updates the `<prefix>/terraform/idp-terraform-latest.json` pointer that
+  `idp-cli deploy --terraform` reads by default. With `--public` the module is anonymously readable
+  too. See [Terraform deployment](terraform.md).
 - `--clean-build` forces every component to rebuild instead of reusing cached builds.
 
 `make publish REGION=<region> BUCKET_BASENAME=<basename> PREFIX=<prefix> PUBLIC=1` is a

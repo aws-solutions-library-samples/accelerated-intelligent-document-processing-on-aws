@@ -343,6 +343,22 @@ class TestTranslatorCommand:
         with pytest.raises(IDPConfigurationError, match="translator not found"):
             tf.translator_command(str(tmp_path), "t", "o", "c", "1")
 
+    def test_a_missing_translator_dependency_is_named_before_running(
+        self, tmp_path, monkeypatch
+    ):
+        """Without the terraform extra the translator would die with an import
+        traceback in a subprocess; the SDK names the missing module and the fix."""
+        (tmp_path / "terraform" / "translator" / "idp_tf").mkdir(parents=True)
+        (tmp_path / "terraform" / "translator" / "idp_tf" / "cli.py").write_text("")
+        real = tf.importlib.util.find_spec
+        monkeypatch.setattr(
+            tf.importlib.util,
+            "find_spec",
+            lambda name, *a: None if name == "samtranslator" else real(name, *a),
+        )
+        with pytest.raises(IDPConfigurationError, match=r"samtranslator.*terraform\]"):
+            tf.translator_command(str(tmp_path), "t", "o", "c", "1")
+
     def test_translator_failure_is_raised(self, tmp_path, monkeypatch):
         (tmp_path / "terraform" / "translator" / "idp_tf").mkdir(parents=True)
         (tmp_path / "terraform" / "translator" / "idp_tf" / "cli.py").write_text("")
