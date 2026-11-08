@@ -262,6 +262,7 @@ class StackOperation:
         terraform_dir: Optional[str] = None,
         terraform_bin: str = "terraform",
         assume_role_arn: Optional[str] = None,
+        allow_replace_stateful: bool = False,
         allow_replace_retained: bool = False,
     ) -> StackDeploymentResult:
         """Deploy or update the accelerator with Terraform (or OpenTofu).
@@ -274,8 +275,9 @@ class StackOperation:
         deploy from this directory), ``plan -out``, checks the saved plan, and
         applies exactly that plan, streaming output to stderr. The check
         refuses a plan that deletes or replaces a resource CloudFormation
-        retains (the module's ``retainedAddresses``, old and new module both)
-        unless ``allow_replace_retained`` is set. State is local in that
+        retains or one that holds data (the module's ``retainedAddresses`` and
+        ``statefulAddresses``, old and new module both) unless
+        ``allow_replace_stateful`` is set. State is local in that
         directory unless a backend is configured in another file there.
         Always waits.
 
@@ -295,8 +297,10 @@ class StackOperation:
                 ``assume_role`` syntax), so the resources are created as that
                 role rather than as the caller. The caller needs
                 ``sts:AssumeRole`` on it.
-            allow_replace_retained: Apply even when the plan deletes or
-                replaces a retained resource (its data is lost).
+            allow_replace_stateful: Apply even when the plan deletes or
+                replaces a retained or stateful resource (its data is lost).
+            allow_replace_retained: The earlier name of
+                ``allow_replace_stateful``; either one allows it.
 
         Returns:
             StackDeploymentResult with operation ``APPLY`` and the label stack's
@@ -306,8 +310,8 @@ class StackOperation:
             IDPConfigurationError: Binary missing, bad parameters, a foreign
                 ``main.tf``, or a CloudFormation stack of that name.
             IDPStackError: ``init``, ``plan`` or ``apply`` failed, or the plan
-                deletes a retained resource and ``allow_replace_retained`` is
-                not set (nothing is applied).
+                deletes a retained or stateful resource and
+                ``allow_replace_stateful`` is not set (nothing is applied).
         """
         from pathlib import Path
 
@@ -359,18 +363,17 @@ class StackOperation:
         operation = "UPDATE" if (directory / "terraform.tfstate").exists() else "CREATE"
         runner.init(upgrade=tf.needs_upgrade(directory, module_url))
         tf.record_module_source(directory, module_url)
-        retained = set(manifest.get("retainedAddresses") or []) | set(
-            previous_manifest.get("retainedAddresses") or []
-        )
+        protected = tf.protected_addresses(manifest, previous_manifest)
+        allow = allow_replace_stateful or allow_replace_retained
         plan_path = directory / tf.PLAN_FILE
         try:
             runner.plan(tf.PLAN_FILE)
-            blocked = tf.retained_deletions(runner.show_plan(tf.PLAN_FILE), retained)
-            if blocked and not allow_replace_retained:
-                tf.refuse_retained_deletions(blocked, directory)
+            blocked = tf.protected_deletions(runner.show_plan(tf.PLAN_FILE), protected)
+            if blocked and not allow:
+                tf.refuse_protected_deletions(blocked, directory, protected)
             for address in blocked:
                 logger.warning(
-                    "Deleting retained resource %s (allow_replace_retained)", address
+                    "Deleting protected resource %s (allow_replace_stateful)", address
                 )
             runner.apply_plan(tf.PLAN_FILE)
         finally:

@@ -848,12 +848,16 @@ def cli():
     ),
 )
 @click.option(
+    "--terraform-allow-replace-stateful",
     "--terraform-allow-replace-retained",
+    "terraform_allow_replace_retained",
     is_flag=True,
     help=(
-        "Apply even if the plan deletes or replaces a resource CloudFormation "
-        "would retain (a bucket or table, for example), losing its data. Without "
-        "it such a plan is refused and nothing is applied (used with --terraform)"
+        "Apply even if the plan deletes or replaces a resource that holds data "
+        "(a bucket, table, user pool, key or knowledge base) or that "
+        "CloudFormation would retain, losing its data. Without it such a plan is "
+        "refused and nothing is applied. --terraform-allow-replace-retained is "
+        "the earlier name (used with --terraform)"
     ),
 )
 def deploy(

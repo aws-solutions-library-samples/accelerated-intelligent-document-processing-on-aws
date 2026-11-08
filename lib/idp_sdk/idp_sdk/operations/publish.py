@@ -403,7 +403,10 @@ class PublishOperation:
         for a variant, where :meth:`build` puts them), and translated online:
         nested templates are fetched by their ``TemplateURL``. The module tree is
         zipped deterministically and uploaded to the same bucket and prefix as
-        the templates::
+        the templates. Before translating, the module the bucket's latest
+        pointer names is read, and its ``idp-terraform.json`` passed to the
+        translator, which writes ``moved`` blocks for every resource whose
+        address changed since that release::
 
             <prefix>/<version>/terraform/idp-terraform-<version>.zip
             <prefix>/<version>/terraform/idp-terraform-<version>.zip.sha256
@@ -451,8 +454,9 @@ class PublishOperation:
             raise IDPStackError(
                 f"cannot read the published template s3://{bucket}/{key}: {e}"
             ) from e
+        previous = tf.previous_release_manifest(s3, bucket, prefix, variant)
         module_dir = tf.translate_published_template(
-            source_dir, local_template, work, version
+            source_dir, local_template, work, version, previous
         )
         try:
             return tf.upload_module(

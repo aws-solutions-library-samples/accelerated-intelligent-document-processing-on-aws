@@ -14,12 +14,13 @@ deterministically and uploads it beside the templates::
 
 ``idp-cli deploy --terraform`` writes a root configuration that calls that module,
 runs ``init`` (with ``-upgrade`` only when the module source changed), saves a
-plan, refuses it if it would delete a resource CloudFormation retains (unless
-told otherwise), and applies exactly that plan; ``idp-cli delete --terraform`` empties the
+plan, refuses it if it would delete or replace a resource CloudFormation
+retains or one that holds data (unless told otherwise), and applies exactly
+that plan; ``idp-cli delete --terraform`` empties the
 deployment's buckets, removes the resources CloudFormation would have retained
 from the state, and runs ``destroy``. The module's ``idp-terraform.json`` (written
 by the translator, at the root of the zip) supplies the CloudFormation-parameter
-to Terraform-variable map and the retained addresses.
+to Terraform-variable map, the retained addresses and the stateful ones.
 
 The pure functions here (URL and key construction, the zip, parameter mapping,
 the root configuration, the retained-address selection) carry the logic and are
@@ -222,12 +223,15 @@ def translator_command(
     out_dir: str,
     nested_cache: str,
     version: str,
+    previous_manifest: Optional[str] = None,
 ) -> Tuple[List[str], Dict[str, str]]:
     """The translator invocation and its environment.
 
     The published template is translated online: nested templates are fetched
     by ``TemplateURL`` into ``nested_cache``. The same template labels the
-    deployment, at ``version``.
+    deployment, at ``version``. ``previous_manifest`` is the path of the
+    previous release's ``idp-terraform.json``, from which the translator writes
+    ``moved`` blocks for resources whose address changed.
     """
     translator = Path(source_dir) / "terraform" / "translator"
     if not (translator / "idp_tf" / "cli.py").is_file():
@@ -261,13 +265,47 @@ def translator_command(
         "--version",
         version,
     ]
+    if previous_manifest:
+        cmd += ["--previous-manifest", previous_manifest]
     return cmd, env
 
 
+def previous_release_manifest(
+    s3, bucket: str, prefix: str, variant: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """The ``idp-terraform.json`` of the module the bucket's latest pointer names.
+
+    Publishing reads it before uploading the new module, so it is the previous
+    release's. ``None`` when there is no pointer yet (the first publish of a
+    module to this bucket and prefix). Any other failure raises: translating
+    without it would silently omit the ``moved`` blocks an upgrade needs.
+    """
+    key = pointer_key(prefix, variant)
+    try:
+        body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+    except Exception as e:  # noqa: BLE001 - only an absent pointer is expected
+        code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
+        if code in ("NoSuchKey", "404", "NotFound"):
+            logger.info("no previous Terraform module at s3://%s/%s", bucket, key)
+            return None
+        raise IDPStackError(
+            f"cannot read the previous Terraform pointer s3://{bucket}/{key}: {e}"
+        ) from e
+    module_url, sha = resolve_pointer(json.loads(body))
+    return load_module_manifest(module_url, sha, lambda region: s3)
+
+
 def translate_published_template(
-    source_dir: str, template_path: str, work_dir: str, version: str
+    source_dir: str,
+    template_path: str,
+    work_dir: str,
+    version: str,
+    previous_manifest: Optional[Dict[str, Any]] = None,
 ) -> Path:
-    """Translate the published main template into ``<work_dir>/module``."""
+    """Translate the published main template into ``<work_dir>/module``.
+
+    ``previous_manifest`` (the previous release's ``idp-terraform.json``) makes
+    the translator generate ``moved`` blocks for addresses that changed."""
     work = Path(work_dir)
     out = work / "module"
     cache = work / "nested-cache"
@@ -275,8 +313,17 @@ def translate_published_template(
         if d.exists():
             shutil.rmtree(d)
     work.mkdir(parents=True, exist_ok=True)
+    previous_path = None
+    if previous_manifest is not None:
+        previous_path = work / "previous-idp-terraform.json"
+        previous_path.write_text(json.dumps(previous_manifest))
     cmd, env = translator_command(
-        source_dir, template_path, str(out), str(cache), version
+        source_dir,
+        template_path,
+        str(out),
+        str(cache),
+        version,
+        str(previous_path) if previous_path else None,
     )
     proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
     for line in (proc.stdout or "").splitlines():
@@ -812,14 +859,36 @@ def record_module_source(directory: Path, module_url: str) -> None:
     )
 
 
-def retained_deletions(plan: Dict[str, Any], retained: Iterable[str]) -> List[str]:
-    """Planned deletions (replacements included) of retained resources.
+def protected_addresses(*manifests: Dict[str, Any]) -> Dict[str, str]:
+    """``{module-relative address: why}`` a plan may not delete or replace.
 
-    ``plan`` is ``terraform show -json <planfile>`` output; ``retained`` are the
+    The union, over the installed and the new module's ``idp-terraform.json``,
+    of ``retainedAddresses`` (CloudFormation ``DeletionPolicy: Retain``) and
+    ``statefulAddresses`` (every resource of a type whose replacement loses
+    data, computed by the translator from its ``STATEFUL_TYPES`` list). A
+    version-1 manifest has no ``statefulAddresses``; its retained ones still
+    count.
+    """
+    out: Dict[str, str] = {}
+    for manifest in manifests:
+        for address in manifest.get("statefulAddresses") or []:
+            out.setdefault(address, "stateful")
+    for manifest in manifests:
+        for address in manifest.get("retainedAddresses") or []:
+            out[address] = "retained"
+    return out
+
+
+def protected_deletions(plan: Dict[str, Any], protected: Iterable[str]) -> List[str]:
+    """Planned deletions (replacements included) of protected resources.
+
+    ``plan`` is ``terraform show -json <planfile>`` output; ``protected`` are
     module-relative addresses from ``idp-terraform.json``. Each entry is a plan
     address, with `` (replace)`` when the resource is deleted to be recreated.
+    A resource whose address changed without a ``moved`` block shows here as a
+    deletion of the old address, which is the case this exists for.
     """
-    wanted = {MODULE_PREFIX + a for a in retained}
+    wanted = {MODULE_PREFIX + a for a in protected}
     out = []
     for change in plan.get("resource_changes") or []:
         actions = (change.get("change") or {}).get("actions") or []
@@ -830,18 +899,42 @@ def retained_deletions(plan: Dict[str, Any], retained: Iterable[str]) -> List[st
     return sorted(out)
 
 
+#: Kept for callers of the retained-only guard; the deploy guard is wider now.
+retained_deletions = protected_deletions
+
+ALLOW_REPLACE_STATEFUL_FLAG = "--terraform-allow-replace-stateful"
+#: The flag's earlier name, still accepted.
 ALLOW_REPLACE_RETAINED_FLAG = "--terraform-allow-replace-retained"
 
 
-def refuse_retained_deletions(blocked: List[str], directory: Path) -> None:
+def refuse_protected_deletions(
+    blocked: List[str], directory: Path, why: Optional[Dict[str, str]] = None
+) -> None:
+    why = why or {}
+
+    def reason(address: str) -> str:
+        bare = strip_instance_keys(address.removesuffix(" (replace)"))
+        kind = why.get(bare.removeprefix(MODULE_PREFIX))
+        return {
+            "retained": " (CloudFormation retains it)",
+            "stateful": " (holds data)",
+        }.get(kind or "", "")
+
     raise IDPStackError(
-        f"The plan would delete {len(blocked)} resource(s) that CloudFormation "
-        "retains (DeletionPolicy Retain), which can lose their data:\n"
-        + "\n".join(f"  - {a}" for a in blocked)
+        f"The plan would delete or replace {len(blocked)} resource(s) that hold "
+        "data or that CloudFormation retains (DeletionPolicy Retain), which can "
+        "lose their data:\n"
+        + "\n".join(f"  - {a}{reason(a)}" for a in blocked)
         + f"\nNothing was applied. Review the change with `terraform plan` in "
-        f"{directory}. To apply it anyway, re-run with "
-        f"{ALLOW_REPLACE_RETAINED_FLAG} (SDK: allow_replace_retained=True)."
+        f"{directory}. A resource whose address changed needs a `moved` block "
+        "(the module generates them from terraform/translator/renames.yaml). To "
+        f"apply it anyway, re-run with {ALLOW_REPLACE_STATEFUL_FLAG} (SDK: "
+        "allow_replace_stateful=True)."
     )
+
+
+#: Kept for callers of the retained-only guard.
+refuse_retained_deletions = refuse_protected_deletions
 
 
 # ---------------------------------------------------------------------------

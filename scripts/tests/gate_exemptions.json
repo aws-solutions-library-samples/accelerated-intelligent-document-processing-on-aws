@@ -3277,6 +3277,39 @@
         1691
       ],
       "reason": "Each member carries its own reason in the constant's value, because the three reasons differ: rule_validation and chat are on in the system defaults and off in some presets, and hitl is off in the system defaults and may have been turned on in a profile. They share one fact. `all` copies each section's default values, and config-upload merges the file over the stack's preset or the profile's current configuration, so adding a member to `all` would revert that section there. For these three the revert would switch a feature on or off, so `all` leaves them out and they keep the deployment's own setting unless named. That was a product decision (issue #1691), so it cannot be computed. The ratchet is test_all_accounts_for_every_section_the_defaults_carry. It requires every member to be a real section and not already in `all`, and it requires `all` plus the members to equal the section set derived from the defaults. A section that is in neither is therefore unaccounted for and fails, and a member that is added to `all`, or that the defaults drop, also fails."
+    },
+    "terraform/translator/idp_tf/completeness.py::NOT_APPLICABLE": {
+      "kind": "exemption",
+      "memberKind": "a (CloudFormation type, property path) pair",
+      "turnsOff": "the translator's completeness check (every property value of a resource appears in the Terraform emitted for it), for that one property path of that one type",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "terraform/translator/tests/test_upgrade_safety.py",
+      "reason": "Each entry says why that property's value legitimately does not appear in the HCL: it is encoded in an attribute name (DynamoDB KeyType becomes hash_key/range_key), it is the only value the mapper accepts and is the provider default (S3 AccessControl Private, DynamoDB SSEType KMS, each refused by the mapper otherwise), or it is written to a file instead (inline Lambda ZipFile). Why JUDGEMENT: whether a value is represented elsewhere is a reading of the mapper, not a property of the member. An entry that matches nothing in the standard template is reported stale by tree_checks, and test_no_declaration_is_stale_for_the_standard_template fails on it."
+    },
+    "scripts/terraform_scan_baseline.json::terraform_scan_baseline.json": {
+      "kind": "exemption",
+      "memberKind": "a (checkov check id, resource) pair, plus one pinned count",
+      "turnsOff": "make terraform-scan-diff, for one checkov check on one resource of the generated Terraform that the CloudFormation side does not fail",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/terraform_scan_diff.py",
+      "reason": "Each entry names one check on one resource of the custom-resource bridge the translator adds (the bridge has no CloudFormation counterpart, because CloudFormation runs custom resources inside the service) and says why that check does not apply to it or that it is a known gap, in which case the entry says what removes it. Why JUDGEMENT: whether a scanner rule applies to a generated resource is a reading of what the resource does. An entry matching no finding fails the gate as stale, and notEvaluatedCount is count-pinned: a change in the number of findings on conditional resources the CloudFormation scan skips fails the gate until it is re-read."
+    },
+    "terraform/tools/parity_baseline.json::parity_baseline.json": {
+      "kind": "exemption",
+      "memberKind": "a (CloudFormation type, property path) pair",
+      "turnsOff": "make terraform-parity's property comparison, for that property path (and everything below it) of every resource of that type",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "terraform/tools/parity.py",
+      "reason": "Each entry is a property one deployment stores and the other does not because of how the writer behaves (the hashicorp/aws provider writing CodeBuild's service defaults explicitly), with the measurement it came from. Why JUDGEMENT: whether a stored default is the same configuration as an absent value is a reading of the service's behaviour. The tier is live and manual, so the ratchet runs when it does: an entry that explained no difference in a run is reported stale and fails that run."
     }
   }
 }

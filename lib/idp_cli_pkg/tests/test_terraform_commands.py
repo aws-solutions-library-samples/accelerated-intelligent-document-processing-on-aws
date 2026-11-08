@@ -148,6 +148,25 @@ class TestDeployTerraform:
         kwargs = client.stack.deploy_terraform.call_args.kwargs
         assert kwargs["allow_replace_retained"] is True
 
+    def test_the_stateful_guard_flag_has_a_new_name_and_keeps_the_old(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    "--terraform-allow-replace-stateful",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        kwargs = client.stack.deploy_terraform.call_args.kwargs
+        assert kwargs["allow_replace_retained"] is True
+
     def test_a_region_with_no_published_module_needs_a_url(self, runner):
         client = _client()
         with patch.object(cli_module, "IDPClient", return_value=client):

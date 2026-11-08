@@ -92,8 +92,9 @@ make fastcommit         # fastlint (skip UI) + auto-commit + push
 - [ ] Dedicated LogGroup per Lambda with KMS encryption
 - [ ] cfn-nag + checkov suppression metadata where needed (with justification)
 - [ ] `make validate-buildspec` passes
-- [ ] `make terraform-check` passes — the release's Terraform module is generated from these templates (see the "Terraform parity" checks in `pr-review.md`)
-- [ ] Renamed logical IDs, resources moved between nested stacks, and changed create-only properties of stateful resources come with a note on how existing Terraform deployments upgrade
+- [ ] `make terraform-check` passes (it includes `make terraform-scan-diff`), and so does the `terraform/translator` suite in `make test` — the release's Terraform module is generated from these templates (see the "Terraform parity" checks in `pr-review.md`)
+- [ ] A renamed logical ID or nested stack of a stateful resource has a `terraform/translator/renames.yaml` entry; a changed create-only property of one comes with a note on how existing Terraform deployments upgrade
+- [ ] No `custom-output edge: ... [stateful, UNHANDLED]` in the translator's output; a new `STABLE_CUSTOM_OUTPUTS` entry states, from the handler's code, why its output does not change on Update
 
 ### Security
 - [ ] No credentials, API keys, or secrets in code or templates

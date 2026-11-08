@@ -1001,7 +1001,8 @@ class TestRetainedResourceGuard:
         message = str(err.value)
         assert "module.idp.aws_s3_bucket.logging_bucket (replace)" in message
         assert "Nothing was applied" in message
-        assert "--terraform-allow-replace-retained" in message
+        assert "--terraform-allow-replace-stateful" in message
+        assert "(CloudFormation retains it)" in message
         assert not any(c[0] == "apply" for c in calls.cmds)
         assert not (tmp_path / tf.PLAN_FILE).exists()
 
@@ -1039,6 +1040,178 @@ class TestRetainedResourceGuard:
         _, deploy = self._deploy(monkeypatch, tmp_path, plan)
         with pytest.raises(IDPStackError, match="old_kept"):
             deploy()
+
+
+class TestStatefulResourceGuard:
+    """Every address of a stateful type is protected, not only retained ones.
+
+    Measured on a live upgrade: renaming the roles replaced the knowledge base's
+    data source, which no DeletionPolicy retains, so the retained-only guard
+    applied the plan."""
+
+    STATEFUL = {
+        **MANIFEST,
+        "formatVersion": 2,
+        "statefulAddresses": [
+            "module.documentkb.awscc_bedrock_data_source.s3_data_source",
+            "aws_dynamodb_table.tracking_table",
+        ],
+    }
+
+    def _deploy(self, monkeypatch, tmp_path, plan, manifest, **kwargs):
+        monkeypatch.setattr(
+            tf, "fetch_url", lambda url, s3_factory=None: _module_zip(manifest)
+        )
+        monkeypatch.setattr(tf.shutil, "which", lambda b: "/usr/bin/terraform")
+        calls = _Calls({SHOW_PLAN: json.dumps(plan)})
+        monkeypatch.setattr(tf.subprocess, "run", calls)
+        client = IDPClient(stack_name="tfidp", region=REGION)
+        return calls, lambda: client.stack.deploy_terraform(
+            admin_email="a@example.com",
+            module_url=MODULE_URL,
+            terraform_dir=str(tmp_path),
+            **kwargs,
+        )
+
+    REPLACE_DS = {
+        "resource_changes": [
+            _change(
+                "module.idp.module.documentkb.awscc_bedrock_data_source.s3_data_source[0]",
+                "create",
+                "delete",
+            )
+        ]
+    }
+
+    def test_replacing_a_stateful_resource_that_is_not_retained_is_refused(
+        self, monkeypatch, tmp_path, no_cfn_stack
+    ):
+        calls, deploy = self._deploy(
+            monkeypatch, tmp_path, self.REPLACE_DS, self.STATEFUL
+        )
+        with pytest.raises(IDPStackError) as err:
+            deploy()
+        assert "s3_data_source[0] (replace) (holds data)" in str(err.value)
+        assert not any(c[0] == "apply" for c in calls.cmds)
+
+    def test_deleting_the_old_address_of_a_moved_table_is_refused(
+        self, monkeypatch, tmp_path, no_cfn_stack
+    ):
+        """An address change without a moved block plans a delete of the old
+        address and a create of the new: data loss, refused."""
+        plan = {
+            "resource_changes": [
+                _change("module.idp.aws_dynamodb_table.tracking_table", "delete"),
+                _change("module.idp.aws_dynamodb_table.tracking_table_v2", "create"),
+            ]
+        }
+        _, deploy = self._deploy(monkeypatch, tmp_path, plan, self.STATEFUL)
+        with pytest.raises(IDPStackError, match="tracking_table "):
+            deploy()
+
+    @pytest.mark.parametrize(
+        "flag", ["allow_replace_stateful", "allow_replace_retained"]
+    )
+    def test_either_flag_name_applies_the_checked_plan(
+        self, monkeypatch, tmp_path, no_cfn_stack, flag
+    ):
+        calls, deploy = self._deploy(
+            monkeypatch, tmp_path, self.REPLACE_DS, self.STATEFUL, **{flag: True}
+        )
+        assert deploy().success
+        assert calls.cmds[-1] == ["apply", "-input=false", tf.PLAN_FILE]
+
+    def test_a_version_1_manifest_still_guards_its_retained_resources(self):
+        assert tf.protected_addresses(MANIFEST) == {
+            a: "retained" for a in MANIFEST["retainedAddresses"]
+        }
+
+    def test_retained_wins_over_stateful_in_the_reason(self):
+        both = {
+            "retainedAddresses": ["aws_s3_bucket.logging_bucket"],
+            "statefulAddresses": ["aws_s3_bucket.logging_bucket", "aws_s3_bucket.b"],
+        }
+        assert tf.protected_addresses({}, both) == {
+            "aws_s3_bucket.logging_bucket": "retained",
+            "aws_s3_bucket.b": "stateful",
+        }
+
+
+class TestPreviousReleaseManifest:
+    """Publishing passes the previous release's manifest to the translator, so
+    it can write moved blocks."""
+
+    class _NoSuchKey(Exception):
+        response = {"Error": {"Code": "NoSuchKey"}}
+
+    def test_no_pointer_means_no_previous_release(self):
+        s3 = MagicMock()
+        s3.get_object.side_effect = self._NoSuchKey()
+        assert tf.previous_release_manifest(s3, "b", "p") is None
+        assert (
+            s3.get_object.call_args.kwargs["Key"]
+            == "p/terraform/idp-terraform-latest.json"
+        )
+
+    def test_the_pointer_names_the_module_whose_manifest_is_read(self):
+        data = _module_zip()
+        digest = hashlib.sha256(data).hexdigest()
+        pointer = tf.build_pointer(
+            "0.6.14", "https://s3.us-west-2.amazonaws.com/b/p/0.6.14/m.zip", digest
+        )
+        s3 = MagicMock()
+        s3.get_object.side_effect = [
+            {"Body": io.BytesIO(json.dumps(pointer).encode())},
+            {"Body": io.BytesIO(data)},
+        ]
+        assert tf.previous_release_manifest(s3, "b", "p", "govcloud") == MANIFEST
+        keys = [c.kwargs["Key"] for c in s3.get_object.call_args_list]
+        assert keys == [
+            "p/terraform/idp-terraform-govcloud-latest.json",
+            "p/0.6.14/m.zip",
+        ]
+
+    def test_an_unreadable_pointer_fails_rather_than_dropping_the_moves(self):
+        s3 = MagicMock()
+        s3.get_object.side_effect = RuntimeError("AccessDenied")
+        with pytest.raises(IDPStackError, match="previous Terraform pointer"):
+            tf.previous_release_manifest(s3, "b", "p")
+
+    def test_the_translator_is_given_the_previous_manifest(self, tmp_path):
+        (tmp_path / "terraform" / "translator" / "idp_tf").mkdir(parents=True)
+        (tmp_path / "terraform" / "translator" / "idp_tf" / "cli.py").write_text("")
+        cmd, _ = tf.translator_command(
+            str(tmp_path), "t.yaml", "out", "cache", "9", "/w/prev.json"
+        )
+        assert cmd[cmd.index("--previous-manifest") + 1] == "/w/prev.json"
+        cmd, _ = tf.translator_command(str(tmp_path), "t.yaml", "out", "cache", "9")
+        assert "--previous-manifest" not in cmd
+
+    def test_publish_reads_the_pointer_before_uploading(self, monkeypatch, tmp_path):
+        from idp_sdk.operations import publish as pub
+
+        s3 = MagicMock()
+        monkeypatch.setattr(pub.boto3, "client", lambda *a, **k: s3)
+        order = []
+        monkeypatch.setattr(
+            tf,
+            "previous_release_manifest",
+            lambda s3c, b, p, v: order.append("previous") or {"resources": []},
+        )
+        monkeypatch.setattr(
+            tf,
+            "translate_published_template",
+            lambda src, tpl, work, ver, prev=None: (
+                order.append(("translate", prev)) or Path(work)
+            ),
+        )
+        monkeypatch.setattr(
+            tf, "upload_module", lambda s3c, **kw: order.append("upload") or {}
+        )
+        IDPClient(region=REGION).publish.publish_terraform(
+            str(tmp_path), "b-us-west-2", "p", REGION, "1"
+        )
+        assert order == ["previous", ("translate", {"resources": []}), "upload"]
 
 
 class TestInitUpgrade:
@@ -1376,11 +1549,14 @@ class TestPublishOperation:
 
         s3 = MagicMock()
         monkeypatch.setattr(pub.boto3, "client", lambda *a, **k: s3)
+        monkeypatch.setattr(tf, "previous_release_manifest", lambda *a: None)
         translated = []
         monkeypatch.setattr(
             tf,
             "translate_published_template",
-            lambda src, tpl, work, ver: translated.append((tpl, work)) or Path(work),
+            lambda src, tpl, work, ver, prev=None: (
+                translated.append((tpl, work)) or Path(work)
+            ),
         )
         uploaded = {}
         monkeypatch.setattr(
@@ -1436,8 +1612,11 @@ class TestPublishOperation:
         from idp_sdk.operations import publish as pub
 
         monkeypatch.setattr(pub.boto3, "client", lambda *a, **k: MagicMock())
+        monkeypatch.setattr(tf, "previous_release_manifest", lambda *a: None)
         monkeypatch.setattr(
-            tf, "translate_published_template", lambda src, tpl, work, ver: Path(work)
+            tf,
+            "translate_published_template",
+            lambda src, tpl, work, ver, prev=None: Path(work),
         )
 
         def upload(s3c, **kw):

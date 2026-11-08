@@ -85,7 +85,9 @@ Lifecycle checks on the hybrid deployment:
 
 ## Expected, explained differences
 
-These are excluded by name in `compare.py`, one entry per property:
+These were excluded by name in the comparison script used for the run, one entry
+per property; its successor, `terraform/tools/parity.py`, carries the CodeBuild
+pair in `parity_baseline.json` and drops the others by rule:
 
 - the tags each tool adds on its own: `aws:cloudformation:*`, and the fixture's
   provider default tag;

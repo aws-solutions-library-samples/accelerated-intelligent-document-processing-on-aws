@@ -98,6 +98,41 @@ LIFECYCLE_OVERRIDES: dict[tuple[str, str], tuple[list[str], str]] = {
     ),
 }
 
+# Create-only properties of stateful resources that take a custom resource's
+# output, which is unknown at plan whenever the custom resource's inputs change,
+# so Terraform would replace the resource where CloudFormation, which sees the
+# handler's answer, changes nothing. Each entry says why the output is stable.
+# Keyed by (type, logical id, top-level property). The attribute is emitted with
+# `ignore_changes`, plus `replace_triggered_by` a `terraform_data` holding the
+# value with every custom-resource output replaced by that resource's name, so
+# a change in anything else the value is made of still replaces the resource,
+# as it would under CloudFormation. idp_tf.safety finds the edges; a stateful
+# edge with no entry here fails the translation, and an entry naming nothing
+# fails it too.
+STABLE_CUSTOM_OUTPUTS: dict[tuple[str, str, str], str] = {
+    ("AWS::Bedrock::DataSource", "S3DataSource", "KnowledgeBaseId"): (
+        "KnowledgeBaseS3VectorsCustom's handler (s3_vectors_manager) returns the "
+        "knowledge base id held in its PhysicalResourceId on every Update; only a "
+        "Create makes a new one"
+    ),
+    ("AWS::Bedrock::DataSource", "WebDataSource", "KnowledgeBaseId"): (
+        "KnowledgeBaseS3VectorsCustom's handler (s3_vectors_manager) returns the "
+        "knowledge base id held in its PhysicalResourceId on every Update; only a "
+        "Create makes a new one"
+    ),
+    ("AWS::OpenSearchServerless::Collection", "OSSCollection", "Name"): (
+        "AdjustedStackName (Custom::GetLowercase) lowercases the stack name, which "
+        "a deployment cannot change"
+    ),
+}
+
+# Resource attributes that are one of the resource's own properties, read back.
+# Rendering a STABLE_CUSTOM_OUTPUTS key inlines the property instead of reading
+# the attribute, which is unknown whenever the property is.
+PASS_THROUGH_ATTRS: dict[tuple[str, str], str] = {
+    ("AWS::SSM::Parameter", "Value"): "Value",
+}
+
 AWSCC_REF_ATTR: dict[str, str] = {
     "AWS::ApiGateway::Authorizer": "authorizer_id",
     "AWS::ApiGateway::Deployment": "deployment_id",
@@ -228,6 +263,8 @@ class Translator:
         self._collect_cond_params(self.conditions)
         self._in_conditions = False
         self._opaque = False
+        # True while rendering a STABLE_CUSTOM_OUTPUTS replacement key.
+        self._stable = False
         # Only the root reads the pseudo-parameters from data sources. A data
         # source inside a module that has depends_on is deferred to apply, which
         # would make every condition reading it unknown at plan time.
@@ -379,6 +416,8 @@ class Translator:
             return hcl.string(f"opaque-{name}")
         if plan is None:
             raise TranslationError(f"{self._current}: Ref to unknown name {name}")
+        if plan.kind == "custom" and self._stable:
+            return hcl.string(f"custom-resource:{name}")
         if plan.kind == "custom":
             self._refs.add(name)
             inner = f"jsondecode({plan.address}{'[0]' if plan.condition else ''}"
@@ -391,6 +430,8 @@ class Translator:
             return hcl.string(f"opaque-{name}-{attr}")
         if plan is None:
             raise TranslationError(f"{self._current}: GetAtt on unknown {name}")
+        if plan.kind == "custom" and self._stable:
+            return hcl.string(f"custom-resource:{name}.{attr}")
         if plan.kind == "custom":
             self._refs.add(name)
             idx = "[0]" if plan.condition else ""
@@ -404,6 +445,9 @@ class Translator:
                     f"{self._current}: nested stack {name} has no output {out}"
                 )
             return self._wrap(plan, out)
+        passed = PASS_THROUGH_ATTRS.get((plan.cfn_type, attr))
+        if self._stable and passed is not None and passed in plan.props:
+            return self.expr(plan.props[passed])
         if plan.kind == "aws":
             assert plan.getatt is not None
             got = plan.getatt(attr)
@@ -658,16 +702,42 @@ class Translator:
                 rendered = f"try(distinct({rendered}), {rendered})"
             lines.append(f"{tf_name} = {rendered}")
         head, tail = self.meta_lines(plan, res)
+        state_owned: list[str] = []
+        triggers: list[str] = []
+        comments: list[str] = []
+        keys: list[str] = []
         override = LIFECYCLE_OVERRIDES.get((plan.cfn_type, plan.logical_id))
         if override:
             attrs, reason = override
-            tail = tail + [
-                f"# {reason}",
+            state_owned.extend(attrs)
+            comments.append(f"# {reason}")
+        for k, x in plan.props.items():
+            reason = STABLE_CUSTOM_OUTPUTS.get((plan.cfn_type, plan.logical_id, k))
+            if reason is None:
+                continue
+            tf_name = hint.attr(k)[0]  # type: ignore[index] - checked above
+            key_name = f"{plan.name}_{tf_name}_key"
+            self._stable = True
+            try:
+                key_value = self.expr(x, ANY, json_ctx=True)
+            finally:
+                self._stable = False
+            keys.append(
                 hcl.block(
-                    "lifecycle", [f"ignore_changes = [{', '.join(attrs)}]"]
-                ).rstrip(),
-            ]
-        return hcl.block(
+                    f'resource "terraform_data" "{key_name}"',
+                    head + [f"input = {key_value}"],
+                )
+            )
+            state_owned.append(tf_name)
+            idx = "[count.index]" if plan.condition else ""
+            triggers.append(f"terraform_data.{key_name}{idx}")
+            comments.append(f"# {tf_name}: {reason}")
+        if state_owned:
+            body = [f"ignore_changes = [{', '.join(state_owned)}]"]
+            if triggers:
+                body.append(f"replace_triggered_by = [{', '.join(triggers)}]")
+            tail = tail + comments + [hcl.block("lifecycle", body).rstrip()]
+        return "".join(keys) + hcl.block(
             f'resource "{plan.tf_type}" "{plan.name}"', head + lines + tail
         )
 
@@ -832,6 +902,9 @@ class Translator:
 
     def render(self) -> dict[str, str]:
         self.custom_tokens: list[str] = []
+        # Logical id -> the HCL emitted for it; read by the completeness check
+        # and by the manifest, which records every address a resource became.
+        self.emitted: dict[str, str] = {}
         resources: list[str] = []
         if self.is_root and self.directory_readers:
             resources.extend(self._inject_directory_readers())
@@ -842,13 +915,15 @@ class Translator:
             self.begin(lid)
             try:
                 if plan.kind == "awscc":
-                    resources.append(self.emit_awscc(plan, res))
+                    chunk = self.emit_awscc(plan, res)
                 elif plan.kind == "custom":
-                    resources.append(self.emit_custom(plan, res))
+                    chunk = self.emit_custom(plan, res)
                 elif plan.kind == "module":
-                    resources.append(self.emit_module(plan, res))
+                    chunk = self.emit_module(plan, res)
                 else:
-                    resources.append(self.mappers[plan.cfn_type].emit(self, plan, res))
+                    chunk = self.mappers[plan.cfn_type].emit(self, plan, res)
+                resources.append(chunk)
+                self.emitted[lid] = chunk
             except (TranslationError, KeyError) as exc:
                 if not self.survey:
                     raise
@@ -859,6 +934,7 @@ class Translator:
             "locals.tf": self._locals(),
             "outputs.tf": self._outputs(),
         }
+        self.last_render = files
         return files
 
     def _variables(self) -> str:

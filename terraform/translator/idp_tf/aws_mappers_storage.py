@@ -315,9 +315,22 @@ def render_storage_spec(tr: Translator, spec: Spec, v: Any, where: str) -> list[
 
 
 # ------------------------------------------------------------- DynamoDB table
+def _only(value: Any, allowed: set[str], where: str) -> None:
+    """A sub-property object the mapper reads key by key: refuse any other key,
+    which would otherwise be dropped without a word."""
+    if is_intrinsic(value) or not isinstance(value, dict):
+        raise TranslationError(f"{where}: {value!r} must be a literal object")
+    extra = set(value) - allowed
+    if extra:
+        raise TranslationError(f"{where}: unmapped property {sorted(extra)}")
+
+
 class DynamoDbTableMapper:
     tf_type = "aws_dynamodb_table"
     ref_attr = "name"
+    #: hash_key and range_key force a new table in the provider, as a changed
+    #: key schema does in DynamoDB; the registry lists only TableName.
+    force_new = ("KeySchema",)
     spec: Spec = {
         "BillingMode": ("attr", "billing_mode"),
         "DeletionProtectionEnabled": ("attr", "deletion_protection_enabled"),
@@ -388,6 +401,7 @@ class DynamoDbTableMapper:
                 body = [f"name = {tr.expr(leaf['IndexName'])}"]
                 body += self._keys(tr, leaf["KeySchema"], where)
                 proj = leaf.get("Projection", {})
+                _only(proj, {"ProjectionType", "NonKeyAttributes"}, where)
                 body.append(
                     f"projection_type = {tr.expr(proj.get('ProjectionType', 'ALL'))}"
                 )
@@ -407,26 +421,33 @@ class DynamoDbTableMapper:
                 lines.append(block)
         pitr = props.pop("PointInTimeRecoverySpecification", None)
         if pitr is not None:
-            lines.append(
-                hcl.block(
-                    "point_in_time_recovery",
-                    [
-                        f"enabled = {tr.expr(pitr.get('PointInTimeRecoveryEnabled', False))}"
-                    ],
-                ).rstrip()
-            )
+            _only(pitr, {"PointInTimeRecoveryEnabled", "RecoveryPeriodInDays"}, where)
+            body = [
+                f"enabled = {tr.expr(pitr.get('PointInTimeRecoveryEnabled', False))}"
+            ]
+            if "RecoveryPeriodInDays" in pitr:
+                body.append(
+                    f"recovery_period_in_days = {tr.expr(pitr['RecoveryPeriodInDays'])}"
+                )
+            lines.append(hcl.block("point_in_time_recovery", body).rstrip())
         sse = props.pop("SSESpecification", None)
         if sse is not None:
+            extra = set(sse) - {"SSEEnabled", "SSEType", "KMSMasterKeyId"}
+            if extra or sse.get("SSEType", "KMS") != "KMS":
+                # The provider sends SSEType KMS whenever encryption is enabled.
+                raise TranslationError(f"{where}.SSESpecification: {sse}")
             body = [f"enabled = {tr.expr(sse.get('SSEEnabled', False))}"]
             if "KMSMasterKeyId" in sse:
                 body.append(f"kms_key_arn = {_kms_arn(tr, sse['KMSMasterKeyId'])}")
             lines.append(hcl.block("server_side_encryption", body).rstrip())
         stream = props.pop("StreamSpecification", None)
         if stream is not None:
+            _only(stream, {"StreamViewType"}, where)
             lines.append("stream_enabled = true")
             lines.append(f"stream_view_type = {tr.expr(stream['StreamViewType'])}")
         ttl = props.pop("TimeToLiveSpecification", None)
         if ttl is not None:
+            _only(ttl, {"AttributeName", "Enabled"}, where)
             lines.append(
                 hcl.block(
                     "ttl",
