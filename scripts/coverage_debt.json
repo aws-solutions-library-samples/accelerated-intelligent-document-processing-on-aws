@@ -381,6 +381,7 @@
         "scripts/srt/setup.py": 14.41,
         "scripts/standing_failures.py": 90.36,
         "scripts/terraform_check.py": 78.89,
+        "scripts/terraform_scan_diff.py": 51.9,
         "scripts/ux_recorder.py": 54.11,
         "scripts/ux_recorder_cdp.py": 74.6,
         "scripts/ux_recorder_mcp.py": 99.07,
