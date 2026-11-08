@@ -12,6 +12,7 @@ that the CloudFormation path is not taken.
 """
 
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from click.testing import CliRunner
@@ -93,7 +94,13 @@ class TestDeployTerraform:
             "allow_replace_retained": False,
         }
         client.stack.deploy.assert_not_called()
-        assert "https://app.example.com" in result.output
+        # The deploy prints the application URL; compare it parsed, by host.
+        printed = [
+            urlparse(t.rstrip(".,"))
+            for t in result.output.split()
+            if t.startswith("https://")
+        ]
+        assert ("https", "app.example.com") in [(u.scheme, u.hostname) for u in printed]
 
     def test_explicit_module_dir_and_binary(self, runner):
         client = _client()

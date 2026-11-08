@@ -31,6 +31,7 @@ wrapper around the ``terraform`` or ``tofu`` binary.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 import json
 import logging
@@ -211,6 +212,11 @@ def manifest_from_zip(data: bytes) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+#: Modules the translator imports that are not part of the SDK's own
+#: dependencies. They come from the SDK's ``terraform`` extra.
+TRANSLATOR_MODULES = ("samtranslator", "yaml")
+
+
 def translator_command(
     source_dir: str,
     template_path: str,
@@ -232,6 +238,14 @@ def translator_command(
         raise IDPConfigurationError(
             f"Terraform translator not found at {translator}; --terraform needs a "
             "source checkout that contains terraform/translator"
+        )
+    missing = [m for m in TRANSLATOR_MODULES if importlib.util.find_spec(m) is None]
+    if missing:
+        raise IDPConfigurationError(
+            f"The Terraform translator needs {', '.join(missing)}, which this "
+            "Python environment does not have. Install the SDK's terraform extra "
+            '(pip install -e "lib/idp_sdk[terraform]", which `make setup` does), '
+            "or publish without --terraform."
         )
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
