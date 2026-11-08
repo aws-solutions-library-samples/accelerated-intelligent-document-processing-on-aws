@@ -313,7 +313,7 @@ class StackOperation:
 
         from idp_sdk._core import terraform_deploy as tf
         from idp_sdk._core.stack import StackDeployer
-        from idp_sdk._core.terraform_stack import is_terraform_stack
+        from idp_sdk._core.terraform_stack import is_terraform_label
 
         name = self._client._require_stack(stack_name)
         region = self._client._region
@@ -324,7 +324,7 @@ class StackOperation:
 
         deployer = StackDeployer(region=region)
         stack = self._describe_stack(deployer, name)
-        if stack is not None and not is_terraform_stack(stack.get("Description")):
+        if stack is not None and not is_terraform_label(stack):
             raise IDPConfigurationError(
                 f"{name} is a CloudFormation stack. A Terraform deployment creates "
                 "a label stack of its own name, so it needs a name no stack uses; "

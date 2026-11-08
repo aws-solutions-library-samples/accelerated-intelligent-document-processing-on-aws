@@ -19,6 +19,7 @@ from idp_common.utils.terraform_stack import (  # noqa: F401
     attach,
     install,
     install_if_terraform,
+    is_terraform_label,
     is_terraform_stack,
     reset_cache,
 )

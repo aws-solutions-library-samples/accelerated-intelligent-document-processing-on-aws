@@ -218,7 +218,7 @@ ROLE_BLOCK = re.compile(
 )
 DEFAULT_NAME = re.compile(
     r'^\s*name = "\$\{substr\("(?P<pair>[^"]+)", 0, (?P<n>\d+)\)\}-'
-    r'\$\{substr\(md5\("(?P=pair)"\), 0, 8\)\}"$',
+    r'\$\{substr\(md5\("(?P=pair)(?P<region>-\$\{local\.pseudo\.region\})?"\), 0, 8\)\}"$',
     re.M,
 )
 NESTED_STACK_NAME = re.compile(
@@ -245,22 +245,27 @@ def _module_stack_names(root: Path, stack: str) -> dict[Path, str]:
 
 RETAINED_NAME = re.compile(
     r'^\s*name = "\$\{substr\("(?P<pair>[^"]+)", 0, (?P<n>\d+)\)\}-'
-    r'\$\{substr\(md5\("(?P=pair)"\), 0, 8\)\}-'
+    r'\$\{substr\(md5\("(?P=pair)-\$\{local\.pseudo\.region\}"\), 0, 8\)\}-'
     r'\$\{time_static\.[a-z0-9_]+(?:\[0\])?\.unix\}"$',
     re.M,
 )
+
+
+#: The region names are evaluated for; any region gives the same prefix.
+REGION = "us-west-2"
 
 
 def _evaluate_name(body: str, stack: str) -> str | None:
     m = RETAINED_NAME.search(body)
     if m:
         pair = m["pair"].replace("${var.stack_name}", stack)
-        digest = hashlib.md5(pair.encode()).hexdigest()[:8]  # nosec B324 - mirrors HCL md5()
+        digest = hashlib.md5(f"{pair}-{REGION}".encode()).hexdigest()[:8]  # nosec B324 - mirrors HCL md5()
         return f"{pair[: int(m['n'])]}-{digest}-1767225600"  # a 10-digit unix time
     m = DEFAULT_NAME.search(body)
     if m:
         pair = m["pair"].replace("${var.stack_name}", stack)
-        digest = hashlib.md5(pair.encode()).hexdigest()[:8]  # nosec B324 - mirrors HCL md5()
+        hashed = f"{pair}-{REGION}" if m["region"] else pair
+        digest = hashlib.md5(hashed.encode()).hexdigest()[:8]  # nosec B324 - mirrors HCL md5()
         return f"{pair[: int(m['n'])]}-{digest}"
     m = re.search(r'^\s*name = "([^"$]*\$\{var\.stack_name\}[^"]*)"$', body, re.M)
     if m and "${" not in m[1].replace("${var.stack_name}", ""):
@@ -425,3 +430,26 @@ def test_the_generated_module_names_no_partition(variant, tmp_path):
                 if _PARTITION_SUFFIX.search(literal) and literal not in authored:
                     problems.append(f"{where}: {literal[:80]}")
     assert not problems, problems[:20]
+
+
+def test_only_account_wide_names_carry_the_region(standard_module):
+    """IAM role names are unique across an account, so the same stack name in two
+    regions would collide; the region joins their hash. Every other generated
+    name is unique within a region, and adding the region there would rename,
+    and so replace, a function or table on upgrade."""
+    roles, others = 0, []
+    for module in _modules(standard_module):
+        text = _module_text(module)
+        for m in re.finditer(
+            r'^resource "(\w+)" "(\w+)" \{\n(.*?)^\}', text, re.M | re.S
+        ):
+            kind, label, body = m.groups()
+            for line in re.findall(r"^\s*name = .*md5\(.*$", body, re.M):
+                regional = "local.pseudo.region" in line
+                if kind == "aws_iam_role":
+                    roles += 1
+                    assert regional, f"{module.name}:{label}"
+                elif regional:
+                    others.append(f"{module.name}:{kind}.{label}")
+    assert roles, "no generated role names found"
+    assert not others, others[:10]

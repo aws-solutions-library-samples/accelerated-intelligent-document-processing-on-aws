@@ -345,10 +345,10 @@ class StackDeployer:
                 return False
             raise
         if action:
-            from .terraform_stack import is_terraform_stack
+            from .terraform_stack import is_terraform_label
 
             stacks = response.get("Stacks") or [{}]
-            if is_terraform_stack(stacks[0].get("Description")):
+            if is_terraform_label(stacks[0]):
                 verb = "terraform apply" if action == "deploy" else "terraform destroy"
                 raise ValueError(
                     f"{stack_name} is a Terraform deployment. Its CloudFormation "

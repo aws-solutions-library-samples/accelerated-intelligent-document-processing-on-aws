@@ -844,6 +844,7 @@ class TestDeployOperation:
             "Outputs": [
                 {"OutputKey": "ApplicationWebURL", "OutputValue": "https://ui.test"},
                 {"OutputKey": "S3InputBucketName", "OutputValue": "tfidp-input"},
+                {"OutputKey": "TerraformResourceDirectory", "OutputValue": "s3://b/k"},
             ],
         }
         monkeypatch.setattr(
@@ -865,6 +866,7 @@ class TestDeployOperation:
         assert result.outputs == {
             "ApplicationWebURL": "https://ui.test",
             "S3InputBucketName": "tfidp-input",
+            "TerraformResourceDirectory": "s3://b/k",
         }
 
 
