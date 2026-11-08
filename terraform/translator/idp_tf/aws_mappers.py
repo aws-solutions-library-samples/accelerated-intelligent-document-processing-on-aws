@@ -142,15 +142,21 @@ def _block(tr: Translator, name: str, spec: Spec, v: Any, where: str) -> str:
     return hcl.block(name, render_spec(tr, spec, v, where)).rstrip()
 
 
-def default_name(logical_id: str, limit: int) -> str:
+def default_name(logical_id: str, limit: int, global_name: bool = False) -> str:
     """Deterministic name for a type whose Terraform resource requires one.
 
     ``<stack>-<LogicalId>`` cut to fit, then an 8-character hash of the full
     pair. The stack name stays a prefix, as in CloudFormation's generated names,
     because templates grant access by it (``function:${AWS::StackName}*``).
+
+    ``global_name`` is for names unique across the account rather than within
+    a region (IAM roles): the region joins the hash, so the same stack name in
+    two regions of one account does not collide. Only the hash changes, so the
+    prefix scoped deploy roles match on is the same.
     """
     pair = f"${{var.{STACK_NAME_VAR}}}-{logical_id}"
-    return f'"${{substr("{pair}", 0, {limit - 9})}}-${{substr(md5("{pair}"), 0, 8)}}"'
+    hashed = f"{pair}-${{local.pseudo.region}}" if global_name else pair
+    return f'"${{substr("{pair}", 0, {limit - 9})}}-${{substr(md5("{hashed}"), 0, 8)}}"'
 
 
 @dataclass
@@ -256,7 +262,7 @@ class IamRoleMapper:
         idx = "[0]" if plan.condition else ""
         pair = f"${{var.{STACK_NAME_VAR}}}-{plan.logical_id}"
         name = (
-            f'"${{substr("{pair}", 0, 44)}}-${{substr(md5("{pair}"), 0, 8)}}-'
+            f'"${{substr("{pair}", 0, 44)}}-${{substr(md5("{pair}-${{local.pseudo.region}}"), 0, 8)}}-'
             f'${{time_static.{stamp}{idx}.unix}}"'
         )
         return name, [hcl.block(f'resource "time_static" "{stamp}"', count)]
@@ -295,7 +301,7 @@ class IamRoleMapper:
                 # A retained role's name also carries a creation timestamp, so
                 # a redeploy after a delete cannot collide with the kept role.
             else:
-                name = default_name(plan.logical_id, 64)
+                name = default_name(plan.logical_id, 64, global_name=True)
             lifecycle = GENERATED_NAME_ROLE_LIFECYCLE
             lines.insert(0, f"name = {name}")
         head, tail = tr.meta_lines(plan, res)

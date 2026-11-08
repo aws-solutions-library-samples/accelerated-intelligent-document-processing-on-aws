@@ -64,7 +64,9 @@ def env(monkeypatch):
         "AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
     )
     monkeypatch.setenv("STACK_NAME", "stk")
-    monkeypatch.setattr(ts, "_raw_clients", lambda region: (_NoDescribe(), _FakeS3()))
+    monkeypatch.setattr(
+        ts, "_raw_clients", lambda region, factory=None: (_NoDescribe(), _FakeS3())
+    )
     ts.reset_cache()
     installed_before = ts._installed
     yield monkeypatch
