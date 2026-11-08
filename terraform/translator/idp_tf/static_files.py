@@ -41,7 +41,7 @@ def bridge_tf(boundary_var: str | None = None) -> str:
     has one) is applied as its permissions boundary when set, as the template's
     ``HasPermissionsBoundary`` condition does for every other role.
     """
-    role_lines = [f"name = {default_name('CfnBridge', 64)}"]
+    role_lines = [f"name = {default_name('CfnBridge', 64, global_name=True)}"]
     if boundary_var:
         v = f"var.{boundary_var}"
         role_lines.append(

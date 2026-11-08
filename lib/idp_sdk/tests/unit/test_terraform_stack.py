@@ -162,6 +162,12 @@ def test_deploy_and_delete_refuse_a_terraform_labelled_stack(monkeypatch, action
                     "CreationTime": "2026-01-01T00:00:00Z",
                     "StackStatus": "CREATE_COMPLETE",
                     "Description": "AWS GenAI IDP Accelerator (v0.6.13) (Terraform)",
+                    "Outputs": [
+                        {
+                            "OutputKey": "TerraformResourceDirectory",
+                            "OutputValue": "s3://b/k.json",
+                        }
+                    ],
                 }
             ]
         },
@@ -183,3 +189,49 @@ def test_terraform_marker_followed_by_the_read_only_notice():
         "for a Terraform deployment. Updated only by Terraform; do not update this "
         "stack in CloudFormation."
     )
+
+
+def test_a_description_alone_does_not_make_a_stack_a_terraform_label():
+    """Anyone can write "(Terraform)" into a stack's description; only the label
+    stack carries the resource directory output, so both are required."""
+    from idp_sdk._core.terraform_stack import is_terraform_label
+
+    described = {"Description": "Notes (Terraform) migration pending"}
+    assert not is_terraform_label(described)
+    assert not is_terraform_label(
+        dict(described, Outputs=[{"OutputKey": "Other", "OutputValue": "x"}])
+    )
+    assert is_terraform_label(
+        dict(
+            described,
+            Outputs=[
+                {"OutputKey": "TerraformResourceDirectory", "OutputValue": "s3://b/k"}
+            ],
+        )
+    )
+
+
+@pytest.mark.unit
+def test_the_lookup_uses_the_calling_clients_credentials(monkeypatch):
+    """A client built with explicit credentials reads the label stack and its
+    directory as that principal, not as the process's default credentials."""
+    import idp_common.utils.terraform_stack as core
+
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+    monkeypatch.setenv(
+        "AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    )
+    seen = {}
+    monkeypatch.setattr(
+        core, "attach", lambda client, factory=None: seen.update(factory=factory)
+    )
+    ts.install()
+    boto3.client(
+        "cloudformation",
+        region_name=REGION,
+        aws_access_key_id="AKIAI44QH8DHBEXAMPLE",
+        aws_secret_access_key="je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY",
+    )
+    lookup = seen["factory"]("s3", "us-east-1")
+    assert lookup._request_signer._credentials.access_key == "AKIAI44QH8DHBEXAMPLE"
+    assert lookup.meta.region_name == "us-east-1"

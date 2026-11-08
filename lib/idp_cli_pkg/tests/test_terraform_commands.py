@@ -400,7 +400,17 @@ class TestTheGuardIsUntouched:
         deployer = StackDeployer.__new__(StackDeployer)
         deployer.cfn = MagicMock()
         deployer.cfn.describe_stacks.return_value = {
-            "Stacks": [{"Description": "GenAI IDP (Terraform) read-only label"}]
+            "Stacks": [
+                {
+                    "Description": "GenAI IDP (Terraform) read-only label",
+                    "Outputs": [
+                        {
+                            "OutputKey": "TerraformResourceDirectory",
+                            "OutputValue": "s3://b/k",
+                        }
+                    ],
+                }
+            ]
         }
         with pytest.raises(ValueError, match="is a Terraform deployment"):
             deployer._stack_exists("tfidp", action=action)
