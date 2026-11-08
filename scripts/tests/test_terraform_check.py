@@ -309,11 +309,22 @@ def _versions_tf_ranges() -> dict[str, SpecifierSet]:
     block = text[
         text.index("VERSIONS_TF") : text.index('"""\n', text.index("VERSIONS_TF") + 20)
     ]
+    # Line by line rather than one pattern spanning lines: each version line
+    # belongs to the source line before it, with only comments between.
     ranges = {}
-    for source, version in re.findall(
-        r'source\s*=\s*"([^"]+)"(?:\s*#[^\n]*)*\s*version\s*=\s*"([^"]+)"', block
-    ):
-        ranges[source] = version
+    source = None
+    for line in block.splitlines():
+        line = line.strip()
+        found = re.match(r'source\s*=\s*"([^"]+)"', line)
+        if found:
+            source = found.group(1)
+            continue
+        found = re.match(r'version\s*=\s*"([^"]+)"', line)
+        if found and source:
+            ranges[source] = found.group(1)
+            source = None
+        elif line and not line.startswith("#"):
+            source = None
     return {
         s: SpecifierSet(v.replace("AWSCC_VERSION", tc.awscc_vendored_version()))
         for s, v in ranges.items()

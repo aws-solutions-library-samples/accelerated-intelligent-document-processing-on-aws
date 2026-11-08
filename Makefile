@@ -44,7 +44,7 @@ IDP_FEATURE_CLI := $(PYTHON) -m idp_feature_sdk.cli
 # Keep this list complete, and never split it across multiple pip calls.
 FIRST_PARTY_EDITABLES := \
 	-e "lib/idp_common_pkg[all,dev,test]" \
-	-e lib/idp_sdk \
+	-e "lib/idp_sdk[terraform]" \
 	-e lib/idp_cli_pkg \
 	-e lib/idp_mcp_connector_pkg \
 	-e lib/idp_feature_sdk

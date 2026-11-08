@@ -93,7 +93,10 @@ class TestDeployTerraform:
             "allow_replace_retained": False,
         }
         client.stack.deploy.assert_not_called()
-        assert "https://app.example.com" in result.output
+        # Compared as a whole token: the deploy prints the application URL.
+        assert "https://app.example.com" in [
+            t.rstrip(".,") for t in result.output.split()
+        ]
 
     def test_explicit_module_dir_and_binary(self, runner):
         client = _client()
