@@ -622,6 +622,16 @@ integration_tests:
   #     below serialises it against the nightly; it does NOT reduce the burst of
   #     primary + probe stacks inside the run, which codebuild_deployment.py's
   #     launch stagger, concurrency cap and retry bound instead.
+  #   - the weekly Terraform schedule            → auto, primary suite only,
+  #     against a TERRAFORM deployment of the accelerator. The schedule carries
+  #     IDP_IAC=terraform, and integration_test_deployment.py (iac_requested)
+  #     honours it only on a scheduled pipeline and refuses it combined with
+  #     IDP_RUN_PROBES or IDP_TEST_REGION. It reaches the build in
+  #     ci_run_options.json; the build installs the pinned, checksum-verified
+  #     Terraform release itself (ensure_terraform_binary in
+  #     codebuild_deployment.py), because CodeBuild, not this job, runs it.
+  #     Nothing in this file turns it on: with no schedule carrying the variable,
+  #     no Terraform run happens.
   #   - any MR targeting develop                 → MANUAL button on the MR page
   #   - push to develop                          → MANUAL button on the pipeline
   #   - anything else                            → never
@@ -955,6 +965,12 @@ integration_tests:
           if os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
           else ""
       )
+      # And the weekly Terraform run, keyed like iac_requested(): the variable
+      # counts only on a schedule.
+      terraform_run = (
+          os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+          and os.environ.get("IDP_IAC", "").strip().lower() == "terraform"
+      )
       # ⚠️ A green job is NOT the same claim as "the suite passed".
       # integration_test_deployment.py exits 0 on the HANDOFF path too (the
       # monitor stopped before the pipeline reached a terminal state, on its
@@ -995,6 +1011,8 @@ integration_tests:
           status = "🔬 WEEKLY VARIANT PROBES · " + status
       if region_run:
           status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
+      if terraform_run:
+          status = "🧱 WEEKLY TERRAFORM RUN · " + status
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
@@ -2044,6 +2062,14 @@ nightly_notification:
           )
           if region_run:
               status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
+          # And the weekly Terraform run, read exactly as the post in
+          # integration_tests reads it.
+          terraform_run = (
+              os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+              and os.environ.get("IDP_IAC", "").strip().lower() == "terraform"
+          )
+          if terraform_run:
+              status = "🧱 WEEKLY TERRAFORM RUN · " + status
 
           # Same flat, all-string contract as the post in integration_tests: these
           # four keys are declared on the Slack Workflow Builder trigger as Text, and
@@ -2093,7 +2119,8 @@ nightly_notification:
 #   - Run pipeline on develop with UX_TEST_STORIES_RUN=all, automatically;
 #   - a push to develop, as a manual button.
 # The weekly region schedules (IDP_TEST_REGION) are excluded for the same reason:
-# the review stack is in us-east-1 and they leave it alone.
+# the review stack is in us-east-1 and they leave it alone. So is the weekly
+# Terraform schedule (IDP_IAC=terraform), which leaves the review stack alone too.
 # The weekly variant-probe schedule (IDP_RUN_PROBES=true) is also a scheduled
 # develop pipeline and is excluded: it leaves the review stack alone, so a story
 # run there would re-test the night's stack and add a second "night" to the
@@ -2134,6 +2161,8 @@ ai_ux_test_stories_nightly:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_PROBES =~ /^\s*true\s*$/i
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_TEST_REGION
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_IAC =~ /^\s*terraform\s*$/i
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "develop"
       when: always

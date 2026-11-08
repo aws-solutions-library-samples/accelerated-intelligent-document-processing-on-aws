@@ -302,6 +302,7 @@ The options are:
 | `--headless` / `--govcloud` | use the latest headless or GovCloud module instead of the standard one; they cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless` |
 | `--terraform-dir DIR` | the directory to write, instead of `./idp-terraform/<stack-name>` |
 | `--terraform-bin` | `terraform` or `tofu` |
+| `--terraform-assume-role-arn ARN` | an IAM role both providers assume, written into the `aws` and `awscc` provider blocks of `main.tf` in each provider's own `assume_role` syntax (a block for `aws`, an attribute for `awscc`), so the resources are created as that role instead of as you. You need `sts:AssumeRole` on it. The role needs permission to create, change and delete every resource the deployment creates, including `cloudcontrol:*` for the `awscc` resources and `iam:CreateRole`/`iam:PassRole` on the roles the module creates. A new deployment names every role starting with the deployment name (`stack_name`); a deployment first applied with an earlier module keeps the names its roles were created with (Terraform's generated `terraform-<timestamp>` names among them), because an upgrade does not rename a role, so a role scoped to a name prefix must also cover those. If its role creation is conditioned on a permissions boundary, as the [CloudFormation service role](../iam-roles/cloudformation-management/README.md)'s is, pass that boundary as `PermissionsBoundaryArn` in `--parameters` so the module attaches it to every role it creates |
 | `--terraform-allow-replace-retained` | apply even if the plan deletes or replaces a resource CloudFormation would retain, losing its data; without it such a plan is refused and nothing is applied |
 | `--wait` | accepted as on the CloudFormation path |
 
@@ -420,7 +421,10 @@ idp-cli delete --terraform --stack-name idp-tf
 ```
 
 Add `--terraform-dir DIR` if you deployed with a directory other than the default, and
-`--force` to skip the confirmation. The command empties the deployment's buckets the
+`--force` to skip the confirmation. A deployment applied with
+`--terraform-assume-role-arn` keeps that role in `main.tf`, so the delete uses it
+too; pass `--terraform-assume-role-arn` to the delete to set or change it, which
+rewrites the two provider blocks before `init`. The command empties the deployment's buckets the
 way the CloudFormation delete path does, then removes from Terraform state every
 resource whose CloudFormation `DeletionPolicy` keeps it (`Retain` or
 `RetainExceptOnCreate`), and then runs `terraform destroy`. Removing a resource from

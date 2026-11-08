@@ -630,6 +630,11 @@ _NIGHTLY_CASES = [
         "never",
     ),
     (
+        "the weekly Terraform schedule",
+        _branch_pipeline("schedule", IDP_IAC="terraform"),
+        "never",
+    ),
+    (
         "the weekly variant-probe schedule, capitalised",
         _branch_pipeline("schedule", IDP_RUN_PROBES="True"),
         "never",
