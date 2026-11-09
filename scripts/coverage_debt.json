@@ -314,6 +314,7 @@
         "idp_common/utils/settings_helper.py": 80.95,
         "idp_common/utils/strands_agent_tools/__init__.py": 100.0,
         "idp_common/utils/strands_agent_tools/todo_list.py": 32.35,
+        "idp_common/utils/terraform_stack.py": 63.64,
         "idp_common/utils/transient_errors.py": 100.0
       }
     },
@@ -379,6 +380,8 @@
         "scripts/srt/scanner_health.py": 87.8,
         "scripts/srt/setup.py": 14.41,
         "scripts/standing_failures.py": 90.36,
+        "scripts/terraform_check.py": 78.89,
+        "scripts/terraform_scan_diff.py": 51.9,
         "scripts/ux_recorder.py": 54.11,
         "scripts/ux_recorder_cdp.py": 74.6,
         "scripts/ux_recorder_mcp.py": 99.07,
@@ -545,6 +548,8 @@
         "idp_sdk/_core/template_transform.py": 99.9,
         "idp_sdk/_core/tenancy_policies.py": 84.48,
         "idp_sdk/_core/tenancy_verify.py": 78.49,
+        "idp_sdk/_core/terraform_deploy.py": 93.19,
+        "idp_sdk/_core/terraform_stack.py": 100.0,
         "idp_sdk/_core/ui_api.py": 60.0,
         "idp_sdk/client.py": 100.0,
         "idp_sdk/exceptions.py": 100.0,

@@ -46,6 +46,8 @@ export default defineConfig({
             { label: "Quick Start", slug: "quick-start" },
             { label: "Deployment", slug: "deployment" },
             { label: "AI-Guided Deployment Walkthrough", slug: "idp-deployment-ai-guide" },
+            { label: "Terraform Deployment (Experimental)", slug: "terraform" },
+            { label: "Migrating from genai-idp-terraform", slug: "terraform-migration" },
             { label: "Headless Deployment", slug: "headless-deployment" },
             { label: "API Gateway Hosting", slug: "apigateway-hosting" },
             { label: "Private Network Deployment", slug: "deployment-private-network" },

@@ -1,0 +1,20 @@
+# Logical-id and nested-stack renames the translator cannot infer.
+#
+# Each entry keeps the Terraform state of a resource whose identity in the
+# templates changed, so an upgrade of an existing Terraform deployment moves it
+# (a `moved` block in the generated moved.tf) instead of destroying and
+# recreating it. An identity is `<nested-stack path>/<LogicalId>`, the path being
+# the nested stacks' logical ids from the main template down (`PATTERNSTACK/X`),
+# or a bare `<LogicalId>` for the main template. A nested-stack path alone
+# renames everything under it.
+#
+#   renames:
+#     - from: PATTERNSTACK/OldBucketName
+#       to: PATTERNSTACK/NewBucketName
+#       since: 0.7.0
+#       reason: renamed for consistency with the other buckets
+#
+# The translation fails if `to` names nothing in the templates, or if `from`
+# still exists. Entries stay after the release that needed them: a deployment
+# that skips releases is moved by every rename since its own.
+renames: []
