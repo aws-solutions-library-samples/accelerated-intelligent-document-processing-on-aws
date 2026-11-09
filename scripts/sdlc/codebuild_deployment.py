@@ -4517,8 +4517,10 @@ TERRAFORM_DELETE_LOG = "idp-cli-delete.log"
 TERRAFORM_LOG_TAIL_LINES = 120
 
 #: Heads the consolidated summary, and marks the failure email's subject, on a
-#: Terraform run, so its result is never read as the nightly's.
-TERRAFORM_RUN_LABEL = "WEEKLY TERRAFORM RUN"
+#: Terraform run, so its result is never read as the CloudFormation nightly's.
+#: The Terraform schedule runs every night too, so the label names the deploy
+#: tool, which is what tells the two apart, rather than relying on cadence.
+TERRAFORM_RUN_LABEL = "NIGHTLY TERRAFORM RUN"
 
 
 @dataclass
@@ -11021,8 +11023,8 @@ def label_terraform_run(summary_text: str, environ: dict | None = None) -> str:
         return summary_text
     return (
         f"🧱 {TERRAFORM_RUN_LABEL} — the primary suite ran against a Terraform "
-        "deployment of the accelerator. This is not the nightly result.\n\n"
-        + summary_text
+        "deployment of the accelerator. This is not the CloudFormation nightly "
+        "result.\n\n" + summary_text
     )
 
 

@@ -960,7 +960,7 @@ def main():
         print(f"❌ {e}")
         sys.exit(1)
     if iac == IAC_TERRAFORM:
-        print("🧱 Weekly Terraform run — deploying the accelerator with Terraform")
+        print("🧱 Nightly Terraform run — deploying the accelerator with Terraform")
     elif os.environ.get(IAC_VARIABLE, "").strip():
         source = os.environ.get("CI_PIPELINE_SOURCE") or "non-CI"
         print(

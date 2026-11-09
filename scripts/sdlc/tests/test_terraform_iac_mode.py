@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT-0
 """The integration driver's Terraform mode (IDP_IAC=terraform).
 
-A weekly schedule carrying IDP_IAC=terraform deploys the accelerator with
-`idp-cli deploy --terraform` instead of CloudFormation and runs the primary suite
-against it unchanged. What is pinned here, offline:
+A nightly schedule carrying IDP_IAC=terraform, beside the CloudFormation nightly,
+deploys the accelerator with `idp-cli deploy --terraform` instead of CloudFormation
+and runs the primary suite against it unchanged. What is pinned here, offline:
 
 * the switch on both sides: the GitLab job honours it on a schedule only, the build
   reads it from its environment or ci_run_options.json, and an unknown value or a
@@ -927,7 +927,7 @@ def test_a_terraform_run_is_labelled(cbd):
     assert cbd.label_ci_run("body", environ).startswith(f"🧱 {cbd.TERRAFORM_RUN_LABEL}")
     assert cbd.label_ci_run("body", {}) == "body"
     assert cbd.failure_subject("stk", environ) == (
-        "IDP CI failure (weekly terraform run): stk"
+        "IDP CI failure (nightly terraform run): stk"
     )
     assert cbd.failure_subject("stk", {}) == "IDP CI failure: stk"
 
@@ -1001,7 +1001,7 @@ def _after_script_payload(config, tmp_path, environ):
 )
 def test_the_job_post_renders_the_terraform_label(config, tmp_path, environ, labelled):
     status = _after_script_payload(config, tmp_path, environ)["status"]
-    assert status.startswith("🧱 WEEKLY TERRAFORM RUN · ") is labelled, status
+    assert status.startswith("🧱 NIGHTLY TERRAFORM RUN · ") is labelled, status
 
 
 @pytest.mark.parametrize(
@@ -1052,7 +1052,7 @@ def test_the_fallback_post_renders_the_terraform_label(
     namespace["main"]()
     (request,) = sent
     status = json.loads(request.data)["status"]
-    assert status.startswith("🧱 WEEKLY TERRAFORM RUN · ") is labelled, status
+    assert status.startswith("🧱 NIGHTLY TERRAFORM RUN · ") is labelled, status
 
 
 def test_no_new_job_is_added_for_it(config):

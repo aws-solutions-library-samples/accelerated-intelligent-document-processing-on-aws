@@ -629,10 +629,24 @@ _NIGHTLY_CASES = [
         _branch_pipeline("schedule", IDP_TEST_REGION="eu-central-1"),
         "never",
     ),
+    # The Terraform schedule runs every night on develop, exactly as the
+    # CloudFormation nightly does, so its variable is the only thing the rules can
+    # tell the two apart by. These cases pin that the rule reads the value of
+    # IDP_IAC, spelled as iac_requested() accepts it, and nothing about cadence.
     (
-        "the weekly Terraform schedule",
+        "the nightly Terraform schedule",
         _branch_pipeline("schedule", IDP_IAC="terraform"),
         "never",
+    ),
+    (
+        "the nightly Terraform schedule, capitalised and padded",
+        _branch_pipeline("schedule", IDP_IAC=" Terraform "),
+        "never",
+    ),
+    (
+        "a schedule naming CloudFormation explicitly",
+        _branch_pipeline("schedule", IDP_IAC="cloudformation"),
+        "always",
     ),
     (
         "the weekly variant-probe schedule, capitalised",
