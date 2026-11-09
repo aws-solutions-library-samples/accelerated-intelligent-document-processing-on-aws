@@ -2391,7 +2391,7 @@ RUNNING_ROW = (
 
 
 def _night(harness: StoryHarness, summary: str, *extra: str) -> list[str]:
-    path = harness.tmp / "deployment_summary.txt"
+    path = harness.tmp / "codebuild_logs.txt"
     path.write_text(summary, encoding="utf-8")
     harness.environ.update(CI="true", CI_COMMIT_SHA=HEAD, CI_PIPELINE_ID="12345")
     return ["--all", "--deploy-summary", str(path), *extra]
@@ -2438,6 +2438,60 @@ def test_a_missing_deployment_summary_runs_and_records_the_night_as_missing(
     )
     assert runner.main(argv, harness.runtime()) == 0
     assert harness.record()["stack_state"] == "missing"
+
+
+@pytest.mark.unit
+def test_the_stack_state_is_read_from_the_tail_of_a_log_past_the_bound(
+    tmp_path: Path,
+) -> None:
+    """The build prints its consolidated summary near the end of a log that can
+    pass the read's bound, so the log's last bytes are read and a long night is
+    not taken for one whose stack row is missing."""
+    bound = runner._SUMMARY_MAX_BYTES
+    filler = "".join(
+        f"[Container] step output — line {n:08d}\n" for n in range(bound // 30)
+    )
+    log = tmp_path / "codebuild_logs.txt"
+    log.write_text(
+        f"{filler}\n{UPDATED_ROW}\n🤖 Generating deployment summary with Bedrock...\n"
+        "🚀 DEPLOYMENT RESULTS — ✅ PASS\n",
+        encoding="utf-8",
+    )
+    assert log.stat().st_size > bound
+    assert runner.deploy_state(log) == "updated"
+    early = tmp_path / "early.txt"
+    early.write_text(f"{UPDATED_ROW}{filler}", encoding="utf-8")
+    assert early.stat().st_size > bound
+    assert runner.deploy_state(early) == "missing"
+
+
+@pytest.mark.unit
+def test_the_last_stack_header_in_the_log_decides(tmp_path: Path) -> None:
+    log = tmp_path / "codebuild_logs.txt"
+    log.write_text(
+        f"build starts\n{RUNNING_ROW}more output\n{UPDATED_ROW}"
+        "🤖 Generating deployment summary with Bedrock...\n",
+        encoding="utf-8",
+    )
+    assert runner.deploy_state(log) == "updated"
+    log.write_text(f"{UPDATED_ROW}more output\n{RUNNING_ROW}", encoding="utf-8")
+    assert runner.deploy_state(log) == "running"
+
+
+@pytest.mark.unit
+def test_a_log_that_is_absent_or_not_a_regular_file_is_missing(tmp_path: Path) -> None:
+    target = tmp_path / "codebuild_logs.txt"
+    target.write_text(UPDATED_ROW, encoding="utf-8")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+    empty = tmp_path / "empty.txt"
+    empty.write_text("", encoding="utf-8")
+    assert runner.deploy_state(None) is None
+    assert runner.deploy_state(target) == "updated"
+    assert runner.deploy_state(tmp_path / "absent.txt") == "missing"
+    assert runner.deploy_state(tmp_path) == "missing"
+    assert runner.deploy_state(link) == "missing"
+    assert runner.deploy_state(empty) == "missing"
 
 
 @pytest.mark.unit
@@ -3122,8 +3176,13 @@ def test_the_scheduled_digest_compares_with_the_nights_it_read_and_posts_once(
         posted.append((webhook, payload))
         return "posted (200)"
 
+    read: list[story_digest.History | None] = []
+
     def history(args: Any, environ: Any) -> story_digest.History | None:
-        return runner.nightly_history(args, environ, forge=lambda a, credential: gitlab)
+        read.append(
+            runner.nightly_history(args, environ, forge=lambda a, credential: gitlab)
+        )
+        return read[-1]
 
     runtime.history = history
     runtime.slack = slack
@@ -3140,7 +3199,28 @@ def test_the_scheduled_digest_compares_with_the_nights_it_read_and_posts_once(
     assert record["available"] is True
     assert [night["pipeline_id"] for night in record["nights"]] == [41]
     assert "History unavailable" not in (out / "digest.md").read_text("utf-8")
-    assert posted == [(WEBHOOK, story_digest.slack_payload(digest, job_url=JOB_URL))]
+    catalogue = stories.load_catalogue()
+    facts = story_digest.SlackFacts(
+        results=json.loads((out / story_verdict.RESULTS_FILE).read_text("utf-8")),
+        run=json.loads((out / story_verdict.RUN_FILE).read_text("utf-8")),
+        history=read[0],
+        titles={story.id: story.title for story in catalogue.stories},
+        cap_usd=2 * catalogue.runs.job_usd,
+    )
+    ((webhook, payload),) = posted
+    assert webhook == WEBHOOK
+    assert payload == story_digest.slack_payload(digest, job_url=JOB_URL, facts=facts)
+    assert payload["status"] == "⚠️ 1 of 2 passed"
+    assert payload["job_url"] == JOB_URL
+    assert payload["summary"].split("\n")[3:5] == [
+        "❌ Make one input folder use one configuration (new analyst): offered a "
+        "control the docs say this role lacks (unconfirmed)",
+        "✅ Make one input folder use one configuration (platform admin), 3 of 50 "
+        "steps",
+    ]
+    assert payload["summary"].endswith(
+        f"\nSpend: ${digest['spend_usd']:.2f} of ${facts.cap_usd:.2f}"
+    )
     lines = _lines(capsys)
     assert lines[-3:] == [
         "history: 1 earlier night(s), 1 gap(s)",
