@@ -180,8 +180,9 @@ cat VERSION                      # must print exactly <x.y.z>
 git describe --tags --abbrev=0   # should print the previous release tag
 ```
 
-**Success:** `VERSION` and the 9 package version files read `<x.y.z>`, and the command
-lists the 12 paths it changed.
+**Success:** every file the command stamps — `VERSION`, the 9 package version files, the
+seller entitlement service template and the lockfile's project entry — reads `<x.y.z>`, and
+the command lists the 12 paths it changed.
 
 ### Step 2 — Cut the CHANGELOG
 

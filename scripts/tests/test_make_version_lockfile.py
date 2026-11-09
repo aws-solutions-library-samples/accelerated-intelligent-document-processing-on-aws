@@ -11,6 +11,13 @@ target says it stamps (read from its own "Version updated ... in:" list, so a fi
 added to the target is copied without editing this test), then asks `uv` itself
 whether the lockfile is still current. `uv` is a hard requirement rather than a
 skip: `make setup` cannot run without it, and a skip here would read as a pass.
+
+`uv lock --check` stands in for `uv export --locked` deliberately: both refuse a
+lockfile whose project version disagrees with `pyproject.toml`, and `--check` does
+it without writing an export. `PYTHON` is passed through because the scratch tree
+has no `.venv`, so the Makefile would otherwise pick whatever `python3` is on the
+path, and its version-validation step reports a missing `packaging` module as an
+invalid version string.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -74,7 +82,10 @@ def test_make_version_leaves_the_lockfile_current(tmp_path: Path) -> None:
     )
 
     bump = subprocess.run(
-        ["make", "version", f"V={BUMP}"], cwd=root, capture_output=True, text=True
+        ["make", "version", f"V={BUMP}", f"PYTHON={sys.executable}"],
+        cwd=root,
+        capture_output=True,
+        text=True,
     )
     assert bump.returncode == 0, bump.stdout + bump.stderr
 
@@ -101,7 +112,10 @@ def test_make_version_changes_only_the_projects_own_lock_entry(
     original = (root / LOCK).read_text(encoding="utf-8").splitlines()
 
     bump = subprocess.run(
-        ["make", "version", f"V={BUMP}"], cwd=root, capture_output=True, text=True
+        ["make", "version", f"V={BUMP}", f"PYTHON={sys.executable}"],
+        cwd=root,
+        capture_output=True,
+        text=True,
     )
     assert bump.returncode == 0, bump.stdout + bump.stderr
 
