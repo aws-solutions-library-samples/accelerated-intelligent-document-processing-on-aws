@@ -104,7 +104,7 @@ the workflow over a bad update:
 |---|---|
 | `id` / `input_key` / `input_bucket` / `output_bucket` are immutable | The tracking-table row and output S3 prefixes are keyed off them |
 | `sections` in a compressed reference must be a list of section-id strings | The workflow's `ProcessSections` Map iterates it directly |
-| `config_version` is preserved | It resolves hooks for the rest of the pipeline |
+| `config_version` (the document's configuration profile) is preserved | It resolves hooks for the rest of the pipeline |
 | A compressed ref's `s3_uri` must be under `compressed_documents/` in the working bucket | `Document.decompress()` discards the URI's bucket and reads the key against the consumer's own working bucket, so an unconstrained URI is a key-injection vector |
 | Inline documents capped at 5 MB | Bounded by Lambda's 6 MB response limit |
 

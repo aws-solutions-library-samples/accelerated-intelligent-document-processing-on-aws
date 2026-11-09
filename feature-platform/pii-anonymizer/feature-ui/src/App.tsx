@@ -17,7 +17,7 @@ import type { FeatureContext } from './types';
 
 /**
  * PII Anonymization. Two tabs:
- *   1. Config Pairing — clone an existing config version into a redaction pair
+ *   1. Config Pairing — clone an existing configuration profile into a redaction pair
  *      (initiating + companion) and optionally activate it. Uses host GraphQL.
  *   2. Redaction Report — metadata-only audit of redacted documents (feature API).
  */

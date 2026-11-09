@@ -288,6 +288,11 @@ The solution creates various IAM roles to run different components of the system
   * `cognito-idp:AdminCreateUser`, `AdminDeleteUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup`, `AdminListGroupsForUser`, `ListUsers`, `ListUsersInGroup` on the stack's user pool
   * `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the stack's customer-managed key
 
+* **User Sync Role** (`UserSyncFunction`, which consumes the UsersTable's DynamoDB stream and mirrors user rows into Cognito):
+  * read access to the UsersTable stream, added by the SAM `DynamoDB` event source
+  * `cognito-idp:AdminCreateUser`, `AdminDeleteUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup` on the stack's user pool
+  * `kms:Decrypt` on the stack's customer-managed key, which encrypts the UsersTable and so its stream
+
 * **External IdP Group Mapping Role** (the Cognito pre-token trigger, deployed only when federation with group mapping is configured):
   * `cognito-idp:AdminGetUser`, `AdminListGroupsForUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup` on the stack's user pool (a separate policy, to avoid a circular dependency on the pool)
   * Only when `TenantGrantSource=IdpClaim`, to write the tenant the claim grants: `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `DeleteItem` on the UsersTable and `dynamodb:Query` on its `EmailIndex`; `dynamodb:GetItem` on the ConfigurationTable restricted by `dynamodb:LeadingKeys` to `TenantIndex#__index`; and `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the stack's customer-managed key. Under any other grant source the trigger holds no data-plane grant

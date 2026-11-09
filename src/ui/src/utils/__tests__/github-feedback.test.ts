@@ -111,7 +111,7 @@ describe('the field ids the forms actually declare', () => {
       const symbolic = show(['symbolic-ref', '--short', `refs/remotes/${remote}/HEAD`]);
       if (symbolic) return symbolic;
     }
-    for (const candidate of ['refs/remotes/github/main', 'refs/remotes/origin/main', 'refs/heads/main']) {
+    for (const candidate of ['refs/remotes/github/develop', 'refs/remotes/origin/develop', 'refs/heads/develop']) {
       if (show(['rev-parse', '--verify', '--quiet', candidate])) return candidate;
     }
     return null;

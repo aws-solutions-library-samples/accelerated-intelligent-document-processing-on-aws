@@ -200,7 +200,16 @@ document, so it finishes with the new grouping.
   routes documents.
 - A queue's `eligible_annotators` is its membership (`QueueDefinition.allows`): an
   Annotator works only the queues that list them, and an empty list means none.
-  Admins work every queue (`QueueDirectory.is_member`).
+  Admins work every queue (`QueueDirectory.is_member`). Taking an Annotator off a
+  queue's list stops them seeing the queue and claiming from it, but an item they
+  already hold stays theirs (`_check_access` admits the holder of a `CLAIMED` item)
+  until they finish or release it, or an Admin unassigns it with
+  `forceReleaseReviewItem`. Queue definitions are cached for 30 s per Lambda
+  instance, so a list change can take that long to reach every instance.
+- For a caller who may not work an item, the access check (`_check_access`: scope,
+  then membership) runs before any argument is checked against the item's queue
+  definition, so `completeReviewItem`'s checklist and `rejectReviewItem`'s reason are
+  only validated for someone allowed to work the item.
 - Work reaches an Annotator two ways. They **claim** an item from one of their
   queues (`claimReviewItem`, `claimNextReviewItem`), or an Admin assigns it with
   `reassignReviewItem` (and unassigns it with `forceReleaseReviewItem`). Either way

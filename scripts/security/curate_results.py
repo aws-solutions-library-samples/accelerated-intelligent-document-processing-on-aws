@@ -820,7 +820,9 @@ def curate_rbac_static(stdout_path: Path | None) -> tuple[str, dict]:
             "S4",
             "Scope enforcement",
             "ops flagged `scope_checked`/`scope_filtered` "
-            "reference allowedConfigVersions in their `enforced_in` file",
+            "reference the caller's config-version scope in the code the "
+            "operation reaches, and `scope_filtered` ops apply a per-item scope "
+            "predicate (bottoming out at `scope_allows`) to what they return",
         ),
         (
             "S5",

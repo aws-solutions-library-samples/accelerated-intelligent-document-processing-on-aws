@@ -1902,7 +1902,7 @@ hitl:
   For the *agentic* path, integrated confidence can be produced two ways. This knob
   is **not surfaced in the config UI** — it exists so operators can A/B the
   cost/latency-vs-calibration trade-off before we pick a default. Set it via
-  `idp-cli config-upload` on a throwaway config version; both values produce
+  `idp-cli config-upload` on a throwaway configuration profile; both values produce
   identical `explainability_info` downstream (only the inference mechanics differ):
 
   | value | how confidence is produced | inferences per turn/shard (happy path) |

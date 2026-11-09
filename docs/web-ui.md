@@ -668,7 +668,7 @@ The "Chat with Document" feature is available at the bottom of the Document Deta
 
 Chat has its own dedicated configuration section (**Configuration tab → "Chat-with-Document Configuration"**) — it is **independent from summarization**. This is important because chat sends the entire document text to the model in a single prompt, so a large-context model (such as `us.anthropic.claude-opus-4-8:1m` — the default — or `us.anthropic.claude-sonnet-4-6:1m`) is usually the best choice, even if you've configured a smaller, cheaper model for summarization.
 
-The Chat panel includes a **Model** selector that defaults to the `chat.model` configured in the version of the config that was used to process the document. You can override the model for the current chat session via the dropdown. The list of selectable models comes from the `chat.model` enum in the configuration schema.
+The Chat panel includes a **Model** selector that defaults to the `chat.model` in the current configuration of the profile that processed the document (its current revision, which may be newer than the one the document ran under). You can override the model for the current chat session via the dropdown. The list of selectable models comes from the `chat.model` enum in the configuration schema.
 
 > **OpenAI GPT-5.x in chat:** `openai.gpt-5.4`, `openai.gpt-5.5`, and GPT-5.6 (`openai.gpt-5.6-sol` / `-terra` / `-luna`) are supported for Chat-with-Document and **stream** token-by-token like other models. They run on the `bedrock-mantle` Responses API (US regions only) and are tuned via `chat.reasoning_effort` rather than temperature/top_p. They are hidden from the model selector in EU-region deployments. Note: chat sends the document as **text** (extracted full text), so the PDF-document-block limitation that excludes GPT-5.x from Discovery does not apply here. See [OpenAI GPT-5.x Models](./openai-models.md).
 
@@ -689,7 +689,7 @@ Chat-with-Document runs as an asynchronous workflow so it can use long-latency l
 1. A **status pill** appears above the input area and transitions as the backend makes progress: **Queued → Loading document text → Querying {model} → Streaming response**.
 2. As soon as the model starts producing output, the assistant bubble appears with a blinking cursor and **tokens stream in** live (throttled to ~200 ms / 200-char batches server-side so the UI stays responsive under heavy throttling).
 3. When generation completes the status pill clears and the bubble finalizes with a timestamp and the model ID used.
-4. Errors render inline in the assistant bubble in red so you can see what went wrong without losing the context of the conversation. A configuration-version scope denial — a document outside your `allowedConfigVersions` — is rendered the same way, on deployments where the chat turn reaches the backend through the REST API. Chat streamed from the Lambda Function URL is not restricted by that scope; see [Known Limitations in the RBAC guide](./rbac.md#known-limitations).
+4. Errors render inline in the assistant bubble in red so you can see what went wrong without losing the context of the conversation. A configuration-profile scope denial — a document outside your `allowedConfigVersions` — is rendered the same way, on deployments where the chat turn reaches the backend through the REST API. Chat streamed from the Lambda Function URL is not restricted by that scope; see [Known Limitations in the RBAC guide](./rbac.md#known-limitations).
 
 The session is scoped to your user — other users cannot subscribe to or continue your chat session even if they know the session ID.
 
@@ -881,7 +881,7 @@ hand-type them. There are three entry points:
 - **Report this issue on GitHub (Troubleshoot modal).** After running the
   [Error Analyzer](error-analyzer.md) on a failed document, the Troubleshoot modal
   footer offers **Report this issue on GitHub** — it pre-fills the bug form with the
-  document context (object key, status, config version, execution ARN, and the
+  document context (object key, status, configuration profile, execution ARN, and the
   agent's findings) in addition to the environment details. A **Copy full details**
   button copies the complete environment + findings text to your clipboard for
   pasting anything the URL can't carry (long transcripts are length-capped in the

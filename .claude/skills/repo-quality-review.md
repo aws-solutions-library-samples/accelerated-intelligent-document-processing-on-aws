@@ -670,8 +670,8 @@ explicitly `continue-on-error: false`.
 step that turns "the gate runs" into "the gate blocks", and it is the one the parity
 test cannot cover.
 
-**Read both branches.** `develop` is what pull requests target, but `main` is the
-repository's **default** branch and the one releases are cut from, and it carries its
+**Read both branches.** `develop` is what pull requests target and the repository's
+**default** branch, but `main` is the one releases are cut from, and it carries its
 own independent protection setting. Checking only `develop` is why `main` being equally
 unprotected went unnoticed. Read the two endpoints that answer at ordinary permission
 levels, and do **not** infer protection state from the protection endpoint alone:
@@ -679,7 +679,7 @@ levels, and do **not** infer protection state from the protection endpoint alone
 ```bash
 R=aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws
 
-gh api "repos/$R" -q '.default_branch'   # main — note which branch that is
+gh api "repos/$R" -q '.default_branch'   # develop — note which branch that is
 
 # 1. Classic branch protection — take it from the BRANCH object. The `protected`
 #    field is returned at `pull` level and settles the question either way. Per
