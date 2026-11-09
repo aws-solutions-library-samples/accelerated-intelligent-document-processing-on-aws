@@ -60,6 +60,7 @@ PREFIX_DOCS = {
     "PII": "PII Anonymization",
     "SELL": "Seller Entitlement Service",
     "HITL": "Review Queues",
+    "TEN": "Tenant Isolation",
 }
 
 # Curated per-threat risk + mitigation status. This is the ONLY place status is
@@ -202,8 +203,8 @@ STATUS: dict[str, tuple[int, str]] = {
     "SELL.T10": (4, "Accepted"),
     # HITL review queues and Inbox (v0.6.13). Scores are Likelihood x Severity on
     # the risk matrix's scale, per entry.
-    # Low x Medium: listings filter each item by its own profile; queue counts are
-    # not scope-filtered.
+    # Low x Medium: listings and, for a scoped caller, queue counts filter each item
+    # by its own profile.
     "HITL.T01": (2, "Mitigated"),
     # Low x High: holder-only conditional writes; drafts are not schema-checked.
     "HITL.T02": (3, "Partially Mitigated"),
@@ -211,6 +212,21 @@ STATUS: dict[str, tuple[int, str]] = {
     "HITL.T03": (2, "Partially Mitigated"),
     # Low x High: grants are stack-scoped but wider than any Annotator operation.
     "HITL.T04": (3, "Partially Mitigated"),
+    # Tenant isolation in a shared stack (v0.6.14). Likelihood x Severity per entry.
+    # Medium x High: Off with Manual is the default and reads an unscoped non-Admin
+    # as unrestricted; Strict or an external grant source fails closed.
+    "TEN.T01": (6, "Partially Mitigated"),
+    # Low x High: delegation admits any access point the account owns; the
+    # creation restriction is a documented prerequisite the template cannot set.
+    "TEN.T02": (3, "Partially Mitigated"),
+    # Low x High: the IdP's role administration or the entitlement system decides
+    # tenancy; removal applies at the next fresh sign-in.
+    "TEN.T03": (3, "Partially Mitigated"),
+    # Low x High: whole-table UsersTable write under IdpClaim, bounded by code only.
+    "TEN.T04": (3, "Partially Mitigated"),
+    # Low x Medium: Admin-only writes, size-bounded index, fail-closed ingest read
+    # with an alarm.
+    "TEN.T05": (2, "Mitigated"),
 }
 
 BLOCK_RE = re.compile(

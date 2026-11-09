@@ -4,11 +4,11 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.3 |
-| **Last Updated** | 2026-09-19 |
+| **Document Version** | 3.4 |
+| **Last Updated** | 2026-11-09 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threat IDs** | 104 |
+| **Total Threat IDs** | 109 |
 
 ## 1. Threat ID Naming Convention
 
@@ -32,6 +32,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | **PII** | PII Anonymization | Preprocessing hook + PII redaction extension threats | [feature-threats/pii-anonymization.md](feature-threats/pii-anonymization.md) |
 | **SELL** | Seller Entitlement Service | Seller-account activation endpoint for paid extensions (only doc whose assets belong to the SELLER, not the customer) | [feature-threats/seller-entitlement-service.md](feature-threats/seller-entitlement-service.md) |
 | **HITL** | Review Queues | HITL review queues, the per-user Inbox, the review finalize execution | [feature-threats/review-queues.md](feature-threats/review-queues.md) |
+| **TEN** | Tenant Isolation | Tenants sharing one stack: declarations, `TenantIsolationMode`, `TenantGrantSource`, per-tenant access points | [feature-threats/tenant-isolation.md](feature-threats/tenant-isolation.md) |
 
 ## 2. Complete Threat ID Reference
 
@@ -232,6 +233,16 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | HITL.T02 | Reviewer-controlled drafts become the document's final output | Tampering, R | 3 (Medium) |
 | HITL.T03 | Review metadata reaches readers beyond the queue's audience | ID | 2 (Low) |
 | HITL.T04 | Resolvers serving Annotator operations hold write grants on authorization and workflow state | EoP | 3 (Medium) |
+
+### TEN — Tenant Isolation (5 threats)
+
+| ID | Short Name | STRIDE | Risk |
+|----|-----------|--------|------|
+| TEN.T01 | Cross-tenant access in a shared stack | ID, EoP | 6 (High) |
+| TEN.T02 | Access-point delegation trusts every access point in the account | EoP, ID | 3 (Medium) |
+| TEN.T03 | An external grant source decides tenancy | Spoofing, EoP | 3 (Medium) |
+| TEN.T04 | The sign-in trigger holds UsersTable write under `IdpClaim` | EoP, Tampering | 3 (Medium) |
+| TEN.T05 | Tenant declarations are an authorization input and a single point of failure | Tampering, DoS | 2 (Low) |
 
 ## 3. STRIDE Abbreviations
 
