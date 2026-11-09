@@ -1051,37 +1051,43 @@ and absent from `test_ci_gate_parity.py`'s `SHARED_GATES`. The entry point is
   log on the MR, which is kept when a newer push cancels a job or it times out.
 - **At night.** `ux_nightly` comes after `notify`, so it neither delays
   `nightly_notification` nor feeds it. `ai_ux_test_stories_nightly` runs the nightly
-  set in parallel shards, each with a dollar cap of its own and a time gate that starts
-  a flow only when it can finish. `ai_ux_test_stories_digest` merges the shards
+  set in parallel shards, each with a dollar cap of its own and a time gate that
+  starts a flow only when it can finish. `ai_ux_test_stories_digest` merges the shards
   and writes `digest.md` and `digest.json`. In the scheduled pipeline it also compares
   the night with earlier scheduled nights, read with `GITLAB_REVIEW_TOKEN` by GET
   requests alone, and with `UX_TEST_STORIES_SLACK_WEBHOOK_URL` set posts the night to
-  Slack; a manual run compares nothing and says so. It runs no model and no browser.
-  A night is compared only when the review stack's row says it was updated or already
-  up to date and every socket audit was clean. The shards read that row from the
+  Slack; a manual run compares nothing and says so. It runs no model and no browser. A
+  night is compared only when the review stack's row says it was updated or already up
+  to date and every socket audit was clean. The shards read that row from the
   integration build's `codebuild_logs.txt`, in the consolidated summary the build
-  prints near the end of its log, within the log's last MiB and under the last such
-  header; not from `deployment_summary.txt`, which keeps only the log after that
-  table whenever `integration_tests` cannot fetch the build's summary from S3. A bad
-  result is a regression once a second attempt confirms it; when that confirming
-  re-run did not fit in a shard's budget or time, the result is still listed, marked
-  unconfirmed in `digest.md` and on Slack.
+  prints near the end of its log: within the log's last MiB, under the last such
+  header before the `🤖 Generating deployment summary with Bedrock...` line, so the
+  model's narrative after it is never read. Not from `deployment_summary.txt`, which
+  keeps only the log from that line on whenever `integration_tests` cannot fetch the
+  build's summary from S3. A bad result is a regression once a second attempt confirms
+  it; when that confirming re-run did not fit in a shard's budget or time, the result
+  is still listed, marked unconfirmed in `digest.md` and on Slack.
 - **The Slack post.** It reads like the integration build's own: `status` is the
   night's outcome from its stories (`✅ 13 of 13 passed`, `❌ 2 regressions` for
-  confirmed regressions only, `⚠️ 11 of 13 passed` when a flow did not pass and none is
-  a confirmed regression, `⚠️ harness problem` for a harness error or an unclean audit,
-  `⏭️ not run`), and `summary` names develop's commit and the review stack's version,
-  then lists every flow under its catalogue title and persona with one icon per
-  outcome: confirmed regressions first, then the other flows that did not pass, each
-  saying why, then the passes, with their steps. A night that could not be compared
-  says why in words on a line of its own and keeps its ✅ when every story passed. It
-  closes with what tonight was compared with, the night's hesitations and dead ends,
-  and its spend against the night's cap. The summary is plain text, because the
-  workflow shows Slack's `<url|label>`, `*` and backticks as typed, and stays within
-  2,000 characters by folding passes into "and N more passed" before any failure is
-  cut. Every value is a closed one, a count, fixed text or a catalogue title reduced to
-  letters, digits and plain punctuation, so nothing in it can mention a channel or
-  carry a link but the job's own `job_url`.
+  confirmed regressions only, `⚠️ harness problem` for a harness error or an unclean
+  audit, `⚠️ 11 of 13 passed` when a flow did not pass and none is a confirmed
+  regression, `⏭️ not run`). Once no night has been compared for four nights in a row,
+  tonight included and a night with no readable digest counted as not compared, the
+  tally says so instead of carrying a ✅:
+  `⚠️ 13 of 13 passed, not compared for 4 nights`. A regression or a harness problem
+  still comes first. And `summary` names develop's commit and the review stack's
+  version, then lists every flow under its catalogue title and persona with one icon
+  per outcome: confirmed regressions first, then the other flows that did not pass,
+  each saying why, then the passes, with their steps. A night that could not be
+  compared says why in words on a line of its own, and keeps its ✅ when every story
+  passed and the run of uncompared nights is shorter than four. It closes with what
+  tonight was compared with, the night's hesitations and dead ends, and its spend
+  against the night's cap. The summary is plain text, because the workflow shows
+  Slack's `<url|label>`, `*` and backticks as typed, and stays within 2,000 characters
+  by folding passes into "and N more passed" before any failure is cut. Every value is
+  a closed one, a count, fixed text or a catalogue title reduced to letters, digits
+  and plain punctuation, so nothing in it can mention a channel or carry a link but
+  the job's own `job_url`.
 - **Artifacts.** The MR job keeps `ux-test-stories/`, each nightly shard
   `ux-test-stories/shard-<i>/` and the digest `ux-test-stories-digest/`. Each holds
   `report.html`, the run as one page to open in a browser once downloaded: every

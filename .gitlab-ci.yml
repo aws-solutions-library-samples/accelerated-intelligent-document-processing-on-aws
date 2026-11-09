@@ -2102,7 +2102,8 @@ ai_ux_test_stories_nightly:
     - when: never
   # codebuild_logs.txt, the integration build's log, whose consolidated summary
   # records the review stack's state for the night; the shard reads its last
-  # MiB. Not deployment_summary.txt: when the job cannot fetch the build's
+  # MiB, up to the line that starts the Bedrock narrative, which it never reads.
+  # Not deployment_summary.txt: when the job cannot fetch the build's
   # summary from S3 it keeps only the log after that table, so the stack's row
   # is not in it.
   dependencies:

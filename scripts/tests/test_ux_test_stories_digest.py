@@ -222,37 +222,99 @@ def test_classify_reads_only_the_first_row_under_the_last_header(
     assert story_digest.classify_stack_state(text) == state
 
 
-@pytest.mark.unit
-def test_classify_reads_the_table_the_build_prints_near_the_end_of_its_log() -> None:
-    """The build's log carries the consolidated summary once, between the steps'
-    output and the Bedrock narrative; any earlier header is not tonight's last word,
-    so the last one decides, as it does whichever order the two come in."""
-    module = _codebuild_deployment()
-    table = module.build_consolidated_summary(
+def _updated_table() -> str:
+    """The consolidated summary as the build renders it, the stack updated tonight."""
+    return _codebuild_deployment().build_consolidated_summary(
         "idp-ci-x",
         {"success": True},
         [],
         True,
         ux_nightly_update=_outcome("updated", status="UPDATE_COMPLETE", minutes=24.6),
     )
-    earlier = f"{HEADER}\n  ⚠️ Still updating when the run ended — 3.0 min so far; CloudFormation carries on"
-    log = "\n".join(
+
+
+EARLIER_ROW = (
+    f"{HEADER}\n  ⚠️ Still updating when the run ended — 3.0 min so far; "
+    "CloudFormation carries on"
+)
+ECHOED_ROWS = (
+    f"{HEADER}\n  ✅ Already on tonight's template — nothing to update",
+    f"{HEADER}\n  ✅ The review stack looks healthy tonight",
+)
+
+
+def _build_log(*after_marker: str, table: str | None = None) -> str:
+    """A build log: steps, an earlier header, the table, the marker, the narrative."""
+    return "\n".join(
         [
             "[Container] 2026/11/06 03:12:00 Entering phase BUILD",
             *(f"step output line {n}" for n in range(200)),
-            earlier,
+            EARLIER_ROW,
             *(f"more output {n}" for n in range(50)),
             "",
-            table,
+            table if table is not None else _updated_table(),
             "",
             "",
-            "🤖 Generating deployment summary with Bedrock...",
+            story_digest.NARRATIVE_MARKER,
             "🚀 DEPLOYMENT RESULTS — ✅ PASS",
+            *after_marker,
         ]
     )
+
+
+@pytest.mark.unit
+def test_classify_reads_the_table_the_build_prints_near_the_end_of_its_log() -> None:
+    """The build's log carries the consolidated summary once, between the steps'
+    output and the Bedrock narrative; an earlier header is not tonight's last word,
+    so the last one before the narrative decides."""
+    table = _updated_table()
     assert story_digest.classify_stack_state(table) == "updated"
-    assert story_digest.classify_stack_state(log) == "updated"
-    assert story_digest.classify_stack_state(f"{table}\n{earlier}\n") == "running"
+    assert story_digest.classify_stack_state(_build_log()) == "updated"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("echo", ECHOED_ROWS)
+def test_a_header_the_narrative_echoes_after_the_marker_is_never_read(
+    echo: str,
+) -> None:
+    """The narrative is model output printed after the marker, and a prompt built
+    from the build's own log can lead it to echo a header-shaped line; what follows
+    the last marker is left out, so the real row before it decides."""
+    assert story_digest.classify_stack_state(_build_log(echo)) == "updated"
+    twice = "\n".join(
+        [
+            EARLIER_ROW,
+            story_digest.NARRATIVE_MARKER,
+            "an earlier narrative",
+            _updated_table(),
+            story_digest.NARRATIVE_MARKER,
+            echo,
+        ]
+    )
+    assert story_digest.classify_stack_state(twice) == "updated"
+
+
+@pytest.mark.unit
+def test_text_with_no_marker_is_read_whole_and_text_after_it_alone_has_no_row() -> None:
+    """A summary uploaded to S3, or a fixture, has no marker and its last header
+    decides; the job's fallback summary starts at the marker, so it has no row."""
+    table = _updated_table()
+    assert story_digest.classify_stack_state(f"{table}\n{EARLIER_ROW}\n") == "running"
+    assert story_digest.classify_stack_state(f"{EARLIER_ROW}\n{table}\n") == "updated"
+    fallback = "\n".join([story_digest.NARRATIVE_MARKER, ECHOED_ROWS[0]])
+    assert story_digest.classify_stack_state(fallback) == "missing"
+    assert (
+        story_digest.classify_stack_state(
+            f"{HEADER}\n{story_digest.NARRATIVE_MARKER}\n  ⚪ Not reported"
+        )
+        == "unrecognised"
+    )
+
+
+@pytest.mark.unit
+def test_the_marker_is_the_line_the_build_prints_before_its_narrative() -> None:
+    source = Path(_codebuild_deployment().__file__).read_text(encoding="utf-8")
+    assert f'print("\\n{story_digest.NARRATIVE_MARKER}")' in source
 
 
 def _digest_of(night: Night, **overrides: Any) -> dict[str, Any]:
@@ -1590,6 +1652,165 @@ def test_the_slack_status_is_one_of_five_plain_answers(
             "status"
         ]
         == status
+    )
+
+
+def _uncompared(pipeline_id: int, *, audits_clean: bool = True) -> Night:
+    return _night(
+        pipeline_id,
+        _flow("done"),
+        comparable=False,
+        stack_state="missing",
+        audits_clean=audits_clean,
+    )
+
+
+def _earlier(*nights: Night, gaps: Sequence[int] = ()) -> History:
+    """Earlier nights as given, then six comparable good ones before them."""
+    oldest = min([night.pipeline_id for night in nights] + list(gaps) + [TONIGHT])
+    good = tuple(_night(oldest - 1 - n, _flow("done")) for n in range(6))
+    return History(nights=(*nights, *good), gaps=tuple(gaps))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("history", "status"),
+    [
+        (
+            _earlier(_uncompared(TONIGHT - 1), _uncompared(TONIGHT - 2)),
+            "✅ 3 of 3 passed",
+        ),
+        (
+            _earlier(
+                _uncompared(TONIGHT - 1),
+                _uncompared(TONIGHT - 2),
+                _uncompared(TONIGHT - 3),
+            ),
+            "⚠️ 3 of 3 passed, not compared for 4 nights",
+        ),
+        (
+            _earlier(_uncompared(TONIGHT - 1), gaps=[TONIGHT - 2, TONIGHT - 3]),
+            "⚠️ 3 of 3 passed, not compared for 4 nights",
+        ),
+        (
+            _earlier(
+                _uncompared(TONIGHT - 1),
+                _night(TONIGHT - 2, _flow("done"), audits_clean=False),
+                _uncompared(TONIGHT - 3),
+            ),
+            "⚠️ 3 of 3 passed, not compared for 4 nights",
+        ),
+        (
+            _earlier(
+                _uncompared(TONIGHT - 1),
+                _uncompared(TONIGHT - 2),
+                _night(TONIGHT - 3, _flow("done")),
+                _uncompared(TONIGHT - 4),
+            ),
+            "✅ 3 of 3 passed",
+        ),
+        (
+            History(
+                nights=tuple(_uncompared(TONIGHT - 1 - n) for n in range(13)),
+                gaps=(),
+            ),
+            "⚠️ 3 of 3 passed, not compared for 14 nights",
+        ),
+        (
+            _earlier(
+                _uncompared(TONIGHT + 3),
+                _uncompared(TONIGHT),
+                _uncompared(TONIGHT - 1),
+                _uncompared(TONIGHT - 2),
+            ),
+            "✅ 3 of 3 passed",
+        ),
+        (None, "✅ 3 of 3 passed"),
+    ],
+    ids=[
+        "three-nights",
+        "four-nights",
+        "gaps-count",
+        "unclean-audit-counts",
+        "a-compared-night-ends-it",
+        "the-whole-history",
+        "later-pipelines-ignored",
+        "no-history",
+    ],
+)
+def test_a_run_of_nights_with_no_comparison_shows_in_the_status_from_four_on(
+    history: History | None, status: str
+) -> None:
+    """One night that cannot be compared leaves a clean status alone; four in a
+    row, tonight among them, is a run in which no regression can be flagged."""
+    digest, facts = _slack_night(*_clean_attempts(), history=history, stack_state=None)
+    payload = story_digest.slack_payload(digest, job_url="", facts=facts)
+    assert payload["status"] == status
+    assert (
+        "Not compared with earlier nights: the review stack's update could not be "
+        "confirmed."
+    ) in _summary_lines(payload)
+    shuffled = (
+        None
+        if history is None
+        else History(
+            nights=tuple(reversed(history.nights)), gaps=tuple(reversed(history.gaps))
+        )
+    )
+    shuffled_facts = dataclasses.replace(facts, history=shuffled)
+    assert (
+        story_digest.slack_payload(digest, job_url="", facts=shuffled_facts)["status"]
+        == status
+    )
+
+
+@pytest.mark.unit
+def test_a_regression_a_harness_problem_or_a_failure_keeps_its_place_in_a_long_run() -> (
+    None
+):
+    history = _earlier(
+        _uncompared(TONIGHT - 1), _uncompared(TONIGHT - 2), _uncompared(TONIGHT - 3)
+    )
+    digest, facts = _slack_night(
+        _result(KEY),
+        _result(OTHER_KEY, verdict="stuck"),
+        _result(OTHER_KEY, attempt=2, verdict="stuck"),
+        history=history,
+        stack_state=None,
+    )
+    assert story_digest.slack_payload(digest, job_url="", facts=facts)["status"] == (
+        "⚠️ 1 of 2 passed, not compared for 4 nights"
+    )
+    regressed = {
+        **digest,
+        "regressions": [
+            {
+                "key": OTHER_KEY,
+                "series": SERIES,
+                "kind": "completion",
+                "verdict": "stuck",
+                "good": 4,
+                "counted": 4,
+            }
+        ],
+    }
+    assert story_digest.slack_payload(regressed, job_url="", facts=facts)["status"] == (
+        "❌ 1 regression"
+    )
+    digest, facts = _slack_night(
+        _result(KEY, audit="unavailable"), history=history, stack_state=None
+    )
+    assert story_digest.slack_payload(digest, job_url="", facts=facts)["status"] == (
+        "⚠️ harness problem"
+    )
+    digest, facts = _slack_night(
+        _result(KEY, verdict="error"),
+        _result(OTHER_KEY),
+        history=history,
+        stack_state=None,
+    )
+    assert story_digest.slack_payload(digest, job_url="", facts=facts)["status"] == (
+        "⚠️ harness problem"
     )
 
 

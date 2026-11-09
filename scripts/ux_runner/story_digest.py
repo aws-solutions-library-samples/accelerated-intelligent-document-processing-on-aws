@@ -99,6 +99,9 @@ SLACK_STACK_REASONS: dict[str, str] = {
     "missing": "the review stack's update could not be confirmed",
 }
 STACK_HEADER_PREFIX = "🌙 UX review stack ("
+#: The line the build prints after its consolidated summary and before the
+#: Bedrock narrative, which is model output and is never read for the state.
+NARRATIVE_MARKER = "🤖 Generating deployment summary with Bedrock..."
 STACK_STATES: tuple[str, ...] = (
     "updated",
     "up_to_date",
@@ -422,15 +425,22 @@ _ROW_PATTERNS = tuple(
 def classify_stack_state(summary_text: str | None) -> str:
     """The review stack's state from the row under its header in the build's summary.
 
-    The text is the integration build's log, or its summary, and the header read
-    is its last: the build prints the consolidated summary near the end of its
-    log, so a header earlier in the text is not tonight's final word. ``missing``
-    for no text or no header, ``unrecognised`` for a row that is not exactly one
-    of ROW_TEMPLATES with its slots in their fixed shapes.
+    The text is the integration build's log, or its summary. Everything from the
+    last NARRATIVE_MARKER line on is the Bedrock narrative and is left out, and of
+    what remains the header read is the last: the build prints the consolidated
+    summary just before that marker, so a header earlier in the text is not
+    tonight's final word. Text with no marker is read whole. ``missing`` for no
+    text or no header, ``unrecognised`` for a row that is not exactly one of
+    ROW_TEMPLATES with its slots in their fixed shapes.
     """
     if not isinstance(summary_text, str) or not summary_text:
         return "missing"
     lines = summary_text.split("\n")
+    markers = [
+        index for index, line in enumerate(lines) if line.strip() == NARRATIVE_MARKER
+    ]
+    if markers:
+        lines = lines[: markers[-1]]
     headers = [
         index
         for index, line in enumerate(lines)
@@ -1350,10 +1360,48 @@ def _pass_lines(
     return lines
 
 
+def _uncompared_nights(digest: Mapping[str, Any], history: History | None) -> int:
+    """How many nights in a row, tonight and back, could not be compared.
+
+    A night counts as compared when it was comparable and its audits clean, and
+    an earlier night whose digest could not be read, a gap, counts as one that
+    was not. Without the history, only tonight is known.
+    """
+    if digest.get("comparable") is True and digest.get("audits_clean") is True:
+        return 0
+    if history is None:
+        return 1
+    tonight = digest.get("pipeline_id")
+    earlier = sorted(
+        [
+            (night.pipeline_id, night.comparable and night.audits_clean)
+            for night in history.nights
+        ]
+        + [(gap, False) for gap in history.gaps if _is_int(gap)],
+        reverse=True,
+    )
+    count = 1
+    for pipeline_id, compared in earlier:
+        if _is_int(tonight) and pipeline_id >= tonight:
+            continue
+        if compared:
+            break
+        count += 1
+    return count
+
+
 def _slack_status(
-    digest: Mapping[str, Any], flows: Sequence[NightFlow], confirmed: int
+    digest: Mapping[str, Any],
+    flows: Sequence[NightFlow],
+    confirmed: int,
+    uncompared: int,
 ) -> str:
-    """The night in a few words, from its stories: never from whether it compared."""
+    """The night in a few words, from its stories.
+
+    A night that could not be compared changes it only once BASELINE_NIGHTS
+    nights in a row, tonight among them, could not be, because a run that long
+    is one in which no regression can be flagged.
+    """
     if digest.get("shards_ran") == 0 or all(
         flow.verdict == "not_run" for flow in flows
     ):
@@ -1365,8 +1413,10 @@ def _slack_status(
     ):
         return "⚠️ harness problem"
     passed = sum(1 for flow in flows if flow.verdict in story_verdict.GOOD_VERDICTS)
-    icon = "✅" if passed == len(flows) else "⚠️"
-    return f"{icon} {passed} of {len(flows)} passed"
+    tally = f"{passed} of {len(flows)} passed"
+    if uncompared >= BASELINE_NIGHTS:
+        return f"⚠️ {tally}, not compared for {uncompared} nights"
+    return f"{'✅' if passed == len(flows) else '⚠️'} {tally}"
 
 
 def _compared_nights(history: History, pipeline_id: object) -> int:
@@ -1482,7 +1532,8 @@ def slack_payload(
 ) -> dict[str, str]:
     """The Slack workflow's four variables, in plain text built from closed values only.
 
-    ``status`` is the night's outcome from its stories. ``summary`` lists every
+    ``status`` is the night's outcome from its stories, and says so once no night
+    has been compared for BASELINE_NIGHTS nights in a row. ``summary`` lists every
     flow, under its catalogue title and persona, confirmed regressions first,
     then the other flows that did not pass, each saying why, then the passes,
     which give way to "and N more passed" when the summary would pass
@@ -1511,7 +1562,9 @@ def slack_payload(
     confirmed = sum(1 for key in regressed if key not in unconfirmed)
     url = section.flatten(job_url) if isinstance(job_url, str) else ""
     payload = {
-        "status": _slack_status(digest, flows, confirmed),
+        "status": _slack_status(
+            digest, flows, confirmed, _uncompared_nights(digest, facts.history)
+        ),
         "commit": sha8,
         "job_url": url[:_URL_CHARS],
     }

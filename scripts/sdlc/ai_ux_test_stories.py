@@ -1288,11 +1288,11 @@ def deploy_state(path: Path | None) -> str | None:
     """The review stack's state from the integration build's log; None without a path.
 
     The CI shards pass ``codebuild_logs.txt``, the build's log, which prints its
-    consolidated summary near the end; the state is that summary's row under the
-    review stack's last header in the file's final :data:`_SUMMARY_MAX_BYTES`, so
-    a longer log is read rather than refused. A file that is absent or cannot be
-    read is ``missing``, which runs the flows and records the night as not
-    comparable.
+    consolidated summary near the end, just before its Bedrock narrative; the
+    state is that summary's row under the review stack's last header before the
+    narrative, in the file's final :data:`_SUMMARY_MAX_BYTES`, so a longer log is
+    read rather than refused. A file that is absent or cannot be read is
+    ``missing``, which runs the flows and records the night as not comparable.
     """
     if path is None:
         return None

@@ -2479,6 +2479,21 @@ def test_the_last_stack_header_in_the_log_decides(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_a_header_echoed_in_the_narrative_after_the_marker_is_not_read(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "codebuild_logs.txt"
+    log.write_text(
+        f"build starts\n{UPDATED_ROW}\n{story_digest.NARRATIVE_MARKER}\n"
+        f"🚀 DEPLOYMENT RESULTS — ❌ FAIL\n{RUNNING_ROW}",
+        encoding="utf-8",
+    )
+    assert runner.deploy_state(log) == "updated"
+    log.write_text(f"{story_digest.NARRATIVE_MARKER}\n{UPDATED_ROW}", encoding="utf-8")
+    assert runner.deploy_state(log) == "missing"
+
+
+@pytest.mark.unit
 def test_a_log_that_is_absent_or_not_a_regular_file_is_missing(tmp_path: Path) -> None:
     target = tmp_path / "codebuild_logs.txt"
     target.write_text(UPDATED_ROW, encoding="utf-8")
