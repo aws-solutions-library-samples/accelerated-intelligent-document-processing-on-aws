@@ -631,7 +631,7 @@ _NIGHTLY_CASES = [
     ),
     # The Terraform schedule runs every night on develop, exactly as the
     # CloudFormation nightly does, so its variable is the only thing the rules can
-    # tell the two apart by. These cases pin that the exclusion reads the value of
+    # tell the two apart by. These cases pin that the rule reads the value of
     # IDP_IAC, spelled as iac_requested() accepts it, and nothing about cadence.
     (
         "the nightly Terraform schedule",
