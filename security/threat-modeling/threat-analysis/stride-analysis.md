@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.2 |
-| **Last Updated** | 2026-09-17 |
+| **Document Version** | 3.3 |
+| **Last Updated** | 2026-11-09 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
 | **Methodology** | STRIDE (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege) |
@@ -20,7 +20,7 @@ data storage/analytics.
 
 > **How to read this document.** It is deliberately **category-level**: rows are
 > phrased as threat *classes* rather than as the numbered threat entries, so a
-> reader can scan a STRIDE category without holding 104 identifiers in their head.
+> reader can scan a STRIDE category without holding 109 identifiers in their head.
 > The authoritative per-threat record — identifier, score, status, and whether a
 > mitigation is present or pending — is the
 > [risk register](../risk-assessment/risk-matrix.md), which is derived from the
@@ -42,6 +42,7 @@ Spoofing threats involve an attacker pretending to be something or someone they 
 | **External MCP client impersonation** | AgentCore Gateway / MCP handler | Medium | Cognito authentication required for all clients (dedicated M2M resource server) |
 | **Client-supplied caller identity on the agent streaming route** — a request body field is read in preference to the request's signed identity | Lambda Function URL (chat streaming) | High | **Not mitigated today.** The identity available from the signed request is the assumed-role session name rather than a verified Cognito `sub`, and that session name is the same for every user of the deployment, so establishing a *verified* caller is the fix — reordering the two would attribute every turn to one shared identifier. See CHAT.T06; **issue #920** / PR #954 is a partial step and leaves the threat Open |
 | **Group assignment from a user-writable attribute** — an external identity provider maps a claim the user can edit onto a Cognito group | Cognito pre-token trigger, external IdP | Medium | Group mapping reads provider-controlled claims; `make verify-idp-federation` exercises a real federated sign-in. Note `Annotator` enters that mapping only when `ExternalIdPAnnotatorGroupName` is set; left at its empty default it is assigned in Cognito directly, outside the IdP's joiner/leaver process (**issue #968**). See AUTH.T13 |
+| **Tenancy decided outside the stack** — under `TenantGrantSource=IdpClaim` or `Api` the identity provider's role administration or an entitlement system grants each user's tenant | Pre-token trigger, `setUserTenant`, SDK | Medium | Claim honoured only for a user linked to the configured provider and only at a fresh sign-in; exactly one tenant or none; failure fails the sign-in; Admin edits refused; removal applies at the next fresh sign-in, bounded by `RefreshTokenValidityHours`. See TEN.T03 |
 
 ### 2.2 Service Spoofing
 
@@ -113,7 +114,8 @@ Information disclosure threats involve exposure of sensitive data to unauthorize
 | **Data exfiltration via post-processing hooks** — full results sent externally | Lambda Hooks | Critical | Customer-managed VPC, security review, monitoring |
 | **OpenSearch vector store exposure** — KB embeddings accessible | Knowledge Base | Medium | Encryption, IAM/network policies, no public access |
 | **Client-side config exposure** — backend endpoints visible in JS | Web UI | Low | All endpoints require auth, security through access control |
-| **Review items outside the caller's profile scope** — a system-wide queue holds several profiles' items, so a listing must filter each item by its own profile | Review Queues | Low | Every per-item operation and listing applies `scope_allows` to the item's profile; queue counts are not scope-filtered. See HITL.T01 |
+| **Review items outside the caller's profile scope** — a system-wide queue holds several profiles' items, so a listing must filter each item by its own profile | Review Queues | Low | Every per-item operation and listing applies `scope_allows` to the item's profile, and so do a scoped caller's queue counts. See HITL.T01 |
+| **Cross-tenant access in a shared stack** — tenants share every Lambda, table and bucket, so isolation is the application's scope checks | Tenant isolation | High | Write-time boundary checks; under `Strict` or an external grant source unscoped non-Admins are denied, cross-tenant documents refused at ingest, and the agent, Knowledge Base, MCP and chat-stream surfaces closed; Admins are cross-tenant, and `Off` with `Manual` (the default) leaves an unscoped non-Admin unrestricted. See TEN.T01 |
 | **Review metadata beyond the queue's audience** — group-addressed Inbox announcements, `status.json`, Output-bucket EventBridge events | Review Queues, Inbox | Low | Self-scoped Inbox reads, no posting operation, in-app links only, sanitized rendering; announcements address whole groups. See HITL.T03 |
 | **Credential-shaped values in resolver logs** — a name-based redaction denylist | API resolver Lambdas, CloudWatch Logs | Medium | Every resolver applies the one canonical denylist (issue #921 closed, held by a test), so the exposure is a credential under a key the list does not name or in free text; log groups are retention-bounded and 113 of the 115 in the core templates use the stack KMS customer-managed key. See AUTH.T15 |
 
@@ -143,6 +145,7 @@ Denial of service threats involve making the system unavailable.
 | **Test Studio cost escalation** — excessive interactive testing | Test Studio | Medium | RBAC, rate limiting, cost monitoring |
 | **Hook Lambda failure cascade** — customer hooks blocking pipeline | Lambda Hooks | Medium | Step Functions timeouts, error handling, DLQ |
 | **AgentCore gateway disruption** — MCP infrastructure unavailable | MCP Integration | Medium | Health monitoring, alarms, lifecycle management |
+| **Tenant declarations unreadable at ingest** — under `Strict` every document's tenant check reads one ConfigurationTable item | Tenant isolation | Low | Fails closed (document retried, not admitted unchecked) with `TenantIsolationLookupFailedAlarm`; the index is size-bounded. Throughput is shared between tenants and not metered per tenant. See TEN.T05 |
 
 ## 7. Elevation of Privilege
 
@@ -155,6 +158,8 @@ Elevation of privilege threats involve gaining capabilities beyond what was auth
 | **Per-object authorization is opt-in per resolver** — the dispatcher's default deny enforces each operation's declared groups, and every narrower check (scope, ownership, queue eligibility) is hand-written in the resolver | API Gateway dispatcher | High | The dispatcher refuses an operation with no entry in the generated manifest (`scripts/api_rbac_expectations.yaml`, all 164 operations); `make api-test-static` in both CI systems checks that an enforcement pattern exists for each declared scope or ownership rule, and the live harness asserts a per-object refusal only where `object_scoped_roles` is declared. The 403 mapping still keys partly on error-message text. See AUTH.T16 |
 | **Deployment role breadth** — the shipped CloudFormation service role holds `iam:*` and broad service wildcards | Deployment / SDLC | Critical | **Partially mitigated.** Issue #927 attached a permissions boundary and constrained the roles the service role may create; its own `iam:*` grant is unchanged, so who may assume it remains the control. See SDK.T05 |
 | **Resolver grants wider than the Annotator operations they serve** — UsersTable writes on the test-set resolver, tracking-table writes and `DocumentQueue` sends on the review-queues resolver | Review Queues | Medium | Grants scoped to this stack's named resources; the scope-writing operation is Admin only at the dispatcher and in the resolver. See HITL.T04 |
+| **Access-point delegation** — under `Strict` the Input and Output bucket policies admit any access point the account owns | Tenant isolation | Medium | Generated access point policies confine with explicit denies and refuse account-root principals; restricting `s3:CreateAccessPoint`/`s3:PutAccessPointPolicy` is a documented prerequisite the template cannot enforce. See TEN.T02 |
+| **Sign-in trigger write grant** — under `IdpClaim` the pre-token trigger holds whole-table UsersTable write, and a `persona` write reaches Cognito groups through the stream sync | Tenant isolation | Medium | Grant and layer exist only under `IdpClaim`; the writer changes scope attributes only and never an Admin row; IAM does not restrict the attributes. See TEN.T04 |
 | **Parser exploit in a processing Lambda** — a weaponized document runs code with the function's role | Pipeline Processing | Medium | Optional GuardDuty ingest gate, pinned dependencies with `make dep-audit`, one role per function. See PM.T09 |
 | **Agent routing manipulation** — tricking orchestrator to invoke restricted agents | Agent System | Medium | Agent-level auth, tool access controls, audit logging |
 | **Configuration-driven privilege escalation** — malicious config enabling unauthorized model access | Configuration | High | Config schema validation, RBAC, model allowlisting |
