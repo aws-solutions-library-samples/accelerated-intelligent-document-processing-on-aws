@@ -634,8 +634,11 @@ treats that file as diagnostics only.
    before recording starts;
 7. starts `scripts/ux_recorder.py`, then runs `claude -p` with the prompt on stdin, in
    its own process group, holding only `chrome-devtools-mcp`'s navigation, input,
-   snapshot and screenshot tools and the four tools of the recorder's stdio adapter
-   `scripts/ux_recorder_mcp.py` (mark, note, pause and resume);
+   snapshot and screenshot tools, served through the review relay
+   `scripts/ux_runner/review_relay.py`, which puts every click, key and edit through
+   the first-time-user stories' commit guard before it reaches the browser, and the
+   four tools of the recorder's stdio adapter `scripts/ux_recorder_mcp.py` (mark,
+   note, pause and resume);
 8. stops the recorder, terminates Chrome and only then takes the socket audit's last
    pass, stops the proxy, and, for the review stack alone, renders the narrated mp4
    in a child process of its own (Amazon Polly, voice Ruth, with a private render
@@ -762,6 +765,33 @@ treats that file as diagnostics only.
   the browser and recorder tools, `--permission-mode manual`, `--strict-mcp-config`
   and `--bare`. Its MCP servers start under `env -i`, and its own environment is
   built from an allowlist that never holds `GITLAB_REVIEW_TOKEN` or the personas.
+- The shared stack is kept from the model's writes by a commit guard as well as by
+  the contract. `claude`'s browser server is the review relay, not
+  `chrome-devtools-mcp` itself: it starts the pinned `chrome-devtools-mcp` as the
+  first-time-user stories' relay does, serves only the browser tools the session is
+  granted, and judges every call with the stories' own guard
+  (`story_relay.CommitGuard`) before forwarding it. A click on a control whose name
+  commits (Save, Delete, Skip, Claim, Process Changes and the rest of
+  `story_relay.COMMIT_VERBS`), a key that presses one, accepting a confirm or a
+  prompt, and any edit or key but Tab and Escape on a page whose editor saves its own
+  edits are refused and never sent, so Process Changes on an unassigned review-queue
+  item, which claims and finishes it with no confirmation, cannot consume a shared
+  fixture. On such a page Edit Page Grouping is refused too
+  (`story_relay.CLAIM_FIRST_CONTROLS`), because opening the grouping board claims an
+  unassigned item before the board opens. The model is told the step would change the shared stack, the run goes on,
+  and each refusal is listed in `refusals.jsonl` with `origin` `guard` after the
+  proxy's records, and counted in `summary.json` (`guard`). The guard is the one
+  `scripts/tests/test_ux_story_relay.py` closes over every mutation the web UI
+  declares (`MUTATION_CONTROLS`), so a control added to the UI is checked once, for
+  both, and that suite also finds every call in `src/ui/src` that claims an item and
+  fails on one not mapped to the controls that reach it (`CLAIM_CALL_SITES`), a
+  callback such as the grouping board's `beforeOpen` included.
+  `scripts/tests/test_ux_review_relay.py` and `scripts/tests/test_ai_ux_test.py`
+  replay the Process Changes click through the relay and the orchestrator. It judges
+  names and the page, not what a handler sends, so a control that commits under a
+  name it has no verb for still gets through, and which control reaches a claim call
+  is written by hand rather than derived. Everything the guard lets through is forwarded as the model sent it and
+  answered with `chrome-devtools-mcp`'s own answer.
 - None of the granted browser tools runs script in the page. Denying
   `evaluate_script` by name is not enough for that, because by default
   `navigate_page` also takes an `initScript` and follows `javascript:` and `data:`

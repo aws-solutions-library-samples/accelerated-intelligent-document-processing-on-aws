@@ -636,9 +636,13 @@ link, breadcrumbs included, and one with no address, with `#`, to the page it is
 or in a dialog, is judged by its name like any control. On a page whose editor
 may save its own edits, which the review workspace marks with Discard Changes while
 it is editable (and an older deployment with Save draft), it refuses every edit:
-typing, filling, dragging and ticking. Every annotation frame and the configuration
-editor show Discard Changes too, so edits are refused there as well, though nothing
-there is saved without a Save the guard already refuses. It cannot see an unnamed
+typing, filling, dragging and ticking. On such a page it also refuses Edit Page
+Grouping, because on the edit screen of a review-queue item nobody holds, opening
+the grouping board claims the item for the Admin first, as a first save does; from
+a document page's More Actions it opens the board and is let through. Every
+annotation frame and the configuration editor show Discard Changes too, so edits
+are refused there as well, though nothing there is saved without a Save the guard
+already refuses. It cannot see an unnamed
 control anywhere else, a save an edit sets off on a page without that control, a
 full-page form submitted by a Create, Add, New, Assign or Move button (those words
 are refused only inside a dialog, because outside one they open a form or a
@@ -653,7 +657,13 @@ through, because it changes nothing but that persona's own read state. A
 and does not join a tier.
 `scripts/tests/test_ux_story_relay.py` maps every mutation the web UI declares to
 the controls that send it and checks the guard refuses each, so a UI change that
-adds one fails there until its control is accounted for.
+adds one fails there until its control is accounted for. It also finds every call
+in the web UI that claims an item, a callback such as the grouping board's
+`beforeOpen` included, and fails on one that is not mapped to the controls that
+reach it; which control reaches a call is written by hand, since the suite cannot
+follow a handler through the props it is passed down. The MR UX test's review
+runs behind the same guard (`scripts/ux_runner/review_relay.py`), so that one check
+covers both.
 
 ## The review stack (once, by its operator)
 

@@ -15,7 +15,8 @@ to reuse the same pieces rather than grow a second copy of them.
 Import rule
 -----------
 Callers put ``scripts/`` on ``sys.path`` and import ``from ux_runner import x``.
-``browser.py`` is executed by path and inserts ``scripts/`` itself.
+``browser.py`` and ``review_relay.py`` are executed by path and insert ``scripts/``
+themselves.
 ``run_in_docker.py`` and ``ui_change.py`` are self-contained stdlib, because they
 run on developer hosts and in CI jobs where nothing is installed, and a sibling
 import there would be one more thing that has to be present for a precheck to

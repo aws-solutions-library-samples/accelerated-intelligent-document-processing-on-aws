@@ -54,9 +54,25 @@ Overrides "Assumes a disposable dev stack". `idp-ux-nightly` is long-lived and
 shared, holds shipped example data only, and other runs rely on its fixtures. Never
 press a control that saves, deletes, re-extracts, resets labels, uploads, publishes,
 starts or aborts a run, or changes configuration or users. Walk the flow to its
-commit point, show the confirmation, cancel, and report that step under
-`not_covered`. Flows 5.1 and 6.2 are therefore reviewed up to their save and
-re-extract, and no further.
+commit point, show the confirmation where you can open it, cancel, and report that
+step under `not_covered`. Flows 5.1 and 6.2 are therefore reviewed up to their save
+and re-extract, and no further.
+
+The harness enforces this. Every click, key and edit you make passes the same
+commit guard the first-time-user stories run behind before it reaches the browser,
+and one that would commit is refused and never sent: the tool answers that it would
+change something on the shared review stack. The guard judges a control by its
+name, so a button such as Delete or Process Changes is refused whether it commits
+at once or only opens a confirmation, and Process Changes on a review-queue item
+commits at once, with no confirmation. On a page whose editor saves its own edits,
+which the edit screen marks with Cancel and discard changes, every edit and every
+key but Tab and Escape is refused, and so is Edit Page Grouping, because on a
+review-queue item nobody holds, opening the grouping board claims the item first.
+Open the grouping board from a document page's More Actions instead. A refusal is
+the guard working, not a finding: report the step it stopped under `not_covered`
+and carry on another way. Each one is listed in the job's `refusals.jsonl`. The
+guard reads names and the page, never what a control sends, so the rule above still
+binds wherever it lets a control through.
 
 ### 5. Blocked is an outcome, not breakage
 

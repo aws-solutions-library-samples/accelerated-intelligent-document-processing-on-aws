@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The MR UX test can no longer commit on the shared review stack.** Its unattended contract forbade every write, but nothing enforced that, so a review could press Process Changes on an unassigned review-queue item, which claims and finishes it with no confirmation, and consume a shared fixture. Every click, key and edit the review makes now passes the commit guard the first-time-user stories run behind, before it reaches the browser: a control that would commit is refused and never sent, the review carries on, and the refusal is listed in the job's `refusals.jsonl`. The guard judges a control by its name, so a review can no longer open a confirmation such as Delete's only to cancel it. Reviews and first-time-user stories alike are now also refused Edit Page Grouping on the edit page of a review-queue item, where opening it claims an unassigned item before the board opens; it still opens from a document page's More Actions. See [the unattended UX test contract](.claude/skills/ux-test-ci.md).
+
 ## [0.6.14]
 
 ### Added
