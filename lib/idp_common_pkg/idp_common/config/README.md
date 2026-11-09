@@ -396,6 +396,55 @@ carried = carry_forward_authored_settings(existing_class, new_class, synthesized
   including `description`. `$id` / `x-aws-idp-document-type` are excluded: those
   are rewritten by the caller's id normalization, which logs its own rename.
 
+## Prompt comments
+
+A prompt template can carry `{# ... #}` comments (#1653). The rules and the
+stripping functions are in the standard-library-only leaf module
+`idp_common/prompt_comments.py` (`strip_prompt_comments`,
+`strip_prompt_comments_in_config`, `is_prompt_key`, `has_prompt_comments`), so the
+Bedrock client can use it without importing this package.
+
+**Where comments are removed, and why there.** Services check, splice and split a
+template *before* they substitute values: classification infers modality from
+whether `{DOCUMENT_IMAGE}` is in the template, the confidence and bounding-box
+blocks are spliced in next to `<<CACHEPOINT>>`, and templates are split on
+`{DOCUMENT_IMAGE}` / `{FEW_SHOT_EXAMPLES}`. A placeholder inside a comment must be
+gone before any of that, so:
+
+- `ConfigurationReader.get_merged_configuration` (behind `get_config`, the runtime
+  loader every processing Lambda uses) returns the configuration with comments
+  removed from every prompt key. A configuration with no comment is returned as the
+  same object; otherwise a new `IDPConfig` is built from a stripped dump and the
+  manager's object is left unchanged.
+- `ConfigurationManager` (the configuration editor's read and save path) is not
+  touched, so stored and exported configurations keep their comments.
+- `validate_config` runs the placeholder and cache-prefix checks on a stripped copy,
+  so a placeholder that appears only in a comment is reported missing.
+- For a configuration handed to a service directly, the services that split or
+  splice a template strip it themselves: `ExtractionService` and
+  `AssessmentService` strip their whole configuration once in `__init__`
+  (`without_prompt_comments`, the reader's helper; a configuration without comments
+  is kept as the same object), and the classification service strips in
+  `_stage_prompt`, in its shipped-default fallback and on the class-confidence
+  block. Few-shot example prompts are stripped where they are built, and
+  `BedrockClient.format_prompt` strips a template it is given.
+- Never strip after substitution (for example in `invoke_model`): document text
+  would already be in the prompt, and a document containing `{#` would be altered.
+- A configuration built in code and passed straight to any other service
+  (summarization, rule validation, evaluation, discovery, chat) has its task
+  prompts stripped by `format_prompt`, but not its system prompts. Load it with
+  `get_config`, or call `strip_prompt_comments_in_config` on it first.
+- The comment pattern is "tempered": a comment always ends at its own first `#}`.
+  The whole-line pattern (`_COMMENT_LINE`) needs that: with a plain lazy `.*?`
+  body under DOTALL, a line such as `{# a #}Keep{# b #}` would fail the required
+  line terminator after the first `#}`, and the engine would extend the comment to
+  the next `#}`, removing `Keep` with it.
+  `test_a_comment_never_extends_past_its_own_close` pins that.
+
+`tests/unit/test_prompt_comments.py` asserts that no comment text reaches a
+classification request with the commented shipped defaults, through the reader and
+with the configuration handed over directly.
+
 ## Configuration records
 
 Configuration is stored in DynamoDB with two record types:

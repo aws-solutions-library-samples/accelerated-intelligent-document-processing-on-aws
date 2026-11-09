@@ -85,10 +85,6 @@
       "F841": 1,
       "I001": 2
     },
-    "lib/idp_common_pkg/idp_common/utils/few_shot_example_builder.py": {
-      "F401": 1,
-      "I001": 1
-    },
     "lib/idp_common_pkg/idp_common/utils/lambda_metering.py": {
       "I001": 1
     },
@@ -487,8 +483,8 @@
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
   ],
   "highWaterMark": {
-    "lintDebtFiles": 72,
-    "lintFindings": 176,
+    "lintDebtFiles": 71,
+    "lintFindings": 174,
     "formatDebtFiles": 161
   }
 }
