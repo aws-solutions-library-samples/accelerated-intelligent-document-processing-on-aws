@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.4 |
-| **Last Updated** | 2026-09-20 |
+| **Document Version** | 3.5 |
+| **Last Updated** | 2026-11-09 |
 | **Applies to release** | v0.6.9 |
 | **Feature** | Role-Based Access Control & Authentication |
 | **Classification** | Internal |
@@ -206,7 +206,7 @@ flowchart TD
 | **Likelihood** | Low |
 | **Severity** | High |
 | **Affected Components** | Cognito User Pool, Web UI, SDK/CLI |
-| **Mitigations** | Configurable refresh token expiration, token revocation capabilities, Cognito advanced security (anomaly detection), secure token storage, session monitoring |
+| **Mitigations** | Configurable refresh token expiration: the `RefreshTokenValidityHours` parameter (default 720, 30 days) sets the web UI client's lifetime, and the client is left unmodified at the default (`HasCustomRefreshTokenValidity` in `template.yaml`). Token revocation capabilities, Cognito advanced security (anomaly detection), secure token storage, session monitoring |
 
 ### AUTH.T06: Cross-Tenant Data Access (Multi-Stack)
 
@@ -214,7 +214,7 @@ flowchart TD
 |-----------|-------|
 | **Threat ID** | AUTH.T06 |
 | **Category** | STRIDE: Information Disclosure |
-| **Description** | Each deployment is single-tenant, but organizations may deploy multiple stacks. If users have access to multiple stacks' Cognito pools, they could access data across environments |
+| **Description** | Organizations may deploy one stack per tenant or environment. If users have access to multiple stacks' Cognito pools, they could access data across environments. Several tenants sharing **one** stack is a different boundary, inside the deployment, and is modelled separately as TEN.T01–T05 in [`tenant-isolation.md`](tenant-isolation.md) |
 | **Attack Vector** | User with credentials for multiple stacks accesses data from an environment they shouldn't have access to |
 | **Impact** | Cross-environment data access |
 | **Likelihood** | Low |

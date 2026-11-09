@@ -4,14 +4,14 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 3.15 |
-| **Last Updated** | 2026-11-03 |
-| **Applies to release** | v0.6.13 |
-| **Last reviewed against version** | 0.6.13 |
+| **Version** | 3.16 |
+| **Last Updated** | 2026-11-09 |
+| **Applies to release** | v0.6.14 |
+| **Last reviewed against version** | 0.6.14 |
 | **System** | GenAI Intelligent Document Processing (IDP) Accelerator |
 | **Architecture** | Unified (Pipeline + BDA modes), API Gateway REST transport |
 | **Methodology** | STRIDE |
-| **Total Threats** | 104 |
+| **Total Threats** | 109 |
 | **Classification** | Internal |
 
 > **`Last reviewed against version` is a gated field.** It records the release
@@ -30,13 +30,13 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 
 | Metric | Value |
 |--------|-------|
-| Threats identified | **104** |
+| Threats identified | **109** |
 | Critical risk (8–9) | 9 |
-| High risk (6–7) | 31 |
-| Medium risk (3–5) | 47 |
-| Low risk (1–2) | 17 |
-| Mitigated | 64 (62%) |
-| Partially mitigated | 33 (32%) |
+| High risk (6–7) | 32 |
+| Medium risk (3–5) | 50 |
+| Low risk (1–2) | 18 |
+| Mitigated | 65 (60%) |
+| Partially mitigated | 37 (34%) |
 | Open (real gap, needs work) | **3 (3%)** |
 | Accepted risk | 4 (4%) |
 
@@ -113,22 +113,25 @@ against as a whole, and the rows deliberately differ: a blanket version bump acr
 every document would assert reviews that did not happen, which is the failure mode
 the currency gate exists to prevent.
 
-In the v3.12 currency pass (against 0.6.13) three documents were re-derived from
-the templates, the state machine and `scripts/api_rbac_expectations.yaml` rather
-than edited in place, and their rows read v0.6.13:
+In the v3.16 currency pass (against 0.6.14) these documents were checked against
+the v0.6.14 templates, `scripts/api_rbac_expectations.yaml` and the source they
+cite, and their rows read v0.6.14:
 [`architecture/system-overview.md`](architecture/system-overview.md),
-[`architecture/data-flows.md`](architecture/data-flows.md), and the new
-[`feature-threats/review-queues.md`](feature-threats/review-queues.md), written
-from the review-queue, Inbox and finalize source.
+[`architecture/data-flows.md`](architecture/data-flows.md),
+[`feature-threats/review-queues.md`](feature-threats/review-queues.md), and the new
+[`feature-threats/tenant-isolation.md`](feature-threats/tenant-isolation.md),
+written from the tenancy source (`idp_common/config/tenants.py`,
+`config_scope.py`, `user_scope.py`, the pre-token trigger, `queue_sender`, the
+access point policy generator and the `template.yaml` conditions).
 
 Inside documents that were otherwise carried forward, named entries were
-re-verified against code in the same pass, and the document's row stays at the
-release it was last verified against as a whole: AUTH.T01, AUTH.T15, AUTH.T16 and
-the authorization-surface paragraph in
-[`rbac-authentication.md`](feature-threats/rbac-authentication.md); HOOK.T07 and
-the hook-point table in [`lambda-hooks.md`](feature-threats/lambda-hooks.md);
-UI.T03 in [`web-ui.md`](feature-threats/web-ui.md); and PM.T09, new, in
-[`pipeline-mode.md`](architecture/pipeline-mode.md).
+re-verified against v0.6.14 code in the same pass, and each document's row stays at
+the release it was last verified against as a whole: AUTH.T05 and AUTH.T06 in
+[`rbac-authentication.md`](feature-threats/rbac-authentication.md); MCP.T01 and
+MCP.T06 in [`mcp-integration.md`](feature-threats/mcp-integration.md); KB.T03 in
+[`knowledge-base.md`](feature-threats/knowledge-base.md); and the routable-operation
+count in UI.T03 ([`web-ui.md`](feature-threats/web-ui.md)) and JOB.T02
+([`jobs-api.md`](feature-threats/jobs-api.md)).
 
 The remaining documents were **carried forward**: their content was reconciled for
 counts, cross-references and any claim contradicted by the documents above, but
@@ -140,7 +143,7 @@ pass.
 ```
 security/threat-modeling/
 ├── README.md                                    ← You are here
-├── threat-id-glossary.md                        ← All 104 threat IDs with cross-references
+├── threat-id-glossary.md                        ← All 109 threat IDs with cross-references
 │
 ├── architecture/                                ← System architecture & data flows
 │   ├── system-overview.md                       ← Unified architecture, components, trust boundaries
@@ -163,7 +166,8 @@ security/threat-modeling/
 │   ├── feature-platform.md                      ← Installable extension threats (FEAT)   [new in 3.0]
 │   ├── jobs-api.md                              ← Machine-to-machine Jobs API threats (JOB) [new in 3.0]
 │   ├── pii-anonymization.md                     ← Preprocessing hook + PII redaction (PII)  [new in 3.0]
-│   └── review-queues.md                         ← HITL review queues, Inbox, finalize (HITL) [new in 3.12]
+│   ├── review-queues.md                         ← HITL review queues, Inbox, finalize (HITL) [new in 3.12]
+│   └── tenant-isolation.md                      ← Tenants sharing one stack (TEN)            [new in 3.16]
 │
 ├── threat-analysis/                             ← Cross-cutting analysis
 │   ├── stride-analysis.md                       ← Full STRIDE analysis across all components
@@ -212,11 +216,12 @@ security/threat-modeling/
 - **[PII Anonymization](feature-threats/pii-anonymization.md)** — Redaction bypass, re-identification oracle
 - **[Seller Entitlement Service](feature-threats/seller-entitlement-service.md)** — Seller-side activation endpoint; identity spoofing, key compromise, wrong-account deploy
 - **[Review Queues](feature-threats/review-queues.md)** — Reviewer-controlled output, Inbox and status-object disclosure, resolver grants
+- **[Tenant Isolation](feature-threats/tenant-isolation.md)** — Cross-tenant access in a shared stack, access-point delegation, external tenant grants
 
 ### Cross-Cutting Analysis
 - **[STRIDE Analysis](threat-analysis/stride-analysis.md)** — Full STRIDE across all components
 - **[Risk Matrix](risk-assessment/risk-matrix.md)** — Complete risk register with scoring and recommendations
-- **[Threat ID Glossary](threat-id-glossary.md)** — All 104 threat IDs with quick reference
+- **[Threat ID Glossary](threat-id-glossary.md)** — All 109 threat IDs with quick reference
 
 ### Implementation & Testing
 - **[Implementation Guide](deliverables/implementation-guide.md)** — Security controls, configuration, and checklists
@@ -244,6 +249,7 @@ security/threat-modeling/
 | PII | PII Anonymization | 5 | High (6) | [pii-anonymization.md](feature-threats/pii-anonymization.md) |
 | SELL | Seller Entitlement Service | 10 | Very High (9) | [seller-entitlement-service.md](feature-threats/seller-entitlement-service.md) |
 | HITL | Review Queues | 4 | Medium (3) | [review-queues.md](feature-threats/review-queues.md) |
+| TEN | Tenant Isolation | 5 | High (6) | [tenant-isolation.md](feature-threats/tenant-isolation.md) |
 
 ## Top Priority Threats
 
@@ -260,6 +266,7 @@ security/threat-modeling/
 | 9 | UI.T06 | Object reads scoped per configuration profile; document ownership is not modelled | 6 | **Partially Mitigated** (#1033; residual is the missing ownership axis) |
 | 10 | AUTH.T16 | Per-object authorization is opt-in per resolver; the default deny covers the group floor only | 6 | Partially Mitigated (#928 closed) |
 | 11 | HOOK.T07 | `onError: fail` is not terminal at six of seven hook points | 6 | **Mitigated** (#919 closed) |
+| 12 | TEN.T01 | Cross-tenant access in a shared stack; the defaults read an unscoped non-Admin as unrestricted | 6 | Partially Mitigated |
 
 ## Maintaining This Threat Model
 
@@ -324,7 +331,8 @@ strictly worse than the red build.
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 3.15 | 2026-11-03 | **Tenant grants from the identity provider or an entitlement system.** A control change, not a re-review — `Last reviewed against version` stays at 0.6.13. The new `TenantGrantSource` parameter moves who writes a user's configuration-profile scope: `Manual` (an Admin, unchanged), `IdpClaim` (the pre-token trigger, at each fresh federated sign-in, matching the group or role claim against each tenant's `grantedBy` values) or `Api` (the Admin-only `setUserTenant` operation, or the SDK and CLI with IAM credentials). Under the last two a non-Admin's scope is exactly one tenant's pattern or a marker matching no profile, a user whose values grant two or more tenants is granted none, Admin edits of the scope are refused, and an unscoped non-Admin is denied in every consumer whatever `TenantIsolationMode` says. The trigger, which held no data-plane grant, now holds conditional UsersTable read/write, the EmailIndex query and a `GetItem` on the tenant index item only, and fails the sign-in when the grant cannot be written; it still trusts the claim only for a user linked to the configured provider and only on a fresh sign-in. Residuals recorded in [Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md#who-grants-a-tenant): a removal in the identity provider applies at the next fresh sign-in, so a session can keep a revoked tenant for up to `RefreshTokenValidityHours`; and whoever administers the identity provider's roles or the entitlement system now decides tenancy. The Function URL chat path (GAP-07) is closed under `Strict` or an external grant source, which also moves the web UI's chat onto the REST path; what remains of GAP-07 is that the Function URL transport carries no verified per-user identity, so it cannot be scoped and is refused rather than served. No threat added or retired; no score or status changed. |
+| 3.16 | 2026-11-09 | **Currency re-review for 0.6.14.** The field moves 0.6.13 → 0.6.14. The review read the change set between the two release tags — `template.yaml`, the nested stacks, `scripts/api_rbac_expectations.yaml` and the resolver and library source — rather than the CHANGELOG. **Tenant isolation gets its own prefix and document.** v3.14 and v3.15 recorded tenant declarations, `TenantIsolationMode` and `TenantGrantSource` as control changes with no threat behind them. A shared stack makes the tenant a trust boundary inside the deployment and adds principals the corpus did not describe: the access point deployer, the identity provider's role administration and an entitlement system. So [`tenant-isolation.md`](feature-threats/tenant-isolation.md) adds **TEN.T01** (cross-tenant access in a shared stack; Medium × High = 6, Partially Mitigated), **TEN.T02** (access-point delegation admits every access point the account owns; 3, Partially Mitigated), **TEN.T03** (an external grant source decides tenancy; 3, Partially Mitigated), **TEN.T04** (the sign-in trigger's UsersTable write under `IdpClaim`; 3, Partially Mitigated) and **TEN.T05** (the tenant declarations as an authorization input and an ingest dependency; 2, Mitigated). The system overview gains trust boundary TB8, and the data flows gain the ingest tenant check, §3.6 for tenant grants, and two summary rows. AUTH.T06 no longer says that every deployment is single-tenant, and neither does the executive summary. The v3.15 row's "conditional UsersTable read/write" is corrected to the grant as deployed: the condition is the grant source, and within it the UsersTable grant has no key condition. Counts move 104 → 109; High 31 → 32, Medium 47 → 50, Low 17 → 18; Mitigated 64 → 65, Partially Mitigated 33 → 37. **Measured at v0.6.14:** routable operations 168, where they were 164 (`listTenants`, `putTenant`, `deleteTenant` and `setUserTenant`, all Admin only), split 42 direct, 116 aliased and 11 in process. The group distribution in `system-overview.md` is re-derived from the expectations file; its Annotator rows had not matched the file at v0.6.13 either. 45 operations verify profile scope, where 26 did, and 10 filter by it, where 9 did; `system-overview.md` already carried both. The `known_gaps` block is unchanged. Table, queue, bucket, state-machine and log-group declarations are unchanged in number. **Changed with the model:** HITL.T01's residual is closed for counts, because a scoped caller's queue depth, unclaimed count and oldest-item age are now filtered item by item. MCP.T06 records the narrowed gateway-manager role, KB.T03 the knowledge base's `iam:PassRole` narrowed to its own service role and to Bedrock, and AUTH.T05 the `RefreshTokenValidityHours` parameter. `Reviewer` is removed from the Test Studio operations, recorded in the overview's distribution note. **Reviewed with no threat change:** the profile-scope fix on every single-document and test-run operation (already in v3.14, and declared per operation in the expectations file); `UserSyncFunction`'s added `kms:Decrypt` on the stack key; the `Deny logs:CreateLogGroup` statements on custom-resource roles; read-only UsersTable lookups added to resolvers that now check profile scope, and a UsersTable `Scan` on the configuration resolver, which tenant writes use to check the stored scopes; `config_revisions/` writes added for the discovery and blueprint-sync resolvers, so that their saves record revisions; `TypeDateIndexV2`, read only by `listDocuments` under the scope filter it already applied; missing-required-field review routing; profile settings filled from `default` as a revision written by `system`; and the classification, extraction, BDA-blueprint, metering and lock-file installation fixes, none of which crosses a boundary. **Not covered:** nothing was measured against a live stack; the carried-forward documents' entries other than those named under "What reviewed covers" were not re-verified; and changes on `develop` after the 0.6.14 tag are out of scope. |
+| 3.15 | 2026-11-03 | **Tenant grants from the identity provider or an entitlement system.** A control change, not a re-review — `Last reviewed against version` stays at 0.6.13. The new `TenantGrantSource` parameter moves who writes a user's configuration-profile scope: `Manual` (an Admin, unchanged), `IdpClaim` (the pre-token trigger, at each fresh federated sign-in, matching the group or role claim against each tenant's `grantedBy` values) or `Api` (the Admin-only `setUserTenant` operation, or the SDK and CLI with IAM credentials). Under the last two a non-Admin's scope is exactly one tenant's pattern or a marker matching no profile, a user whose values grant two or more tenants is granted none, Admin edits of the scope are refused, and an unscoped non-Admin is denied in every consumer whatever `TenantIsolationMode` says. The trigger, which held no data-plane grant, now holds — under `IdpClaim` only — `GetItem`, `PutItem`, `UpdateItem` and `DeleteItem` on the whole UsersTable with no key condition, `Query` on its email index, a `GetItem` on the ConfigurationTable restricted by `dynamodb:LeadingKeys` to the tenant index item, and encrypt/decrypt on the stack key, and fails the sign-in when the grant cannot be written; it still trusts the claim only for a user linked to the configured provider and only on a fresh sign-in. Residuals recorded in [Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md#who-grants-a-tenant): a removal in the identity provider applies at the next fresh sign-in, so a session can keep a revoked tenant for up to `RefreshTokenValidityHours`; and whoever administers the identity provider's roles or the entitlement system now decides tenancy. The Function URL chat path (GAP-07) is closed under `Strict` or an external grant source, which also moves the web UI's chat onto the REST path; what remains of GAP-07 is that the Function URL transport carries no verified per-user identity, so it cannot be scoped and is refused rather than served. No threat added or retired; no score or status changed. |
 | 3.14 | 2026-11-03 | **Tenant isolation in a shared stack.** A control change, not a re-review — `Last reviewed against version` stays at 0.6.13. Tenant declarations tie Input-bucket prefixes to a profile name pattern; once declared, prefix mappings, tenants and user scopes that would cross a tenant are refused when written. The new `TenantIsolationMode` parameter's `Strict` value makes an unscoped non-admin resolve to a scope matching no profile, refuses at ingest a document whose key and resolved profile belong to different tenants, makes Agent Chat, agent queries and Knowledge Base queries Admin-only, refuses MCP tools, and lets the Input and Output bucket policies delegate to per-tenant S3 Access Points that confine with explicit denies. Separately, every single-document operation (fetch, versions, review, delete, abort, copy-to-baseline) and the test-run operations now apply profile scope in both modes. Prose reconciled where it asserted that no tenancy axis exists or that an unscoped caller is never refused: [`system-overview.md`](architecture/system-overview.md), the executive summary, the implementation guide, the risk matrix, the STRIDE analysis and [`agent-analysis.md`](feature-threats/agent-analysis.md). Residuals recorded in [Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md): Admins are cross-tenant in both modes, whoever can create access points in the account is inside the delegation boundary, and an Annotator's test-set scope (`allowedTestSets`) is not tenant-confined because a test set records no tenant. No threat added or retired; no score or status changed. |
 | 3.13 | 2026-10-30 | **HITL.T01 added: review-queue listings apply profile scope per item.** A control change, not a re-review — `Last reviewed against version` stays at 0.6.13. A review queue is system-wide and holds items of several configuration profiles, so profile scope has to be decided by each item's own profile; the listings (`listReviewQueueItems`, `getMyReviewQueues`, `listMyReviewWork`, `claimNextReviewItem`) now make that decision with `scope_allows`, as the per-item operations already did. Recorded in [`review-queues.md`](feature-threats/review-queues.md) as **HITL.T01** (Low × Medium = 2, Mitigated), with the residual that queue counts are not scope-filtered and that the static RBAC rule does not check per-item application. Counts move 103 → 104; Low 16 → 17; Mitigated 63 → 64; Information Disclosure 39 → 40. Reconciled in the glossary, the risk matrix, the STRIDE analysis, the executive summary, the implementation guide and the export. No other threat, score or status changed. |
 | 3.12 | 2026-10-29 | **Currency re-review for 0.6.13.** The field moves 0.6.11 → 0.6.13, covering 0.6.12 and the current cycle. **Re-derived from source:** [`system-overview.md`](architecture/system-overview.md) and [`data-flows.md`](architecture/data-flows.md), from `template.yaml`, the nested stacks it deploys, `patterns/unified/statemachine/workflow.asl.json` and `scripts/api_rbac_expectations.yaml`. Measured against those: 15 DynamoDB tables where the overview said 13 (`HITLTable` and `NotificationsTable` are new, and no table is named Metering or TestSets), 18 SQS queues, 5 state machines, 130+ Lambda functions, `InstalledFeaturesTable` on the AWS-managed key rather than the stack CMK, 124 of 126 declared log groups on the CMK, and the browser's Identity Pool role granting `lambda:InvokeFunction` on the chat function as well as `lambda:InvokeFunctionUrl`. Routable operations are **164**; `system-overview.md` said 161 with a distribution three operations off, and five other documents still said 124. The ingestion flow now shows the queue sender — not the queue processor — creating the tracking record and the optional malware hold; the shared tail now shows both review paths (the legacy flow marks sections pending and *continues*, where the document said the execution ended) and the finalize execution; the Inbox and `review/status.json` are a new §2.6. **Controls described as absent that are present.** The corpus's convention is that *pending* means absent, and four fixes that merged before or during 0.6.11 were still described as pending in places the v3.9 pass did not reach: the dispatcher's default deny (#928) in AUTH.T16, UI.T03, `data-flows.md`, the STRIDE analysis, and the executive-summary and risk-matrix recommendations; terminal `onError: fail` (#919) in the hook-point table of `lambda-hooks.md`, in `data-flows.md` and in both recommendation lists; the service role's permissions boundary (#927) in the STRIDE analysis and both recommendation lists; and the converged log-redaction denylist (#921) in AUTH.T15 itself, the risk register and the STRIDE analysis. AUTH.T07's "five fail-open resolvers" survived in this file, the risk matrix and the builder's STATUS comment while the entry and the code have one fail-closed lookup. Each is now stated as it is. This is the conservative direction — it understated controls — and the review looked specifically for the damaging one, a threat crediting a control that no longer holds; one was found, the STRIDE analysis crediting "self-signup disabled, admin-created accounts only" when `AllowedSignUpEmailDomain` enables self-registration, and it now names the group floor that actually bounds a self-registered caller. The hook-point table also described `PostProcessingLambdaHookFunctionArn` as a state-machine hook; EventBridge invokes it after the execution has succeeded, so it can neither halt nor fail a document. **New threats (99 → 103).** HITL review queues are a new entry point and change a principal's reach — 40 operations in three resolvers, a new table, a per-user Inbox, a second execution per reviewed document, an outbound status object, and the `Annotator` group working **production** documents where it was confined to test sets — so they get their own prefix and document, [`review-queues.md`](feature-threats/review-queues.md): **HITL.T02** (reviewer drafts are copied verbatim into the final output and are not schema-checked), **HITL.T03** (waiting-work announcements reach every Annotator, and `status.json` and the Output bucket's EventBridge feed carry reviewer and document metadata), **HITL.T04** (resolvers serving Annotator operations hold UsersTable and tracking-table write grants). **PM.T09** records the threat 0.6.12's GuardDuty malware gate addresses — a document whose file structure exploits a parser in a processing Lambda — which the STRIDE analysis listed with no threat behind it; Pillow 13.0.0 closed a CRITICAL advisory on exactly that path this cycle. All four are Partially Mitigated. Bands: Medium 44 → 47, Low 15 → 16; statuses: Partially Mitigated 29 → 33; STRIDE: Tampering 39 → 40, Repudiation 4 → 5, Information Disclosure 38 → 39, Denial of Service 17 → 18, Elevation of Privilege 32 → 34. No threat retired and no existing score or status changed. AUTH.T15 and AUTH.T16 are retitled to what they now describe — a name-based denylist, and per-object checks that remain opt-in under a default-deny group floor. AUTH.T01 records the persona-to-group sync fix and its upgrade action. **Changes reviewed with no threat change:** the classification format 0.9/0.10 and the `split_then_classify` strategy (the model Lambda hook now receives `Splitting` and `SectionClassification` contexts; its IAM bound, `GENAIIDP-*` by ARN and `lambda:FunctionName`, is unchanged — recorded in `lambda-hooks.md` §1.1), BDA-mode refusal of section and page edits in `processChanges` and its revision-pinned mode check, configuration prefix mappings and per-document object-read scoping (both already modelled in v3.10 and v3.11), Test Studio's run sweeper, capacity planning's pipeline-only scope, the SDK's batch revision pinning, the vendored CloudFormation response helper (recorded in the STRIDE supply-chain table), the generic 500 with a request id (recorded under AUTH.T16 and UI.T03), the new region, model and cost metrics, and the documentation-site and dependency bumps. **Re-verified in otherwise carried-forward documents:** AUTH.T01, AUTH.T15, AUTH.T16 and the surface paragraph in `rbac-authentication.md`; HOOK.T07 and the hook-point table in `lambda-hooks.md`; UI.T03 in `web-ui.md`; PM.T09 in `pipeline-mode.md`. Those documents keep their **Applies to release** rows. **Carried forward, reconciled for counts and cross-references only:** `bda-mode`, `agent-analysis`, `companion-chat`, `feature-platform`, `jobs-api`, `knowledge-base`, `mcp-integration`, `pii-anonymization`, `reporting-analytics`, `sdk-cli`, `seller-entitlement-service`, the risk matrix, the STRIDE analysis, the glossary, the executive summary and the implementation guide. |
