@@ -736,7 +736,7 @@ the **`ExternalIdPEmailMutable`** parameter when the stack is created:
 - **Self-service email changes are verification-gated when the attribute is mutable.**
   `email` is in the app client's `WriteAttributes` because it is IdP-mapped, so on a
   mutable pool a native user's own token could rewrite it — and the API resolves
-  config-version scope from the token's `email` claim. Pools created with
+  configuration-profile scope from the token's `email` claim. Pools created with
   `ExternalIdPEmailMutable=true` therefore also set
   `UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate: [email]`, so
   a user-initiated change takes effect only after a code sent to the *new* address is

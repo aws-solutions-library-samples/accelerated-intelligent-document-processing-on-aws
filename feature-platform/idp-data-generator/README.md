@@ -24,7 +24,7 @@ and driven through its typed `Generator` API by `idp_common.synthesis.engine`
 (the same adapter the CLI `idp-cli bootstrap` uses). Two execution surfaces:
 
 - **BootstrapProcessor Lambda** (`bootstrap-processor/`) — SQS-driven. Authors a
-  schema, writes the config version to the host Configuration table, then
+  schema, writes the configuration profile to the host Configuration table, then
   *invokes* the AgentCore runtime. Installs `idp_common[synthesis]` only (light,
   no `seed-data`) — it doesn't generate documents itself.
 - **AgentCore Runtime image** (`Dockerfile` + `agent-source/runtime/handler.py`)
@@ -110,5 +110,5 @@ Install = the CloudFormation quick-create URL with `MainStackName=<your IDP stac
   `idp_common[synthesis]`) → ECR → AgentCore runtime → end-to-end generate.
 - ⏳ FeatureApi request/response contract vs. the Test Studio modal + Quick Start.
 - The `feature-ui` page is a landing card that points to Test Studio → Test Sets
-  → Generate Synthetic Data (the host modal, with version/class dropdowns, is the
+  → Generate Synthetic Data (the host modal, with profile/class dropdowns, is the
   single source of truth); the feature bundle intentionally doesn't duplicate it.

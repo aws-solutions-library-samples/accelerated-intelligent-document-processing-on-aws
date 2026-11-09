@@ -111,7 +111,7 @@ class ConfigUploadResult(BaseModel):
 
     success: bool = Field(description="Whether upload succeeded")
     version: Optional[str] = Field(
-        default=None, description="Configuration version that was uploaded"
+        default=None, description="Configuration profile that was uploaded"
     )
     version_created: bool = Field(
         default=False,
@@ -135,10 +135,10 @@ class ConfigUploadResult(BaseModel):
 
 
 class ConfigActivateResult(BaseModel):
-    """Result of a configuration version activation."""
+    """Result of a configuration profile activation."""
 
     success: bool = Field(description="Whether activation succeeded")
-    activated_version: str = Field(description="The configuration version activated")
+    activated_version: str = Field(description="The configuration profile activated")
     bda_synced: bool = Field(
         default=False,
         description="Whether BDA blueprint sync was performed",
@@ -174,9 +174,9 @@ class ConfigActivateResult(BaseModel):
 
 
 class ConfigVersionInfo(BaseModel):
-    """Information about a single configuration version."""
+    """Information about a single configuration profile."""
 
-    version_name: str = Field(description="Configuration version name/identifier")
+    version_name: str = Field(description="Configuration profile name")
     is_active: bool = Field(
         default=False, description="Whether this is the currently active version"
     )
@@ -217,10 +217,10 @@ class ConfigVersionInfo(BaseModel):
 
 
 class ConfigListResult(BaseModel):
-    """Result of listing configuration versions."""
+    """Result of listing configuration profiles."""
 
     versions: List[ConfigVersionInfo] = Field(
-        description="List of configuration versions"
+        description="List of configuration profiles"
     )
     count: int = Field(description="Total number of versions returned")
 
@@ -278,11 +278,11 @@ class ConfigRevisionListResult(BaseModel):
 
 
 class ConfigDeleteResult(BaseModel):
-    """Result of deleting a configuration version."""
+    """Result of deleting a configuration profile."""
 
     success: bool = Field(description="Whether deletion succeeded")
     deleted_version: str = Field(
-        description="The configuration version that was deleted"
+        description="The configuration profile that was deleted"
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")
 

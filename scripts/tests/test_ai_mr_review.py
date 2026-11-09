@@ -1320,9 +1320,9 @@ def test_the_fork_path_is_the_schedule_and_it_is_documented(
     Both halves are asserted because both are invisible. A fork's
     ``pull_request`` run gets no OIDC token, so the schedule is the only path a
     fork PR has — and GitHub reads ``on: schedule`` from the DEFAULT branch's copy
-    of the workflow, which is ``main`` here and not the ``develop`` branch this
-    merges to. Until it reaches ``main`` the cron fires never, and it does so
-    silently: the sweep looks installed and does nothing.
+    of the workflow, which is ``develop`` here. If the default branch moves, the
+    cron moves with it silently, and the review role's ``DefaultBranch`` parameter
+    has to follow or every scheduled run fails at the credential step.
     """
     # `on:` is the YAML 1.1 boolean True once parsed, which is why the key is
     # read both ways here and in check_branch_protection.py.

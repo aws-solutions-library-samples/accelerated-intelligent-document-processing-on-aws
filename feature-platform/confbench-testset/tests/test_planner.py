@@ -231,7 +231,7 @@ class TestPlanner:
     def test_declares_its_config_version_on_the_test_set(self, planner, monkeypatch):
         """The row carries `configVersion` so Test Studio preselects this
         extension's Invoice preset. Name matching can't do it: the Feature
-        Platform names presets `<featureId>-v<version>`, never the test set id.
+        Platform names presets after the feature id, never the test set id.
         """
         planner_mod, state = planner
         monkeypatch.setattr(

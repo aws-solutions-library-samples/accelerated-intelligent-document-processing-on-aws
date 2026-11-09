@@ -313,7 +313,7 @@ Scope entries are matched against the profile name with two deliberate rules:
 - **An empty or unset scope means unrestricted.** Scoping is opt-in per user.
 - **A set scope fails closed.** A profile or document with no name to match against
   is denied, not admitted. In particular, a scoped user does **not** see documents
-  that carry no `ConfigVersion` (documents processed before config-version stamping,
+  that carry no `ConfigVersion` (documents processed before profile stamping,
   or whose stamp failed) — an unnamed object cannot be proven in scope.
 
 Entries may be exact names (`lending`) or **glob patterns** (`lending-*`,
@@ -502,29 +502,52 @@ number with no indication. Narrow the date range if a scoped count looks wrong.
 | **Revision Bodies in S3** (server-side) | A revision's configuration is stored as an object in the Configuration bucket, so the object-read path applies the same profile check to the **key**: `getFileContents` / `getFilePresignedUrl` match the profile in a `config_revisions/<profile>/` key against `allowedConfigVersions` before reading anything. Without it the revision operations above could be bypassed by asking for the body directly, and the Configuration bucket is no longer readable with the browser's own credentials either |
 | **Test-Set Objects in S3** (server-side) | The same path applies `allowedTestSets` to every Test Set bucket key (`<test_set_id>/…` — source documents, ground truth, published baseline snapshots), so a scoped Annotator cannot read another test set's documents or labels through it, and a Reviewer or Viewer reads none of them |
 | **Document Objects in S3** (server-side) | `document_scope` finds the document that owns an Input- or Output-bucket key — walking the key's `/` boundaries longest-first against the tracking table — and matches its `ConfigVersion` against `allowedConfigVersions` on all three object-read operations (`getFileContents`, `getFilePresignedUrl`, `getFilePresignedUrls`), before any S3 call. Fails closed twice over: a key no tracked document owns is refused, and so is a document carrying no `ConfigVersion`. The refusal text is the same non-disclosing 403 the key check uses, and on the batch operation a single refusal fails the whole request, so it cannot be used to probe which documents are in scope key by key |
-| **Version Dropdowns** (UI) | `useConfigurationVersions` hook filters versions client-side for immediate UX |
-| **Default Version Selection** (UI) | Version pickers and the View/Edit Configuration page select the active profile when it is in scope, otherwise the first scoped one. A scoped user is never sent to `default` unless their scope admits it |
+| **Profile Dropdowns** (UI) | `useConfigurationVersions` hook filters profiles client-side for immediate UX |
+| **Default Profile Selection** (UI) | Profile pickers and the View/Edit Configuration page select the active profile when it is in scope, otherwise the first scoped one. A scoped user is never sent to `default` unless their scope admits it |
+
+**What the static scan checks for the server-side rows.** Every operation that
+`scripts/api_rbac_expectations.yaml` flags `scope_checked` or `scope_filtered` is
+held by check **S4** of `make api-test-static`
+([`scripts/sdlc/scan_api_rbac.py`](../scripts/sdlc/scan_api_rbac.py)) to two rules, both read from the code the operation itself can
+reach (its dispatch branch or dispatch-table entry, and that code's call closure):
+
+- **It refers to the caller's scope.** The reachable code names the scope or calls
+  the shared matcher, so a sibling operation in the same module cannot satisfy it.
+- **A `scope_filtered` operation filters each item it returns** (finding kind
+  `S4-per-item`, a FAIL). Following calls from the resolver into `idp_common`,
+  the reachable code must call a recognised per-item scope predicate inside an
+  iteration over results — a comprehension, a loop body or a `filter(...)`
+  predicate — or a whole-list scope filter, and that predicate must itself bottom
+  out at `idp_common.config_scope.scope_allows`. The recognised names are
+  `SCOPE_ITEM_PREDICATES` and `SCOPE_LIST_FILTERS` in the scanner. This is what
+  covers listings served by a library service, such as the review-queue
+  operations, whose filter lives in `ReviewQueueService` rather than in the
+  resolver.
+
+Both are structural checks, not dataflow: they cannot show that the filtered
+collection is the one returned, or that the scope value came from the UsersTable.
+The per-site unit suites and the live scope suite in `make api-test` cover those.
 
 ### Affected UI Components
 
-All pages with config version selectors automatically respect scope:
+All pages with configuration profile selectors automatically respect scope:
 
 | Page | Behavior |
 |------|----------|
-| **View/Edit Configuration** | Shows only scoped versions in the Configuration Profiles table. Waits for that list, then opens the active profile if it is in scope, otherwise the first scoped one; a `?version=` link opens its profile directly. When no existing profile is in the user's scope the page says so instead of opening one |
-| **Upload Documents** | Version picker shows only scoped versions |
-| **Discovery** | Version picker shows only scoped versions |
-| **Test Studio** | Test runner version picker shows only scoped versions |
-| **Capacity Planning** | Version picker shows only scoped versions, and says so when none is in the user's scope |
-| **Reprocess Document** | Defaults to document's current ConfigVersion (if in scope) |
-| **Document List** | Server-side filtered — only shows documents matching scoped versions |
+| **View/Edit Configuration** | Shows only scoped profiles in the Configuration Profiles table. Waits for that list, then opens the active profile if it is in scope, otherwise the first scoped one; a `?version=` link opens its profile directly. When no existing profile is in the user's scope the page says so instead of opening one |
+| **Upload Documents** | Profile picker shows only scoped profiles |
+| **Discovery** | Profile picker shows only scoped profiles |
+| **Test Studio** | Test runner profile picker shows only scoped profiles |
+| **Capacity Planning** | Profile picker shows only scoped profiles, and says so when none is in the user's scope |
+| **Reprocess Document** | Defaults to the document's current profile (`ConfigVersion`), if in scope |
+| **Document List** | Server-side filtered — only shows documents matching scoped profiles |
 
 ### Managing User Scope
 
 Admins can manage user scope via the **User Management** page:
 
-1. **Create user with scope**: When creating a new user, optionally select config versions from the multiselect
-2. **Edit user scope**: Click "Edit scope" on any non-Admin user row to add/remove config versions
+1. **Create user with scope**: When creating a new user, optionally select configuration profiles from the multiselect
+2. **Edit user scope**: Click "Edit scope" on any non-Admin user row to add/remove configuration profiles
 3. **Remove scope**: Clear all selections to make a user unrestricted
 
 Admin users' scope cannot be edited (they are always unrestricted).
@@ -810,7 +833,7 @@ step; `make api-test-static` fails if the two drift, and the dispatcher treats a
 unreadable or unsupported manifest as deny-all.
 
 This layer is a **floor, not a replacement** for the resolver checks in Layer 2:
-only the resolver can enforce per-object scope (config version, test set,
+only the resolver can enforce per-object scope (configuration profile, test set,
 ownership), so both run. When triaging a 403, the dispatcher logs `Denied
 <field>: ...`; a resolver denial carries the resolver's own message.
 
@@ -1024,7 +1047,7 @@ rather than a silent pass. The polarity has to be this way round: defaulting to
 known coverage gap. Two kinds of refusal are therefore still unattributed **by
 design** — a resolver's own group check, which is a group decision, and the per-object
 controls the live matrix cannot currently reach (`key_scope`'s refusals, the
-config-version scope refusals in the reprocess, upload and list paths, and the
+profile-scope refusals in the reprocess, upload and list paths, and the
 in-band `{success:false,error:{type:"Unauthorized"}}` 200 the configuration and sync
 resolvers return, which the dispatcher passes through and never sees).
 
@@ -1069,7 +1092,7 @@ filtering based on the caller's identity:
 **Document Filtering:**
 - **Admin**: See all documents
 - **Author/Viewer**: See all documents, filtered by `allowedConfigVersions` if scope is set
-- **Reviewer-only**: See only documents awaiting review that are unclaimed (pending, or released back to the queue) or claimed by them, plus config-version scope. A completed or skipped review is listed only for the reviewer who owns it, and only on a document carrying the legacy `HITLTriggered` flag or one whose finished review was claimed again, which sets it back to in progress. `listDocuments`, `getDocumentCount` and `listDocumentsByDateRange` apply the same filter
+- **Reviewer-only**: See only documents awaiting review that are unclaimed (pending, or released back to the queue) or claimed by them, plus configuration-profile scope. A completed or skipped review is listed only for the reviewer who owns it, and only on a document carrying the legacy `HITLTriggered` flag or one whose finished review was claimed again, which sets it back to in progress. `listDocuments`, `getDocumentCount` and `listDocumentsByDateRange` apply the same filter
 
 **Configuration Filtering:**
 - `getConfigVersions`: Returns only profiles in user's scope (or all if unrestricted)
@@ -1085,7 +1108,7 @@ filtering based on the caller's identity:
 The UI adapts based on the user's role and scope:
 - Navigation sidebar shows only relevant features per role
 - Action buttons and menu items (delete, reprocess, upload, save, import, and the document page's actions) are hidden for roles that can never perform them; disabled, with the reason, when they don't apply now (for example a past version, a document in a review queue or still processing, or BDA mode)
-- Version dropdowns are automatically filtered to show only scoped versions
+- Profile dropdowns are automatically filtered to show only scoped profiles
 - The top navigation badge shows the user's role with color coding (blue=Admin, green=Author, grey=Reviewer/Viewer)
 - **Admin-only buttons**: "Save as Profile", "Save as Default" in Configuration; Import/Restore/Save in Pricing and Model Limits
 - **Pricing page**: Shows "View Pricing" (read-only) for non-admin; "Pricing Configuration" (editable) for admin
@@ -1099,7 +1122,7 @@ Admins can create users with any of the five roles via the User Management page.
 1. Created in DynamoDB (source of truth)
 2. Synced to Cognito (for authentication)
 3. Added to the appropriate Cognito group (for authorization)
-4. Optionally assigned `allowedConfigVersions` for config-version scoping
+4. Optionally assigned `allowedConfigVersions` for configuration-profile scoping
 
 ### User Table Fields
 
@@ -1122,7 +1145,7 @@ Admins can create users with any of the five roles via the User Management page.
 ┌─────────────────────────────────┐
 │  Browser (UI)                   │  Layer 3: Navigation/button hiding + scope filtering (UX only)
 │  useUserRole + getMyProfile     │
-│  useConfigurationVersions       │  ← Filters versions by allowedConfigVersions
+│  useConfigurationVersions       │  ← Filters profiles by allowedConfigVersions
 └────────────┬────────────────────┘
              │ POST /op/{field} (Cognito ID token)
 ┌────────────▼────────────────────┐
@@ -1148,7 +1171,7 @@ Admins can create users with any of the five roles via the User Management page.
 ┌────────────▼────────────────────┐
 │  DynamoDB                       │
 │  TrackingTable (documents)      │
-│  ConfigurationTable (versions)  │
+│  ConfigurationTable (profiles)  │
 │  UsersTable (scope data)        │
 └─────────────────────────────────┘
 ```
@@ -1174,10 +1197,9 @@ To add a new role:
 - **A row that records no Cognito `sub` is still keyed on an email address, which can stop matching it.** Scope is resolved from the immutable `sub` first and the `email` claim second, so a divergence no longer lifts the restriction for any row that records a `sub` — see [Resolving *whose* Scope](#resolving-whose-scope--two-keys-and-the-lookup-fails-closed). A row that does not yet record one falls back to the email join and keeps the original exposure: matching is exact, so a difference in letter case is a miss, while Cognito re-applies the external-IdP attribute mapping on every federated sign-in; on a pool created with `ExternalIdPEmailMutable=true` a user can change their own address, where email verification stops them adopting someone else's but not orphaning their own row. The `sub` is recorded by `createUser` and back-filled by the Cognito sync that runs on every Admin `listUsers`, so in practice a row reaches an administrator with one — but a deployment whose administrator has never opened User Management since upgrading has none. The back-fill matches a Cognito account to its row on the recorded `sub`, the exact address, or the **case-folded** address, so it does **not** reach a row whose address changed beyond case before it ever ran; that row keeps the email-only exposure indefinitely. The scan above lists exactly which rows are in that state. See [External IdP integration](./external-idp.md) for the detail and the mitigations.
 - **User deletion removes the table row before the Cognito account**, warning rather than failing if the second step does not complete. The orphaned Cognito account then has no row, which means unrestricted.
 - **`allowedTestSets` has no `sub` join.** The Annotator test-set axis (`idp_common/testset_scope.py`) still resolves its row from `EmailIndex` alone, and from a fallback chain of claims rather than the `email` claim by itself. Its polarity is the opposite of `allowedConfigVersions` — `assert_can_access_test_set` requires an *explicit* scope, so an Annotator whose row cannot be found is **denied** rather than granted everything — which makes a diverged address an availability problem (a locked annotation queue) rather than a widening one. `scripts/tests/test_scope_lookup_fail_closed.py` discovers this module and carries it in `PENDING_FIX` with its two rules named, so the suppression is visible and removable; giving that axis the same two-key lookup is the follow-up.
-- **Knowledge Base queries** do not currently enforce config-version scope. KB results may include documents from out-of-scope config versions.
-- **Agent Companion Chat** analytics queries (Athena) do not filter by config-version scope.
-- **GetDocument API** (direct document access by URL) does not enforce config-version scope at the resolver level. UI navigation hides out-of-scope documents, but direct API access is not blocked.
-- **Documents with no `ConfigVersion`** are now hidden from scoped users rather than shown (the filters fail closed). If a scoped user reports documents disappearing after an upgrade, those documents were processed before config-version stamping; reprocessing them under a profile in that user's scope restores visibility.
-- **Custom Model Fine-tuning** jobs are global — not scoped by `allowedConfigVersions`. A scoped Author can see all fine-tuning jobs and create jobs from any test set. However, when applying a custom model to a configuration version (via the "Create Config Version" modal), the config-version scope IS enforced — the Author can only target versions within their scope.
+- **Knowledge Base queries** do not currently enforce configuration-profile scope. KB results may include documents from out-of-scope profiles.
+- **Agent Companion Chat** analytics queries (Athena) do not filter by configuration-profile scope.
+- **Documents with no `ConfigVersion`** are now hidden from scoped users rather than shown (the filters fail closed). If a scoped user reports documents disappearing after an upgrade, those documents were processed before profile stamping; reprocessing them under a profile in that user's scope restores visibility.
+- **Custom Model Fine-tuning** jobs are global — not scoped by `allowedConfigVersions`. A scoped Author can see all fine-tuning jobs and create jobs from any test set. However, when applying a custom model to create a configuration profile (via the "Create Configuration Profile with Custom Model" modal), the profile scope IS enforced — the Author can only target profiles within their scope.
 - **A principal with `s3:PutObject` on the Input bucket chooses its own Configuration Profile.** `uploadDocument` and `uploadSampleDocument` now scope-check the **resolved** profile — covering both the `version` argument and the destination prefix once [prefix mappings](configuration-profiles.md) are in use — but that check lives in the API layer, and a write that does not go through the API never reaches it. An S3 replication rule, a partner role, an appliance, or the SDK running with its own credentials picks its own prefix and its own `x-amz-meta-config-version`, and nothing in this product sees the request. Bound this with the IAM policy on whatever writes to that bucket; the admin UI's mapping table is a routing policy, not an ingest boundary.
 - These limitations are tracked for Phase 3 implementation.

@@ -165,7 +165,7 @@ The BDA service is designed to be thread-safe, supporting concurrent processing 
 
 ## Blueprint Synchronization (`BdaBlueprintService`)
 
-`create_blueprints_from_custom_configuration` aligns a config version's IDP document
+`create_blueprints_from_custom_configuration` aligns a configuration profile's IDP document
 classes with the blueprints its BDA project associates. A blueprint *is* the extraction
 contract in BDA mode — the project's `customOutputConfiguration.blueprints` list decides
 which document types are recognised and which fields come back — so the error contracts
@@ -186,11 +186,11 @@ which the API reports by omitting the field. That is an empty list, not a failur
 
 ### A recorded project is replaced only when it is known to be gone
 
-`get_or_create_project_for_version` verifies the ARN recorded for a version and creates
+`get_or_create_project_for_version` verifies the ARN recorded for a configuration profile and creates
 a replacement **only** for `ResourceNotFoundException`. A throttle, an `AccessDenied` or
 a server error on `GetDataAutomationProject` raises: it says nothing about whether the
 project still exists, and creating one anyway overwrites the tracking row and orphans
-the first project's blueprints while the version's config names the new, empty one.
+the first project's blueprints while the profile's config names the new, empty one.
 
 ### An inline object becomes a definition
 

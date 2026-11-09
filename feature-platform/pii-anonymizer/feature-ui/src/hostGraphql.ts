@@ -13,7 +13,7 @@
  * here instead throws "No GraphQL endpoint configured in Amplify.configure()".)
  *
  * The Config Pairing wizard uses four host operations:
- *   getConfigVersions                      — list existing config versions
+ *   getConfigVersions                      — list existing configuration profiles
  *   getConfigVersion(versionName)          — fetch a version's config JSON
  *   updateConfiguration(versionName, ...)  — create/update a version
  *                                            (saveAsVersion:true creates a new one)
@@ -143,7 +143,7 @@ export async function listConfigVersions(): Promise<ConfigVersion[]> {
     };
   }>(result);
   const r = data.getConfigVersions;
-  if (!r?.success) throw new Error(r?.error?.message || 'Could not list config versions');
+  if (!r?.success) throw new Error(r?.error?.message || 'Could not list configuration profiles');
   return (r.versions || []).filter((v) => !!v.versionName);
 }
 
@@ -180,7 +180,7 @@ export async function getConfig(versionName: string): Promise<Record<string, unk
 }
 
 /**
- * Create (or overwrite) a config version with the given full config object.
+ * Create (or overwrite) a configuration profile with the given full config object.
  * Sets saveAsVersion:true so the host writes it as a NEW non-active version.
  */
 export async function saveConfigVersion(

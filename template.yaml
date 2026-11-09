@@ -16393,6 +16393,13 @@ Resources:
                 - cognito-idp:AdminAddUserToGroup
                 - cognito-idp:AdminRemoveUserFromGroup
               Resource: !GetAtt UserPool.Arn
+            # UsersTable is encrypted with the stack's key, and Lambda reads its
+            # stream as this role: without Decrypt the event source mapping is
+            # refused at creation, or disabled when it first polls.
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
       Events:
         DynamoDBStream:
           Type: DynamoDB

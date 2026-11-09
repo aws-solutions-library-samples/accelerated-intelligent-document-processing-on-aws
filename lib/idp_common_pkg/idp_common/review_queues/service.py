@@ -1214,6 +1214,9 @@ class ReviewQueueService:
         note: Optional[str] = None,
     ) -> ReviewItemView:
         record = self._load(object_key)
+        # Access first: a caller who may not work this item learns nothing about its
+        # queue's checklist from the argument check below.
+        self._check_access(caller, record)
         definition = self._rq(record.profile).queue(record.queue)
         template = list(definition.checklist) if definition else []
         if checklist is not None and len(checklist) != len(template):
@@ -1241,6 +1244,9 @@ class ReviewQueueService:
         if not reason or not reason.strip():
             raise ReviewValidationError("REASON_REQUIRED", "choose a reject reason")
         record = self._load(object_key)
+        # Access first: a caller who may not work this item learns nothing about its
+        # queue's reject reasons from the argument check below.
+        self._check_access(caller, record)
         rq = self._rq(record.profile)
         definition = rq.queue(record.queue)
         allowed = definition.reject_reasons if definition else rq.reject_reasons
