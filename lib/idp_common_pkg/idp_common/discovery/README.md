@@ -122,6 +122,33 @@ them by `$id` (falling back to `x-aws-idp-document-type`), and inserts each newl
 discovered class — overwriting only a class with the same identifier. It never
 deletes classes the user curated.
 
+### Discovered text is kept to plain text
+
+`discovered_text` cleans what a model wrote before it is saved or shown:
+`clean_schema_text` (every `description` and `examples` value in a schema, at any
+depth), `clean_rule_classes` (rule-class and rule descriptions) and `clean_report`
+(the reflection report, line breaks kept). URLs, markdown images and HTML are
+removed, a markdown link keeps its text, and lengths are capped
+(`MAX_DESCRIPTION_CHARS`, `MAX_EXAMPLE_CHARS`, `MAX_EXAMPLES`, `MAX_REPORT_CHARS`).
+Structural keys (`$schema`, `$id`, `type`, `pattern`, ...) are left alone. It is
+called on `_merge_and_save_class` (both class discovery flows), on
+`DiscoveryAgent.analyze_cluster` and `reflect`, and on the rules path
+(`discovery_rules_from_document` and `to_policy_class`). Existing, authored classes
+in the target profile are not cleaned.
+
+### The multi-document agent's tools are bounded
+
+`DiscoveryAgent.analyze_cluster` binds `ClusterAnalysisTool` to the cluster under
+analysis and `DocumentVisualTool` to that cluster's members and to
+`max_sample_size` distinct documents (viewing one again is free). A request outside
+either bound returns a tool error the agent can read, rather than an image.
+
+### Rules discovery saves only into a named profile
+
+`RulesDiscovery` with a configuration manager (that is, without `config=`) requires
+`version=`. With none it raises `ValueError` before the model runs; there is no
+fallback to the active profile.
+
 ### Multi-record samples produce a suggestion, not a setting (#765)
 
 Both single-document flows append `_INSTANCE_COUNT_INSTRUCTION` to the prompt: the

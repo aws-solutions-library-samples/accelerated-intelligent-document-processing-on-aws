@@ -526,8 +526,10 @@ number with no indication. Narrow the date range if a scoped count looks wrong.
 | **Document List** (server-side) | Both `listDocuments` resolvers filter by the `ConfigVersion` field using `allowedConfigVersions` from UsersTable (fails closed on an unstamped document) |
 | **Document Count** (server-side) | `getDocumentCount` — the header figure beside that list — applies the same two filters, from the same helpers, so it cannot report documents the list does not show |
 | **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents. ⚠️ Applies to turns that reach the processor through the REST API; chat streamed from the Lambda Function URL is **not** restricted by `allowedConfigVersions` — see [Known Limitations](#known-limitations) |
-| **Single-Document Operations** (server-side) | Every operation that acts on one document by key — `getDocument`, the three document-version operations, the five review operations on a production document (`claimReview`, `releaseReview`, `skipAllSectionsReview`, `saveSectionReviewEdits`, `completeSectionReview`), `deleteDocument`, `abortWorkflow` and `copyToBaseline` — refuses a scoped caller when the document's `ConfigVersion` is outside their scope, when it has none, or when no document is tracked for the key, with one non-disclosing message for all three. The shared check is `idp_common.document_scope`; Admins are never looked up. A multi-document request is refused whole if any one key is out of scope |
+| **Single-Document Operations** (server-side) | Every operation that acts on one document by key — `getDocument`, the three document-version operations, the five review operations on a production document (`claimReview`, `releaseReview`, `skipAllSectionsReview`, `saveSectionReviewEdits`, `completeSectionReview`), `deleteDocument`, `abortWorkflow`, `copyToBaseline`, `processChanges` and `updateDocumentSections` on a production document — refuses a scoped caller when the document's `ConfigVersion` is outside their scope, when it has none, or when no document is tracked for the key, with one non-disclosing message for all three. The shared check is `idp_common.document_scope`; Admins are never looked up. A multi-document request is refused whole if any one key is out of scope |
 | **Raw Index Reads** (server-side) | `listDocumentsDateHour` and `listDocumentsDateShard` return index rows that carry no profile, so they are refused to any caller with a scope rather than filtered. The web UI does not call them |
+| **Discovery** (server-side) | `uploadDiscoveryDocument` (class and policy discovery), `startMultiDocDiscovery`, `uploadMultiDocDiscoveryZip` and `autoDetectSections` refuse a configuration profile outside the caller's scope before any upload URL is issued or any job is started. `autoDetectSections` with no profile named checks the active profile, which is the one it reads. A discovery job must name the profile it saves into, and **Replace** is refused on the active profile. Admins are never looked up |
+| **Test Studio profile arguments** (server-side) | `generateDraftLabels`, `reextractTestSetDocument` and `estimateReviewEffort` accept an optional `configVersion`; a profile named there must be in the caller's scope. With none named, the test set's own profile is used and the set itself is governed by `allowedTestSets` |
 | **Test Runs** (server-side) | `startTestRun` and `sendTestRunToReview` hold the run's profile to the caller's scope; `getTestRun`, `getTestRunStatus` and `compareTestRuns` refuse a run whose recorded profile is out of scope, and `getTestRuns` filters by it |
 | **Config Profile List** (server-side) | `getConfigVersions` Lambda resolver filters returned profiles |
 | **Config Profile Access** (server-side) | `getConfigVersion` Lambda resolver rejects requests for out-of-scope profiles |
@@ -560,6 +562,21 @@ reach (its dispatch branch or dispatch-table entry, and that code's call closure
 Both are structural checks, not dataflow: they cannot show that the filtered
 collection is the one returned, or that the scope value came from the UsersTable.
 The per-site unit suites and the live scope suite in `make api-test` cover those.
+
+**Which operations have to declare a scope** is check **S10**. S4 can only check
+the operations that opt in, so S10 starts from the other end: any operation whose
+arguments (read from `schema.graphql`, input types included, and from the entry's
+`args:`) name a configuration profile (`configVersion`, `version`, `versionName`,
+`profile`), a document (`documentKey`, `objectKey`) or a session (`sessionId`) must
+declare how that object is scoped — `scope_checked` or `scope_filtered` for a
+profile; one of those, `testset_checked` (the test-set scope) or `ownership` for a
+document; `ownership` or `scope_checked` for a session. On an operation that names
+both a profile and a document, `scope_checked` answers for the profile only. Each
+declaration is itself checked against the code the operation reaches. An operation
+only Admins or IAM principals can call needs none, because neither carries a
+profile scope. Anything else needs a `known_gap` or a per-operation entry in
+`SCOPE_KEYED_ARGUMENT_EXEMPT`, registered with its reason in
+`scripts/tests/gate_exemptions.json`.
 
 ### Affected UI Components
 
@@ -1236,4 +1253,5 @@ To add a new role:
 - **Documents with no `ConfigVersion`** are now hidden from scoped users rather than shown (the filters fail closed). If a scoped user reports documents disappearing after an upgrade, those documents were processed before profile stamping; reprocessing them under a profile in that user's scope restores visibility.
 - **Custom Model Fine-tuning** jobs are global — not scoped by `allowedConfigVersions`. A scoped Author can see all fine-tuning jobs and create jobs from any test set. However, when applying a custom model to create a configuration profile (via the "Create Configuration Profile with Custom Model" modal), the profile scope IS enforced — the Author can only target profiles within their scope.
 - **A principal with `s3:PutObject` on the Input bucket chooses its own Configuration Profile.** `uploadDocument` and `uploadSampleDocument` now scope-check the **resolved** profile — covering both the `version` argument and the destination prefix once [prefix mappings](configuration-profiles.md) are in use — but that check lives in the API layer, and a write that does not go through the API never reaches it. An S3 replication rule, a partner role, an appliance, or the SDK running with its own credentials picks its own prefix and its own `x-amz-meta-config-version`, and nothing in this product sees the request. Bound this with the IAM policy on whatever writes to that bucket; the admin UI's mapping table is a routing policy, not an ingest boundary.
+- **Discovery uploads are not scoped per object.** The discovery bucket is a shared workspace for Admins and Authors: an upload records no profile or uploader, so `autoDetectSections` checks the profile it reads but not the document key it is given, and `listDiscoveryJobs` lists every discovery job.
 - These limitations are tracked for Phase 3 implementation.
