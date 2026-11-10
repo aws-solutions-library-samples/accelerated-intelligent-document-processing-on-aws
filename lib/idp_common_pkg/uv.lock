@@ -909,6 +909,9 @@ code-intel = [
     { name = "requests" },
     { name = "strands-agents" },
 ]
+decision-model = [
+    { name = "pillow" },
+]
 dev = [
     { name = "ipykernel" },
     { name = "jupyter" },
@@ -1067,6 +1070,7 @@ requires-dist = [
     { name = "pillow", marker = "extra == 'all'", specifier = "==13.0.0" },
     { name = "pillow", marker = "extra == 'assessment'", specifier = "==13.0.0" },
     { name = "pillow", marker = "extra == 'classification'", specifier = "==13.0.0" },
+    { name = "pillow", marker = "extra == 'decision-model'", specifier = "==13.0.0" },
     { name = "pillow", marker = "extra == 'extraction'", specifier = "==13.0.0" },
     { name = "pillow", marker = "extra == 'image'", specifier = "==13.0.0" },
     { name = "pillow", marker = "extra == 'multi-document-discovery'", specifier = "==13.0.0" },
@@ -1126,7 +1130,7 @@ requires-dist = [
     { name = "z3-solver", marker = "extra == 'rule-validation'", specifier = "==4.15.4.0" },
     { name = "z3-solver", marker = "extra == 'test'", specifier = "==4.15.4.0" },
 ]
-provides-extras = ["core", "notifications", "review-queues", "dev", "image", "ocr", "classification", "extraction", "assessment", "evaluation", "rule-validation", "reporting", "appsync", "agents", "multi-document-discovery", "synthesis", "code-intel", "docs-service", "test", "all", "agentic-extraction"]
+provides-extras = ["core", "notifications", "review-queues", "decision-model", "dev", "image", "ocr", "classification", "extraction", "assessment", "evaluation", "rule-validation", "reporting", "appsync", "agents", "multi-document-discovery", "synthesis", "code-intel", "docs-service", "test", "all", "agentic-extraction"]
 
 [package.metadata.requires-dev]
 first-party-siblings = [
