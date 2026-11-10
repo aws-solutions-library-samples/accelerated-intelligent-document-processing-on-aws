@@ -103,8 +103,11 @@ While packaging, the publisher replaces tokens in `template.yaml`:
   `VERSION`, the 9 package version files, the seller entitlement service template's
   version and the project's own entry in `lib/idp_common_pkg/uv.lock`: 12 paths in all,
   which it lists when it finishes. Do not edit `VERSION` or the lockfile by hand. The
-  lockfile line matters because `make setup` and every CI job run `uv export --locked`,
-  which refuses a lockfile whose project version disagrees with `pyproject.toml`.
+  lockfile line matters because `make setup` and every CI job that builds the Python
+  environment run `uv export --locked`, which refuses a lockfile whose project version
+  disagrees with `pyproject.toml`. The lockfile is the last file the command stamps, so
+  if that step fails the other paths are already stamped; fix the cause and re-run the
+  same command, which is safe to repeat.
 - `CHANGELOG.md` should have its `[Unreleased]` section turned into a section for the new
   version, with the template URLs for each region you publish. The procedures are in
   `.claude/skills/prepare-changelog.md` and `.claude/skills/cut-release-changelog.md`.

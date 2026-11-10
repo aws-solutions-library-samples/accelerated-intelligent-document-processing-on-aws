@@ -2,7 +2,8 @@
 
 The lockfile records the project's own version. `make lock-constraints` runs
 `uv export --locked`, which refuses a lockfile that disagrees with its
-`pyproject.toml`, and `make setup` and every CI job reach that target first. So a
+`pyproject.toml`, and `make setup` and every CI job that builds the Python
+environment reach that target first. So a
 version bump that rewrites `pyproject.toml` and not the lockfile turns the first
 pipeline after it red before any test runs (#1818).
 
@@ -77,7 +78,8 @@ def test_make_version_leaves_the_lockfile_current(tmp_path: Path) -> None:
         [uv, "lock", "--check"], cwd=lock_dir, capture_output=True, text=True
     )
     assert before.returncode == 0, (
-        f"the committed lockfile is already stale, so this test proves nothing:\n"
+        f"uv lock --check fails before the bump (the committed lockfile is stale, or uv "
+        f"cannot evaluate the project here), so this test proves nothing:\n"
         f"{before.stderr}"
     )
 
