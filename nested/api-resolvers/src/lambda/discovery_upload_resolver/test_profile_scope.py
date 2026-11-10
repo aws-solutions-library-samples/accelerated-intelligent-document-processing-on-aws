@@ -177,7 +177,11 @@ class TestAScopedCallerNamesOnlyAProfileInScope:
             _call(
                 index,
                 "autoDetectSections",
-                {"documentKey": "k.pdf", "bucket": DISCOVERY_BUCKET, "version": "payroll"},
+                {
+                    "documentKey": "k.pdf",
+                    "bucket": DISCOVERY_BUCKET,
+                    "version": "payroll",
+                },
             )
         bucket_check.assert_not_called()
 
