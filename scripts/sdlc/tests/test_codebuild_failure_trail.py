@@ -13,6 +13,8 @@ Covers the three things that made the 2026-07-27 CI failure hard to diagnose:
      (_is_transient_deploy_race).
 """
 
+from pathlib import Path
+
 import pytest
 
 # --------------------------------------------------------------------------- #
@@ -545,3 +547,56 @@ def test_capture_cf_events_skips_codebuild_when_no_events(cbd, monkeypatch):
     cbd._capture_cf_events(result, "idp-test")
     assert called == []
     assert "error" in result["cf_events"][0]
+
+
+# The marker set has to match what the handlers actually emit. The shared
+# build-run handler (src/lambda/start_codebuild) serves both DockerBuildRun
+# resources since #1824; a marker keyed only on the wording of the handler it
+# replaced would leave this trail matching nothing.
+_SHARED_HANDLER = (
+    Path(__file__).resolve().parents[3] / "src" / "lambda" / "start_codebuild" / "index.py"
+)
+
+
+def test_the_shared_build_handler_still_emits_a_recognised_failure_reason(cbd):
+    source = _SHARED_HANDLER.read_text(encoding="utf-8")
+    emitted = 'raise RuntimeError(f"build did not complete - status: [{build_status}]")'
+    assert emitted in source, (
+        "the shared build-run handler's failure wording changed; update "
+        "_CODEBUILD_CR_FAILURE_MARKERS to match it"
+    )
+    reason = "build did not complete - status: [FAILED]"
+    assert any(m in reason.lower() for m in cbd._CODEBUILD_CR_FAILURE_MARKERS)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Received response status [FAILED] from custom resource. Message returned: "
+        "build did not complete - status: [FAILED] (RequestId: 1)",
+        "Received response status [FAILED] from custom resource. Message returned: "
+        "Build DockerBuildProject-x:y did not complete within the Lambda budget.",
+        "Received response status [FAILED] from custom resource. Message returned: "
+        "CodeBuild failed with status: FAULT",
+    ],
+)
+def test_every_handler_wording_triggers_the_trail(cbd, monkeypatch, reason):
+    nested = "idp-0727-211933-MULTIDOCDISCOVERYSTACK-1MQRU7V6EWVP3"
+    cfn = _FakeCfn(
+        resources={
+            nested: [
+                {
+                    "ResourceType": "AWS::CodeBuild::Project",
+                    "LogicalResourceId": "DockerBuildProject",
+                    "PhysicalResourceId": "DockerBuildProject-9qS7dcXXFFIe",
+                }
+            ]
+        }
+    )
+    codebuild = _FakeCodeBuild({"DockerBuildProject-9qS7dcXXFFIe": [_failed_build()]})
+    _patch_clients(cbd, monkeypatch, cfn=cfn, codebuild=codebuild)
+    event = dict(_codebuild_cr_event(), reason=reason)
+
+    details = cbd.get_codebuild_failure_details("idp-0727-211933", [event])
+
+    assert [d["project_name"] for d in details] == ["DockerBuildProject-9qS7dcXXFFIe"]

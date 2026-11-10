@@ -440,8 +440,13 @@ Resources:
         # crhelper waits for the build by re-invoking this function from an
         # EventBridge rule every two minutes, rather than inside one invocation,
         # so the build has CloudFormation's full hour instead of Lambda's 15
-        # minutes (#1824). crhelper names the rule and the permission after the
-        # resource's logical id, and the permission is on this function only.
+        # minutes (#1824). The scoping rests on crhelper's own naming, read from
+        # crhelper 2.0.12's resource_helper.py (requirements.txt pins ~=2.0.10):
+        # _put_rule names the rule LogicalResourceId plus eight random
+        # characters, hence rule/DockerBuildRun*, and _add_permission adds the
+        # permission to context.function_name, which is this function. If a
+        # crhelper release changes either, PutRule or AddPermission is denied and
+        # this resource fails on its first deploy rather than silently.
         - PolicyName: CustomResourcePoller
           PolicyDocument:
             Version: "2012-10-17"
