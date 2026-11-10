@@ -40,10 +40,11 @@ WORKDIR /app
 # SEED is now the published `seed-data` PyPI package (module `seed_data`) — no
 # longer vendored as local source. Installing it pulls the generator plus its
 # bundled schema library/packages and dependencies (strands, weasyprint,
-# augraphy, opencv, reportlab, etc.). Pinned to a known-good minimum; the
-# accelerator's synthesis adapter (idp_common) targets the seed_data Generator
-# API from this version.
-RUN pip install "seed-data>=0.0.5"
+# augraphy, opencv, reportlab, etc.). Pinned to one release, because the tools
+# SEED gives its models can change between releases and README.md records the
+# tool inventory for this version ("What the generator's model can do"). Re-read
+# that inventory against the new release's source when moving the pin.
+RUN pip install "seed-data==0.0.7"
 
 # Extra runtime deps not in seed-data (AgentCore HTTP server + SigV4 helpers)
 # plus idp_common[synthesis] for the synthesis adapter glue.

@@ -93,6 +93,19 @@ A self-contained extension stack that plugs into the host contract:
 - **Job status** is feature-owned (a DynamoDB tracking table), surfaced through
   the FeatureApi.
 
+### What the generator's model can do
+
+The runtime installs one pinned release of `seed-data`, and the extension names
+SEED's `xhtml2pdf` PDF backend rather than taking SEED's default. With that
+backend, none of SEED's models holds a tool that requests a URL, runs code or
+calls an AWS API; the document generator writes HTML and local files and renders
+the HTML to a PDF. Rendering fetches any `http(s)` resource the HTML references,
+such as an image or a stylesheet, and the AgentCore runtime is created in
+`PUBLIC` network mode, so such a reference can reach a public host. VPC network
+mode is not offered. The per-agent tool inventory, and the AWS services the
+runtime reaches, are in the extension's
+[README](../../feature-platform/idp-data-generator/README.md#what-the-generators-model-can-do).
+
 ## Tuning and troubleshooting
 
 Generation is long and expensive — a high-quality batch with scan/fax effects can run for

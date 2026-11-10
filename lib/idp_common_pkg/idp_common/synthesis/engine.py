@@ -54,6 +54,15 @@ INSTALL_HINT = (
 )
 
 
+# The PDF backend SEED renders with, named here rather than left to SEED's
+# default. SEED offers three: the two HTML backends ("xhtml2pdf", "weasyprint")
+# give its document-generator model a render tool, while "reportlab" gives it a
+# shell tool instead, so that it can run the Python script it writes. Naming the
+# backend keeps the model's tool set fixed if SEED's default ever changes.
+# xhtml2pdf is the one SEED documents as needing no system libraries.
+SEED_RENDERER = "xhtml2pdf"
+
+
 @dataclass
 class SynthesisJob:
     """Inputs for one synthesis run. Runtime-agnostic (no AWS handles)."""
@@ -272,6 +281,7 @@ def synthesize(
     generator = Generator(
         models=ModelConfig(**model_kwargs),
         threshold=job.threshold,
+        renderer=SEED_RENDERER,
         output_dir=batch_out,
         augment=job.augment,
         session=boto3.Session(),

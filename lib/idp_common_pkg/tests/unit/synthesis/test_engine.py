@@ -154,6 +154,32 @@ class TestSynthesizeShaping:
             with pytest.raises(RuntimeError):
                 engine.synthesize(job)
 
+    def test_generator_is_given_an_html_renderer(self, tmp_path, monkeypatch):
+        """The adapter names SEED's PDF backend instead of taking SEED's default.
+
+        In seed-data 0.0.7, ``seed_data.stages.document.HTML_RENDERERS`` is
+        ``("xhtml2pdf", "weasyprint")``: those give the document-generator model a
+        ``render_html_to_pdf`` tool, and any other backend (``"reportlab"``) gives
+        it the strands ``shell`` tool instead. The fake ``Generator`` records the
+        keyword arguments it is built with, so an omitted ``renderer`` fails here
+        rather than silently following SEED's default.
+        """
+        seed_html_renderers = ("xhtml2pdf", "weasyprint")
+        doc = _make_generated_doc(tmp_path, 1, {"EmployeeName": "Jane"})
+        captured = {}
+        _install_fake_seed_data(monkeypatch, [doc], captured)
+        monkeypatch.setattr(engine, "_pdf_page_indices", lambda p: [0])
+
+        job = engine.SynthesisJob(
+            schema_dir=_write_schema_dir(tmp_path),
+            out_dir=str(tmp_path / "out"),
+            count=1,
+        )
+        assert engine.synthesize(job).success
+
+        assert captured["init"].get("renderer") == "xhtml2pdf"
+        assert captured["init"]["renderer"] in seed_html_renderers
+
 
 class TestDocumentClassFromSchemaDir:
     def test_reads_title(self, tmp_path):
