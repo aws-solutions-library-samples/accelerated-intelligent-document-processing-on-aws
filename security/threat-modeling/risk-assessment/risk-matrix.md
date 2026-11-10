@@ -340,7 +340,7 @@ effort-to-value:
    work so `'unsafe-inline'`/`'unsafe-eval'` can be dropped from `script-src`
    (Talos #12 phase 2). The blanket `https:` source is already gone — self-host
    Monaco out of the Web UI bucket to drop the remaining `cdn.jsdelivr.net`
-   source (and `style-src`'s `https:`) as well
+   source (and the same source in `style-src`) as well
 7. **Ground-truth change visibility (RPT.T07)**: surface/alert on baseline
    `_editHistory` mutations for high-value test sets
 8. **Log redaction (AUTH.T15)**: every resolver now applies the one canonical

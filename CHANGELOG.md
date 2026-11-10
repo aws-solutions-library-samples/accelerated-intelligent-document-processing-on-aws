@@ -13,6 +13,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
+- **The web UI's content policy lists where each kind of resource may come from.** Both hosting modes now send `default-src 'self'`; images and framed files may come from the app itself, `data:`/`blob:` URLs and S3 (`https://*.amazonaws.com`) instead of any HTTPS host; stylesheets from the app and the jsDelivr path the Monaco editor loads from instead of any HTTPS host; fonts from the app and `data:`; and media from the app. An HTML document shown in the file viewer no longer loads images from other sites.
+
 - **A field whose value is part of a longer OCR line now highlights just the value.** In the Visual Editor, a date after its label, a name inside a sentence or an amount at the end of a row used to highlight the whole line; the box is now narrowed to the words that spell the value, using the word boxes the OCR backend already returns (Amazon Textract, and BDA OCR). This applies to every language, including Arabic and mixed Arabic/English lines where the OCR lists words in reading order. On an internal 36-page Arabic/English benchmark, correctly placed boxes went from 70% to 89% with none made worse. Backends without word boxes, and values that occur twice on one line, keep the whole-line box. Under `llm_grounded` geometry, a value repeated on several lines may now resolve to a different line, because the tie-break measures distance to the value's words rather than to the whole line. See [Extraction & Confidence](docs/extraction-and-confidence.md#ocr_only-default--ocr-grounding-via-pagedatajson). **Action:** none; documents processed earlier keep their stored boxes until they are reprocessed.
 
 ### Fixed
