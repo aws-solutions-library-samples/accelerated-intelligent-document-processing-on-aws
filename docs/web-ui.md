@@ -853,7 +853,8 @@ entry points:
   or **Delete** them. **More actions** offers **Mark all as read** and **Clear read**
   (which deletes every read message) without a selection. Each row's actions menu
   (**⋮**) opens, marks or deletes that one message. Opening a message shows its details
-  and marks it read; **Open related page** follows its link.
+  and marks it read; **Open related page** follows its link. The info icon opens a panel
+  describing the page.
 
 **Settings.** The settings button (gear icon) at the top right of the Inbox page opens
 **Inbox settings**, which lists the message types and lets you turn off the ones you

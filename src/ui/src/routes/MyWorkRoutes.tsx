@@ -13,6 +13,7 @@ import MyTasksPage from '../components/review-queues/MyTasksPage';
 import MyQueuesPage from '../components/review-queues/MyQueuesPage';
 import JobsPage from '../components/review-bulk/JobsPage';
 import JobDetailPage from '../components/review-bulk/JobDetailPage';
+import { JobToolsPanel, JobsToolsPanel, MyQueuesToolsPanel, TasksToolsPanel } from '../components/home/home-tools-panels';
 import RequireRole from './RequireRole';
 import { HOME_CRUMB, JOBS_CRUMB, MY_QUEUES_CRUMB, TASKS_CRUMB } from '../components/review-queues/breadcrumbs';
 import { MY_TASKS_PATH } from './constants';
@@ -23,7 +24,7 @@ const JobsRoutes = (): React.JSX.Element => (
       <Route
         index
         element={
-          <ReviewQueuesLayout trail={[HOME_CRUMB, JOBS_CRUMB]}>
+          <ReviewQueuesLayout trail={[HOME_CRUMB, JOBS_CRUMB]} tools={<JobsToolsPanel />}>
             <JobsPage />
           </ReviewQueuesLayout>
         }
@@ -31,7 +32,7 @@ const JobsRoutes = (): React.JSX.Element => (
       <Route
         path=":jobId"
         element={
-          <ReviewQueuesLayout trail={[HOME_CRUMB, JOBS_CRUMB, { text: 'Job', href: '#' }]}>
+          <ReviewQueuesLayout trail={[HOME_CRUMB, JOBS_CRUMB, { text: 'Job', href: '#' }]} tools={<JobToolsPanel />}>
             <JobDetailPage />
           </ReviewQueuesLayout>
         }
@@ -53,7 +54,7 @@ const MyWorkRoutes = (): React.JSX.Element => (
               <Route
                 path="tasks"
                 element={
-                  <ReviewQueuesLayout trail={[HOME_CRUMB, TASKS_CRUMB]}>
+                  <ReviewQueuesLayout trail={[HOME_CRUMB, TASKS_CRUMB]} tools={<TasksToolsPanel />}>
                     <MyTasksPage />
                   </ReviewQueuesLayout>
                 }
@@ -61,7 +62,7 @@ const MyWorkRoutes = (): React.JSX.Element => (
               <Route
                 path="queues"
                 element={
-                  <ReviewQueuesLayout trail={[HOME_CRUMB, MY_QUEUES_CRUMB]}>
+                  <ReviewQueuesLayout trail={[HOME_CRUMB, MY_QUEUES_CRUMB]} tools={<MyQueuesToolsPanel />}>
                     <MyQueuesPage />
                   </ReviewQueuesLayout>
                 }

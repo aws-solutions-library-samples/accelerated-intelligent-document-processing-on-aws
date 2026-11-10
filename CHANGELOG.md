@@ -13,6 +13,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
+- **Every Home page has an info panel.** The info icon on **Inbox**, **Tasks**, **Queues**, **Jobs** and a job's page opens a panel explaining what the page is for, who uses it, and where to read more.
+
 - **Skip All Reviews has a Resubmit for downstream processing option** (on by default). Untick it to mark a review skipped without re-running Summarization, Evaluation and the post-processing hook.
 
 - **Reviewers can skip review-queue items in bulk.** Waiting items and their own claims, as an Admin can with **Remove from queue**; see [Review Queues](docs/review-queues.md). **Start Review** and **Release Review** in the Document List moved into its new **Review** menu.
