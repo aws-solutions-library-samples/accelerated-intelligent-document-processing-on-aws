@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import JSZip from 'jszip';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
-import { uploadMultiDocDiscoveryZip, startMultiDocDiscovery, listDiscoveryJobs, uploadDiscoveryDocument } from '../../graphql/generated';
+import { uploadDiscoveryZip } from '../../api/discovery-zip-upload';
+import { startMultiDocDiscovery, listDiscoveryJobs, uploadDiscoveryDocument } from '../../graphql/generated';
 import useSettingsContext from '../../contexts/settings';
 
 const logger = new ConsoleLogger('useQuickStartUpload');
@@ -184,18 +185,7 @@ const useQuickStartUpload = ({ onComplete, onError }: UseQuickStartUploadArgs = 
   const startMultiDocUpload = useCallback(
     async (files: File[], configVersion: string) => {
       const zipFile = await toZip(files);
-
-      const uploadResponse = await client.graphql({
-        query: uploadMultiDocDiscoveryZip,
-        variables: { fileName: zipFile.name, fileSize: zipFile.size, configVersion },
-      });
-      const uploadData = (uploadResponse as { data?: { uploadMultiDocDiscoveryZip?: { presignedUrl?: string; objectKey?: string } } })?.data
-        ?.uploadMultiDocDiscoveryZip;
-      if (!uploadData?.presignedUrl || !uploadData?.objectKey) {
-        throw new Error('Failed to get an upload URL');
-      }
-
-      await postFileToPresignedUrl(zipFile, uploadData.presignedUrl);
+      const objectKey = await uploadDiscoveryZip(zipFile, configVersion);
 
       const startResponse = await client.graphql({
         query: startMultiDocDiscovery,
@@ -203,7 +193,7 @@ const useQuickStartUpload = ({ onComplete, onError }: UseQuickStartUploadArgs = 
           configVersion,
           zipFileName: zipFile.name,
           zipFileSize: zipFile.size,
-          s3Prefix: uploadData.objectKey,
+          s3Prefix: objectKey,
         },
       });
       const job = (startResponse as { data?: { startMultiDocDiscovery?: QuickStartUploadStatus } })?.data?.startMultiDocDiscovery;
