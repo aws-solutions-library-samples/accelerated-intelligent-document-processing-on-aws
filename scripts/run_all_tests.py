@@ -123,6 +123,7 @@ RUN_ROOTS = [
     "feature-platform/confbench-testset/tests",
     "feature-platform/feature-template/feature-api/tests",
     "feature-platform/idp-data-generator/feature-api/tests",
+    "feature-platform/idp-data-generator/docker_build_lambda/tests",
     "feature-platform/pii-anonymizer/feature-api/tests",
     "feature-platform/pii-anonymizer/hook/tests",
     "feature-platform/pii-anonymizer/ui-deployer/tests",

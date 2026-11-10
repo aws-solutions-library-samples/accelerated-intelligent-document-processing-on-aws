@@ -40,6 +40,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CFN_YAML = _REPO_ROOT / "lib" / "idp_sdk" / "idp_sdk" / "_core" / "cfn_yaml.py"
 _HANDLER_DIR = _REPO_ROOT / "src" / "lambda" / "start_codebuild"
 
+#: The stacks served by the host's shared handler.
 TEMPLATES = {
     "unified": _REPO_ROOT / "patterns" / "unified" / "template.yaml",
     "multi-doc-discovery": _REPO_ROOT
@@ -47,6 +48,12 @@ TEMPLATES = {
     / "multi-doc-discovery"
     / "template.yaml",
 }
+
+_FEATURE_DIR = _REPO_ROOT / "feature-platform" / "idp-data-generator"
+
+#: Every stack with a DockerBuildRun, including the feature that keeps its own
+#: handler (see the section at the end of this file).
+ALL_TEMPLATES = {**TEMPLATES, "idp-data-generator": _FEATURE_DIR / "template.yaml"}
 
 
 @functools.lru_cache(maxsize=None)
@@ -60,7 +67,7 @@ def _cfn_yaml() -> Any:
 
 @functools.lru_cache(maxsize=None)
 def _resources(name: str) -> dict:
-    text = TEMPLATES[name].read_text(encoding="utf-8")
+    text = ALL_TEMPLATES[name].read_text(encoding="utf-8")
     return (_cfn_yaml().load_cfn_yaml(text) or {})["Resources"]
 
 
@@ -175,3 +182,46 @@ def test_the_multi_doc_functions_pull_the_tag_the_build_pushes_and_verifies():
     assert set(map(str, image_uris)) == {
         str({"!Sub": "${ECRRepository.RepositoryUri}:" + verified})
     }
+
+
+# --------------------------------------------------------------------------- #
+# The data generator feature (feature-platform/idp-data-generator)
+#
+# It runs the same build-and-wait job, but as an independent feature stack it
+# keeps its own handler inside its own directory: a feature is versioned and
+# published as its own artifact, so a handler taken from the host's src/ would
+# change the feature's code without a feature version bump. That handler polls
+# through crhelper like the host's. It has no rollback shortcut, because its
+# image is tagged `latest` and the AgentCore runtime re-pulls `latest` on every
+# update, so rebuilding on rollback is what restores the previous image.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_feature_handler_lives_inside_the_feature():
+    _, function = _service_token_function("idp-data-generator")
+    resolved = (_FEATURE_DIR / function["Properties"]["CodeUri"]).resolve()
+
+    assert resolved == (_FEATURE_DIR / "docker_build_lambda").resolve()
+    assert resolved.is_relative_to(_FEATURE_DIR.resolve())
+
+
+def test_the_feature_handler_polls_through_crhelper():
+    _, function = _service_token_function("idp-data-generator")
+    handler_dir = _FEATURE_DIR / function["Properties"]["CodeUri"]
+    requirements = (handler_dir / "requirements.txt").read_text(encoding="utf-8")
+    source = (handler_dir / "index.py").read_text(encoding="utf-8")
+
+    assert any(line.startswith("crhelper") for line in requirements.splitlines())
+    assert "@HELPER.poll_create" in source and "@HELPER.poll_update" in source
+
+
+def test_the_feature_handler_can_schedule_its_own_polls():
+    statements = _role_statements("idp-data-generator")
+
+    assert _grants(statements, "events:PutRule") == [
+        {
+            "!Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}"
+            ":rule/DockerBuildRun*"
+        }
+    ]
+    assert _grants(statements, "lambda:AddPermission")
