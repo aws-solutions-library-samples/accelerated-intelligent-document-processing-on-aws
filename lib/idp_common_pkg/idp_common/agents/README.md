@@ -369,8 +369,21 @@ data are bounded in code rather than by the prompt:
   one succeeds, so a failed or refused query leaves nothing to copy, and the tool
   refuses when no query has succeeded.
 
+- **`execute_python`** runs the agent's code only if `analytics/sandbox_code_checks.py`
+  accepts it: the code must parse, import only `IMPORTABLE_MODULES` (data, charting
+  and standard-library computation), avoid `DYNAMIC_NAMES` and double-underscore
+  attributes, carry no `://` literal, and pass only literal local file names to
+  `open`, `read_*` and the other `PATH_OPENERS`. Refused code is returned to the agent
+  as `{"isError": true, "error": ...}`. The check reads text and syntax only, so it is
+  not a boundary; it is checked after the optional description is prepended, so the
+  text checked is the text that runs.
+
 Tests: `tests/unit/agents/analytics/test_query_validation.py` (the accepted and
-refused statement corpus) and `test_code_interpreter_tools.py`.
+refused statement corpus), `test_code_interpreter_tools.py` and
+`test_sandbox_code_checks.py`. The repository gate
+`scripts/tests/test_tool_resource_arguments.py` requires a Strands tool parameter that
+names a resource (`query`, `*_uri`, `*_key`, `path`, ...) to be passed to a registered
+validator before any other use.
 
 ### A system prompt names only tools its agent registers
 

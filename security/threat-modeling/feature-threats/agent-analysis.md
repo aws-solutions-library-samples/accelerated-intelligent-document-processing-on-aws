@@ -121,10 +121,10 @@ flowchart TD
 
 | Control | Implementation | Threats Mitigated |
 |---------|---------------|-------------------|
-| **Athena read-only** | IAM role with only SELECT permissions | AGT.T01 |
+| **Read-only statements** | The Athena tool runs exactly one `SELECT`, `WITH … SELECT`, `SHOW` or `DESCRIBE` statement and refuses any other before calling Athena (`idp_common/agents/analytics/query_validation.py`) | AGT.T01 |
 | **AgentCore sandbox** | AWS-managed isolation (no network, no credentials) | AGT.T02 |
 | **RBAC** | Cognito group-based agent access | AGT.T03, AGT.T05 |
 | **Audit logging** | All agent invocations logged to CloudWatch | AGT.T01, AGT.T03 |
-| **Query validation** | SQL sanitization before Athena execution | AGT.T01 |
+| **Query result handoff** | The sandbox tool takes no S3 location and copies only the result of the agent's last successful query (`write_query_results_to_code_sandbox`) | AGT.T01, AGT.T02 |
 | **Session management** | Conversation history limits, session isolation | AGT.T04 |
 | **Single-tenant, or Admin-only when shared** | One deployment per environment; in a stack shared by tenants, `TenantIsolationMode: Strict` makes the agent Admin-only | AGT.T05 |

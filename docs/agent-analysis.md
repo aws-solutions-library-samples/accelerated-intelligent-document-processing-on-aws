@@ -66,8 +66,8 @@ For data analysis queries, the Analytics Agent follows this workflow:
 
 1. **Database Discovery**: Agent explores database schema using `get_database_info` tool
 2. **SQL Generation**: Agent converts the question into optimized SQL queries with proper column quoting
-3. **Query Execution**: SQL queries are executed against Amazon Athena with results stored in S3
-4. **Data Processing**: Query results are securely transferred to AWS Bedrock AgentCore sandbox
+3. **Query Execution**: One read-only SQL statement at a time is executed against Amazon Athena, with results stored in S3
+4. **Data Processing**: The results of the last successful query are copied into the AWS Bedrock AgentCore sandbox
 5. **Visualization Generation**: Python code generates charts or tables from the data
 6. **Result Display**: Final visualizations are displayed in the web interface
 
@@ -106,6 +106,12 @@ The analytics agent has access to four specialized tools:
 ### 2. Athena Query Tool
 
 - **Purpose**: Executes SQL queries against the analytics database
+- **Statements**: each call runs exactly one read-only statement — a `SELECT`
+  (optionally starting with `WITH`), or a `SHOW` or `DESCRIBE` statement for schema
+  discovery. Anything else (more than one statement, DDL, `INSERT`/`UPDATE`/`DELETE`/`MERGE`,
+  `UNLOAD`, `EXPLAIN`, `PREPARE`/`EXECUTE`, external or inline functions, table
+  functions, session statements) is refused before it reaches Athena, and the agent is
+  told why so it can rewrite the query
 - **Features**:
   - Automatic column name quoting for Athena compatibility
   - Query result storage in S3
@@ -114,14 +120,20 @@ The analytics agent has access to four specialized tools:
 
 ### 3. Code Sandbox Tool
 
-- **Purpose**: Securely transfers query results to AgentCore sandbox
-- **Security**: Isolated environment with no Lambda file system access
+- **Purpose**: Copies the results of the agent's most recent successful query into the
+  AgentCore sandbox as `query_results.csv`
+- **Input**: none. The tool takes no S3 location; it reads only the result object Athena
+  reported for the last query the agent ran successfully, and refuses when there is none
 - **Data Format**: CSV files containing query results
 
 ### 4. Python Execution Tool
 
 - **Purpose**: Generates visualizations and tables from query data
-- **Libraries**: Pandas, Matplotlib, and other standard Python libraries
+- **Libraries**: Pandas, NumPy, Matplotlib and standard-library computation modules.
+  Code that imports anything else, evaluates code dynamically, contains a URL, or opens
+  a file other than by a literal local file name is returned to the agent with an
+  error instead of being run. This is a check on the code's text, not a sandbox
+  boundary
 - **Output**: JSON-formatted charts and tables for web display
 
 ## Using Agent Analysis
