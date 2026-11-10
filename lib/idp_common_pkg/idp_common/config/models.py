@@ -1076,6 +1076,27 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
         ),
     )
 
+    @field_validator("instructions", mode="before")
+    @classmethod
+    def empty_instructions_is_the_default(cls, v: Any, info: ValidationInfo) -> str:
+        """An empty question is the shipped one, never an empty question sent."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return cls.model_fields[info.field_name].default
+        return str(v)
+
+    @field_validator("price_per_request", mode="before")
+    @classmethod
+    def price_per_request_is_not_read(cls, v: Any) -> float:
+        """Refused rather than ignored: cost comes from ``pricing.yaml``."""
+        value = float(v or 0)
+        if value:
+            raise ValueError(
+                "decision_model.price_per_request is not read: the decision model's "
+                "cost comes from the decision_model/<function> entry in "
+                "config_library/pricing.yaml, by request and GB-second. Leave it 0."
+            )
+        return 0.0
+
     @field_validator("endpoint", mode="before")
     @classmethod
     def empty_endpoint_is_unset(cls, v: Any) -> Optional[str]:
@@ -2533,6 +2554,27 @@ class DecisionModelConfig(ExternalModelConfig):
             "returned). 'softmax' and 'per_class_thresholds' are declared."
         ),
     )
+
+    @field_validator("instructions", mode="before")
+    @classmethod
+    def empty_instructions_is_the_default(cls, v: Any, info: ValidationInfo) -> str:
+        """An empty question is the shipped one, never an empty question sent."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return cls.model_fields[info.field_name].default
+        return str(v)
+
+    @field_validator("price_per_request", mode="before")
+    @classmethod
+    def price_per_request_is_not_read(cls, v: Any) -> float:
+        """Refused rather than ignored: cost comes from ``pricing.yaml``."""
+        value = float(v or 0)
+        if value:
+            raise ValueError(
+                "decision_model.price_per_request is not read: the decision model's "
+                "cost comes from the decision_model/<function> entry in "
+                "config_library/pricing.yaml, by request and GB-second. Leave it 0."
+            )
+        return 0.0
 
     @field_validator("endpoint", mode="before")
     @classmethod

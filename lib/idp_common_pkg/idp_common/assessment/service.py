@@ -368,7 +368,7 @@ class AssessmentService:
             )
             return {
                 "confidence": 0.5,
-                "confidence_reason": f"LLM returned unexpected type {type(assessment_dict)} instead of dictionary. Using default confidence.",
+                "confidence_reason": f"The confidence pass returned unexpected type {type(assessment_dict)} instead of dictionary. Using default confidence.",
                 "confidence_threshold": threshold,
             }
 
@@ -428,7 +428,7 @@ class AssessmentService:
             )
             return {
                 "confidence": 0.5,
-                "confidence_reason": f"LLM returned unexpected type {type(assessment_dict)} instead of dictionary. Using default confidence.",
+                "confidence_reason": f"The confidence pass returned unexpected type {type(assessment_dict)} instead of dictionary. Using default confidence.",
                 "confidence_threshold": default_threshold,
             }
 
@@ -1038,9 +1038,12 @@ class AssessmentService:
         ``process_document_section`` (the standalone Assessment step) and the
         agentic in-shard assessment path. Given a class label, the extracted
         values, and the page text/images/OCR-confidence for the scope being
-        assessed, it builds the assessment prompt, invokes Bedrock, parses the
-        response, and enhances every field with its confidence threshold and
-        alerts — returning the result in memory.
+        assessed, it scores every field and enhances it with its confidence
+        threshold and alerts, returning the result in memory. With
+        ``extraction.confidence.method: llm`` it builds the assessment prompt,
+        invokes Bedrock and parses the response; with ``decision_model`` it asks
+        a decision model one yes/no question per value (``ocr_text_confidence``
+        is not used, and a ``model_id_override`` is refused).
 
         Geometry grounding is NOT applied here; the caller grounds against the
         page-data scope it owns (see ``AssessmentCoreResult``).
@@ -1068,6 +1071,17 @@ class AssessmentService:
         # Get confidence configuration (v0.6: extraction.confidence.*)
         confidence_cfg = self.config.extraction.confidence
         if confidence_cfg.method == "decision_model":
+            if model_id_override:
+                # The escalation ladder's override names a Bedrock model, which this
+                # path does not call. Refused rather than ignored, so an escalation
+                # cannot look as though it ran. Not reached in practice: this path
+                # scores every value or raises, so nothing is left to escalate.
+                raise ValueError(
+                    "extraction.confidence.method is 'decision_model', which cannot "
+                    f"run the Bedrock model override {model_id_override!r}"
+                )
+            # ocr_text_confidence is not sent: the decision model reads the page
+            # image by default, and adding text to its state measured worse.
             return self._assess_with_decision_model(
                 class_label=class_label,
                 extraction_results=extraction_results,
@@ -1441,7 +1455,7 @@ class AssessmentService:
                     )
                     enhanced_assessment_data[attr_name] = {
                         "confidence": 0.5,
-                        "confidence_reason": f"LLM returned list format for non-list attribute '{attr_name}'. Using default confidence (0.5) and threshold ({attr_threshold}).",
+                        "confidence_reason": f"The confidence pass returned list format for non-list attribute '{attr_name}'. Using default confidence (0.5) and threshold ({attr_threshold}).",
                         "confidence_threshold": attr_threshold,
                     }
             else:
@@ -1452,7 +1466,7 @@ class AssessmentService:
                 )
                 enhanced_assessment_data[attr_name] = {
                     "confidence": 0.5,
-                    "confidence_reason": f"LLM returned unexpected type {type(attr_assessment)} for attribute '{attr_name}'. Using default confidence (0.5) and threshold ({attr_threshold}).",
+                    "confidence_reason": f"The confidence pass returned unexpected type {type(attr_assessment)} for attribute '{attr_name}'. Using default confidence (0.5) and threshold ({attr_threshold}).",
                     "confidence_threshold": attr_threshold,
                 }
 

@@ -236,3 +236,42 @@ def test_integrated_mode_is_refused_with_the_decision_model():
         IDPConfig.model_validate(
             {"extraction": {"confidence": {"decision_model": {"max_pages": 51}}}}
         )
+
+
+def test_an_empty_question_and_a_price_per_request_are_handled_at_load():
+    from idp_common.config.models import IDPConfig
+
+    cfg = IDPConfig.model_validate(
+        {"extraction": {"confidence": {"decision_model": {"instructions": ""}}}}
+    )
+    assert "{VALUE}" in cfg.extraction.confidence.decision_model.instructions
+    with pytest.raises(Exception, match="price_per_request is not read"):
+        IDPConfig.model_validate(
+            {
+                "extraction": {
+                    "confidence": {"decision_model": {"price_per_request": 0.01}}
+                }
+            }
+        )
+
+
+def test_a_bedrock_override_is_refused_rather_than_ignored():
+    service = _service()
+    with pytest.raises(ValueError, match="cannot run the Bedrock model override"):
+        service.assess_results(
+            class_label="invoice",
+            extraction_results=EXTRACTED,
+            document_text="",
+            page_images=_pages(1),
+            model_id_override="us.anthropic.claude-sonnet-5",
+        )
+
+
+def test_a_page_without_an_image_keeps_the_later_page_numbers():
+    decider = FakeDecider([{}, {"Total": 0.99}])
+    pages: List[Any] = [None, *_pages(2)]  # page 1 has no image
+    # The fake reads the page index from the image bytes: shift them to match.
+    pages[2] = b"PAGE-1"
+    pages[1] = b"PAGE-0"
+    core = _assess(_service(), decider, pages)
+    assert "page 3" in core.enhanced_assessment["Total"]["confidence_reason"]

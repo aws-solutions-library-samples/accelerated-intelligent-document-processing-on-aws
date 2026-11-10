@@ -140,6 +140,12 @@ class DecisionModelSectionLabeler:
 
         candidates = self._candidates(answer.probabilities)
         choice = self.label_map.get(answer.choice, answer.choice)
+        # The section's confidence, and what low_confidence.min_confidence is
+        # compared against, is the chosen class's PROBABILITY, not the answer's
+        # normalised `confidence` field: a probability reads the same whatever the
+        # number of classes, it is what the class-confidence code reads from LLM
+        # candidates, and it is what was measured. Looked up under the model's own
+        # label, before label_map renames it.
         probability = float(answer.probabilities.get(answer.choice, 0.0))
         reason = (
             f"Decision model {result.response.model}: {choice} "

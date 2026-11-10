@@ -2811,7 +2811,8 @@ Resources:
                         type: string
                         title: Question
                         format: textarea
-                        description: "Each value's yes/no question. {FIELD} is the field's path (for example LineItems[2].Amount), {DESCRIPTION} its schema description, {VALUE} the extracted value."
+                        description: "Each value's yes/no question. {FIELD} is the field's path (for example LineItems[2].Amount), {DESCRIPTION} its schema description, {VALUE} the extracted value. Empty uses this default."
+                        default: 'The system says the field "{FIELD}" ({DESCRIPTION}) is "{VALUE}". Is that the correct value?'
                         order: 3
                       max_questions_per_request:
                         type: integer

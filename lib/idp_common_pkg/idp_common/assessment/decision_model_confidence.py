@@ -215,6 +215,9 @@ class DecisionModelConfidenceScorer:
                     "confidence_source": "decision_model",
                 },
             )
+        # Summed across requests: the billed time, which is what metering and
+        # duration_seconds report. The requests run concurrently, so it overstates
+        # the wall-clock latency of the pass.
         duration = sum(r.duration_seconds for r in results)
         return assessment, merge_metering(results), duration
 
@@ -225,7 +228,13 @@ class DecisionModelConfidenceScorer:
         mode = self.cfg.input
         if mode == "text":
             return [("the section text", document_text, [])]
-        images = [img for img in page_images if isinstance(img, (bytes, bytearray))]
+        # The ORIGINAL position is kept, so a page with no image does not shift
+        # the page number recorded for every page after it.
+        images = [
+            (index, img)
+            for index, img in enumerate(page_images, start=1)
+            if isinstance(img, (bytes, bytearray))
+        ]
         if not images:
             raise ValueError(
                 f"extraction.confidence.decision_model.input is {mode!r} but the "
@@ -242,6 +251,6 @@ class DecisionModelConfidenceScorer:
             )
         state = document_text if mode == "both" else ""
         return [
-            (f"page {i}", state, [encode_image(bytes(img))])
-            for i, img in enumerate(images[:limit], start=1)
+            (f"page {index}", state, [encode_image(bytes(img))])
+            for index, img in images[:limit]
         ]

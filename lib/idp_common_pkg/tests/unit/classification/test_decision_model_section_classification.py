@@ -241,3 +241,19 @@ def test_the_method_and_its_bounds_are_validated():
         cfg({"decision_model": {"score_calibration": "softmax"}})
     with pytest.raises(Exception, match="on_low_confidence"):
         cfg({"low_confidence": {"on_low_confidence": "retry"}})
+
+
+def test_an_empty_question_is_the_shipped_one():
+    from idp_common.config.models import IDPConfig
+
+    cfg = IDPConfig.model_validate(
+        {
+            "classification": {
+                "split_then_classify": {
+                    "section_classification": {"decision_model": {"instructions": " "}}
+                }
+            }
+        }
+    )
+    dm = cfg.classification.split_then_classify.section_classification.decision_model
+    assert dm.instructions == "Which type of document is this?"

@@ -33,7 +33,13 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError, ReadTimeoutError
+from botocore.exceptions import (
+    BotoCoreError,
+    ClientError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
 from pydantic import ValidationError
 
 from idp_common.decision_model.wire import SystemOneRequest, SystemOneResponse
@@ -190,13 +196,18 @@ class DecisionModelClient:
         worst_attempt_seconds = 0.0
         attempt = 0
         while True:
+            # Bound before the try: the handler below reads it, and a binding only
+            # inside the try would turn an early failure into UnboundLocalError.
+            # Rebound once the concurrency slot is held, so neither the gate nor the
+            # metered GB-seconds count time spent waiting for a slot.
+            attempt_start_time = time.time()
             try:
                 with self._in_flight:
-                    started = time.time()
-                    return self._invoke_once(payload, context, started)
+                    attempt_start_time = time.time()
+                    return self._invoke_once(payload, context, attempt_start_time)
             except _Retry as retry:
                 worst_attempt_seconds = max(
-                    worst_attempt_seconds, time.time() - started
+                    worst_attempt_seconds, time.time() - attempt_start_time
                 )
                 if attempt >= self.max_retries:
                     self._put_metric("DecisionModelRequestsFailed", 1)
@@ -208,6 +219,7 @@ class DecisionModelClient:
                 if attempt_cannot_finish(
                     worst_attempt_seconds + backoff, self.function_name
                 ):
+                    self._put_metric("DecisionModelRequestsFailed", 1)
                     self._put_metric("DecisionModelRetryAbandonedOutOfTime", 1)
                     raise DecisionModelUnavailable(
                         f"{self.function_name}: {retry.reason}; no time left in "
@@ -223,6 +235,13 @@ class DecisionModelClient:
                 )
                 time.sleep(backoff)
                 attempt += 1
+            except DecisionModelError:
+                # Every failure that is not a retry: a refusal, a non-retryable
+                # Lambda error, a read timeout, a response that is not System One.
+                # Without this, the failure metric fired only on retry exhaustion
+                # and "every call refused" looked like "no traffic".
+                self._put_metric("DecisionModelRequestsFailed", 1)
+                raise
 
     @staticmethod
     def _backoff_within_invocation(attempt: int) -> float:
@@ -264,7 +283,7 @@ class DecisionModelClient:
         return [f.result() for f in futures]
 
     def _invoke_once(
-        self, payload: bytes, context: str, started: float
+        self, payload: bytes, context: str, attempt_start_time: float
     ) -> DecisionResult:
         try:
             response = self._lambda.invoke(
@@ -287,8 +306,19 @@ class DecisionModelClient:
                 f"{self.function_name}: no answer within {self.timeout_seconds:.0f}s "
                 "(the configured timeout_ms)"
             ) from e
+        except (ConnectTimeoutError, EndpointConnectionError) as e:
+            # The connection never opened, so the invocation never began: the one
+            # failure that is safe to retry without re-running paid work.
+            raise _Retry(f"{type(e).__name__}: {e}") from None
+        except BotoCoreError as e:
+            # Anything else below the API, including ConnectionClosedError: the
+            # request may have been delivered, so like a read timeout it is not
+            # retried, but it is still this client's failure type.
+            raise DecisionModelUnavailable(
+                f"{self.function_name}: {type(e).__name__}: {e}"
+            ) from e
 
-        duration = time.time() - started
+        duration = time.time() - attempt_start_time
         body = response["Payload"].read().decode("utf-8")
         function_error = response.get("FunctionError")
         if function_error:

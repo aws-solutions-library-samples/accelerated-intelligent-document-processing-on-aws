@@ -46,11 +46,28 @@ IMAGE_MAX_SIDE = 448
 Content = Union[str, Dict[str, Any], List[Any]]
 
 
+def _require_instructions(v: Any) -> Any:
+    """An empty question is refused at the contract rather than sent and billed."""
+    if (
+        v is None
+        or (isinstance(v, (str, list, dict)) and not v)
+        or (isinstance(v, str) and not v.strip())
+    ):
+        raise ValueError("a question's instructions must not be empty")
+    return v
+
+
 class NoulQuestion(BaseModel):
     """Yes or no. The answer is the probability that the statement is true."""
 
     type: Literal["noul"] = "noul"
     instructions: Content
+
+    @field_validator("instructions")
+    @classmethod
+    def _instructions(cls, v):
+        return _require_instructions(v)
+
     #: Optional ``{"true": ..., "false": ...}`` descriptions that sharpen the line.
     criteria: Optional[Dict[str, Optional[Content]]] = None
 
@@ -67,6 +84,12 @@ class ChoiceQuestion(BaseModel):
 
     type: Literal["choice"] = "choice"
     instructions: Content
+
+    @field_validator("instructions")
+    @classmethod
+    def _instructions(cls, v):
+        return _require_instructions(v)
+
     criteria: Dict[str, Optional[Content]]
 
     @field_validator("criteria")
@@ -84,6 +107,12 @@ class ScoreQuestion(BaseModel):
 
     type: Literal["score"] = "score"
     instructions: Content
+
+    @field_validator("instructions")
+    @classmethod
+    def _instructions(cls, v):
+        return _require_instructions(v)
+
     criteria: List[str]
 
     @field_validator("criteria")

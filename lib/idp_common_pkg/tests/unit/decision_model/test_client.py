@@ -223,3 +223,77 @@ def test_request_bounds():
         )
     with pytest.raises(ValueError, match="at least 2"):
         ChoiceQuestion(instructions="?", criteria={"only": None})
+
+
+def _metrics(client):
+    seen = []
+    client._put_metric = lambda name, value, unit="Count": seen.append(name)
+    return seen
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        _function_error("ValueError", "over the window"),
+        _client_error("AccessDeniedException"),
+        ReadTimeoutError(endpoint_url="x"),
+        _ok({"output": "not system one"}),
+    ],
+    ids=["refused", "non-retryable", "read-timeout", "malformed"],
+)
+def test_every_failure_records_the_failure_metric_once(outcome):
+    from idp_common.decision_model import DecisionModelError
+
+    client = _client(FakeLambda([outcome]))
+    seen = _metrics(client)
+    with pytest.raises(DecisionModelError):
+        client.decide(_request(), "Ctx")
+    assert seen == ["DecisionModelRequestsFailed"]
+
+
+def test_retry_exhaustion_records_the_failure_metric_once():
+    client = _client(
+        FakeLambda([_client_error("TooManyRequestsException")] * 2), max_retries=1
+    )
+    seen = _metrics(client)
+    with pytest.raises(DecisionModelUnavailable):
+        client.decide(_request(), "Ctx")
+    assert seen == ["DecisionModelRequestsFailed"]
+
+
+def test_a_connection_that_never_opened_is_retried():
+    from botocore.exceptions import ConnectTimeoutError, EndpointConnectionError
+
+    fake = FakeLambda(
+        [
+            ConnectTimeoutError(endpoint_url="x"),
+            EndpointConnectionError(endpoint_url="x"),
+            _ok(),
+        ]
+    )
+    _client(fake).decide(_request(), "Ctx")
+    assert len(fake.calls) == 3
+
+
+def test_a_closed_connection_is_unavailable_and_not_retried():
+    from botocore.exceptions import ConnectionClosedError
+
+    fake = FakeLambda([ConnectionClosedError(endpoint_url="x")])
+    with pytest.raises(DecisionModelUnavailable, match="ConnectionClosedError"):
+        _client(fake).decide(_request(), "Ctx")
+    assert len(fake.calls) == 1
+
+
+def test_an_empty_question_is_refused_at_the_contract():
+    for empty in ("", "   ", {}, []):
+        with pytest.raises(ValueError, match="must not be empty"):
+            NoulQuestion(instructions=empty)
+    with pytest.raises(ValueError, match="must not be empty"):
+        ChoiceQuestion(instructions="", criteria={"a": None, "b": None})
+
+
+def test_the_input_modes_are_the_configs():
+    from idp_common.config.models import DECISION_MODEL_INPUTS
+    from idp_common.decision_model import INPUT_MODES
+
+    assert INPUT_MODES is DECISION_MODEL_INPUTS

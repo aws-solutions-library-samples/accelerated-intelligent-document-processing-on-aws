@@ -11,6 +11,7 @@ import base64
 import os
 from typing import Any, Optional
 
+from idp_common.config.models import DECISION_MODEL_INPUTS
 from idp_common.decision_model.invoker import (
     DEFAULT_FUNCTION_MEMORY_MB,
     FUNCTION_NAME_PREFIX,
@@ -44,8 +45,8 @@ from idp_common.decision_model.wire import (
 #: configuration can leave ``endpoint`` empty and move between stacks unchanged.
 ENDPOINT_ENV_VAR = "DECISION_MODEL_FUNCTION_ARN"
 
-#: The values ``ExternalModelConfig.input`` takes.
-INPUT_MODES = ("images", "text", "both")
+#: The values ``ExternalModelConfig.input`` takes; defined once, with the model.
+INPUT_MODES = DECISION_MODEL_INPUTS
 
 
 def resolve_endpoint(configured: Optional[str]) -> str:
