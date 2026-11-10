@@ -1945,6 +1945,102 @@ function_url_endpoints:
           both rather than only on the route whose policy this branch changed.
 
 # ============================================================================
+# MCP tools — the AgentCore Gateway target (src/lambda/agentcore_mcp_handler)
+# ============================================================================
+# The MCP server is a third way in, beside the REST dispatcher and the Function
+# URL routes: an AgentCore Gateway whose JWT authorizer admits the clients listed
+# under mcp_clients, and whose one Lambda target serves the tools below. The
+# gateway forwards only tool arguments, so a request interceptor
+# (src/lambda/mcp_identity_interceptor) resolves the caller, refuses a tool the
+# caller may not use, and passes a signed `_caller` block to the handler, which
+# verifies it and applies the caller's configuration scope.
+#
+# Entry schema
+# ------------
+#   groups:         the roles admitted. The handler and the interceptor both read
+#                   the same table, idp_common.mcp_access.MCP_TOOL_POLICY, and the
+#                   static scan (checks M1-M5) fails when this file and that table
+#                   differ, in either direction.
+#   write:          true -> the tool starts processing; a service credential must
+#                   also have write tools enabled.
+#   unscoped_only:  true -> the tool reads across every Configuration Profile with
+#                   nothing to filter its output on, so a caller with a
+#                   configuration scope is refused (Admin-only under Strict).
+#   scope_checked:  true -> refuses a request naming a document or a destination
+#                   profile outside the caller's scope.
+#   scope_filtered: true -> returns only documents inside the caller's scope.
+#   equivalent_op:  the REST operation the tool corresponds to. Its groups must
+#                   admit every role this entry admits, so MCP is never the more
+#                   permissive way to do the same thing.
+#   enforced_in:    the tool module; it must call the shared scope helper.
+mcp_clients:
+  # Every Cognito client the gateway authorizer admits, and how the interceptor
+  # resolves a token from it. The scan reads AgentCoreGateway's client properties
+  # and the interceptor's environment and fails if either names a client this
+  # list does not, so a client cannot be allowed in without a resolution rule.
+  ExternalAppClient: user
+  MCPConnectorClient: service
+
+mcp_tools:
+  search:
+    groups: [Admin, Author, Viewer]
+    write: false
+    unscoped_only: true
+    equivalent_op: sendAgentChatMessage
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/search.py
+    note: >-
+      Runs the analytics agent over the reporting tables, which hold rows for
+      every document and cannot be filtered per row, so it is refused to any
+      scoped caller. Under TenantIsolationMode=Strict every non-admin is scoped,
+      which makes it Admin-only there, as Agent Chat is.
+  status:
+    groups: [Admin, Author, Reviewer, Viewer]
+    write: false
+    unscoped_only: false
+    scope_filtered: true
+    equivalent_op: getDocument
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/batch_status.py
+    note: >-
+      Counts and lists only the batch's documents inside the caller's scope. A
+      batch with none in scope is answered exactly as a batch that does not exist.
+      The four document roles, not ANY_GROUP: Annotator reaches documents only
+      through test-set labelling, whose per-object control MCP does not have.
+  get_results:
+    groups: [Admin, Author, Reviewer, Viewer]
+    write: false
+    unscoped_only: false
+    scope_checked: true
+    scope_filtered: true
+    equivalent_op: getDocument
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/batch_results.py
+    note: >-
+      Single-document mode refuses a document outside the caller's scope; batch
+      mode pages over the in-scope documents only.
+  process:
+    groups: [Admin, Author]
+    write: true
+    unscoped_only: false
+    scope_checked: true
+    equivalent_op: uploadDocument
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/batch_run.py
+    note: >-
+      Resolves the Configuration Profile the uploaded document will process
+      under exactly as uploadDocument does (prefix mappings, the requested
+      profile, the active profile) and refuses one outside the caller's scope.
+      Processing from an S3 location reads with the handler's own role, which
+      can read every profile's documents, so it is limited to unscoped callers.
+  reprocess:
+    groups: [Admin, Author]
+    write: true
+    unscoped_only: false
+    scope_checked: true
+    equivalent_op: reprocessDocument
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/batch_reprocess.py
+    note: >-
+      Every named document, or every document of the named batch, must be in the
+      caller's scope; one outside it refuses the whole request.
+
+# ============================================================================
 # Known gaps register — tracked deviations between the ideal authorization
 # posture and current enforcement. Each id must be referenced by at least one
 # operation or route above (the scan enforces that in both directions).

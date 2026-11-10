@@ -75,6 +75,21 @@ CHECKS
       `transport_enforces:`, which produces a finding naming the divergence
       (WARN, FAIL under --strict) and requires a gap id — so aligning the
       declared policy cannot make the real divergence disappear from the report.
+  M1  MCP tool universe — the `mcp_tools:` section, `MCP_TOOL_POLICY` in
+      `idp_common/mcp_access.py`, the handler's `TOOLS` registry and the
+      gateway's `IDP_TOOLS_SCHEMA` name the same tools, in every direction.
+  M2  MCP declarations match the code — each tool's groups, `write`,
+      `unscoped_only` and `equivalent_op` equal its `MCP_TOOL_POLICY` row.
+  M3  MCP is never the more permissive way in — a tool admits no role its
+      `equivalent_op` refuses.
+  M4  MCP enforcement is called — the handler calls `verify_caller` and
+      `authorize_tool`; the interceptor calls `resolve_caller`, `authorize_tool`,
+      `filter_tool_list` and `sign_caller`; a tool flagged `scope_checked` or
+      `scope_filtered` calls the shared scope helper. Calls only, read from the
+      AST, so a mention in a comment or a string does not count.
+  M5  MCP clients — every client the `AgentCoreGateway` resource admits is
+      declared in `mcp_clients:` with a kind, and the interceptor's environment
+      names exactly the clients of each kind.
 
 EXIT CODES
 ----------
@@ -1461,6 +1476,332 @@ def op_per_item_scope_filter(
 # --- checks ------------------------------------------------------------------
 
 
+# --- MCP tool checks (M1-M5) ---------------------------------------------------
+# The MCP server is the third way in. Its authorization is a table in
+# idp_common.mcp_access, applied by a gateway interceptor and by the handler; these
+# checks hold that table, the tool registry, the gateway's tool schema, the
+# expectations file and the template's client wiring to one another. They read
+# source (AST and text), never import it, so the scan needs no runtime.
+
+MCP_ACCESS_MODULE = "lib/idp_common_pkg/idp_common/mcp_access.py"
+MCP_HANDLER = "src/lambda/agentcore_mcp_handler/index.py"
+MCP_TOOL_REGISTRY = "src/lambda/agentcore_mcp_handler/tools/__init__.py"
+MCP_GATEWAY_MANAGER = "src/lambda/agentcore_gateway_manager/index.py"
+MCP_INTERCEPTOR = "src/lambda/mcp_identity_interceptor/index.py"
+MCP_INTERCEPTOR_FUNCTION = "McpIdentityInterceptorFunction"
+MCP_GATEWAY_RESOURCE = "AgentCoreGateway"
+
+#: What each half must call. Named functions, matched as call targets in the AST,
+#: so a mention in a comment or a string does not count.
+MCP_HANDLER_CALLS = ("verify_caller", "authorize_tool")
+MCP_INTERCEPTOR_CALLS = (
+    "resolve_caller",
+    "authorize_tool",
+    "filter_tool_list",
+    "sign_caller",
+)
+#: The shared helper a tool flagged scope_checked / scope_filtered must call.
+MCP_SCOPE_HELPERS = {
+    "scope_checked": ("require_document_keys_in_scope", "require_profile_in_scope"),
+    "scope_filtered": ("document_keys_in_scope",),
+}
+#: Template property on the gateway resource, and interceptor environment
+#: variable, carrying the client ids of each kind.
+MCP_GATEWAY_CLIENT_PROPERTIES = ("ClientId", "ConnectorClientId")
+MCP_INTERCEPTOR_CLIENT_ENV = {
+    "user": "MCP_USER_CLIENT_IDS",
+    "service": "MCP_STACK_SERVICE_CLIENT_IDS",
+}
+
+
+def _module_assignments(tree: ast.Module) -> dict[str, ast.AST]:
+    out: dict[str, ast.AST] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    out[target.id] = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.value is not None:
+                out[node.target.id] = node.value
+    return out
+
+
+def _literal_strings(node: ast.AST, names: dict[str, ast.AST]) -> list[str] | None:
+    """A tuple/list of string literals, following one module-level name."""
+    if isinstance(node, ast.Name) and node.id in names:
+        node = names[node.id]
+    if isinstance(node, (ast.Tuple, ast.List)):
+        values = []
+        for elt in node.elts:
+            if not (isinstance(elt, ast.Constant) and isinstance(elt.value, str)):
+                return None
+            values.append(elt.value)
+        return values
+    return None
+
+
+def mcp_tool_policy_from_source(text: str) -> dict[str, dict] | None:
+    """``MCP_TOOL_POLICY`` as ``{tool: {roles, write, unscoped_only,
+    equivalent_op}}``, read from the module's AST, or ``None`` when it cannot be
+    read in full. A partial read is ``None`` rather than a smaller table, so an
+    entry the reader could not understand is a FAIL, never a missing row."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    names = _module_assignments(tree)
+    table = names.get("MCP_TOOL_POLICY")
+    if not isinstance(table, ast.Dict):
+        return None
+    out: dict[str, dict] = {}
+    for key, value in zip(table.keys, table.values):
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+            return None
+        if not isinstance(value, ast.Call):
+            return None
+        kwargs = {kw.arg: kw.value for kw in value.keywords if kw.arg}
+        roles = _literal_strings(kwargs.get("roles"), names) if "roles" in kwargs else None
+        entry = {"roles": roles}
+        for flag in ("write", "unscoped_only"):
+            node = kwargs.get(flag)
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, bool)):
+                return None
+            entry[flag] = node.value
+        op = kwargs.get("equivalent_op")
+        if not (isinstance(op, ast.Constant) and isinstance(op.value, str)):
+            return None
+        entry["equivalent_op"] = op.value
+        if roles is None:
+            return None
+        out[key.value] = entry
+    return out
+
+
+def mcp_registry_tools(text: str) -> set[str] | None:
+    """Keys of the handler's ``TOOLS`` registry."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    node = _module_assignments(tree).get("TOOLS")
+    if not isinstance(node, ast.Dict):
+        return None
+    keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
+    return keys if len(keys) == len(node.keys) else None
+
+
+def mcp_schema_tools(text: str) -> set[str] | None:
+    """Tool names in the gateway manager's ``IDP_TOOLS_SCHEMA``."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    node = _module_assignments(tree).get("IDP_TOOLS_SCHEMA")
+    if not isinstance(node, ast.List):
+        return None
+    names = set()
+    for elt in node.elts:
+        if not isinstance(elt, ast.Dict):
+            return None
+        found = None
+        for k, v in zip(elt.keys, elt.values):
+            if isinstance(k, ast.Constant) and k.value == "name":
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    found = v.value
+        if found is None:
+            return None
+        names.add(found)
+    return names
+
+
+def called_function_names(text: str) -> set[str] | None:
+    """Every name called in ``text`` (``f(...)`` and ``mod.f(...)``)."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                out.add(node.func.id)
+            elif isinstance(node.func, ast.Attribute):
+                out.add(node.func.attr)
+    return out
+
+
+def _block_refs(block: str, key: str) -> list[str]:
+    """Logical ids referenced by ``key:`` in a resource block, in either the
+    single-value form (``Key: !Ref X``) or a ``!Join``/list of ``!Ref`` lines
+    directly beneath it."""
+    refs: list[str] = []
+    lines = block.splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(rf"^(\s*){re.escape(key)}:\s*(.*)$", line)
+        if not m:
+            continue
+        indent, rest = len(m.group(1)), m.group(2)
+        refs += re.findall(r"!Ref\s+(\w+)", rest)
+        for follow in lines[i + 1 :]:
+            if follow.strip() and len(follow) - len(follow.lstrip()) <= indent:
+                break
+            refs += re.findall(r"!Ref\s+(\w+)", follow)
+    return refs
+
+
+def mcp_checks(
+    repo: Path, spec: dict, ops: dict[str, dict], app_groups: set[str]
+) -> list[Finding]:
+    """M1-M5. Returns findings; never raises on a missing or unreadable source,
+    which is itself a FAIL so a check cannot pass by having nothing to read."""
+    findings: list[Finding] = []
+
+    def fail(check: str, message: str, op: str = "") -> None:
+        findings.append(Finding(check, "FAIL", message, op))
+
+    declared = spec.get("mcp_tools")
+    if not isinstance(declared, dict) or not declared:
+        fail("M1", "api_rbac_expectations.yaml has no mcp_tools section")
+        return findings
+
+    def source(rel: str) -> str | None:
+        path = repo / rel
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    policy_text = source(MCP_ACCESS_MODULE)
+    policy = mcp_tool_policy_from_source(policy_text) if policy_text else None
+    registry_text = source(MCP_TOOL_REGISTRY)
+    registry = mcp_registry_tools(registry_text) if registry_text else None
+    schema_text = source(MCP_GATEWAY_MANAGER)
+    schema = mcp_schema_tools(schema_text) if schema_text else None
+    for rel, value in (
+        (MCP_ACCESS_MODULE, policy),
+        (MCP_TOOL_REGISTRY, registry),
+        (MCP_GATEWAY_MANAGER, schema),
+    ):
+        if value is None:
+            fail("M1", f"could not read the MCP tool set from {rel}")
+    if policy is None or registry is None or schema is None:
+        return findings
+
+    # M1: one universe, closed in every direction.
+    universes = {
+        "mcp_tools (expectations)": set(declared),
+        "MCP_TOOL_POLICY": set(policy),
+        "TOOLS registry": registry,
+        "IDP_TOOLS_SCHEMA": schema,
+    }
+    union = set().union(*universes.values())
+    for label, members in universes.items():
+        for missing in sorted(union - members):
+            fail("M1", f"MCP tool '{missing}' is absent from {label}", missing)
+
+    def resolve(groups: object) -> set[str] | None:
+        if groups == POLICY_ANY_GROUP:
+            return set(app_groups)
+        if isinstance(groups, list) and all(isinstance(g, str) for g in groups):
+            return set(groups)
+        return None
+
+    for tool in sorted(set(declared) & set(policy)):
+        entry = declared[tool] or {}
+        code = policy[tool]
+        groups = resolve(entry.get("groups"))
+        # M2: the expectations and the code agree, field by field.
+        if groups is None:
+            fail("M2", f"groups {entry.get('groups')!r} is not a group list or "
+                 f"{POLICY_ANY_GROUP}", tool)
+        elif groups != set(code["roles"]):
+            fail("M2", f"declared groups {sorted(groups)} differ from "
+                 f"MCP_TOOL_POLICY roles {sorted(code['roles'])}", tool)
+        unknown = set(code["roles"]) - set(app_groups)
+        if unknown:
+            fail("M2", f"MCP_TOOL_POLICY names roles the stack does not create: "
+                 f"{sorted(unknown)}", tool)
+        for flag in ("write", "unscoped_only"):
+            if bool(entry.get(flag)) != code[flag]:
+                fail("M2", f"{flag}: expectations say {bool(entry.get(flag))}, "
+                     f"MCP_TOOL_POLICY says {code[flag]}", tool)
+        if entry.get("equivalent_op") != code["equivalent_op"]:
+            fail("M2", f"equivalent_op: expectations say "
+                 f"{entry.get('equivalent_op')!r}, MCP_TOOL_POLICY says "
+                 f"{code['equivalent_op']!r}", tool)
+        # M3: never more permissive than the REST operation it corresponds to.
+        equivalent = entry.get("equivalent_op")
+        if equivalent not in ops:
+            fail("M3", f"equivalent_op '{equivalent}' is not a declared operation",
+                 tool)
+        elif groups is not None:
+            rest = resolve(ops[equivalent].get("groups"))
+            if rest is None:
+                fail("M3", f"equivalent_op '{equivalent}' has a policy "
+                     f"({ops[equivalent].get('groups')!r}) MCP cannot match", tool)
+            elif not groups <= rest:
+                fail("M3", f"admits {sorted(groups - rest)}, which "
+                     f"'{equivalent}' refuses", tool)
+        # M4 (per tool): the scope helper is called where the flag says.
+        for flag, helpers in MCP_SCOPE_HELPERS.items():
+            if not entry.get(flag):
+                continue
+            rel = entry.get("enforced_in") or ""
+            text = source(rel) if rel else None
+            calls = called_function_names(text) if text else None
+            if calls is None:
+                fail("M4", f"{flag}: enforced_in '{rel}' cannot be read", tool)
+            elif not calls & set(helpers):
+                fail("M4", f"{flag}: '{rel}' calls none of {list(helpers)}", tool)
+
+    # M4 (both halves): the shared authorization helpers are called.
+    for rel, required in (
+        (MCP_HANDLER, MCP_HANDLER_CALLS),
+        (MCP_INTERCEPTOR, MCP_INTERCEPTOR_CALLS),
+    ):
+        text = source(rel)
+        calls = called_function_names(text) if text else None
+        if calls is None:
+            fail("M4", f"{rel} cannot be read")
+            continue
+        for name in required:
+            if name not in calls:
+                fail("M4", f"{rel} does not call {name}")
+
+    # M5: every client the gateway admits has a resolution rule, and only those.
+    clients = spec.get("mcp_clients")
+    if not isinstance(clients, dict) or not clients:
+        fail("M5", "api_rbac_expectations.yaml has no mcp_clients section")
+        return findings
+    kinds = set(MCP_INTERCEPTOR_CLIENT_ENV)
+    for client, kind in clients.items():
+        if kind not in kinds:
+            fail("M5", f"mcp_clients '{client}' has kind {kind!r}; expected one of "
+                 f"{sorted(kinds)}")
+    template = source("template.yaml") or ""
+    gateway_block = _resource_block(template, MCP_GATEWAY_RESOURCE)
+    interceptor_block = _resource_block(template, MCP_INTERCEPTOR_FUNCTION)
+    if not gateway_block:
+        fail("M5", f"template.yaml has no {MCP_GATEWAY_RESOURCE} resource")
+    if not interceptor_block:
+        fail("M5", f"template.yaml has no {MCP_INTERCEPTOR_FUNCTION} resource")
+    if not gateway_block or not interceptor_block:
+        return findings
+    admitted = {
+        ref
+        for prop in MCP_GATEWAY_CLIENT_PROPERTIES
+        for ref in _block_refs(gateway_block, prop)
+    }
+    if admitted != set(clients):
+        fail("M5", f"{MCP_GATEWAY_RESOURCE} admits {sorted(admitted)}; "
+             f"mcp_clients declares {sorted(clients)}")
+    for kind, env in MCP_INTERCEPTOR_CLIENT_ENV.items():
+        wired = set(_block_refs(interceptor_block, env))
+        expected = {c for c, k in clients.items() if k == kind}
+        if wired != expected:
+            fail("M5", f"{MCP_INTERCEPTOR_FUNCTION} {env} names {sorted(wired)}; "
+                 f"mcp_clients declares {sorted(expected)} as {kind}")
+    return findings
+
+
 def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     """Run every check against ``repo`` (the real repository by default).
 
@@ -2090,6 +2431,9 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                                 f"({ops[equivalent]['groups']}) — one entry "
                                 "path is more permissive than the other",
                                 route))
+
+    # --- M1-M5: MCP tools ------------------------------------------------
+    findings.extend(mcp_checks(repo, spec, ops, app_groups))
 
     # --- known_gaps integrity ----------------------------------------------
     referenced = {o["known_gap"] for o in ops.values() if o.get("known_gap")}
