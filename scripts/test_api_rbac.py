@@ -258,6 +258,9 @@ OPERATION_ENTRY_KEYS = frozenset(
         "scope_enforced_in",
         "scope_filtered",
         "skip_allowed",
+        # Read by scan_api_rbac.py (S10): a document key governed by the test-set
+        # scope rather than the profile scope.
+        "testset_checked",
     }
 )
 

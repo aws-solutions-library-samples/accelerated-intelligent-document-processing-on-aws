@@ -3310,6 +3310,19 @@
       "ratchet": "staleness",
       "ratchetEvidence": "terraform/tools/parity.py",
       "reason": "Each entry is a property one deployment stores and the other does not because of how the writer behaves (the hashicorp/aws provider writing CodeBuild's service defaults explicitly), with the measurement it came from. Why JUDGEMENT: whether a stored default is the same configuration as an absent value is a reading of the service's behaviour. The tier is live and manual, so the ratchet runs when it does: an entry that explained no difference in a run is reported stale and fails that run."
+    },
+    "scripts/sdlc/scan_api_rbac.py::SCOPE_KEYED_ARGUMENT_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "(operation, argument kind) pair",
+      "turnsOff": "S10's requirement that an operation whose arguments name a configuration profile, document or session declare how that object is scoped, for one argument kind of one named operation",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "One member: autoDetectSections' documentKey. It names an upload in the discovery bucket, which this function's IAM grant is limited to and which Admins and Authors share as a workspace; nothing records a profile or an uploader on the upload, so there is no per-object scope it could be checked against. Whether an object carries a scope is a property of the data model, not of the source the gate reads, so it is a judgement. The profile the same operation reads is scope-checked and declared, which is why the entry is per argument kind rather than per operation.",
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/sdlc/scan_api_rbac.py",
+      "ratchetDetail": "run_checks records every (operation, kind) an entry actually shields and reports each entry that shielded nothing as an S10 FAIL ('shields no finding'), so an entry is stale -- and fails -- as soon as its operation is gone, stops taking that kind of argument, or declares a scope. test_an_exemption_that_shields_nothing_fails in scripts/sdlc/tests/test_scan_api_rbac_scope_keyed_arguments.py pins it; the same file pins that an entry shields only its own pair.",
+      "ratchetGap": "A live entry is not re-judged: if discovery uploads gained a profile stamp, the entry would keep shielding the missing check until someone deleted it."
     }
   }
 }
