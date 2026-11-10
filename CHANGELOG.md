@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Changed
+
+- **Quick Start is for Admins.** Quick Start creates and activates a configuration profile, which only an Admin may create, so only Admins see its side navigation button, Welcome page entry, guided-tour step and chat panel, and both chat routes refuse a Quick Start message from any other group. See [Quick Start](docs/quick-start.md#web-ui).
+
 ### Fixed
 
 - **Agent Chat only continues your own sessions.** A message for a chat session that belongs to another user is refused on the REST API and on the streaming endpoint, before anything is stored or the agent loads the conversation. See [Agent Chat](docs/agent-companion-chat.md).

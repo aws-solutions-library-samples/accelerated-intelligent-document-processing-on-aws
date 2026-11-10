@@ -1288,10 +1288,12 @@ operations:
     args: { prompt: "hi" }
     note: server-side _caller_in_groups check matches the schema directive
       (Reviewer excluded, closes former GAP-03); allowed-role call skipped
-      (would start a live agent session). Ownership - a message for a session
-      id that already holds messages is refused unless the caller holds the
-      (userId, sessionId) record for it, before anything is stored, for every
-      method.
+      (would start a live agent session). A message with method quick_start is
+      Admin only (_QUICK_START_GROUPS), because Quick Start creates a
+      configuration profile, which only an Admin may create. Ownership - a
+      message for a session id that already holds messages or agent memory is
+      refused unless the caller holds the (userId, sessionId) record for it,
+      before anything is stored, for every method.
   sendChatDocumentMessage:
     groups: ANY_GROUP
     kind: mutation
@@ -1928,10 +1930,11 @@ function_url_endpoints:
           Formerly GAP-07. The route verifies the caller's Cognito ID token before
           the stream opens and refuses a request without one, then applies the
           processor's own Admin/Author/Viewer predicate to the verified groups
-          (_enforce_groups_or_403), so a denial is a real 403. The turn is filed
-          under the verified identity, derived as the REST path derives it, and a
-          body callerSub that differs is refused. A turn for a session another
-          user owns is refused before the stream opens
+          (_enforce_groups_or_403), so a denial is a real 403. A Quick Start turn
+          (method quick_start) is Admin only, by the same predicate. The turn is
+          filed under the verified identity, derived as the REST path derives it,
+          and a body callerSub that differs is refused. A turn for a session
+          another user owns is refused before the stream opens
           (_refuse_foreign_session_or_403, the processor's own predicate).
 
 # ============================================================================

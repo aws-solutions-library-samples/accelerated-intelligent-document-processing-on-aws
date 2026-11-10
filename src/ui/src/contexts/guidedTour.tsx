@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import AnnotationContext from '@cloudscape-design/components/annotation-context';
 import type { AnnotationContextProps } from '@cloudscape-design/components/annotation-context';
 import { DOCUMENTS_PATH } from '../routes/constants';
-import { isQuickStartEnabled } from '../utils/quick-start-flag';
+import useQuickStartAvailable from '../hooks/use-quick-start-available';
 import './guidedTour.css';
 
 interface TourFlags {
@@ -137,6 +137,7 @@ const i18nStrings: AnnotationContextProps.I18nStrings = {
 
 export const GuidedTourProvider = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
   const [tutorial, setTutorial] = useState<AnnotationContextProps.Tutorial | null>(null);
+  const quickStartAvailable = useQuickStartAvailable();
   const navigate = useNavigate();
 
   const startTour = useCallback(
@@ -144,20 +145,20 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
       const resolved: TourFlags = {
         customModels: flags?.customModels ?? false,
         capacityPlanning: flags?.capacityPlanning ?? true,
-        quickStart: isQuickStartEnabled(),
+        quickStart: quickStartAvailable,
       };
       navigate(DOCUMENTS_PATH);
       window.setTimeout(() => setTutorial(buildTutorial(resolved)), 350);
     },
-    [navigate],
+    [navigate, quickStartAvailable],
   );
   const exitTour = useCallback(() => setTutorial(null), []);
   const finishTour = useCallback(() => {
     setTutorial(null);
-    if (isQuickStartEnabled()) {
+    if (quickStartAvailable) {
       window.dispatchEvent(new CustomEvent('openQuickStart'));
     }
-  }, []);
+  }, [quickStartAvailable]);
 
   useEffect(() => {
     const handler = (e: Event) => startTour((e as CustomEvent<Partial<TourFlags>>).detail);

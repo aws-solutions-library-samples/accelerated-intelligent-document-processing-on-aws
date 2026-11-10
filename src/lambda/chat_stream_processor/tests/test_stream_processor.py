@@ -670,3 +670,17 @@ def test_agent_route_refuses_another_users_session_before_the_stream_opens():
         "session_id",
         "caller_sub",
     ]
+
+
+def test_agent_route_hands_the_gate_the_requested_method():
+    """The processor's gate refuses a Quick Start turn to a non-Admin, which it can
+    only do if the route tells it which method was asked for."""
+    fn = _route_functions(_app_ast())["POST /chat/agent"]
+    (call,) = _calls_named(fn, "_enforce_groups_or_403")
+    method = call.args[1]
+    assert any(
+        isinstance(node, ast.Attribute)
+        and node.attr == "method"
+        and getattr(node.value, "id", None) == "body"
+        for node in ast.walk(method)
+    ), "the gate must be given body.method"

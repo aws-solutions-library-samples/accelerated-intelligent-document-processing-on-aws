@@ -6,7 +6,7 @@ import { Box, Button, Container, Header, SpaceBetween, Link } from '@cloudscape-
 import { DOCUMENTS_PATH, MY_TASKS_PATH, CONFIGURATION_PATH, UPLOAD_DOCUMENT_PATH, WELCOME_DISMISSED_KEY } from '../../routes/constants';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
-import { isQuickStartEnabled } from '../../utils/quick-start-flag';
+import useQuickStartAvailable from '../../hooks/use-quick-start-available';
 
 interface WelcomeContentProps {
   // When true, shows the "Don't show this again" dismissal (landing-page variant).
@@ -18,7 +18,7 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
   const navigate = useNavigate();
   const { settings } = useSettingsContext();
   const { isAnnotatorOnly } = useUserRole();
-  const quickStart = isQuickStartEnabled();
+  const quickStart = useQuickStartAvailable();
 
   const openQuickStart = useCallback(() => {
     navigate(DOCUMENTS_PATH);

@@ -11,9 +11,8 @@ import WelcomeContent from '../WelcomeContent';
 vi.mock('../../../contexts/settings', () => ({
   default: () => ({ settings: {} }),
 }));
-vi.mock('../../../hooks/use-user-role', () => ({
-  default: () => ({ isAnnotatorOnly: false }),
-}));
+const { role } = vi.hoisted(() => ({ role: { isAnnotatorOnly: false, isAdmin: true } }));
+vi.mock('../../../hooks/use-user-role', () => ({ default: () => role }));
 
 const renderWelcome = () =>
   render(
@@ -25,6 +24,7 @@ const renderWelcome = () =>
 describe('WelcomeContent', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    role.isAdmin = true;
   });
 
   it('offers Quick Start twice, and each opens the Quick Start chat', () => {
@@ -50,6 +50,16 @@ describe('WelcomeContent', () => {
     expect(screen.queryByText(/No configuration yet\?/)).toBeNull();
     expect(screen.getByRole('button', { name: 'Take the tour' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Enter IDP Console' })).toBeInTheDocument();
+  });
+
+  it('offers no Quick Start to a user who is not an Admin, and keeps the other ways in', () => {
+    vi.stubEnv('VITE_ENABLE_QUICK_START_WIDGET', 'true');
+    role.isAdmin = false;
+    renderWelcome();
+
+    expect(screen.queryByText('Quick Start')).toBeNull();
+    expect(screen.queryByText(/No configuration yet\?/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Take the tour' })).toBeInTheDocument();
   });
 
   it('names the upload page as the side navigation does', () => {

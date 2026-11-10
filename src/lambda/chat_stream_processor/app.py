@@ -157,7 +157,7 @@ def _caller_identity(request: Request) -> dict:
         ) from exc
 
 
-def _enforce_groups_or_403(identity: dict) -> None:
+def _enforce_groups_or_403(identity: dict, method: str) -> None:
     """Apply the Agent Chat group gate BEFORE the SSE response is committed.
 
     Delegates to the processor's own ``_enforce_agent_chat_groups`` so there is
@@ -167,7 +167,7 @@ def _enforce_groups_or_403(identity: dict) -> None:
     a denial could only be rendered as an error frame in the body.
     """
     try:
-        agent_proc._enforce_agent_chat_groups({"identity": identity})
+        agent_proc._enforce_agent_chat_groups({"identity": identity, "method": method})
     except PermissionError as exc:
         logger.warning("Rejecting agent chat: %s", exc)
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -375,7 +375,7 @@ async def chat_agent(request: Request, body: AgentChatRequest) -> StreamingRespo
     # Group gate, applied here rather than only inside the processor: a 403 is
     # only reachable before StreamingResponse is returned.
     _refuse_unverified_when_unscoped_is_denied_or_403(identity)
-    _enforce_groups_or_403(identity)
+    _enforce_groups_or_403(identity, body.method or "chat")
     _refuse_foreign_session_or_403(identity, session_id, caller_sub)
 
     q: "queue.Queue" = queue.Queue()

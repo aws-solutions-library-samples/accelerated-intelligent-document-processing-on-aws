@@ -398,7 +398,7 @@ def _send(index, method="chat"):
         {
             "identity": {
                 "username": "b@example.com",
-                "claims": {"cognito:groups": ["Author"]},
+                "claims": {"cognito:groups": ["Admin"]},
             },
             "arguments": {
                 "prompt": "what did we discuss?",
@@ -571,3 +571,87 @@ def test_the_ownership_check_reads_memory_under_the_providers_key():
     ):
         src = open(os.path.join(_REPO_ROOT, rel)).read()
         assert 'Key("PK").eq(f"conversation#{session_id}")' in src, rel
+
+
+# --- Quick Start (method=quick_start) is Admin only --------------------------
+# Quick Start creates a configuration profile and activates it, and the
+# configuration API lets only an Admin create a profile.
+
+
+def _quick_start_event(group):
+    return {
+        "identity": {
+            "username": "u@example.com",
+            "claims": {"cognito:groups": [group]},
+        },
+        "arguments": {"prompt": "paystubs", "sessionId": "s1", "method": "quick_start"},
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("group", ["Author", "Viewer"])
+def test_resolver_refuses_quick_start_to_a_non_admin(agent_chat_index, group):
+    with pytest.raises(PermissionError, match="Quick Start requires the Admin group"):
+        agent_chat_index.handler(_quick_start_event(group), None)
+
+
+@pytest.mark.unit
+def test_resolver_allows_quick_start_to_an_admin(agent_chat_index):
+    result = agent_chat_index.handler(_quick_start_event("Admin"), None)
+    assert result["sessionId"] == "s1"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("group", ["Author", "Viewer"])
+def test_resolver_still_allows_ordinary_agent_chat_to_non_admins(
+    agent_chat_index, group
+):
+    event = _quick_start_event(group)
+    event["arguments"]["method"] = "chat"
+    assert agent_chat_index.handler(event, None)["sessionId"] == "s1"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("group", ["Author", "Viewer"])
+def test_processor_refuses_quick_start_to_a_non_admin_before_any_work(
+    agent_chat_processor, monkeypatch, group
+):
+    monkeypatch.setattr(
+        agent_chat_processor,
+        "get_cached_boto3_session",
+        MagicMock(side_effect=_ReachedAgentWork),
+    )
+    event = {
+        "identity": {"claims": {"cognito:groups": [group]}},
+        "sessionId": "s1",
+        "prompt": "paystubs",
+        "method": "quick_start",
+        "callerSub": "u@example.com",
+    }
+    with pytest.raises(PermissionError, match="Quick Start requires the Admin group"):
+        agent_chat_processor.handler(event, None)
+    assert not agent_chat_processor.get_cached_boto3_session.called
+
+
+@pytest.mark.unit
+def test_processor_allows_quick_start_to_an_admin(agent_chat_processor, monkeypatch):
+    monkeypatch.setattr(
+        agent_chat_processor,
+        "get_cached_boto3_session",
+        MagicMock(side_effect=_ReachedAgentWork("reached the agent work")),
+    )
+    event = {
+        "identity": {"claims": {"cognito:groups": ["Admin"]}},
+        "sessionId": "s1",
+        "prompt": "paystubs",
+        "method": "quick_start",
+        "callerSub": "u@example.com",
+    }
+    assert agent_chat_processor.handler(event, None)["body"] == "reached the agent work"
+
+
+@pytest.mark.unit
+def test_processor_and_resolver_agree_on_quick_starts_groups(agent_chat_processor):
+    resolver = _load("agent_chat_resolver_qs_groups", "agent_chat_resolver/index.py")
+    assert agent_chat_processor._QUICK_START_GROUPS == resolver._QUICK_START_GROUPS
+    assert agent_chat_processor._QUICK_START_GROUPS == ("Admin",)
