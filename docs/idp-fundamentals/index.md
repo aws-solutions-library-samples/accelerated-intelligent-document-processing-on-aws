@@ -88,7 +88,19 @@ on your documents.
 | Confidence assessment | Yes |
 | Rule validation | Not yet |
 
-Each section states the dataset, the release and date of the run, and the sample size, so
-you can judge how far it carries to your documents. [Benchmark Datasets](benchmark-datasets.md)
-describes each dataset. Most of them are loaded into Test Studio on every stack, so you can
-run the same comparisons yourself.
+**We benchmark the problem sets one at a time.** Each benchmark isolates one problem set so
+that a result can be traced to a single choice. No benchmark is perfect, and the coverage
+has gaps. For example, there is no benchmark today that combines packet splitting with
+extraction ground truth, so we measure how well documents are split and how well fields are
+extracted, but not yet how a split error carries through to the extracted values. Each
+section states the dataset, the release and date of the run, and the sample size, so you
+can judge how far it carries to your documents. [Benchmark Datasets](benchmark-datasets.md)
+describes each dataset and what it does and does not cover.
+
+**You can run the same benchmarks, and build your own.** Most of these datasets are loaded
+into Test Studio as test sets on every stack, each with a matching configuration, so you can
+repeat our comparisons in your own account. Building a test set from your own documents is
+just as direct: the pipeline drafts the ground truth for you, and you review and correct it,
+worst-first, instead of labeling every field by hand. See
+[Bootstrap the labels](../creating-custom-test-sets.md#path-a--bootstrap-the-labels-recommended)
+for the step-by-step flow.
