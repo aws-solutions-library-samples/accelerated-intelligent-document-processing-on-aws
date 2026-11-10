@@ -46,6 +46,7 @@ import dataclasses
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -79,6 +80,7 @@ from ux_runner import (  # noqa: E402
     processes,
     prompt,
     recording,
+    review_relay,
     section,
     session,
     signin,
@@ -2085,6 +2087,201 @@ def test_a_refusal_log_that_is_not_the_proxys_own_file_fails_the_run(
         assert ROOT_ONLY.encode() not in artifact.read_bytes(), artifact.name
 
 
+# --- the commit guard ---------------------------------------------------------------
+
+_FAKE_DEVTOOLS = SCRIPTS / "tests" / "fixtures" / "ux_story_relay" / "fake_devtools.py"
+#: An unassigned review-queue item's edit page, its action bar as EditScreen.tsx
+#: draws it: Process Changes finishes the review, with no confirmation.
+_QUEUE_ITEM_PAGE = "\n".join(
+    (
+        "## Latest page snapshot",
+        'uid=1_0 RootWebArea "lending_package.pdf (In review)" '
+        'url="http://localhost:3000/#/review-queues/items/lending_package.pdf"',
+        "  uid=1_1 main",
+        '    uid=1_2 button "Refresh"',
+        '    uid=1_3 button "Cancel and discard changes"',
+        '    uid=1_4 button "Process Changes"',
+    )
+)
+
+
+def _fake_browser(harness: Harness, record: Path) -> None:
+    """Make the toolchain's chrome-devtools-mcp the story suite's fake, which
+    answers ``take_snapshot`` with :data:`_QUEUE_ITEM_PAGE` and records what it is
+    sent."""
+    spec = harness.tmp / "scenario.json"
+    answer = {"result": {"content": [{"type": "text", "text": _QUEUE_ITEM_PAGE}]}}
+    spec.write_text(
+        json.dumps({"record": str(record), "calls": {"take_snapshot": [answer]}}),
+        encoding="utf-8",
+    )
+    command = shlex.join(
+        [sys.executable, "-I", "-B", str(_FAKE_DEVTOOLS), "--scenario", str(spec)]
+    )
+    devtools = paths.Toolchain(harness.prefix).devtools_mcp
+    devtools.write_text(f'#!/bin/sh\nexec {command} "$@"\n', encoding="utf-8")
+    devtools.chmod(0o755)
+
+
+def _call(request_id: int, name: str, **arguments: Any) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "tools/call",
+        "params": {"name": name, "arguments": arguments},
+    }
+
+
+@pytest.mark.unit
+def test_process_changes_on_a_queue_item_is_refused_and_listed_in_refusals_jsonl(
+    harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The incident, end to end: the session's own MCP config starts the review
+    relay, which starts the browser's server, and the model's click on Process
+    Changes is refused before it reaches the browser. The run goes on to its dry
+    run, and ``refusals.jsonl`` lists the refusal after the proxy's, as the
+    guard's."""
+    record = harness.tmp / "fake-record.jsonl"
+    _fake_browser(harness, record)
+    answers: dict[int, dict[str, Any]] = {}
+
+    def session() -> None:
+        servers = harness.mcp_config["mcpServers"]
+        entry = servers[tool_profiles.CHROME_DEVTOOLS_SERVER]
+        messages = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            _call(2, "take_snapshot"),
+            _call(3, "click", uid="1_4"),
+            _call(4, "click", uid="1_2"),
+        ]
+        done = subprocess.run(
+            [entry["command"], *entry["args"]],
+            input="".join(json.dumps(message) + "\n" for message in messages),
+            capture_output=True,
+            text=True,
+            cwd=harness.agent_kwargs["cwd"],
+            env={},
+            timeout=60,
+            check=False,
+        )
+        assert done.returncode == 0, done.stderr
+        for line in done.stdout.splitlines():
+            reply = json.loads(line)
+            answers[reply["id"]] = reply
+
+    harness.agent_effect = session
+    assert harness.main("--dry-run") == 0
+    assert answers[3]["result"] == {
+        "content": [{"type": "text", "text": review_relay.COMMIT_POINT_TEXT}],
+        "isError": True,
+    }
+    assert "error" not in answers[4] and not answers[4]["result"].get("isError")
+    sent = [
+        entry["in"]
+        for entry in map(json.loads, record.read_text().splitlines())
+        if "in" in entry
+    ]
+    assert [
+        (m["params"]["name"], m["params"]["arguments"])
+        for m in sent
+        if m.get("method") == "tools/call"
+    ] == [("take_snapshot", {}), ("click", {"uid": "1_2"})]
+    listed = [
+        json.loads(line) for line in harness.artifact("refusals.jsonl").splitlines()
+    ]
+    assert [r["origin"] for r in listed] == ["selftest", review_relay.REFUSAL_ORIGIN]
+    guard = listed[-1]
+    assert (guard["tool"], guard["refused"], guard["label"]) == (
+        "click",
+        "commit_point",
+        "Process Changes",
+    )
+    summary = harness.summary()
+    assert summary["status"] == "dry_run"
+    assert summary["guard"] == {"refused": 1, "by_refusal": {"commit_point": 1}}
+    assert summary["egress"]["by_origin"] == {"page": 0, "browser": 0, "selftest": 1}
+    assert "guard: refused 1 call(s): commit_point x1" in capsys.readouterr().out
+    caveats = next(
+        line
+        for line in harness.artifact("section.md").splitlines()
+        if line.startswith("**Caveats:**")
+    )
+    assert "egress proxy refused" not in caveats
+
+
+@pytest.mark.unit
+def test_the_guard_s_refusals_are_counted_by_kind_and_redacted_like_the_rest(
+    harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The log is written by a process the page's text reaches, so a kind of any
+    other shape counts as ``other`` and every field goes through the redactor."""
+
+    def relay_wrote() -> None:
+        servers = harness.mcp_config["mcpServers"]
+        args = servers[tool_profiles.CHROME_DEVTOOLS_SERVER]["args"]
+        log = Path(args[args.index("--refusals") + 1])
+        lines = [
+            {"tool": "click", "refused": "commit_point", "label": "Delete"},
+            {"tool": "click", "refused": "invalid", "label": None},
+            {"tool": "click", "refused": "<b>Bold</b>", "label": CREDENTIAL},
+        ]
+        log.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    harness.agent_effect = relay_wrote
+    assert harness.main("--dry-run") == 0
+    assert harness.summary()["guard"] == {
+        "refused": 3,
+        "by_refusal": {"commit_point": 1, "invalid": 1, "other": 1},
+    }
+    out = capsys.readouterr().out
+    assert "guard: refused 3 call(s): commit_point x1, invalid x1, other x1" in out
+    text = harness.artifact("refusals.jsonl")
+    assert CREDENTIAL not in text
+    assert [json.loads(line)["origin"] for line in text.splitlines()] == [
+        "selftest",
+        "guard",
+        "guard",
+        "guard",
+    ]
+
+
+@pytest.mark.unit
+def test_a_guard_log_left_as_a_link_is_left_out_and_the_proxy_s_lines_kept(
+    harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    outside = harness.tmp / "root-only-guard.jsonl"
+    outside.write_text(json.dumps({"label": ROOT_ONLY}) + "\n", encoding="utf-8")
+
+    def planted() -> None:
+        servers = harness.mcp_config["mcpServers"]
+        args = servers[tool_profiles.CHROME_DEVTOOLS_SERVER]["args"]
+        Path(args[args.index("--refusals") + 1]).symlink_to(outside)
+
+    harness.agent_effect = planted
+    assert harness.main("--dry-run") == 0
+    assert (
+        "guard: not copied: the review relay's guard-refusals.jsonl is refused: it "
+        "is a symbolic link, which is never followed"
+    ) in capsys.readouterr().out
+    assert harness.summary()["guard"] == {}
+    listed = harness.artifact("refusals.jsonl").splitlines()
+    assert [json.loads(line)["origin"] for line in listed] == ["selftest"]
+    for artifact in harness.artifacts.iterdir():
+        assert ROOT_ONLY.encode() not in artifact.read_bytes(), artifact.name
+
+
+@pytest.mark.unit
+def test_a_session_that_never_started_records_no_guard_summary(
+    harness: Harness,
+) -> None:
+    harness.environ["CI_JOB_STARTED_AT"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=50)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert harness.main() == 0
+    assert harness.summary()["guard"] == {}
+
+
 @pytest.mark.unit
 def test_stats_the_proxy_left_as_a_link_are_left_out_rather_than_read_through_it(
     harness: Harness,
@@ -2608,23 +2805,24 @@ def test_the_turn_and_budget_limits_given_to_the_harness_reach_the_session(
 
 
 @pytest.mark.unit
-def test_claudes_cwd_and_the_devtools_file_root_are_private_empty_run_dirs(
+def test_claudes_cwd_the_devtools_file_root_and_the_guard_log_are_private_run_dirs(
     harness: Harness,
 ) -> None:
-    """chrome-devtools-mcp writes under its ``--filesystemRoot`` and under any root
-    the MCP client reports, which for claude is its working directory, so both are
-    empty private directories of the run, not the harness or the checkout."""
+    """Every MCP server runs in claude's working directory, chrome-devtools-mcp
+    writes under the file root the review relay hands it, and the relay creates its
+    refusal log in a directory of its own, so all three are empty private
+    directories of the run, not the harness or the checkout."""
     seen: dict[str, tuple[Path, int, list[str]]] = {}
 
     def inspect() -> None:
         servers = harness.mcp_config["mcpServers"]
         args = servers[tool_profiles.CHROME_DEVTOOLS_SERVER]["args"]
-        (root,) = [
-            a.split("=", 1)[1] for a in args if a.startswith("--filesystemRoot=")
-        ]
+        log = Path(args[args.index("--refusals") + 1])
+        assert log.name == review_relay.REFUSAL_LOG
         for name, path in (
             ("cwd", Path(harness.agent_kwargs["cwd"])),
-            ("root", Path(root)),
+            ("root", Path(args[args.index("--filesystem-root") + 1])),
+            ("guard", log.parent),
         ):
             mode = path.stat().st_mode & 0o777
             seen[name] = (path, mode, sorted(p.name for p in path.iterdir()))
@@ -2635,6 +2833,7 @@ def test_claudes_cwd_and_the_devtools_file_root_are_private_empty_run_dirs(
     agent_root = harness.run_dir / "agent"
     assert seen["cwd"] == (agent_root / "cwd", 0o700, [])
     assert seen["root"] == (agent_root / "mcp-files", 0o700, [])
+    assert seen["guard"] == (agent_root / "guard", 0o700, [])
 
 
 @pytest.mark.unit
@@ -3232,6 +3431,34 @@ def test_every_harness_import_is_itself_in_the_harness() -> None:
         }
     )
     assert not stray, f"unaccounted harness import: {stray}"
+
+
+@pytest.mark.unit
+def test_every_script_the_session_s_mcp_config_runs_is_in_the_harness(
+    harness: Harness,
+) -> None:
+    """The review relay and the recorder adapter are run by path, which an import
+    closure does not see, so each is checked against ``HARNESS_PATHS`` here."""
+    assert harness.main("--dry-run") == 0
+    servers = harness.mcp_config["mcpServers"]
+    assert set(servers) == {
+        tool_profiles.CHROME_DEVTOOLS_SERVER,
+        tool_profiles.RECORDER_SERVER,
+    }
+    started = {
+        name: [arg for arg in server["args"] if arg.endswith(".py")]
+        for name, server in servers.items()
+    }
+    assert started == {
+        tool_profiles.CHROME_DEVTOOLS_SERVER: [
+            str(paths.HARNESS_ROOT / ai_ux_test.REVIEW_RELAY)
+        ],
+        tool_profiles.RECORDER_SERVER: [
+            str(paths.HARNESS_ROOT / "scripts" / "ux_recorder_mcp.py")
+        ],
+    }
+    for scripts in started.values():
+        assert _covered(Path(scripts[0])), scripts
 
 
 @pytest.mark.unit

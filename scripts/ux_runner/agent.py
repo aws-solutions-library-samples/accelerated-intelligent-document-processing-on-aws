@@ -40,8 +40,12 @@ Every MCP server starts under ``env -i``
 Claude Code starts a stdio MCP server with an environment derived from its own,
 and its own holds the Bedrock session. Rather than depend on which variables that
 derivation passes, :func:`mcp_servers` runs both servers through
-``/usr/bin/env -i`` with an explicit ``PATH``, ``HOME`` and locale, so
-chrome-devtools-mcp and the recorder adapter receive no credential at all.
+``/usr/bin/env -i`` with an explicit ``PATH``, ``HOME`` and locale, so the review
+relay, the chrome-devtools-mcp it starts and the recorder adapter receive no
+credential at all. The browser server is the review relay
+(``ux_runner/review_relay.py``) rather than chrome-devtools-mcp itself, so every
+click and input the model makes passes the first-time-user stories' commit guard
+before it reaches the browser.
 
 The argv is fixed and carries no payload
 ----------------------------------------
@@ -100,11 +104,10 @@ CHILD_ENV_ALLOWLIST: tuple[str, ...] = ("PATH", "LANG", "LC_ALL", "TZ")
 #: each of them requires a ``pageId`` that only the denied ``list_pages`` reports.
 #: Every flag was checked against 1.10.1, whose option parser warns on an unknown
 #: one, and against its tools/list. The ``filePath`` that ``take_screenshot`` and
-#: ``take_snapshot`` take may name a file under ``--filesystemRoot``, which
-#: :func:`mcp_servers` adds, or under any root the MCP client reports, since 1.10.1
-#: writes under the union of the two; a client reports its working directory, so
-#: ``claude``'s is a write root as well, and :func:`run_agent` refuses one that is
-#: not a private, empty directory.
+#: ``take_snapshot`` take may name a file under ``--filesystemRoot`` or under any
+#: root the MCP client reports, since 1.10.1 writes under the union of the two. Its
+#: client is one of the two relays (``review_relay``, ``story_relay``), and neither
+#: reports a root, so ``--filesystemRoot`` is the only one.
 DEVTOOLS_FLAGS: tuple[str, ...] = (
     "--browserUrl",
     "http://127.0.0.1:9222",
@@ -229,6 +232,8 @@ def child_env(
 def mcp_servers(
     *,
     toolchain: paths.Toolchain,
+    relay: Path,
+    refusal_log: Path,
     recorder_adapter: Path,
     recorder_out: Path,
     python: str,
@@ -239,15 +244,15 @@ def mcp_servers(
     """The two MCP server definitions, keyed by the names the tool ids use.
 
     Both are ``/usr/bin/env -i`` with an explicit environment, so neither inherits
-    ``claude``'s, and both have an empty ``env`` map for the same reason.
-    chrome-devtools-mcp writes files only under ``fs_root`` and the roots the MCP
-    client reports, which is why :func:`run_agent` holds ``claude``'s working
-    directory to the same standard as ``fs_root``, and it is told not to check
-    for updates. The recorder adapter runs under ``python -I``,
-    which ignores ``PYTHON*`` variables and the user site directory, so it is
-    kept from writing bytecode into the pinned harness by ``-B`` on its command
-    line, where ``PYTHONDONTWRITEBYTECODE`` would be ignored; it writes only under
-    ``recorder_out``.
+    ``claude``'s, and both have an empty ``env`` map for the same reason. The one
+    named ``tool_profiles.CHROME_DEVTOOLS_SERVER`` is the review relay at ``relay``,
+    which starts the pinned chrome-devtools-mcp itself with this ``PATH`` and
+    ``HOME``, in ``fs_root``, the only directory that server writes files under, and
+    writes the commit guard's refusals to ``refusal_log``, which it creates. Both
+    servers run under ``python -I``, which ignores ``PYTHON*`` variables and the user
+    site directory, so each is kept from writing bytecode into the pinned harness by
+    ``-B`` on its command line, where ``PYTHONDONTWRITEBYTECODE`` would be ignored;
+    the recorder adapter writes only under ``recorder_out``.
     """
     base = ["-i", f"PATH={search_path}", f"HOME={home}", "LANG=C.UTF-8"]
     return {
@@ -256,10 +261,16 @@ def mcp_servers(
             "command": "/usr/bin/env",
             "args": [
                 *base,
-                "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1",
+                python,
+                "-I",
+                "-B",
+                str(relay),
+                "--devtools",
                 str(toolchain.devtools_mcp),
-                *DEVTOOLS_FLAGS,
-                f"--filesystemRoot={fs_root}",
+                "--filesystem-root",
+                str(fs_root),
+                "--refusals",
+                str(refusal_log),
             ],
             "env": {},
         },
@@ -560,7 +571,7 @@ def _require_private_empty_dir(path: Path) -> None:
     ):
         raise AgentError(
             "claude's working directory must be an empty directory that only its "
-            "owner, this user, can enter: chrome-devtools-mcp may write files there"
+            "owner, this user, can enter: every MCP server it starts runs there"
         )
 
 
@@ -584,9 +595,9 @@ def run_agent(
 
     ``cwd`` must be an empty directory, not a symlink, that only its owner (this
     process's user) can enter, or :class:`AgentError` is raised before anything
-    runs. The working directory is one of the roots chrome-devtools-mcp may write
-    a screenshot or snapshot under, so pointing it at the harness, the artifacts
-    or anything else that holds files would let the model write there.
+    runs. Every MCP server the session starts inherits it as its own working
+    directory, so it is held to the standard chrome-devtools-mcp's file root is,
+    whether or not anything writes there: neither relay reports it as a root.
     """
     _require_private_empty_dir(cwd)
     completed = runner(argv, input_text=prompt, env=env, cwd=cwd, timeout=timeout)

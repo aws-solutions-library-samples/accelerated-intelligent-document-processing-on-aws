@@ -2181,7 +2181,12 @@ ai_ux_test_stories_nightly:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"
       when: manual
     - when: never
-  # deployment_summary.txt, which records the review stack's state for the night.
+  # codebuild_logs.txt, the integration build's log, whose consolidated summary
+  # records the review stack's state for the night; the shard reads its last
+  # MiB, up to the line that starts the Bedrock narrative, which it never reads.
+  # Not deployment_summary.txt: when the job cannot fetch the build's
+  # summary from S3 it keeps only the log after that table, so the stack's row
+  # is not in it.
   dependencies:
     - integration_tests
   # ai_ux_test's environment, as on ai_ux_test_stories.
@@ -2197,7 +2202,7 @@ ai_ux_test_stories_nightly:
     # Under CI, --all is the nightly shard: a flow that gave up or ran out of
     # steps runs once more at twice its step budget, inside the catalogue's
     # job_usd and deadline.
-    UX_MODE_ARGS: "--all --shard $CI_NODE_INDEX/$CI_NODE_TOTAL --deploy-summary deployment_summary.txt"
+    UX_MODE_ARGS: "--all --shard $CI_NODE_INDEX/$CI_NODE_TOTAL --deploy-summary codebuild_logs.txt"
     UX_ARTIFACTS: "ux-test-stories/shard-$CI_NODE_INDEX"
   before_script: *ux_confined_setup
   # UX_HARNESS_SHA as in ai_ux_test_stories.
@@ -2279,8 +2284,9 @@ ai_ux_test_stories_digest:
   script:
     # The shards merged; on the schedule, compared with the earlier scheduled
     # nights' digests, read with GITLAB_REVIEW_TOKEN by GET requests alone, and
-    # the one-line summary posted to Slack, with UX_TEST_STORIES_SLACK_WEBHOOK_URL
-    # set. digest.md says when no earlier night was read.
+    # the night's summary posted to Slack, with UX_TEST_STORIES_SLACK_WEBHOOK_URL
+    # set: one plain-text line per flow, as the integration build's own post
+    # lists its tests. digest.md says when no earlier night was read.
     - python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" --digest ux-test-stories --out "$UX_ARTIFACTS"
   artifacts:
     when: always
