@@ -223,7 +223,9 @@ def _rollback_can_reuse_images(event) -> bool:
 
     try:
         # No build start time: with no build running there is no scan to order, so
-        # this is a presence check only.
+        # this is a presence check only. The first argument takes a repository URI
+        # and keeps the segment after its last "/", so a bare repository name (no
+        # "/", as !Ref ECRRepository yields) passes through unchanged.
         present = _verify_ecr_images_available(
             repository_name, image_version, expected_images, None
         )
