@@ -4,9 +4,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.3 |
-| **Last Updated** | 2026-10-29 |
-| **Applies to release** | v0.6.13 |
+| **Document Version** | 3.4 |
+| **Last Updated** | 2026-11-09 |
+| **Applies to release** | v0.6.14 |
 | **Classification** | Internal |
 
 > **v3.0 update.** All UI flows were rewritten: AppSync GraphQL + subscriptions
@@ -52,6 +52,10 @@ sequenceDiagram
         Note over QS: GuardDuty verdict arrives via EventBridge
         QS->>DDB: THREATS_FOUND -> QUARANTINED, unscannable -> MALWARE_SCAN_FAILED (no workflow)
     end
+    opt TenantIsolationMode=Strict
+        QS->>DDB: Read tenant declarations (ConfigurationTable)
+        Note over QS: Key's tenant must own the resolved profile, else FAILED;<br/>read failure raises (retried, alarmed); re-checked after a malware hold
+    end
     QS->>SQS: Enqueue document reference
     SQS->>QP: Dequeue message
     QP->>DDB: Conditional counter increment (admission control)
@@ -68,6 +72,7 @@ sequenceDiagram
 - S3 bucket policy restricts upload access; a bucket policy denies any request where `aws:SecureTransport` is false
 - SQS encryption at rest with the stack's **KMS customer-managed key** (`KmsMasterKeyId: CustomerManagedEncryptionKey` on every queue and DLQ) — not SSE-SQS
 - Step Functions input validated by Queue Processor Lambda
+- Under `TenantIsolationMode=Strict`, `queue_sender.enforce_tenant_boundary` refuses a document whose key and resolved profile belong to different tenants, and fails closed when the declarations cannot be read (`TenantIsolationLookupFailedAlarm`); a tenant uploader may also write through a per-tenant S3 Access Point, which the Input bucket policy delegates to (TEN.T01, TEN.T02, TEN.T05)
 - **Admission control** bounds concurrent processing (below)
 
 **Admission control, in detail.** This is the control that prevents an upload
@@ -456,6 +461,39 @@ secrets; auth happens inside the app against `/op`), but the PRIVATE endpoint
 policy and the optional WAF WebACL still gate them. **No CSP is emitted in this
 mode** — see UI.T01.
 
+### 3.6 Tenant Grants (`TenantGrantSource`, v0.6.14)
+
+```mermaid
+sequenceDiagram
+    participant IdP as External IdP
+    participant Cog as Cognito User Pool
+    participant Trig as Pre-token trigger
+    participant Cfg as ConfigurationTable (tenant index)
+    participant Users as UsersTable
+    participant Ent as Entitlement system / Admin
+    participant UM as user_management or SDK
+
+    alt TenantGrantSource=IdpClaim
+        IdP->>Cog: Fresh federated sign-in (group / role claim)
+        Cog->>Trig: TokenGeneration event
+        Trig->>Cog: AdminGetUser (linked to configured provider?)
+        Trig->>Cfg: GetItem TenantIndex#__index (skipped for an Admin)
+        Trig->>Users: Write one tenant's pattern or the deny marker
+        Note over Trig,Cog: Write failure raises: the sign-in fails
+    else TenantGrantSource=Api
+        Ent->>UM: setUserTenant (Admin) or SDK with IAM credentials
+        UM->>Cfg: Read tenant declarations
+        UM->>Users: Write one tenant's pattern or the deny marker
+    end
+```
+
+**Trust boundary crossings**: the identity provider's claim (outside every boundary
+in this model) crosses TB2 into TB3 as an authorization input, and under `Api` an
+external entitlement system writes it. Either way the source, not an Admin, now
+decides tenancy (TEN.T03). Under `IdpClaim` the trigger holds UsersTable write and
+a CMK grant that it holds in no other mode (TEN.T04). An Admin cannot edit a scope
+under either source, and Admins are never granted a tenant.
+
 ## 4. Agent & Chat Data Flows
 
 ### 4.1 Companion Chat Flow
@@ -764,7 +802,7 @@ sequenceDiagram
 | LLM prompts (Anthropic/Nova) | TB3 | TB4 | High (document text + PII) | TLS, IAM roles, no training opt-out |
 | **LLM prompts (OpenAI GPT-5.x via mantle)** | TB3 | TB4 | High (document text + PII) | TLS, IAM roles; **different model family — verify vendor/residency constraints** (PM.T08) |
 | **UI API operations** | TB1 | TB3 | High | JWT authn at gateway; default-deny group floor at the dispatcher; scope, ownership and queue-eligibility checks in resolver Lambdas; input-shape validation; optional WAF |
-| **Chat streaming (SSE)** | TB1 | TB3→TB4 | Medium-High | **SigV4 on a public Function URL; no group check, no session-ownership check** (CHAT.T03); #920 closed without a verified per-user subject; not covered by the WAF or by `make api-test` |
+| **Chat streaming (SSE)** | TB1 | TB3→TB4 | Medium-High | **SigV4 on a public Function URL; no group check, no session-ownership check** (CHAT.T03); #920 closed without a verified per-user subject; not covered by the WAF or by `make api-test`. Under `Strict` or an external `TenantGrantSource` the UI does not use it and it refuses every turn |
 | **Malware verdict** (optional) | GuardDuty | TB3 | Low (verdict only) | EventBridge rule filtered to the Input bucket; unknown verdicts refuse unless both the config and the stack ceiling allow unscannable files (PM.T09) |
 | **Review-queue work** | TB1 | TB3 | High (production document data, reviewer edits) | Group floor (`Admin` + `Annotator`; supervision `Admin`); per-item eligibility and profile scope, fail closed, with listings filtered by each item's own profile (HITL.T01); holder-only conditional writes (HITL.T02) |
 | **Review finalize** | TB3 | TB3 | High | Server-built `DocumentQueue` message; token-named execution; hooks before the review point run twice (HOOK.T04) |
@@ -782,4 +820,6 @@ sequenceDiagram
 | Configuration | TB1 | TB3 | Medium (prompts, schemas) | Auth, schema validation, config-version scope |
 | **Presigned object reads** | TB3 | TB1 | High (any document object) | Bucket allow-list, plus key scoping for the two per-user-partitioned buckets (`allowedConfigVersions` on `config_revisions/`, `allowedTestSets` on the Test Set bucket), plus document scoping on the Input/Output buckets (the owning document's `ConfigVersion` against `allowedConfigVersions`). The browser's Identity Pool role grants no S3, so there is no path around them. **No ownership axis** — the profile check narrows a scoped caller only (UI.T06) |
 | **Configuration revision bodies** | TB3 | TB1 | High (prompts, few-shot examples, every profile's history) | `config_revisions/<profile>/<nnnnnn>.json.gz` in the Configuration bucket. Read only through `getConfigProfileRevision` or `getFileContents`/`getFilePresignedUrl`, both of which match the profile against the caller's `allowedConfigVersions` and fail closed; the bucket is not on the browser's Identity Pool role, so there is no direct-S3 path |
+| **Tenant grant (IdP claim or API push)** | External IdP / entitlement system | TB3 (UsersTable) | High (decides a user's tenant) | Linked provider and fresh sign-in only; exactly one tenant or none; failure fails the sign-in or the call; Admin edits refused (TEN.T03, TEN.T04) |
+| **Tenant upload via access point** (`Strict`) | TB1 / tenant system | TB3 (Input bucket) | High (customer docs) | Per-tenant access point policy with explicit principal and prefix denies; bucket delegation admits any access point the account owns (TEN.T02); ingest tenant check (TEN.T01) |
 | **Test-set ground truth writes** | TB1 | TB3 | Medium (evaluation baselines) | Admin/Author group; `_editHistory` provenance (RPT.T07) |

@@ -500,10 +500,13 @@ carrying `IDP_RUN_PROBES=true`), not something in this repository; the probes ru
 only while it exists and is active.
 Two more weekly schedules, while they are active, run the primary suite in
 `eu-central-1` and `ca-central-1`; each result is labelled with its region, in the
-same Slack channel. A weekly Terraform schedule, while it is active (carrying
+same Slack channel. A second nightly schedule, while it is active (carrying
 `IDP_IAC=terraform`), runs the primary suite against a
 [Terraform deployment](./terraform.md) of the accelerator instead of a
-CloudFormation stack, labelled `WEEKLY TERRAFORM RUN`. To run that mode by hand, set
+CloudFormation stack, labelled `NIGHTLY TERRAFORM RUN`. It is told apart from the
+CloudFormation nightly by that variable alone, so it leaves the UX review stack and
+the nightly first-time-user stories to the CloudFormation nightly, and the two runs
+queue for the same deploy lock rather than overlapping. To run that mode by hand, set
 `IDP_IAC=terraform` for the deploy driver, `scripts/sdlc/codebuild_deployment.py`;
 how it differs from the CloudFormation run, and the CI pipeline-stack update it
 needs before the schedule is turned on, are in the coverage document below.

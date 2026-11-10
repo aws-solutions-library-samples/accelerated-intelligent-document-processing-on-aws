@@ -98,8 +98,8 @@ payload-robustness corpus covers that goal directly. See
 
 The GitLab pipeline's stages are below. Every gate a merge request runs is in the
 first one; the two deploy stages are **scheduled plus a manual button** (the nightly runs
-the primary suite, separate weekly schedules the probes, the other regions and
-the Terraform deployment), and the
+the primary suite, a second nightly schedule runs it against a Terraform deployment,
+and separate weekly schedules run the probes and the other regions), and the
 advisory `ux_review` stage runs only on a merge request that changes `src/ui/` or
 `CHANGELOG.md`. The advisory `ux_nightly` stage comes last, after `notify`, on the
 nightly schedule or on request.
@@ -111,7 +111,7 @@ nightly schedule or on request.
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack**. The deployment-variant probes run here only on the **weekly variant-probe schedule** — see below. | Yes (deploys) | ~1 hour; longer with the probes |
 | **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/`; `ai_ux_test_stories` (advisory first-time-user stories)⁴, only on non-Draft MRs to `develop` that change `CHANGELOG.md` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only; the stories job stops at its precheck in about a minute on most CHANGELOG MRs, and otherwise keeps to the catalogue's deadline inside a 60-minute job |
 | **notify** | `nightly_notification`: on a scheduled pipeline, posts the result to Slack when `integration_tests` did not | No | seconds |
-| **ux_nightly** | `ai_ux_test_stories_nightly` (the nightly story set, in parallel shards), then `ai_ux_test_stories_digest` (merges the shards into the night's digest and, on the schedule, compares it with earlier scheduled nights)⁴; on the scheduled `develop` pipeline (not the weekly variant-probe schedule), on a manual one with `UX_TEST_STORIES_RUN=all`, and as a manual button on a push to `develop` | Yes for the shards (Bedrock, Polly; they read the review stack); the digest needs none | after `notify`, so `nightly_notification` never waits for it; each shard keeps to the catalogue's dollar cap and deadline inside a 60-minute job |
+| **ux_nightly** | `ai_ux_test_stories_nightly` (the nightly story set, in parallel shards), then `ai_ux_test_stories_digest` (merges the shards into the night's digest and, on the schedule, compares it with earlier scheduled nights)⁴; on the scheduled `develop` pipeline (not the weekly variant-probe or region schedules, nor the nightly Terraform schedule), on a manual one with `UX_TEST_STORIES_RUN=all`, and as a manual button on a push to `develop` | Yes for the shards (Bedrock, Polly; they read the review stack); the digest needs none | after `notify`, so `nightly_notification` never waits for it; each shard keeps to the catalogue's dollar cap and deadline inside a 60-minute job |
 
 **The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE
 hosting, Jobs API, tenant isolation) run on their own weekly scheduled pipeline**, not on the nightly,
@@ -261,9 +261,9 @@ subscription, then create the region's schedule carrying `IDP_TEST_REGION`.
 Add the region to both `REGION_RUN_REGIONS` and `CI_INFRA_REGIONS`;
 `test_weekly_region_runs.py` fails if the two disagree.
 
-### Weekly Terraform run: the primary suite against a Terraform deployment
+### Nightly Terraform run: the primary suite against a Terraform deployment
 
-Every other run deploys the accelerator as a CloudFormation stack. One more weekly
+Every other run deploys the accelerator as a CloudFormation stack. A second nightly
 schedule, while it is active, deploys it with Terraform instead, from the module the
 same build publishes (`idp-cli publish --terraform`), and runs the **primary suite**
 against that deployment unchanged. The schedule carries `IDP_IAC=terraform`, and
@@ -277,15 +277,87 @@ variable, no Terraform run happens.
 | Pipeline | `IDP_IAC` | Runs |
 |---|---|---|
 | Nightly, probe run, region runs, buttons | not set (ignored off a schedule) | CloudFormation |
-| Weekly Terraform schedule | `terraform` | primary suite against a Terraform deployment in `us-east-1`; labelled `WEEKLY TERRAFORM RUN` in the summary, the failure email and both Slack posts; leaves the UX review stack and the nightly story jobs alone |
+| Nightly Terraform schedule | `terraform` | primary suite against a Terraform deployment in `us-east-1`; labelled `NIGHTLY TERRAFORM RUN` in the summary, the failure email and both Slack posts; leaves the UX review stack and the nightly story jobs alone |
 | Any schedule, with `IDP_IAC=terraform` set as a **project or group** CI/CD variable | `terraform`, inherited | every schedule becomes a Terraform run, the nightly included. Set the variable on the Terraform schedule only |
 
 It is the same `integration_tests` job, distinguished by the variable, as the probe
 and region runs are, so it holds the same `integration_deploy` resource group.
 `nightly_notification` covers it as it covers every schedule, with one change: its
-fallback post carries the same `WEEKLY TERRAFORM RUN` label as the job's own post. It
+fallback post carries the same `NIGHTLY TERRAFORM RUN` label as the job's own post. It
 is not a merge gate and is in neither CI's gate set; there is no GitHub equivalent,
 because integration runs are GitLab-only.
+
+**How it is kept apart from the CloudFormation nightly.** Both are scheduled
+pipelines of `develop` that fire every night, so nothing about cadence, source or
+ref tells them apart, and a schedule's description is not read anywhere. Every rule
+that means "the CloudFormation nightly" therefore excludes `IDP_IAC=terraform`
+explicitly, spelled as `iac_requested` accepts it (any case, surrounding space
+ignored):
+
+- **The nightly story jobs.** `ai_ux_test_stories_nightly` and
+  `ai_ux_test_stories_digest` share one rule list in `.gitlab-ci.yml`, which admits
+  a scheduled `develop` pipeline only after refusing one carrying `IDP_RUN_PROBES`,
+  `IDP_TEST_REGION` or `IDP_IAC=terraform`. Without the last of those the story set
+  would run twice a night against the same review stack, and the digest would
+  compare a night with itself. `scripts/tests/test_ux_test_stories_ci_jobs.py`
+  evaluates those rules for a Terraform schedule, and for one naming
+  CloudFormation explicitly, which still runs them.
+- **The UX review stack.** `ux_nightly_update_requested` in
+  `codebuild_deployment.py` moves `idp-ux-nightly` only on a scheduled `develop` run
+  whose `ci_run_options.json` names neither the probes, a region nor Terraform, so
+  the review stack still moves once a night, on the CloudFormation nightly.
+- **Notifications.** Both Slack posts, the consolidated summary and the failure
+  email's subject carry the `NIGHTLY TERRAFORM RUN` label, and the summary says it
+  is not the CloudFormation nightly result, so a red Terraform night in the shared
+  channel is not read as a product regression of the CloudFormation deploy.
+- **The digest's history.** It lists `develop`'s newest scheduled pipelines
+  (`SCHEDULED_PIPELINES` in `scripts/ux_runner/gitlab_api.py`) and skips any without
+  a digest job, so a Terraform pipeline is never read as a night. ⚠️ It is still
+  counted against that listing's length, though, and with one every night the
+  listing reaches back over fewer CloudFormation nights than before — fewer than
+  the `HISTORY_NIGHTS` the digest is written to compare with. The comparison still
+  works while at least `BASELINE_NIGHTS` are reached; widening the listing is a
+  separate change.
+- **Cleanup.** The startup sweeps reap a run's leftovers once its run prefix has no
+  CloudFormation stack left (`_live_idp_run_prefixes`) and spare `idp-ux-nightly`
+  by name. A Terraform run has CloudFormation stacks of its own — its `-iam`
+  pre-stack and the deployment's label stack — so the same rule covers both kinds
+  of run, and nothing in it depends on which schedule started the sweep. The
+  resource group keeps the two runs from overlapping in any case.
+
+**Scheduling it after the CloudFormation nightly.** Both runs hold
+`resource_group: integration_deploy`, so whichever reaches `integration_tests`
+second waits for the first to release it. Waiting is safe — a queued job's timeout
+does not run — but the order matters: if the Terraform run takes the group first,
+the CloudFormation nightly's deploy, its review-stack update and the story jobs
+that read that stack all start a full Terraform run later. Give the Terraform
+schedule a cron that fires after the CloudFormation nightly is normally done. The
+nightly's own cron is a GitLab project setting and is not recorded in this
+repository; the one recorded start is the 20:03 nightly of 2026-10-14 mentioned in
+`.gitlab-ci.yml`, without a time zone. What is recorded is its shape: the
+`fast_checks` stage costs its slowest job, measured at about a quarter of an hour,
+and the deploy plus primary suite took 62–113 minutes when it ran on every
+pipeline. So the CloudFormation nightly normally releases the group a little over
+two hours after it fires. **Start the Terraform schedule three hours after the
+CloudFormation nightly's cron** — `0 23 * * *` for a nightly at `0 20 * * *`, in the
+same schedule time zone — which covers the slowest recorded deploy with margin and
+still leaves the Terraform run inside the same night. On the nights a weekly
+probe or region schedule also fires, check that its cron does not sit between the
+two, or one of the three queues behind the others. If the nightly's timing has
+drifted from those figures, re-measure from its pipeline history rather than
+trusting this offset.
+
+**What it costs.** Running nightly instead of weekly adds one more full deployment,
+primary-suite run and teardown of the accelerator every night, on top of the
+CloudFormation nightly: the AWS resources of a complete stack for the length of the
+run, the primary suite's Bedrock, Textract and BDA calls, the CodeBuild minutes of
+the build, and the GitLab runner minutes of a second scheduled pipeline, its
+`fast_checks` stage included. The Terraform prototype measured a first `apply` of
+the full stack at about 28 minutes and a `destroy` at about 21
+(`terraform/README.md`); the run's own wall clock and its dollar cost in CI have
+not been measured, so no figure is given here. It also lengthens the night: with
+the two runs serialised on the deploy lock, the account's deploy window is roughly
+twice as long, and a manual button pressed during it queues behind both.
 
 ⚠️ **Order: update the `genaiic-sdlc-codepipeline` stack, then turn the Terraform
 schedule on.** The CodeBuild role needs the `AssumePerRunTerraformDeployRole`
@@ -570,6 +642,7 @@ GitHub's own Merge button runs no code from this tree.
 | **Nightly schedule** | ✅ | — | ✅ auto | ✅ auto¹ | — | — | ✅ auto |
 | **Weekly variant-probe schedule** | ✅ | — | ✅ auto | ✅ auto¹, plus the probes | — | — | — |
 | **Weekly region schedule** (eu-central-1, ca-central-1) | ✅ | — | ✅ auto | ✅ auto¹, in that region | — | — | — |
+| **Nightly Terraform schedule** (`IDP_IAC=terraform`) | ✅ | — | ✅ auto | ✅ auto¹, against a Terraform deployment | — | — | — |
 
 ¹ ⚠️ **THE DEPLOY IS NO LONGER A MERGE GATE.** This is the central trade in the
 current pipeline shape and it has to be read before a green MR pipeline is relied

@@ -622,8 +622,10 @@ integration_tests:
   #     below serialises it against the nightly; it does NOT reduce the burst of
   #     primary + probe stacks inside the run, which codebuild_deployment.py's
   #     launch stagger, concurrency cap and retry bound instead.
-  #   - the weekly Terraform schedule            → auto, primary suite only,
-  #     against a TERRAFORM deployment of the accelerator. The schedule carries
+  #   - the nightly Terraform schedule           → auto, primary suite only,
+  #     against a TERRAFORM deployment of the accelerator. It is a second daily
+  #     schedule beside the CloudFormation nightly, told apart from it by
+  #     IDP_IAC alone, never by its cadence or its description. The schedule carries
   #     IDP_IAC=terraform, and integration_test_deployment.py (iac_requested)
   #     honours it only on a scheduled pipeline and refuses it combined with
   #     IDP_RUN_PROBES or IDP_TEST_REGION. It reaches the build in
@@ -631,7 +633,9 @@ integration_tests:
   #     Terraform release itself (ensure_terraform_binary in
   #     codebuild_deployment.py), because CodeBuild, not this job, runs it.
   #     Nothing in this file turns it on: with no schedule carrying the variable,
-  #     no Terraform run happens.
+  #     no Terraform run happens. It holds the same resource_group as the
+  #     CloudFormation nightly, so the two serialise; schedule it to start after
+  #     the nightly normally finishes (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
   #   - any MR targeting develop                 → MANUAL button on the MR page
   #   - push to develop                          → MANUAL button on the pipeline
   #   - anything else                            → never
@@ -965,8 +969,10 @@ integration_tests:
           if os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
           else ""
       )
-      # And the weekly Terraform run, keyed like iac_requested(): the variable
-      # counts only on a schedule.
+      # And the nightly Terraform run, keyed like iac_requested(): the variable
+      # counts only on a schedule. It is a second daily schedule, so this label,
+      # not the cadence, is what keeps it from reading as the CloudFormation
+      # nightly.
       terraform_run = (
           os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
           and os.environ.get("IDP_IAC", "").strip().lower() == "terraform"
@@ -1012,7 +1018,7 @@ integration_tests:
       if region_run:
           status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
       if terraform_run:
-          status = "🧱 WEEKLY TERRAFORM RUN · " + status
+          status = "🧱 NIGHTLY TERRAFORM RUN · " + status
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
@@ -2062,14 +2068,14 @@ nightly_notification:
           )
           if region_run:
               status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
-          # And the weekly Terraform run, read exactly as the post in
+          # And the nightly Terraform run, read exactly as the post in
           # integration_tests reads it.
           terraform_run = (
               os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
               and os.environ.get("IDP_IAC", "").strip().lower() == "terraform"
           )
           if terraform_run:
-              status = "🧱 WEEKLY TERRAFORM RUN · " + status
+              status = "🧱 NIGHTLY TERRAFORM RUN · " + status
 
           # Same flat, all-string contract as the post in integration_tests: these
           # four keys are declared on the Slack Workflow Builder trigger as Text, and
@@ -2119,8 +2125,12 @@ nightly_notification:
 #   - Run pipeline on develop with UX_TEST_STORIES_RUN=all, automatically;
 #   - a push to develop, as a manual button.
 # The weekly region schedules (IDP_TEST_REGION) are excluded for the same reason:
-# the review stack is in us-east-1 and they leave it alone. So is the weekly
+# the review stack is in us-east-1 and they leave it alone. So is the nightly
 # Terraform schedule (IDP_IAC=terraform), which leaves the review stack alone too.
+# It is a scheduled develop pipeline every night, exactly as the CloudFormation
+# nightly is, so IDP_IAC is the only thing that tells the two apart here: without
+# that rule the story set would run twice a night against the same stack and the
+# digest would compare the night with itself.
 # The weekly variant-probe schedule (IDP_RUN_PROBES=true) is also a scheduled
 # develop pipeline and is excluded: it leaves the review stack alone, so a story
 # run there would re-test the night's stack and add a second "night" to the

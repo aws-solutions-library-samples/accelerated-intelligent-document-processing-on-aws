@@ -25,6 +25,10 @@ classification:
   # matches it. Check the spelling yourself against `classes`.
   fallback_class: unclassified
   # ── strategy: combined ────────────────────────────────────────────────
+  # Each prompt below starts with a {# ... #} comment stating its contract; comments
+  # are removed before a prompt is sent (idp_common/prompt_comments.py). In a folded
+  # (>-) block the blank line after the comment is needed: without it YAML folds the
+  # comment into the first text line and the prompt starts with a space.
   combined:
     # page: one call per page, each also saying whether the page starts a document. packet: one call per packet or window.
     granularity: page
@@ -32,6 +36,8 @@ classification:
       # Pages either side of the page being read, sent as context. Each call carries up to 2k+1 pages.
       contextPagesCount: '0'
       system_prompt: >-
+        {# System prompt for page calls (strategy combined, granularity page). Sent as written: no placeholder is replaced in a system prompt. #}
+
         You are a multimodal document classification expert that analyzes business documents
         using both visual layout and textual content. Your task is to classify single-page
         documents into predefined categories based on their structural patterns, visual features,
@@ -42,6 +48,14 @@ classification:
         <document-types>: List of valid document types with their descriptions that the document
         must be classified into </variables>
       task_prompt: |-
+        {# Contract: one page per call. Must ask for a JSON object with "class" (one of the listed types)
+        and "document_boundary" ("start" if this page begins a new section, else "continue").
+        Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (each class's examples;
+        empty when there are none, so it is safe to leave in), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE},
+        and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} to add schema field names.
+        Removing {DOCUMENT_TEXT} or {DOCUMENT_IMAGE} is the same as turning that Modality flag off.
+        <<CACHEPOINT>> marks the end of the static prefix for prompt caching; keep the
+        document placeholders after it. #}
         <task-description> Analyze the provided document using both its visual layout and textual content to determine its document type and whether this page begins a new document or continues the previous one. </task-description>
         <document-types> {CLASS_NAMES_AND_DESCRIPTIONS} </document-types>
         <few-shot-examples> {FEW_SHOT_EXAMPLES} </few-shot-examples>
@@ -58,6 +72,8 @@ classification:
         <final-instructions> Analyze the document above by: 1. Applying the <classification-instructions> to examine both visual and textual features 2. Selecting ONLY from document types in <document-types> 3. Providing clear reasoning with specific evidence 4. Outputting in the exact JSON format specified in <output-format> </final-instructions>
     packet:
       system_prompt: >-
+        {# System prompt for packet calls (strategy combined, granularity packet). Sent as written: no placeholder is replaced in a system prompt. #}
+
         You are a document classification expert who analyses multi-document packets. Your
         task is to identify where each document in the packet starts and ends, and to classify
         each one into a predefined category, using both the visual layout of each page and
@@ -67,6 +83,11 @@ classification:
         the packet, each preceded by its page number <document-types>: List of valid document
         types with their descriptions </variables>
       task_prompt: |-
+        {# Contract: one call per packet or window. Must ask for a "segments" array whose items carry
+        "ordinal_start_page", "ordinal_end_page" and "type". Page numbers count from the first page
+        the call is shown, not the document's page 1.
+        Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}.
+        <<CACHEPOINT>> marks the end of the static prefix for prompt caching. #}
         <task-description> Analyse the document packet below and split it into the separate documents it contains. For each document, report the page range it occupies and its document type. </task-description>
         <document-types> {CLASS_NAMES_AND_DESCRIPTIONS} </document-types>
         <few-shot-examples> {FEW_SHOT_EXAMPLES} </few-shot-examples>
@@ -118,6 +139,8 @@ classification:
         mode: topk
         top_k_candidates: '3'
         task_prompt_topk: |-
+          {# Appended to the page task prompt when confidence.mode is topk. Must ask for a "candidates"
+          array of {"class", "probability"}, most likely first; {TOP_K_CANDIDATES} is the count. #}
           <class-confidence> Your JSON object MUST also contain a "candidates" key: the {TOP_K_CANDIDATES} document types most likely to be correct for this page, most likely first, each with the probability that it is the correct type.
           "candidates": [
             {"class": "<most likely type>", "probability": <number between 0.0 and 1.0>},
@@ -125,9 +148,13 @@ classification:
           ]
           Rules: 1. Every "class" value must be one of the types listed in <document-types>. 2. The first candidate must be the same type you report in "class". 3. The probabilities must not sum to more than 1.0. Mass you leave unassigned means "possibly some other type". 4. Distribute the probability honestly. If a second type is genuinely plausible for this page, give it real probability mass instead of assigning close to 1.0 to the first — a page that is hard to classify should not look certain. </class-confidence>
         task_prompt_verbalized: |-
+          {# Appended to the page task prompt when confidence.mode is verbalized. Must ask for a
+          "confidence" number between 0.0 and 1.0 for the reported class. #}
           <class-confidence> Your JSON object MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report in "class" is correct for this page.
           Base it on how much better the page matches the type you chose than the other types in <document-types>. Do not default to a high value: a page whose evidence is thin or ambiguous should carry a low confidence. </class-confidence>
         task_prompt_topk_packet: |-
+          {# Appended to the packet task prompt when confidence.mode is topk. Each "segments" item must
+          gain a "candidates" array of {"class", "probability"}; {TOP_K_CANDIDATES} is the count. #}
           <class-confidence> Each object in your "segments" array MUST also contain a "candidates" key: the {TOP_K_CANDIDATES} document types most likely to be correct for THAT segment, most likely first, each with the probability that it is the correct type.
           "candidates": [
             {"class": "<most likely type>", "probability": <number between 0.0 and 1.0>},
@@ -135,6 +162,8 @@ classification:
           ]
           Rules: 1. Every "class" value must be one of the types listed in <document-types>. 2. The first candidate must be the same type you report in that segment's "type". 3. The probabilities for a segment must not sum to more than 1.0. Mass you leave unassigned means "possibly some other type". 4. Score each segment independently and honestly. A short segment, or one whose evidence is thin, should not look as certain as a clearly-identified multi-page document. </class-confidence>
         task_prompt_verbalized_packet: |-
+          {# Appended to the packet task prompt when confidence.mode is verbalized. Each "segments"
+          item must gain a "confidence" number between 0.0 and 1.0. #}
           <class-confidence> Each object in your "segments" array MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report for THAT segment is correct.
           Base it on how much better the segment's pages match the type you chose than the other types in <document-types>. Do not default to a high value: a segment whose evidence is thin or ambiguous should carry a low confidence. </class-confidence>
   # ── strategy: split_then_classify ──────────────────────────────────────────────────
@@ -149,10 +178,17 @@ classification:
           # Pages either side of the page being read, sent as context. Each call carries up to 2k+1 pages.
           contextPagesCount: '0'
           system_prompt: >-
+            {# System prompt for the per-page splitting calls (strategy split_then_classify). Sent as written: no placeholder is replaced in a system prompt. #}
+
             You are a document segmentation expert. Your only task is to decide where each
             document in a packet starts. You do not classify documents and you do not name
             document types. Your output must be valid JSON according to the requested format.
           task_prompt: |-
+            {# Contract: decides only whether this page starts a new section. Must ask for a
+            "document_boundary" of "start" or "continue"; no class.
+            Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. The class list and
+            examples are deliberately absent: they are the prefix this stage exists to drop, and
+            render empty here. #}
             <task-description> Decide whether the page below is the FIRST page of a document, or a later page of a document that began earlier. </task-description>
             {BOUNDARY_HINTS}
             <boundary-detection-rules> You are looking at ONE page. Any pages shown to you as context are there only to help you judge this page. Decide from this page's own evidence, in priority order: 1. PAGINATION: pagination such as "Page 2 of 2", "Page 3 of 5", "2/2", or "continued" with a number greater than 1 means this page is NOT a first page - output "continue". 2. If pagination indicates the first page (for example "Page 1 of 2"), output "start". 3. OPENING HEADER BLOCK: a first page carries the document's opening identity block - the document title or form name, the issuer or institution name, the addressee or account holder name AND address, the statement or document date or period, and account or reference numbers. Output "start" ONLY when this page carries that opening block. 4. TABLE CONTINUATION: a page whose content is a table or list of rows - even when the table's COLUMN HEADINGS (for example "Date | Description | Amount") are repeated at the top of the page - and that does NOT carry the opening block is a continuation page. Repeated column headings are printed on every page of a long table; they are NOT a document title. Output "continue". 5. OTHER CONTINUATION EVIDENCE: a later page may show a form number only in the footer, a running balance or subtotal carried forward, or a trailing signature/consent/certification section. Output "continue". CRITICAL - no preceding page shown: if you are not shown the preceding page, do NOT conclude that this page must be a first page. Pages are judged independently, so the absence of a preceding page tells you nothing. A page showing only table rows, or marked "Page 2 of 2", is a continuation page even when you cannot see page 1. CRITICAL - consecutive documents: output "start" whenever this page IS a first page, even when the preceding page belongs to a document of the same kind. Two copies of the same form filed back to back are two separate documents. If evidence is genuinely balanced, prefer "continue" for a page lacking the opening block and "start" for a page carrying a complete opening block. </boundary-detection-rules>
@@ -169,11 +205,16 @@ classification:
           # Pages repeated between adjacent windows; must be smaller than window_pages.
           overlap_pages: '2'
           system_prompt: >-
+            {# System prompt for the packet splitting calls (strategy split_then_classify). Sent as written: no placeholder is replaced in a system prompt. #}
+
             You are a document segmentation expert who analyses multi-document packets. Your
             only task is to decide where each document in the packet starts and ends. You
             do not classify documents and you do not name document types. Your output must
             be valid JSON according to the requested format.
           task_prompt: |-
+            {# Contract: ranges only. Must ask for a "segments" array of "ordinal_start_page" and
+            "ordinal_end_page", with no type. Page numbers count from the first page the call is shown.
+            Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. #}
             <task-description> Split the document packet below into the separate documents it contains. Report only the page range each document occupies. Do NOT name or classify the documents. </task-description>
             {BOUNDARY_HINTS}
             <segmentation-instructions> 1. Read every page of the packet before deciding anything. A boundary is a statement about the packet, not about one page. 2. A new document STARTS on a page that carries an opening identity block: the document title or form name, the issuer or institution name, the addressee or account holder name AND address, the statement date or period, and account or reference numbers. 3. A page CONTINUES the current document when it lacks that opening block. Repeated table column headings (for example "Date | Description | Amount") are printed on every page of a long table and do NOT start a new document. 4. Pagination is strong evidence: "Page 1 of 3" starts a document, "Page 2 of 3" or "continued" does not. 5. Two copies of the same form filed back to back are TWO documents. Report two ranges rather than one merged range. 6. Every page of the packet must belong to exactly one range. Ranges must be contiguous, must not overlap, and must cover the full page range in order. </segmentation-instructions>
@@ -237,10 +278,15 @@ classification:
           target_height: ''
           target_width: ''
         system_prompt: >-
+          {# System prompt for the section classification calls (strategy split_then_classify). Sent as written: no placeholder is replaced in a system prompt. #}
+
           You are a document classification expert. You are given the opening pages of ONE
           document and a list of document types. Your task is to say which type it is. Your
           output must be valid JSON according to the requested format.
         task_prompt: |-
+          {# Contract: given one section's pages, returns its class. Must ask for "class" only;
+          the boundary was already decided.
+          Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. #}
           <task-description> Identify the type of the single document whose pages are shown below. The pages all belong to one document; you are not being asked to split anything. </task-description>
           <document-types> {CLASS_NAMES_AND_DESCRIPTIONS} </document-types>
           <few-shot-examples> {FEW_SHOT_EXAMPLES} </few-shot-examples>
@@ -264,6 +310,8 @@ classification:
           mode: topk
           top_k_candidates: '3'
           task_prompt_topk: |-
+            {# Appended to the section task prompt when confidence.mode is topk. Must ask for a
+            "candidates" array of {"class", "probability"}; {TOP_K_CANDIDATES} is the count. #}
             <class-confidence> Your JSON object MUST also contain a "candidates" key: the {TOP_K_CANDIDATES} document types most likely to be correct for this page, most likely first, each with the probability that it is the correct type.
             "candidates": [
               {"class": "<most likely type>", "probability": <number between 0.0 and 1.0>},
@@ -271,6 +319,8 @@ classification:
             ]
             Rules: 1. Every "class" value must be one of the types listed in <document-types>. 2. The first candidate must be the same type you report in "class". 3. The probabilities must not sum to more than 1.0. Mass you leave unassigned means "possibly some other type". 4. Distribute the probability honestly. If a second type is genuinely plausible for this page, give it real probability mass instead of assigning close to 1.0 to the first — a page that is hard to classify should not look certain. </class-confidence>
           task_prompt_verbalized: |-
+            {# Appended to the section task prompt when confidence.mode is verbalized. Must ask for a
+            "confidence" number between 0.0 and 1.0 for the reported class. #}
             <class-confidence> Your JSON object MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report in "class" is correct for this page.
             Base it on how much better the page matches the type you chose than the other types in <document-types>. Do not default to a high value: a page whose evidence is thin or ambiguous should carry a low confidence. </class-confidence>
   # ── Advanced: known document shape ───────────────────────────────────────────

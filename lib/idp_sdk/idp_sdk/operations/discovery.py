@@ -342,8 +342,13 @@ class DiscoveryOperation:
         try:
             from idp_common import bedrock
             from idp_common.config.merge_utils import load_system_defaults
+            from idp_common.prompt_comments import strip_prompt_comments_in_config
 
-            defaults = load_system_defaults("pattern-2")
+            # Shipped defaults may document prompts in {# ... #} comments; this
+            # path sends them without the runtime config reader, so strip here.
+            defaults = strip_prompt_comments_in_config(
+                load_system_defaults("pattern-2")
+            )
             discovery_cfg = defaults.get("discovery", {})
             auto_cfg = discovery_cfg.get("auto_split", {})
 
@@ -539,6 +544,7 @@ class DiscoveryOperation:
         try:
             from idp_common import bedrock, image
             from idp_common.config.merge_utils import load_system_defaults
+            from idp_common.prompt_comments import strip_prompt_comments_in_config
 
             # If a page range is specified and the file is a PDF, extract only those pages
             file_extension = doc_path.suffix.lower().lstrip(".")
@@ -551,7 +557,11 @@ class DiscoveryOperation:
                 )
 
             # Load system defaults to get discovery prompts and model settings
-            defaults = load_system_defaults("pattern-2")
+            # Shipped defaults may document prompts in {# ... #} comments; this
+            # path sends them without the runtime config reader, so strip here.
+            defaults = strip_prompt_comments_in_config(
+                load_system_defaults("pattern-2")
+            )
             discovery_cfg = defaults.get("discovery", {})
             mode_cfg = (
                 discovery_cfg.get("with_ground_truth", {})

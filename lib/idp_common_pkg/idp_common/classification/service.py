@@ -63,6 +63,7 @@ from idp_common.config.schema_constants import (
 )
 from idp_common.config.schema_utils import deref_schema
 from idp_common.models import Document, ProcessingIssue, Section, Status
+from idp_common.prompt_comments import strip_prompt_comments
 from idp_common.utils import (
     extract_json_from_text,
     extract_structured_data_from_text,
@@ -1592,7 +1593,9 @@ class ClassificationService:
             )
             return task_prompt
 
-        composed = append_class_confidence_block(task_prompt, block, top_k)
+        composed = append_class_confidence_block(
+            task_prompt, strip_prompt_comments(block), top_k
+        )
         if composed is not task_prompt:
             logger.info(
                 "Requesting class confidence in %s mode%s",
@@ -1677,7 +1680,9 @@ class ClassificationService:
             if not isinstance(node, dict):
                 return ""
             node = node.get(key)
-        return node if isinstance(node, str) else ""
+        # The shipped defaults carry their contract as prompt comments, and this
+        # read bypasses the runtime config reader that removes them elsewhere.
+        return strip_prompt_comments(node) if isinstance(node, str) else ""
 
     # ── Which block a call reads its settings from ──────────────────────────
     # Config format 0.9 nests every setting inside the call that uses it. These
@@ -1805,7 +1810,11 @@ class ClassificationService:
             path = root + (sub, field)
             value = getattr(getattr(block, sub), field)
         if value:
-            return value
+            # Comments ({# ... #}) are removed here as well as by the runtime config
+            # reader, because a config can also be handed to this service directly,
+            # and everything downstream (modality inference, the splits on
+            # {DOCUMENT_IMAGE} / {FEW_SHOT_EXAMPLES}) must see the template as sent.
+            return strip_prompt_comments(value)
         # ⚠️ The combined PAGE prompt gets no shipped fallback, unlike every
         # other prompt here. The fallback exists for prompts added after a
         # profile could have been saved, which read back empty through no choice
