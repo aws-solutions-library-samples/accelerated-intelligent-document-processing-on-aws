@@ -127,6 +127,17 @@ EXEMPT_SUBTREES: dict[str, str] = {
 #: Individual fields that should never have a control.
 NOT_USER_SETTABLE: dict[str, str] = {
     # --- section classification by a decision model (#1656) -------------
+    "extraction.confidence.decision_model.backend": (
+        "One accepted value, 'lambda'; a control would offer a single choice."
+    ),
+    "extraction.confidence.decision_model.price_per_request": (
+        "Not read: decision-model cost comes from the decision_model/<function> "
+        "entry in pricing.yaml, priced by GB-second like any Lambda."
+    ),
+    "extraction.confidence.decision_model.function_memory_mb": (
+        "Metering input that must equal the deployed function's memory; it is a "
+        "property of the deployment, not a tuning choice, so it is YAML-only."
+    ),
     "classification.split_then_classify.section_classification.decision_model.backend": (
         "One accepted value, 'lambda'; a control would offer a single choice."
     ),

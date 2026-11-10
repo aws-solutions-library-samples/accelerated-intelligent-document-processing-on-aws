@@ -2769,6 +2769,74 @@ Resources:
                     default: 25
                     order: 2
                     dependsOn: { field: "extraction.confidence.mode", value: "separate" }
+                  method:
+                    type: string
+                    title: Confidence method
+                    description: "Who scores each extracted value in a separate pass. 'LLM' (default): the confidence model and prompts below. 'Decision model': one yes/no question per value to a decision model, per page, and the value's confidence is its highest probability across pages ([Decision models](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/decision-models.md)). Needs mode 'separate'."
+                    enum: ["llm", "decision_model"]
+                    enumLabels: { "llm": "LLM (default)", "decision_model": "Decision model" }
+                    default: "llm"
+                    order: 1
+                    dependsOn: { field: "extraction.confidence.mode", value: "separate" }
+                  decision_model:
+                    type: object
+                    sectionLabel: Decision model
+                    collapsible: false
+                    description: "One yes/no question per extracted value, asked against each page of the section in one request per page."
+                    order: 3
+                    showWhen: [{ field: "method", value: "decision_model" }]
+                    properties:
+                      endpoint:
+                        type: string
+                        title: Function ARN
+                        description: "The decision model's Lambda function ARN (System One API). The function name must start with GENAIIDP-. Empty uses the stack's own decision model, when the stack deploys one."
+                        order: 0
+                      input:
+                        type: string
+                        title: Input
+                        description: "What each request reads. 'Page images' (default): one page image per request, which measured best. 'OCR text': one request with the section's text. 'Both': each page image plus the section's text, which can exceed the model's window on long sections."
+                        enum: ["images", "text", "both"]
+                        enumLabels: { images: "Page images (default)", text: "OCR text", both: "Page images and OCR text" }
+                        default: "images"
+                        order: 1
+                      max_pages:
+                        type: integer
+                        title: Maximum pages per section
+                        description: "The most pages of a section read, one request each. A value that appears only on a later page scores low and is sent to review."
+                        minimum: 1
+                        maximum: 50
+                        default: 20
+                        order: 2
+                      instructions:
+                        type: string
+                        title: Question
+                        format: textarea
+                        description: "Each value's yes/no question. {FIELD} is the field's path (for example LineItems[2].Amount), {DESCRIPTION} its schema description, {VALUE} the extracted value."
+                        order: 3
+                      max_questions_per_request:
+                        type: integer
+                        title: Maximum questions per request
+                        description: "A page with more extracted values is asked in several requests, which keeps each inside the model's request limit."
+                        minimum: 1
+                        maximum: 250
+                        default: 100
+                        order: 4
+                      timeout_ms:
+                        type: integer
+                        title: Timeout (ms)
+                        description: "How long to wait for one answer. A new execution environment can take up to 30 s to load the model."
+                        minimum: 1000
+                        maximum: 840000
+                        default: 120000
+                        order: 5
+                      max_concurrency:
+                        type: integer
+                        title: Maximum concurrent calls
+                        description: "The most calls in flight for one section. Each call occupies one 10 GB execution environment."
+                        minimum: 1
+                        maximum: 64
+                        default: 4
+                        order: 6
                   model:
                     type: string
                     title: Confidence model

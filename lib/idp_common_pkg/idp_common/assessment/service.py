@@ -1067,6 +1067,13 @@ class AssessmentService:
 
         # Get confidence configuration (v0.6: extraction.confidence.*)
         confidence_cfg = self.config.extraction.confidence
+        if confidence_cfg.method == "decision_model":
+            return self._assess_with_decision_model(
+                class_label=class_label,
+                extraction_results=extraction_results,
+                document_text=document_text,
+                page_images=page_images,
+            )
         model_id = model_id_override or confidence_cfg.model
         temperature = confidence_cfg.temperature
         top_k = confidence_cfg.top_k
@@ -1260,6 +1267,61 @@ class AssessmentService:
                     }
                 parsing_succeeded = False
 
+        return self._finalize_assessment(
+            assessment_data,
+            class_schema,
+            metering=metering,
+            parsing_succeeded=parsing_succeeded,
+            total_duration=total_duration,
+            truncated=truncated,
+        )
+
+    def _assess_with_decision_model(
+        self,
+        *,
+        class_label: str,
+        extraction_results: Dict[str, Any],
+        document_text: str,
+        page_images: List[Any],
+    ) -> AssessmentCoreResult:
+        """``extraction.confidence.method: decision_model``: one yes/no per value."""
+        from idp_common.assessment.decision_model_confidence import (
+            DecisionModelConfidenceScorer,
+        )
+
+        class_schema = self._get_class_schema(class_label)
+        if not class_schema:
+            raise ValueError(f"No schema found for document class: {class_label}")
+        scorer = DecisionModelConfidenceScorer(
+            self.config.extraction.confidence, region=self.region
+        )
+        assessment_data, metering, duration = scorer.score(
+            extraction_results, class_schema, document_text, page_images
+        )
+        return self._finalize_assessment(
+            assessment_data,
+            class_schema,
+            metering=metering,
+            parsing_succeeded=True,
+            total_duration=duration,
+            truncated=False,
+        )
+
+    def _finalize_assessment(
+        self,
+        assessment_data: Dict[str, Any],
+        class_schema: Dict[str, Any],
+        *,
+        metering: Optional[Dict[str, Any]],
+        parsing_succeeded: bool,
+        total_duration: float,
+        truncated: bool,
+    ) -> AssessmentCoreResult:
+        """Thresholds, alerts and the result, for a parsed assessment.
+
+        Shared by the LLM confidence call and the decision-model one, so both
+        produce exactly the same ``explainability_info`` shape and alerts.
+        """
         # Convert any model-provided bbox into geometry — only in the LLM-box
         # geometry modes ('llm', 'llm_grounded'). In 'ocr_only' (default) and 'off'
         # we intentionally ignore model boxes (geometry comes solely from OCR

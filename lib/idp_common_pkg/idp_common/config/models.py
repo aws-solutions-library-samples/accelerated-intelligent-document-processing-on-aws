@@ -974,6 +974,126 @@ class MalwareScanningConfig(BaseModel):
         return normalised
 
 
+class ExternalModelConfig(BaseModel):
+    """An external model behind a stable contract.
+
+    Shared by the boundary model (splitting) and the decision models (section
+    classification, extraction confidence), so each method lands without a
+    configuration migration. ``backend: lambda`` is implemented, by
+    ``idp_common.decision_model``, which speaks the System One API; ``sagemaker``
+    and ``bedrock_custom`` are declared and refused until they are.
+    """
+
+    backend: str = Field(
+        default="",
+        description="lambda (empty means lambda) | sagemaker | bedrock_custom",
+    )
+    endpoint: str = Field(
+        default="",
+        description=(
+            "Endpoint name, model ARN, or function ARN (GENAIIDP- prefix). Empty "
+            "uses the stack's own decision model, when the stack deploys one."
+        ),
+    )
+    input: str = Field(default="images", description="images | text | both")
+    timeout_ms: int = Field(default=30000, ge=0)
+    max_concurrency: int = Field(default=4, ge=1)
+    price_per_request: float = Field(
+        default=0.0, ge=0.0, description="Per-request price, for metering."
+    )
+    function_memory_mb: int = Field(
+        default=10240,
+        ge=128,
+        le=10240,
+        description=(
+            "The memory the Lambda backend's function runs at, for metering "
+            "GB-seconds. The Strands Decider's Lambda deployment uses 10240."
+        ),
+    )
+
+
+#: The most pages of a section the decision-model confidence pass reads. Each page
+#: is a request, so this bounds how many one section fans out to.
+DECISION_MODEL_MAX_CONFIDENCE_PAGES = 50
+
+
+class ConfidenceDecisionModelConfig(ExternalModelConfig):
+    """Extraction confidence by a decision model: one ``noul`` question per field.
+
+    Each page of the section is one request, with that page as the state and one
+    question per extracted value; a value's confidence is its highest P(yes) over
+    the pages. See ``idp_common.assessment.decision_model_confidence``.
+    """
+
+    backend: str = Field(
+        default="lambda", description="lambda (the only backend today)"
+    )
+    endpoint: Optional[str] = Field(
+        default=None,
+        description=(
+            "Function ARN; the function name must start with GENAIIDP-. Unset uses "
+            "the stack's own decision model, when the stack deploys one."
+        ),
+    )
+    timeout_ms: int = Field(
+        default=120000,
+        ge=1000,
+        le=840000,
+        description=(
+            "How long to wait for one answer. A new execution environment can take "
+            "up to 30 s to load the model before it answers."
+        ),
+    )
+    instructions: str = Field(
+        default=(
+            'The system says the field "{FIELD}" ({DESCRIPTION}) is "{VALUE}". '
+            "Is that the correct value?"
+        ),
+        description=(
+            "Each field's yes/no question. {FIELD} is the field's path, "
+            "{DESCRIPTION} its schema description, {VALUE} the extracted value."
+        ),
+    )
+    max_pages: int = Field(
+        default=20,
+        ge=1,
+        le=DECISION_MODEL_MAX_CONFIDENCE_PAGES,
+        description=(
+            "The most pages of a section read, one request each (1 to "
+            f"{DECISION_MODEL_MAX_CONFIDENCE_PAGES}). A value that appears only on a "
+            "page past the limit scores low and is sent to review."
+        ),
+    )
+    max_questions_per_request: int = Field(
+        default=100,
+        ge=1,
+        le=250,
+        description=(
+            "The most field questions in one request. A page with more fields is "
+            "asked in several requests, which keeps each inside the model's "
+            "request limit."
+        ),
+    )
+
+    @field_validator("input", mode="before")
+    @classmethod
+    def validate_input(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "images"
+        v_str = str(v).strip().lower()
+        if v_str not in DECISION_MODEL_INPUTS:
+            raise ValueError(
+                "extraction.confidence.decision_model.input must be one of "
+                f"{', '.join(DECISION_MODEL_INPUTS)}, got {v!r}"
+            )
+        return v_str
+
+    @field_validator("max_pages", "max_questions_per_request", mode="before")
+    @classmethod
+    def parse_ints(cls, v: Any, info: ValidationInfo) -> int:
+        return _parse_required_int(v, info, cls)
+
+
 class ConfidenceConfig(BaseModel):
     """Per-field confidence configuration (v0.6).
 
@@ -1102,6 +1222,30 @@ class ConfidenceConfig(BaseModel):
         ),
     )
     image: ImageConfig = Field(default_factory=ImageConfig)
+    method: str = Field(
+        default="llm",
+        description=(
+            "Who scores each extracted value: 'llm' (the model and prompts above) "
+            "or 'decision_model' (one yes/no question per value to a decision "
+            "model, see `decision_model`). Applies to mode 'separate'."
+        ),
+    )
+    decision_model: ConfidenceDecisionModelConfig = Field(
+        default_factory=ConfidenceDecisionModelConfig
+    )
+
+    @field_validator("method", mode="before")
+    @classmethod
+    def validate_method(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "llm"
+        v_str = str(v).strip().lower()
+        if v_str not in ("llm", "decision_model"):
+            raise ValueError(
+                "extraction.confidence.method must be 'llm' or 'decision_model', "
+                f"got {v!r}"
+            )
+        return v_str
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
@@ -1148,6 +1292,12 @@ class ConfidenceConfig(BaseModel):
         if self.enabled is False and self.mode != "off":
             # Legacy disable-via-enabled: respect it.
             self.mode = "off"
+        if self.method == "decision_model" and self.mode == "integrated":
+            raise ValueError(
+                "extraction.confidence.method 'decision_model' needs mode "
+                "'separate': in 'integrated' mode the extraction call scores its own "
+                "values and no confidence pass runs"
+            )
         self.enabled = self.mode != "off"
         return self
 
@@ -2273,44 +2423,6 @@ class SplittingLLMConfig(ClassificationModelSettings):
                 f"'none' or 'class_names', got {v!r}"
             )
         return v_str
-
-
-class ExternalModelConfig(BaseModel):
-    """An external model behind a stable contract.
-
-    Shared by the boundary model (splitting) and the decision models (section
-    classification, extraction confidence), so each method lands without a
-    configuration migration. ``backend: lambda`` is implemented, by
-    ``idp_common.decision_model``, which speaks the System One API; ``sagemaker``
-    and ``bedrock_custom`` are declared and refused until they are.
-    """
-
-    backend: str = Field(
-        default="",
-        description="lambda (empty means lambda) | sagemaker | bedrock_custom",
-    )
-    endpoint: str = Field(
-        default="",
-        description=(
-            "Endpoint name, model ARN, or function ARN (GENAIIDP- prefix). Empty "
-            "uses the stack's own decision model, when the stack deploys one."
-        ),
-    )
-    input: str = Field(default="images", description="images | text | both")
-    timeout_ms: int = Field(default=30000, ge=0)
-    max_concurrency: int = Field(default=4, ge=1)
-    price_per_request: float = Field(
-        default=0.0, ge=0.0, description="Per-request price, for metering."
-    )
-    function_memory_mb: int = Field(
-        default=10240,
-        ge=128,
-        le=10240,
-        description=(
-            "The memory the Lambda backend's function runs at, for metering "
-            "GB-seconds. The Strands Decider's Lambda deployment uses 10240."
-        ),
-    )
 
 
 class SplittingConfig(BaseModel):

@@ -33,6 +33,7 @@ a `state` (text, page images, or both) and a set of typed questions.
 | Step | Setting | What is asked |
 |---|---|---|
 | Section classification | `classification.split_then_classify.section_classification.method: decision_model` | one `choice` question per section: the options are your classes, each described by its `description` |
+| Extraction confidence | `extraction.confidence.method: decision_model` | one `noul` question per extracted value, asked against each page of the section |
 
 Section classification is the second call of the
 [split-then-classify strategy](./classification.md): splitting still finds where
@@ -95,14 +96,49 @@ classification:
 descriptions, so a description is the whole definition of its class. Descriptions
 also count against the model's context window.
 
+### 3. Or use it for extraction confidence
+
+Confidence scoring asks whether each extracted value is right. With
+`method: decision_model`, every value becomes one yes/no question ("the system says
+the field *Total* is *100.00*; is that the correct value?"), each page of the section
+is one request carrying all of them, and a value's confidence is its **highest
+probability across the pages**. Thresholds, alerts and human review then work exactly
+as with the LLM.
+
+```yaml
+extraction:
+  confidence:
+    mode: separate             # required: integrated mode has no confidence pass
+    method: decision_model
+    decision_model:
+      endpoint: arn:aws:lambda:<region>:<account>:function:GENAIIDP-decider
+      input: images            # images (default) | text | both
+      max_pages: 20            # 1 to 50: pages read per section, one request each
+      max_questions_per_request: 100
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `input` | `images` | `images`: one page image per request, which measured best. `text`: one request with the section's OCR text. `both`: each page image plus the section's text, which can exceed the window on a long section. Adding the OCR text or the extraction to the state measured worse. |
+| `max_pages` | `20` | The most pages read per section. A value that appears only on a later page scores low and goes to review. |
+| `instructions` | the question above | `{FIELD}` is the field's path (`Lines[2].Amount`), `{DESCRIPTION}` its schema description, `{VALUE}` the extracted value. |
+| `max_questions_per_request` | `100` | A page with more values is asked in several requests, inside the model's request limit. |
+
+Each value's explainability entry carries `confidence_source: decision_model` and a
+reason naming the page that supported it best. A failed call fails the confidence
+pass, as a failed Bedrock call does; it never becomes an LLM call.
+
 ## What you get
+
+For section classification:
 
 - The section's class, and its **confidence: the probability the model gave that
   class**.
 - Every class's probability, in the section's classification candidates.
 - A classification reason naming the decision model and the probability, so the
   source of a confidence is visible in the document's details.
-- Cost under `SectionClassification/decision_model/<function>` in the cost table.
+- Cost under `SectionClassification/decision_model/<function>` in the cost table,
+  and `Assessment/decision_model/<function>` for confidence.
 
 ## Failures
 
