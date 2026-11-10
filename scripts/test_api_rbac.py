@@ -29,7 +29,8 @@ WHAT IT CHECKS
                                  mutation args is fine — proves auth passed)
   * IAM-only backend ops       -> 403 for every Cognito role
   * config-version scope       -> a scoped Author is denied an out-of-scope
-                                 version (in-band Unauthorized) and Admin is not
+                                 version (in-band Unauthorized) and Admin is not;
+                                 the discovery operations refuse it (403)
   * token negatives            -> tampered / wrong-issuer / no-token -> 401
 
 SAFETY
@@ -155,6 +156,28 @@ TEST_PW = "Aa1!" + secrets.token_urlsafe(24)
 # .invalid TLD (RFC 2606) can never be a real address.
 SCOPE_VERSION = "rbac-test-scope-v1"  # a version the scoped user is limited to
 OUT_OF_SCOPE_VERSION = "default"  # exists, but outside the scoped user's set
+
+#: Discovery operations the scope suite drives with the scoped Author against
+#: OUT_OF_SCOPE_VERSION. Each must refuse (403) before doing any work.
+SCOPED_DISCOVERY_CELLS = (
+    (
+        "startMultiDocDiscovery",
+        {"configVersion": OUT_OF_SCOPE_VERSION, "zipFileName": "rbac-scope-probe.zip"},
+    ),
+    (
+        "uploadMultiDocDiscoveryZip",
+        {"fileName": "rbac-scope-probe.zip", "fileSize": 1,
+         "configVersion": OUT_OF_SCOPE_VERSION},
+    ),
+    (
+        "uploadDiscoveryDocument",
+        # No bucket: the scope check runs before the bucket is read, and a bucket
+        # outside the allow-list would be refused by THAT check in either build,
+        # which would make the cell pass for the wrong reason.
+        {"fileName": "rbac-scope-probe.pdf", "contentType": "application/pdf",
+         "version": OUT_OF_SCOPE_VERSION, "skipJobCreation": True},
+    ),
+)
 
 ANY = "ANY"
 IAM = "IAM_ONLY"
@@ -2071,6 +2094,41 @@ def run_scope_suite(ctx, tokens, results):
         f"  scoped Author getConfigVersion('{OUT_OF_SCOPE_VERSION}') -> "
         f"{st}/{et or ib} ({'OK denied' if denied else 'LEAK'})"
     )
+
+    # The discovery operations name a profile too, and save into it. Each cell asks
+    # for the out-of-scope profile; before these operations were scope-checked,
+    # startMultiDocDiscovery and uploadDiscoveryDocument answered 400 ("the default
+    # profile is read-only") and uploadMultiDocDiscoveryZip 200 with an upload URL,
+    # so every cell fails on a stack without the check. The arguments
+    # are chosen so that no job starts and nothing is uploaded either way:
+    # skipJobCreation keeps uploadDiscoveryDocument to a presign, and no zip is ever
+    # PUT to the URL uploadMultiDocDiscoveryZip returns. autoDetectSections is not
+    # probed here: refusing it needs a real allow-listed bucket, and with an empty
+    # one the resolver answers 400 before the scope check in both builds. Its check
+    # is covered by discovery_upload_resolver/test_profile_scope.py.
+    for field, arguments in SCOPED_DISCOVERY_CELLS:
+        st, et, ib, rid = call(ctx["api_base"], field, arguments, tokens["scoped"])
+        why = inconclusive(st, et)
+        denied = (not why) and (
+            et == "Unauthorized" or ib == "Unauthorized" or st == 403
+        )
+        _record(
+            results,
+            field,
+            "scoped(out-of-scope)",
+            st,
+            denied,
+            f"INCONCLUSIVE: {why}" if why else f"expect denial; got {st}/{et}/{ib}",
+            et,
+            ib,
+            rid,
+            gap=_inconclusive_gap(st) if why else None,
+            outcome="ERROR" if why else None,
+        )
+        print(
+            f"  scoped Author {field}('{OUT_OF_SCOPE_VERSION}') -> "
+            f"{st}/{et or ib} ({'OK denied' if denied else 'LEAK'})"
+        )
 
     # Admin asks for the same version -> must NOT be denied
     st, et, ib, rid = call(

@@ -18,9 +18,12 @@ complementary layers that share one source of truth:
 > `dynamodb:Query` IAM grant). Treat a hard fail as real until proven otherwise.
 
 > ⚠️ **"Every operation" is true of the group check, not of the scope check.** The
-> dynamic scope suite makes exactly **two** calls with the scoped token, against
-> `getConfigVersion` and `getConfigVersions`. No other scope-enforcing operation is
-> exercised live. Ops marked `skip_allowed:` in the expectations file are called
+> dynamic scope suite calls, with the scoped token, `getConfigVersion`,
+> `getConfigVersions` and the three discovery operations in
+> `SCOPED_DISCOVERY_CELLS` (`startMultiDocDiscovery`, `uploadMultiDocDiscoveryZip`,
+> `uploadDiscoveryDocument`), each naming the out-of-scope profile and each built so
+> that no job starts whatever the stack answers. No other scope-enforcing
+> operation is exercised live. Ops marked `skip_allowed:` in the expectations file are called
 > only in their *denied* role, because an allowed-role call would start real work —
 > `sendChatDocumentMessage` starts a chat turn — so their scope enforcement is not
 > reached here and is covered by that component's own unit suite instead. The
@@ -31,6 +34,13 @@ complementary layers that share one source of truth:
 > structural check, not dataflow: a broken scope *lookup* still passes it.
 > Neither layer would have caught issue #970, where the lookup named a DynamoDB
 > index no template declares.
+>
+> **S10** is what makes an operation declare a scope in the first place: any
+> operation whose arguments name a profile, a document key or a session must carry
+> `scope_checked`, `scope_filtered`, `testset_checked` or `ownership` (by argument
+> kind), be callable only by Admin/IAM, or have a `known_gap` or a
+> `SCOPE_KEYED_ARGUMENT_EXEMPT` entry. **Adding an operation that takes
+> `configVersion`, `objectKey` or `sessionId`? Declare its scope, or S10 fails.**
 
 ### Mandatory security-focused test cases (AppSec checklist)
 

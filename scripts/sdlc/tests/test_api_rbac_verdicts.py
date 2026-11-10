@@ -528,7 +528,9 @@ class TestTheScopeSuiteArmsClassifyInconclusiveResults:
     def test_no_arm_passes(self, monkeypatch, capsys, status, et):
         results = self._run(monkeypatch, capsys, status, et)
 
-        assert len(results) == 3, "expected all three scope arms to be recorded"
+        assert len(results) == 3 + len(h.SCOPED_DISCOVERY_CELLS), (
+            "expected every scope arm to be recorded"
+        )
         assert not [r for r in results if r["outcome"] == "PASS"]
 
     def test_every_arm_is_flagged_inconclusive(self, monkeypatch, capsys, status, et):
@@ -569,6 +571,8 @@ def test_a_healthy_scope_suite_still_passes(monkeypatch, capsys):
         # test_api_security_cases.py.
         if token == "tok-scoped" and field == "getConfigVersion":  # nosec B105
             return 200, None, "Unauthorized", "rid"
+        if token == "tok-scoped" and field in _DISCOVERY_FIELDS:  # nosec B105
+            return 403, "Unauthorized", None, "rid"
         return 200, None, None, "rid"
 
     monkeypatch.setattr(h, "call", _call)
@@ -577,9 +581,47 @@ def test_a_healthy_scope_suite_still_passes(monkeypatch, capsys):
     h.run_scope_suite(CTX, SCOPE_TOKENS, results)
     capsys.readouterr()
 
-    assert len(results) == 3
+    assert len(results) == 3 + len(h.SCOPED_DISCOVERY_CELLS)
     assert all(r["outcome"] == "PASS" for r in results)
     assert not [r for r in results if r["inconclusive"]]
+
+
+_DISCOVERY_FIELDS = {field for field, _ in h.SCOPED_DISCOVERY_CELLS}
+
+
+def test_the_discovery_cells_fail_on_a_stack_without_the_scope_check(
+    monkeypatch, capsys
+):
+    """What those operations answered before they were scope-checked: 400 for the
+    read-only default profile, and 200 with an upload URL for the zip upload. Each
+    cell must read that as a failure, not as a refusal."""
+    before = {
+        "startMultiDocDiscovery": (400, "ValueError", None, "rid"),
+        "uploadDiscoveryDocument": (400, "ValueError", None, "rid"),
+        "uploadMultiDocDiscoveryZip": (200, None, None, "rid"),
+    }
+    assert set(before) == _DISCOVERY_FIELDS
+
+    def _call(api_base, field, args, token):
+        if token == "tok-scoped" and field == "getConfigVersion":  # nosec B105
+            return 200, None, "Unauthorized", "rid"
+        if token == "tok-scoped" and field in before:  # nosec B105
+            return before[field]
+        return 200, None, None, "rid"
+
+    monkeypatch.setattr(h, "call", _call)
+    results = []
+    h.run_scope_suite(CTX, SCOPE_TOKENS, results)
+    capsys.readouterr()
+
+    failed = {r["op"] for r in results if r["outcome"] == "FAIL"}
+    assert failed == _DISCOVERY_FIELDS
+
+
+def test_every_discovery_cell_names_the_out_of_scope_profile():
+    for field, arguments in h.SCOPED_DISCOVERY_CELLS:
+        named = arguments.get("configVersion") or arguments.get("version")
+        assert named == h.OUT_OF_SCOPE_VERSION, field
 
 
 #: A ctx the per-document suite can reach a verdict with. Its own rather than
