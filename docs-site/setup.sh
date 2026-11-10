@@ -107,6 +107,26 @@ if [ -d "$PROJECT_ROOT/docs/release-validation" ]; then
     echo "   ✅ Linked $relval_count release-validation docs"
 fi
 
+# Step 1e: Symlink the docs/idp-fundamentals/ folder (the vendor-neutral theory
+# section: index.md plus one page per problem set) into
+# src/content/docs/idp-fundamentals/. index.md publishes as the folder's own slug.
+if [ -d "$PROJECT_ROOT/docs/idp-fundamentals" ]; then
+    echo ""
+    echo "🔗 Creating symlinks for IDP fundamentals docs..."
+    mkdir -p "$CONTENT_DOCS/idp-fundamentals"
+    fundamentals_count=0
+    for md_file in "$PROJECT_ROOT"/docs/idp-fundamentals/*.md; do
+        [ -e "$md_file" ] || continue
+        filename=$(basename "$md_file")
+        target="$CONTENT_DOCS/idp-fundamentals/$filename"
+        # Path: docs-site/src/content/docs/idp-fundamentals/ → 5 levels up
+        [ -L "$target" ] && rm "$target"
+        ln -s "../../../../../docs/idp-fundamentals/$filename" "$target"
+        fundamentals_count=$((fundamentals_count + 1))
+    done
+    echo "   ✅ Linked $fundamentals_count IDP fundamentals docs"
+fi
+
 # Step 2: Symlink images/ into src/content/images/ (for ../images/ relative paths in docs)
 # Path: docs-site/src/content/ → 3 levels up to project root
 echo ""

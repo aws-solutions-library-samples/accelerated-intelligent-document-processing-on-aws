@@ -1,5 +1,6 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
+import mermaid from "astro-mermaid";
 import remarkGithubVideo from "./plugins/remark-github-video.mjs";
 import remarkRewriteDocsLinks from "./plugins/remark-rewrite-docs-links.mjs";
 
@@ -10,6 +11,9 @@ export default defineConfig({
     remarkPlugins: [remarkGithubVideo, remarkRewriteDocsLinks],
   },
   integrations: [
+    // Renders ```mermaid fences. Must be registered before starlight, which
+    // otherwise processes the fence as a plain code block first.
+    mermaid({ theme: "neutral", autoTheme: true }),
     starlight({
       title: "GenAI IDP",
       description:
@@ -37,6 +41,28 @@ export default defineConfig({
               slug: "references",
             },
             { label: "Hands-on Workshops", slug: "workshops" },
+          ],
+        },
+        {
+          label: "Get Started",
+          items: [{ label: "Get Started", slug: "get-started" }],
+        },
+        {
+          // Vendor-neutral theory of document processing: the five problem sets every
+          // IDP system solves, plus the datasets used to measure them. Pages link into
+          // the accelerator but are not about it.
+          label: "IDP Fundamentals",
+          items: [
+            { label: "How Document Processing Works", slug: "idp-fundamentals" },
+            { label: "Digitization (OCR)", slug: "idp-fundamentals/digitization" },
+            {
+              label: "Splitting and Section Classification",
+              slug: "idp-fundamentals/splitting-and-classification",
+            },
+            { label: "Key Information Extraction", slug: "idp-fundamentals/extraction" },
+            { label: "Confidence Assessment", slug: "idp-fundamentals/confidence-assessment" },
+            { label: "Rule Validation", slug: "idp-fundamentals/rule-validation" },
+            { label: "Benchmark Datasets", slug: "idp-fundamentals/benchmark-datasets" },
           ],
         },
         {
