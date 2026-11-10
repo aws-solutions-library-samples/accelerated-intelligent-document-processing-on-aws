@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime
 
 import boto3
+from boto3.dynamodb.conditions import Key
 import botocore.exceptions
 from idp_common.agents.analytics import get_analytics_config
 from idp_common.config_scope import unscoped_is_denied
@@ -120,6 +121,65 @@ def _enforce_agent_chat_groups(event):
             "Agent Chat (which reads across every tenant's documents) is limited to "
             "the Admin group"
         )
+
+
+def _session_belongs_to_another_user(session_id, user_id):
+    """True when ``session_id`` is in use but ``user_id`` holds no session for it.
+
+    A conversation's messages and agent memory are keyed by the session id alone,
+    and only the session list is keyed by user, so the session record is the one
+    statement of who owns a conversation. An id is in use when it has messages or
+    agent memory; memory is checked as well because it outlives the messages. An
+    id with neither is a new conversation. Any failure to tell reads as another
+    user's, so the turn is refused rather than served.
+    """
+    if not _CHAT_MESSAGES_TABLE or not _CHAT_SESSIONS_TABLE:
+        return False
+    try:
+        dynamodb = boto3.resource("dynamodb")
+        owned = (
+            dynamodb.Table(_CHAT_SESSIONS_TABLE)
+            .get_item(Key={"userId": user_id, "sessionId": session_id})
+            .get("Item")
+        )
+        if owned:
+            return False
+        earlier = dynamodb.Table(_CHAT_MESSAGES_TABLE).query(
+            KeyConditionExpression=Key("PK").eq(session_id),
+            ProjectionExpression="PK",
+            Limit=1,
+        )
+        if earlier.get("Items"):
+            return True
+        memory_table = os.environ.get("ID_HELPER_CHAT_MEMORY_TABLE")
+        if not memory_table:
+            return False
+        memory = dynamodb.Table(memory_table).query(
+            KeyConditionExpression=Key("PK").eq(f"conversation#{session_id}"),
+            ProjectionExpression="PK",
+            Limit=1,
+        )
+        return bool(memory.get("Items"))
+    except Exception as e:
+        logger.error(f"Could not verify ownership of chat session {session_id}: {e}")
+        return True
+
+
+def _refuse_foreign_session(event):
+    """Refuse a turn for a session that belongs to another user.
+
+    Applies to callers whose identity a chat route verified; a direct
+    ``lambda:InvokeFunction`` carries none and is gated by IAM. The REST resolver
+    applies the same check before it stores anything, and the streaming route
+    applies this one before its stream opens.
+    """
+    if event.get("identity") is None:
+        return
+    session_id = event.get("sessionId") or ""
+    user_id = event.get("callerSub") or ""
+    if not user_id or _session_belongs_to_another_user(session_id, user_id):
+        logger.warning("Rejecting agent chat: session %s is not the caller's", session_id)
+        raise PermissionError("Unauthorized: this chat session belongs to another user")
 
 
 def _persist_chat_turn(
@@ -1110,6 +1170,7 @@ def handler(event, context):
     # 500 return, which would turn a denial into an application error. Raising
     # PermissionError here matches the resolver so the dispatcher maps it to 403.
     _enforce_agent_chat_groups(event)
+    _refuse_foreign_session(event)
 
     try:
         # Use cached boto3 session for warm Lambda containers (significant performance improvement)

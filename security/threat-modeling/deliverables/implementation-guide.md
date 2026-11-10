@@ -23,8 +23,8 @@ and mapped to the specific threats they address.
 > denylist (**#921**) have merged and are described below as controls; the
 > deployment service role's permissions boundary (**#927**) has merged while its
 > own `iam:*` is unchanged. The chat streaming transport verifies the caller's
-> Cognito ID token and applies its group checks to it, while its session-ownership
-> check is still absent (§3.1a).
+> Cognito ID token and applies its group checks to it, and every agent chat send
+> path refuses a session another user owns (§3.1a).
 
 ## 2. Authentication & Identity (AUTH)
 
@@ -105,7 +105,7 @@ and mapped to the specific threats they address.
 
 ### 3.1a Chat Streaming Function URL
 
-**Threats mitigated**: CHAT.T03 (authentication and group checks), CHAT.T06, AUTH.T14
+**Threats mitigated**: CHAT.T03 (authentication, group and session checks), CHAT.T06, AUTH.T14
 
 | Control | Implementation |
 |---------|---------------|
@@ -113,7 +113,7 @@ and mapped to the specific threats they address.
 | **CORS** | `AllowCredentials: false`, SigV4 and the ID token in headers, no cookies; `x-idp-id-token` is an allowed header |
 | **Group authorization** | **Enforced in the handler, from the verified token.** The Identity Pool role (`CognitoAuthorizedRole`) is shared by all five groups (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish them; `/chat/agent` applies the Admin/Author/Viewer predicate (and tenant isolation's Admin-only rule) and `/chat/document` the `ANY_GROUP` floor to the token's groups, both as a 403 before the stream opens (AUTH.T14) |
 | **Configuration-profile scope** | The document route forwards the verified claims as `identity`, and the processor resolves the caller's `allowedConfigVersions` from them, denying a turn whose scope it cannot evaluate |
-| **Session ownership** | **NOT ENFORCED** on this transport: agent memory is loaded by `sessionId` alone (open gap, CHAT.T03) |
+| **Session ownership** | **Enforced on `/chat/agent` before the stream opens** (`_refuse_foreign_session_or_403`): a session that already holds messages or agent memory is refused with 403 unless the verified caller holds a `(userId, sessionId)` record in `ChatSessionsTable`, and a failed lookup refuses. Memory is checked because it carries no expiry and outlives the messages. The agent processor applies the same check, and so does the REST resolver behind `sendAgentChatMessage` before it stores anything. A session id with neither is a new conversation (CHAT.T03). The document route keeps no server-side history on this transport |
 | **Caller identity** | Taken from the verified ID token: a turn is attributed to `email`, else `cognito:username`, else `sub`, as on the REST path, and a body `callerSub` that differs is refused with 403 (CHAT.T06). The SigV4 principal is not used, because its assumed-role session name is the **same for every user** of the deployment |
 | **Rate limiting** | Lambda concurrency only — **not** covered by API Gateway throttling or the WAF WebACL |
 | **Automated testing** | **Static and unit only** — `make api-test-static` checks the routes (S6–S9) and the endpoint's unit suites cover the token, group and attribution checks; `make api-test` drives `POST /op/{field}` only |
@@ -231,7 +231,7 @@ bound to it.
 | Mechanism | Implementation |
 |-----------|---------------|
 | **Single-tenant** | One CloudFormation stack per environment |
-| **User-scoped queries** | `ChatSessionsTable` is keyed `PK=userId`; `ChatMessagesTable` is keyed `PK=sessionId` and relies on **explicit resolver ownership checks** (`_verify_session_ownership` / `ownerSub`), not the key alone |
+| **User-scoped queries** | `ChatSessionsTable` is keyed `PK=userId`; `ChatMessagesTable` and the agent memory are keyed by session id and rely on **explicit ownership checks**, not the key alone — `_verify_session_ownership` / `ownerSub` on read and delete, and on every agent chat send path a refusal of a session that holds messages or agent memory the caller has no session record for (CHAT.T03) |
 | **Session isolation** | UUID-based conversation session IDs |
 | **Stack isolation** | Separate Cognito pools, S3 buckets, DynamoDB tables per stack |
 

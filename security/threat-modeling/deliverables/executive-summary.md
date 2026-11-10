@@ -65,21 +65,22 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| **Mitigated** | 66 | 63% |
+| **Mitigated** | 67 | 64% |
 | **Partially Mitigated** | 32 | 31% |
-| **Open** (real gap, needs work) | **2** | **2%** |
+| **Open** (real gap, needs work) | **1** | **1%** |
 | **Accepted** | 4 | 4% |
 
-The **Open** items are CHAT.T03 (the chat streaming Function URL does not check that
-a caller owns the chat session it names, so another user's agent-chat history can be
-loaded into a turn; its group check is enforced) and JOB.T02 (the Jobs API sits
-outside the automated authorization harness). UI.T07 (no CSP in
-API-Gateway/GovCloud hosting mode) was closed in v0.6.x, and UI.T06 is now
+The **Open** item is JOB.T02 (the Jobs API sits outside the automated
+authorization harness). CHAT.T03 is **Mitigated**: every agent chat send path, the
+chat streaming Function URL included, enforces its group check and refuses a turn
+for a session another user owns. UI.T07 (no CSP in API-Gateway/GovCloud hosting
+mode) was closed in v0.6.x, and UI.T06 is now
 **Partially Mitigated**: the browser's Identity Pool role grants no S3, so every
 document read is an API call behind a group floor, a fail-closed bucket allow-list
 and a per-document configuration-profile check — what remains is that the product
 records no document owner, so a caller whose profile scope is unset reads any
-document through the resolver. The Open items are code/config changes; see
+document through the resolver. The Open item and the UI.T06 residual are
+code/config changes; see
 [risk-matrix §5](../risk-assessment/risk-matrix.md#5-recommendations).
 
 **What changed since the 0.6.9 review.** Five issues this summary previously
@@ -96,9 +97,11 @@ identifier a 403, but on this transport the SigV4 principal is a pool-wide const
 so on its own it could not attribute a turn to a verified user. That took ID-token
 verification on the streaming endpoint, which now attributes every turn to the
 verified identity and applies each route's group floor to it: CHAT.T06 is
-**Mitigated**, and CHAT.T03 stays **Open** on its session-ownership half, which is
-the accounting in
+**Mitigated**, which is the accounting in
 [companion-chat CHAT.T06](../feature-threats/companion-chat.md#chatt06-client-supplied-caller-identity-on-the-agent-streaming-route).
+A session check on every agent chat send path then moved CHAT.T03 to
+**Mitigated**
+([companion-chat CHAT.T03](../feature-threats/companion-chat.md#chatt03-chat-streaming-function-url--missing-group-and-session-ownership-enforcement)).
 #921 (consistent log redaction, AUTH.T15) is likewise closed without changing that
 threat's status. The status columns in this model deliberately do not credit an unmerged fix, because a
 threat model that counts intentions as controls is worse than one that is merely
@@ -142,21 +145,15 @@ work, so the harness remains what catches a missing one (AUTH.T16).
 
 ### Immediate (Partially Mitigated Critical/High Risks)
 
-1. **Enforce session ownership on the chat streaming Function URL (CHAT.T03)** —
-   the endpoint verifies the caller's Cognito ID token, applies each route's group
-   floor to it and attributes every turn to that identity (CHAT.T06, Mitigated), so
-   the verified subject an ownership check needs exists; what remains is for the
-   streaming agent processor to compare a session's recorded owner with it before
-   loading the session's memory
-2. **Narrow the deployment service role (SDK.T05)** — **issue #927** attached a
+1. **Narrow the deployment service role (SDK.T05)** — **issue #927** attached a
    permissions boundary and constrained the roles it may create, but the role keeps
    its own `iam:*` and broad service wildcards, so possession of it is still close
    to possession of the account
-3. **Make per-object authorization structural (AUTH.T16)** — the
+2. **Make per-object authorization structural (AUTH.T16)** — the
    dispatcher's default deny (**issue #928**, closed) covers the group floor only;
    scope, ownership and review-queue eligibility are hand-written per resolver, and
    the 403 status still derives partly from error-message text
-4. **Give documents an owner to scope reads against (UI.T06)** — every document
+3. **Give documents an owner to scope reads against (UI.T06)** — every document
    read is now an API call under a group floor, a fail-closed bucket allow-list and
    three caller-derived scope checks, one of them the owning document's
    configuration profile; the browser's Identity Pool role grants no S3, so there is
@@ -167,12 +164,12 @@ work, so the harness remains what catches a missing one (AUTH.T16).
    every document, and tenant declarations confine each user's scope to one tenant.
    What is still missing is a per-*user* ownership attribute (**issue #1033**,
    partial)
-5. **Add bundle integrity verification (SRI) to the Feature Platform (FEAT.T01)** —
+4. **Add bundle integrity verification (SRI) to the Feature Platform (FEAT.T01)** —
    installed extension UI code runs unsandboxed in the host origin with the user's session
-6. **Implement VPC egress controls** for MCP Lambda functions to prevent unauthorized data exfiltration
-7. **Publish secure hook deployment guide** with reference VPC architecture and IAM templates
-8. **Enhance SDK credential management** with credential helper integration
-9. **Extend the automated authorization harness to the chat streaming Function URL** — it currently covers `POST /op/{field}` only, so on that transport only the static Function-URL checks and the endpoint's unit suites would catch a regression (CHAT.T03, CHAT.T06, AUTH.T14)
+5. **Implement VPC egress controls** for MCP Lambda functions to prevent unauthorized data exfiltration
+6. **Publish secure hook deployment guide** with reference VPC architecture and IAM templates
+7. **Enhance SDK credential management** with credential helper integration
+8. **Extend the automated authorization harness to the chat streaming Function URL** — it currently covers `POST /op/{field}` only, so on that transport only the static Function-URL checks and the endpoint's unit suites would catch a regression (CHAT.T03, CHAT.T06, AUTH.T14)
 
 ### Ongoing
 

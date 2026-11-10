@@ -47,7 +47,8 @@ keyed to:
   isolation, which the processors apply to the ``identity`` they are given;
 * the key a turn's chat history is filed under, derived from the claims the way
   the REST path derives it. A body-supplied ``callerSub`` that differs is
-  refused (``_resolve_caller_sub``).
+  refused (``_resolve_caller_sub``), and so is an agent chat turn for a session
+  another user owns (``_refuse_foreign_session_or_403``).
 
 This transport exists in the **commercial partition only**. On GovCloud the UI
 falls back to the REST dispatcher plus polling (``ChatPanel.tsx``), so every
@@ -167,6 +168,24 @@ def _enforce_groups_or_403(identity: dict) -> None:
     """
     try:
         agent_proc._enforce_agent_chat_groups({"identity": identity})
+    except PermissionError as exc:
+        logger.warning("Rejecting agent chat: %s", exc)
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _refuse_foreign_session_or_403(
+    identity: dict, session_id: str, caller_sub: str
+) -> None:
+    """Refuse a turn for an agent chat session another user owns, before the stream.
+
+    Delegates to the processor's ``_refuse_foreign_session`` so this route and the
+    processor apply one predicate, and turns its ``PermissionError`` into a 403,
+    which is only possible ahead of ``StreamingResponse``.
+    """
+    try:
+        agent_proc._refuse_foreign_session(
+            {"identity": identity, "sessionId": session_id, "callerSub": caller_sub}
+        )
     except PermissionError as exc:
         logger.warning("Rejecting agent chat: %s", exc)
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -357,6 +376,7 @@ async def chat_agent(request: Request, body: AgentChatRequest) -> StreamingRespo
     # only reachable before StreamingResponse is returned.
     _refuse_unverified_when_unscoped_is_denied_or_403(identity)
     _enforce_groups_or_403(identity)
+    _refuse_foreign_session_or_403(identity, session_id, caller_sub)
 
     q: "queue.Queue" = queue.Queue()
 

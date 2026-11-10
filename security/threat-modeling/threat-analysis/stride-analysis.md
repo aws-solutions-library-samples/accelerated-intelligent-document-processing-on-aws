@@ -122,8 +122,8 @@ Information disclosure threats involve exposure of sensitive data to unauthorize
 | Threat | Component | Risk | Mitigations |
 |--------|-----------|------|-------------|
 | **JWT token theft via XSS** — browser-stored tokens stolen | Web UI | High | React XSS protection, CSP headers, short token lifetime |
-| **Chat stream cross-user access** — reading another user's stream via their `sessionId` | Lambda Function URL (chat streaming) | High | **OPEN GAP** — the endpoint verifies the caller's Cognito ID token and applies each route's group floor to it, but neither streaming processor checks that the caller owns the session, and agent memory is loaded by `sessionId` alone. Not covered by `make api-test` or by the WAF WebACL. See CHAT.T03 |
-| **Conversation session hijacking** — accessing other users' chats | Companion Chat | High | UUID session IDs, user-scoped DynamoDB queries |
+| **Chat stream cross-user access** — reading another user's stream via their `sessionId` | Lambda Function URL (chat streaming) | High | **Mitigated.** The endpoint verifies the caller's Cognito ID token and applies each route's group floor to it, and `/chat/agent` refuses with 403, before the stream opens, a session that already holds messages or agent memory the caller has no session record for; the REST send path applies the same check. Not covered by `make api-test` or by the WAF WebACL. See CHAT.T03 |
+| **Conversation session hijacking** — accessing other users' chats | Companion Chat | High | UUID session IDs, user-scoped DynamoDB queries, explicit session-ownership checks on read, delete and send. See CHAT.T02 |
 | **SDK credential exposure** — credentials on developer machines | SDK/CLI | High | Env var credentials, short-lived tokens, secure documentation |
 | **Presigned URL interception** — captured upload URLs reused | Web UI | Medium | Short expiration, conditions, TLS |
 

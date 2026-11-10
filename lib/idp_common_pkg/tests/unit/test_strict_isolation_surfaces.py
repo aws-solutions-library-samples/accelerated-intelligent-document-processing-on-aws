@@ -47,7 +47,12 @@ def _load(module_name, rel_path):
 
 
 def _identity(*groups):
-    return {"claims": {"cognito:groups": list(groups), "email": "u@example.com"}}
+    """The identity ``idp_common.api_adapter.normalize_event`` hands a resolver."""
+    return {
+        "claims": {"cognito:groups": list(groups), "email": "u@example.com"},
+        "username": "u@example.com",
+        "sub": "11111111-2222-3333-4444-555555555555",
+    }
 
 
 @pytest.fixture(params=["Off", "Strict", "IdpClaim", "Api"])

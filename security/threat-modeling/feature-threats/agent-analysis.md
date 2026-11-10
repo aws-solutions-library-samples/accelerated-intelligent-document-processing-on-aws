@@ -19,7 +19,7 @@ Agent Analysis provides a multi-agent AI system for interactive document data an
 - **Error Analyzer Agent**: Diagnoses processing failures
 - **Code Intelligence Agent**: Provides codebase analysis
 
-Users interact via a conversational interface (Companion Chat) and receive streaming responses as Server-Sent Events over a Lambda Function URL (`AuthType=AWS_IAM`). See [companion-chat.md](companion-chat.md) — CHAT.T03 covers the authorization gaps on that transport.
+Users interact via a conversational interface (Companion Chat) and receive streaming responses as Server-Sent Events over a Lambda Function URL (`AuthType=AWS_IAM`). See [companion-chat.md](companion-chat.md) — CHAT.T03 covers authorization on that transport.
 
 ## 2. Architecture
 

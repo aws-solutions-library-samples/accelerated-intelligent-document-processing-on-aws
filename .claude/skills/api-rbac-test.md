@@ -153,8 +153,13 @@ processors **directly** — no dispatcher, no resolver. Consequences:
   a turn whose scope it cannot evaluate, as on the REST path. `identity: None`
   now only means a direct, IAM-gated `lambda:InvokeFunction`; neither chat route
   produces it.
-- Session ownership is **not** checked on this transport: agent memory is loaded
-  by `sessionId` alone (CHAT.T03).
+- `/chat/agent` refuses a session another user owns, with 403 before the stream
+  opens (`_refuse_foreign_session_or_403`, delegating to the processor's
+  `_refuse_foreign_session`): a session id that already holds messages or agent
+  memory (`conversation#<sessionId>`) is refused unless the verified caller holds a
+  `(userId, sessionId)` record in `ChatSessionsTable`, and a failed lookup
+  refuses. `sendAgentChatMessage` applies the same predicate before it stores
+  anything (CHAT.T03).
 
 Declare every Function URL and route in the **`function_url_endpoints:`** section
 of `scripts/api_rbac_expectations.yaml`. The scanner's Function-URL checks:

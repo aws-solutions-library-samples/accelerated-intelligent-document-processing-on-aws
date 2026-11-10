@@ -97,9 +97,12 @@ STATUS: dict[str, tuple[int, str]] = {
     # Chat
     "CHAT.T01": (9, "Mitigated"),
     "CHAT.T02": (3, "Mitigated"),
-    # Open on its session-ownership half: the streaming processors still load agent
-    # memory by sessionId alone. Its group half is closed by the ID-token check.
-    "CHAT.T03": (6, "Open"),
+    # Its group half is closed by the ID-token check. Its session half is closed by
+    # one check on every agent chat send path (the REST resolver, the processor, the
+    # streaming route): a session id holding messages or agent memory is refused to a
+    # caller with no session record for it, and a failed lookup refuses. What the
+    # entry leaves is coverage — no live test drives the Function URL.
+    "CHAT.T03": (6, "Mitigated"),
     "CHAT.T04": (3, "Mitigated"),
     "CHAT.T05": (4, "Partially Mitigated"),
     # The streaming routes attribute a turn to the verified ID token's identity and

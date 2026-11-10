@@ -1288,7 +1288,10 @@ operations:
     args: { prompt: "hi" }
     note: server-side _caller_in_groups check matches the schema directive
       (Reviewer excluded, closes former GAP-03); allowed-role call skipped
-      (would start a live agent session)
+      (would start a live agent session). Ownership - a message for a session
+      id that already holds messages is refused unless the caller holds the
+      (userId, sessionId) record for it, before anything is stored, for every
+      method.
   sendChatDocumentMessage:
     groups: ANY_GROUP
     kind: mutation
@@ -1918,6 +1921,7 @@ function_url_endpoints:
           turn whose scope cannot be evaluated.
       POST /chat/agent:
         groups: [Admin, Author, Viewer]
+        ownership: true
         equivalent_op: sendAgentChatMessage
         enforced_in: src/lambda/agent_chat_processor/index.py
         note: >
@@ -1926,7 +1930,9 @@ function_url_endpoints:
           processor's own Admin/Author/Viewer predicate to the verified groups
           (_enforce_groups_or_403), so a denial is a real 403. The turn is filed
           under the verified identity, derived as the REST path derives it, and a
-          body callerSub that differs is refused.
+          body callerSub that differs is refused. A turn for a session another
+          user owns is refused before the stream opens
+          (_refuse_foreign_session_or_403, the processor's own predicate).
 
 # ============================================================================
 # Known gaps register — tracked deviations between the ideal authorization

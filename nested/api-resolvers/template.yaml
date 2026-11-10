@@ -598,6 +598,7 @@ Resources:
           AGENT_CHAT_PROCESSOR_FUNCTION: !Ref AgentChatProcessorFunctionArn
           DATA_RETENTION_DAYS: !Ref DataRetentionInDays
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTableName
+          ID_HELPER_CHAT_MEMORY_TABLE: !Ref IdHelperChatMemoryTableName
       LoggingConfig:
         LogGroup: !Ref AgentChatResolverLogGroup
       Policies:
@@ -609,6 +610,8 @@ Resources:
             TableName: !Ref ChatMessagesTableName
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatSessionsTableName
+        - DynamoDBReadPolicy:
+            TableName: !Ref IdHelperChatMemoryTableName
         - LambdaInvokePolicy:
             FunctionName: !Ref AgentChatProcessorFunctionArn
         - Statement:

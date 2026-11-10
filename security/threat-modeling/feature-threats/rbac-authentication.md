@@ -273,8 +273,8 @@ flowchart TD
 | **Impact** | Cross-user disclosure or destruction of chat history / job data within the same deployment. |
 | **Likelihood** | Medium |
 | **Severity** | High |
-| **Affected Components** | `get_agent_chat_messages_resolver`, `delete_agent_chat_session_resolver`, `ddb_direct` agent-job ops, ChatSessions/ChatMessages/Agent tables |
-| **Mitigations** | Ownership is enforced by construction (agent-job ops derive the DynamoDB partition key from the caller identity, so a foreign id resolves under the caller's own empty partition) and by explicit `ownerSub`-vs-caller-`sub` checks in the document-chat message resolver (feature-flagged on by default). The **live IDOR suite in `make api-test`** seeds a session owned by User A and asserts User B is denied/empty for that id while the owner retains access — catching a regression that dropped the ownership check. |
+| **Affected Components** | `get_agent_chat_messages_resolver`, `delete_agent_chat_session_resolver`, `agent_chat_resolver`, `ddb_direct` agent-job ops, ChatSessions/ChatMessages/Agent tables |
+| **Mitigations** | Ownership is enforced by construction (agent-job ops derive the DynamoDB partition key from the caller identity, so a foreign id resolves under the caller's own empty partition) and by explicit `ownerSub`-vs-caller-`sub` checks in the document-chat message resolver (feature-flagged on by default). The agent chat **send** path cannot be used to acquire a foreign session: `sendAgentChatMessage` refuses a session that already holds messages or agent memory the caller has no `(userId, sessionId)` record for, before it stores anything, so the record the read resolvers' check accepts is created only for a conversation's first sender (CHAT.T02, CHAT.T03). The **live IDOR suite in `make api-test`** seeds a session owned by User A and asserts User B is denied/empty for that id while the owner retains access — catching a regression that dropped the ownership check. |
 
 ### AUTH.T10: Token Lifecycle — Post-Logout Token Reuse (Stateless JWT)
 

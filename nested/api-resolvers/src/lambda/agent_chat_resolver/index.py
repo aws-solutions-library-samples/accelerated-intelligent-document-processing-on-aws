@@ -14,6 +14,7 @@ import time
 from datetime import datetime
 
 import boto3
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 from log_sanitizer import sanitize_event_for_logging
 
@@ -28,6 +29,7 @@ lambda_client = boto3.client("lambda")
 # Get environment variables
 CHAT_MESSAGES_TABLE = os.environ.get("CHAT_MESSAGES_TABLE")
 CHAT_SESSIONS_TABLE = os.environ.get("CHAT_SESSIONS_TABLE")
+ID_HELPER_CHAT_MEMORY_TABLE = os.environ.get("ID_HELPER_CHAT_MEMORY_TABLE")
 AGENT_CHAT_PROCESSOR_FUNCTION = os.environ.get("AGENT_CHAT_PROCESSOR_FUNCTION")
 DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 
@@ -88,6 +90,46 @@ def _forwarded_identity(event):
     return {"claims": {"cognito:groups": list(groups)}}
 
 
+def _session_belongs_to_another_user(session_id, user_id):
+    """True when ``session_id`` is in use but ``user_id`` holds no session for it.
+
+    The same predicate as ``_session_belongs_to_another_user`` in
+    src/lambda/agent_chat_processor, restated because this function ships without
+    the ``idp_common`` layer. A conversation's messages and agent memory are keyed
+    by session id alone, so the session record is the one statement of who owns
+    it; an id with messages or memory is in use. Any failure to tell reads as
+    another user's.
+    """
+    if not CHAT_MESSAGES_TABLE or not CHAT_SESSIONS_TABLE:
+        return False
+    try:
+        owned = (
+            dynamodb.Table(CHAT_SESSIONS_TABLE)
+            .get_item(Key={"userId": user_id, "sessionId": session_id})
+            .get("Item")
+        )
+        if owned:
+            return False
+        earlier = dynamodb.Table(CHAT_MESSAGES_TABLE).query(
+            KeyConditionExpression=Key("PK").eq(session_id),
+            ProjectionExpression="PK",
+            Limit=1,
+        )
+        if earlier.get("Items"):
+            return True
+        if not ID_HELPER_CHAT_MEMORY_TABLE:
+            return False
+        memory = dynamodb.Table(ID_HELPER_CHAT_MEMORY_TABLE).query(
+            KeyConditionExpression=Key("PK").eq(f"conversation#{session_id}"),
+            ProjectionExpression="PK",
+            Limit=1,
+        )
+        return bool(memory.get("Items"))
+    except Exception as e:
+        logger.error(f"Could not verify ownership of chat session {session_id}: {e}")
+        return True
+
+
 def handler(event, context):
     """
     Handle agent chat message requests from AppSync.
@@ -136,6 +178,17 @@ def handler(event, context):
             "Agent Chat (which reads across every tenant's documents) is limited to "
             "the Admin group"
         )
+    identity = event.get("identity")
+    session_id = (event.get("arguments") or {}).get("sessionId") or ""
+    if identity is not None and session_id:
+        user_id = identity.get("username") or identity.get("sub") or ""
+        if not user_id or _session_belongs_to_another_user(session_id, user_id):
+            logger.warning(
+                "Rejecting agent chat: session %s is not the caller's", session_id
+            )
+            raise PermissionError(
+                "Unauthorized: this chat session belongs to another user"
+            )
 
     try:
         # Extract arguments from the event

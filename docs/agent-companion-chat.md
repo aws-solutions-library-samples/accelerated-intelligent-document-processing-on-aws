@@ -101,6 +101,9 @@ The Agent Companion Chat includes an optional Code Intelligence Agent that can p
 - Sessions are isolated from each other
 - Clearing chat creates a new session
 - Previous session data is not accessible from new sessions
+- A message for a session another user owns is refused, over the REST API and the
+  streaming endpoint alike (see the Agent Chat note in
+  [Role-Based Access Control](rbac.md#layer-1-authentication-at-the-api-and-the-declared-group-policy))
 
 
 ## Architecture

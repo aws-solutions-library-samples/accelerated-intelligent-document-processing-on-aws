@@ -4,7 +4,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 3.16 |
+| **Version** | 3.17 |
 | **Last Updated** | 2026-11-10 |
 | **Applies to release** | v0.6.13 |
 | **Last reviewed against version** | 0.6.13 |
@@ -35,9 +35,9 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 | High risk (6–7) | 31 |
 | Medium risk (3–5) | 47 |
 | Low risk (1–2) | 17 |
-| Mitigated | 66 (63%) |
+| Mitigated | 67 (64%) |
 | Partially mitigated | 32 (31%) |
-| Open (real gap, needs work) | **2 (2%)** |
+| Open (real gap, needs work) | **1 (1%)** |
 | Accepted risk | 4 (4%) |
 
 > **Counts are generated, not hand-maintained.** `deliverables/threat-model.tc.json`
@@ -68,11 +68,11 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 ### Open items requiring action
 
 Read the last column before counting rows: not every entry here is an open gap.
-**CHAT.T03 and JOB.T02 are the model's `Open` threats** — no effective control
-today, CHAT.T03 on its session-ownership half. **SDK.T05 and UI.T06 are
-`Partially Mitigated` with a named residual** (SDK.T05, whose permissions boundary
-is attached while `iam:*` is unchanged, and UI.T06, which has no
-document-ownership axis). **HOOK.T07 and CHAT.T06 are `Mitigated`** and are kept
+**JOB.T02 is the model's one `Open` threat** — no effective control today.
+**SDK.T05 and UI.T06 are `Partially Mitigated` with a named residual** (SDK.T05,
+whose permissions boundary is attached while `iam:*` is unchanged, and UI.T06,
+which has no document-ownership axis). **CHAT.T03, CHAT.T06 and HOOK.T07 are
+`Mitigated`** and are kept
 here as the record of what the fix covered, not as outstanding items. A fix still in flight is **not** a control until its
 change merges, so a threat whose fix is pending keeps its *Open* status and the
 issue number is recorded instead. Note the
@@ -82,7 +82,7 @@ same mistake as one that reports an intention as a control.
 
 | ID | Threat | Fix in flight | Where |
 |----|--------|---------------|-------|
-| CHAT.T03 | Chat streaming Function URL does not enforce session ownership (its group check is enforced) | **ID-token verification on the streaming endpoint** — **partial, does not close it**: both routes apply their group floors to the verified token, but the processors still load agent memory by `sessionId` alone | [companion-chat.md](feature-threats/companion-chat.md) |
+| CHAT.T03 | Chat streaming Function URL — group and session-ownership enforcement | **ID-token verification on the streaming endpoint, then a session check on every agent chat send path** — **closed**: both routes apply their group floors to the verified token, and the REST resolver, the processor and `/chat/agent` refuse a session that holds messages or agent memory the caller has no session record for | [companion-chat.md](feature-threats/companion-chat.md) |
 | CHAT.T06 | A client-supplied `callerSub` taken as the caller's identity on `/chat/agent` | **ID-token verification on the streaming endpoint** — **closed**: a turn is attributed to the verified identity, and a differing body value is refused with 403 | [companion-chat.md](feature-threats/companion-chat.md) |
 | HOOK.T07 | `onError: fail` does not halt the workflow at six of the seven hook points | **issue #919** — **closed**: terminal at all seven | [lambda-hooks.md](feature-threats/lambda-hooks.md) |
 | SDK.T05 | The shipped CloudFormation deployment service role reaches account administrator | **issue #927** — **closed on the boundary**; `iam:*` unchanged | [sdk-cli.md](feature-threats/sdk-cli.md) |
@@ -254,7 +254,7 @@ security/threat-modeling/
 | 5 | HOOK.T02 | Data exfiltration via post-processing hook | 8 | Partially Mitigated |
 | 6 | FEAT.T01 | Feature UI bundle executes unsandboxed in host origin | 8 | Partially Mitigated |
 | 7 | SDK.T05 | Deployment service role reaches account administrator | 8 | **Partially Mitigated** (boundary attached, #927 closed) |
-| 8 | CHAT.T03 | Chat streaming Function URL — no session-ownership check (group check enforced) | 6 | **Open** (ownership half) |
+| 8 | CHAT.T03 | Chat streaming Function URL — group and session-ownership enforcement | 6 | **Mitigated** (group and session checks on every send path) |
 | 9 | UI.T06 | Object reads scoped per configuration profile; document ownership is not modelled | 6 | **Partially Mitigated** (#1033; residual is the missing ownership axis) |
 | 10 | AUTH.T16 | Per-object authorization is opt-in per resolver; the default deny covers the group floor only | 6 | Partially Mitigated (#928 closed) |
 | 11 | HOOK.T07 | `onError: fail` is not terminal at six of seven hook points | 6 | **Mitigated** (#919 closed) |
@@ -322,6 +322,7 @@ strictly worse than the red build.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.17 | 2026-11-10 | **Agent chat refuses a turn for a session another user owns, on every send path.** A control change, not a re-review — `Last reviewed against version` stays at 0.6.13. An agent chat conversation's messages and the agent's memory are keyed by the session id alone, and only `ChatSessionsTable` records which user owns a session. The REST resolver behind `sendAgentChatMessage`, the agent processor and the streaming route `/chat/agent` apply one check before any agent work: a session id that holds messages or agent memory is refused unless the caller holds a session record for it, as a 403 on both routes, and a failed lookup refuses. Memory is counted because it carries no expiry and is not deleted with the session, so it outlives the messages. An id with neither is a new conversation. Because the resolver refuses before it stores anything, a send cannot create the session record the read resolvers' ownership check accepts. The resolver gains a read-only grant on the memory table; Chat-with-Document is unaffected. **Status change:** CHAT.T03 Open → Mitigated, its group half having closed in v3.16. Recorded as accepted behaviour: a session record is not refreshed on later turns, so once it expires its owner is refused for that id as well and starts a new chat. The residual left is that no live test exercises the Function URL transport. Counts move Mitigated 66 → 67, Open 2 → 1. Reconciled in [`companion-chat.md`](feature-threats/companion-chat.md) (CHAT.T02, CHAT.T03, CHAT.T06), [`rbac-authentication.md`](feature-threats/rbac-authentication.md) (AUTH.T09), [`system-overview.md`](architecture/system-overview.md), [`data-flows.md`](architecture/data-flows.md), the risk matrix, the STRIDE analysis, the executive summary, the implementation guide and the export. No threat added or retired; no score changed. |
 | 3.16 | 2026-11-10 | **The chat streaming Function URL verifies the caller's Cognito ID token.** A control change, not a re-review — `Last reviewed against version` stays at 0.6.13. The web UI sends its User Pool ID token inside the SigV4-signed headers of every streamed request, and the handler verifies it (RS256 against the pool's JWKS, the pool as issuer, the web UI's app client as audience, an ID token, unexpired) before either route opens a stream, refusing a request without a valid one with 403. Both routes now apply their REST operations' group floors to the verified groups — Admin, Author or Viewer for agent chat, any assigned group for document chat — Chat-with-Document's `allowedConfigVersions` scope applies to streamed turns, and a turn is attributed to the verified identity, derived as the REST path derives it, with a differing body `callerSub` refused. The handler reads nothing from the SigV4 principal for identity, and `GAP-07` is retired in `scripts/api_rbac_expectations.yaml`. **Status changes:** CHAT.T06 Open → Mitigated; AUTH.T14 Partially Mitigated → Mitigated. CHAT.T03 stays **Open**: its group half is closed, but the streaming processors still load agent memory by `sessionId` alone, so its session-ownership half — cross-user history disclosure — has no control yet. AUTH.T07 keeps Partially Mitigated on its other residuals, with the streaming stand-down no longer among them. Counts move Mitigated 64 → 66, Partially Mitigated 33 → 32, Open 3 → 2. Reconciled in [`companion-chat.md`](feature-threats/companion-chat.md), [`rbac-authentication.md`](feature-threats/rbac-authentication.md), [`system-overview.md`](architecture/system-overview.md), [`data-flows.md`](architecture/data-flows.md), the glossary, the risk matrix, the STRIDE analysis, the executive summary, the implementation guide and the export. Residuals recorded: no live test exercises the Function URL transport, and a browser tab running a UI bundle from before the change is refused until it reloads. The transport stays commercial-only, and the web UI stays on the REST path under `Strict` or an external grant source. No threat added or retired; no score changed. |
 | 3.15 | 2026-11-03 | **Tenant grants from the identity provider or an entitlement system.** A control change, not a re-review — `Last reviewed against version` stays at 0.6.13. The new `TenantGrantSource` parameter moves who writes a user's configuration-profile scope: `Manual` (an Admin, unchanged), `IdpClaim` (the pre-token trigger, at each fresh federated sign-in, matching the group or role claim against each tenant's `grantedBy` values) or `Api` (the Admin-only `setUserTenant` operation, or the SDK and CLI with IAM credentials). Under the last two a non-Admin's scope is exactly one tenant's pattern or a marker matching no profile, a user whose values grant two or more tenants is granted none, Admin edits of the scope are refused, and an unscoped non-Admin is denied in every consumer whatever `TenantIsolationMode` says. The trigger, which held no data-plane grant, now holds conditional UsersTable read/write, the EmailIndex query and a `GetItem` on the tenant index item only, and fails the sign-in when the grant cannot be written; it still trusts the claim only for a user linked to the configured provider and only on a fresh sign-in. Residuals recorded in [Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md#who-grants-a-tenant): a removal in the identity provider applies at the next fresh sign-in, so a session can keep a revoked tenant for up to `RefreshTokenValidityHours`; and whoever administers the identity provider's roles or the entitlement system now decides tenancy. The Function URL chat path (GAP-07) is closed under `Strict` or an external grant source, which also moves the web UI's chat onto the REST path; what remains of GAP-07 is that the Function URL transport carries no verified per-user identity, so it cannot be scoped and is refused rather than served. No threat added or retired; no score or status changed. |
 | 3.14 | 2026-11-03 | **Tenant isolation in a shared stack.** A control change, not a re-review — `Last reviewed against version` stays at 0.6.13. Tenant declarations tie Input-bucket prefixes to a profile name pattern; once declared, prefix mappings, tenants and user scopes that would cross a tenant are refused when written. The new `TenantIsolationMode` parameter's `Strict` value makes an unscoped non-admin resolve to a scope matching no profile, refuses at ingest a document whose key and resolved profile belong to different tenants, makes Agent Chat, agent queries and Knowledge Base queries Admin-only, refuses MCP tools, and lets the Input and Output bucket policies delegate to per-tenant S3 Access Points that confine with explicit denies. Separately, every single-document operation (fetch, versions, review, delete, abort, copy-to-baseline) and the test-run operations now apply profile scope in both modes. Prose reconciled where it asserted that no tenancy axis exists or that an unscoped caller is never refused: [`system-overview.md`](architecture/system-overview.md), the executive summary, the implementation guide, the risk matrix, the STRIDE analysis and [`agent-analysis.md`](feature-threats/agent-analysis.md). Residuals recorded in [Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md): Admins are cross-tenant in both modes, whoever can create access points in the account is inside the delegation boundary, and an Annotator's test-set scope (`allowedTestSets`) is not tenant-confined because a test set records no tenant. No threat added or retired; no score or status changed. |

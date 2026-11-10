@@ -693,13 +693,23 @@ Look for:
   streaming route applies the processor's predicate before the stream opens, so a
   denial there is a real 403. A turn is filed under the verified
   identity (`email`, else `cognito:username`, else `sub`), and a body `callerSub`
-  that differs is refused. The REST path adds session ownership checks against the
-  caller's Cognito `sub`; the streaming path does not check session ownership. The
-  REST authorizer only authenticates; it does not evaluate any group policy.
+  that differs is refused. A message for a session another user owns is refused
+  on both paths: a conversation's messages and memory are keyed by the session id
+  alone, so a session id that already holds messages or agent memory is refused
+  unless the caller holds a `(userId, sessionId)` record in `ChatSessionsTable`. The
+  `sendAgentChatMessage` resolver refuses before it stores anything, the streaming
+  route with a 403 before the stream opens, and the processor
+  (`_refuse_foreign_session`) again before any agent work. The check counts memory
+  because memory outlives the messages (see **TTL** below). A session id with
+  neither is a new conversation, and a lookup that fails refuses. Reads through
+  `getChatMessages` and deletes add their own ownership checks. The REST authorizer
+  only authenticates; it does not evaluate any group policy.
   An event with no `identity` reaches the processor only through a direct,
   IAM-gated `lambda:InvokeFunction`.
 - **Encryption**: KMS encryption for DynamoDB tables
-- **TTL**: Messages expire after 30 days (configurable)
+- **TTL**: Messages and session records expire after 30 days (configurable). Agent
+  memory items in `IdHelperChatMemoryTable` carry no `ExpiresAfter`, so they do not
+  expire, and deleting a session leaves them in place
 - **VPC**: Not required (uses AWS service APIs)
 
 ## Monitoring

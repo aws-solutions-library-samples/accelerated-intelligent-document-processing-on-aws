@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **Agent Chat only continues your own sessions.** A message for a chat session that belongs to another user is refused on the REST API and on the streaming endpoint, before anything is stored or the agent loads the conversation. See [Agent Chat](docs/agent-companion-chat.md).
 - **Streamed chat now verifies who is asking.** The chat streaming endpoint verifies the caller's Cognito ID token, which the web UI sends with every streamed turn, and refuses a request without a valid one. Agent Chat's group restriction, Chat-with-Document's group requirement and configuration-profile scope, and the chat history a turn is filed under now follow the signed-in user on that endpoint as they do on the REST path. A browser tab opened before the update has to be reloaded before it can chat. See [Enforcement layers](docs/rbac.md#enforcement-layers).
 - **The RBAC page documents the Annotator role as the API enforces it.** The [Permission Matrix](docs/rbac.md#permission-matrix) has an Annotator column and review-queue rows, with notes where an Annotator is limited to the work given to it or where its console offers less than the API admits. The page no longer says an Annotator without assigned test sets can do nothing, or that it has no access to the document list: it works the Production queues that list it, and its document reads are answered within its configuration-profile scope, as for every role. It also records that every signed-in user can list fine-tuning jobs.
 

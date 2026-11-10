@@ -387,6 +387,7 @@ def test_each_route_verifies_the_caller_once_before_anything_else(route):
         "_refuse_unverified_when_unscoped_is_denied_or_403",
         "_enforce_groups_or_403",
         "_enforce_any_group_or_403",
+        "_refuse_foreign_session_or_403",
     )
     for i, st in enumerate(fn.body):
         for gate in gates:
@@ -647,3 +648,25 @@ def test_the_refusal_is_conditional_on_unscoped_is_denied_and_a_403():
     ]
     assert "identity is None and unscoped_is_denied()" in body
     assert "status_code=403" in body
+
+
+@pytest.mark.unit
+def test_agent_route_refuses_another_users_session_before_the_stream_opens():
+    """A turn for a session another user owns must be refused while a 403 is still
+    expressible, with the verified identity and the resolved caller key."""
+    fn = _route_functions(_app_ast())["POST /chat/agent"]
+    calls = _calls_named(fn, "_refuse_foreign_session_or_403")
+    assert len(calls) == 1
+    (call,) = calls
+    idx = next(
+        i
+        for i, st in enumerate(fn.body)
+        if isinstance(st, ast.Expr) and st.value is call
+    )
+    streams = [i for i, st in enumerate(fn.body) if _calls_named(st, "StreamingResponse")]
+    assert idx < min(streams)
+    assert [getattr(a, "id", None) for a in call.args] == [
+        "identity",
+        "session_id",
+        "caller_sub",
+    ]
