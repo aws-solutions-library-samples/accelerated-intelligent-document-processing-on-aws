@@ -587,6 +587,22 @@ class CognitoUserMapper:
         }
         lines += render_spec(tr, spec, props, plan.logical_id)
         head, tail = tr.meta_lines(plan, res)
+        # Every AWS::Cognito::UserPoolUser property is create-only, so
+        # CloudFormation never changes a user after creating it. Cognito adds
+        # attributes of its own (sub, email_verified) that the template does not
+        # name, and the user may change others; reading those as drift would
+        # strip them, and an adopted user carries whatever its pool gave it.
+        tail = tail + [
+            "# create-only under CloudFormation; the user owns its attributes "
+            "after creation",
+            hcl.block(
+                "lifecycle",
+                [
+                    "ignore_changes = [attributes, desired_delivery_mediums, "
+                    "message_action]"
+                ],
+            ).rstrip(),
+        ]
         return hcl.block(
             f'resource "aws_cognito_user" "{plan.name}"', head + lines + tail
         )

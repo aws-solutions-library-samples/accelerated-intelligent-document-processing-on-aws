@@ -664,3 +664,50 @@ def test_a_hand_mapper_force_new_path_counts_as_create_only(schema, monkeypatch)
 
     monkeypatch.setattr(aws_mappers_storage.DynamoDbTableMapper, "force_new", ())
     assert safety.custom_output_edges(translated(t, schema)) == []
+
+
+def _pool_and_user() -> dict:
+    return {
+        "Resources": {
+            "Pool": {
+                "Type": "AWS::Cognito::UserPool",
+                "Properties": {
+                    "UserPoolName": "p",
+                    "UsernameConfiguration": {"CaseSensitive": False},
+                },
+            },
+            "Admin": {
+                "Type": "AWS::Cognito::UserPoolUser",
+                "Properties": {
+                    "UserPoolId": {"Ref": "Pool"},
+                    "Username": "a@example.com",
+                    "UserAttributes": [{"Name": "email", "Value": "a@example.com"}],
+                    "DesiredDeliveryMediums": ["EMAIL"],
+                },
+            },
+        }
+    }
+
+
+def test_a_user_pool_keeps_the_username_configuration_it_was_created_with(schema):
+    # Cognito cannot change UsernameConfiguration after creation, so the only
+    # thing a difference can do is replace the pool and delete every user in it.
+    # A pool adopted with `import` (created case sensitive) must not be replaced.
+    tr = translated(_pool_and_user(), schema)
+    pool = tr.emitted["Pool"]
+    assert "case_sensitive = false" in pool
+    assert "ignore_changes = [username_configuration]" in pool
+    assert completeness.check(tr)[0] == []
+
+
+def test_a_pool_user_is_never_rewritten_after_creation(schema):
+    # Every UserPoolUser property is create-only under CloudFormation. Cognito
+    # adds attributes the template does not name (email_verified, sub); treating
+    # them as drift would strip them from an adopted user.
+    tr = translated(_pool_and_user(), schema)
+    user = tr.emitted["Admin"]
+    assert (
+        "ignore_changes = [attributes, desired_delivery_mediums, message_action]"
+        in user
+    )
+    assert completeness.check(tr)[0] == []
