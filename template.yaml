@@ -2782,8 +2782,11 @@ Resources:
             - Effect: Allow
               Action:
                 - lambda:InvokeFunction
+              # The only function the agents call is the document lookup
+              # (LOOKUP_FUNCTION_NAME), so the grant names it rather than every
+              # function in the stack.
               Resource:
-                - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}*"
+                - !GetAtt LookupFunction.Arn
             - Effect: Allow
               Action:
                 - states:DescribeExecution
@@ -12124,11 +12127,24 @@ Resources:
             - Effect: Allow
               Action: s3:GetObject
               Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_library/*"
-        - S3CrudPolicy:
+        - S3ReadPolicy:
             BucketName: !If
               - ShouldCreateReportingBucket
               - !Ref ReportingBucket
               - !Ref ReportingBucketName
+        # Athena writes each query's results under athena-results/ (the
+        # ATHENA_OUTPUT_LOCATION above) with this function's credentials; that is
+        # the only reporting-bucket write the analytics agent needs.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub
+                - "arn:${AWS::Partition}:s3:::${Bucket}/athena-results/*"
+                - Bucket: !If
+                    - ShouldCreateReportingBucket
+                    - !Ref ReportingBucket
+                    - !Ref ReportingBucketName
         - Statement:
             - Effect: Allow
               Action:
@@ -12267,8 +12283,11 @@ Resources:
             - Effect: Allow
               Action:
                 - lambda:InvokeFunction
+              # The only function the agents call is the document lookup
+              # (LOOKUP_FUNCTION_NAME), so the grant names it rather than every
+              # function in the stack.
               Resource:
-                - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}*"
+                - !GetAtt LookupFunction.Arn
             - Effect: Allow
               Action:
                 - states:DescribeExecution
@@ -12427,8 +12446,14 @@ Resources:
                   s3:prefix: config_revisions/*
         - S3ReadPolicy:
             BucketName: !Ref OutputBucket
-        - S3WritePolicy:
-            BucketName: !Ref OutputBucket
+        # Chat with Document caches a document's assembled page text at
+        # <document key>/summary/fulltext.txt; that is the only object this
+        # function writes to the output bucket.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "${OutputBucket.Arn}/*/summary/fulltext.txt"
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTable
         - DynamoDBReadPolicy:
@@ -12450,11 +12475,24 @@ Resources:
             - Effect: Allow
               Action: s3:GetObject
               Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/config_library/*"
-        - S3CrudPolicy:
+        - S3ReadPolicy:
             BucketName: !If
               - ShouldCreateReportingBucket
               - !Ref ReportingBucket
               - !Ref ReportingBucketName
+        # Athena writes each query's results under athena-results/ (the
+        # ATHENA_OUTPUT_LOCATION above) with this function's credentials; that is
+        # the only reporting-bucket write the analytics agent needs.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub
+                - "arn:${AWS::Partition}:s3:::${Bucket}/athena-results/*"
+                - Bucket: !If
+                    - ShouldCreateReportingBucket
+                    - !Ref ReportingBucket
+                    - !Ref ReportingBucketName
         - Statement:
             # OpenAI GPT-5.x models are served via the bedrock-mantle endpoint.
             - Effect: Allow
@@ -12476,13 +12514,19 @@ Resources:
             - Effect: Allow
               Action:
                 - bedrock-agentcore:InvokeAgentRuntime
+              Resource:
+                - "*"
+            # The AWS-managed Code Interpreter the analytics agent uses, scoped
+            # the same way as AgentChatProcessorFunction's grant.
+            - Effect: Allow
+              Action:
                 - bedrock-agentcore:StartCodeInterpreterSession
                 - bedrock-agentcore:StopCodeInterpreterSession
                 - bedrock-agentcore:InvokeCodeInterpreter
                 - bedrock-agentcore:GetCodeInterpreterSession
                 - bedrock-agentcore:ListCodeInterpreterSessions
               Resource:
-                - "*"
+                - !Sub "arn:${AWS::Partition}:bedrock-agentcore:*:aws:code-interpreter/*"
             - Effect: Allow
               Action:
                 - aws-marketplace:Subscribe
@@ -12529,8 +12573,11 @@ Resources:
             - Effect: Allow
               Action:
                 - lambda:InvokeFunction
+              # The only function the agents call is the document lookup
+              # (LOOKUP_FUNCTION_NAME), so the grant names it rather than every
+              # function in the stack.
               Resource:
-                - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}*"
+                - !GetAtt LookupFunction.Arn
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -13240,11 +13287,24 @@ Resources:
             TableName: !Ref AgentTable
         - DynamoDBReadPolicy:
             TableName: !Ref ConfigurationTable
-        - S3CrudPolicy:
+        - S3ReadPolicy:
             BucketName: !If
               - ShouldCreateReportingBucket
               - !Ref ReportingBucket
               - !Ref ReportingBucketName
+        # Athena writes each query's results under athena-results/ (the
+        # ATHENA_OUTPUT_LOCATION above) with this function's credentials; that is
+        # the only reporting-bucket write the analytics agent needs.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub
+                - "arn:${AWS::Partition}:s3:::${Bucket}/athena-results/*"
+                - Bucket: !If
+                    - ShouldCreateReportingBucket
+                    - !Ref ReportingBucket
+                    - !Ref ReportingBucketName
         - Statement:
             - Effect: Allow
               Action:
@@ -13383,8 +13443,11 @@ Resources:
             - Effect: Allow
               Action:
                 - lambda:InvokeFunction
+              # The only function the agents call is the document lookup
+              # (LOOKUP_FUNCTION_NAME), so the grant names it rather than every
+              # function in the stack.
               Resource:
-                - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}*"
+                - !GetAtt LookupFunction.Arn
             - Effect: Allow
               Action:
                 - states:DescribeExecution
