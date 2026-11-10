@@ -1051,18 +1051,43 @@ and absent from `test_ci_gate_parity.py`'s `SHARED_GATES`. The entry point is
   log on the MR, which is kept when a newer push cancels a job or it times out.
 - **At night.** `ux_nightly` comes after `notify`, so it neither delays
   `nightly_notification` nor feeds it. `ai_ux_test_stories_nightly` runs the nightly
-  set in parallel shards, each with a dollar cap of its own and a time gate that starts
-  a flow only when it can finish. `ai_ux_test_stories_digest` merges the shards
+  set in parallel shards, each with a dollar cap of its own and a time gate that
+  starts a flow only when it can finish. `ai_ux_test_stories_digest` merges the shards
   and writes `digest.md` and `digest.json`. In the scheduled pipeline it also compares
   the night with earlier scheduled nights, read with `GITLAB_REVIEW_TOKEN` by GET
-  requests alone, and with `UX_TEST_STORIES_SLACK_WEBHOOK_URL` set posts a one-line
-  summary to Slack, with a status that begins `🧭 UX STORIES ·`; a manual run
-  compares nothing and says so. It runs no model and
-  no browser. A night is compared only when the review stack's row in
-  `deployment_summary.txt` says it was updated or already up to date and every socket
-  audit was clean. A bad result is a regression once a second attempt confirms it;
-  when that confirming re-run did not fit in a shard's budget or time, the result is
-  still listed, marked unconfirmed in `digest.md` and on Slack.
+  requests alone, and with `UX_TEST_STORIES_SLACK_WEBHOOK_URL` set posts the night to
+  Slack; a manual run compares nothing and says so. It runs no model and no browser. A
+  night is compared only when the review stack's row says it was updated or already up
+  to date and every socket audit was clean. The shards read that row from the
+  integration build's `codebuild_logs.txt`, in the consolidated summary the build
+  prints near the end of its log: within the log's last MiB, under the last such
+  header before the `🤖 Generating deployment summary with Bedrock...` line, so the
+  model's narrative after it is never read. Not from `deployment_summary.txt`, which
+  keeps only the log from that line on whenever `integration_tests` cannot fetch the
+  build's summary from S3. A bad result is a regression once a second attempt confirms
+  it; when that confirming re-run did not fit in a shard's budget or time, the result
+  is still listed, marked unconfirmed in `digest.md` and on Slack.
+- **The Slack post.** It reads like the integration build's own: `status` is the
+  night's outcome from its stories (`✅ 13 of 13 passed`, `❌ 2 regressions` for
+  confirmed regressions only, `⚠️ harness problem` for a harness error or an unclean
+  audit, `⚠️ 11 of 13 passed` when a flow did not pass and none is a confirmed
+  regression, `⏭️ not run`). Once no night has been compared for four nights in a row,
+  tonight included and a night with no readable digest counted as not compared, the
+  tally says so instead of carrying a ✅:
+  `⚠️ 13 of 13 passed, not compared for 4 nights`. A regression or a harness problem
+  still comes first. And `summary` names develop's commit and the review stack's
+  version, then lists every flow under its catalogue title and persona with one icon
+  per outcome: confirmed regressions first, then the other flows that did not pass,
+  each saying why, then the passes, with their steps. A night that could not be
+  compared says why in words on a line of its own, and keeps its ✅ when every story
+  passed and the run of uncompared nights is shorter than four. It closes with what
+  tonight was compared with, the night's hesitations and dead ends, and its spend
+  against the night's cap. The summary is plain text, because the workflow shows
+  Slack's `<url|label>`, `*` and backticks as typed, and stays within 2,000 characters
+  by folding passes into "and N more passed" before any failure is cut. Every value is
+  a closed one, a count, fixed text or a catalogue title reduced to letters, digits
+  and plain punctuation, so nothing in it can mention a channel or carry a link but
+  the job's own `job_url`.
 - **Artifacts.** The MR job keeps `ux-test-stories/`, each nightly shard
   `ux-test-stories/shard-<i>/` and the digest `ux-test-stories-digest/`. Each holds
   `report.html`, the run as one page to open in a browser once downloaded: every
@@ -1106,7 +1131,7 @@ without `GITLAB_REVIEW_TOKEN` still writes the night's digest and compares nothi
 |---|---|---|
 | `UX_TEST_STORIES` | the three jobs' rules | unset or empty runs all three; `mr` only the MR job; `nightly` only the nightly pair; any other value, `off` among them, none. Keep it at environment scope All (`*`): GitLab can leave an environment-scoped variable undefined while it evaluates `rules`, so a scoped `off` can read as unset and stop nothing |
 | `UX_TEST_STORIES_RUN` | the nightly pair's rules | `all`, on a pipeline run by hand for `develop`, runs the nightly pair. At All (`*`) scope, for the same reason |
-| `UX_TEST_STORIES_SLACK_WEBHOOK_URL` | the digest, on the schedule | optional and masked: a Slack Workflow Builder webhook of its own for the night's one-line summary, which is a bearer credential. Set it at environment scope `ux-stories-digest`, which only the digest declares, so no other job receives it, and protect that environment where `develop` is a protected branch. The digest never posts through `SLACK_WEBHOOK_URL`: that variable reaches every job, so a test running the digest in a scheduled pipeline would post through it, and its workflow's message names the integration deploy |
+| `UX_TEST_STORIES_SLACK_WEBHOOK_URL` | the digest, on the schedule | optional and masked: a Slack Workflow Builder webhook of its own for the night's summary, which is a bearer credential. Its workflow declares four Text variables, `status`, `commit`, `job_url` and `summary`, and puts `{{job_url}}` on a line of its own. Set it at environment scope `ux-stories-digest`, which only the digest declares, so no other job receives it, and protect that environment where `develop` is a protected branch. The digest never posts through `SLACK_WEBHOOK_URL`: that variable reaches every job, so a test running the digest in a scheduled pipeline would post through it, and its workflow's message names the integration deploy |
 | `UX_TEST_UI_ENV` | the MR job and the shards | `ai_ux_test`'s, plus a `UX_TEST_WEB_URL=<the stack's ApplicationWebURL>` line, which every run against the deployed UI needs (an MR that changes the docs but not `src/ui`, and every nightly flow), because nothing else in the variable names the web host |
 | `UX_TEST_PERSONAS` | the MR job and the shards | `ai_ux_test`'s, with an entry for each Cognito group the stories sign in as, and one for each persona that names its own `credentials` (the profile-limited Annotator's `Annotator-scoped`); a flow whose entry is missing is not run |
 | `UX_TEST_AWS_ACCOUNT_ID` | the MR job and the shards | `ai_ux_test`'s |
