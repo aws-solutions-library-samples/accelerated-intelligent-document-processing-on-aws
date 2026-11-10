@@ -3073,6 +3073,9 @@ STDERR:
                 "patterns/unified/statemachine",
                 "patterns/unified/buildspec.yml",
                 "Dockerfile.optimized",
+                # CodeBuildTrigger's handler (DockerBuildRun), shared with the
+                # multi-doc-discovery stack (#1824).
+                "src/lambda/start_codebuild",
             ],
             # Feature Platform plumbing nested stack — InstalledFeatures DDB
             # table + AppSync resolvers/Lambdas. Deployed only when

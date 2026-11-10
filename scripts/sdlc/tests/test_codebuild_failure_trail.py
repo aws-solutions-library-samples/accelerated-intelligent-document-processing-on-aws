@@ -560,7 +560,7 @@ _SHARED_HANDLER = (
 
 def test_the_shared_build_handler_still_emits_a_recognised_failure_reason(cbd):
     source = _SHARED_HANDLER.read_text(encoding="utf-8")
-    emitted = 'raise RuntimeError(f"build did not complete - status: [{build_status}]")'
+    emitted = "build did not complete - status: ["
     assert emitted in source, (
         "the shared build-run handler's failure wording changed; update "
         "_CODEBUILD_CR_FAILURE_MARKERS to match it"

@@ -376,11 +376,11 @@ Resources:
                     exit 1
                   fi
                 - echo Build completed on `date`
-      # Room for both docker build attempts in the build phase above, and still
-      # inside CloudFormation's 60-minute custom-resource limit, so a slow build
-      # fails as a CodeBuild timeout rather than as an unanswered custom resource.
-      # Matches the unified pattern's DockerBuildProject.
       TimeoutInMinutes: 55
+      # 55: room for both docker build attempts in the build phase above, and
+      # still inside CloudFormation's 60-minute custom-resource limit, so a slow
+      # build fails as a CodeBuild timeout rather than as an unanswered custom
+      # resource. Matches the unified pattern's DockerBuildProject.
       EncryptionKey: !Ref CustomerManagedEncryptionKeyArn
 
   ##########################################################################
