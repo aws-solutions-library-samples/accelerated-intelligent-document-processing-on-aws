@@ -2248,22 +2248,40 @@ class SplittingLLMConfig(ClassificationModelSettings):
 
 
 class ExternalModelConfig(BaseModel):
-    """An external model behind a stable contract. **Declared, not yet implemented.**
+    """An external model behind a stable contract.
 
-    Shared by the boundary model (splitting) and the decision model (section
-    classification), so both methods land without a configuration migration.
+    Shared by the boundary model (splitting) and the decision models (section
+    classification, extraction confidence), so each method lands without a
+    configuration migration. ``backend: lambda`` is implemented, by
+    ``idp_common.decision_model``, which speaks the System One API; ``sagemaker``
+    and ``bedrock_custom`` are declared and refused until they are.
     """
 
-    backend: str = Field(default="", description="sagemaker | bedrock_custom | lambda")
+    backend: str = Field(
+        default="",
+        description="lambda (empty means lambda) | sagemaker | bedrock_custom",
+    )
     endpoint: str = Field(
         default="",
-        description="Endpoint name, model ARN, or function ARN (GENAIIDP- prefix).",
+        description=(
+            "Endpoint name, model ARN, or function ARN (GENAIIDP- prefix). Empty "
+            "uses the stack's own decision model, when the stack deploys one."
+        ),
     )
     input: str = Field(default="images", description="images | text | both")
     timeout_ms: int = Field(default=30000, ge=0)
     max_concurrency: int = Field(default=4, ge=1)
     price_per_request: float = Field(
         default=0.0, ge=0.0, description="Per-request price, for metering."
+    )
+    function_memory_mb: int = Field(
+        default=10240,
+        ge=128,
+        le=10240,
+        description=(
+            "The memory the Lambda backend's function runs at, for metering "
+            "GB-seconds. The Strands Decider's Lambda deployment uses 10240."
+        ),
     )
 
 

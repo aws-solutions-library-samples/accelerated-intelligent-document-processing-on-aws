@@ -1719,6 +1719,21 @@ pricing:
         price: "0.0015"
 
   # ---------------------------------------------------------------------------
+  # Decision models on Lambda (System One API) — see docs/decision-models.md
+  # ---------------------------------------------------------------------------
+  # Keys are `decision_model/<function-name>`, matching the metering key
+  # idp_common.decision_model emits: `{context}/decision_model/{function-name}`.
+  # Lambda bills requests and GB-seconds; the arm64 rates below are us-east-1 list
+  # prices. A function under another name records a NULL cost until it has an
+  # entry: copy this one under its name.
+  - name: decision_model/GENAIIDP-decider
+    units:
+      - name: requests
+        price: "2.0E-7"
+      - name: gb_seconds
+        price: "1.33334E-5"
+
+  # ---------------------------------------------------------------------------
   # AWS Lambda Pricing (US East - N. Virginia)
   # ---------------------------------------------------------------------------
   - name: lambda/requests
