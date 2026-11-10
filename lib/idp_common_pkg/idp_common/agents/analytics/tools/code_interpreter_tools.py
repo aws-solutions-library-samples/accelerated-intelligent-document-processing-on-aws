@@ -8,6 +8,7 @@ Code interpreter tools for analytics agents.
 import json
 import logging
 import time
+from typing import Optional
 
 import boto3
 from bedrock_agentcore.tools.code_interpreter_client import CodeInterpreter
@@ -32,6 +33,19 @@ class CodeInterpreterTools:
         self.session = session
         self.region = region
         self._code_client = None
+        # Where the result of the last successful Athena query this agent ran is
+        # stored, as reported by Athena. This is the only object
+        # write_query_results_to_code_sandbox reads.
+        self._last_query_result_uri: Optional[str] = None
+
+    def record_query_result(self, s3_uri: Optional[str]) -> None:
+        """Remember the result location of the query that just ran.
+
+        Called by the agent's Athena tool after every query: with the location
+        Athena reported for a successful query, and with ``None`` before a query runs
+        so that a failed or refused query leaves no earlier result in place.
+        """
+        self._last_query_result_uri = s3_uri or None
 
     def _get_code_interpreter_client(self):
         """Get or create the code interpreter client."""
@@ -57,13 +71,14 @@ class CodeInterpreterTools:
             self._code_client = None
 
     @tool
-    def write_query_results_to_code_sandbox(self, s3_uri: str) -> str:
+    def write_query_results_to_code_sandbox(self) -> str:
         """
-        Download CSV from S3 and write it to the code interpreter environment.
+        Write the results of the last successful Athena query to the code
+        interpreter environment as "query_results.csv".
         Must always be called before any execute_python functions can be called.
 
-        Args:
-            s3_uri: S3 URI of the CSV file to download
+        Takes no arguments: the file is always the result of the most recent
+        successful run_athena_query call. Run the query first.
 
         Returns:
             Success message indicating the file was written to the sandbox
@@ -71,17 +86,27 @@ class CodeInterpreterTools:
         start_time = time.time()
         try:
             filename = "query_results.csv"
+            s3_uri = self._last_query_result_uri
+            if not s3_uri:
+                result = (
+                    "No query results are available to write. Run a query with "
+                    "run_athena_query first; this tool writes the results of the "
+                    "most recent successful query."
+                )
+                analytics_logger.log_content(
+                    "write_query_results_to_code_sandbox", result
+                )
+                return result
+
             logger.info(
-                f"Downloading CSV from S3 and writing to code interpreter: {filename}"
+                f"Writing the last query result to code interpreter: {filename}"
             )
 
-            # Parse S3 URI
-            if not s3_uri.startswith("s3://"):
-                raise ValueError("Invalid S3 URI format")
-
-            # Remove s3:// prefix and split bucket and key
-            s3_path = s3_uri[5:]  # Remove 's3://'
-            bucket_name, key = s3_path.split("/", 1)
+            # The location came from Athena's own GetQueryExecution response for
+            # the query this agent ran, never from the model.
+            if not s3_uri.startswith("s3://") or "/" not in s3_uri[5:]:
+                raise ValueError("Athena reported an unexpected result location")
+            bucket_name, key = s3_uri[5:].split("/", 1)
 
             logger.debug(f"Bucket: {bucket_name}, Key: {key}")
 

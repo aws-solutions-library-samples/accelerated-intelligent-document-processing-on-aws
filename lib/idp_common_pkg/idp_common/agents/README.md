@@ -349,6 +349,29 @@ The system includes several specialized agents:
 
 All agents are automatically available to the orchestrator - no manual selection needed.
 
+### What the analytics agent's tools read
+
+The analytics agent writes its own SQL and its own Python, so both tools that move
+data are bounded in code rather than by the prompt:
+
+- **`run_athena_query`** runs exactly one read-only statement: a `SELECT` (optionally
+  opening with `WITH` or parentheses), or a `SHOW` or `DESCRIBE` statement.
+  `analytics/query_validation.py` checks the statement before Athena is called and
+  refuses more than one statement, any other leading keyword, and the keywords in
+  `REFUSED_KEYWORDS` (writes, DDL, `UNLOAD`, `PREPARE`/`EXECUTE`, external and
+  inline functions, table functions, session statements) anywhere outside string
+  literals, quoted identifiers and comments. A refused query returns
+  `{"success": False, "state": "NOT_RUN", "error": ...}` and is not sent.
+- **`write_query_results_to_code_sandbox`** takes no arguments. It copies the result
+  object of the agent's most recent successful query, at the location Athena
+  reported for it, into the Code Interpreter session as `query_results.csv`. The
+  agent's Athena tool clears that location before every query and sets it only when
+  one succeeds, so a failed or refused query leaves nothing to copy, and the tool
+  refuses when no query has succeeded.
+
+Tests: `tests/unit/agents/analytics/test_query_validation.py` (the accepted and
+refused statement corpus) and `test_code_interpreter_tools.py`.
+
 ### A system prompt names only tools its agent registers
 
 An agent's system prompt is the model's only guide to choosing among its tools,
