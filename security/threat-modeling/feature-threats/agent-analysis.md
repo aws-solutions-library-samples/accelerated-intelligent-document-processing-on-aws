@@ -73,7 +73,7 @@ flowchart TD
 | **Likelihood** | Medium |
 | **Severity** | Medium |
 | **Affected Components** | Analytics Agent, Bedrock AgentCore |
-| **Mitigations** | AgentCore runs in AWS-managed sandboxed environment (no network access, no AWS credentials), code output validation, execution time limits, output size limits |
+| **Mitigations** | AgentCore runs in AWS-managed sandboxed environment (no AWS credentials; network reach limited to Amazon S3 in the session's region), code output validation, execution time limits, output size limits |
 
 ### AGT.T03: Agent Routing Manipulation
 
@@ -122,7 +122,7 @@ flowchart TD
 | Control | Implementation | Threats Mitigated |
 |---------|---------------|-------------------|
 | **Athena read-only** | IAM role with only SELECT permissions | AGT.T01 |
-| **AgentCore sandbox** | AWS-managed isolation (no network, no credentials) | AGT.T02 |
+| **AgentCore sandbox** | AWS-managed isolation (no credentials; network reach limited to Amazon S3 in the session's region) | AGT.T02 |
 | **RBAC** | Cognito group-based agent access | AGT.T03, AGT.T05 |
 | **Audit logging** | All agent invocations logged to CloudWatch | AGT.T01, AGT.T03 |
 | **Query validation** | SQL sanitization before Athena execution | AGT.T01 |

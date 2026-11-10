@@ -19,7 +19,7 @@ The Agent Analysis feature provides intelligent data exploration and analysis ca
 - **Automated SQL Generation**: Analytics agents convert questions into optimized SQL queries
 - **Interactive Visualizations**: Generate charts, graphs, and tables from query results
 - **Real-time Analysis**: Get insights from your processed documents without manual data analysis
-- **Secure Code Execution**: Python visualization code runs in isolated AWS Bedrock AgentCore sandboxes
+- **Sandboxed Code Execution**: Python visualization code runs in AWS Bedrock AgentCore Code Interpreter sessions, which hold no AWS credentials and reach only Amazon S3 in their own region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
 - **MCP Integration**: Connect external systems and tools via Model Context Protocol (MCP) servers
 
 https://github.com/user-attachments/assets/e2dea2c5-5eb1-42f6-9af5-469afd2135a7
@@ -75,11 +75,38 @@ For data analysis queries, the Analytics Agent follows this workflow:
 
 The Agent Analysis feature implements a security-first design:
 
-- **Sandboxed Execution**: All Python code runs in AWS Bedrock AgentCore, completely isolated from the rest of the AWS environment and the internet
+- **Sandboxed Execution**: All Python code runs in the AWS-managed Bedrock AgentCore Code Interpreter. A session holds no AWS credentials and cannot reach public internet hosts, but it can reach Amazon S3 in its own region; see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter)
 - **Secure Data Transfer**: Query results are transferred via S3 and AgentCore APIs, never through direct file system access
 - **Session Management**: Code interpreter sessions are properly managed and cleaned up after use
 - **Minimal Permissions**: Each component requests only the necessary AWS permissions
 - **Audit Trail**: Comprehensive logging and monitoring for security reviews
+
+#### Network reach of the Python interpreter
+
+The Python tool runs code on `aws.codeinterpreter.v1`, the AWS-managed interpreter
+the `bedrock_agentcore` SDK uses by default. What a session on it can reach is set by
+the managed service, not by this solution, and a session on that interpreter is not
+fully cut off from the network. Measured from a session in `us-west-2` on 2026-11-10:
+
+| From inside a session | Result |
+|---|---|
+| DNS lookup of a public name (`example.com`) | fails: the name does not resolve |
+| HTTPS GET to `https://example.com` | fails: the name does not resolve |
+| TCP connection to a public address (`1.1.1.1:443`) | fails: network unreachable |
+| DNS lookup of Amazon S3 in the session's region | succeeds |
+| HTTP PUT to a presigned URL for a bucket in the session's region | succeeds, and the object arrives in the bucket |
+| TCP connection to Amazon S3 in another region, or HTTPS to regional STS | fails: network unreachable |
+| AWS credentials in the environment, in `~/.aws`, from the instance metadata service or a container credential endpoint | none present (the metadata service answers but lists no role) |
+
+So code running in a session has no credentials of its own and no general internet
+access, but it can send data to Amazon S3 in that region, including to any bucket a
+presigned URL names. Treat the result of every query the agent runs as data that code
+in the session can read and write to such a location. Only `us-west-2` was measured;
+another region may differ.
+
+To re-measure, run `make stacktest-sandbox-network` (it needs no stack, and creates
+and deletes its own bucket). It prints a pass/fail table against the posture above
+and exits 1 if the posture has changed.
 
 ### Data Flow
 
@@ -316,7 +343,7 @@ Key configuration settings:
 1. **Data Access**: Only authenticated users can access analytics features
 2. **Query Isolation**: Each user's queries are isolated and tracked separately
 3. **Audit Logging**: All queries and results are logged for security reviews
-4. **Sandbox Security**: Python code execution is completely isolated from system resources
+4. **Sandbox Reach**: Python code runs with no AWS credentials and no public internet access, but it can reach Amazon S3 in the session's region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
 
 ## Troubleshooting
 

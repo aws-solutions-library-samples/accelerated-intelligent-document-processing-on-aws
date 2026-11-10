@@ -50,7 +50,7 @@
       "component": "Agent Analysis",
       "affectedComponents": "Analytics Agent, Bedrock AgentCore",
       "status": "Mitigated",
-      "mitigations": "AgentCore runs in AWS-managed sandboxed environment (no network access, no AWS credentials), code output validation, execution time limits, output size limits",
+      "mitigations": "AgentCore runs in AWS-managed sandboxed environment (no AWS credentials; network reach limited to Amazon S3 in the session's region), code output validation, execution time limits, output size limits",
       "residualRisk": "",
       "source": "feature-threats/agent-analysis.md"
     },

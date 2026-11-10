@@ -291,7 +291,7 @@ The Analytics Agent has access to four specialized tools:
    - Generates visualizations and tables from query data
    - Uses Pandas, Matplotlib, and other standard Python libraries
    - Outputs JSON-formatted charts and tables for web display
-   - Runs in isolated AgentCore sandbox for security
+   - Runs in an AgentCore Code Interpreter session with no AWS credentials and no public internet access; the session can still reach Amazon S3 in its region (see [Network reach of the Python interpreter](agent-analysis.md#network-reach-of-the-python-interpreter))
 
 **Workflow**:
 1. Agent explores database schema using Database Info tool

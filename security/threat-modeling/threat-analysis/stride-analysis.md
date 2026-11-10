@@ -165,7 +165,7 @@ Elevation of privilege threats involve gaining capabilities beyond what was auth
 | **Configuration-driven privilege escalation** — malicious config enabling unauthorized model access | Configuration | High | Config schema validation, RBAC, model allowlisting |
 | **MCP tool parameter manipulation** — causing tools to access unauthorized resources | MCP Integration | High | Input validation, parameter schemas, least-privilege credentials |
 | **Hook IAM role over-privilege** — customer hooks accessing platform resources | Lambda Hooks | High | Separate IAM roles, platform resource policies, documentation |
-| **Arbitrary code execution via AgentCore** — AI-generated malicious code | Agent System | Medium | AgentCore sandbox (no network, no credentials), output validation |
+| **Arbitrary code execution via AgentCore** — AI-generated malicious code | Agent System | Medium | AgentCore sandbox (no credentials; network reach limited to Amazon S3 in the session's region), output validation |
 | **BDA project configuration tampering** — altering BDA processing behavior | BDA Mode | High | IAM restrictions, CloudTrail, admin-only access |
 
 ## 8. Cross-Cutting Threats
