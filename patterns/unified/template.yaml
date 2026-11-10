@@ -4933,6 +4933,12 @@ Resources:
                   - ecr:DescribeImages
                 Resource:
                   - !GetAtt ECRRepository.Arn
+              # Read this stack's own status, to tell a rollback from an update
+              # (#1824). Scoped to this stack only.
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: !Ref AWS::StackId
         # Used by custom resource helper poller
         # https://github.com/aws-cloudformation/custom-resource-helper
         - PolicyName: CustomResourcePoller
@@ -5022,6 +5028,9 @@ Resources:
       CodeLocation: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactPrefix}/${SourceZipfile}"
       ImageVersion: !Ref ImageVersion
       LambdaArchitecture: !Ref LambdaArchitecture
+      # Lets a rollback reuse the previous version's images, which are still in
+      # this repository, instead of rebuilding them (#1824).
+      RepositoryName: !Ref ECRRepository
       ExpectedImages:
         - "bda-invoke-function"
         - "bda-completion-function"

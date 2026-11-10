@@ -607,12 +607,14 @@ Verbose mode provides:
 ### Container-Based Lambda Deployment Issues
 
 Container packaging is not mode-specific. Every image-packaged function in the
-unified pattern stack — on the BDA branch and the pipeline branch alike — plus the
-image-packaged functions in the multi-doc-discovery stack are built by a single
-CodeBuild project (`DockerBuildProject`, named `<StackName>-docker-build`). One
-build builds them all; images are
+unified pattern stack — on the BDA branch and the pipeline branch alike — is built by
+one CodeBuild project (`DockerBuildProject`, named `<StackName>-docker-build`, where
+`<StackName>` is the pattern's nested stack). The multi-doc-discovery nested stack
+builds its own image in a `DockerBuildProject` of its own. In both, images are
 tagged with a content-based version (`IMAGE_VERSION`), so the tag changes only when
-content does, and that is what moves the Lambda functions onto a new image.
+content does, and that is what moves the Lambda functions onto a new image. A
+`DockerBuildRun` resource in each stack starts the build and waits up to
+CloudFormation's one-hour custom-resource limit for it.
 
 ⚠️ **Those images are built in CodeBuild during stack deployment, not on your
 machine.** Publishing runs no `docker` command and needs no local Docker daemon, no
@@ -625,4 +627,5 @@ error is — not your local environment.
 | **Lambda package exceeds 250MB limit** | The large-dependency functions are already image-packaged, which raises the limit to the 10 GB image size. If a ZIP-packaged function hits this, move it to `PackageType: Image` rather than trimming dependencies. |
 | **Docker build or push fails during deployment** | Read the CodeBuild log for the project named `<StackName>-docker-build`. Check Dockerfile syntax and that all referenced files exist |
 | **Image push timeout, or ECR access denied in the build** | The build uses the CodeBuild service role, not your credentials. In VPC-secured mode confirm the ECR API, ECR Docker and S3 endpoints exist and that the build subnets have outbound access for base images — see [VPC Secured Mode](./vpc-secured-mode.md) |
+| **Stack update fails on `DockerBuildRun`, then wedges in `UPDATE_ROLLBACK_FAILED`** | The image build did not finish in time, usually because CodeBuild was slow to start builds, and the rollback's build failed the same way. From the release that fixed [#1824](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1824), a rollback reuses the previous version's images while they are still in ECR instead of rebuilding them, and the multi-doc-discovery build gets the same hour as the unified pattern's. That protects a rollback *to* a release carrying the fix; the rollback runs the previous release's handler. **Recover:** `aws cloudformation continue-update-rollback --stack-name <StackName>`. If it fails again on the same resource, skip it: `--resources-to-skip <PatternNestedStackName>.DockerBuildRun <MultiDocNestedStackName>.DockerBuildRun`, naming each nested stack by its **logical** id in the parent (`PATTERNSTACK`, `MULTIDOCDISCOVERYSTACK`) and listing only the resources that failed. Skipping leaves the previous version's functions pointing at the images built when it was deployed, so it is safe while those images are still in the stack's ECR repository; check with `aws ecr describe-images` if the update's own build may have completed, since each repository keeps only its most recent images. Then retry the update once CodeBuild builds start normally |
 | **Docker daemon not running** | Only affects local Lambda testing (`sam local invoke`), not publishing. Start Docker Desktop or the Docker service before invoking a function locally |

@@ -141,7 +141,6 @@ RUN_ROOTS = [
     # becomes a wrong published number rather than a visible failure — which is
     # exactly what happened at v0.6.5. Pure dict/YAML logic, no AWS.
     "benchmarks/tests",
-    "nested/multi-doc-discovery/docker_build_lambda/tests",
     # CloudFormation -> Terraform translator and its custom-resource bridge.
     "terraform/translator/tests",
     "terraform/bridge/tests",

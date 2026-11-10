@@ -3054,7 +3054,9 @@ STDERR:
             ],
             "nested/multi-doc-discovery": [
                 LIB_DEPENDENCY,
-                "nested/multi-doc-discovery/docker_build_lambda",
+                # The build-run custom resource's handler, shared with the
+                # unified pattern (#1824).
+                "src/lambda/start_codebuild",
                 "nested/multi-doc-discovery/template.yaml",
                 # The container image's build inputs. Without these two, a
                 # Dependabot bump to requirements.txt (or a Dockerfile change)
