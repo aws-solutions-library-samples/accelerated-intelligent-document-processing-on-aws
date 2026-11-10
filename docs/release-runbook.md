@@ -100,9 +100,14 @@ While packaging, the publisher replaces tokens in `template.yaml`:
   `1.2.3rc1`. The publisher accepts any string and will publish a development version as
   a real release, with that string in every key. Check it by hand with `cat VERSION`.
 - Set the version with `make version V=<x.y.z>`. It validates the version, then rewrites
-  `VERSION`, the 9 package version files and the seller entitlement service template's
-  version: 11 paths in all, which it lists when it finishes. Do not edit `VERSION` by
-  hand.
+  `VERSION`, the 9 package version files, the seller entitlement service template's
+  version and the project's own entry in `lib/idp_common_pkg/uv.lock`: 12 paths in all,
+  which it lists when it finishes. Do not edit `VERSION` or the lockfile by hand. The
+  lockfile line matters because `make setup` and every CI job that builds the Python
+  environment run `uv export --locked`, which refuses a lockfile whose project version
+  disagrees with `pyproject.toml`. If any step fails, the files
+  stamped before it keep the new version; fix the cause and re-run the same command,
+  which is safe to repeat.
 - `CHANGELOG.md` should have its `[Unreleased]` section turned into a section for the new
   version, with the template URLs for each region you publish. The procedures are in
   `.claude/skills/prepare-changelog.md` and `.claude/skills/cut-release-changelog.md`.
@@ -178,8 +183,9 @@ cat VERSION                      # must print exactly <x.y.z>
 git describe --tags --abbrev=0   # should print the previous release tag
 ```
 
-**Success:** `VERSION` and the 9 package version files read `<x.y.z>`, and the command
-lists the 11 paths it changed.
+**Success:** every file the command stamps — `VERSION`, the 9 package version files, the
+seller entitlement service template and the lockfile's project entry — reads `<x.y.z>`, and
+the command lists the 12 paths it changed.
 
 ### Step 2 — Cut the CHANGELOG
 
