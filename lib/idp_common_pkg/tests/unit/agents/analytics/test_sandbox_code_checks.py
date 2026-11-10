@@ -44,6 +44,11 @@ ACCEPTED = [
         "import matplotlib.pyplot as plt\nplt.figure()", id="matplotlib-submodule"
     ),
     pytest.param("print('ok')", id="plain"),
+    pytest.param(
+        "import pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "print(df.to_json(orient='records'))\nrows = df.to_dict('records')",
+        id="to-methods-without-a-path",
+    ),
 ]
 
 REFUSED = [
@@ -83,6 +88,14 @@ REFUSED = [
         "import pandas as pd\npd.read_html(filepath_or_buffer=x)", id="reader-keyword"
     ),
     pytest.param("data = open(path).read()", id="open-computed-path"),
+    pytest.param(
+        "import pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "df.to_csv(df['link'][0])",
+        id="writer-with-a-computed-path",
+    ),
+    pytest.param(
+        "import matplotlib.pyplot as plt\nplt.savefig(target)", id="savefig-computed"
+    ),
     pytest.param("import numpy as np\nnp.loadtxt(p)", id="numpy-loader"),
     pytest.param("!curl remote.example", id="shell-line"),
     pytest.param("%pip install requests", id="notebook-magic"),

@@ -18,9 +18,9 @@ else that the code's own text makes visible:
   (:data:`DYNAMIC_NAMES`), and any double-underscore attribute such as
   ``__class__`` or ``__globals__``;
 - a string literal containing ``://`` (a URL in any scheme);
-- a call to a ``read_*`` function (``pd.read_csv``, ``pd.read_html``, ...) or to one
-  of :data:`PATH_OPENERS` (``open``, ``np.loadtxt``, ...) whose first argument is not
-  a string literal naming a local file.
+- a call to a ``read_*`` or ``to_*`` function (``pd.read_csv``, ``df.to_csv``, ...)
+  or to one of :data:`PATH_OPENERS` (``open``, ``np.loadtxt``, ``plt.savefig``, ...)
+  whose first argument is not a string literal naming a local file.
 
 ⚠️ **This is a check on the text and syntax tree of the code, not a boundary.** It
 cannot see what a value will be at run time, so it refuses the forms above rather
@@ -102,7 +102,22 @@ DYNAMIC_NAMES = frozenset(
 #: besides every ``read_*`` function. Their first argument must be a literal local
 #: file name.
 PATH_OPENERS = frozenset(
-    {"open", "loadtxt", "genfromtxt", "load", "fromfile", "DataSource", "imread"}
+    {
+        "open",
+        "loadtxt",
+        "genfromtxt",
+        "load",
+        "fromfile",
+        "DataSource",
+        "imread",
+        # Writers, alongside every ``to_*`` method (``df.to_csv(...)``).
+        "save",
+        "savez",
+        "savetxt",
+        "tofile",
+        "savefig",
+        "imsave",
+    }
 )
 
 
@@ -154,7 +169,11 @@ def _findings(tree: ast.AST) -> list[str]:
                 found.append("a URL in a string literal")
         elif isinstance(node, ast.Call):
             name = _call_name(node.func)
-            if name in PATH_OPENERS or name.startswith("read_"):
+            if (
+                name in PATH_OPENERS
+                or name.startswith("read_")
+                or name.startswith("to_")
+            ):
                 first = node.args[0] if node.args else None
                 if first is None:
                     first = next(
