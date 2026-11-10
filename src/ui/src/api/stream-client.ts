@@ -13,6 +13,11 @@
 // state machines (ChatPanel.handleUpdate, useAgentChat.addMessage) are reused
 // unchanged — only the source of events differs.
 //
+// The request also carries the caller's Cognito ID token in ID_TOKEN_HEADER,
+// inside the signed headers: SigV4 proves only that a signed-in user of the
+// pool is calling, and the endpoint verifies the token to learn which user and
+// which groups. A request without one is refused.
+//
 // Works identically whether the SPA is served via CloudFront or ALB: the
 // Function URL is addressed directly by the browser.
 import { SignatureV4 } from '@smithy/signature-v4';
@@ -21,8 +26,11 @@ import { Sha256 } from '@aws-crypto/sha256-browser';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 import { streamUrl, awsRegion } from '../aws-exports';
+import { fetchSharedAuthSession } from './auth-session';
 
 const logger = new ConsoleLogger('streamClient');
+
+export const ID_TOKEN_HEADER = 'x-idp-id-token';
 
 /** AWS credentials shape (subset) — what Amplify's fetchAuthSession exposes. */
 export interface StreamCredentials {
@@ -54,6 +62,13 @@ const getStreamEndpoint = (): URL => {
   return new URL(streamUrl);
 };
 
+const getIdToken = async (): Promise<string> => {
+  const session = await fetchSharedAuthSession();
+  const token = session.tokens?.idToken?.toString();
+  if (!token) throw new Error('streamClient: no Cognito id token available');
+  return token;
+};
+
 /**
  * SigV4-sign and POST to the Function URL, then read the SSE response stream,
  * splitting on blank lines and parsing `data:` payloads. Resolves when the
@@ -62,6 +77,7 @@ const getStreamEndpoint = (): URL => {
 export const streamChat = async ({ path, body, credentials, onEvent, signal }: StreamChatOptions): Promise<void> => {
   const endpoint = getStreamEndpoint();
   const payload = JSON.stringify(body);
+  const idToken = await getIdToken();
 
   // Build a canonical request for SigV4. Function URLs are signed against the
   // 'lambda' service. We must include the body hash (x-amz-content-sha256) so
@@ -74,6 +90,7 @@ export const streamChat = async ({ path, body, credentials, onEvent, signal }: S
     headers: {
       'content-type': 'application/json',
       host: endpoint.hostname,
+      [ID_TOKEN_HEADER]: idToken,
     },
     body: payload,
   });

@@ -326,10 +326,9 @@ def test_processor_accepts_a_single_group_claim_string(
 def test_processor_allows_identity_less_invocation(agent_chat_processor, monkeypatch):
     """An invocation carrying no groups at all is gated by IAM, not by group.
 
-    That covers the backend `lambda:InvokeFunction` path and the streaming
-    Function URL, whose transport forwards no Cognito group claim (GAP-07 in
-    scripts/api_rbac_expectations.yaml). Denying them here would take chat
-    streaming offline for every user rather than restricting it to a group.
+    That is the backend `lambda:InvokeFunction` path. Both chat routes forward
+    verified claims, the streaming Function URL from the ID token it verifies, so
+    neither reaches this branch.
     """
     monkeypatch.setattr(
         agent_chat_processor,

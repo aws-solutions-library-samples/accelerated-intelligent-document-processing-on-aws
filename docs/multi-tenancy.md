@@ -86,7 +86,7 @@ behaviour.
 | Non-admin user with no scope | Sees every document | Sees **nothing** until an admin sets a scope |
 | Upload under tenant T processed under a profile of another tenant (via upload metadata, `submission-source`, or an ancestor mapping) | Processed | **Refused** at ingest, recorded as Failed with the reason |
 | Upload outside every tenant's prefixes | Processed under the active profile | **Refused** at ingest once at least one tenant is declared (internal producers excepted, below) |
-| Document chat | Streams through the chat Function URL | Uses the REST path, which carries the caller's verified identity and so can be scoped; the Function URL refuses |
+| Document chat | Streams through the chat Function URL | Uses the REST path: the web UI is given no stream URL. Either path scopes a turn to the caller's verified identity |
 | Agent Chat, agent queries and Knowledge Base queries, which read across documents | Available to their usual groups | **Admin only** |
 | MCP tools | Available | **Refused**: the gateway passes no user identity to scope by |
 
@@ -191,10 +191,10 @@ Under `IdpClaim` and `Api` four things change, whatever `TenantIsolationMode` sa
   who has never been granted a tenant, for example one who signed in before any
   entitlement push, is denied rather than served every tenant's documents.
 - **The surfaces that read across tenants are closed to non-Admins,** as in strict
-  mode: Agent Chat, agent queries and Knowledge Base queries are Admin only, MCP tools
-  are refused, and document chat must use the REST path because the chat Function URL
-  carries no verified identity to scope by. Once users are confined to a tenant, any
-  of these would otherwise be a way around the confinement.
+  mode: Agent Chat, agent queries and Knowledge Base queries are Admin only, and MCP
+  tools are refused. Once users are confined to a tenant, any of these would otherwise
+  be a way around the confinement. The web UI also keeps document chat on the REST
+  path, as it is given no stream URL.
 - **Admins cannot edit configuration-profile scopes** in User Management or through
   `createUser`/`updateUser`. The field is shown read-only with the tenant and where it
   came from, and the API refuses an edit, naming the grant source. Test-set scope

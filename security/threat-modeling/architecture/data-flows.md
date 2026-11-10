@@ -478,10 +478,11 @@ sequenceDiagram
 
     Browser->>IdPool: Exchange Cognito JWT for temp AWS credentials
     IdPool-->>Browser: SigV4 credentials (CognitoAuthorizedRole)
-    Browser->>FURL: POST /chat/agent or /chat/document (SigV4-signed)
+    Browser->>FURL: POST /chat/agent or /chat/document (SigV4-signed, ID token in x-idp-id-token)
     FURL->>FURL: IAM authZ: lambda:InvokeFunctionUrl on caller role
-    FURL->>Proc: Invoke (RESPONSE_STREAM) + x-amzn-request-context
-    Proc->>Proc: Derive caller id from SigV4 request context (role session name)
+    FURL->>Proc: Invoke (RESPONSE_STREAM)
+    Proc->>Proc: Verify ID token (JWKS signature, iss, aud, token_use, exp), else 403
+    Proc->>Proc: Route group floor on verified groups, body callerSub must match, else 403
     Proc->>DDB: Load session memory keyed by sessionId
     Proc->>Bedrock: Invoke model with context + tools
 
@@ -494,7 +495,7 @@ sequenceDiagram
 
     Bedrock-->>Proc: Token deltas
     Proc-->>Browser: SSE frames (text/event-stream), streamed
-    Proc->>DDB: Persist chat turn (attributed to callerSub)
+    Proc->>DDB: Persist chat turn (attributed to the verified identity)
 ```
 
 **Security-relevant characteristics of the streaming transport**:
@@ -504,15 +505,15 @@ sequenceDiagram
 | Network exposure | Public Function URL (no CloudFront/WAF/VPC in front) |
 | Authentication | SigV4 via `AuthType=AWS_IAM` — unauthenticated callers rejected by Lambda |
 | Authorization granularity | `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the chat function, granted to the shared `CognitoAuthorizedRole` and nothing narrower — the role is common to **all five RBAC groups** (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish Admin from Reviewer |
-| Group (RBAC) enforcement | **None on this path.** The Admin/Author/Viewer restriction on `sendAgentChatMessage` is enforced in the *resolver*, not here; this transport carries no group claim (`GAP-07`). **Issue #920** is closed without changing that |
-| Session ownership | **Not enforced.** Neither streaming processor performs the `ownerSub`-vs-caller check the resolver path does, because no verified per-user subject reaches this transport (CHAT.T03) |
-| Caller identity available | Weaker than the diagram suggests: the value derived from the request context is the assumed-role **session name**, and on `/chat/agent` a body-supplied `callerSub` takes precedence over it. That session name is the same for every user of the deployment, so no per-user identity exists on this transport at all. **Issue #920** (PR #954) removes the precedence problem but does not create one — establishing a verified subject is still outstanding; see CHAT.T06 |
+| Group (RBAC) enforcement | **In the handler, from the verified ID token**, before the stream opens: Admin/Author/Viewer on `/chat/agent` (the processor's own predicate, so it cannot drift from the resolver's), `ANY_GROUP` on `/chat/document`. A refusal is an HTTP 403. The Function URL forwards no Cognito claims, so the token the browser sends is the only group signal |
+| Session ownership | **Not enforced.** Neither streaming processor performs the `ownerSub`-vs-caller check the resolver path does; agent memory is loaded by `sessionId` alone. A verified per-user subject now reaches this transport, so the check is no longer blocked on identity (CHAT.T03) |
+| Caller identity available | The verified ID token's claims: `cognito:groups`, `sub`, `email` and `cognito:username`. A turn is attributed to `email`, else `cognito:username`, else `sub`, as on the REST path, and a body `callerSub` that differs is refused with 403. The SigV4 principal is not read for identity: its assumed-role session name is the same for every user of the deployment (CHAT.T06) |
 | CORS | `AllowOrigins: "*"`, `AllowCredentials: false` (safe: SigV4 in headers, no cookies) |
-| Covered by `make api-test` | **No** — the harness drives `POST /op/{field}` only |
+| Covered by `make api-test` | **No** — the harness drives `POST /op/{field}` only; the static Function-URL checks (S6–S9) and the endpoint's unit suites cover the code |
 | Covered by the WAF / stage throttling | **No** — the WebACL is associated with the REST API stage; Lambda concurrency is the bound here |
 
-See CHAT.T03 (streaming-path authorization gaps) and CHAT.T06 (caller-identity
-trust inconsistency) for the full analysis.
+See CHAT.T03 (streaming-path session ownership) and CHAT.T06 (caller identity) for
+the full analysis.
 
 **(b) Non-streaming transport — REST resolver (fallback; GovCloud without streaming)**
 
@@ -534,7 +535,7 @@ sequenceDiagram
 ```
 
 **Trust boundary crossings**:
-- TB1→TB3: User message via the Function URL (SigV4) **or** the REST API (JWT)
+- TB1→TB3: User message via the Function URL (SigV4 plus a verified ID token) **or** the REST API (JWT)
 - TB3→TB4: Conversation context sent to Bedrock
 - TB3→TB5: Analytics queries to Athena
 - TB3→TB6: MCP tool calls to customer-managed agents
@@ -764,7 +765,7 @@ sequenceDiagram
 | LLM prompts (Anthropic/Nova) | TB3 | TB4 | High (document text + PII) | TLS, IAM roles, no training opt-out |
 | **LLM prompts (OpenAI GPT-5.x via mantle)** | TB3 | TB4 | High (document text + PII) | TLS, IAM roles; **different model family — verify vendor/residency constraints** (PM.T08) |
 | **UI API operations** | TB1 | TB3 | High | JWT authn at gateway; default-deny group floor at the dispatcher; scope, ownership and queue-eligibility checks in resolver Lambdas; input-shape validation; optional WAF |
-| **Chat streaming (SSE)** | TB1 | TB3→TB4 | Medium-High | **SigV4 on a public Function URL; no group check, no session-ownership check** (CHAT.T03); #920 closed without a verified per-user subject; not covered by the WAF or by `make api-test` |
+| **Chat streaming (SSE)** | TB1 | TB3→TB4 | Medium-High | SigV4 on a public Function URL plus a verified Cognito ID token; each route's group floor applied to the token's groups; **no session-ownership check** (CHAT.T03); not covered by the WAF or by `make api-test` |
 | **Malware verdict** (optional) | GuardDuty | TB3 | Low (verdict only) | EventBridge rule filtered to the Input bucket; unknown verdicts refuse unless both the config and the stack ceiling allow unscannable files (PM.T09) |
 | **Review-queue work** | TB1 | TB3 | High (production document data, reviewer edits) | Group floor (`Admin` + `Annotator`; supervision `Admin`); per-item eligibility and profile scope, fail closed, with listings filtered by each item's own profile (HITL.T01); holder-only conditional writes (HITL.T02) |
 | **Review finalize** | TB3 | TB3 | High | Server-built `DocumentQueue` message; token-named execution; hooks before the review point run twice (HOOK.T04) |

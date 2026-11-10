@@ -8,3 +8,7 @@ uvicorn>=0.30.0
 # serviceTier parameter (see chat_with_document_processor/requirements.txt).
 boto3>=1.42.0
 botocore>=1.42.0
+
+# Verifies the Cognito ID token the web UI presents (id_token.py). The [crypto]
+# extra brings cryptography, which RS256 signature checks need.
+PyJWT[crypto]>=2.13.0

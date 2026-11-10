@@ -343,11 +343,9 @@ their result rows by it, and **17** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
 `make api-test-static` in both CI systems and by the live matrix in
-`make api-test`. Its `known_gaps` block holds **three** entries, of which two are accepted *authorization* gaps and the third is a limitation of the live harness — `GAP-SEC-INCONCLUSIVE-5XX`, which records that a 5xx response scores a matrix cell INCONCLUSIVE rather than as a pass, and that a resolver refusal raised as a bare `Exception` still produces one. The not-found refusals that used to produce most of them now answer 404 (`errorType: "ResourceNotFound"`); the gap entry itself enumerates what remains at 500, rather than this page quoting a count that goes stale. The two authorization gaps: **GAP-02**: the `queryKnowledgeBase`
+`make api-test`. Its `known_gaps` block holds one accepted *authorization* gap and one limitation of the live harness — `GAP-SEC-INCONCLUSIVE-5XX`, which records that a 5xx response scores a matrix cell INCONCLUSIVE rather than as a pass, and that a resolver refusal raised as a bare `Exception` still produces one. The not-found refusals that used to produce most of them now answer 404 (`errorType: "ResourceNotFound"`); the gap entry itself enumerates what remains at 500, rather than this page quoting a count that goes stale. The authorization gap is **GAP-02**: the `queryKnowledgeBase`
 *resolver* performs no group check of its own, so the dispatcher's floor — which
-requires an assigned group — is the only group gate on it. **GAP-07**: the chat
-Function URL transport carries no `cognito:groups` claim, so neither chat route's
-group check can be applied to callers arriving that way.
+requires an assigned group — is the only group gate on it.
 
 Two mechanical details matter when reading resolver code. The REST authorizer
 places claims at `requestContext.authorizer.claims` (not where an AppSync-era
@@ -370,7 +368,7 @@ and do **not** inherit the resolver authorization model:
 
 | Entry point | Authentication | Authorization |
 |---|---|---|
-| **Chat streaming Function URL** (`ChatStreamProcessorUrl`) | `AuthType=AWS_IAM`; the browser SigV4-signs with credentials from the Cognito **Identity Pool** | **No group check.** `lambda:InvokeFunctionUrl` (and `lambda:InvokeFunction`, on the function itself) is granted to the single authenticated Identity Pool role that all five groups share, so IAM cannot distinguish them. Ownership of a chat session is not verified on this transport, and the caller identifier available to it is an assumed-role session name rather than a verified Cognito `sub`. See CHAT.T03 and CHAT.T06. **issue #920** is closed: both routes now resolve identity through one helper in which a body-supplied `callerSub` is a fallback only and a value contradicting the transport is refused with 403. What that does not supply is a *verified per-user* subject on this transport, and no group claim reaches it at all (`GAP-07`) — so CHAT.T03 stays open |
+| **Chat streaming Function URL** (`ChatStreamProcessorUrl`) | `AuthType=AWS_IAM`; the browser SigV4-signs with credentials from the Cognito **Identity Pool**, and sends its Cognito User Pool **ID token** in the signed `x-idp-id-token` header, which the handler verifies (signature against the pool's JWKS, issuer, the web UI's app client as audience, token use, expiry) and refuses with 403 when absent or invalid | **In the handler, from the verified token.** `lambda:InvokeFunctionUrl` (and `lambda:InvokeFunction`, on the function itself) is granted to the single authenticated Identity Pool role that all five groups share, so IAM cannot distinguish them; the handler does instead. `/chat/agent` applies Admin/Author/Viewer and `/chat/document` the `ANY_GROUP` floor before the stream opens, the document route's processor applies `allowedConfigVersions` scope from the verified claims, and a turn is attributed to the verified identity with a differing body `callerSub` refused (AUTH.T14, CHAT.T06). Ownership of a chat session is still not verified on this transport (CHAT.T03) |
 | **Jobs API** (optional, `EnableJobsApi=true`) | A separate `ApiUserPool` with OAuth **client-credentials** scopes (`idp-api/jobs.write`, `jobs.read`) | Scope-based, PRIVATE-endpoint only. A distinct realm from the Cognito group model — see JOB.T01–T03 |
 
 When `WebUIHosting=APIGateway`, two further methods (`GET /` and `GET /{proxy+}`)
@@ -527,9 +525,10 @@ release under [`security/test-results/<version>/`](../../test-results/):
 | **RBAC dynamic** (`make api-test`) | Live multi-role matrix, scope, IDOR, token lifecycle, input validation, TLS | AUTH.T03, T07–T12 |
 
 Two coverage limits are worth stating alongside that table, because a reader can
-otherwise take it as broader assurance than it is. Both RBAC suites drive
-`POST /op/{field}` only, so **no test exercises the chat Function URL
-transport** — a regression on the paths described in §5.2 would not be detected
+otherwise take it as broader assurance than it is. The live suite drives
+`POST /op/{field}` only, so **no live test exercises the chat Function URL
+transport**; the static suite's Function-URL checks (S6–S9) and the endpoint's
+unit suites are what would detect a regression on the paths described in §5.2
 (CHAT.T03, CHAT.T06). And the static suite asserts each operation against the
 expectations manifest and the dispatcher refuses an operation with no entry
 (**issue #928**, closed), but neither asserts that a resolver's per-object check —

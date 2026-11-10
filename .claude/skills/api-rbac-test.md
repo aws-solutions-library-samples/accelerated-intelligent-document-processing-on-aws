@@ -127,26 +127,34 @@ processors **directly** — no dispatcher, no resolver. Consequences:
 - An op reachable both ways must enforce its group check **in the component that
   does the work** (e.g. `src/lambda/agent_chat_processor/index.py`), not only in
   the resolver in front of it. A resolver-only check is enforced on one path.
-- That transport **authenticates but carries no `cognito:groups`**:
+- A Function URL **forwards no Cognito claims**:
   `requestContext.authorizer.iam.cognitoIdentity` is documented as unused by
   Function URLs, and the assumed-role session name under the Identity Pool
-  enhanced flow is a pool-wide constant. So there is nothing verified to gate on
-  there; the residual difference is **GAP-07** / AUTH.T14.
-- A request-body `callerSub` is a **fallback only** — the transport-verified
-  principal wins, and a body value that *contradicts* it is refused (403), not
-  silently preferred. Both routes go through one helper so they cannot drift.
-  It is nonetheless the **effective** identity on this transport, because the
-  verified value is that pool-wide constant, so it must not be used as an
-  authorization key. Both processors read `identity` for that instead, and this
-  route can only report it as `None`.
-- **`allowedConfigVersions` is therefore not enforced on `POST /chat/document`.**
-  The processor resolves the caller from verified claims and denies a turn whose
-  scope it cannot evaluate; with no claims to resolve from, it stands the check
-  down and logs that it did so once per turn rather than appearing to have
-  consulted the UsersTable. The REST path through the dispatcher does enforce it.
-  Both halves of GAP-07 close when this endpoint verifies a Cognito ID token —
-  and the claims it then returns must include `email`, which is the only
-  identifier that joins a Cognito principal to a UsersTable row.
+  enhanced flow is a pool-wide constant. So the browser also sends its Cognito
+  User Pool **ID token** in the `x-idp-id-token` header, inside the signed
+  headers, and `_caller_identity` in `app.py` verifies it (`id_token.py`: RS256
+  against the pool's JWKS, `iss` = `COGNITO_ISSUER`, `aud` =
+  `COGNITO_APP_CLIENT_ID`, `token_use` = `id`, unexpired) at the top of each route,
+  before the stream opens. A missing, invalid, expired or other-client token is a
+  **403**. The claims it returns (`cognito:groups`, `sub`, `email` when present,
+  `cognito:username`) are the `identity` both processors receive.
+- Each route applies its REST operation's group floor to those claims before the
+  stream opens, because once `StreamingResponse` is returned the status is fixed
+  at 200: `/chat/agent` calls the processor's own Admin/Author/Viewer predicate
+  (`_enforce_groups_or_403`), and `/chat/document` applies `ANY_GROUP`
+  (`_enforce_any_group_or_403`, whose `_ANY_GROUP` a unit test holds equal to the
+  dispatcher manifest's).
+- A request-body `callerSub` is **never** the identity: a turn is filed under the
+  verified identity's `history_key` (`email`, else `cognito:username`, else `sub`,
+  as the REST path derives `identity.username`), and a body value that differs
+  is refused (403). Both routes go through one helper so they cannot drift.
+- `allowedConfigVersions` applies to `POST /chat/document`: the processor
+  resolves the caller from the verified claims, by `sub` then `email`, and denies
+  a turn whose scope it cannot evaluate, as on the REST path. `identity: None`
+  now only means a direct, IAM-gated `lambda:InvokeFunction`; neither chat route
+  produces it.
+- Session ownership is **not** checked on this transport: agent memory is loaded
+  by `sessionId` alone (CHAT.T03).
 
 Declare every Function URL and route in the **`function_url_endpoints:`** section
 of `scripts/api_rbac_expectations.yaml`. The scanner's Function-URL checks:
@@ -402,8 +410,9 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
    failed `dynamodb:Query`, and each REST consumer turns that into a refusal — so a
    missing IAM grant presents as a **denial**, not as an unrestricted caller. In
    the resolver's CloudWatch logs, look for "config-version scope lookup failed on
-   EmailIndex" at ERROR. ⚠️ The **chat-streaming** transport is the exception and is
-   not a REST operation: see GAP-07 and AUTH.T07's residuals. An *empty page* is
+   EmailIndex" at ERROR. The **chat-streaming** transport is not a REST operation,
+   but its document route fails closed the same way, from the claims of the ID
+   token it verifies. An *empty page* is
    still deliberately unrestricted
    (scoping is opt-in), so a caller with no UsersTable row legitimately sees
    everything: check the row exists before reading a broad result as a leak.

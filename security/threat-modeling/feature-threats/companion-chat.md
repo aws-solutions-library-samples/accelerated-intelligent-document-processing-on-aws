@@ -18,19 +18,14 @@
 > mitigation is corrected: the two chat tables have *different* key schemas and
 > ownership is enforced by explicit resolver checks, not by partition key alone.
 
-> **v3.2 re-verification (v0.6.9).** CHAT.T03 and CHAT.T06 were re-checked
-> against `template.yaml` and `src/lambda/chat_stream_processor/` and both are
-> **still open**: the Function URL is still `AuthType=AWS_IAM` with no group
-> check, and `/chat/agent` still reads `callerSub` from the request body ahead of
-> the SigV4 identity. Both are tracked in **issue #920**, whose implementation
-> (PR #954) is in review — but read that as a **partial** step, not a closure:
-> it removes the precedence problem without creating a per-user identity on this
-> transport, so both threats remain *Open* after it merges. The note under
-> CHAT.T06 accounts for exactly what it does and what it leaves. Treat every
-> mitigation below marked *pending* as not present. Two corrections in this pass: the
-> Identity Pool authenticated role is now shared by **five** Cognito groups (an
-> `Annotator` group was added), and the "SigV4-derived caller identity" is
-> weaker than v3.0 implied — see the note under CHAT.T06.
+> **The streaming transport verifies the caller.** The chat streaming Function URL
+> verifies the caller's Cognito ID token on both routes before it opens a stream, so
+> the Agent Chat group restriction, Chat-with-Document's group floor and
+> configuration-profile scope, and the identity a turn is attributed to follow the
+> signed-in user there as they do on the REST path. That mitigates CHAT.T06 and
+> closes CHAT.T03's group half; CHAT.T03's session-ownership half is still open. The
+> Identity Pool authenticated role is shared by all **five** Cognito groups, so IAM
+> alone distinguishes none of them.
 
 ## 1. Feature Overview
 
@@ -53,8 +48,8 @@ flowchart TD
 
     subgraph Streaming[a. Streaming transport - UI default]
       IdPool[Cognito Identity Pool] -->|SigV4 creds| Browser
-      Browser -->|"POST /chat/agent or /chat/document<br/>SigV4-signed"| FURL["Lambda Function URL<br/>AuthType=AWS_IAM<br/>RESPONSE_STREAM"]
-      FURL --> Proc[Chat Stream Processor<br/>LWA + FastAPI]
+      Browser -->|"POST /chat/agent or /chat/document<br/>SigV4-signed + Cognito ID token"| FURL["Lambda Function URL<br/>AuthType=AWS_IAM<br/>RESPONSE_STREAM"]
+      FURL --> Proc[Chat Stream Processor<br/>LWA + FastAPI<br/>verifies ID token, group floors]
       Proc -->|SSE frames| Browser
     end
 
@@ -118,14 +113,14 @@ flowchart TD
 |-----------|-------|
 | **Threat ID** | CHAT.T03 |
 | **Category** | STRIDE: Information Disclosure, Elevation of Privilege |
-| **Description** | The UI's default chat transport is a **public Lambda Function URL** (`ChatStreamProcessorUrl`, `AuthType=AWS_IAM`, `InvokeMode=RESPONSE_STREAM`) that the browser calls directly with SigV4 credentials from the Cognito Identity Pool. It does **not** traverse API Gateway, the Cognito authorizer, the WAF, or the `http_api_dispatcher`, and therefore inherits **none** of the authorization machinery those layers provide. Two concrete gaps follow. **(a) No RBAC group check.** The IAM gate is `lambda:InvokeFunctionUrl` granted to `CognitoAuthorizedRole` — the *single* authenticated role shared by **all five Cognito groups** (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`) — so IAM cannot distinguish a Reviewer from an Admin. The Admin/Author/Viewer restriction that `sendAgentChatMessage` enforces server-side (closed in v0.6.2) exists only in the *resolver*; a Reviewer holding valid Identity Pool credentials can invoke `POST /chat/agent` directly. **(b) No session-ownership check.** Neither vendored processor (`agent_chat_processor`, `chat_with_document_processor`) performs the `ownerSub`-vs-caller comparison that `send_chat_document_message_resolver` and `get_agent_chat_messages_resolver` perform. The agent memory provider (`DynamoDBMemoryHookProvider`) loads prior conversation turns keyed on `sessionId` **alone**, so supplying another user's `sessionId` causes their conversation history to be loaded into the model context and echoed back in the streamed response. |
-| **Attack Vector** | An authenticated user (any group) obtains Identity Pool credentials — the SPA does this normally — and `POST`s a SigV4-signed request to the Function URL with (i) a `sessionId` belonging to another user, reading their chat history back through the SSE stream; and/or (ii) `/chat/agent` from a Reviewer account, which the REST path would refuse. |
+| **Description** | The UI's default chat transport is a **public Lambda Function URL** (`ChatStreamProcessorUrl`, `AuthType=AWS_IAM`, `InvokeMode=RESPONSE_STREAM`) that the browser calls directly with SigV4 credentials from the Cognito Identity Pool. It does **not** traverse API Gateway, the Cognito authorizer, the WAF, or the `http_api_dispatcher`, and therefore inherits **none** of the authorization machinery those layers provide: every check on this transport has to be made by its own handler. Two checks are at stake. **(a) RBAC group.** The IAM gate is `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` granted to `CognitoAuthorizedRole` — the *single* authenticated role shared by **all five Cognito groups** (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`) — so IAM cannot distinguish a Reviewer from an Admin, and a route without a group check of its own lets a Reviewer holding valid Identity Pool credentials use `POST /chat/agent`, which `sendAgentChatMessage` refuses. **(b) Session ownership.** Neither vendored processor (`agent_chat_processor`, `chat_with_document_processor`) performs the `ownerSub`-vs-caller comparison that `send_chat_document_message_resolver` and `get_agent_chat_messages_resolver` perform. The agent memory provider (`DynamoDBMemoryHookProvider`) loads prior conversation turns keyed on `sessionId` **alone**, so supplying another user's `sessionId` causes their conversation history to be loaded into the model context and echoed back in the streamed response. |
+| **Attack Vector** | An authenticated user obtains Identity Pool credentials and their own Cognito ID token — the SPA does both normally — and `POST`s a signed request to the Function URL with (i) a `sessionId` belonging to another user, reading their chat history back through the SSE stream; and/or (ii) `/chat/agent` from a Reviewer account, which the REST path refuses. |
 | **Impact** | Cross-user disclosure of chat conversation content (which may quote document contents, PII, and analytics results); use of the agent fleet — including Athena and AgentCore tool access — by a role that policy excludes from Agent Chat. |
 | **Likelihood** | Medium (requires an authenticated account and a target `sessionId`; the SPA already mints the necessary credentials, and `sessionId`s are exposed to their owner) |
 | **Severity** | High |
-| **Affected Components** | `ChatStreamProcessorUrl` (`template.yaml`), `src/lambda/chat_stream_processor/app.py`, both vendored processors, `DynamoDBMemoryHookProvider`, `CognitoAuthorizedRole` |
-| **Mitigations** | **Authentication is enforced**: `AuthType=AWS_IAM` means an unauthenticated or non-SigV4 request is rejected by Lambda before any code runs, and the resource permission is scoped to this account with the actual gate being the caller's identity policy. A caller identifier **is** derived from the SigV4 identity forwarded in `x-amzn-request-context` and threaded into the processors, so the plumbing for an ownership check is present and used for write attribution — but see CHAT.T06: what is derived is the **assumed-role session name**, not a verified Cognito `sub`, so the plumbing needs strengthening as well as wiring. CORS is safe (`AllowCredentials: false`, SigV4 in headers, no cookies). Session ids are UUIDs. Chat tables are KMS-encrypted with TTL. |
-| **Residual risk / recommendation** | **This is an open gap, not a mitigated threat.** Re-verified open at v0.6.9, and **still Open after the in-flight change** — see the note under CHAT.T06 for exactly what PR #954 (implementing issue #920) does and does not close. Recommended fixes, in the order they have to happen: (0) **establish a verified subject first** — the ownership check in (1) is meaningless without one, because the identity available on this transport today is a pool-wide constant (CHAT.T06); (1) then enforce session ownership in both processors — compare the stored `ownerSub` against that verified subject before loading memory, and reject on mismatch; (2) enforce the Admin/Author/Viewer group set on `/chat/agent` — no JWT reaches this path and a Function URL forwards no group claim, so either verify a passed ID token or split the Identity Pool role so only permitted groups receive `lambda:InvokeFunctionUrl`; (3) extend the automated harness to cover this transport. #954 makes a start on (3) with static Function-URL checks (S6–S9) and on (2) by moving the group check into the processor, but the processor's gate stands down when no group claim is present, which is always the case on this transport (`GAP-07`). `make api-test` still drives `POST /op/{field}` only, so **no live test would catch a regression here**. Note also that `Cors.AllowOrigins` on the Function URL is `["*"]` despite a template comment describing it as the SPA origin; with `AllowCredentials: false` and SigV4 in headers this is not itself the gap, but it means any origin can drive the endpoint with credentials it can obtain. |
+| **Affected Components** | `ChatStreamProcessorUrl` (`template.yaml`), `src/lambda/chat_stream_processor/app.py`, `src/lambda/chat_stream_processor/id_token.py`, both vendored processors, `DynamoDBMemoryHookProvider`, `CognitoAuthorizedRole` |
+| **Mitigations** | **Authentication is enforced twice.** `AuthType=AWS_IAM` means an unauthenticated or non-SigV4 request is rejected by Lambda before any code runs, and the resource permission is scoped to this account with the actual gate being the caller's identity policy. The handler then verifies the caller's Cognito User Pool **ID token**, which the web UI sends in the `x-idp-id-token` header inside the SigV4-signed headers (`src/ui/src/api/stream-client.ts`): an RS256 signature against the pool's published JWKS, the deployment's pool as `iss`, the web UI's app client as `aud` (a token from another app client of the pool is refused), `token_use` of `id`, and an unexpired `exp` (`src/lambda/chat_stream_processor/id_token.py`). `_caller_identity` in `app.py` runs at the top of both routes, before the stream opens, and refuses a missing, invalid, expired or wrong-client token with HTTP 403. **Gap (a) is closed by that.** `/chat/agent` applies the processor's own Admin/Author/Viewer predicate to the verified groups (`_enforce_groups_or_403`), so a Reviewer, an Annotator or a caller in no group is refused with a 403, and `/chat/document` applies the `ANY_GROUP` floor its REST operation carries (`_enforce_any_group_or_403`). The verified identity is also what a turn is attributed to (CHAT.T06), so an ownership check now has a per-user subject to compare against. CORS is safe (`AllowCredentials: false`, credentials in headers, no cookies). Session ids are UUIDs. Chat tables are KMS-encrypted with TTL. |
+| **Residual risk / recommendation** | **Open, on gap (b).** Neither streaming processor checks that the caller owns a session before using it. On `/chat/agent` the memory provider loads prior turns keyed on `sessionId` alone, and the turn is appended to that session's messages, so a signed-in user in an Agent Chat group who supplies another user's `sessionId` has that user's history loaded into the model context. The document route keeps no server-side history on this transport. Recommended fixes, in order: (1) enforce session ownership in the agent processor — compare the session's recorded owner with the verified identity before loading memory, and reject on mismatch, as the REST resolvers do; the verified subject that comparison needs now exists on this transport; (2) extend the live harness to cover this transport. `make api-test-static` checks the Function-URL routes statically (S6–S9), and the endpoint's unit suites cover token verification, both routes' group floors and the attribution refusal, but `make api-test` still drives `POST /op/{field}` only, so **no live test would catch a regression here**. Note also that `Cors.AllowOrigins` on the Function URL is `["*"]` despite a template comment describing it as the SPA origin; with `AllowCredentials: false` and credentials in headers this is not itself the gap, but it means any origin can drive the endpoint with credentials it can obtain. |
 
 ### CHAT.T06: Client-Supplied Caller Identity on the Agent Streaming Route
 
@@ -133,112 +128,40 @@ flowchart TD
 |-----------|-------|
 | **Threat ID** | CHAT.T06 |
 | **Category** | STRIDE: Spoofing |
-| **Description** | The two streaming routes resolve the caller's identity with **opposite precedence**. `/chat/document` trusts the SigV4 request context first and falls back to the request body: `_caller_sub(request) or str(body.get("callerSub") or "")` (`app.py:119`). `/chat/agent` does the reverse: `str(body.get("callerSub") or "") or _caller_sub(request)` (`app.py:172`) — a **client-supplied body field takes precedence over the SigV4-derived one**. A caller can therefore set an arbitrary `callerSub` on the agent route and have it accepted as their identity. **Neither ordering yields a verified subject, and this is the part that determines the remediation.** The SigV4-derived value is produced by `sse.py:25-47`, which parses the `x-amzn-request-context` header, reads `authorizer.iam.userArn`, and returns `user_arn.rsplit("/", 1)[-1]` — the **assumed-role session name**. No JWT is verified anywhere on this transport. Under the Cognito Identity Pool **enhanced (simplified) flow**, which is how the browser obtains these credentials, Cognito — not the client — chooses that session name, and the pool attaches one `authenticated` role shared by every user, so the value is the **same for every user of the deployment** (measured: the literal `CognitoIdentityCredentials` in 499 of 499 CloudTrail `AssumeRoleWithWebIdentity` records on a reference deployment; see the note below, including why this is a measurement rather than a documented guarantee). It says *a* signed-in user of this deployment is calling, not *which* one. That value becomes `user_id`, the partition key of the chat sessions table. |
-| **Attack Vector** | `POST /chat/agent` with `{"sessionId": "...", "prompt": "...", "callerSub": "<another-users-sub>"}`. |
-| **Impact** | Currently bounded: `caller_sub` on this path flows to `_persist_chat_turn`, so the effect is **write misattribution** — a chat turn written into another user's session/history view, and log/audit records naming the wrong principal. It is not presently an authorization bypass **because no authorization decision consumes `caller_sub` on this path** — which is precisely the CHAT.T03 gap. If CHAT.T03 is fixed by adding an ownership check that reads `caller_sub`, this inconsistency would silently convert that fix into a no-op on the agent route. |
-| **Likelihood** | Low (requires an authenticated account; limited direct impact today) |
-| **Severity** | Medium (High if CHAT.T03 is remediated without also fixing this) |
-| **Affected Components** | `src/lambda/chat_stream_processor/app.py` (`chat_agent`, line ~172 vs `chat_document`, line ~119) |
-| **Mitigations** | The request-context identity is available and authenticated on both routes; `/chat/document` already uses the correct precedence, so the correct pattern exists in the same file. `_persist_chat_turn` refuses to write when no caller identity is present at all. |
-| **Residual risk / recommendation** | **Open**, re-verified at v0.6.9. **The correct fix is to obtain a verified subject on this transport, not to reorder the two values that exist.** ⚠️ Do **not** simply make `/chat/agent` match `/chat/document` and prefer the SigV4-derived value: because that value is a pool-wide constant under the Identity Pool enhanced flow, preferring it would attribute **every conversation turn in the deployment to one shared identifier** — strictly worse than today, and it would collapse the chat sessions table's partition key to a single partition. What is actually needed: (1) have the browser present its Cognito **ID token** in addition to SigV4-signing the request, verify that token in the processor against the pool's JWKS, and take `sub` from the verified claims — this is the only step that produces a per-user identity on a Function URL, because `requestContext.authorizer.iam.cognitoIdentity` is documented as not populated for Function URLs, leaving the session name as the only transport signal; (2) once a verified `sub` exists, refuse any body-supplied `callerSub` that contradicts it, and only then (3) add the CHAT.T03 ownership check that reads it. Ordering matters: an ownership check built on a pool-wide constant either passes for everyone or fails for everyone. Tracked in **issue #920**; see the note below for what the in-flight change does and does not do. |
+| **Description** | Both streaming routes accept a `callerSub` field in the request body, and a turn's chat history is filed under the caller identity the route resolves: on `/chat/agent` it becomes `user_id`, the partition key of the chat sessions table. If that identity can be taken from the body, a caller can set an arbitrary `callerSub` and have it accepted as their identity. The transport offers no per-user identity of its own to prefer instead: the SigV4 principal is the assumed-role ARN of the Identity Pool's single `authenticated` role, and its session name is the same for every user of the deployment (see the note below), so it says *a* signed-in user of this deployment is calling, not *which* one. |
+| **Attack Vector** | `POST /chat/agent` with `{"sessionId": "...", "prompt": "...", "callerSub": "<another-users-identifier>"}`. |
+| **Impact** | **Write misattribution** — a chat turn written into another user's session/history view, and log/audit records naming the wrong principal. An ownership check keyed to that value (CHAT.T03's open half) would inherit the spoofed identity and pass for it. |
+| **Likelihood** | Low (requires an authenticated account) |
+| **Severity** | Medium (High if an ownership check were keyed to a value the client chooses) |
+| **Affected Components** | `src/lambda/chat_stream_processor/app.py` (`_caller_identity`, `_resolve_caller_sub`), `src/lambda/chat_stream_processor/sse.py` (`history_key`, `resolve_caller_sub`), `src/lambda/chat_stream_processor/id_token.py` |
+| **Mitigations** | **The identity comes from a verified token, never from the body.** Both routes verify the caller's Cognito ID token before the stream opens (`_caller_identity`, see CHAT.T03) and resolve the caller through one helper, `_resolve_caller_sub`, whose verified input is the token's `history_key`: `email`, else `cognito:username`, else `sub` — the value the REST path puts in `identity.username` and its chat read resolvers key on, so a turn streamed here and one sent over REST belong to the same history. A body `callerSub` that differs from it is refused with HTTP 403 before the stream opens, and a request with no verified identity has already been refused by the token check. The web UI derives its body value from the same claims in the same order (`src/ui/src/hooks/use-agent-chat.ts`), and a unit test holds the two equal, so an honest client never trips the refusal. Nothing on this transport reads the SigV4 principal for identity. `_persist_chat_turn` refuses to write when no caller identity is present at all. |
+| **Residual risk** | The attribution key is the one the REST path uses, so it has that key's properties and no stronger ones: it is the `email` claim wherever one is present. The refusal is covered by unit suites and by the static Function-URL checks (S7, S8); no live test exercises it (see CHAT.T03). |
 
-> **What "the SigV4-derived identity" actually is (v3.2 correction).** The
-> derivation reads `requestContext.authorizer.iam.userArn` and, for an
-> assumed-role ARN, returns the trailing **role session name** — not a claim from
-> a verified token. Separately, the browser does not send a Cognito `sub` in
-> `callerSub` at all: it sends the caller's **email address**. So on the agent
-> route the identifier is a browser-chosen string, and even on the document route
-> it is a session name rather than a pool-verified subject.
->
-> **And the session name is not per-user.** Four facts, each read from this
-> repository, establish that. The Identity Pool (`template.yaml:11097-11104`) does
-> not set `AllowClassicFlow`, so only the **enhanced (simplified) flow** is
-> available and Cognito — not the client — calls
-> `AssumeRoleWithWebIdentity` and chooses the role session name; the pool attaches
-> a **single** `authenticated` role shared by every user and every Cognito group
-> (`template.yaml:11106-11111`), so the role portion of the ARN carries no
-> per-user information either; the handler's caller identity is nothing but the
-> trailing session-name segment of that ARN (`sse.py:42-47`), and its fallback
-> branch (`userId`, of the form `<role-id>:<session-name>`) is composed of the same
-> two constants; and Lambda Function URLs do not forward the Cognito identity
-> separately —
+> **Why the SigV4 principal is not the identity.** The Function URL authenticates a
+> request by SigV4 with the Identity Pool's single `authenticated` role, which every
+> user and every Cognito group shares. The pool does not set `AllowClassicFlow`, so
+> only the **enhanced (simplified) flow** is available, in which Cognito — not the
+> client — calls `AssumeRoleWithWebIdentity` and chooses the role session name. On a
+> reference deployment that name was the literal `CognitoIdentityCredentials` in all
+> 499 CloudTrail `AssumeRoleWithWebIdentity` records across three identity pools and
+> three roles. That is a measurement rather than a documented guarantee, since AWS
+> publishes no `RoleSessionName` for the enhanced flow, but nothing here depends on
+> the literal: the client cannot influence a value Cognito picks, and one shared role
+> cannot distinguish its assumers. Lambda Function URLs do not forward the Cognito
+> identity separately either —
 > [`requestContext.authorizer.iam.cognitoIdentity` is documented as not populated
-> for Function URLs](https://docs.aws.amazon.com/lambda/latest/dg/urls-invocation.html)
-> — so the assumed-role ARN is the only identity signal this transport offers.
+> for Function URLs](https://docs.aws.amazon.com/lambda/latest/dg/urls-invocation.html).
+> Preferring the SigV4 value would attribute every turn in the deployment to one
+> shared identifier and collapse the chat sessions table to a single partition. The
+> per-user identity therefore comes from a second signal, the User Pool ID token sent
+> alongside the signed request, and the handler reads nothing from the SigV4
+> principal.
 >
-> **Measured, not inferred.** The session name Cognito uses in the enhanced flow is
-> the literal `CognitoIdentityCredentials`. That was verified from CloudTrail
-> `AssumeRoleWithWebIdentity` records on a reference deployment: **499 events across
-> three identity pools and three roles, every one carrying the same
-> `roleSessionName`, with no counter-example**. Two properties of those records make
-> the constancy structural rather than incidental. The caller is AWS itself —
-> `userIdentity.type` is `WebIdentityUser` with
-> `identityProvider: cognito-identity.amazonaws.com` and an internal user agent — so
-> the browser has no channel through which to influence the value. And the per-user
-> identity *does* exist at that moment: the record's
-> `subjectFromWebIdentityToken` carries the caller's identity id. It simply never
-> propagates into the assumed-role ARN, which is exactly why the one value the Lambda
-> can read is pool-wide. State this as a measurement rather than as documented
-> behaviour: **AWS publishes no compatibility commitment for this string**, and its
-> IAM-roles page for identity pools enumerates what Cognito includes in that request
-> without mentioning `RoleSessionName` at all.
->
-> **The consequence is visible in the data, not only in the code.** On the same
-> reference deployment the document route's chat-sessions table — the route that
-> already prefers the transport value (`app.py:119`) — is **empty**, while the agent
-> route's table holds turns whose partition key is, in every case, the
-> client-supplied email address. That contrast is the clearest available statement of
-> the problem: where the transport value is preferred nothing distinguishes users,
-> and where the body value is preferred the client chooses the attribution key.
->
-> **A related fragility worth recording.** `is_user_specific_identity`
-> (`sse.py:44-54` on the in-review branch) recognises the pool-wide session names by
-> **denylist** — two literal strings — so any unrecognised value is treated as
-> user-specific. If AWS ever changed the enhanced-flow session name, that predicate
-> would start returning true and the shared resolver would raise on every agent turn,
-> because the browser sends an email address which can never equal a session name.
-> The result would be a fail-closed outage triggered by an upstream change with no
-> code change on this side. Fail-closed is the right direction, but the trigger is
-> invisible from here, so the resolver should key on the *shape* of the value it can
-> verify rather than on a list of values it cannot. Recorded here rather than as a new
-> threat identifier because it is a property of the same missing verified subject.
->
-> Nothing in the argument above depends on the literal — the client cannot influence
-> a value Cognito picks, and a single shared role cannot distinguish its assumers.
-> This is why issue #920 is a larger change than moving
-> one `or` expression: it needs a *new* signal (a verified token), not a different
-> precedence between two existing ones. Scope note: this transport is
-> commercial-partition only — GovCloud has no Lambda Function URLs and the UI falls
-> back to the REST API with polling, where the Cognito authorizer does supply a
-> verified subject.
->
-> **What the in-flight change (PR #954) actually does — and what it leaves open.**
-> It introduces one shared `resolve_caller_sub` helper used by both streaming
-> routes, which prefers the transport-verified value and raises a 403 when a
-> body-supplied identity *contradicts* it; it adds Pydantic request models so a
-> malformed body is rejected with a 422; it moves the Agent Chat
-> Admin/Author/Viewer group check into `agent_chat_processor` so both entry paths
-> evaluate one policy; and it extends `make api-test-static` with Function-URL
-> checks (S6–S9) that discover every `AWS::Lambda::Url` route from the template
-> and fail on an undeclared route or a missing check. That is real progress: it
-> removes the divergence between the two routes, and it is correctly reasoned code —
-> its own tests assert the behaviour described next.
->
-> What it does **not** do is make the body-supplied value untrusted. Because the
-> helper recognises the pool-wide session name as non-user-specific, it falls back to
-> the claimed value in exactly the case that always obtains, so on the streaming
-> agent route the change is **behaviourally a no-op**: the client still fully controls
-> the attribution key. Nor can the group check it adds fire on either live path
-> today — the streaming path has no caller identity to evaluate a group claim
-> against, and on the dispatcher path the resolver already rejects an out-of-group
-> caller before the processor is invoked, using the equivalent test on the same
-> claim. So that check is **defence-in-depth that becomes load-bearing once the
-> identity gap closes**, which is a real contribution and a different claim from
-> closing the threat. A Function URL forwards no Cognito group claim at all, and #954
-> records that residual difference explicitly as `GAP-07` in
-> `scripts/api_rbac_expectations.yaml`. **CHAT.T03 and CHAT.T06 therefore remain
-> Open after #954 merges**, with a smaller remainder: a verified subject, and a
-> group signal on the streaming transport.
+> Scope note: this transport is commercial-partition only — GovCloud has no Lambda
+> Function URLs and the UI falls back to the REST API with polling, where the Cognito
+> authorizer supplies a verified subject. The UI also uses that REST path under
+> `TenantIsolationMode=Strict` or an external `TenantGrantSource`, where it is given
+> no stream URL.
 
 ### CHAT.T04: Conversation History Data Exposure
 
@@ -277,6 +200,7 @@ flowchart TD
 | **Bedrock Guardrails** | Content filtering, topic denial (when `BedrockGuardrailId` configured) | CHAT.T01 |
 | **Session ownership (REST paths)** | `_verify_session_ownership` / `_owns_document_session` — `ownerSub` vs caller `sub`; agent sessions keyed `PK=userId` | CHAT.T02 |
 | **Streaming transport authentication** | Function URL `AuthType=AWS_IAM` + SigV4; `lambda:InvokeFunctionUrl` on the authenticated Identity Pool role | CHAT.T03 (authn only) |
+| **Streaming transport caller identity** | Cognito ID token verified on every request (`id_token.py`); each route's group floor applied before the stream opens; a turn attributed to the verified identity, a differing body value refused | CHAT.T03 (group half), CHAT.T06 |
 | **Encryption** | DynamoDB SSE-KMS at rest on all chat tables | CHAT.T04 |
 | **Data retention** | `ExpiresAfter` TTL on chat sessions and messages (`DataRetentionInDays`) | CHAT.T04 |
 | **Context trimming** | `DropAndSlideConversationManager` bounds conversation growth | CHAT.T05 |
@@ -288,10 +212,6 @@ flowchart TD
 
 | Item | Threat | Status |
 |------|--------|--------|
-| The SigV4-derived identity is a **pool-wide** role session name, not a verified `sub` | CHAT.T03, CHAT.T06 | **Open** — and the prerequisite for the two rows below: an ownership check needs a per-user identity first, and there is none on this transport today. PR #954 (issue #920) recognises the constant and works around it; it does not replace it |
-| Streaming processors do not check session ownership | CHAT.T03 | **Open** — cross-user history disclosure via `sessionId`. Not closed by #954; blocked on the row above |
-| Streaming route does not enforce RBAC group (Reviewer/Annotator exclusion) | CHAT.T03 | **Open** — the Identity Pool role is shared by all five groups and cannot distinguish them. #954 moves the group check into `agent_chat_processor`, but a Function URL forwards no group claim so that gate stands down on this transport (`GAP-07`) |
-| `/chat/agent` prefers a body-supplied `callerSub` over the SigV4-derived one | CHAT.T06 | **Partly addressed** by #954's shared `resolve_caller_sub`, which prefers the transport value and 403s a contradicting body value. The body value remains the effective identity whenever the transport value is the pool-wide constant, so the threat stays **Open** |
-| Chat-with-Document is not restricted by `allowedConfigVersions` on the streaming route | AUTH.T07, CHAT.T03 | **Open** — the processor resolves the caller's scope from verified claims and denies a turn whose scope it cannot evaluate, so the check is live on the REST path. This transport forwards no claims, so the route reports an explicitly null caller identity and the check stands down, logging that it did so once per turn. Keying it to the body-supplied identity instead would not be a control: the caller it would restrict chooses the value. Closes with the same ID-token verification as the rows above (`GAP-07`) |
-| No **live** test coverage of the Function URL transport | CHAT.T03, CHAT.T06 | **Open** — #954 adds *static* Function-URL checks (S6–S9); `make api-test` still covers `POST /op/{field}` only, so a runtime regression on this transport remains undetectable |
+| Streaming processors do not check session ownership | CHAT.T03 | **Open** — cross-user history disclosure via `sessionId` on `/chat/agent`. The verified subject an ownership check needs now exists on this transport, so this is no longer blocked on identity |
+| No **live** test coverage of the Function URL transport | CHAT.T03, CHAT.T06 | **Open** — `make api-test-static` checks the routes statically (S6–S9) and the endpoint's unit suites cover the token, group and attribution checks; `make api-test` still covers `POST /op/{field}` only, so a runtime regression on this transport is not detected by a live test |
 | WAF / stage throttling do not cover the Function URL | CHAT.T05 | **Accepted** — Lambda concurrency is the bound; note in cost-abuse analysis |

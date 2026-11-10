@@ -95,10 +95,11 @@ def _enforce_agent_chat_groups(event):
     real 403 before the response is committed. This copy of the check remains the
     last line of defence for any invocation that reaches the function directly.
 
-    Invocations with no ``identity`` are not group-checked: they are the backend
-    paths (a direct ``lambda:InvokeFunction``, and the streaming Function URL,
-    whose transport forwards no Cognito group claim — see ``_caller_identity`` in
-    src/lambda/chat_stream_processor/app.py). Those are gated by IAM instead.
+    Invocations with no ``identity`` are not group-checked: that is a direct
+    ``lambda:InvokeFunction``, gated by IAM instead. Both chat routes forward
+    verified claims: the resolver the dispatcher's, and the streaming Function
+    URL those of the ID token it verified (``_caller_identity`` in
+    src/lambda/chat_stream_processor/app.py).
     """
     if event.get("identity") is None:
         return

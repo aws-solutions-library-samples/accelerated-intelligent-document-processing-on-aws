@@ -192,8 +192,8 @@ EXPECTED_ROLE_POLICIES = {
         "lambda:InvokeFunction on the chat-streaming Function URL, which the browser "
         "invokes with SigV4 under AuthType=AWS_IAM. The identity-side half of that "
         "grant has to be on this role; there is no per-user axis it could express, "
-        "and the group check for a chat turn is in the component that does the work "
-        "(see GAP-07 / AUTH.T14 for the residual)"
+        "and the group check for a chat turn is applied by the endpoint, from the "
+        "Cognito ID token it verifies"
     ),
     "ParameterStore": (
         "ssm:GetParameter on this stack's single Settings parameter, which the UI "

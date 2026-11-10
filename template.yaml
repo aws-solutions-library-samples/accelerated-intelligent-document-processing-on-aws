@@ -12363,6 +12363,9 @@ Resources:
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           GUARDRAIL_ID_AND_VERSION:
             !If [HasGuardrailConfig, !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}", ""]
+          # --- Caller identity: the ID token the web UI presents (id_token.py) ---
+          COGNITO_ISSUER: !Sub "https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${UserPool}"
+          COGNITO_APP_CLIENT_ID: !Ref UserPoolClient
           # --- Agent-chat processor env (mirrors AgentChatProcessorFunction) ---
           LOOKUP_FUNCTION_NAME: !Ref LookupFunction
           STRANDS_LOG_LEVEL: !Ref LogLevel
@@ -12578,13 +12581,9 @@ Resources:
                   "aws:ResourceTag/idp:feature-id": "*"
             # RBAC scope enforcement — read the caller's UsersTable row for their
             # `allowedConfigVersions`, on either key space (the SUB#<sub> pointer via
-            # GetItem, or EmailIndex via Query). Retained for this function because
-            # it runs the same Chat-with-Document processor code, but on THIS
-            # transport the check stands down and the grant goes unused: a Function
-            # URL forwards no Cognito claims, so there is no verified per-user
-            # caller to resolve a scope for (GAP-07 in
-            # scripts/api_rbac_expectations.yaml). It becomes live the moment that
-            # endpoint verifies an ID token, with no IAM change needed.
+            # GetItem, or EmailIndex via Query). This function runs the same
+            # Chat-with-Document processor code, resolving the caller from the ID
+            # token the route verifies (src/lambda/chat_stream_processor/id_token.py).
             - Effect: Allow
               Action:
                 - dynamodb:Query
@@ -12623,6 +12622,7 @@ Resources:
           - x-amz-date
           - x-amz-content-sha256
           - x-amz-security-token
+          - x-idp-id-token
         AllowOrigins:
           - "*"
         MaxAge: 600
@@ -16025,9 +16025,7 @@ Resources:
           # Chat streaming Function URL (IAM-authed, response streaming). The
           # signed stream client (src/api/stream-client.ts) reads this. Empty
           # under strict tenant isolation or an external TenantGrantSource, which
-          # sends the UI to its REST polling fallback (as on GovCloud): that path
-          # carries the caller's verified Cognito claims, so it can be scoped,
-          # where the Function URL cannot (GAP-07) and refuses every turn there.
+          # keeps chat on the UI's REST polling fallback (as on GovCloud).
           - Name: VITE_STREAM_URL
             Value: !If
               - DeniesUnscopedCaller

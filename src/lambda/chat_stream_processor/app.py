@@ -27,46 +27,27 @@ are reused unchanged — only the source of the events differs.
 Auth model
 ----------
 The Function URL is ``AuthType=AWS_IAM``; the browser signs the request with
-SigV4 using the authenticated Cognito Identity Pool role. The role is granted
-``lambda:InvokeFunctionUrl`` on this function. The SigV4 principal is read from
-the request context and threaded into the agent processor as ``callerSub``, which
-is what its chat history is filed under.
+SigV4 using the authenticated Cognito Identity Pool role, which is granted
+``lambda:InvokeFunctionUrl`` and ``lambda:InvokeFunction`` on this function
+(``CognitoAuthorizedRole``'s ``ChatStreamInvoke``, with
+``ChatStreamProcessorUrlPermission`` on the function). That proves the caller is
+a signed-in user of this deployment. The SigV4 principal is a pool-wide constant,
+so it says nothing about which user, and Function URLs forward no Cognito claims.
 
-It is **not** what any authorization decision is keyed to. On this deployment that
-principal is a pool-wide constant, so it names no particular user (see
-``_GENERIC_IDENTITY_POOL_SESSION_NAMES`` in ``sse.py``), and the value the routes
-resolve therefore falls back to the request body. Both authorization checks the
-processors carry — the agent-chat group gate and Chat-with-Document's
-``allowedConfigVersions`` scope check — read ``identity`` instead, which this
-transport can only report as ``None``. They stand down accordingly, and the
-invocation is gated by IAM alone. That residual is GAP-07.
+So the browser also sends its User Pool ID token in the ``x-idp-id-token``
+header, inside the signed request, and ``_caller_identity`` verifies it
+(``id_token.py``) before either route opens its stream. A request without a valid
+token is refused with a 403. The verified claims are what every decision here is
+keyed to:
 
-What this transport does and does not give us:
-
-* It **authenticates**. Only a principal granted both halves of the
-  ``AuthType=AWS_IAM`` check can reach any route: the resource permission on the
-  function (``ChatStreamProcessorUrlPermission``, which uses
-  ``lambda:InvokeFunctionUrl``) and an identity policy on the caller's role
-  (``CognitoAuthorizedRole``'s ``ChatStreamInvoke``, which grants
-  ``lambda:InvokeFunction`` **and** ``lambda:InvokeFunctionUrl``).
-  Counter-intuitively it is ``lambda:InvokeFunction`` that actually gates the
-  identity side — granting only ``lambda:InvokeFunctionUrl`` there returns 403
-  AccessDeniedException at invoke time. That is measured, not inferred; see the
-  note on the ``ChatStreamInvoke`` policy in ``template.yaml``.
-* It does **not** carry Cognito group claims.
-  ``requestContext.authorizer.iam.cognitoIdentity`` is documented as unused by
-  Function URLs (always ``null`` or absent), and an assumed-role ARN has no
-  group claim, so there is no verified ``cognito:groups`` to enforce against
-  here. Group enforcement on the equivalent operation therefore lives on the
-  dispatcher path, and the residual difference is tracked as GAP-07 in
-  ``scripts/api_rbac_expectations.yaml``. ``_caller_identity`` is where a
-  verified claims source plugs in; ``_enforce_groups_or_403`` is what turns the
-  claims it returns into a denial (see both docstrings).
-* A body-supplied ``callerSub`` is a fallback only, never an override — see
-  ``_resolve_caller_sub``. On this deployment the transport principal is NOT
-  per-user (measured — see ``_GENERIC_IDENTITY_POOL_SESSION_NAMES`` in
-  ``sse.py``), so the body value is in fact what attribution is keyed to today.
-  Both routes use the one helper, so they cannot drift apart.
+* the agent-chat group gate (``_enforce_groups_or_403``, the processor's own
+  predicate) and the any-group floor on Chat-with-Document
+  (``_enforce_any_group_or_403``), the same floors the REST operations carry;
+* Chat-with-Document's ``allowedConfigVersions`` scope check and tenant
+  isolation, which the processors apply to the ``identity`` they are given;
+* the key a turn's chat history is filed under, derived from the claims the way
+  the REST path derives it. A body-supplied ``callerSub`` that differs is
+  refused (``_resolve_caller_sub``).
 
 This transport exists in the **commercial partition only**. On GovCloud the UI
 falls back to the REST dispatcher plus polling (``ChatPanel.tsx``), so every
@@ -90,10 +71,11 @@ import agent_chat_processor as agent_proc  # type: ignore
 import chat_with_document_processor as doc_proc  # type: ignore
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from id_token import ID_TOKEN_HEADER, InvalidIdToken, verified_identity
 from pydantic import BaseModel, Field, StrictBool
 from sse import (
     CallerIdentityConflict,
-    caller_sub_from_request_context,
+    history_key,
     now_iso,
     resolve_caller_sub,
     sse,
@@ -109,12 +91,9 @@ app = FastAPI()
 # Sentinel pushed onto the queue to signal the producer thread is done.
 _DONE = object()
 
-
-def _caller_sub(request: Request) -> str:
-    """Extract the Cognito sub from the Function URL request context header."""
-    return caller_sub_from_request_context(
-        request.headers.get("x-amzn-request-context")
-    )
+#: The groups Chat-with-Document admits: every group a user signs in with, the
+#: ``ANY_GROUP`` floor its REST operation carries in the dispatcher's manifest.
+_ANY_GROUP = ("Admin", "Annotator", "Author", "Reviewer", "Viewer")
 
 
 # --- request schemas ---------------------------------------------------------
@@ -138,9 +117,8 @@ class _ChatRequest(BaseModel):
 
     sessionId: str = Field(default="", max_length=128)
     prompt: str = Field(default="", max_length=100_000)
-    # Client-asserted caller identity. Only honoured when the transport does not
-    # supply a per-user identity of its own, and never when it contradicts one —
-    # see _resolve_caller_sub.
+    # Client-asserted caller identity. Never honoured over the verified ID token,
+    # and refused when it contradicts it — see _resolve_caller_sub.
     callerSub: str = Field(default="", max_length=256)
 
 
@@ -155,46 +133,30 @@ class AgentChatRequest(_ChatRequest):
     enableCodeIntelligence: StrictBool = False
 
 
-def _caller_identity() -> dict | None:
-    """Verified Cognito claims for the caller, or ``None`` if none are available.
+def _caller_identity(request: Request) -> dict:
+    """Verified Cognito claims for the caller; a 403 when there are none.
 
     Shaped like the ``identity`` object the resolvers receive
-    (``{"claims": {"cognito:groups": [...], "email": "..."}}``) because the
-    processors read that shape, and it is what the dispatcher path already
-    supplies. **Both** claims matter: ``cognito:groups`` is what the agent-chat
-    group gate reads, and ``email`` is what Chat-with-Document's
-    ``allowedConfigVersions`` lookup resolves the caller by (it is the only
-    identifier that joins a Cognito principal to a UsersTable row). Returning a
-    claims dict without ``email`` would deny every Chat-with-Document turn, since
-    that lookup fails closed.
+    (``{"claims": {"cognito:groups": [...], "email": ..., "sub": ...}}``) because
+    the processors read that shape. ``cognito:groups`` is what the group gates
+    read, and ``email`` and ``sub`` are what Chat-with-Document's
+    ``allowedConfigVersions`` lookup resolves the caller by.
 
-    On a Lambda Function URL there is nothing to build it from. The only identity
-    the transport forwards is the SigV4 principal —
-    ``requestContext.authorizer.iam.cognitoIdentity`` is documented as "Function
-    URLs don't use this parameter. Lambda sets this to null or excludes this from
-    the JSON" — and an assumed-role ARN carries no Cognito group claim. So this
-    returns ``None``, and the processors' group gate stands down for this
-    transport exactly as it does for backend (IAM) invocations.
-
-    Supplying real claims here needs the browser to present its Cognito ID token
-    to this endpoint in addition to signing the request, which is a change to the
-    transport's auth contract (UI + template + verification) and is tracked as
-    GAP-07 in scripts/api_rbac_expectations.yaml.
-
-    This is where the claims are OBTAINED, but it is not the only place that
-    change touches. The processor's own ``PermissionError`` cannot produce a 403
-    on this transport: ``StreamingResponse`` has already committed HTTP 200 by
-    the time ``_produce`` runs, and ``_run_in_thread`` converts anything the
-    producer raises into an ``assistant_error`` SSE frame on that 200 — the very
-    error-to-stream conversion the processor's gate was placed outside its own
-    ``try`` to avoid. So the denial is applied a second time, synchronously, in
-    ``_enforce_groups_or_403`` below, which is called from the route before the
-    response is returned.
+    Called at the top of each route, before ``StreamingResponse``: once the
+    response exists its status is fixed at 200 and a refusal could only be an
+    error frame in the body.
     """
-    return None
+    try:
+        return verified_identity(request.headers.get(ID_TOKEN_HEADER, ""))
+    except InvalidIdToken as exc:
+        logger.warning("Rejecting streamed chat: %s", exc)
+        raise HTTPException(
+            status_code=403,
+            detail="Unauthorized: a valid Cognito ID token is required",
+        ) from exc
 
 
-def _enforce_groups_or_403(identity: dict | None) -> None:
+def _enforce_groups_or_403(identity: dict) -> None:
     """Apply the Agent Chat group gate BEFORE the SSE response is committed.
 
     Delegates to the processor's own ``_enforce_agent_chat_groups`` so there is
@@ -202,11 +164,6 @@ def _enforce_groups_or_403(identity: dict | None) -> None:
     real HTTP 403 — which is only possible here, ahead of
     ``StreamingResponse``. Once the stream is open the status is fixed at 200 and
     a denial could only be rendered as an error frame in the body.
-
-    A no-op while ``_caller_identity`` returns ``None`` (GAP-07): an
-    identity-less invocation is IAM-gated, exactly as a backend
-    ``lambda:InvokeFunction`` is. It exists so that closing GAP-07 needs no
-    second change on this path.
     """
     try:
         agent_proc._enforce_agent_chat_groups({"identity": identity})
@@ -215,34 +172,47 @@ def _enforce_groups_or_403(identity: dict | None) -> None:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
+def _enforce_any_group_or_403(identity: dict) -> None:
+    """Chat-with-Document's floor: the caller must hold a group.
+
+    The REST operation's ``ANY_GROUP`` floor is applied by the dispatcher, which
+    this transport does not go through, so it is applied here, before the stream
+    opens. A user with no group, which a domain-scoped self-signup produces, is
+    refused on both routes alike.
+    """
+    groups = identity["claims"].get("cognito:groups") or []
+    if not set(groups).intersection(_ANY_GROUP):
+        logger.warning("Rejecting document chat: caller is in no group")
+        raise HTTPException(
+            status_code=403, detail="Unauthorized: your account has no group"
+        )
+
+
 def _refuse_unverified_when_unscoped_is_denied_or_403(identity: dict | None) -> None:
-    """Tenant isolation: refuse a turn this transport cannot attribute.
+    """Tenant isolation: refuse a turn with no verified identity.
 
     Applies under ``TenantIsolationMode=Strict`` or an external
-    ``TenantGrantSource`` (``IdpClaim`` or ``Api``). With ``identity`` ``None``
-    (GAP-07) the processors stand their scope and group checks down, which serves
-    the turn unrestricted. Tenant isolation is defined as never doing that, and the denial has to be raised here, before the
-    ``StreamingResponse`` commits HTTP 200, to arrive as a 403 rather than an error
-    frame. Both processors refuse too, as defence in depth. The UI's REST fallback
-    (``sendChatDocumentMessage`` / ``sendAgentChatMessage``) carries verified
-    claims and is unaffected by this check.
+    ``TenantGrantSource`` (``IdpClaim`` or ``Api``). ``_caller_identity`` already
+    refuses a request without a valid ID token, so on these routes ``identity``
+    is never ``None``; the check stays as defence in depth for the one condition
+    tenant isolation is defined by, serving a turn unattributed. Both processors
+    refuse too.
     """
     if identity is None and unscoped_is_denied():
         logger.warning(
             "Rejecting streamed chat: tenant isolation requires a verified "
-            "caller identity, which this transport does not supply (GAP-07)"
+            "caller identity"
         )
         raise HTTPException(
             status_code=403,
             detail=(
                 "Unauthorized: this deployment runs with tenant isolation, "
-                "which requires a verified caller identity that the streaming chat "
-                "endpoint cannot supply"
+                "which requires a verified caller identity"
             ),
         )
 
 
-def _resolve_caller_sub(request: Request, claimed: str) -> str:
+def _resolve_caller_sub(identity: dict, claimed: str) -> str:
     """Caller identity for this request; 403 if the body contradicts the token.
 
     Thin HTTP adapter over ``sse.resolve_caller_sub`` (which holds the decision
@@ -250,7 +220,7 @@ def _resolve_caller_sub(request: Request, claimed: str) -> str:
     precedence cannot drift apart again.
     """
     try:
-        return resolve_caller_sub(_caller_sub(request), claimed)
+        return resolve_caller_sub(history_key(identity), claimed)
     except CallerIdentityConflict as exc:
         logger.warning("Rejecting chat request: %s", exc)
         raise HTTPException(
@@ -316,13 +286,14 @@ async def chat_document(
     request: Request, body: DocumentChatRequest
 ) -> StreamingResponse:
     session_id = body.sessionId
+    identity = _caller_identity(request)
     # Called for its refusal, not its result: it 403s a body-supplied identity
-    # that contradicts the transport-verified one, before the stream is committed.
-    # The value is not otherwise used on this route — the processor resolves the
-    # caller from `identity` below, which only a transport can set, rather than
-    # from a field a client can choose.
-    _resolve_caller_sub(request, body.callerSub)
-    _refuse_unverified_when_unscoped_is_denied_or_403(_caller_identity())
+    # that contradicts the verified one, before the stream is committed. The
+    # processor resolves the caller from `identity` below rather than from a field
+    # a client can choose.
+    _resolve_caller_sub(identity, body.callerSub)
+    _refuse_unverified_when_unscoped_is_denied_or_403(identity)
+    _enforce_any_group_or_403(identity)
 
     q: "queue.Queue" = queue.Queue()
 
@@ -360,14 +331,10 @@ async def chat_document(
                     "prompt": body.prompt,
                     "s3Uri": body.s3Uri,
                     "modelId": body.modelId,
-                    # Verified caller claims, or None when this transport could
-                    # not verify any — which is the case today (GAP-07). The
-                    # processor reads this to resolve the caller's
-                    # allowedConfigVersions and stands that check down on None,
-                    # exactly as the agent processor's group gate does. The key
-                    # must be PRESENT either way: the processor treats an absent
-                    # `identity` as a wiring regression and denies the turn.
-                    "identity": _caller_identity(),
+                    # The verified claims. The processor resolves the caller's
+                    # allowedConfigVersions from them, and treats an absent
+                    # `identity` key as a wiring regression and denies the turn.
+                    "identity": identity,
                 },
                 None,
             )
@@ -381,15 +348,13 @@ async def chat_document(
 @app.post("/chat/agent")
 async def chat_agent(request: Request, body: AgentChatRequest) -> StreamingResponse:
     session_id = body.sessionId
+    identity = _caller_identity(request)
     # Same precedence as /chat/document: the verified identity wins and a
-    # contradicting body value is refused. This route previously preferred the
-    # body value, which let the persisted attribution of an agent chat session be
-    # chosen by the client.
-    caller_sub = _resolve_caller_sub(request, body.callerSub)
+    # contradicting body value is refused, so the persisted attribution of an
+    # agent chat session cannot be chosen by the client.
+    caller_sub = _resolve_caller_sub(identity, body.callerSub)
     # Group gate, applied here rather than only inside the processor: a 403 is
-    # only reachable before StreamingResponse is returned. No-op while
-    # _caller_identity() is None (GAP-07).
-    identity = _caller_identity()
+    # only reachable before StreamingResponse is returned.
     _refuse_unverified_when_unscoped_is_denied_or_403(identity)
     _enforce_groups_or_403(identity)
 
@@ -430,12 +395,9 @@ async def chat_agent(request: Request, body: AgentChatRequest) -> StreamingRespo
                     # rejected with a 422 before reaching here.
                     "enableCodeIntelligence": body.enableCodeIntelligence,
                     "callerSub": caller_sub,
-                    # Group membership the caller was authorized under, already
-                    # checked by _enforce_groups_or_403 above. The Function URL
-                    # transport carries no Cognito group claim (see the "Auth
-                    # model" note in the module docstring), so this is None today
-                    # and the processor's group gate stands down for this
-                    # transport; the dispatcher path supplies real claims.
+                    # The verified claims the caller was authorized under,
+                    # already checked by _enforce_groups_or_403 above; the
+                    # processor applies its own gate to them again.
                     "identity": identity,
                     "timestamp": now_iso(),
                 },

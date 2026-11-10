@@ -16,6 +16,7 @@ build-ChatStreamProcessorFunction:
 	mkdir -p $(ARTIFACTS_DIR)
 	cp $(CURDIR)/app.py $(ARTIFACTS_DIR)/
 	cp $(CURDIR)/sse.py $(ARTIFACTS_DIR)/
+	cp $(CURDIR)/id_token.py $(ARTIFACTS_DIR)/
 	cp $(CURDIR)/run.sh $(ARTIFACTS_DIR)/
 	chmod +x $(ARTIFACTS_DIR)/run.sh
 	# Vendored processor sources, exposed under their importable module names.

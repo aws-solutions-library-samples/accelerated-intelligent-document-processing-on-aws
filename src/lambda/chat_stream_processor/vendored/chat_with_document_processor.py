@@ -426,18 +426,12 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
       **unrestricted**. It is logged every time, at WARNING: this is the one
       fail-open path in this module and it must never be silent.
 
-      The streaming Lambda Function URL transport is what sets it today — see
-      ``_caller_identity`` in ``src/lambda/chat_stream_processor/app.py`` and
-      GAP-07 in ``scripts/api_rbac_expectations.yaml``. It carries only Identity
-      Pool SigV4 credentials, whose assumed-role session name is a pool-wide
-      constant, so it can prove *a* signed-in user of this deployment is calling
-      but not *which* one. Enforcing ``allowedConfigVersions`` against the
-      request body's self-asserted identity instead would be no control at all:
-      the caller it would restrict is the same caller that chooses the value.
-      Closing it means the browser presenting its Cognito ID token to that
-      endpoint and the endpoint verifying it — at which point returning real
-      claims from ``_caller_identity`` turns this check on with no change here,
-      provided those claims include an ``email`` or a ``sub``.
+      Neither chat route sets it: the REST resolver forwards the claims the
+      dispatcher verified, and the streaming Function URL forwards the claims of
+      the ID token it verified (``_caller_identity`` in
+      ``src/lambda/chat_stream_processor/app.py``), refusing a request without
+      one. What remains is a direct ``lambda:InvokeFunction`` by a principal IAM
+      allows.
     * ``identity`` **is a dict** — verified claims. The scope is resolved from
       them and every failure denies.
     """
@@ -451,8 +445,7 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
         # denied rather than served unrestricted.
         logger.warning(
             "Denied chat turn (session=%s): tenant isolation requires a "
-            "verified caller identity, and the invoking transport supplied none "
-            "(GAP-07).",
+            "verified caller identity, and the invoking transport supplied none.",
             event.get("sessionId") or "unknown",
         )
         raise ScopeLookupError("tenant isolation: no verified caller identity")
@@ -461,7 +454,7 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
             "Config-version scope NOT enforced for this chat turn (session=%s): "
             "the invoking transport verified no caller identity, so there is no "
             "principal to resolve allowedConfigVersions for. The turn proceeds "
-            "unrestricted. See GAP-07 / AUTH.T07.",
+            "unrestricted. See AUTH.T07.",
             event.get("sessionId") or "unknown",
         )
         return None

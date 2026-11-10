@@ -190,9 +190,16 @@ sub-second push rather than polling — see
 
 The Function URL is `AuthType=AWS_IAM`: the browser SigV4-signs the request with
 its authenticated Cognito Identity Pool credentials, so AWS rejects an
-unauthenticated reader at the function edge. Because the browser addresses the
-Function URL directly, streaming behaves identically under CloudFront and under
-the API Gateway hosting option (API Gateway buffers responses and cannot stream).
+unauthenticated reader at the function edge. The request also carries the user's
+Cognito ID token, which the function verifies before it streams anything; it
+applies the same Admin, Author and Viewer restriction to the token's groups as the
+REST API, and files the turn under the signed-in user, refusing a request without a
+valid token with a 403. A browser tab opened before an upgrade that introduced the
+token gets that 403 until it is reloaded. See
+[RBAC](./rbac.md#layer-0-the-api-dispatcher-denies-by-default-server-side). Because
+the browser addresses the Function URL directly, streaming behaves identically under
+CloudFront and under the API Gateway hosting option (API Gateway buffers responses
+and cannot stream).
 
 **Benefits**:
 - Users see responses immediately as they're generated

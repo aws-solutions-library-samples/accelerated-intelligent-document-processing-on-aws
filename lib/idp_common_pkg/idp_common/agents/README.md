@@ -302,7 +302,7 @@ deliver, so events feed straight into the message list. This is the only
 true token-by-token path.
 
 ```
-POST <streamUrl>/chat/agent        (SigV4, IAM-authed)
+POST <streamUrl>/chat/agent        (SigV4, IAM-authed; Cognito ID token in x-idp-id-token)
 body: { prompt, sessionId, method, enableCodeIntelligence, callerSub }
 
 → text/event-stream; one event per chunk, terminal event marks completion
@@ -497,7 +497,8 @@ The system is deployed via CloudFormation with these key resources:
 
 On the streaming path the browser POSTs the message straight to the chat
 streaming Function URL, SigV4-signed with the caller's Cognito Identity Pool
-credentials:
+credentials and carrying the caller's Cognito User Pool ID token in the
+`x-idp-id-token` header, inside the signed headers:
 
 ```
 POST https://<id>.lambda-url.<region>.on.aws/chat/agent
@@ -651,6 +652,13 @@ Look for:
 - Confirm the browser request is SigV4-signed with Identity Pool credentials; the
   Function URL is `AuthType=AWS_IAM`, so an unsigned request is rejected at the
   function edge before any code runs.
+- A 403 with `Unauthorized: a valid Cognito ID token is required` means the request
+  reached the function without a verifiable `x-idp-id-token`. A browser tab running
+  a UI bundle from before the endpoint required the token sends none, so reload the
+  app. Otherwise check that `COGNITO_ISSUER` and `COGNITO_APP_CLIENT_ID` on
+  `ChatStreamProcessorFunction` name the deployment's user pool and the web UI's app
+  client: a token from any other pool or app client is refused, and with either
+  variable empty every request is.
 - Ignore `APPSYNC_API_URL` here. It is deliberately empty (see Environment
   Variables above) and has nothing to do with streaming.
 
@@ -672,12 +680,24 @@ Look for:
 ## Security
 
 - **Authentication**: the REST API's Cognito User Pools authorizer for the
-  `sendAgentChatMessage` path; IAM (SigV4 with Identity Pool credentials) at the
-  Function URL for the streaming path
+  `sendAgentChatMessage` path. On the streaming path, IAM (SigV4 with Identity Pool
+  credentials) at the Function URL, plus the caller's Cognito ID token, which the
+  streaming function verifies before it opens a stream (`id_token.py` in
+  `src/lambda/chat_stream_processor/`: signature against the pool's JWKS, issuer,
+  the web UI's app client as audience, `token_use` of `id`, expiry) and refuses
+  with a 403 when it is missing or invalid
 - **Authorization**: enforced in the resolver/processor code from the caller's
-  identity — group membership from the `cognito:groups` claim, plus session
-  ownership checks against the caller's Cognito `sub`. The REST authorizer only
-  authenticates; it does not evaluate any group policy.
+  verified identity — the dispatcher's claims on the REST path, the ID token's on
+  the streaming path. Group membership comes from the `cognito:groups` claim: the
+  Admin/Author/Viewer check runs in the resolver and again in the processor, and the
+  streaming route applies the processor's predicate before the stream opens, so a
+  denial there is a real 403. A turn is filed under the verified
+  identity (`email`, else `cognito:username`, else `sub`), and a body `callerSub`
+  that differs is refused. The REST path adds session ownership checks against the
+  caller's Cognito `sub`; the streaming path does not check session ownership. The
+  REST authorizer only authenticates; it does not evaluate any group policy.
+  An event with no `identity` reaches the processor only through a direct,
+  IAM-gated `lambda:InvokeFunction`.
 - **Encryption**: KMS encryption for DynamoDB tables
 - **TTL**: Messages expire after 30 days (configurable)
 - **VPC**: Not required (uses AWS service APIs)

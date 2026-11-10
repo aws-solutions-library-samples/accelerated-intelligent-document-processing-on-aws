@@ -445,6 +445,7 @@
         "calculate_capacity/log_sanitizer.py": 100.0,
         "calculate_capacity/validation.py": 100.0,
         "chat_stream_processor/app.py": 0.0,
+        "chat_stream_processor/id_token.py": 100.0,
         "chat_stream_processor/sse.py": 97.06,
         "chat_stream_processor/vendored/agent_chat_processor.py": 27.86,
         "chat_with_document_processor/index.py": 74.86,

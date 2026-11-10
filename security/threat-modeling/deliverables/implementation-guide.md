@@ -22,9 +22,9 @@ and mapped to the specific threats they address.
 > uniform hook failure containment (**#919**) and the converged log-redaction
 > denylist (**#921**) have merged and are described below as controls; the
 > deployment service role's permissions boundary (**#927**) has merged while its
-> own `iam:*` is unchanged; and **#920** closed without giving the chat streaming
-> transport a verified per-user subject, so its group and ownership checks remain
-> absent (§3.1a).
+> own `iam:*` is unchanged. The chat streaming transport verifies the caller's
+> Cognito ID token and applies its group checks to it, while its session-ownership
+> check is still absent (§3.1a).
 
 ## 2. Authentication & Identity (AUTH)
 
@@ -105,17 +105,18 @@ and mapped to the specific threats they address.
 
 ### 3.1a Chat Streaming Function URL
 
-**Threats mitigated**: CHAT.T03 (authentication only), CHAT.T06
+**Threats mitigated**: CHAT.T03 (authentication and group checks), CHAT.T06, AUTH.T14
 
 | Control | Implementation |
 |---------|---------------|
-| **Authentication** | `AuthType=AWS_IAM`; browser signs with SigV4 using Cognito Identity Pool credentials; `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the chat function granted to `CognitoAuthorizedRole` |
-| **CORS** | `AllowCredentials: false`, SigV4 in headers, no cookies |
-| **Group authorization** | **NOT ENFORCED** — the Identity Pool role (`CognitoAuthorizedRole`) is shared by all five groups (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish them, and no group claim reaches this transport (open gap, CHAT.T03, `GAP-07`; issue #920 closed without changing it) |
-| **Session ownership** | **NOT ENFORCED** on this transport, which carries no verified per-user subject (open gap, CHAT.T03) |
-| **Caller identity** | The value the handler derives from the request context is the assumed-role **session name**, not a verified Cognito `sub`; on `/chat/agent` a body-supplied `callerSub` takes precedence over it (CHAT.T06). That session name is also the **same for every user** of the deployment, because the Identity Pool's enhanced flow picks it and one authenticated role is shared by all groups — so the remedy is a verified subject (an ID token presented alongside the signed request), not a reordering. **Issue #920** / PR #954 addresses the precedence and leaves the verified subject outstanding |
+| **Authentication** | `AuthType=AWS_IAM`; browser signs with SigV4 using Cognito Identity Pool credentials; `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the chat function granted to `CognitoAuthorizedRole`. The browser also sends its Cognito User Pool **ID token** in the signed `x-idp-id-token` header, and the handler verifies it before either route opens a stream (`src/lambda/chat_stream_processor/id_token.py`: RS256 against the pool's JWKS, `iss` from `COGNITO_ISSUER`, `aud` from `COGNITO_APP_CLIENT_ID`, `token_use` of `id`, unexpired); a missing or invalid token is refused with HTTP 403 |
+| **CORS** | `AllowCredentials: false`, SigV4 and the ID token in headers, no cookies; `x-idp-id-token` is an allowed header |
+| **Group authorization** | **Enforced in the handler, from the verified token.** The Identity Pool role (`CognitoAuthorizedRole`) is shared by all five groups (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish them; `/chat/agent` applies the Admin/Author/Viewer predicate (and tenant isolation's Admin-only rule) and `/chat/document` the `ANY_GROUP` floor to the token's groups, both as a 403 before the stream opens (AUTH.T14) |
+| **Configuration-profile scope** | The document route forwards the verified claims as `identity`, and the processor resolves the caller's `allowedConfigVersions` from them, denying a turn whose scope it cannot evaluate |
+| **Session ownership** | **NOT ENFORCED** on this transport: agent memory is loaded by `sessionId` alone (open gap, CHAT.T03) |
+| **Caller identity** | Taken from the verified ID token: a turn is attributed to `email`, else `cognito:username`, else `sub`, as on the REST path, and a body `callerSub` that differs is refused with 403 (CHAT.T06). The SigV4 principal is not used, because its assumed-role session name is the **same for every user** of the deployment |
 | **Rate limiting** | Lambda concurrency only — **not** covered by API Gateway throttling or the WAF WebACL |
-| **Automated testing** | **None** — `make api-test` drives `POST /op/{field}` only |
+| **Automated testing** | **Static and unit only** — `make api-test-static` checks the routes (S6–S9) and the endpoint's unit suites cover the token, group and attribution checks; `make api-test` drives `POST /op/{field}` only |
 
 ### 3.2 CloudFront Distribution
 
@@ -411,7 +412,7 @@ For deployments requiring network-level isolation:
 ### Ongoing Operations
 
 - [ ] Periodic API authorization audit (`make api-test` against a live stack; review the op×role matrix report)
-- [ ] Review the chat streaming Function URL path separately — it is **outside** the automated harness and outside the WAF WebACL (CHAT.T03, CHAT.T06)
+- [ ] Review the chat streaming Function URL path separately — it is **outside** the live authorization harness and outside the WAF WebACL (CHAT.T03, CHAT.T06)
 - [ ] Re-review the threat model each release cycle — `make check-threat-model-currency` fails the build when `security/threat-modeling/README.md`'s `Last reviewed against version` field falls more than one release behind `VERSION`
 - [ ] Review CloudWatch alarm history for security events
 - [ ] Monitor Athena query patterns for anomalies

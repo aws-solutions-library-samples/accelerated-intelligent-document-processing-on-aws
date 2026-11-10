@@ -97,10 +97,14 @@ STATUS: dict[str, tuple[int, str]] = {
     # Chat
     "CHAT.T01": (9, "Mitigated"),
     "CHAT.T02": (3, "Mitigated"),
+    # Open on its session-ownership half: the streaming processors still load agent
+    # memory by sessionId alone. Its group half is closed by the ID-token check.
     "CHAT.T03": (6, "Open"),
     "CHAT.T04": (3, "Mitigated"),
     "CHAT.T05": (4, "Partially Mitigated"),
-    "CHAT.T06": (3, "Open"),
+    # The streaming routes attribute a turn to the verified ID token's identity and
+    # refuse a body callerSub that differs from it.
+    "CHAT.T06": (3, "Mitigated"),
     # MCP
     "MCP.T01": (8, "Partially Mitigated"),
     "MCP.T02": (3, "Mitigated"),
@@ -124,8 +128,7 @@ STATUS: dict[str, tuple[int, str]] = {
     # that prefers the immutable `sub`. Partially Mitigated on the residuals the
     # entry writes out: rows the `sub` back-fill cannot reach, the token type being
     # a property of the authorizer, the class gate having no rule about the matcher,
-    # and the suppressed allowedTestSets lookup. Chat-with-Document's stand-down on
-    # the streaming transport (GAP-07) is carried by AUTH.T14 and CHAT.T03.
+    # and the suppressed allowedTestSets lookup.
     "AUTH.T07": (6, "Partially Mitigated"),
     "AUTH.T08": (6, "Mitigated"),
     "AUTH.T09": (6, "Mitigated"),
@@ -134,10 +137,9 @@ STATUS: dict[str, tuple[int, str]] = {
     "AUTH.T12": (3, "Mitigated"),
     "AUTH.T13": (4, "Partially Mitigated"),
     # Likelihood Low / Severity Medium, scored as its two nearest siblings
-    # (AUTH.T10, AUTH.T11) are. "Partially Mitigated" because the entry's own
-    # Mitigations field closes the identity-precedence and input-shape halves but
-    # leaves the group check unenforceable on the streaming transport (GAP-07).
-    "AUTH.T14": (3, "Partially Mitigated"),
+    # (AUTH.T10, AUTH.T11) are. Both streaming routes verify the caller's ID token
+    # and apply their REST operations' group floors to it before the stream opens.
+    "AUTH.T14": (3, "Mitigated"),
     "AUTH.T15": (4, "Partially Mitigated"),
     "AUTH.T16": (6, "Partially Mitigated"),
     # SDK / CLI
