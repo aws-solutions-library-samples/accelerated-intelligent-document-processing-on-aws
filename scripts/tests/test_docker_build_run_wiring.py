@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import functools
 import importlib.util
+import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -225,3 +227,113 @@ def test_the_feature_handler_can_schedule_its_own_polls():
         }
     ]
     assert _grants(statements, "lambda:AddPermission")
+
+
+# --------------------------------------------------------------------------- #
+# The multi-doc-discovery buildspec's retry loops, run for real
+#
+# The whole-build retry the removed handler did is replaced by loops inside the
+# inline buildspec. `make validate-buildspec` does not open an inline buildspec,
+# so the loops are extracted from the template and run under bash with stub
+# `docker` and `sleep` commands, which is the only thing that shows the
+# fall-through to `exit 1` and the retry actually happen.
+# --------------------------------------------------------------------------- #
+
+
+def _buildspec_loop(containing: str) -> str:
+    resources = _resources("multi-doc-discovery")
+    spec_text = resources["DockerBuildProject"]["Properties"]["Source"]["BuildSpec"]
+    spec = _cfn_yaml().load_cfn_yaml(spec_text)
+    commands = [
+        command
+        for phase in spec["phases"].values()
+        for command in phase.get("commands", [])
+        if isinstance(command, str) and containing in command
+    ]
+    assert len(commands) == 1, f"expected one loop running {containing!r}"
+    return commands[0]
+
+
+def _run_loop(tmp_path: Path, loop: str, docker_failures: int) -> tuple[int, int]:
+    """Run ``loop`` with a docker that fails its first N calls; return
+    (exit status, docker calls)."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    counter = tmp_path / "calls"
+    counter.write_text("0")
+    (bin_dir / "docker").write_text(
+        "#!/bin/bash\n"
+        f'n=$(( $(cat "{counter}") + 1 )); echo $n > "{counter}"\n'
+        f"[ $n -gt {docker_failures} ]\n"
+    )
+    (bin_dir / "sleep").write_text("#!/bin/bash\nexit 0\n")
+    for stub in bin_dir.iterdir():
+        stub.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", loop],
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "ECR_REPO_URI": "repo",
+            "IMAGE_TAG": "t",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode, int(counter.read_text())
+
+
+@pytest.mark.parametrize(
+    ("step", "attempts"), [("docker build", 2), ("docker push", 3)]
+)
+def test_a_transient_failure_is_retried_and_succeeds(tmp_path, step, attempts):
+    status, calls = _run_loop(tmp_path, _buildspec_loop(step), attempts - 1)
+
+    assert (status, calls) == (0, attempts)
+
+
+@pytest.mark.parametrize(
+    ("step", "attempts"), [("docker build", 2), ("docker push", 3)]
+)
+def test_a_persistent_failure_fails_the_build_after_its_attempts(
+    tmp_path, step, attempts
+):
+    status, calls = _run_loop(tmp_path, _buildspec_loop(step), attempts + 5)
+
+    assert status != 0
+    assert calls == attempts
+
+
+def test_the_unified_repository_keeps_two_complete_versions():
+    """A rollback reuses the previous version only while all its images remain.
+
+    The lifecycle rule expires images beyond a count, so the count has to hold
+    the version being rolled back from and the one being rolled back to.
+    """
+    resources = _resources("unified")
+    images = _build_run("unified")["Properties"]["ExpectedImages"]
+    policy = json.loads(
+        resources["ECRRepository"]["Properties"]["LifecyclePolicy"][
+            "LifecyclePolicyText"
+        ]
+    )
+    kept = [
+        rule["selection"]["countNumber"]
+        for rule in policy["rules"]
+        if rule["selection"].get("countType") == "imageCountMoreThan"
+    ]
+
+    assert kept and min(kept) >= 2 * len(images)
+
+
+def test_the_feature_can_only_grant_eventbridge_invoke():
+    statements = [
+        s
+        for s in _role_statements("idp-data-generator")
+        if "lambda:AddPermission" in (s.get("Action") or [])
+    ]
+
+    assert len(statements) == 1
+    assert statements[0]["Condition"] == {
+        "StringEquals": {"lambda:Principal": {"!Sub": "events.${AWS::URLSuffix}"}}
+    }

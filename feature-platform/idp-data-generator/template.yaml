@@ -280,9 +280,11 @@ Resources:
         # lambda:AddPermission/RemovePermission are on function:* in this
         # account and Region, as in the host's unified pattern: crhelper adds the
         # permission to this function itself, and this function has a generated
-        # name, so its ARN cannot be written here without a circular reference
-        # (the role is an input to the function). The grant crhelper adds is
-        # lambda:InvokeFunction for events.amazonaws.com from that one rule.
+        # name. Naming it explicitly would bound the host stack name's length,
+        # since the name is built from it, and referencing the function's ARN
+        # here is a circular reference (the role is an input to the function).
+        # The grant crhelper adds is lambda:InvokeFunction for EventBridge from
+        # that one rule, and the condition below holds AddPermission to it.
         - PolicyName: CustomResourcePoller
           PolicyDocument:
             Version: "2012-10-17"
@@ -294,9 +296,17 @@ Resources:
                   - events:PutTargets
                   - events:RemoveTargets
                 Resource: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/DockerBuildRun*"
+              # Granting is limited to EventBridge as the invoking principal,
+              # which is the only grant crhelper makes.
               - Effect: Allow
                 Action:
                   - lambda:AddPermission
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+                Condition:
+                  StringEquals:
+                    lambda:Principal: !Sub "events.${AWS::URLSuffix}"
+              - Effect: Allow
+                Action:
                   - lambda:RemovePermission
                 Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
 

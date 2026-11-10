@@ -341,7 +341,11 @@ Resources:
                 # mid-download surfaces as a hard pip exit 2. One more attempt
                 # turns that into a couple of minutes of delay instead of a failed
                 # stack operation. The retry lives here because the build-run
-                # handler waits on one build id for the whole operation.
+                # handler waits on one build id for the whole operation, which
+                # also makes it narrower than the whole-build retry the previous
+                # handler did: only docker build (here) and docker push (below)
+                # are retried, so a failure in another step, such as the ECR
+                # login in pre_build, fails the build.
                 - |
                   built=0
                   for attempt in 1 2; do
