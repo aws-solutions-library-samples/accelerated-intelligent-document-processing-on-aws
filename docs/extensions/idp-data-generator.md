@@ -97,13 +97,14 @@ A self-contained extension stack that plugs into the host contract:
 
 The runtime installs one pinned release of `seed-data`, and the extension names
 SEED's `xhtml2pdf` PDF backend rather than taking SEED's default. With that
-backend, none of SEED's models holds a tool that requests a URL, runs code or
-calls an AWS API; the document generator writes HTML and local files and renders
-the HTML to a PDF. Rendering fetches any `http(s)` resource the HTML references,
-such as an image or a stylesheet, and the AgentCore runtime is created in
-`PUBLIC` network mode, so such a reference can reach a public host. VPC network
-mode is not offered. The per-agent tool inventory, and the AWS services the
-runtime reaches, are in the extension's
+backend, no tool SEED gives its models takes a URL, runs a command or calls an
+AWS API; the document generator writes HTML and reads and writes local files,
+then renders the HTML to a PDF. The extension renders that HTML with remote
+resources turned off, so an `http(s)` image, stylesheet or font the HTML
+references is left out of the PDF rather than fetched; local files and inline
+`data:` resources still load. The AgentCore runtime is created in `PUBLIC`
+network mode, and VPC network mode is not offered. The per-agent tool inventory,
+and the AWS services the runtime reaches, are in the extension's
 [README](../../feature-platform/idp-data-generator/README.md#what-the-generators-model-can-do).
 
 ## Tuning and troubleshooting

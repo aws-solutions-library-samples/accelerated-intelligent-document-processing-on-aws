@@ -44,6 +44,9 @@ The AgentCore runtime installs `seed-data` **0.0.7**, pinned exactly in the
 `Dockerfile`. The tools SEED gives its models can change between releases, so
 re-read this section against the new release's source before moving the pin.
 The inventory below was taken by reading the 0.0.7 wheel, not by running it.
+Two packages it depends on are not pinned here: `strands-agents-tools` (SEED
+requires `>=0.8`; 0.9.0 was read) and `xhtml2pdf` (SEED requires `>=0.2.17`;
+0.2.28 was read).
 
 `idp_common.synthesis.engine` calls only `Generator(...).generate_batch`, and it
 names the PDF backend explicitly (`SEED_RENDERER = "xhtml2pdf"`). These are the
@@ -57,41 +60,47 @@ agents that path builds and the tools each one holds:
 | Document generator (`stages/document.py`) | `file_write`, `editor` (both from `strands-agents-tools`), `read_json_file`, `random_roll`, `render_html_to_pdf` |
 | Document critic (`critique.py`) | none |
 | Augmentor (`stages/augment_stage.py`) | `apply_augmentation` |
+| Augmentation critic (`augment.py`) | none |
 
 What those tools can and cannot do:
 
-- **No tool requests a URL, and no tool runs code.** `calculator` evaluates
-  arithmetic over an AST allowlist rather than with `eval`, and `random_roll`
-  returns a boolean.
+- **No tool takes a URL as an argument or makes an HTTP request of its own.**
+  `calculator` evaluates arithmetic over an AST allowlist rather than with
+  `eval`, and `random_roll` returns a boolean. Rendering is the one place a
+  fetch can happen, described below.
 - **`shell` is not in the set.** SEED gives the document generator the
   `strands-agents-tools` `shell` tool only with its `reportlab` backend, so that
   the model can run the Python script it writes. The adapter names `xhtml2pdf`
   so that SEED's default changing cannot add it.
   `tests/unit/synthesis/test_engine.py` in `idp_common_pkg` checks that.
-- **`file_write` and `editor` work on the container's local filesystem**, with
-  the permissions of the image's `appuser`. `BYPASS_TOOL_CONSENT=true` on the
-  runtime turns off their interactive confirmation, which would otherwise
+- **`file_write` and `editor` read and write any path the image's `appuser` can.**
+  `editor`'s `view` command returns a file's contents to the model, so anything
+  `appuser` can read can enter the model's context. `BYPASS_TOOL_CONSENT=true`
+  on the runtime turns off their interactive confirmation, which would otherwise
   cancel every call in the headless runtime. Neither one makes a network call.
-- **Rendering fetches what the HTML references.** `render_html_to_pdf` renders
-  the HTML the document generator wrote with `xhtml2pdf`, and SEED passes it no
-  access policy. A reference to an `http(s)` URL in that HTML (an image, a
-  stylesheet, an `@import` or a font) is therefore fetched while the PDF renders,
-  so the model can cause a `GET` to a public host and path it chose, and the path
-  can carry text from its context. According to its source, `xhtml2pdf` 0.2.28
-  refuses loopback, private, link-local and reserved destinations by default,
-  while 0.2.17, the lowest version SEED accepts, has no such check. Its version
-  is not pinned here: the image takes whatever satisfies SEED's
-  `xhtml2pdf>=0.2.17`. SEED's `weasyprint` backend also
-  fetches remote references by default.
-- **The model has no AWS tool.** The runtime's role can read and write the
-  TestSet and Working buckets, read the configuration table and write the job
-  tracking table, but only the runtime handler and the adapter use those
-  permissions. No tool the model holds
-  calls S3, DynamoDB or any other AWS API.
+- **Rendering loads local and inline resources only.** `render_html_to_pdf`
+  renders the HTML the document generator wrote. SEED calls `xhtml2pdf` with no
+  access policy, and xhtml2pdf's default policy fetches public `http(s)`
+  references (images, stylesheets, `@import`, fonts) while the PDF renders. The
+  adapter therefore replaces SEED's `xhtml2pdf` backend before generation with
+  one that passes `ResourceAccessPolicy(allow_remote=False)`
+  (`_render_without_remote_fetches` in `engine.py`). A remote reference is then
+  logged by xhtml2pdf and left out of the PDF, and the render carries on;
+  SEED's generator prompt does not ask for remote resources. That policy exists
+  in xhtml2pdf 0.2.27 and 0.2.28 and not in 0.2.17. If the installed xhtml2pdf has no
+  `xhtml2pdf.config.resources`, or SEED no longer keeps its backends in
+  `seed_data.tools._HTML_RENDERERS`, the adapter logs
+  `Render fetch policy not applied` and SEED's own renderer is used, which
+  fetches remote references.
+- **The model has no AWS tool.** The runtime's role can read, write and delete
+  objects in the TestSet bucket, read and write the Working bucket, read the
+  configuration table, and write both this extension's job tracking table and
+  the host's tracking table. Only the runtime handler and the adapter use those
+  permissions; no tool the model holds calls S3, DynamoDB or any other AWS API.
 
 The model's context holds the document class schema (from the configuration
-profile, or authored from your description), the scenario text and the data it
-generates. That is also what a rendered reference could carry.
+profile, or authored from your description), the scenario text, the data it
+generates, and whatever it reads with `editor`.
 
 ### Network mode
 
@@ -101,10 +110,11 @@ It needs that access, or an endpoint per service, to reach Amazon Bedrock
 Runtime, Amazon S3, Amazon DynamoDB, AWS KMS, Amazon ECR, CloudWatch Logs and
 metrics, AWS X-Ray and AgentCore workload identity. VPC mode with no internet
 route would need a VPC endpoint for each of those, and it has not been tested
-with this extension, so the extension does not offer it. With `PUBLIC`, the
-render-time fetch described above can reach public hosts. If your account
-requires that the runtime have no internet access, do not install this
-extension until a VPC option exists.
+with this extension, so the extension does not offer it. When the adapter has
+applied its render policy, no tool the model holds makes a network request; when
+it has not, it logs `Render fetch policy not applied`. If your
+account requires that the runtime itself have no internet route, do not install
+this extension until a VPC option exists.
 
 ## Layout
 
