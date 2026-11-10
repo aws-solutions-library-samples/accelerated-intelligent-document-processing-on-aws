@@ -130,8 +130,8 @@ The analytics agent has access to four specialized tools:
 
 - **Purpose**: Generates visualizations and tables from query data
 - **Libraries**: Pandas, NumPy, Matplotlib and standard-library computation modules.
-  Code that imports anything else, evaluates code dynamically, contains a URL, or opens
-  a file other than by a literal local file name is returned to the agent with an
+  Code that imports anything else, evaluates code dynamically, contains a URL, or reads
+  or writes a file other than by a literal local file name is returned to the agent with an
   error instead of being run. This is a check on the code's text, not a sandbox
   boundary
 - **Output**: JSON-formatted charts and tables for web display

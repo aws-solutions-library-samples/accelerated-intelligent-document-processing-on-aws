@@ -373,7 +373,7 @@ data are bounded in code rather than by the prompt:
   accepts it: the code must parse, import only `IMPORTABLE_MODULES` (data, charting
   and standard-library computation), avoid `DYNAMIC_NAMES` and double-underscore
   attributes, carry no `://` literal, and pass only literal local file names to
-  `open`, `read_*` and the other `PATH_OPENERS`. Refused code is returned to the agent
+  `open`, `read_*`, `to_*` and the other `PATH_OPENERS`. Refused code is returned to the agent
   as `{"isError": true, "error": ...}`. The check reads text and syntax only, so it is
   not a boundary; it is checked after the optional description is prepended, so the
   text checked is the text that runs.
