@@ -49,7 +49,11 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(_HERE)))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from classification_flat import METHOD_FOR_GRANULARITY, V09_BLOCKS  # noqa: E402
+from classification_flat import (  # noqa: E402
+    METHOD_FOR_GRANULARITY,
+    V09_BLOCKS,
+    strip_prompt_comments_in_config,
+)
 
 
 def dropped_keys(model_cls: Any, data: Any, prefix: str) -> List[str]:
@@ -328,9 +332,13 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
     nested_only = copy.deepcopy(cfg)
     for key in FLAT_KEYS | {"classificationMethod"}:
         nested_only["classification"].pop(key, None)
-    current = IDPConfig.model_validate(
-        migrate_config(nested_only)
-    ).classification.model_dump(mode="json")
+    # As sent: the current runtime reader removes {# ... #} prompt comments, and
+    # the flat prompts the release reads were written without them.
+    current = strip_prompt_comments_in_config(
+        IDPConfig.model_validate(migrate_config(nested_only)).classification.model_dump(
+            mode="json"
+        )
+    )
     old = answer["classification"]
     granularity = str(_get(current, ("combined", "granularity")) or "page")
     expected_method = METHOD_FOR_GRANULARITY.get(granularity)

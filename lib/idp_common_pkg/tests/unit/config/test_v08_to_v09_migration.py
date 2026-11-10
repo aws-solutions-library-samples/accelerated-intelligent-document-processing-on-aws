@@ -47,6 +47,7 @@ from idp_common.config.models import (
     ClassificationConfig,
     IDPConfig,
 )
+from idp_common.prompt_comments import strip_prompt_comments_in_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CALLS = (
@@ -88,7 +89,11 @@ def _service(config: Dict[str, Any]) -> ClassificationService:
 @pytest.mark.unit
 class TestTheShippedDefaultsAreEquivalent:
     def test_the_frozen_0_8_defaults_resolve_to_the_0_9_defaults(self):
-        shipped = load_system_defaults("pattern-2")["classification"]
+        # Compared as sent: the 0.9 defaults document their prompts in {# ... #}
+        # comments, which are removed before any request (prompt_comments).
+        shipped = strip_prompt_comments_in_config(
+            load_system_defaults("pattern-2")["classification"]
+        )
         frozen = _fixture("base-classification-0.8.yaml")["classification"]
         assert (
             IDPConfig(classification=frozen).classification.model_dump()

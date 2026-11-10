@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from idp_common import bedrock, image, metrics, s3, utils
 from idp_common.assessment.degradation import skip_section_no_confidence
+from idp_common.config import without_prompt_comments
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
     SCHEMA_DESCRIPTION,
@@ -231,7 +232,10 @@ class AssessmentService:
                     f"Invalid config type: {type(config)}. Expected None, dict, or IDPConfig instance."
                 )
 
-        self.config = config_model
+        # A directly handed configuration may carry {# ... #} prompt comments;
+        # the prompt is split on {DOCUMENT_IMAGE} before format_prompt sees it,
+        # so remove them once here (see ExtractionService.__init__).
+        self.config = without_prompt_comments(config_model, as_model=True)
         self.region = region or os.environ.get("AWS_REGION")
 
         # Get model_id from typed config for logging (v0.6: extraction.confidence)
