@@ -908,7 +908,9 @@ is tested as a table in `tests/unit/config/test_tenants.py`.
 so every consumer of the lookup denies without an edit of its own. It is defined in
 `config_scope` because that file is vendored verbatim into resolvers that carry no
 `idp_common`; `tenants` re-exports it. The sentinel is applied after the
-per-container cache, so a cached answer is re-judged against the current mode.
+per-container cache, so a cached answer is re-judged against the current mode: the
+cache holds the row's raw scope and whether that row records a different Cognito
+`sub` than the caller's, never a mode-resolved answer.
 `scripts/tests/test_tenant_isolation_wiring.py` fails if any function that resolves
 scope is deployed without the variable, because an unwired function would silently
 run as `Off`.
@@ -917,12 +919,26 @@ run as `Off`.
 `TenantGrantSource` parameter) is read per call; under `IdpClaim` or `Api`,
 `unscoped_is_denied()` is true and the lookup denies an unscoped caller exactly as
 strict mode does, and the wiring gate requires the variable on the same consumers.
+
+The lookup binds a row to the caller's Cognito `sub`. The `SUB#` pointer is read
+first; failing that, every `EmailIndex` row for the address is read (Cognito does not
+make `email` unique, and each account sharing an address can have a row) and one is
+chosen in the writer's order: the row recording the caller's `sub`, then a row
+recording none, then any other. A row recording a different `sub` than the caller's,
+reached by either leg, denies the caller wherever `unscoped_is_denied()` is true; under
+`Manual` with isolation off its scope is applied, because there it can only narrow
+access.
 The writer side is [`idp_common/user_scope.py`](../user_scope.py):
 `apply_tenant_grant` writes a `resolve_grants` answer onto a user's row — exactly the
 tenant's `profilePattern`, or `NO_TENANT_GRANTED` (`!no-tenant-granted`, matching no
 profile), never an empty scope — records `scopeSource` and `scopeTenant`, keeps the
 `SUB#` pointer, leaves Admins alone, and creates a missing row marked
-`source: "cognito"` so the user-sync stream does not create a second account. The
+`source: "cognito"` so the user-sync stream does not create a second account. Given a
+`sub`, it finds the row through `find_user_row`, which never returns a row recording a
+different `sub`, and writes the grant and the row's `cognitoSub` in one `UpdateItem`
+conditioned on the row recording no `sub` or this one, so a row never carries a grant
+without the account it belongs to; an account with no row of its own is given one.
+Without a `sub` (an email-only push) an address held by more than one row is refused. The
 pre-token trigger, `user_management`'s `setUserTenant` and the SDK's
 `set_user_tenant` all write through it. The row and pointer invariants it shares with
 `user_management` (`record_cognito_sub`, `is_scoped`) are defined there too.
