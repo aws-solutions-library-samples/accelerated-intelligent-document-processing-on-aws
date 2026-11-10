@@ -192,12 +192,11 @@ def test_unimplemented_backend_is_refused():
         DecisionModelClient(ARN, backend="sagemaker", lambda_client=object())
 
 
-def test_endpoint_falls_back_to_the_stacks_own(monkeypatch):
-    monkeypatch.setenv("DECISION_MODEL_FUNCTION_ARN", ARN)
-    assert resolve_endpoint("") == ARN
-    monkeypatch.delenv("DECISION_MODEL_FUNCTION_ARN")
-    with pytest.raises(ValueError, match="no decision model endpoint"):
-        resolve_endpoint(None)
+def test_an_empty_endpoint_is_refused_by_name():
+    for empty in ("", "  ", None):
+        with pytest.raises(ValueError, match="decision_model.endpoint is empty"):
+            resolve_endpoint(empty)
+    assert resolve_endpoint(f"  {ARN} ") == ARN
 
 
 def test_client_from_config_reads_the_shared_block(monkeypatch):

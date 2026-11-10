@@ -328,7 +328,7 @@ classification:
       decision_model:
         # lambda (the only backend today). The function name must start GENAIIDP-.
         backend: lambda
-        # Function ARN. Empty uses the stack's own decision model, when it deploys one.
+        # Function ARN (GENAIIDP- prefix). Required when method is decision_model.
         endpoint: ''
         # images | text | both. Page images measured best for classification.
         input: images

@@ -225,12 +225,11 @@ def test_the_method_and_its_bounds_are_validated():
             }
         )
 
-    assert (
-        cfg(
-            {"method": "decision_model"}
-        ).classification.split_then_classify.section_classification.method
-        == "decision_model"
-    )
+    selected = cfg({"method": "decision_model", "decision_model": {"endpoint": ARN}})
+    section = selected.classification.split_then_classify.section_classification
+    assert section.method == "decision_model"
+    with pytest.raises(Exception, match="endpoint is empty"):
+        cfg({"method": "decision_model"})
     with pytest.raises(Exception, match="1329"):
         cfg({"method": "embeddings"})
     with pytest.raises(Exception):

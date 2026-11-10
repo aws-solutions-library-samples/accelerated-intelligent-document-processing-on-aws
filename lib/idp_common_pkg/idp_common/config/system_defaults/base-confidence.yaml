@@ -58,7 +58,7 @@ extraction:
     method: llm
     decision_model:
       backend: lambda
-      # Function ARN (GENAIIDP- prefix). Empty uses the stack's own decision model.
+      # Function ARN (GENAIIDP- prefix). Required when method is decision_model.
       endpoint: ''
       # images | text | both. Page images measured best.
       input: images

@@ -275,3 +275,23 @@ def test_a_page_without_an_image_keeps_the_later_page_numbers():
     pages[1] = b"PAGE-0"
     core = _assess(_service(), decider, pages)
     assert "page 3" in core.enhanced_assessment["Total"]["confidence_reason"]
+
+
+def test_the_method_needs_an_endpoint_and_ocr_geometry():
+    from idp_common.config.models import IDPConfig
+
+    def cfg(confidence, geometry=None):
+        extraction = {"confidence": {"mode": "separate", **confidence}}
+        if geometry:
+            extraction["geometry"] = {"mode": geometry}
+        return IDPConfig.model_validate({"extraction": extraction})
+
+    with pytest.raises(Exception, match="endpoint is empty"):
+        cfg({"method": "decision_model"})
+    ok = {"method": "decision_model", "decision_model": {"endpoint": ARN}}
+    assert cfg(ok).extraction.geometry.mode == "ocr_only"
+    for mode in ("llm", "llm_grounded"):
+        with pytest.raises(Exception, match="returns no bounding boxes"):
+            cfg(ok, geometry=mode)
+    # Off scores nothing, so neither rule applies.
+    cfg({"method": "decision_model", "mode": "off"}, geometry="llm")

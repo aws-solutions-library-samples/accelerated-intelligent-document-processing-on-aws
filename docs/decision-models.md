@@ -86,7 +86,7 @@ classification:
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `endpoint` | unset | The function ARN. The name must start with `GENAIIDP-`. |
+| `endpoint` | required | The function ARN. The name must start with `GENAIIDP-`. A configuration that selects the decision model without one is refused when it is saved. |
 | `input` | `images` | What the model reads. Page images measured best: OCR text alone loses the visual cues that tell forms, letters and memos apart. |
 | `max_pages` | `1` | The most pages of a section the model reads, after `pages` selects them. The maximum is 4, the API's image limit. More pages did not raise accuracy and weakened the confidence. |
 | `instructions` | `Which type of document is this?` | The question. The options are always your classes. |
@@ -125,6 +125,11 @@ extraction:
 | `max_pages` | `20` | The most pages read per section. A value that appears only on a later page scores low and goes to review. |
 | `instructions` | the question above | `{FIELD}` is the field's path (`Lines[2].Amount`), `{DESCRIPTION}` its schema description, `{VALUE}` the extracted value. |
 | `max_questions_per_request` | `100` | A page with more values is asked in several requests, inside the model's request limit. |
+
+It needs `extraction.geometry.mode: ocr_only`, the default, which locates each value
+from OCR. In `llm` and `llm_grounded` the boxes come from the confidence call, and a
+decision model returns none, so those combinations are refused when the configuration
+is saved.
 
 Each value's explainability entry carries `confidence_source: decision_model` and a
 reason naming the page that supported it best. A failed call fails the confidence

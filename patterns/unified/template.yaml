@@ -2052,7 +2052,7 @@ Resources:
                           endpoint:
                             type: string
                             title: Function ARN
-                            description: "The decision model's Lambda function ARN (System One API). The function name must start with GENAIIDP-. Empty uses the stack's own decision model, when the stack deploys one."
+                            description: "The decision model's Lambda function ARN (System One API). The function name must start with GENAIIDP-. Required when the method is Decision model."
                             order: 0
                           input:
                             type: string
@@ -2789,7 +2789,7 @@ Resources:
                       endpoint:
                         type: string
                         title: Function ARN
-                        description: "The decision model's Lambda function ARN (System One API). The function name must start with GENAIIDP-. Empty uses the stack's own decision model, when the stack deploys one."
+                        description: "The decision model's Lambda function ARN (System One API). The function name must start with GENAIIDP-. Required when the method is Decision model."
                         order: 0
                       input:
                         type: string

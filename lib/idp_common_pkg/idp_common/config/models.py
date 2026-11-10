@@ -990,10 +990,7 @@ class ExternalModelConfig(BaseModel):
     )
     endpoint: str = Field(
         default="",
-        description=(
-            "Endpoint name, model ARN, or function ARN (GENAIIDP- prefix). Empty "
-            "uses the stack's own decision model, when the stack deploys one."
-        ),
+        description=("Endpoint name, model ARN, or function ARN (GENAIIDP- prefix)."),
     )
     input: str = Field(default="images", description="images | text | both")
     timeout_ms: int = Field(default=30000, ge=0)
@@ -1031,8 +1028,8 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
     endpoint: Optional[str] = Field(
         default=None,
         description=(
-            "Function ARN; the function name must start with GENAIIDP-. Unset uses "
-            "the stack's own decision model, when the stack deploys one."
+            "Function ARN; the function name must start with GENAIIDP-. Required "
+            "when the sibling method is 'decision_model'."
         ),
     )
     timeout_ms: int = Field(
@@ -1100,11 +1097,11 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
     @field_validator("endpoint", mode="before")
     @classmethod
     def empty_endpoint_is_unset(cls, v: Any) -> Optional[str]:
-        """An empty endpoint means the stack's own decision model.
+        """An empty endpoint is an unset one.
 
-        Empty and unset mean the same thing, so the block is shipped with '' to
-        keep it the same shape on disk as section classification's, whose field a
-        release before decision models types as a string.
+        Shipped as '' to keep the block the same shape on disk as section
+        classification's, whose field a release before decision models types as a
+        string. Required when this block's method is selected.
         """
         if v is None or (isinstance(v, str) and not v.strip()):
             return None
@@ -1332,6 +1329,16 @@ class ConfidenceConfig(BaseModel):
                 "extraction.confidence.method 'decision_model' needs mode "
                 "'separate': in 'integrated' mode the extraction call scores its own "
                 "values and no confidence pass runs"
+            )
+        if (
+            self.method == "decision_model"
+            and self.mode != "off"
+            and not self.decision_model.endpoint
+        ):
+            raise ValueError(
+                "extraction.confidence.method is 'decision_model' but "
+                "extraction.confidence.decision_model.endpoint is empty: set it to the "
+                "decision model's Lambda function ARN"
             )
         self.enabled = self.mode != "off"
         return self
@@ -1746,6 +1753,27 @@ class ExtractionConfig(BaseModel):
             self.agentic.enabled = self.mode == "advanced"
         else:
             self.mode = "advanced" if self.agentic.enabled else "simple"
+        return self
+
+    @model_validator(mode="after")
+    def decision_model_confidence_has_no_llm_boxes(self) -> Self:
+        """Refuse decision-model confidence with geometry from the confidence call.
+
+        In geometry modes 'llm' and 'llm_grounded' the boxes come from the
+        confidence-bearing prompt. A decision model answers yes or no and returns
+        no boxes, so the combination would drop field highlighting without a word.
+        """
+        if (
+            self.confidence.method == "decision_model"
+            and self.confidence.mode != "off"
+            and self.geometry.mode in ("llm", "llm_grounded")
+        ):
+            raise ValueError(
+                "extraction.confidence.method 'decision_model' returns no bounding "
+                f"boxes, so extraction.geometry.mode {self.geometry.mode!r} would "
+                "lose field highlighting: use geometry mode 'ocr_only' (the default), "
+                "which locates values from OCR"
+            )
         return self
 
     @model_validator(mode="after")
@@ -2512,8 +2540,8 @@ class DecisionModelConfig(ExternalModelConfig):
     endpoint: Optional[str] = Field(
         default=None,
         description=(
-            "Function ARN; the function name must start with GENAIIDP-. Unset uses "
-            "the stack's own decision model, when the stack deploys one."
+            "Function ARN; the function name must start with GENAIIDP-. Required "
+            "when the sibling method is 'decision_model'."
         ),
     )
     timeout_ms: int = Field(
@@ -2580,10 +2608,11 @@ class DecisionModelConfig(ExternalModelConfig):
     @field_validator("endpoint", mode="before")
     @classmethod
     def empty_endpoint_is_unset(cls, v: Any) -> Optional[str]:
-        """An empty endpoint means the stack's own decision model.
+        """An empty endpoint is an unset one.
 
         Shipped as '' rather than null: a release before decision models types
         this field as a string, and rejects a null in a configuration written now.
+        Required when section classification's method is 'decision_model'.
         """
         if v is None or (isinstance(v, str) and not v.strip()):
             return None
@@ -2686,6 +2715,16 @@ class SectionClassificationConfig(BaseModel):
             ("llm", "decision_model"),
             "'embeddings'",
         )
+
+    @model_validator(mode="after")
+    def decision_model_needs_an_endpoint(self) -> Self:
+        if self.method == "decision_model" and not self.decision_model.endpoint:
+            raise ValueError(
+                "classification.split_then_classify.section_classification.method is "
+                "'decision_model' but its decision_model.endpoint is empty: set it to "
+                "the decision model's Lambda function ARN"
+            )
+        return self
 
     @field_validator("pages", mode="before")
     @classmethod

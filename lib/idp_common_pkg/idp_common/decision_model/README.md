@@ -70,8 +70,8 @@ on `ExternalModelConfig` and refused until they are implemented.
 
 The function name must start with `GENAIIDP-`, the same convention `LambdaHook` uses.
 The pipeline's existing invoke permission is scoped to that prefix, so no new IAM is
-needed. An empty `endpoint` resolves to `DECISION_MODEL_FUNCTION_ARN`, which a stack
-that deploys its own decision model sets.
+needed. `endpoint` is required: a configuration that selects a decision
+model without one is refused when it is loaded.
 
 ## Failures
 

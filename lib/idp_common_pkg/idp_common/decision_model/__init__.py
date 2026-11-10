@@ -8,7 +8,6 @@ See ``README.md`` beside this file, and ``docs/decision-models.md``.
 from __future__ import annotations
 
 import base64
-import os
 from typing import Any, Optional
 
 from idp_common.config.models import DECISION_MODEL_INPUTS
@@ -41,28 +40,21 @@ from idp_common.decision_model.wire import (
     SystemOneResponse,
 )
 
-#: Where a stack that deploys its own decision model publishes the function, so a
-#: configuration can leave ``endpoint`` empty and move between stacks unchanged.
-ENDPOINT_ENV_VAR = "DECISION_MODEL_FUNCTION_ARN"
-
 #: The values ``ExternalModelConfig.input`` takes; defined once, with the model.
 INPUT_MODES = DECISION_MODEL_INPUTS
 
 
 def resolve_endpoint(configured: Optional[str]) -> str:
-    """The configured endpoint, or the stack's own decision model when it is empty.
+    """The configured endpoint. Required: there is no default decision model.
 
     Raises:
-        ValueError: neither is set.
+        ValueError: it is empty.
     """
-    endpoint = (configured or "").strip() or os.environ.get(
-        ENDPOINT_ENV_VAR, ""
-    ).strip()
+    endpoint = (configured or "").strip()
     if not endpoint:
         raise ValueError(
-            "no decision model endpoint: set decision_model.endpoint to a "
-            f"{FUNCTION_NAME_PREFIX} function ARN, or deploy the stack's decision "
-            f"model so {ENDPOINT_ENV_VAR} is set"
+            "decision_model.endpoint is empty: set it to the decision model's "
+            f"Lambda function ARN (the function name must start {FUNCTION_NAME_PREFIX})"
         )
     return endpoint
 
@@ -98,7 +90,6 @@ def encode_image(image_bytes: bytes) -> str:
 
 __all__ = [
     "DEFAULT_FUNCTION_MEMORY_MB",
-    "ENDPOINT_ENV_VAR",
     "FUNCTION_NAME_PREFIX",
     "IMAGE_MAX_SIDE",
     "INPUT_MODES",
