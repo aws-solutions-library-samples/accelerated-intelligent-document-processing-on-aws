@@ -9,6 +9,7 @@ when there is none.
 """
 
 import inspect
+from typing import Any, Tuple
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,7 +17,9 @@ import pytest
 RESULT_URI = "s3://results-bucket/athena-results/q-1.csv"
 
 
-def _tools():
+def _tools() -> Tuple[Any, MagicMock, MagicMock]:
+    # Typed Any: the type checker reads a Strands tool method's signature with
+    # `self` unbound, although the descriptor binds it at run time.
     from idp_common.agents.analytics.tools.code_interpreter_tools import (
         CodeInterpreterTools,
     )

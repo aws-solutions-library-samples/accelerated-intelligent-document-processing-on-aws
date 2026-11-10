@@ -10,6 +10,7 @@ example its own prompt carries (``load_python_plot_generation_examples``) must p
 
 import json
 import re
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -132,7 +133,9 @@ def test_refused(code):
         check_sandbox_code(code)
 
 
-def _tools():
+def _tools() -> Any:
+    # Typed Any: the type checker reads a Strands tool method's signature with
+    # `self` unbound, although the descriptor binds it at run time.
     from idp_common.agents.analytics.tools.code_interpreter_tools import (
         CodeInterpreterTools,
     )
