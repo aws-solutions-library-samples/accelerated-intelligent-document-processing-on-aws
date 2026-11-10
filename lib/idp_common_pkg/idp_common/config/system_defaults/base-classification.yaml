@@ -328,8 +328,8 @@ classification:
       decision_model:
         # lambda (the only backend today). The function name must start GENAIIDP-.
         backend: lambda
-        # Function ARN. Unset uses the stack's own decision model, when it deploys one.
-        endpoint: null
+        # Function ARN. Empty uses the stack's own decision model, when it deploys one.
+        endpoint: ''
         # images | text | both. Page images measured best for classification.
         input: images
         # Pages read per section after `pages` selects them: 1 to 4 (the API's image limit).

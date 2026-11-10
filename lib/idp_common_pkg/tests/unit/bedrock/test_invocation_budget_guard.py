@@ -890,8 +890,8 @@ def _guard_tests(block: list[ast.stmt]) -> list[ast.If]:
 #: Counts as audited. Count pinning: a new retry site inside an already-covered
 #: module fails here rather than inheriting the verdict, and a LOST site fails too —
 #: which is a different remedy, so the messages say which direction moved.
-AUDITED_SLEEP_SITES = 11
-AUDITED_RAISING_GATES = 8
+AUDITED_SLEEP_SITES = 12
+AUDITED_RAISING_GATES = 9
 AUDITED_RETURNING_GATES = 1
 
 #: The exact metric names a refusal may emit, per ladder. Matched exactly rather than
@@ -905,6 +905,8 @@ EXPECTED_REFUSAL_METRICS = frozenset(
         "BedrockRetryAbandonedOutOfTime",
         "BedrockEmbeddingRetryAbandonedOutOfTime",
         "LambdaHookRetryAbandonedOutOfTime",
+        # idp_common/decision_model/invoker.py: a decision-model call (#1656).
+        "DecisionModelRetryAbandonedOutOfTime",
     }
 )
 EXPECTED_FAILURE_METRICS = frozenset(

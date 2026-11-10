@@ -273,6 +273,31 @@ def _flat_keys() -> frozenset:
     return frozenset(FLAT_KEYS | {"classificationMethod"})
 
 
+#: Sub-blocks read only when the sibling ``method`` selects them, keyed by the
+#: block's path under ``classification`` and the method value that reads it.
+_METHOD_SELECTED_BLOCKS: Tuple[Tuple[Tuple[str, ...], str], ...] = (
+    (
+        ("split_then_classify", "section_classification", "decision_model"),
+        "decision_model",
+    ),
+    (
+        ("split_then_classify", "section_classification", "low_confidence"),
+        "decision_model",
+    ),
+)
+
+
+def _unselected_method_block(classification: Dict[str, Any], path: str) -> bool:
+    """Whether ``path`` lies in a method-selected block the cell does not select."""
+    parts = tuple(path.split(".")[1:])
+    for block, method in _METHOD_SELECTED_BLOCKS:
+        if parts[: len(block)] != block:
+            continue
+        selected = _get(classification, block[:-1] + ("method",))
+        return (selected or "llm") != method
+    return False
+
+
 def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
     """Errors for ``cfg`` against the release whose ``idp_common`` is at ``lib_root``.
 
@@ -308,6 +333,11 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
         root = path.split(".")[1]
         if has_flat and root in V09_BLOCKS:
             continue  # carried by the flat keys; compared value by value below
+        if _unselected_method_block(classification, path):
+            # A block only its own `method` value reads, in a cell that does not
+            # select that method: inert on both releases, so dropping it changes
+            # nothing the cell measures. A cell that DOES select it still fails.
+            continue
         errors.append(
             f"{path} is not read by this release: its IDPConfig drops the key and "
             f"runs the code default instead"

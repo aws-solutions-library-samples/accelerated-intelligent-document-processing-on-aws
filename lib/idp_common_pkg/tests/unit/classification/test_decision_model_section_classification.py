@@ -112,7 +112,7 @@ def _run(service, document, decider, bedrock):
         patch("idp_common.s3.get_text_content", return_value="page text"),
         patch("idp_common.image.prepare_image", return_value=_png()),
         patch.object(service, "_invoke_bedrock_model", side_effect=bedrock),
-        patch("idp_common.decision_model.client.boto3.client", return_value=decider),
+        patch("idp_common.decision_model.invoker.boto3.client", return_value=decider),
     ):
         return service.split_then_classify_document(document)
 

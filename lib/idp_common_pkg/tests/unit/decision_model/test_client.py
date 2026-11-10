@@ -92,8 +92,15 @@ def _request():
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    monkeypatch.setattr(
+        "idp_common.decision_model.invoker.time.sleep", lambda seconds: None
+    )
+
+
 def _client(fake, **kw):
-    return DecisionModelClient(ARN, lambda_client=fake, sleep=lambda s: None, **kw)
+    return DecisionModelClient(ARN, lambda_client=fake, metrics_enabled=False, **kw)
 
 
 def test_answers_and_metering():

@@ -29,7 +29,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import boto3
 from botocore.config import Config
@@ -131,7 +131,7 @@ class DecisionModelClient:
         max_retries: int = 4,
         region: Optional[str] = None,
         lambda_client: Any = None,
-        sleep: Callable[[float], None] = time.sleep,
+        metrics_enabled: bool = True,
     ):
         backend = (backend or "lambda").strip().lower()
         if backend not in SUPPORTED_BACKENDS:
@@ -154,7 +154,7 @@ class DecisionModelClient:
         self.max_concurrency = max(1, int(max_concurrency))
         self.function_memory_mb = int(function_memory_mb)
         self.max_retries = max(0, int(max_retries))
-        self._sleep = sleep
+        self.metrics_enabled = metrics_enabled
         # Bounds the calls in flight across every thread using this client, so
         # ``max_concurrency`` holds however many workers the caller runs.
         self._in_flight = threading.BoundedSemaphore(self.max_concurrency)
@@ -187,7 +187,7 @@ class DecisionModelClient:
             DecisionModelUnavailable: the call did not complete.
         """
         payload = json.dumps(request.model_dump(mode="json")).encode("utf-8")
-        worst_attempt = 0.0
+        worst_attempt_seconds = 0.0
         attempt = 0
         while True:
             try:
@@ -195,16 +195,20 @@ class DecisionModelClient:
                     started = time.time()
                     return self._invoke_once(payload, context, started)
             except _Retry as retry:
-                worst_attempt = max(worst_attempt, time.time() - started)
+                worst_attempt_seconds = max(
+                    worst_attempt_seconds, time.time() - started
+                )
                 if attempt >= self.max_retries:
+                    self._put_metric("DecisionModelRequestsFailed", 1)
                     raise DecisionModelUnavailable(
                         f"{self.function_name}: {retry.reason} after "
                         f"{attempt + 1} attempts"
                     ) from None
-                backoff = clamp_sleep_to_budgets(
-                    min(30.0, 2.0 * (2**attempt)) + random.uniform(0, 1)
-                )
-                if attempt_cannot_finish(worst_attempt + backoff, self.function_name):
+                backoff = self._backoff_within_invocation(attempt)
+                if attempt_cannot_finish(
+                    worst_attempt_seconds + backoff, self.function_name
+                ):
+                    self._put_metric("DecisionModelRetryAbandonedOutOfTime", 1)
                     raise DecisionModelUnavailable(
                         f"{self.function_name}: {retry.reason}; no time left in "
                         "this invocation for another attempt"
@@ -217,8 +221,26 @@ class DecisionModelClient:
                     attempt + 2,
                     self.max_retries + 1,
                 )
-                self._sleep(backoff)
+                time.sleep(backoff)
                 attempt += 1
+
+    @staticmethod
+    def _backoff_within_invocation(attempt: int) -> float:
+        """Exponential backoff with jitter, shortened to stay inside the invocation."""
+        return clamp_sleep_to_budgets(
+            min(30.0, 2.0 * (2**attempt)) + random.uniform(0, 1)
+        )
+
+    def _put_metric(self, metric_name: str, value: float, unit: str = "Count") -> None:
+        """Publish a metric, never failing the call that reports it."""
+        if not self.metrics_enabled:
+            return
+        try:
+            from idp_common.metrics import put_metric
+
+            put_metric(metric_name, value, unit)
+        except Exception as e:  # noqa: BLE001 - a metric must not fail the request
+            logger.warning("Could not publish metric %s: %s", metric_name, e)
 
     def decide_many(
         self, requests: Sequence[SystemOneRequest], context: str

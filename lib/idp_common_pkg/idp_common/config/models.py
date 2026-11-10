@@ -1076,6 +1076,18 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
         ),
     )
 
+    @field_validator("endpoint", mode="before")
+    @classmethod
+    def empty_endpoint_is_unset(cls, v: Any) -> Optional[str]:
+        """An empty endpoint means the stack's own decision model.
+
+        Shipped as '' rather than null: a release before decision models types
+        this field as a string, and rejects a null in a configuration written now.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return str(v).strip()
+
     @field_validator("input", mode="before")
     @classmethod
     def validate_input(cls, v: Any) -> str:
@@ -2521,6 +2533,18 @@ class DecisionModelConfig(ExternalModelConfig):
             "returned). 'softmax' and 'per_class_thresholds' are declared."
         ),
     )
+
+    @field_validator("endpoint", mode="before")
+    @classmethod
+    def empty_endpoint_is_unset(cls, v: Any) -> Optional[str]:
+        """An empty endpoint means the stack's own decision model.
+
+        Shipped as '' rather than null: a release before decision models types
+        this field as a string, and rejects a null in a configuration written now.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return str(v).strip()
 
     @field_validator("input", mode="before")
     @classmethod

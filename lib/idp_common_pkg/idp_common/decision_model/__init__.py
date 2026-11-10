@@ -11,7 +11,7 @@ import base64
 import os
 from typing import Any, Optional
 
-from idp_common.decision_model.client import (
+from idp_common.decision_model.invoker import (
     DEFAULT_FUNCTION_MEMORY_MB,
     FUNCTION_NAME_PREFIX,
     SUPPORTED_BACKENDS,

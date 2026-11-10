@@ -58,8 +58,8 @@ extraction:
     method: llm
     decision_model:
       backend: lambda
-      # Function ARN (GENAIIDP- prefix). Unset uses the stack's own decision model.
-      endpoint: null
+      # Function ARN (GENAIIDP- prefix). Empty uses the stack's own decision model.
+      endpoint: ''
       # images | text | both. Page images measured best.
       input: images
       # Pages read per section, one request each: 1 to 50.

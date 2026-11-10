@@ -115,7 +115,7 @@ def _pages(n: int) -> List[bytes]:
 
 def _assess(service, decider, pages):
     with (
-        patch("idp_common.decision_model.client.boto3.client", return_value=decider),
+        patch("idp_common.decision_model.invoker.boto3.client", return_value=decider),
         patch(
             "idp_common.assessment.decision_model_confidence.encode_image",
             side_effect=lambda b: __import__("base64").b64encode(b).decode(),
@@ -195,7 +195,7 @@ def test_through_the_batcher_every_row_is_scored_once():
     service = _service()
     decider = FakeDecider([{"Total": 0.9, "Vendor.Name": 0.9}])
     with (
-        patch("idp_common.decision_model.client.boto3.client", return_value=decider),
+        patch("idp_common.decision_model.invoker.boto3.client", return_value=decider),
         patch(
             "idp_common.assessment.decision_model_confidence.encode_image",
             side_effect=lambda b: __import__("base64").b64encode(b).decode(),
