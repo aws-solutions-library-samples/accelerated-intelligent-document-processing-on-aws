@@ -298,8 +298,18 @@ def upload_config(stack, version, path, res=None, native=False):
         except Exception as e:
             print(f"    native upload error: {e}")
             return False
+    # Every first-party package root of THIS checkout, so idp-cli migrates and
+    # validates with the configuration model of the tree under test rather than
+    # whichever checkout the installed console script points at; and the caller's
+    # profile, defaulting to `default` as before.
+    first_party = ":".join(
+        os.path.join(REPO, "lib", d)
+        for d in sorted(os.listdir(os.path.join(REPO, "lib")))
+        if os.path.exists(os.path.join(REPO, "lib", d, "pyproject.toml"))
+    )
+    profile = os.environ.get("AWS_PROFILE", "default")
     r = sh(
-        f"PYTHONPATH={REPO}/lib/idp_common_pkg AWS_PROFILE=default idp-cli config-upload "
+        f'PYTHONPATH="{first_party}" AWS_PROFILE={profile} idp-cli config-upload '
         f'--stack-name {stack} --config-file "{path}" --config-profile {version} '
         f'--version-description "benchmark {version}" --region {lib.REGION}'
     )
