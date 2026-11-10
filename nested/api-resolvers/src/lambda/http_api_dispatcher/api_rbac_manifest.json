@@ -35,6 +35,10 @@
       "Admin",
       "Author"
     ],
+    "bulkSkipAllReviews": [
+      "Admin",
+      "Reviewer"
+    ],
     "calculateCapacity": [
       "Admin",
       "Author",
@@ -196,6 +200,10 @@
       "Admin",
       "Annotator",
       "Author"
+    ],
+    "getBulkReviewJob": [
+      "Admin",
+      "Reviewer"
     ],
     "getChatMessages": [
       "Admin",
@@ -379,6 +387,10 @@
     ],
     "listBucketFiles": [
       "Admin"
+    ],
+    "listBulkReviewJobs": [
+      "Admin",
+      "Reviewer"
     ],
     "listCatalogFeatures": "ANY",
     "listChatSessions": "ANY",
@@ -616,6 +628,10 @@
     "sendTestRunToReview": [
       "Admin",
       "Author"
+    ],
+    "sendToReview": [
+      "Admin",
+      "Reviewer"
     ],
     "setActiveVersion": [
       "Admin",

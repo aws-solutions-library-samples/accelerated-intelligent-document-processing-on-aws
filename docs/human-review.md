@@ -20,6 +20,8 @@ SPDX-License-Identifier: MIT-0
 - [Document Editor](#document-editor)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
+- [Skip All Reviews for many documents](#skip-all-reviews-for-many-documents)
+- [Send to review](#send-to-review)
 - [When the Default queue is off](#when-the-default-queue-is-off)
 
 ## Overview
@@ -474,12 +476,88 @@ reason and note) and completed it, with timestamps. It is shown in the edit page
 **Reports › History › Review Activity**, and the document records **Review Owner** and
 **Review Completed By**.
 
+## Skip All Reviews for many documents
+
+**Skip All Reviews** finishes a review without anyone checking it. Besides the one
+document on its page, it can close many pending production reviews at once, for
+example after a confidence threshold was tuned, for a load or UAT batch whose reviews
+are noise, or for a configuration profile being retired. Admins and Reviewers can use
+it; a Reviewer only for documents in their configuration scope.
+
+Two ways to choose the documents:
+
+- **Selected documents.** In the Document List, select rows and choose **Review ›
+  Skip All Reviews (N selected)**; on a production queue's page, select items and
+  choose **Skip All Reviews (N)**.
+- **By configuration profile.** Choose **Skip All Reviews by profile…** (Document List
+  Review menu, or a queue's page), then a profile and a submitted-date range in UTC of
+  at most 365 days. A Reviewer can choose only a profile in their scope.
+
+What is skipped, for every role:
+
+- A production review-queue item that is waiting or claimed finishes with its machine
+  results (no edits applied), recorded as **Skipped (Skip All Reviews)** in its review
+  history. A Reviewer can skip waiting items and their own claims, never another
+  reviewer's claim; an Admin can skip any, and the claimant is told.
+- A review outside a review queue that is pending is marked **Review Skipped**, as on
+  the document page. A Reviewer cannot skip one another reviewer has started.
+- Nothing else: finished reviews, documents with no review, documents still processing
+  and Test Studio documents are left alone and listed with the reason.
+
+A reason is required (the same list as on the document page) with an optional note;
+both are recorded with each skip in the document's review history, with the job it
+ran in. **Resubmit for downstream processing** (ticked by default, also on the
+document page) re-runs Summarization and Evaluation on the unedited results and fires
+the post-processing hook for a review outside a queue; untick it to only mark the
+review skipped. A queue item always finishes through its own finishing run.
+
+Before anything changes, the dialog counts what would happen to each document. A
+request of up to `hitl.bulk_skip_sync_limit` documents (50 by default, see
+[Configuration](configuration.md)) runs at once and shows its results. A larger one
+runs as a background job, one at a time per stack and paced so it does not hold up
+new documents; a job handles up to 10,000 documents. Every run is listed under **Home ›
+Jobs** with its status, counts and per-document results, which can be filtered and
+exported to Excel; the Inbox tells you when a background job finishes. A Reviewer sees
+their own jobs, an Admin every job. Results are kept for 30 days, or for the stack's
+data retention if that is shorter.
+
+Per-document results: **Skipped**, **Not permitted** (outside your scope, or no such
+document), **Not pending**, **Already finished**, **Held by another reviewer**, **Test
+Studio excluded**, **Not finished processing**, **Resubmit failed** (the review was
+skipped; its downstream run could not be queued), **Failed** and **Not attempted** (an
+immediate run reached its time limit first). A skipped queue item whose finishing run
+could not be started at once shows **Finishing run will be retried** and is retried
+automatically; the retry is recorded in its review history.
+
+By-profile selection uses each document's recorded profile; very old documents that
+carry only the earlier `ConfigurationVersion` attribute are not found this way and can
+be skipped by selecting them.
+
+## Send to review
+
+**Send to review** puts a finished production document into the Default review queue
+by hand, for a spot check or a second look after a customer query. Choose **More
+Actions › Send to review** on the document's page, or select documents in the Document
+List and choose **Review › Send to review (N selected)**. Admins and Reviewers can send
+documents in their configuration scope.
+
+A reason is required (**Spot check**, **Suspected extraction error**, **Customer or
+downstream query**, **Other (see note)**) with an optional note. Reviewers see it on the
+item as **Sent to review**. From then on the item is worked like any other: completing it
+reprocesses the document with the reviewer's edits.
+
+A document can be sent when it has finished processing, is not already in a review, and
+is not a Test Studio document. The Default queue must be enabled; the profile's own
+`hitl.enabled` setting does not matter. With the Default queue off, Send to review is
+shown disabled with the reason.
+
 ## When the Default queue is off
 
 The Default queue is enabled on a new stack. If an Admin turns it off while HITL stays
 enabled in a profile, documents that raise confidence alerts are not queued: they wait
 as **Review Pending** and are reviewed on their document page instead, with **Start
-Review** and **Process Changes** (or **More Actions › Skip All Reviews**). That page is
+Review** and **Process Changes** (or **More Actions › Skip All Reviews**; many at once
+with [bulk Skip All Reviews](#skip-all-reviews-for-many-documents)). That page is
 reached only by an Admin, or a Reviewer who also holds Author or Viewer; a Reviewer or
 Annotator whose only work is review has no navigation to it. Keep the Default queue
 enabled whenever review-only users do the reviewing. Turning it off stops new documents

@@ -243,6 +243,17 @@
         }
       ]
     },
+    "bulkSkipAllReviews": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "BulkSkipAllReviewsInput"
+        }
+      ]
+    },
     "calculateCapacity": {
       "args": [
         {
@@ -843,6 +854,38 @@
         }
       ]
     },
+    "getBulkReviewJob": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "jobId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "outcome",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "limit",
+          "non_null": false,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "nextToken",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
     "getChatMessages": {
       "args": [
         {
@@ -1313,6 +1356,24 @@
           "elem_non_null": false,
           "is_list": false,
           "name": "modifiedAfter",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "listBulkReviewJobs": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "limit",
+          "non_null": false,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "nextToken",
           "non_null": false,
           "type": "String"
         }
@@ -2416,6 +2477,31 @@
         }
       ]
     },
+    "sendToReview": {
+      "args": [
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "objectKeys",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "reason",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "note",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
     "setActiveVersion": {
       "args": [
         {
@@ -2467,6 +2553,13 @@
           "name": "note",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "resubmit",
+          "non_null": false,
+          "type": "Boolean"
         }
       ]
     },
@@ -3342,6 +3435,78 @@
         "elem_non_null": false,
         "is_list": false,
         "name": "description",
+        "non_null": false,
+        "type": "String"
+      }
+    ],
+    "BulkSkipAllReviewsInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "mode",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "objectKeys",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "profile",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "submittedFrom",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "submittedTo",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "reason",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "note",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "resubmit",
+        "non_null": false,
+        "type": "Boolean"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "dryRun",
+        "non_null": false,
+        "type": "Boolean"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "clientRequestId",
         "non_null": false,
         "type": "String"
       }

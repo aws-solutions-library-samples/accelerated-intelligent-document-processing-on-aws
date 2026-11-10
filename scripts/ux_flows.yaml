@@ -199,6 +199,40 @@ flows:
     ux_watch:
       - Does a refused page leave the annotator somewhere useful, or stranded?
 
+  - id: '4.2'
+    title: Clear pending reviews in bulk, then follow the job
+    persona: Admin
+    priority: p1
+    paths:
+      - src/ui/src/components/review-bulk/**
+      - src/ui/src/components/document-list/DocumentList.tsx
+      - src/ui/src/components/document-list/documents-table-config.tsx
+      - src/ui/src/components/review-queues/ReviewQueuePage.tsx
+    setup:
+      - A configuration profile with a few documents pending review (legacy or
+        in the Default queue), and one document that has finished review.
+    steps:
+      - Open the Document List, select the pending documents and the finished
+        one, and choose Review › Skip All Reviews (N selected).
+      - Read the dry-run summary, choose a reason, keep Resubmit ticked, and
+        confirm.
+      - Open Review › Skip All Reviews by profile…, choose the profile and a
+        date range, and read the count.
+      - Open Home › Jobs and the job the run created.
+    expect:
+      - The count in the menu leaves out the finished document, and the dry run
+        reports it as Already finished.
+      - The results show one outcome per document and can be exported.
+      - The skipped rows show Review Skipped (or Review Completed for queue
+        items) without reloading the list.
+      - The run is listed under Home › Jobs with its status, counts and a
+        working results table.
+    ux_watch:
+      - Is it clear before confirming what will happen to each kind of
+        document, and that a skip is recorded with the reason?
+      - Does a by-profile run that becomes a background job leave the person
+        somewhere they can follow it?
+
 # Flows still to add, gathered in review. Listed rather than
 # invented so it is visible that they are known-missing rather than overlooked:
 #

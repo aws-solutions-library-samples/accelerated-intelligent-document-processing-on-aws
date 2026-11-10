@@ -330,6 +330,14 @@ To work a queue, open its page, select items, and choose one of:
   with its machine output, no draft is applied, and the review status object is
   deleted. An assignee is told. The note is optional and is kept in the item's
   history.
+- **Skip All Reviews (N)** and **Skip All Reviews by profile…** finish items with their
+  machine output, like Remove, but with a required reason, and are recorded as
+  **Skipped (Skip All Reviews)** in each item's history. Reviewers have them too, for
+  items waiting for review and their own claims; an Admin can skip any waiting or
+  assigned item. See [bulk Skip All Reviews](human-review.md#skip-all-reviews-for-many-documents).
+- An item that someone created with **Send to review** shows **Sent to review** with
+  its reason in the item's **Review Reason** panel; it is worked like any other item.
+  See [Send to review](human-review.md#send-to-review).
 
 **Test Studio queues** come from test sets: each test set is a queue, created and
 deleted with the set. Its page shows **Queue Progress**, a bar of the documents completed,
@@ -407,7 +415,9 @@ its queue item:
   Baseline**) are disabled, with the reason that the document is in a review queue;
   correct and regroup the document from its queue item. The server refuses the same
   changes too: a regroup by anyone but the queue item's holder, and processing changes
-  on a document in review. **Skip All Reviews** and **Start Review** aren't offered.
+  on a document in review. **Skip All Reviews** is shown disabled with the reason
+  that the document is in a review queue, and **Start Review** isn't offered; skip
+  queue items in bulk from the queue's page or the Document List's **Review** menu.
   A direct upload of the
   document's section results (`uploadDocument`) is refused as well, with
   `QUEUE_MANAGED`.

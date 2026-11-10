@@ -41,6 +41,7 @@ import {
   MY_QUEUES_PATH,
   MY_TASKS_PATH,
   MY_WORK_PATH,
+  JOBS_PATH,
   REVIEW_QUEUES_PATH,
 } from '../../routes/constants';
 
@@ -462,7 +463,7 @@ const FullNavigation = ({
   const path = location.pathname;
   let activeHref = `#${DEFAULT_PATH}`;
   const { settings } = useSettingsContext();
-  const { isAdmin, isAuthor, isViewerOnly, isQueueWorker } = useUserRole();
+  const { isAdmin, isAuthor, isViewerOnly, isQueueWorker, canReview } = useUserRole();
   const reviewWork = useOptionalReviewWork();
   const reviewCount = reviewWork?.count ?? null;
   // Home (the Inbox) is everyone's; its Tasks and Queues are for Annotators, who are
@@ -494,7 +495,11 @@ const FullNavigation = ({
     else roleItems = viewerNavItems; // Viewer, and Viewer + Reviewer (the union)
 
     // Home (the Inbox, plus an Annotator's Tasks and Queues) comes first for everyone.
-    const home = buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: isQueueWorker, taskCount: reviewCount });
+    const home = buildHomeNavSection(buildInboxNavLink(unreadCount), {
+      showWork: isQueueWorker,
+      taskCount: reviewCount,
+      showJobs: !!canReview,
+    });
     roleItems = [home as unknown as Record<string, unknown>, ...roleItems];
     if (showHitl) {
       // HITL follows Test Studio; without Test Studio it goes before the trailing sections.
@@ -513,7 +518,7 @@ const FullNavigation = ({
     );
     if (resourcesIdx < 0) return [...roleItems, featuresSection as unknown as Record<string, unknown>];
     return [...roleItems.slice(0, resourcesIdx), featuresSection as unknown as Record<string, unknown>, ...roleItems.slice(resourcesIdx)];
-  }, [items, isAdmin, isAuthor, isViewerOnly, featuresSection, unreadCount, isQueueWorker, showHitl, reviewCount]);
+  }, [items, isAdmin, isAuthor, isViewerOnly, featuresSection, unreadCount, isQueueWorker, showHitl, reviewCount, canReview]);
 
   // Filter out navigation items based on deployment context:
   // - Capacity Planning: hidden if pattern is not Pattern-2 or Unified
@@ -611,6 +616,8 @@ const FullNavigation = ({
     activeHref = `#${CAPACITY_PLANNING_PATH}`;
   } else if (path.startsWith(MY_QUEUES_PATH)) {
     activeHref = `#${MY_QUEUES_PATH}`;
+  } else if (path.startsWith(JOBS_PATH)) {
+    activeHref = `#${JOBS_PATH}`;
   } else if (path.startsWith(MY_WORK_PATH)) {
     activeHref = `#${MY_TASKS_PATH}`;
   } else if (path.startsWith(REVIEW_QUEUES_PATH)) {
@@ -666,8 +673,9 @@ const QueueWorkerNavigation = ({ onFollowHandler = defaultOnFollowHandler, activ
   const { unreadCount } = useInbox();
   const reviewWork = useOptionalReviewWork();
   const deploymentInfo = useDeploymentInfoNavSection();
+  const { canReview } = useUserRole();
   const items: SideNavigationProps.Item[] = [
-    buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: true, taskCount: reviewWork?.count ?? null }),
+    buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: true, taskCount: reviewWork?.count ?? null, showJobs: !!canReview }),
     ...(deploymentInfo ? [deploymentInfo] : []),
   ];
   // The edit pages (a Test Studio item under /review-queues/.../items for an Annotator, or a document's
@@ -675,6 +683,7 @@ const QueueWorkerNavigation = ({ onFollowHandler = defaultOnFollowHandler, activ
   // (under /review-queues) from Queues.
   let activeHref = `#${MY_TASKS_PATH}`;
   if (path.startsWith(INBOX_PATH)) activeHref = `#${INBOX_PATH}`;
+  else if (path.startsWith(JOBS_PATH)) activeHref = `#${JOBS_PATH}`;
   else if (path.startsWith(MY_QUEUES_PATH) || (path.startsWith(REVIEW_QUEUES_PATH) && !path.includes('/items/')))
     activeHref = `#${MY_QUEUES_PATH}`;
   return (

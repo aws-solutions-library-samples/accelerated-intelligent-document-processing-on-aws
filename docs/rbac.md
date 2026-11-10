@@ -187,7 +187,11 @@ the Annotator role.
   `skipAllSectionsReview` refuses a caller
   who is not an Admin unless a review was raised on the document and has not
   finished (`REVIEW_FINISHED`, `NO_REVIEW_PENDING`), which is where the web UI offers
-  **Skip All Reviews**.
+  **Skip All Reviews**. Bulk Skip All Reviews (`bulkSkipAllReviews`) applies that rule to
+  every role, Admins included, skips a production review-queue item only when it is
+  waiting or is the caller's own claim (any claim for an Admin), refuses a review
+  another reviewer holds for a caller who is not an Admin (**Held by another
+  reviewer**), and never skips a Test Studio document.
   For every role, `completeSectionReview` and `processChanges` refuse documents that
   are in a production review queue (`QUEUE_MANAGED`), and `uploadDocument` refuses a
   section result of such a document (`<document>/sections/<id>/result.json` in the
@@ -222,6 +226,8 @@ HITL REVIEW
   Claim/Release review             ✅      ❌       ✅        ❌        ✅‡
   Complete section review          ✅      ❌       ✅        ❌        ✅‡
   Skip all section reviews         ✅      ❌       ✅        ❌        ❌
+  Bulk Skip All Reviews, Jobs      ✅      ❌       ✅        ❌        ❌
+  Send to review                   ✅      ❌       ✅        ❌        ❌
   Process changes                  ✅      ❌       ✅        ❌        ❌
 
 REVIEW QUEUES
@@ -526,7 +532,7 @@ number with no indication. Narrow the date range if a scoped count looks wrong.
 | **Document List** (server-side) | Both `listDocuments` resolvers filter by the `ConfigVersion` field using `allowedConfigVersions` from UsersTable (fails closed on an unstamped document) |
 | **Document Count** (server-side) | `getDocumentCount` — the header figure beside that list — applies the same two filters, from the same helpers, so it cannot report documents the list does not show |
 | **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents. ⚠️ Applies to turns that reach the processor through the REST API; chat streamed from the Lambda Function URL is **not** restricted by `allowedConfigVersions` — see [Known Limitations](#known-limitations) |
-| **Single-Document Operations** (server-side) | Every operation that acts on one document by key — `getDocument`, the three document-version operations, the five review operations on a production document (`claimReview`, `releaseReview`, `skipAllSectionsReview`, `saveSectionReviewEdits`, `completeSectionReview`), `deleteDocument`, `abortWorkflow` and `copyToBaseline` — refuses a scoped caller when the document's `ConfigVersion` is outside their scope, when it has none, or when no document is tracked for the key, with one non-disclosing message for all three. The shared check is `idp_common.document_scope`; Admins are never looked up. A multi-document request is refused whole if any one key is out of scope |
+| **Single-Document Operations** (server-side) | Every operation that acts on one document by key — `getDocument`, the three document-version operations, the five review operations on a production document (`claimReview`, `releaseReview`, `skipAllSectionsReview`, `saveSectionReviewEdits`, `completeSectionReview`), `deleteDocument`, `abortWorkflow` and `copyToBaseline` — refuses a scoped caller when the document's `ConfigVersion` is outside their scope, when it has none, or when no document is tracked for the key, with one non-disclosing message for all three. The shared check is `idp_common.document_scope`; Admins are never looked up. A multi-document request is refused whole if any one key is out of scope, except `bulkSkipAllReviews` and `sendToReview`, which report an out-of-scope document, a key no document is tracked for, and a document with no profile as the same per-document outcome **Not permitted** and act on the rest; a by-profile `bulkSkipAllReviews` is refused whole unless the profile itself is in scope |
 | **Raw Index Reads** (server-side) | `listDocumentsDateHour` and `listDocumentsDateShard` return index rows that carry no profile, so they are refused to any caller with a scope rather than filtered. The web UI does not call them |
 | **Test Runs** (server-side) | `startTestRun` and `sendTestRunToReview` hold the run's profile to the caller's scope; `getTestRun`, `getTestRunStatus` and `compareTestRuns` refuse a run whose recorded profile is out of scope, and `getTestRuns` filters by it |
 | **Config Profile List** (server-side) | `getConfigVersions` Lambda resolver filters returned profiles |
@@ -663,7 +669,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 131 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 135 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 27 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -942,6 +948,8 @@ enforcement itself is Layer 2.
 | `createFinetuningJob`, `deleteFinetuningJob` | Admin, Author |
 | `processChanges` (a caller who is not an Admin must own the document's open review, the review must not be finished, the document must not be processing, and the document must be inside the caller's configuration-profile scope — the same checks as `saveSectionReviewEdits`, plus the document-status and scope checks) | Admin, Reviewer |
 | `skipAllSectionsReview` | Admin, Reviewer |
+| `bulkSkipAllReviews` (by-profile requests refused unless the profile is in the caller's scope; selected documents scoped one by one, see below), `sendToReview` (each document scoped by its own profile) | Admin, Reviewer |
+| `getBulkReviewJob`, `listBulkReviewJobs` (a Reviewer reads only the jobs they requested; another user's job reads as not found; an Admin reads every job) | Admin, Reviewer |
 | `completeSectionReview`, `claimReview`, `releaseReview` | Admin, Reviewer, Annotator (an Annotator only for a document of a test set in their `allowedTestSets`, and `completeSectionReview` only for one assigned to them; a Reviewer only for a production document) |
 | `saveTestSetDocumentSection`, `saveTestSetDocumentSectionDraft`, `skipTestSetDocument`, `updateTestSetDocumentSections` | Admin, Author, Annotator (an Annotator only for a document assigned to them; an Author drafts authored ground truth only) |
 | `saveSectionReviewEdits` (saves a section's corrections without completing the review; a Reviewer must be the document's review owner) | Admin, Reviewer |

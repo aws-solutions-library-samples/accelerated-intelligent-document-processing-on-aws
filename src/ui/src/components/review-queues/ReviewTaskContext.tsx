@@ -64,6 +64,12 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
             {item.escalationNote}
           </Alert>
         )}
+        {item.sentToReview && (
+          <Alert type="info" header={`Sent to review: ${item.sentToReview.reason}`}>
+            {`By ${item.sentToReview.requestedBy}`}
+            {item.sentToReview.note ? ` — ${item.sentToReview.note}` : ''}
+          </Alert>
+        )}
         <SpaceBetween direction="horizontal" size="xs">
           {shown.map((reason) => (
             <Popover

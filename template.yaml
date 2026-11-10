@@ -3177,6 +3177,7 @@ Resources:
         
         # SQS Queue Names (for IAM policies)
         DocumentQueueName: !GetAtt DocumentQueue.QueueName
+        MaxConcurrentWorkflows: !Ref MaxConcurrentWorkflows
         DiscoveryQueueName: !GetAtt DiscoveryQueue.QueueName
         TestFileCopyQueueName: !GetAtt TestFileCopyQueue.QueueName
         TestSetFileCopyQueueName: !GetAtt TestSetFileCopyQueue.QueueName
@@ -7392,7 +7393,8 @@ Resources:
           KeyType: RANGE
       GlobalSecondaryIndexes:
         # TypeDateIndex replaces both the old listDocuments scan and the HITLPendingReviewIndex.
-        # Pending reviews use: ItemType='document' + time range + FilterExpression: HITLPendingReview='true'
+        # Pending reviews use: ItemType='document' + time range + a FilterExpression on
+        # HITLTriggered / HITLStatus / HITLCompleted (HITLPendingReview is not projected).
         - IndexName: TypeDateIndex
           KeySchema:
             - AttributeName: ItemType
@@ -16437,9 +16439,9 @@ Resources:
       MemorySize: 512
       Timeout: 60
       Tags:
-        # Data plane — per-doc pipeline callback. Fires once per doc that
-        # needs review, resuming the paused Step Function via task-token
-        # callback. See docs/reporting-sql-layer.md §10.3.
+        # Data plane — per-doc review completion. Fires once per finished
+        # legacy review, resubmitting the document to the DocumentQueue for its
+        # downstream run. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer

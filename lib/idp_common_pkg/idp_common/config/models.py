@@ -1259,6 +1259,21 @@ class HITLConfig(BaseModel):
         default_factory=HITLNotificationsConfig,
         description="Inbox message retention and cap. Applies whether or not hitl.enabled is set.",
     )
+    bulk_skip_sync_limit: int = Field(
+        default=50,
+        ge=1,
+        description=(
+            "Bulk Skip All Reviews runs inline (in the request) up to this many "
+            "documents and as a background job above it. Clamped to 1-100."
+        ),
+    )
+
+    @field_validator("bulk_skip_sync_limit", mode="before")
+    @classmethod
+    def parse_bulk_skip_sync_limit(cls, v: Any, info: ValidationInfo) -> int:
+        """Whole number clamped to 1-100, so a stored out-of-range value never fails
+        the whole HITL configuration (the pipeline reads it too)."""
+        return max(1, min(100, _parse_whole_number(v, info, cls)))
 
     @field_validator("confidence_threshold", mode="before")
     @classmethod

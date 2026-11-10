@@ -128,3 +128,6 @@ hitl:
   notifications:
     retention_days: 30  # Days an Inbox message is kept before DynamoDB TTL removes it (1-365)
     max_per_user: 50    # Messages kept per user; the oldest read message is removed first (1-200)
+  # Bulk Skip All Reviews runs inline up to this many documents and as a background
+  # job above it. Read from the ACTIVE configuration profile (cached ~60 s).
+  bulk_skip_sync_limit: 50  # Inline (synchronous) limit for bulk Skip All Reviews (1-100)

@@ -14,7 +14,7 @@ import logging
 from typing import Any, Optional, Sequence
 
 from idp_common.notifications import notify
-from idp_common.notifications.links import document_edit_link
+from idp_common.notifications.links import bulk_job_link, document_edit_link
 from idp_common.notifications.models import MAX_GROUPS, MAX_USERS
 
 from .models import QueueRef, ReviewItemRecord
@@ -47,6 +47,7 @@ def _post(
     groups: Sequence[str] = (),
     dedupe_key: Optional[str] = None,
     idempotency_key: Optional[str] = None,
+    severity: Optional[str] = None,
 ) -> int:
     """Post in chunks of ≤ 100 users and ≤ 10 groups; return the number of calls."""
     users = [u for u in dict.fromkeys(u.strip().lower() for u in users) if u]
@@ -74,6 +75,7 @@ def _post(
                 link=link,
                 dedupe_key=dedupe_key,
                 idempotency_key=idempotency_key,
+                **({"severity": severity} if severity else {}),
             )
             if result is None:
                 logger.debug("event=review_notice_skipped type=%s", type_id)
@@ -132,6 +134,11 @@ def claim_released(
     if reason == "take_over":
         # The draft is keyed by item and cycle, so the Admin carries on from it.
         body = "An Admin took over the item to finish it. Your draft stays with it."
+    elif reason == "skipped":
+        body = (
+            "The review was skipped (Skip All Reviews); the document completes with "
+            "its machine results."
+        )
     elif reason == "removed":
         # The draft is not applied: the document completes as processed.
         body = (
@@ -193,4 +200,36 @@ def task_reminder(item: ReviewItemRecord) -> None:
         users=[item.owner_email],
         dedupe_key=f"review-task:{item.cycle_id}:{item.owner_key}",
         idempotency_key=f"review-task-reminder:{item.cycle_id}:{item.claimed_at_ms}",
+    )
+
+
+def bulk_job_finished(job: Any) -> int:
+    """Tell the requester a bulk Skip All Reviews job finished (``job`` is a
+    ``BulkJobView``). Warning severity when anything failed or was not attempted."""
+    counts = {c.outcome.value: c.count for c in job.counts}
+    skipped = counts.get("SKIPPED", 0)
+    trouble = (
+        counts.get("FAILED", 0)
+        + counts.get("RESUBMIT_FAILED", 0)
+        + counts.get("NOT_ATTEMPTED", 0)
+    )
+    failed = job.status.value == "FAILED"
+    title = (
+        "Bulk Skip All Reviews failed"
+        if failed
+        else f"Bulk Skip All Reviews finished: {skipped} skipped of {job.total}"
+    )
+    body = (
+        f"{skipped} skipped, {job.processed} processed"
+        + (f", {trouble} need attention" if trouble else "")
+        + (f". Error: {job.error}" if failed and job.error else ".")
+    )
+    return _post(
+        type_id="review.bulk_job_finished",
+        title=title,
+        body=body,
+        link=bulk_job_link(job.job_id),
+        users=[job.requester_key],
+        dedupe_key=f"bulk-job-{job.job_id}",
+        severity="warning" if (failed or trouble) else "info",
     )

@@ -36,6 +36,15 @@ import { claimSelectedReviews, type ClaimedReview } from './claim-selected-revie
 import { releaseSelectedReviews, type ReleasedReview } from './release-selected-reviews';
 
 import type { MappedDocument } from './documents-table-config';
+import BulkSkipModal from '../review-bulk/BulkSkipModal';
+import type { BulkSkipMode } from '../review-bulk/BulkSkipModal';
+import BulkResultsModal from '../review-bulk/BulkResultsModal';
+import type { BulkResultRow } from '../review-bulk/BulkResultsTable';
+import SendToReviewModal from '../review-bulk/SendToReviewModal';
+import { buildReviewMenuItems } from '../review-bulk/review-menu-items';
+import useReviewActionSettings from '../review-bulk/use-review-action-settings';
+import { isHitlReviewFinished } from '../common/review-status';
+import { jobDetailPath } from '../../routes/constants';
 import {
   DocumentsPreferences,
   DocumentsCommonHeader,
@@ -85,7 +94,17 @@ const DocumentList = (): React.JSX.Element => {
   // Server refusals from the last Start Review or Release Review, shown above the table.
   const [reviewRefusal, setReviewRefusal] = useState<{ header: string; messages: string[] } | null>(null);
   const { settings } = useSettingsContext();
-  const { currentCredentials } = useAppContext();
+  const { currentCredentials, setErrorMessage, setSuccessMessage } = useAppContext();
+  const reviewSettings = useReviewActionSettings();
+  // Bulk Skip All Reviews / Send to review: the open dialog and the last results.
+  const [bulkSkip, setBulkSkip] = useState<{ mode: BulkSkipMode; keys: string[] } | null>(null);
+  const [sendKeys, setSendKeys] = useState<string[] | null>(null);
+  const [bulkResults, setBulkResults] = useState<{
+    header: string;
+    counts: { outcome: string; count: number }[];
+    results: BulkResultRow[];
+    exportName: string;
+  } | null>(null);
   const { isAdmin, isReviewerOnly, canWrite, canReview, canWorkReviewQueues } = useUserRole();
   const navigate = useNavigate();
 
@@ -452,7 +471,7 @@ const DocumentList = (): React.JSX.Element => {
         logger.info('Bulk document export cancelled by user');
       } else {
         logger.error('Bulk document export failed:', err);
-        alert(`Download failed: ${(err as Error).message || 'Unknown error'}`);
+        setErrorMessage(`Download failed: ${(err as Error).message || 'Unknown error'}`);
       }
     } finally {
       setIsDownloadInProgress(false);
@@ -483,8 +502,75 @@ const DocumentList = (): React.JSX.Element => {
     setDownloadScope(null);
   };
 
+  const reviewMenu = buildReviewMenuItems({
+    selected: (collectionProps.selectedItems ?? []) as MappedDocument[],
+    currentUsername,
+    isAdmin: !!isAdmin,
+    isTestView,
+    defaultQueueEnabled: reviewSettings.defaultQueueEnabled,
+    show: { claim: !!canReview, release: !!isAdmin, skip: !!canReview, send: !!canReview },
+  });
+
+  /** Reflect skipped or sent documents in the list without reloading it. */
+  const patchRows = (results: BulkResultRow[], status: (r: BulkResultRow) => string | null) => {
+    const changed = new Map(results.map((r) => [r.objectKey, status(r)] as const).filter(([, s]) => !!s));
+    if (changed.size === 0) return;
+    setDocumentList((prev) =>
+      prev.map((doc) => {
+        const next = changed.get(doc.objectKey);
+        return next ? { ...doc, hitlStatus: next, hitlCompleted: isHitlReviewFinished(next) } : doc;
+      }),
+    );
+    actions.setSelectedItems([]);
+  };
+
+  const onReviewAction = (id: string) => {
+    if (id === 'skip-selected') setBulkSkip({ mode: 'SELECTED', keys: reviewMenu.skippable });
+    else if (id === 'skip-profile') setBulkSkip({ mode: 'PROFILE', keys: [] });
+    else if (id === 'send-selected') setSendKeys(reviewMenu.sendable);
+  };
+
   return (
     <>
+      {bulkSkip && (
+        <BulkSkipModal
+          mode={bulkSkip.mode}
+          objectKeys={bulkSkip.keys}
+          onDismiss={() => setBulkSkip(null)}
+          onJobStarted={(jobId) => {
+            setBulkSkip(null);
+            setSuccessMessage('Skip All Reviews is running as a background job.');
+            navigate(jobDetailPath(jobId));
+          }}
+          onFinished={(result) => {
+            setBulkSkip(null);
+            patchRows(result.results, (r) => (r.outcome === 'SKIPPED' ? (r.kind === 'queue' ? 'complete' : 'Review Skipped') : null));
+            setBulkResults({
+              header: 'Skip All Reviews results',
+              counts: result.counts,
+              results: result.results,
+              exportName: `skip-all-reviews-${result.jobId ?? 'results'}`,
+            });
+          }}
+        />
+      )}
+      {sendKeys && (
+        <SendToReviewModal
+          objectKeys={sendKeys}
+          onDismiss={() => setSendKeys(null)}
+          onDone={(result) => {
+            setSendKeys(null);
+            patchRows(result.results, (r) => (r.outcome === 'SENT' ? 'in_review' : null));
+            setBulkResults({
+              header: 'Send to review results',
+              counts: result.counts,
+              results: result.results,
+              exportName: 'send-to-review-results',
+            });
+          }}
+        />
+      )}
+      {bulkResults && <BulkResultsModal {...bulkResults} onDismiss={() => setBulkResults(null)} />}
       {reviewRefusal && (
         <Alert type="error" dismissible onDismiss={() => setReviewRefusal(null)} header={reviewRefusal.header}>
           {reviewRefusal.messages.map((message) => (
@@ -537,6 +623,8 @@ const DocumentList = (): React.JSX.Element => {
             }
             onClaimReview={canReview ? handleClaimReview : null}
             onReleaseReview={isAdmin ? handleReleaseReview : null}
+            reviewMenu={reviewMenu}
+            onReviewAction={onReviewAction}
             currentUsername={currentUsername}
           />
         }

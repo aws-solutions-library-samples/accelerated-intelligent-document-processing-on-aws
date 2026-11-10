@@ -33,6 +33,12 @@ query ListReviewQueueItems($queueProfile: String, $queueName: String, $claimable
       disposedAt
       rejectReason
       version
+      sentToReview {
+        reason
+        note
+        requestedBy
+        requestedAt
+      }
     }
     nextToken
   }

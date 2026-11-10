@@ -137,6 +137,78 @@ export type BaseModelInfo = {
   provider: Scalars['String']['output'];
 };
 
+export type BulkDocumentOutcome = {
+  detail?: Maybe<Scalars['String']['output']>;
+  kind: Scalars['String']['output'];
+  objectKey: Scalars['String']['output'];
+  outcome: Scalars['String']['output'];
+};
+
+export type BulkOutcomeCount = {
+  count: Scalars['Int']['output'];
+  outcome: Scalars['String']['output'];
+};
+
+export type BulkReviewJob = {
+  counts: Array<BulkOutcomeCount>;
+  createdAt: Scalars['String']['output'];
+  error?: Maybe<Scalars['String']['output']>;
+  finishedAt?: Maybe<Scalars['String']['output']>;
+  jobId: Scalars['String']['output'];
+  jobType: Scalars['String']['output'];
+  kind: Scalars['String']['output'];
+  limitReached: Scalars['Boolean']['output'];
+  mode: Scalars['String']['output'];
+  note?: Maybe<Scalars['String']['output']>;
+  processed: Scalars['Int']['output'];
+  profile?: Maybe<Scalars['String']['output']>;
+  reason: Scalars['String']['output'];
+  requestedBy: Scalars['String']['output'];
+  resubmit: Scalars['Boolean']['output'];
+  stalled: Scalars['Boolean']['output'];
+  startedAt?: Maybe<Scalars['String']['output']>;
+  status: Scalars['String']['output'];
+  submittedFrom?: Maybe<Scalars['String']['output']>;
+  submittedTo?: Maybe<Scalars['String']['output']>;
+  total: Scalars['Int']['output'];
+};
+
+export type BulkReviewJobPage = {
+  jobs: Array<BulkReviewJob>;
+  nextToken?: Maybe<Scalars['String']['output']>;
+};
+
+export type BulkReviewJobResults = {
+  job: BulkReviewJob;
+  nextToken?: Maybe<Scalars['String']['output']>;
+  results: Array<BulkDocumentOutcome>;
+};
+
+export type BulkSkipAllReviewsInput = {
+  clientRequestId?: InputMaybe<Scalars['String']['input']>;
+  dryRun?: InputMaybe<Scalars['Boolean']['input']>;
+  mode: Scalars['String']['input'];
+  note?: InputMaybe<Scalars['String']['input']>;
+  objectKeys?: InputMaybe<Array<Scalars['String']['input']>>;
+  profile?: InputMaybe<Scalars['String']['input']>;
+  reason: Scalars['String']['input'];
+  resubmit?: InputMaybe<Scalars['Boolean']['input']>;
+  submittedFrom?: InputMaybe<Scalars['String']['input']>;
+  submittedTo?: InputMaybe<Scalars['String']['input']>;
+};
+
+export type BulkSkipAllReviewsResult = {
+  approximate: Scalars['Boolean']['output'];
+  counts: Array<BulkOutcomeCount>;
+  dryRun: Scalars['Boolean']['output'];
+  eligibleCount: Scalars['Int']['output'];
+  jobId?: Maybe<Scalars['String']['output']>;
+  limitReached: Scalars['Boolean']['output'];
+  results: Array<BulkDocumentOutcome>;
+  runMode: Scalars['String']['output'];
+  syncLimit: Scalars['Int']['output'];
+};
+
 export type CalculationDetails = {
   quotasUsed?: Maybe<QuotasUsed>;
 };
@@ -914,6 +986,7 @@ export type Mutation = {
   applyFeatureConfigPreset: FeatureConfigPresetResult;
   assignTestSetDocuments?: Maybe<Array<TestSetDocumentAssignment>>;
   autoDetectSections?: Maybe<Scalars['String']['output']>;
+  bulkSkipAllReviews?: Maybe<BulkSkipAllReviewsResult>;
   claimNextReviewItem?: Maybe<ClaimNextResult>;
   claimReview?: Maybe<Document>;
   claimReviewItem?: Maybe<ReviewItem>;
@@ -1000,6 +1073,7 @@ export type Mutation = {
   sendAgentChatMessage?: Maybe<AgentChatMessage>;
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
   sendTestRunToReview?: Maybe<SendTestRunToReviewResult>;
+  sendToReview?: Maybe<SendToReviewResult>;
   setActiveVersion?: Maybe<UpdateConfigurationResponse>;
   setUserTenant?: Maybe<User>;
   skipAllSectionsReview?: Maybe<Document>;
@@ -1124,6 +1198,11 @@ export type MutationAutoDetectSectionsArgs = {
   bucket: Scalars['String']['input'];
   documentKey: Scalars['String']['input'];
   version?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type MutationBulkSkipAllReviewsArgs = {
+  input: BulkSkipAllReviewsInput;
 };
 
 
@@ -1521,6 +1600,13 @@ export type MutationSendTestRunToReviewArgs = {
 };
 
 
+export type MutationSendToReviewArgs = {
+  note?: InputMaybe<Scalars['String']['input']>;
+  objectKeys: Array<Scalars['String']['input']>;
+  reason: Scalars['String']['input'];
+};
+
+
 export type MutationSetActiveVersionArgs = {
   versionName: Scalars['String']['input'];
 };
@@ -1536,6 +1622,7 @@ export type MutationSkipAllSectionsReviewArgs = {
   note?: InputMaybe<Scalars['String']['input']>;
   objectKey: Scalars['String']['input'];
   reason: Scalars['String']['input'];
+  resubmit?: InputMaybe<Scalars['Boolean']['input']>;
 };
 
 
@@ -1767,6 +1854,8 @@ export type MutationUploadSampleDocumentArgs = {
 };
 
 export type MyReviewQueues = {
+  bulkSkipSyncLimit: Scalars['Int']['output'];
+  defaultQueueEnabled: Scalars['Boolean']['output'];
   items: ReviewItemPage;
   myClaimCount: Scalars['Int']['output'];
   queues: Array<ReviewQueueSummary>;
@@ -1872,6 +1961,7 @@ export type Query = {
   getAgentChatMessages?: Maybe<Array<Maybe<AgentChatMessage>>>;
   getAgentJobStatus?: Maybe<AgentJob>;
   getAnnotationQueue?: Maybe<AnnotationQueue>;
+  getBulkReviewJob?: Maybe<BulkReviewJobResults>;
   getChatMessages?: Maybe<Array<Maybe<AgentChatMessage>>>;
   getCircuitBreakerStatus?: Maybe<CircuitBreakerStatus>;
   getConfigProfileRevision?: Maybe<ConfigProfileRevisionResponse>;
@@ -1913,6 +2003,7 @@ export type Query = {
   listAvailableAgents?: Maybe<Array<Maybe<Agent>>>;
   listAvailableModels?: Maybe<AvailableModelsResult>;
   listBucketFiles?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
+  listBulkReviewJobs?: Maybe<BulkReviewJobPage>;
   /**
    * List all features published to the feature bucket (the catalog), whether
    * installed or not. The UI takes the union of this + listInstalledFeatures to
@@ -2000,6 +2091,14 @@ export type QueryGetAnnotationQueueArgs = {
   mineOnly?: InputMaybe<Scalars['Boolean']['input']>;
   objectKey?: InputMaybe<Scalars['String']['input']>;
   testSetId: Scalars['String']['input'];
+};
+
+
+export type QueryGetBulkReviewJobArgs = {
+  jobId: Scalars['String']['input'];
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
+  outcome?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -2140,6 +2239,12 @@ export type QueryListBucketFilesArgs = {
   bucketType: Scalars['String']['input'];
   filePattern: Scalars['String']['input'];
   modifiedAfter?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type QueryListBulkReviewJobsArgs = {
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -2385,6 +2490,7 @@ export type ReviewItem = {
   rejectReason?: Maybe<Scalars['String']['output']>;
   reviewStatus: Scalars['String']['output'];
   sections: Array<Scalars['String']['output']>;
+  sentToReview?: Maybe<ReviewSendInfo>;
   state: Scalars['String']['output'];
   version: Scalars['Int']['output'];
 };
@@ -2488,6 +2594,13 @@ export type ReviewSectionDetail = {
   sectionId: Scalars['String']['output'];
 };
 
+export type ReviewSendInfo = {
+  note?: Maybe<Scalars['String']['output']>;
+  reason: Scalars['String']['output'];
+  requestedAt: Scalars['AWSDateTime']['output'];
+  requestedBy: Scalars['String']['output'];
+};
+
 export type ReviewerLoad = {
   claimed: Scalars['Int']['output'];
   email: Scalars['String']['output'];
@@ -2549,6 +2662,11 @@ export type SendTestRunToReviewResult = {
   skippedCount?: Maybe<Scalars['Int']['output']>;
   testRunId: Scalars['String']['output'];
   testSetId?: Maybe<Scalars['String']['output']>;
+};
+
+export type SendToReviewResult = {
+  counts: Array<BulkOutcomeCount>;
+  results: Array<BulkDocumentOutcome>;
 };
 
 export type StepFunctionExecutionResponse = {
@@ -3144,6 +3262,13 @@ export type AutoDetectSectionsMutationVariables = Exact<{
 
 export type AutoDetectSectionsMutation = { autoDetectSections?: string | null };
 
+export type BulkSkipAllReviewsMutationVariables = Exact<{
+  input: BulkSkipAllReviewsInput;
+}>;
+
+
+export type BulkSkipAllReviewsMutation = { bulkSkipAllReviews?: { dryRun: boolean, runMode: string, syncLimit: number, approximate: boolean, eligibleCount: number, limitReached: boolean, jobId?: string | null, counts: Array<{ outcome: string, count: number }>, results: Array<{ objectKey: string, outcome: string, kind: string, detail?: string | null }> } | null };
+
 export type ClaimNextReviewItemMutationVariables = Exact<{
   queueProfile?: InputMaybe<Scalars['String']['input']>;
   queueName?: InputMaybe<Scalars['String']['input']>;
@@ -3637,6 +3762,15 @@ export type SendChatDocumentMessageMutationVariables = Exact<{
 
 export type SendChatDocumentMessageMutation = { sendChatDocumentMessage?: { sessionId: string, role: string, content: string, timestamp: string, method?: string | null, status?: string | null, modelId?: string | null, isProcessing?: boolean | null } | null };
 
+export type SendToReviewMutationVariables = Exact<{
+  objectKeys: Array<Scalars['String']['input']> | Scalars['String']['input'];
+  reason: Scalars['String']['input'];
+  note?: InputMaybe<Scalars['String']['input']>;
+}>;
+
+
+export type SendToReviewMutation = { sendToReview?: { counts: Array<{ outcome: string, count: number }>, results: Array<{ objectKey: string, outcome: string, kind: string, detail?: string | null }> } | null };
+
 export type SetActiveVersionMutationVariables = Exact<{
   versionName: Scalars['String']['input'];
 }>;
@@ -3648,6 +3782,7 @@ export type SkipAllSectionsReviewMutationVariables = Exact<{
   objectKey: Scalars['String']['input'];
   reason: Scalars['String']['input'];
   note?: InputMaybe<Scalars['String']['input']>;
+  resubmit?: InputMaybe<Scalars['Boolean']['input']>;
 }>;
 
 
@@ -3895,6 +4030,16 @@ export type GetAnnotationQueueDocumentQueryVariables = Exact<{
 
 export type GetAnnotationQueueDocumentQuery = { getAnnotationQueue?: { testSetId: string, name?: string | null, claimLeaseMinutes?: number | null, skipReasons?: Array<string> | null, summaryStatus?: string | null, summaryCount?: number | null, totalDocs: number, inspectedDocs?: number | null, reviewedDocs: number, completedDocs?: number | null, remainingDocs: number, claimedByOthers: number, nextObjectKey?: string | null, labelJobStatus?: string | null, labelJobLabeled?: number | null, labelJobTotal?: number | null, draftVersion?: number | null, baseVersion?: number | null, documents: Array<{ objectKey: string, inputKey: string, reviewObjectKey?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, documentClasses?: Array<string> | null, fieldCount?: number | null, labelSource?: string | null, sectionCount: number, assignedTo?: string | null, assignedAt?: string | null, reviewedSections?: number | null, skipped?: boolean | null, claimedBy?: string | null, claimedByMe: boolean, leaseExpiresAt?: string | null, reviewStatus?: string | null, reviewed: boolean, available: boolean, sections?: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> | null, draftSections?: Array<{ sectionId: string, revision: number, draftUri: string, updatedAt: string, updatedBy?: string | null }> | null }> } | null };
 
+export type GetBulkReviewJobQueryVariables = Exact<{
+  jobId: Scalars['String']['input'];
+  outcome?: InputMaybe<Scalars['String']['input']>;
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
+}>;
+
+
+export type GetBulkReviewJobQuery = { getBulkReviewJob?: { nextToken?: string | null, job: { jobId: string, jobType: string, kind: string, status: string, mode: string, profile?: string | null, submittedFrom?: string | null, submittedTo?: string | null, reason: string, note?: string | null, resubmit: boolean, requestedBy: string, total: number, processed: number, limitReached: boolean, stalled: boolean, error?: string | null, createdAt: string, startedAt?: string | null, finishedAt?: string | null, counts: Array<{ outcome: string, count: number }> }, results: Array<{ objectKey: string, outcome: string, kind: string, detail?: string | null }> } | null };
+
 export type GetChatMessagesQueryVariables = Exact<{
   sessionId: Scalars['ID']['input'];
 }>;
@@ -4030,7 +4175,7 @@ export type GetMyReviewQueuesQueryVariables = Exact<{
 }>;
 
 
-export type GetMyReviewQueuesQuery = { getMyReviewQueues?: { myClaimCount: number, queues: Array<{ profile: string, name: string, displayName: string, description?: string | null, priority: number, depth: number, unclaimed: number, claimed: number, claimedByMe: number, oldestEnqueuedAt?: string | null, isDefaultQueue: boolean, enabled?: boolean | null, claimCap: number, checklist: Array<string>, definedInConfig: boolean }>, items: { nextToken?: string | null, items: Array<{ objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }> } } | null };
+export type GetMyReviewQueuesQuery = { getMyReviewQueues?: { myClaimCount: number, defaultQueueEnabled: boolean, bulkSkipSyncLimit: number, queues: Array<{ profile: string, name: string, displayName: string, description?: string | null, priority: number, depth: number, unclaimed: number, claimed: number, claimedByMe: number, oldestEnqueuedAt?: string | null, isDefaultQueue: boolean, enabled?: boolean | null, claimCap: number, checklist: Array<string>, definedInConfig: boolean }>, items: { nextToken?: string | null, items: Array<{ objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }>, sentToReview?: { reason: string, note?: string | null, requestedBy: string, requestedAt: string } | null }> } } | null };
 
 export type GetPricingQueryVariables = Exact<{ [key: string]: never; }>;
 
@@ -4042,7 +4187,7 @@ export type GetReviewItemQueryVariables = Exact<{
 }>;
 
 
-export type GetReviewItemQuery = { getReviewItem?: { queueName?: string | null, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, claimCap: number, myClaimCount: number, machineOutputManifestUri?: string | null, canClaim: boolean, claimBlockedReason?: string | null, item: { objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }, sections: Array<{ sectionId: string, documentClass?: string | null, resultUri?: string | null, draftUri?: string | null, draftRevision?: number | null, draftUpdatedBy?: string | null, draftUpdatedAt?: string | null, pageIds: Array<string>, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }>, history: Array<{ at: string, event: string, actor?: string | null, details?: string | null }> } | null };
+export type GetReviewItemQuery = { getReviewItem?: { queueName?: string | null, checklist: Array<string>, rejectReasons: Array<string>, skipReasons: Array<string>, claimCap: number, myClaimCount: number, machineOutputManifestUri?: string | null, canClaim: boolean, claimBlockedReason?: string | null, item: { objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }>, sentToReview?: { reason: string, note?: string | null, requestedBy: string, requestedAt: string } | null }, sections: Array<{ sectionId: string, documentClass?: string | null, resultUri?: string | null, draftUri?: string | null, draftRevision?: number | null, draftUpdatedBy?: string | null, draftUpdatedAt?: string | null, pageIds: Array<string>, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }>, history: Array<{ at: string, event: string, actor?: string | null, details?: string | null }> } | null };
 
 export type GetReviewQueuesOverviewQueryVariables = Exact<{ [key: string]: never; }>;
 
@@ -4136,6 +4281,14 @@ export type ListBucketFilesQueryVariables = Exact<{
 
 
 export type ListBucketFilesQuery = { listBucketFiles?: Array<string | null> | null };
+
+export type ListBulkReviewJobsQueryVariables = Exact<{
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
+}>;
+
+
+export type ListBulkReviewJobsQuery = { listBulkReviewJobs?: { nextToken?: string | null, jobs: Array<{ jobId: string, jobType: string, kind: string, status: string, mode: string, profile?: string | null, submittedFrom?: string | null, submittedTo?: string | null, reason: string, note?: string | null, resubmit: boolean, requestedBy: string, total: number, processed: number, limitReached: boolean, stalled: boolean, error?: string | null, createdAt: string, startedAt?: string | null, finishedAt?: string | null, counts: Array<{ outcome: string, count: number }> }> } | null };
 
 export type ListChatSessionsQueryVariables = Exact<{
   limit?: InputMaybe<Scalars['Int']['input']>;
@@ -4239,7 +4392,7 @@ export type ListMyReviewWorkQueryVariables = Exact<{
 }>;
 
 
-export type ListMyReviewWorkQuery = { listMyReviewWork?: { nextToken?: string | null, items: Array<{ objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }> } | null };
+export type ListMyReviewWorkQuery = { listMyReviewWork?: { nextToken?: string | null, items: Array<{ objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }>, sentToReview?: { reason: string, note?: string | null, requestedBy: string, requestedAt: string } | null }> } | null };
 
 export type ListMyTestSetTasksQueryVariables = Exact<{ [key: string]: never; }>;
 
@@ -4255,7 +4408,7 @@ export type ListReviewQueueItemsQueryVariables = Exact<{
 }>;
 
 
-export type ListReviewQueueItemsQuery = { listReviewQueueItems?: { nextToken?: string | null, items: Array<{ objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }> }> } | null };
+export type ListReviewQueueItemsQuery = { listReviewQueueItems?: { nextToken?: string | null, items: Array<{ objectKey: string, cycleId: string, profile: string, queue: string, priority: number, state: string, reviewStatus: string, enqueuedAt: string, reasonCount: number, sections: Array<string>, ownerEmail?: string | null, claimedAt?: string | null, leaseExpiresAt?: string | null, isMine: boolean, hasDraft: boolean, draftUpdatedAt?: string | null, draftUpdatedBy?: string | null, escalated: boolean, escalationNote?: string | null, disposition?: string | null, disposedBy?: string | null, disposedAt?: string | null, rejectReason?: string | null, version: number, reasons: Array<{ kind: string, sectionId: string, field?: string | null, label?: string | null, score: number, threshold: number }>, sentToReview?: { reason: string, note?: string | null, requestedBy: string, requestedAt: string } | null }> } | null };
 
 export type ListReviewQueuesQueryVariables = Exact<{ [key: string]: never; }>;
 

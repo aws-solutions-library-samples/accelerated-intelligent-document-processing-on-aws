@@ -289,6 +289,7 @@ describe('More Actions', () => {
       'Reset Page Class',
       'Use As Evaluation Baseline',
       'Skip All Reviews',
+      'Send to review',
       'Download All (ZIP)',
       'Download Predictions (ZIP)',
       'Download Baselines (ZIP)',

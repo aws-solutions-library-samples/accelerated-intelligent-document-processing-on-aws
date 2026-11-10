@@ -190,3 +190,50 @@ class TestNotices:
         with patch(NOTIFY) as sent:
             review_notify.claim_released(_item(), "bob@example.com", "something-new")
         assert sent.call_args.kwargs["body"] == "Your claim ended. Your draft is kept."
+
+
+@pytest.mark.unit
+class TestBulkJobFinished:
+    def _job(self, **kw):
+        from idp_common.review_queues.bulk_jobs import job_view
+
+        meta = {
+            "JobId": "brj-" + "c" * 24,
+            "Status": "SUCCEEDED",
+            "Mode": "SELECTED",
+            "Kind": "ASYNC",
+            "Reason": "Duplicate document",
+            "RequesterKey": "rev@x",
+            "Total": 3,
+            "Processed": 3,
+            "Counts": {"SKIPPED": 3},
+            "CreatedAt": "2026-01-01T00:00:00.000Z",
+            **kw,
+        }
+        return job_view(meta)
+
+    def test_the_requester_is_told_with_a_link_to_the_job(self):
+        from idp_common.notifications.links import bulk_job_link
+
+        job = self._job()
+        with patch(NOTIFY) as sent:
+            review_notify.bulk_job_finished(job)
+        kwargs = sent.call_args.kwargs
+        assert kwargs["type_id"] == "review.bulk_job_finished"
+        assert kwargs["users"] == ["rev@x"]
+        assert (
+            kwargs["link"] == bulk_job_link(job.job_id) == f"/my-work/jobs/{job.job_id}"
+        )
+        assert kwargs["severity"] == "info"
+        assert kwargs["dedupe_key"] == f"bulk-job-{job.job_id}"
+        assert "3 skipped of 3" in kwargs["title"]
+
+    def test_failures_raise_the_severity(self):
+        with patch(NOTIFY) as sent:
+            review_notify.bulk_job_finished(
+                self._job(Counts={"SKIPPED": 2, "RESUBMIT_FAILED": 1})
+            )
+        assert sent.call_args.kwargs["severity"] == "warning"
+        with patch(NOTIFY) as sent:
+            review_notify.bulk_job_finished(self._job(Status="FAILED", Error="boom"))
+        assert sent.call_args.kwargs["title"] == "Bulk Skip All Reviews failed"

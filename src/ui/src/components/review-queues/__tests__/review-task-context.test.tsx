@@ -129,3 +129,25 @@ describe('ReviewTaskContext reasons', () => {
     expect(onReasonClick).toHaveBeenCalledWith(expect.objectContaining({ sectionId: '2', field: 'employer_name' }));
   });
 });
+
+describe('ReviewTaskContext sent to review', () => {
+  it('shows why and by whom a document was sent to review', () => {
+    const sent = {
+      item: {
+        reasons: [],
+        reasonCount: 0,
+        escalated: false,
+        sentToReview: {
+          reason: 'Spot check',
+          note: 'customer asked',
+          requestedBy: 'admin@example.com',
+          requestedAt: '2026-11-01T00:00:00Z',
+        },
+      },
+      checklist: [],
+    } as unknown as ReviewItemDetail;
+    render(<ReviewTaskContext detail={sent} />);
+    expect(screen.getByText('Sent to review: Spot check')).toBeInTheDocument();
+    expect(screen.getByText(/By admin@example.com — customer asked/)).toBeInTheDocument();
+  });
+});

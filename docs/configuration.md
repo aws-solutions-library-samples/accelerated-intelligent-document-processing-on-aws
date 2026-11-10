@@ -622,6 +622,26 @@ How the settings apply:
 For how platform components post messages, see the
 [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
+## Bulk Skip All Reviews Limit
+
+[Bulk Skip All Reviews](human-review.md#skip-all-reviews-for-many-documents) runs at
+once for up to `hitl.bulk_skip_sync_limit` documents, and as a background job (Home ›
+Jobs) above it. It is shown in the configuration editor as **Bulk skip synchronous
+limit** in the **Human-in-the-Loop (HITL) Review (Optional)** section:
+
+```yaml
+hitl:
+  bulk_skip_sync_limit: 50  # 1-100: documents a bulk Skip All Reviews runs at once
+```
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `hitl.bulk_skip_sync_limit` | 50 | 1–100 | Documents a bulk Skip All Reviews request handles immediately. A stored value outside the range is clamped to it, never rejected, and no value can raise the immediate path above 100. |
+
+Like the Inbox settings, it is read from the **active** configuration profile, cached
+for about 60 seconds, applies whether or not `hitl.enabled` is set, and falls back to
+the default if the configuration cannot be read.
+
 ## Stack Parameters
 
 Key parameters that can be configured during CloudFormation deployment:

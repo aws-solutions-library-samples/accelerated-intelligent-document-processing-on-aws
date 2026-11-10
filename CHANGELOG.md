@@ -5,6 +5,18 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Added
+
+- **Bulk Skip All Reviews for production reviews.** Select documents in the Document List (**Review › Skip All Reviews**) or on a review queue's page, or choose a configuration profile and a submitted-date range, to finish many pending reviews at once. A reason is required, and a dry run shows what will happen to each document first. Small requests run at once; larger ones run as a background job, listed with every run under the new **Home › Jobs**, with an Inbox message when they finish. Review-queue items finish with their machine results and are recorded as **Skipped**; Test Studio documents are never skipped. Admins and Reviewers can use it, a Reviewer within their configuration scope and never on another reviewer's claim. New setting `hitl.bulk_skip_sync_limit`. See [Skip All Reviews for many documents](docs/human-review.md#skip-all-reviews-for-many-documents).
+
+- **Send to review.** Put a finished production document, or a selection of them, into the Default review queue by hand with a reason (**More Actions › Send to review**, or the Document List's **Review** menu). Reviewers see the reason on the item. See [Send to review](docs/human-review.md#send-to-review).
+
+### Changed
+
+- **Skip All Reviews has a Resubmit for downstream processing option** (on by default). Untick it to mark a review skipped without re-running Summarization, Evaluation and the post-processing hook.
+
+- **Reviewers can skip review-queue items in bulk.** Waiting items and their own claims, as an Admin can with **Remove from queue**; see [Review Queues](docs/review-queues.md). **Start Review** and **Release Review** in the Document List moved into its new **Review** menu.
+
 ### Fixed
 
 - **The RBAC page documents the Annotator role as the API enforces it.** The [Permission Matrix](docs/rbac.md#permission-matrix) has an Annotator column and review-queue rows, with notes where an Annotator is limited to the work given to it or where its console offers less than the API admits. The page no longer says an Annotator without assigned test sets can do nothing, or that it has no access to the document list: it works the Production queues that list it, and its document reads are answered within its configuration-profile scope, as for every role. It also records that every signed-in user can list fine-tuning jobs, and that agent chat streamed through the chat Function URL does not apply the Agent Chat group restriction (GAP-07).

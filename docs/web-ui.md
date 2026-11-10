@@ -32,7 +32,7 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
+- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins and Reviewers also get **Jobs** (bulk Skip All Reviews runs); Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -58,6 +58,24 @@ Test Studio submits its documents through the same pipeline as ordinary uploads 
 - **Test Studio** — documents submitted by a [Test Studio](test-studio.md) run. Adds a **Test Run** column linking to that run's results, and holds the **Abort**, **Reprocess** and **Delete** actions: a run's results (and the confidence calibration derived from them) are scored against these exact documents, so a run's lifecycle is managed from **Test Executions**, not here.
 
 The two views are mutually exclusive by design — there is no combined view. On a stack that uses Test Studio regularly the test documents outnumber real uploads by an order of magnitude, so merging them would bury the uploads. The selection is not remembered between visits, so the list always opens on Production.
+
+### Review actions on selected documents
+
+Admins and Reviewers get a **Review** menu in the Document List's toolbar (Production
+view; in the Test Studio view it is shown disabled). It holds:
+
+- **Start Review** — claim the selected pending reviews (one opens the document).
+- **Release Review** (Admin) — release the selected claimed reviews.
+- **Skip All Reviews (N selected)** and **Skip All Reviews by profile…** — finish many
+  pending production reviews at once, with a reason, after a count of what will happen
+  (see [Skip All Reviews for many documents](human-review.md#skip-all-reviews-for-many-documents)).
+- **Send to review (N selected)** — put finished documents into the Default review
+  queue, with a reason (see [Send to review](human-review.md#send-to-review)).
+
+N counts the selected rows each action applies to; the server decides each document
+and reports a result per document, which can be exported. Larger runs continue as a
+background job under **Home › Jobs**, where every bulk run is listed with its status,
+counts and results.
 
 ### Deleting documents
 
@@ -145,8 +163,11 @@ beside it, left to right:
   - **Use As Evaluation Baseline** — copy the document's results into the evaluation
     baseline. The **Evaluation** field shows the copy while it runs and when it is done
     or has failed, and a failed copy is reported.
-  - **Skip All Reviews** — finish a pending review without checking it, with a reason
-    (see [Human review](human-review.md)).
+  - **Skip All Reviews** — finish a pending review without checking it, with a reason;
+    **Resubmit for downstream processing** (ticked by default) re-runs Summarization
+    and Evaluation (see [Human review](human-review.md)).
+  - **Send to review** — put the finished document into the Default review queue, with
+    a reason (see [Send to review](human-review.md#send-to-review)).
   - **Download All (ZIP)**, **Download Predictions (ZIP)** and **Download Baselines
     (ZIP)** — the document's outputs as a ZIP (see
     [Download Document Data](#download-document-data)).
@@ -167,7 +188,7 @@ still loading, it ran in BDA mode, or there is no report to show. Who may do wha
 |---|---|
 | Reports (except Estimated Cost), the downloads, Refresh, Details \| Source | every role |
 | Estimated Cost | Admin, Author, Viewer (it reads the stack's pricing) |
-| Edit Page Grouping, Re-extract Sections, Reset Page Class, Skip All Reviews, Start Review | Admin, Reviewer |
+| Edit Page Grouping, Re-extract Sections, Reset Page Class, Skip All Reviews, Send to review, Start Review | Admin, Reviewer |
 | Edit Page Text | Admin (it saves the page text and reprocesses the document, and only Admins may do both) |
 | Use As Evaluation Baseline, Reprocess, Abort, Delete | Admin, Author |
 | Troubleshoot | Admin, Author, Viewer |

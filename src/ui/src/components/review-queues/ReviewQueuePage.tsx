@@ -8,7 +8,7 @@
 // which assigns them to the caller in Home › Tasks. Edit opens an item's
 // edit screen without changing its assignment (read-only unless it is yours).
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { Alert, Box, Button, Container, ContentLayout, Header, KeyValuePairs, SpaceBetween } from '@cloudscape-design/components';
 
@@ -30,6 +30,12 @@ import { claimItem, claimNextItem, documentName, fetchMyReviewQueues, fetchQueue
 import QueueDefinitionModal from './QueueDefinitionModal';
 import { listAnnotatorEmails, listReviewQueues } from './reviewer-assignment';
 import { fromReviewItem } from './work-items';
+import BulkSkipModal from '../review-bulk/BulkSkipModal';
+import type { BulkSkipMode } from '../review-bulk/BulkSkipModal';
+import BulkResultsModal from '../review-bulk/BulkResultsModal';
+import { isSkippableQueueItem } from '../review-bulk/review-menu-items';
+import { NO_SKIPPABLE_SELECTION_REASON } from '../document-actions/action-reasons';
+import { jobDetailPath } from '../../routes/constants';
 import type { WorkItem } from './work-items';
 
 const logger = new ConsoleLogger('ReviewQueuePage');
@@ -58,7 +64,15 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
   // The router has already decoded the queue id once.
   const { queue: queueId = '' } = useParams();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
-  const { isAdmin, loading: roleLoading } = useUserRole();
+  const { isAdmin, canReview, loading: roleLoading } = useUserRole();
+  const navigate = useNavigate();
+  // Bulk Skip All Reviews from the queue: the open dialog, and the last inline results.
+  const [bulkSkip, setBulkSkip] = useState<{ mode: BulkSkipMode; keys: string[] } | null>(null);
+  const [bulkResults, setBulkResults] = useState<{
+    counts: { outcome: string; count: number }[];
+    results: { objectKey: string; outcome: string; kind?: string | null; detail?: string | null }[];
+    jobId?: string | null;
+  } | null>(null);
   const reviewWork = useOptionalReviewWork();
   const [mySummary, setMySummary] = useState<ReviewQueueSummary | null>(null);
   const [claiming, setClaiming] = useState<string | null>(null);
@@ -227,6 +241,26 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
   const removable = selectedItems.filter(isRemovable);
   const claimable = selectedItems.filter(isClaimable);
   const counted = (label: string, n: number) => (n > 0 ? `${label} (${n})` : label);
+  // Skip All Reviews: an Admin any OPEN or CLAIMED item; a Reviewer an OPEN item or their own claim.
+  const skippable = selectedItems.filter((i) => isSkippableQueueItem(i, !!isAdmin));
+  const skipButtons = (
+    <>
+      <span title={skippable.length === 0 ? NO_SKIPPABLE_SELECTION_REASON : undefined}>
+        <Button
+          disabled={skippable.length === 0}
+          onClick={() => setBulkSkip({ mode: 'SELECTED', keys: skippable.map((i) => i.objectKey) })}
+        >
+          {counted('Skip All Reviews', skippable.length)}
+        </Button>
+      </span>
+      <Button onClick={() => setBulkSkip({ mode: 'PROFILE', keys: [] })}>Skip All Reviews by profile…</Button>
+    </>
+  );
+  const afterBulkSkip = async () => {
+    reviewWork?.beginMutation();
+    setSelected([]);
+    await load();
+  };
 
   const loadMore = async () => {
     if (!nextToken) return;
@@ -382,6 +416,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
                     {counted('Remove from queue…', removable.length)}
                   </Button>
                 </span>
+                {skipButtons}
               </SpaceBetween>
             ) : (
               <SpaceBetween direction="horizontal" size="xs">
@@ -402,6 +437,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
                 >
                   Next item
                 </Button>
+                {canReview && skipButtons}
               </SpaceBetween>
             )
           }
@@ -441,6 +477,32 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
           void load();
         }}
       />
+      {bulkSkip && (
+        <BulkSkipModal
+          mode={bulkSkip.mode}
+          objectKeys={bulkSkip.keys}
+          onDismiss={() => setBulkSkip(null)}
+          onJobStarted={(jobId) => {
+            setBulkSkip(null);
+            setSuccessMessage('Skip All Reviews is running as a background job.');
+            navigate(jobDetailPath(jobId));
+          }}
+          onFinished={(result) => {
+            setBulkSkip(null);
+            setBulkResults(result);
+            void afterBulkSkip();
+          }}
+        />
+      )}
+      {bulkResults && (
+        <BulkResultsModal
+          header="Skip All Reviews results"
+          counts={bulkResults.counts}
+          results={bulkResults.results}
+          exportName={`skip-all-reviews-${bulkResults.jobId ?? 'results'}`}
+          onDismiss={() => setBulkResults(null)}
+        />
+      )}
     </ContentLayout>
   );
 };

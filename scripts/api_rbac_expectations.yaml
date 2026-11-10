@@ -126,6 +126,7 @@ anchors:
   config_resolver: &cfg nested/api-resolvers/src/lambda/configuration_resolver/index.py
   inbox_resolver: &inbox nested/api-resolvers/src/lambda/notifications_resolver/index.py
   review_queues_resolver: &rq nested/api-resolvers/src/lambda/review_queues_resolver/index.py
+  bulk_review_resolver: &brv nested/api-resolvers/src/lambda/bulk_review_resolver/index.py
 
 operations:
   # ==========================================================================
@@ -1148,12 +1149,61 @@ operations:
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__", reason: "Other (see note)" }
     note: >-
-      HITL review op. The handler gates on {Admin,Reviewer} both at the global
-      gate (index.py:51) and the per-field check (index.py:72), matching the
-      schema directive. Authorization is checked BEFORE objectKey is used, so an
+      HITL review op. The handler gates on {Admin,Reviewer,Annotator} at its
+      global group check and on {Admin,Reviewer} in the skipAllSectionsReview
+      branch, matching the schema directive. Authorization is checked BEFORE objectKey is used, so an
       allowed role passing a bogus objectKey gets a benign 400 (doc-not-found),
       never a masked auth failure; a disallowed role (Viewer/Author) is rejected
       with Unauthorized regardless of the objectKey.
+  bulkSkipAllReviews:
+    groups: [Admin, Reviewer]
+    kind: mutation
+    enforced_in: *brv
+    scope_checked: true
+    scope_enforced_in: _enforce_scope
+    args:
+      input: { mode: "SELECTED", objectKeys: ["__x__"], reason: "Other (see note)", dryRun: true }
+    note: >-
+      Bulk Skip All Reviews finishes reviews without anyone checking them, so it is
+      limited to the roles that may skip one review (skipAllSectionsReview). A
+      by-profile request is refused unless the profile is in the caller's
+      allowedConfigVersions, before any document is read (_enforce_scope); a
+      selected-documents request reports an out-of-scope or unknown key as the
+      in-band outcome NOT_PERMITTED (review_skip.classify, scope_allows). The matrix
+      args are a dry run of a nonexistent key, which writes nothing.
+  sendToReview:
+    groups: [Admin, Reviewer]
+    kind: mutation
+    enforced_in: *brv
+    scope_checked: true
+    scope_enforced_in: _caller_context
+    args: { objectKeys: ["__x__"], reason: "Spot check" }
+    note: >-
+      Send to review puts finished production documents into the Default review
+      queue, the work Reviewers do, so it is limited to Admin and Reviewer. Each
+      document is checked against the caller's allowedConfigVersions by its own
+      profile; an out-of-scope or unknown key is the in-band outcome NOT_PERMITTED,
+      so the matrix's nonexistent key writes nothing.
+  getBulkReviewJob:
+    groups: [Admin, Reviewer]
+    kind: read
+    ownership: true
+    enforced_in: *brv
+    args: { jobId: "__nope__" }
+    note: >-
+      A bulk Skip All Reviews job's progress and per-document results (object
+      keys), which only the roles that can start one need. A Reviewer reads only
+      jobs they requested (RequesterKey from verified claims); another user's job
+      reads as not found.
+  listBulkReviewJobs:
+    groups: [Admin, Reviewer]
+    kind: read
+    ownership: true
+    enforced_in: *brv
+    args: { limit: 1 }
+    note: >-
+      Home > Jobs. A Reviewer lists only the jobs they requested (their own index
+      partition, keyed by the verified caller); an Admin lists every job.
   saveSectionReviewEdits:
     groups: [Admin, Reviewer]
     kind: mutation

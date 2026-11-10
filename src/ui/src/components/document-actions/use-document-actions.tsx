@@ -12,7 +12,7 @@
 //
 // It reads no configuration and no route itself: the page passes them in.
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Box, Button, SpaceBetween, StatusIndicator } from '@cloudscape-design/components';
+import { Alert, Box, Button, Checkbox, SpaceBetween, StatusIndicator } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 import { generateClient } from '../../api/client-shim';
@@ -31,6 +31,9 @@ import TroubleshootModal from '../document-panel/TroubleshootModal';
 import type { EditorNotice } from '../edit-screen/EditorNotices';
 import usePageClassBoard from '../edit-screen/use-page-class-board';
 import { documentName } from '../review-queues/review-api';
+import SendToReviewModal from '../review-bulk/SendToReviewModal';
+import useReviewActionSettings from '../review-bulk/use-review-action-settings';
+import { outcomeView } from '../review-bulk/bulk-outcomes';
 import StepFunctionFlowViewer from '../step-function-flow/StepFunctionFlowViewer';
 import EstimatedCostModal from '../document-panel/EstimatedCostModal';
 import DocumentReportDialog from './DocumentReportDialog';
@@ -127,6 +130,9 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
   // The last Troubleshoot job per document, for this page visit: reopening shows it.
   const [troubleshootJobs, setTroubleshootJobs] = useState<Record<string, TroubleshootJob>>({});
   const [askSkipReason, setAskSkipReason] = useState(false);
+  const [skipResubmit, setSkipResubmit] = useState(true);
+  const [askSendToReview, setAskSendToReview] = useState(false);
+  const reviewSettings = useReviewActionSettings();
   const [changeDialog, setChangeDialog] = useState<'reextract' | 'reset-class' | null>(null);
   // Edit Page Text: the page it is open at; and a page whose text was saved but not reprocessed.
   const [pageTextAt, setPageTextAt] = useState<string | null>(null);
@@ -171,6 +177,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     bdaMode: isBdaModeConfig(mergedConfig),
     configLoading,
     baselineRequestInFlight,
+    defaultQueueEnabled: reviewSettings.defaultQueueEnabled,
   });
 
   const board = usePageClassBoard(useDetailPageClassBoard({ item, gates, mergedConfig, refresh }), null, null);
@@ -243,7 +250,10 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     run('skip-all', async () => {
       setAskSkipReason(false);
       try {
-        const result = await client.graphql({ query: skipAllSectionsReview, variables: { objectKey: key, reason, note } });
+        const result = await client.graphql({
+          query: skipAllSectionsReview,
+          variables: { objectKey: key, reason, note, resubmit: skipResubmit },
+        });
         const updatedData = result.data.skipAllSectionsReview;
         if (updatedData) {
           const reviewHistory = parseHITLReviewHistory(updatedData.HITLReviewHistory as string);
@@ -275,7 +285,10 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
     else if (id === 'reextract' || id === 'reset-class') setChangeDialog(id);
     else if (id === 'page-text' && firstPageWithText) setPageTextAt(String(firstPageWithText.Id));
     else if (id === 'baseline') void useAsBaseline();
-    else if (id === 'skip-all') setAskSkipReason(true);
+    else if (id === 'skip-all') {
+      setSkipResubmit(true);
+      setAskSkipReason(true);
+    } else if (id === 'send-to-review') setAskSendToReview(true);
     else if (id === 'reprocess') input.onReprocess();
     else if (id === 'abort') input.onAbort();
     else if (id === 'delete') input.onDelete();
@@ -331,6 +344,7 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
         ...offered(gates['reset-class'], 'reset-class', 'Reset Page Class'),
         ...offered(gates.baseline, 'baseline', 'Use As Evaluation Baseline'),
         ...offered(gates['skip-all'], 'skip-all', 'Skip All Reviews'),
+        ...offered(gates['send-to-review'], 'send-to-review', 'Send to review'),
         ...(downloads.length > 0 ? [{ kind: 'group' as const, items: downloads }] : []),
         ...(lifecycle.length > 0 ? [{ kind: 'group' as const, items: lifecycle }] : []),
       ],
@@ -458,6 +472,15 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
           reasons={SKIP_ALL_REASONS}
           confirmLabel="Skip All Reviews"
           loading={busy === 'skip-all'}
+          extra={
+            <Checkbox
+              checked={skipResubmit}
+              onChange={({ detail }) => setSkipResubmit(detail.checked)}
+              description="Re-runs Summarization and Evaluation on the unedited results and fires the post-processing hook."
+            >
+              Resubmit for downstream processing (Summarization, Evaluation, post-processing hook)
+            </Checkbox>
+          }
           onConfirm={(reason, note) => void skipAll(reason, note)}
         >
           <SpaceBetween size="s">
@@ -470,6 +493,23 @@ export const useDocumentActions = (input: DocumentActionsInput): DocumentActions
             <Box>Are you sure you want to skip all section reviews?</Box>
           </SpaceBetween>
         </ReasonModal>
+      )}
+      {askSendToReview && (
+        <SendToReviewModal
+          objectKeys={[key]}
+          onDismiss={() => setAskSendToReview(false)}
+          onDone={(result) => {
+            setAskSendToReview(false);
+            const outcome = result.results[0]?.outcome ?? 'FAILED';
+            if (outcome === 'SENT') {
+              onDocumentUpdate((prev) => ({ ...prev, hitlStatus: 'in_review', hitlCompleted: false }));
+              setSuccessMessage(`Sent ${name} to review.`);
+              void refresh();
+            } else {
+              setErrorMessage(`Could not send ${name} to review: ${outcomeView(outcome).label}.`);
+            }
+          }}
+        />
       )}
     </>
   );
