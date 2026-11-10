@@ -2127,7 +2127,7 @@ def run_scope_suite(ctx, tokens, results):
         )
         print(
             f"  scoped Author {field}('{OUT_OF_SCOPE_VERSION}') -> "
-            f"{st}/{et or ib} ({'OK denied' if denied else 'LEAK'})"
+            f"{st}/{et or ib} ({'OK denied' if denied else 'NOT REFUSED'})"
         )
 
     # Admin asks for the same version -> must NOT be denied
