@@ -1102,8 +1102,9 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
     def empty_endpoint_is_unset(cls, v: Any) -> Optional[str]:
         """An empty endpoint means the stack's own decision model.
 
-        Shipped as '' rather than null: a release before decision models types
-        this field as a string, and rejects a null in a configuration written now.
+        Empty and unset mean the same thing, so the block is shipped with '' to
+        keep it the same shape on disk as section classification's, whose field a
+        release before decision models types as a string.
         """
         if v is None or (isinstance(v, str) and not v.strip()):
             return None

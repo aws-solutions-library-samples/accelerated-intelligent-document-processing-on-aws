@@ -5,8 +5,10 @@
 One backend is implemented: ``lambda``, a direct ``lambda:InvokeFunction`` whose
 event is the System One request and whose result is the response. That is the
 direct-invocation contract of the Strands Decider's Lambda deployment. The function
-name must start with ``GENAIIDP-``, the convention ``LambdaHook`` uses, so the
-pipeline's existing invoke grant covers it and no new IAM is needed.
+name must start with ``GENAIIDP-``, the convention ``LambdaHook`` uses: every
+pipeline function that runs the classification, extraction or assessment service
+may invoke ``GENAIIDP-*``, which scripts/tests/test_decision_model_invoke_grants.py
+asserts for each one.
 
 Failures come in two kinds, and callers treat them differently:
 
@@ -151,8 +153,8 @@ class DecisionModelClient:
         if not name.startswith(FUNCTION_NAME_PREFIX):
             raise ValueError(
                 f"decision model function {name!r} must be named with the "
-                f"{FUNCTION_NAME_PREFIX} prefix, which the pipeline's invoke "
-                "permission is scoped to"
+                f"{FUNCTION_NAME_PREFIX} prefix: the pipeline functions may invoke "
+                "only functions named with it"
             )
         self.endpoint = endpoint.strip()
         self.function_name = name
@@ -236,10 +238,11 @@ class DecisionModelClient:
                 time.sleep(backoff)
                 attempt += 1
             except DecisionModelError:
-                # Every failure that is not a retry: a refusal, a non-retryable
-                # Lambda error, a read timeout, a response that is not System One.
-                # Without this, the failure metric fired only on retry exhaustion
-                # and "every call refused" looked like "no traffic".
+                # Every terminal failure that is not a retry (a refusal, a
+                # non-retryable Lambda error, a read timeout, a response that is not
+                # System One) records DecisionModelRequestsFailed exactly once, as
+                # retry exhaustion does above, so refusals show as failures rather
+                # than as absent traffic.
                 self._put_metric("DecisionModelRequestsFailed", 1)
                 raise
 

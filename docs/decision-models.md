@@ -49,10 +49,12 @@ and deploy it **with images** (`-c vision=true`), because section classification
 works best on page images.
 
 ⚠️ **Name the function with the `GENAIIDP-` prefix.** The pipeline's Lambda
-functions may invoke only functions whose name starts with `GENAIIDP-`, the same rule
-[Lambda Hook Inference](./lambda-hook-inference.md) uses, so a decision model under
-another name is refused with `AccessDeniedException`. Set the function's name when
-you deploy it.
+functions (classification, extraction including Advanced extraction's shard runtime,
+and assessment) may invoke only functions whose name starts with `GENAIIDP-`, the same
+rule [Lambda Hook Inference](./lambda-hook-inference.md) uses, so a decision model
+under another name is refused with `AccessDeniedException`. Set the function's name
+when you deploy it. Use the function's ARN from your own console: `<partition>` is
+`aws` in commercial regions and `aws-us-gov` in GovCloud.
 
 Pin the model to a dated revision (`-c model_revision=<YYMMDD>`) rather than `main`,
 so a redeploy serves the weights you measured.
@@ -71,7 +73,7 @@ classification:
       method: decision_model
       pages: first             # which pages represent a section
       decision_model:
-        endpoint: arn:aws:lambda:<region>:<account>:function:GENAIIDP-decider
+        endpoint: arn:<partition>:lambda:<region>:<account>:function:GENAIIDP-decider
         input: images          # images (default) | text | both
         max_pages: 1           # 1 to 4: a request carries at most 4 images
         instructions: Which type of document is this?
@@ -111,7 +113,7 @@ extraction:
     mode: separate             # required: integrated mode has no confidence pass
     method: decision_model
     decision_model:
-      endpoint: arn:aws:lambda:<region>:<account>:function:GENAIIDP-decider
+      endpoint: arn:<partition>:lambda:<region>:<account>:function:GENAIIDP-decider
       input: images            # images (default) | text | both
       max_pages: 20            # 1 to 50: pages read per section, one request each
       max_questions_per_request: 100
@@ -157,8 +159,15 @@ an LLM section call fails.
 
 ## Cost and scaling
 
-Lambda bills each call by duration at 10 GB. Every call is one request with one
-section's pages, so a packet of N sections makes N calls. With SnapStart off, a new
+Lambda bills each call by duration at 10 GB.
+
+- **Section classification** makes one call per section, so a packet of N sections
+  makes N calls.
+- **Extraction confidence** makes, per section, `pages × ⌈values ÷
+  max_questions_per_request⌉` calls, where `pages` is the section's page count up to
+  `max_pages`. A 20-page section with fewer than 100 extracted values is 20 calls, up
+  to `max_concurrency` of them at once, each a 10 GB execution environment. Raising
+  `max_pages` raises the cost of every long section in proportion. With SnapStart off, a new
 execution environment loads the model before it answers; with it on, the snapshot is
 billed for as long as the function version exists. See the recipe's guide for both.
 

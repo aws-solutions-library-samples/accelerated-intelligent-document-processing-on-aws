@@ -1453,7 +1453,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Per subtree, and the comment justifies subtree granularity: the reason is a property of the subtree, not the field. Two of five members rest on checkable code facts; three are product decisions.",
+      "reason": "Per subtree, and the comment justifies subtree granularity: the reason is a property of the subtree, not the field. Some members rest on checkable code facts (a declared method the model refuses); the rest are product decisions about what the editor exposes.",
       "crossReferences": [
         "scripts/sdlc/tests/test_config_ui_schema_parity.py::KNOWN_UI_GAPS",
         "scripts/sdlc/tests/test_config_ui_schema_parity.py::NOT_USER_SETTABLE",

@@ -6389,6 +6389,16 @@ Resources:
                 Action: sts:AssumeRole
                 Resource: !Ref BedrockHubRoleArn
               - !Ref AWS::NoValue
+            # Lambda invoke for LambdaHook custom inference and decision models,
+            # the same grant the other pipeline functions carry: Advanced
+            # extraction runs both its model calls and its confidence pass here.
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource:
+                - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:GENAIIDP-*"
+              Condition:
+                StringLike:
+                  "lambda:FunctionName": "GENAIIDP-*"
             - Effect: Allow
               Action:
                 - aws-marketplace:Subscribe

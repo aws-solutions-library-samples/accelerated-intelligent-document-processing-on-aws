@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: MIT-0
 """The decision-model question types agree between the library and the UI.
 
-``QUESTION_TYPES`` in ``idp_common.decision_model.wire`` is what the client sends;
-``DECISION_QUESTION_TYPES`` in ``src/ui/src/constants/schemaConstants.ts`` is what
-the editor offers. A type in one and not the other is either a question the UI
-cannot author or a control that writes a type the backend rejects (GitHub #1656).
+``QUESTION_TYPES`` in ``idp_common.decision_model.wire`` is what the client sends.
+``DECISION_QUESTION_TYPES`` in ``src/ui/src/constants/schemaConstants.ts`` exists
+ahead of the per-type question editors, which no control renders yet; this keeps the
+two lists in step so that when an editor arrives it cannot offer a type the backend
+rejects or miss one it accepts (GitHub #1656).
 """
 
 from __future__ import annotations
