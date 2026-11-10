@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Added
+
+- **First-time-user stories and the MR UX test now cover Quick Start.** Nightly stories check that a new user finds [Quick Start](docs/quick-start.md) from the Welcome page and from the side navigation and gets as far as describing a document, stopping before it is sent, because Quick Start's agent creates and activates a configuration profile on the shared review stack. The MR UX test reviews the same path, as flow `QS.1`, when an MR changes Quick Start's screens. See [first-time-user stories](.claude/skills/ux-test-stories.md#writing-a-story).
+
 ### Fixed
 
 - **The RBAC page documents the Annotator role as the API enforces it.** The [Permission Matrix](docs/rbac.md#permission-matrix) has an Annotator column and review-queue rows, with notes where an Annotator is limited to the work given to it or where its console offers less than the API admits. The page no longer says an Annotator without assigned test sets can do nothing, or that it has no access to the document list: it works the Production queues that list it, and its document reads are answered within its configuration-profile scope, as for every role. It also records that every signed-in user can list fine-tuning jobs, and that agent chat streamed through the chat Function URL does not apply the Agent Chat group restriction (GAP-07).
