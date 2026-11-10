@@ -2783,7 +2783,7 @@ Resources:
                     sectionLabel: Decision model
                     collapsible: false
                     description: "One yes/no question per extracted value, asked against each page of the section in one request per page."
-                    order: 3
+                    order: 1.5
                     showWhen: [{ field: "method", value: "decision_model" }]
                     properties:
                       endpoint:
