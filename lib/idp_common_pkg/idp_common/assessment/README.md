@@ -706,8 +706,10 @@ Before the ceiling, the largest shortfall this rung said nothing about was **115
 unscored rows of 3,200** (3.6%) on `scale_3200.pdf`, against 24 of 800 (3.0%) when it
 was last measured — the share barely moved while the row count grew 4.8×, because the
 document grew 4×, which is what a purely multiplicative rung does. With the 10-row
-ceiling the largest silent shortfall over this whole corpus is **6 unscored rows of
-400** (1.5%), and it cannot exceed 9 whatever the list's length
+ceiling the largest silent shortfall over the committed grids through v0.6.14 is **8
+unscored rows of 202** (4.0%), on three Nova Lite runs of the 17-page document whose
+extraction had itself stopped at 202 of 800 rows (6 of 400 before the v0.6.14 grids), and
+it cannot exceed 9 whatever the list's length
 ([#1495](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1495)).
 
 The two error paths are disjoint on this corpus, and together they account for
