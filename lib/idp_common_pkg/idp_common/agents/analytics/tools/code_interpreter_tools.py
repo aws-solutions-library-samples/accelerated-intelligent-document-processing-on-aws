@@ -15,6 +15,7 @@ from bedrock_agentcore.tools.code_interpreter_client import CodeInterpreter
 from strands import tool
 
 from ..analytics_logger import analytics_logger
+from ..sandbox_code_checks import SandboxCodeNotAllowedError, check_sandbox_code
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,10 @@ class CodeInterpreterTools:
         """
         Execute Python code in the code interpreter sandbox.
 
+        The code may read only "query_results.csv" and import only data, charting
+        and standard-library computation modules; code that does otherwise is
+        returned with an error instead of being run.
+
         Args:
             code: Python code to execute
             description: Optional description of what the code does
@@ -164,6 +169,14 @@ class CodeInterpreterTools:
         try:
             if description:
                 code = f"# {description}\n{code}"
+
+            # Checked after the description is prepended, so the text checked is
+            # exactly the text that runs.
+            try:
+                check_sandbox_code(code)
+            except SandboxCodeNotAllowedError as e:
+                logger.warning(f"Code not run in the sandbox: {e}")
+                return json.dumps({"isError": True, "error": str(e)}, indent=2)
 
             logger.debug(f"Executing Python code: {description}")
             logger.debug(f"Code:\n{code}")
