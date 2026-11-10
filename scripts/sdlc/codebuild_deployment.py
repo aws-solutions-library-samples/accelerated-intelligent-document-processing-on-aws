@@ -6180,13 +6180,24 @@ def get_codebuild_logs():
 
 
 # A nested-stack CodeBuild custom resource (e.g. MULTIDOCDISCOVERYSTACK's
-# DockerBuildRun) reports failure to CloudFormation as nothing more than
-# "CodeBuild failed with status: FAILED". The evidence chain dead-ends at the
-# CloudFormation boundary, so no amount of prompt tuning can explain WHY the
-# image build failed — the real cause (a pip BrokenPipeError, a Docker layer
-# error, an ECR auth failure) lives only in that build's own CloudWatch stream.
-# This marker is what tells us to go follow that trail.
-_CODEBUILD_CR_FAILURE_MARKER = "codebuild failed with status"
+# DockerBuildRun) reports failure to CloudFormation as nothing more than a status.
+# The evidence chain dead-ends at the CloudFormation boundary, so no amount of
+# prompt tuning can explain WHY the image build failed — the real cause (a pip
+# BrokenPipeError, a Docker layer error, an ECR auth failure) lives only in that
+# build's own CloudWatch stream. These markers are what tell us to go follow that
+# trail, one per handler wording, compared lowercased:
+#
+# * "build did not complete - status:" -- src/lambda/start_codebuild, which
+#   serves both DockerBuildRun resources (#1824);
+# * "codebuild failed with status" -- the feature-platform data generator's
+#   handler, and the multi-doc-discovery handler of releases before #1824;
+# * "did not complete within" -- the time-budget failure of those same two
+#   handlers, which is the one release v0.6.14's upgrade validation hit.
+_CODEBUILD_CR_FAILURE_MARKERS = (
+    "build did not complete - status:",
+    "codebuild failed with status",
+    "did not complete within",
+)
 
 # Lines of the failing build's log to attach. The interesting part (the failing
 # command + its traceback + the buildspec phase summary) is always at the tail.
@@ -6259,7 +6270,10 @@ def get_codebuild_failure_details(stack_name, failed_events, max_projects=3):
         ev
         for ev in failed_events or []
         if isinstance(ev, dict)
-        and _CODEBUILD_CR_FAILURE_MARKER in (ev.get("reason") or "").lower()
+        and any(
+            marker in (ev.get("reason") or "").lower()
+            for marker in _CODEBUILD_CR_FAILURE_MARKERS
+        )
     ]
     if not triggering:
         return []
@@ -6289,9 +6303,9 @@ def get_codebuild_failure_details(stack_name, failed_events, max_projects=3):
                     continue
                 # Inspect the few most recent builds and report the newest one
                 # that reached a TERMINAL FAILURE. Matching on "not SUCCEEDED"
-                # would also match IN_PROGRESS — and since the DockerBuildRun
-                # custom resource now retries once, the newest build is often
-                # still running when we look. An in-progress build has no
+                # would also match IN_PROGRESS — and since an update and the
+                # rollback that follows it can each start a build, the newest
+                # build is often still running when we look. An in-progress build has no
                 # FAILED/FAULT/TIMED_OUT phase, so it yields an empty
                 # phase_error and a partial log tail, and next() would stop
                 # there and never reach the build that actually failed.

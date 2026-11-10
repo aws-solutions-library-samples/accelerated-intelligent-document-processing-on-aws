@@ -1051,14 +1051,15 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd nested/api-resolvers/src/lambda/delete_agent_chat_session_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	@echo "Running the KB-ingestion and docker-build custom-resource suites..."
-	@# Both built a boto3 client at import time with no region, so both errored at
-	@# COLLECTION under $(PYTEST_HERMETIC) while passing on a developer machine.
-	@# Each now supplies its own region from its own conftest.py, which is what makes
-	@# running them through the wrapper meaningful -- the wrapper takes the region
-	@# away rather than handing one over. See #988.
+	@echo "Running the KB-ingestion custom-resource suite..."
+	@# It built a boto3 client at import time with no region, so it errored at
+	@# COLLECTION under $(PYTEST_HERMETIC) while passing on a developer machine. It
+	@# now supplies its own region from its own conftest.py, which is what makes
+	@# running it through the wrapper meaningful -- the wrapper takes the region
+	@# away rather than handing one over. See #988. (The multi-document-discovery
+	@# build-run handler that sat beside it is now src/lambda/start_codebuild,
+	@# tested above; #1824.)
 	cd nested/bedrockkb/src/start_ingestion_job_custom_resource && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	cd nested/multi-doc-discovery/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running the feature-platform extension suites that reached neither CI..."
 	@# The three pii-anonymizer suites above were added by #974; these eight are the
 	@# rest of the same tree -- the ConfBench test-set extension, the data generator's
@@ -1068,6 +1069,7 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# CI; the other modules in it run unconditionally.
 	cd feature-platform/confbench-testset && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/idp-data-generator/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/idp-data-generator/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/feature-template/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
