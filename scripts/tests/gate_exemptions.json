@@ -3310,6 +3310,17 @@
       "ratchet": "staleness",
       "ratchetEvidence": "terraform/tools/parity.py",
       "reason": "Each entry is a property one deployment stores and the other does not because of how the writer behaves (the hashicorp/aws provider writing CodeBuild's service defaults explicitly), with the measurement it came from. Why JUDGEMENT: whether a stored default is the same configuration as an absent value is a reading of the service's behaviour. The tier is live and manual, so the ratchet runs when it does: an entry that explained no difference in a run is reported stale and fails that run."
+    },
+    "scripts/sdlc/sandbox_network_probe.py::EXPECTED_POSTURE": {
+      "kind": "fixture",
+      "memberKind": "a check name reported by the interpreter network probe",
+      "turnsOff": "nothing. It is the recorded network posture of the managed code interpreter that the probe compares each live observation with; a member makes a row PASS only when the live value equals it, and a value in either direction different from it is a FAIL. No assertion is skipped for any member.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Discovered by name: EXPECTED_ is in the discovery vocabulary. Registered rather than renamed, because renaming to slip past discovery is what this registry exists to prevent. Why JUDGEMENT: each value is a measurement of an AWS-managed service taken by hand with make stacktest-sandbox-network, not a property of this tree, so there is nothing in the tree to compute it from.",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/sdlc/tests/test_sandbox_network_probe.py"
     }
   }
 }

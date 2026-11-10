@@ -1362,6 +1362,16 @@ stacktest-seller: ## Seller Entitlement Service e2e: deploy throwaway stack, pro
 	    $(if $(REGION),--region $(REGION)) \
 	    $(if $(NO_TEARDOWN),--no-teardown)
 
+# Network reach of the analytics agent's Python interpreter. Needs no IDP stack:
+# it starts a session on the AWS-managed Bedrock AgentCore Code Interpreter the
+# analytics tool uses, runs a fixed probe program in it, and compares what it
+# reaches with the posture recorded in scripts/sdlc/sandbox_network_probe.py.
+# Creates and deletes its own throwaway bucket (ab-sandbox-probe-<random>).
+# Exit 0 = matches the recorded posture, 1 = differs, 2 = could not run.
+# Manual only: no CI job runs it (see .claude/skills/run-stack-tests.md).
+stacktest-sandbox-network: ## Analytics interpreter network reach: DNS, HTTPS, S3 presigned PUT, raw TCP, credential presence (no stack; [REGION=us-west-2])
+	$(RUN_FIRST_PARTY) scripts/sdlc/sandbox_network_probe.py --region $(if $(REGION),$(REGION),us-west-2) $(if $(JSON_OUT),--json-out $(JSON_OUT),)
+
 # Release-vs-release benchmark audit (alias to benchmark-release).
 stacktest-benchmark: benchmark-release ## Release benchmark audit (alias: benchmark-release)
 
