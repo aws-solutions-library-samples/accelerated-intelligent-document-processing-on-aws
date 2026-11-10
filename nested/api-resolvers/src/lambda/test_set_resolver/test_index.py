@@ -941,3 +941,116 @@ def test_claim_state_retries_unprocessed_keys(stubbed_ddb, monkeypatch):
 
     assert state == {"b.pdf": {"owner": "bob", "status": "", "exists": True}}
     stubber.assert_no_pending_responses()
+
+
+# --------------------------------------------------------------------------
+# A configuration profile the caller names is held to allowedConfigVersions
+# --------------------------------------------------------------------------
+
+_NAMED_PROFILE_OPS = (
+    # (field, arguments, handler function the dispatch reaches)
+    (
+        "generateDraftLabels",
+        {"input": {"testSetId": TEST_SET_ID, "configVersion": "{v}"}},
+        "generate_draft_labels",
+    ),
+    (
+        "reextractTestSetDocument",
+        {
+            "input": {
+                "testSetId": TEST_SET_ID,
+                "objectKey": "doc-a.pdf",
+                "configVersion": "{v}",
+            }
+        },
+        "reextract_test_set_document",
+    ),
+    (
+        "estimateReviewEffort",
+        {"testSetId": TEST_SET_ID, "configVersion": "{v}"},
+        "estimate_review_effort",
+    ),
+)
+
+
+def _with_version(arguments, version):
+    import json
+
+    return json.loads(json.dumps(arguments).replace("{v}", version))
+
+
+@pytest.fixture
+def profile_scoped(resolver, monkeypatch):
+    """An Author scoped to ``lending-*``, with every other check on the path open."""
+    from unittest import mock
+
+    index, _ = resolver
+    monkeypatch.setattr(
+        index, "resolve_allowed_config_versions", lambda *a, **k: ["lending-*"]
+    )
+    monkeypatch.setattr(index, "_assert_set_access", lambda *a, **k: None)
+    monkeypatch.setattr(index, "_assert_assignee", lambda *a, **k: None)
+    monkeypatch.setattr(index, "_refresh_summary", lambda *a, **k: None)
+    reached = {}
+    for _, _, function in _NAMED_PROFILE_OPS:
+        reached[function] = mock.MagicMock(return_value={"ok": True})
+        monkeypatch.setattr(index, function, reached[function])
+    return index, reached
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field,arguments,function",
+    _NAMED_PROFILE_OPS,
+    ids=[o[0] for o in _NAMED_PROFILE_OPS],
+)
+def test_a_named_profile_outside_scope_is_refused(
+    profile_scoped, field, arguments, function
+):
+    index, reached = profile_scoped
+    with pytest.raises(index.ResourceAccessDenied):
+        index.handler(
+            _event(field, _with_version(arguments, "payroll"), groups=("Author",)),
+            None,
+        )
+    reached[function].assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field,arguments,function",
+    _NAMED_PROFILE_OPS,
+    ids=[o[0] for o in _NAMED_PROFILE_OPS],
+)
+def test_a_named_profile_inside_scope_is_served(
+    profile_scoped, field, arguments, function
+):
+    index, reached = profile_scoped
+    index.handler(
+        _event(field, _with_version(arguments, "lending-v2"), groups=("Author",)), None
+    )
+    reached[function].assert_called_once()
+
+
+@pytest.mark.unit
+def test_no_named_profile_uses_the_sets_own_and_checks_nothing(profile_scoped):
+    index, reached = profile_scoped
+    index.handler(
+        _event("estimateReviewEffort", {"testSetId": TEST_SET_ID}, groups=("Author",)),
+        None,
+    )
+    reached["estimate_review_effort"].assert_called_once()
+
+
+@pytest.mark.unit
+def test_an_admin_naming_any_profile_is_served(profile_scoped):
+    index, reached = profile_scoped
+    index.handler(
+        _event(
+            "estimateReviewEffort",
+            {"testSetId": TEST_SET_ID, "configVersion": "payroll"},
+            groups=("Admin",),
+        ),
+        None,
+    )
+    reached["estimate_review_effort"].assert_called_once()
