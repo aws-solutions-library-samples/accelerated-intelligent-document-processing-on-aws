@@ -152,11 +152,14 @@ def test_upload_multi_doc_zip_returns_plain_put_url(monkeypatch):
 
     result = mod.handle_upload_multi_doc_discovery_zip(
         {
+            # An Admin: these tests are about the S3 key, and an Admin is never
+            # profile-scoped, so the configuration-scope lookup is not reached.
+            "identity": {"claims": {"cognito:groups": ["Admin"]}},
             "arguments": {
                 "fileName": "docs.zip",
                 "fileSize": 123,
                 "configVersion": "v1",
-            }
+            },
         },
         None,
     )
@@ -181,11 +184,14 @@ def test_start_multi_doc_discovery_fallback_matches_upload_key(monkeypatch):
 
     mod.handle_start_multi_doc_discovery(
         {
+            # An Admin: these tests are about the S3 key, and an Admin is never
+            # profile-scoped, so the configuration-scope lookup is not reached.
+            "identity": {"claims": {"cognito:groups": ["Admin"]}},
             "arguments": {
                 "configVersion": "v1",
                 "zipFileName": "docs.zip",
                 "zipFileSize": 123,
-            }
+            },
         },
         None,
     )
@@ -213,11 +219,14 @@ def test_start_multi_doc_discovery_honors_explicit_prefix(monkeypatch):
 
     mod.handle_start_multi_doc_discovery(
         {
+            # An Admin: these tests are about the S3 key, and an Admin is never
+            # profile-scoped, so the configuration-scope lookup is not reached.
+            "identity": {"claims": {"cognito:groups": ["Admin"]}},
             "arguments": {
                 "configVersion": "v1",
                 "zipFileName": "docs.zip",
                 "s3Prefix": "custom/location/docs.zip",
-            }
+            },
         },
         None,
     )
