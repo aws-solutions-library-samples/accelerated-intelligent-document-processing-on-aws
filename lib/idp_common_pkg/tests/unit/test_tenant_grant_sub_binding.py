@@ -316,3 +316,120 @@ def test_a_grant_that_creates_no_row_leaves_another_accounts_row_alone(tables):
     (row,) = _user_rows(table)
     assert row["allowedConfigVersions"] == ["acme-*"]
     assert "Item" not in table.get_item(Key=sub_pointer_key("sub-second"))
+
+
+def _row_naming(table, user_id, sub, scope):
+    table.put_item(
+        Item={
+            **user_row_key(user_id),
+            "userId": user_id,
+            "email": EMAIL,
+            "persona": "Viewer",
+            "cognitoSub": sub,
+            "allowedConfigVersions": scope,
+        }
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "first_source,second_source,first,second",
+    [
+        ("IdpClaim", "Manual", [STRICT_UNSCOPED_DENY], ["acme-*"]),
+        ("Manual", "IdpClaim", ["acme-*"], [STRICT_UNSCOPED_DENY]),
+    ],
+)
+def test_a_cached_answer_for_another_accounts_row_is_judged_per_call(
+    tables, monkeypatch, first_source, second_source, first, second
+):
+    """The cache holds the row's scope and whether the row records another sub;
+    what that means is decided against the mode in force at each call."""
+    ddb, table = tables
+    _row_naming(table, "u1", "sub-owner", ["acme-*"])
+    cache: dict = {}
+
+    def resolve():
+        return resolve_allowed_config_versions(
+            EMAIL,
+            users_table_name="users",
+            dynamodb=ddb,
+            caller_sub="sub-other",
+            cache=cache,
+        )
+
+    monkeypatch.setenv(TENANT_GRANT_SOURCE_ENV, first_source)
+    assert resolve() == first
+    # Served from the cache: the table no longer has the row at all.
+    table.delete_item(Key=user_row_key("u1"))
+    monkeypatch.setenv(TENANT_GRANT_SOURCE_ENV, second_source)
+    assert resolve() == second
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("own_first", [True, False])
+def test_the_email_leg_uses_the_row_recording_the_callers_sub(tables, own_first):
+    """An address can hold one row per account; the email leg reads them all and
+    uses the caller's own wherever it falls, as the writer does."""
+    ddb, table = tables
+    rows = [("u-own", "sub-own", ["acme-*"]), ("u-other", "sub-other", ["globex_*"])]
+    for user_id, sub, scope in rows if own_first else rows[::-1]:
+        _row_naming(table, user_id, sub, scope)
+    assert _resolve(ddb, "sub-own") == ["acme-*"]
+    assert _resolve(ddb, "sub-other") == ["globex_*"]
+    # An account with neither row is denied rather than given either one.
+    assert _resolve(ddb, "sub-third") == [STRICT_UNSCOPED_DENY]
+
+
+@pytest.mark.unit
+def test_the_email_leg_prefers_an_unbound_row_over_another_accounts(tables):
+    ddb, table = tables
+    _row_naming(table, "u-other", "sub-other", ["globex_*"])
+    table.put_item(
+        Item={
+            **user_row_key("u-open"),
+            "userId": "u-open",
+            "email": EMAIL,
+            "persona": "Viewer",
+            "allowedConfigVersions": ["acme-*"],
+        }
+    )
+    assert _resolve(ddb, "sub-new") == ["acme-*"]
+
+
+@pytest.mark.unit
+def test_a_grant_writes_its_binding_in_the_same_write(tables, monkeypatch):
+    """The grant and the row's binding to the account are one conditional write. A
+    row that another account bound after it was read keeps that account's grant,
+    and the sign-in fails rather than reporting success."""
+    _, table = tables
+    stale = {
+        **user_row_key("u1"),
+        "userId": "u1",
+        "email": EMAIL,
+        "persona": "Viewer",
+    }
+    _row_naming(table, "u1", "sub-first", ["acme-*"])
+    # The row as it was read, before the first account bound it.
+    monkeypatch.setattr(us, "find_user_row", lambda *a, **k: dict(stale))
+    with pytest.raises(RuntimeError, match="bound to another Cognito account"):
+        _sign_in(table, "sub-second", "tenant.globex")
+    row = table.get_item(Key=user_row_key("u1"))["Item"]
+    assert row["cognitoSub"] == "sub-first"
+    assert row["allowedConfigVersions"] == ["acme-*"]
+    assert "Item" not in table.get_item(Key=sub_pointer_key("sub-second"))
+
+
+@pytest.mark.unit
+def test_an_unbound_row_is_bound_by_the_grant_write_itself(tables, monkeypatch):
+    """With the pointer writer failing, the row still records the account: the
+    binding is part of the grant's own write."""
+    ddb, table = tables
+    table.put_item(
+        Item={**user_row_key("u1"), "userId": "u1", "email": EMAIL, "persona": "Viewer"}
+    )
+    monkeypatch.setattr(us, "record_cognito_sub", lambda *a, **k: False)
+    with pytest.raises(RuntimeError, match="pointer could not be"):
+        _sign_in(table, "sub-first", "tenant.acme")
+    row = table.get_item(Key=user_row_key("u1"))["Item"]
+    assert row["cognitoSub"] == "sub-first"
+    assert row["allowedConfigVersions"] == ["acme-*"]

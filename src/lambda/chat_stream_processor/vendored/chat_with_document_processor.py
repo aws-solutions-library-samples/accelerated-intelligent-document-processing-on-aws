@@ -378,13 +378,30 @@ def _get_user_allowed_config_versions(
                 )
                 row = None
         if row is None and caller_email:
-            resp = table.query(
-                IndexName=USERS_TABLE_SCOPE_INDEX,
-                KeyConditionExpression=Key(USERS_TABLE_SCOPE_KEY).eq(caller_email),
-                Limit=1,
-            )
-            items = resp.get("Items") or []
-            row = items[0] if items else None
+            # Every row for the address, because Cognito does not make `email`
+            # unique and each account sharing an address can hold a row of its own.
+            # Chosen in the grant writer's order: the row recording this caller's
+            # sub, then one recording no sub, then any other (which the rule below
+            # decides). Mirrors `_row_by_email` in `idp_common.config_scope`.
+            query = {
+                "IndexName": USERS_TABLE_SCOPE_INDEX,
+                "KeyConditionExpression": Key(USERS_TABLE_SCOPE_KEY).eq(caller_email),
+            }
+            items = []
+            while True:
+                resp = table.query(**query)
+                items.extend(resp.get("Items") or [])
+                if not resp.get("LastEvaluatedKey"):
+                    break
+                query["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+            def _rank(item):
+                recorded = str(item.get("cognitoSub") or "").strip()
+                if caller_sub and recorded == caller_sub:
+                    return 0
+                return 1 if not recorded else 2
+
+            row = min(items, key=_rank) if items else None
     except Exception as e:  # noqa: BLE001
         logger.error(
             "User scope lookup failed, denying chat turn (%s / %s on %s): %s",

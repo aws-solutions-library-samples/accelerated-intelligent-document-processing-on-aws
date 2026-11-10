@@ -233,10 +233,10 @@ def find_user_row(
             )
         if unique and len(items) > 1:
             raise ValueError(
-                f"More than one user record has the email {email}, so which one "
-                "decides this user's access cannot be told from the address alone. "
-                "Remove the duplicate in User Management, or have the user sign in "
-                "once so their account can be identified, then try again."
+                f"More than one user record has the email {email}, one for each "
+                "Cognito account with that address, so a grant addressed by email "
+                "alone cannot tell which account it is for. Try again once only "
+                "one record for the address remains."
             )
         if items:
             return items[0]
@@ -408,12 +408,37 @@ def apply_tenant_grant(
             values[":tid"] = tenant_id
         else:
             remove = " REMOVE scopeTenant"
-        users_table.update_item(
-            Key=user_row_key(user_id),
-            UpdateExpression="SET " + ", ".join(set_parts) + remove,
-            ExpressionAttributeValues=values,
-            ConditionExpression="attribute_exists(PK)",
-        )
+        condition = "attribute_exists(PK)"
+        names: Dict[str, str] = {}
+        if cognito_sub:
+            # The grant and the binding to this account are one write: the row is
+            # bound to ``cognito_sub`` in the same UpdateItem, on condition that it
+            # records no sub or this one. A row therefore never carries this grant
+            # without recording the account it belongs to, and a row another
+            # account bound after it was read is left as it is.
+            set_parts.append("#sub = :sub")
+            values[":sub"] = cognito_sub
+            names["#sub"] = USERS_TABLE_SUB_ATTRIBUTE
+            condition += " AND (attribute_not_exists(#sub) OR #sub = :sub)"
+        update: Dict[str, Any] = {
+            "Key": user_row_key(user_id),
+            "UpdateExpression": "SET " + ", ".join(set_parts) + remove,
+            "ExpressionAttributeValues": values,
+            "ConditionExpression": condition,
+        }
+        if names:
+            update["ExpressionAttributeNames"] = names
+        try:
+            users_table.update_item(**update)
+        except Exception as exc:  # noqa: BLE001
+            code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+            if cognito_sub and code == "ConditionalCheckFailedException":
+                raise RuntimeError(
+                    f"The record of user {user_id} was removed, or bound to another "
+                    "Cognito account, after it was read, so the tenant grant was not "
+                    "written. Signing in again resolves the record afresh."
+                ) from exc
+            raise
         action = "updated"
 
     # Always scoped now, so the pointer must exist: it is what keeps the restriction

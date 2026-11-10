@@ -686,6 +686,32 @@ class TestProcessorScopeFailsClosed:
         assert result == expected
 
     @pytest.mark.unit
+    def test_the_email_leg_chooses_the_row_recording_the_callers_sub(
+        self, monkeypatch
+    ):
+        """An address can hold one row per account. The email leg reads them all and
+        uses the caller's own, wherever it falls in the page."""
+        import index
+
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", "IdpClaim")
+        result, _publishes, _bedrock, _users = _run_scope_turn(
+            index,
+            {
+                "identity": {
+                    "claims": {
+                        "email": _VERIFIED_IDENTITY["claims"]["email"],
+                        "sub": "sub-own-account",
+                    }
+                }
+            },
+            users_items=[
+                {"allowedConfigVersions": ["other-v2"], "cognitoSub": "sub-other"},
+                {"allowedConfigVersions": ["secret-v1"], "cognitoSub": "sub-own-account"},
+            ],
+        )
+        assert result == {"ok": True, "turnId": "t-1"}
+
+    @pytest.mark.unit
     def test_a_diverged_email_still_resolves_the_scope_through_the_sub(self):
         """The residual this join exists to close.
 
