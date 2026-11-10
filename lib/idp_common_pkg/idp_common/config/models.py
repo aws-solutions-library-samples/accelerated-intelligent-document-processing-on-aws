@@ -1036,12 +1036,13 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
         ),
     )
     timeout_ms: int = Field(
-        default=120000,
+        default=300000,
         ge=1000,
         le=840000,
         description=(
-            "How long to wait for one answer. A new execution environment can take "
-            "up to 30 s to load the model before it answers."
+            "How long to wait for one answer. Without SnapStart, the first request "
+            "to a new execution environment waits for the model to load: measured "
+            "at about 3 minutes for the first after a deploy, with vision on."
         ),
     )
     instructions: str = Field(
@@ -2482,12 +2483,13 @@ class DecisionModelConfig(ExternalModelConfig):
         ),
     )
     timeout_ms: int = Field(
-        default=120000,
+        default=300000,
         ge=1000,
         le=840000,
         description=(
-            "How long to wait for one answer. A new execution environment can take "
-            "up to 30 s to load the model before it answers."
+            "How long to wait for one answer. Without SnapStart, the first request "
+            "to a new execution environment waits for the model to load: measured "
+            "at about 3 minutes for the first after a deploy, with vision on."
         ),
     )
     instructions: str = Field(

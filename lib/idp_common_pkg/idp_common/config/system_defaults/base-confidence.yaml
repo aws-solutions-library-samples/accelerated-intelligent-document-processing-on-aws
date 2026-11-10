@@ -66,7 +66,7 @@ extraction:
       max_pages: 20
       instructions: 'The system says the field "{FIELD}" ({DESCRIPTION}) is "{VALUE}". Is that the correct value?'
       max_questions_per_request: 100
-      timeout_ms: 120000
+      timeout_ms: 300000
       max_concurrency: 4
       # For metering GB-seconds; the Strands Decider's Lambda runs at 10240.
       function_memory_mb: 10240

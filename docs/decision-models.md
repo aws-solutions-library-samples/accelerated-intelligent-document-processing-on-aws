@@ -75,7 +75,7 @@ classification:
         input: images          # images (default) | text | both
         max_pages: 1           # 1 to 4: a request carries at most 4 images
         instructions: Which type of document is this?
-        timeout_ms: 120000
+        timeout_ms: 300000
         max_concurrency: 4
       low_confidence:
         min_confidence: 0.0    # 0 keeps every answer
@@ -88,7 +88,7 @@ classification:
 | `input` | `images` | What the model reads. Page images measured best: OCR text alone loses the visual cues that tell forms, letters and memos apart. |
 | `max_pages` | `1` | The most pages of a section the model reads, after `pages` selects them. The maximum is 4, the API's image limit. More pages did not raise accuracy and weakened the confidence. |
 | `instructions` | `Which type of document is this?` | The question. The options are always your classes. |
-| `timeout_ms` | `120000` | How long to wait for one answer. A new execution environment takes up to 30 s to load the model. |
+| `timeout_ms` | `300000` | How long to wait for one answer. Without SnapStart, the first request to a new execution environment waits for the model to load: about 3 minutes for the first after a deploy with vision on, and tens of seconds after that. A timed-out call is not retried, because the invocation may still be running. |
 | `max_concurrency` | `4` | The most calls in flight from one document. Each call occupies one 10 GB execution environment. |
 | `low_confidence` | off | What an answer below `min_confidence` does: `fallback_class` gives the section `classification.fallback_class`; `llm` classifies it again with the LLM settings. |
 

@@ -2080,10 +2080,10 @@ Resources:
                           timeout_ms:
                             type: integer
                             title: Timeout (ms)
-                            description: "How long to wait for one answer. A new execution environment can take up to 30 s to load the model, so keep this above 60000 unless SnapStart is on."
+                            description: "How long to wait for one answer. Without SnapStart the first request to a new execution environment waits for the model to load, about 3 minutes for the first after a deploy, so keep this at 300000 unless SnapStart is on."
                             minimum: 1000
                             maximum: 840000
-                            default: 120000
+                            default: 300000
                             order: 4
                           max_concurrency:
                             type: integer
@@ -2824,10 +2824,10 @@ Resources:
                       timeout_ms:
                         type: integer
                         title: Timeout (ms)
-                        description: "How long to wait for one answer. A new execution environment can take up to 30 s to load the model."
+                        description: "How long to wait for one answer. Without SnapStart the first request to a new execution environment waits for the model to load, about 3 minutes for the first after a deploy."
                         minimum: 1000
                         maximum: 840000
-                        default: 120000
+                        default: 300000
                         order: 5
                       max_concurrency:
                         type: integer

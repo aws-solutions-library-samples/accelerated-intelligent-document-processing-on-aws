@@ -335,7 +335,7 @@ classification:
         # Pages read per section after `pages` selects them: 1 to 4 (the API's image limit).
         max_pages: 1
         instructions: Which type of document is this?
-        timeout_ms: 120000
+        timeout_ms: 300000
         max_concurrency: 4
         # For metering GB-seconds; the Strands Decider's Lambda runs at 10240.
         function_memory_mb: 10240
