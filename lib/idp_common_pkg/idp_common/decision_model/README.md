@@ -7,7 +7,8 @@ A decision model picks between options or rates on a scale. It returns a probabi
 for each option rather than generated text, so there is no output to parse, and the
 confidence comes from a distribution instead of being a number the model writes out.
 
-This package is the client the pipeline uses to call one. It is used in place of an
+This package is the client the pipeline uses to call one. User-facing
+documentation: [docs/decision-models.md](../../../../docs/decision-models.md). It is used in place of an
 LLM call wherever the question is closed:
 
 | Call site | Configuration | Question |

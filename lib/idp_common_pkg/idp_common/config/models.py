@@ -1998,6 +1998,34 @@ def _single_value_method(v: Any, path: str, planned: str) -> str:
     return v_str
 
 
+def _implemented_method(
+    v: Any, path: str, implemented: tuple[str, ...], planned: str
+) -> str:
+    """A ``method`` enum some of whose declared values are implemented.
+
+    Empty means ``llm``. A declared value that is not implemented yet is refused
+    with the same pointer :func:`_single_value_method` gives.
+    """
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return "llm"
+    v_str = str(v).strip().lower()
+    if v_str not in implemented:
+        raise ValueError(
+            f"{path} must be one of {', '.join(repr(m) for m in implemented)}, got "
+            f"{v!r}. {planned} is declared but not yet implemented; see GitHub "
+            "issue #1329."
+        )
+    return v_str
+
+
+#: The decision-model input modes (``ExternalModelConfig.input``).
+DECISION_MODEL_INPUTS = ("images", "text", "both")
+
+#: The most pages section classification sends a decision model: the System One
+#: API reads at most 4 images per request (idp_common.decision_model).
+DECISION_MODEL_MAX_SECTION_PAGES = 4
+
+
 class ClassificationModelSettings(BaseModel):
     """The settings of one LLM call. Reused by every classification call.
 
@@ -2324,15 +2352,93 @@ class EmbeddingsConfig(BaseModel):
 
 
 class DecisionModelConfig(ExternalModelConfig):
-    """Section classification by an external model. **Declared, not implemented.**"""
+    """Section classification by a decision model: one ``choice`` question per section.
 
+    The options are the configured classes and each class's ``description`` is its
+    criterion, so a class's description is what the model compares the section
+    against. See ``idp_common.decision_model`` and docs/decision-models.md.
+    """
+
+    backend: str = Field(
+        default="lambda", description="lambda (the only backend today)"
+    )
+    endpoint: Optional[str] = Field(
+        default=None,
+        description=(
+            "Function ARN; the function name must start with GENAIIDP-. Unset uses "
+            "the stack's own decision model, when the stack deploys one."
+        ),
+    )
+    timeout_ms: int = Field(
+        default=120000,
+        ge=1000,
+        le=840000,
+        description=(
+            "How long to wait for one answer. A new execution environment can take "
+            "up to 30 s to load the model before it answers."
+        ),
+    )
+    instructions: str = Field(
+        default="Which type of document is this?",
+        description=(
+            "The choice question's instructions. The options are the configured "
+            "classes, each described by its description."
+        ),
+    )
+    max_pages: int = Field(
+        default=1,
+        ge=1,
+        le=DECISION_MODEL_MAX_SECTION_PAGES,
+        description=(
+            "The most pages of a section sent, after `pages` selects them (1 to "
+            f"{DECISION_MODEL_MAX_SECTION_PAGES}, the API's image limit). One page "
+            "measured best: more images did not raise accuracy and weakened the "
+            "confidence."
+        ),
+    )
     label_map: Dict[str, str] = Field(
         default_factory=dict,
         description="Model label → configured class (or 'unclassified').",
     )
     score_calibration: str = Field(
-        default="none", description="none | softmax | per_class_thresholds"
+        default="none",
+        description=(
+            "'none' (the only value today: the probabilities are used as "
+            "returned). 'softmax' and 'per_class_thresholds' are declared."
+        ),
     )
+
+    @field_validator("input", mode="before")
+    @classmethod
+    def validate_input(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "images"
+        v_str = str(v).strip().lower()
+        if v_str not in DECISION_MODEL_INPUTS:
+            raise ValueError(
+                "decision_model.input must be one of "
+                f"{', '.join(DECISION_MODEL_INPUTS)}, got {v!r}"
+            )
+        return v_str
+
+    @field_validator("max_pages", mode="before")
+    @classmethod
+    def parse_max_pages(cls, v: Any) -> int:
+        return _parse_int_param(v, 1) or 1
+
+    @field_validator("score_calibration", mode="before")
+    @classmethod
+    def validate_score_calibration(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "none"
+        v_str = str(v).strip().lower()
+        if v_str != "none":
+            raise ValueError(
+                "decision_model.score_calibration must be 'none', got "
+                f"{v!r}; 'softmax' and 'per_class_thresholds' are declared but "
+                "not yet implemented"
+            )
+        return v_str
 
 
 class LowConfidenceConfig(BaseModel):
@@ -2349,13 +2455,29 @@ class LowConfidenceConfig(BaseModel):
         default="fallback_class", description="'llm' | 'fallback_class'"
     )
 
+    @field_validator("on_low_confidence", mode="before")
+    @classmethod
+    def validate_on_low_confidence(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "fallback_class"
+        v_str = str(v).strip().lower()
+        if v_str not in ("llm", "fallback_class"):
+            raise ValueError(
+                "section_classification.low_confidence.on_low_confidence must be "
+                f"'llm' or 'fallback_class', got {v!r}"
+            )
+        return v_str
+
 
 class SectionClassificationConfig(BaseModel):
     """Split-then-classify's section classification: one class per section."""
 
     method: str = Field(
         default="llm",
-        description="'llm' (the only value today). 'embeddings' and 'decision_model' are declared.",
+        description=(
+            "'llm' (one LLM call per section) or 'decision_model' (one choice "
+            "question per section, see `decision_model`). 'embeddings' is declared."
+        ),
     )
     pages: str = Field(
         default="first_k",
@@ -2377,10 +2499,11 @@ class SectionClassificationConfig(BaseModel):
     @field_validator("method", mode="before")
     @classmethod
     def validate_method(cls, v: Any) -> str:
-        return _single_value_method(
+        return _implemented_method(
             v,
             "classification.split_then_classify.section_classification.method",
-            "'embeddings' / 'decision_model'",
+            ("llm", "decision_model"),
+            "'embeddings'",
         )
 
     @field_validator("pages", mode="before")

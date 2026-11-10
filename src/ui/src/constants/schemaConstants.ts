@@ -624,3 +624,25 @@ export const DEFAULT_SCHEMA_VERSION = 'https://json-schema.org/draft/2020-12/sch
 
 /** Default confidence threshold */
 export const DEFAULT_CONFIDENCE_THRESHOLD = 0.9;
+
+// ============================================================================
+// Decision models (System One API)
+// ============================================================================
+/**
+ * The decision-model question types, in the order the UI offers them. Mirrors
+ * QUESTION_TYPES in lib/idp_common_pkg/idp_common/decision_model/wire.py; kept in
+ * step by scripts/tests/test_decision_question_types_parity.py.
+ */
+export const DECISION_QUESTION_TYPES = ['noul', 'choice', 'score'] as const;
+export type DecisionQuestionType = (typeof DECISION_QUESTION_TYPES)[number];
+
+/** UI labels for the question types, and what each one's criteria are. */
+export const DECISION_QUESTION_TYPE_OPTIONS: ReadonlyArray<{
+  value: DecisionQuestionType;
+  label: string;
+  description: string;
+}> = [
+  { value: 'noul', label: 'Yes / no', description: 'Returns the probability the statement is true. Optional true and false criteria.' },
+  { value: 'choice', label: 'Choice', description: 'Picks one of 2 to 255 named options, each with a description.' },
+  { value: 'score', label: 'Score', description: 'Rates against 2 to 10 ordered levels, lowest first.' },
+];

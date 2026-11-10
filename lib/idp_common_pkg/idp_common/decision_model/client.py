@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -154,6 +155,9 @@ class DecisionModelClient:
         self.function_memory_mb = int(function_memory_mb)
         self.max_retries = max(0, int(max_retries))
         self._sleep = sleep
+        # Bounds the calls in flight across every thread using this client, so
+        # ``max_concurrency`` holds however many workers the caller runs.
+        self._in_flight = threading.BoundedSemaphore(self.max_concurrency)
         if lambda_client is None:
             # botocore's own retries are off: an attempt re-runs paid work, so
             # retrying belongs to this class, which knows which errors are worth it.
@@ -186,10 +190,10 @@ class DecisionModelClient:
         worst_attempt = 0.0
         attempt = 0
         while True:
-            started = time.time()
             try:
-                result = self._invoke_once(payload, context, started)
-                return result
+                with self._in_flight:
+                    started = time.time()
+                    return self._invoke_once(payload, context, started)
             except _Retry as retry:
                 worst_attempt = max(worst_attempt, time.time() - started)
                 if attempt >= self.max_retries:

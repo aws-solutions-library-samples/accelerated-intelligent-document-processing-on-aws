@@ -323,6 +323,32 @@ classification:
             "confidence" number between 0.0 and 1.0 for the reported class. #}
             <class-confidence> Your JSON object MUST also contain a "confidence" key: the probability, as a number between 0.0 and 1.0, that the type you report in "class" is correct for this page.
             Base it on how much better the page matches the type you chose than the other types in <document-types>. Do not default to a high value: a page whose evidence is thin or ambiguous should carry a low confidence. </class-confidence>
+      # method: decision_model — one choice question per section, answered by a
+      # decision model over the System One API (docs/decision-models.md).
+      decision_model:
+        # lambda (the only backend today). The function name must start GENAIIDP-.
+        backend: lambda
+        # Function ARN. Unset uses the stack's own decision model, when it deploys one.
+        endpoint: null
+        # images | text | both. Page images measured best for classification.
+        input: images
+        # Pages read per section after `pages` selects them: 1 to 4 (the API's image limit).
+        max_pages: 1
+        instructions: Which type of document is this?
+        timeout_ms: 120000
+        max_concurrency: 4
+        # For metering GB-seconds; the Strands Decider's Lambda runs at 10240.
+        function_memory_mb: 10240
+        price_per_request: 0.0
+        # Model label -> configured class, for a model trained on its own labels.
+        label_map: {}
+        # none (the only value today): probabilities are used as returned.
+        score_calibration: none
+      # What a decision-model answer below min_confidence does. 0 keeps every answer.
+      low_confidence:
+        min_confidence: 0.0
+        # fallback_class | llm (the llm block above classifies the section again)
+        on_low_confidence: fallback_class
   # ── Advanced: known document shape ───────────────────────────────────────────
   # By default every document is treated as a packet and its section
   # boundaries are detected. These ASSERT the shape instead.
