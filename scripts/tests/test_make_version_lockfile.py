@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 """`make version` must leave `lib/idp_common_pkg/uv.lock` consistent with the bump.
 
 The lockfile records the project's own version. `make lock-constraints` runs
@@ -11,7 +14,8 @@ The test runs the real target against a scratch copy of exactly the files the
 target says it stamps (read from its own "Version updated ... in:" list, so a file
 added to the target is copied without editing this test), then asks `uv` itself
 whether the lockfile is still current. `uv` is a hard requirement rather than a
-skip: `make setup` cannot run without it, and a skip here would read as a pass.
+skip: `make setup` cannot run without it (and is how to get it), and a skip here
+would read as a pass.
 
 `uv lock --check` stands in for `uv export --locked` deliberately: both refuse a
 lockfile whose project version disagrees with `pyproject.toml`, and `--check` does

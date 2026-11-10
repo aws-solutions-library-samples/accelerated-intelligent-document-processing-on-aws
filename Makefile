@@ -1658,8 +1658,8 @@ endif
 	@# The lockfile records the project's own version, and `uv export --locked`
 	@# (make lock-constraints, run by make setup and by every CI job that builds
 	@# the Python environment) refuses a lockfile whose project version disagrees
-	@# with pyproject.toml. Only that
-	@# one line moves; nothing is re-resolved, so no dependency pin can change
+	@# with pyproject.toml, so the bump has to reach it. Only the project's own
+	@# version line moves; nothing is re-resolved, so no dependency pin can change
 	@# as a side effect of a version bump (#1818).
 	@$(PYTHON) -c "import re,pathlib; p=pathlib.Path('lib/idp_common_pkg/uv.lock'); t=p.read_text(); n,c=re.subn(r'(\[\[package\]\]\nname = \"idp-common\"\nversion = \")[^\"]*(\")', r'\g<1>$(V)\g<2>', t); p.write_text(n); raise SystemExit(0 if c==1 else f'ERROR: expected 1 idp-common version line in lib/idp_common_pkg/uv.lock, replaced {c}')"
 	@echo -e "$(GREEN)✅ Version updated to $(V) in:$(NC)"

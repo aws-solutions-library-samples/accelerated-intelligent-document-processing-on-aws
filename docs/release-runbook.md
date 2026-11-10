@@ -105,9 +105,9 @@ While packaging, the publisher replaces tokens in `template.yaml`:
   which it lists when it finishes. Do not edit `VERSION` or the lockfile by hand. The
   lockfile line matters because `make setup` and every CI job that builds the Python
   environment run `uv export --locked`, which refuses a lockfile whose project version
-  disagrees with `pyproject.toml`. The lockfile is the last file the command stamps, so
-  if that step fails the other paths are already stamped; fix the cause and re-run the
-  same command, which is safe to repeat.
+  disagrees with `pyproject.toml`. If any step fails, the files
+  stamped before it keep the new version; fix the cause and re-run the same command,
+  which is safe to repeat.
 - `CHANGELOG.md` should have its `[Unreleased]` section turned into a section for the new
   version, with the template URLs for each region you publish. The procedures are in
   `.claude/skills/prepare-changelog.md` and `.claude/skills/cut-release-changelog.md`.
