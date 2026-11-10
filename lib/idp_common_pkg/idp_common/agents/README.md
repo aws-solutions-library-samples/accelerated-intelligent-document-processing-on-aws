@@ -346,8 +346,26 @@ The system includes several specialized agents:
 3. **Error Analyzer Agent**: Diagnoses errors in CloudWatch logs
 4. **Sample Calculator Agent**: Performs calculations and data analysis
 5. **External MCP Agents**: Connects to external MCP servers
+6. **Quick Start Agent** (`quick_start/`): Drafts a document-class schema from a
+   description, saves it as a configuration profile and activates it; see
+   [Quick Start](../../../../docs/quick-start.md)
 
-All agents are automatically available to the orchestrator - no manual selection needed.
+All agents except Quick Start are automatically available to the orchestrator - no manual selection needed.
+
+### Quick Start runs outside the orchestrator
+
+The web UI's Quick Start panel sends its messages with `method: "quick_start"`.
+For that method the processor runs `Quick-Start-Agent` directly through
+`agent_factory.create_conversational_agent`, with the same DynamoDB memory keyed by
+session id, and records the session under the `quick_start` surface so its history
+lists apart from Agent Chat's. Every other method removes `Quick-Start-Agent` from
+the orchestrator's agent list. Its tools (`quick_start/tools/bootstrap_tools.py`)
+write the Configuration table and, when the Test Set Generator extension is
+installed, enqueue generation on that extension's queue.
+
+Its system prompt names screens and navigation paths (Upload Documents,
+Configuration › View/Edit Configuration, Test Studio › Test Sets, Agent Chat), so a
+change that renames one of them updates the prompt in the same change.
 
 ### A system prompt names only tools its agent registers
 

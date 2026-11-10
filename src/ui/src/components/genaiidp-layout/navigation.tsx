@@ -14,12 +14,8 @@ import useInbox from '../../hooks/use-inbox';
 import { buildInboxNavLink } from '../inbox/inbox-nav-link';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import { buildReviewStudioNavSection, buildHomeNavSection } from './review-queues-nav-items';
+import { isQuickStartEnabled } from '../../utils/quick-start-flag';
 import './navigation.css';
-
-const isQuickStartWidgetEnabled = (): boolean => {
-  const flag = import.meta.env.VITE_ENABLE_QUICK_START_WIDGET;
-  return flag === undefined || flag === 'true' || flag === true;
-};
 
 import {
   DOCUMENTS_PATH,
@@ -634,7 +630,7 @@ const FullNavigation = ({
   return (
     <div className="idp-side-nav">
       {/* Annotator-only and Reviewer-only users get QueueWorkerNavigation, which has no Quick Start. */}
-      {isQuickStartWidgetEnabled() && (
+      {isQuickStartEnabled() && (
         <div className="nav-quick-start">
           <Hotspot hotspotId="nav-quick-start" side="right">
             <Button variant="primary" iconName="gen-ai" onClick={() => window.dispatchEvent(new CustomEvent('openQuickStart'))}>
