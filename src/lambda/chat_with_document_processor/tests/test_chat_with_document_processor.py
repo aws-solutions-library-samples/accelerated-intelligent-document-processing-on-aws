@@ -651,6 +651,41 @@ class TestProcessorScopeFailsClosed:
         users_table.query.assert_not_called()
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "grant_source,expected",
+        [
+            ("IdpClaim", {"ok": False, "reason": "scope_denied"}),
+            ("Api", {"ok": False, "reason": "scope_denied"}),
+            ("Manual", {"ok": True, "turnId": "t-1"}),
+        ],
+    )
+    def test_a_row_recording_another_accounts_sub(
+        self, monkeypatch, grant_source, expected
+    ):
+        """Cognito does not make ``email`` unique, so the address can match a row
+        another live account owns. Where an unscoped caller is denied, that row's
+        scope is the other account's grant, and the turn is refused; under Manual it
+        is a restriction and is applied, so an in-scope document is still allowed."""
+        import index
+
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", grant_source)
+        result, _publishes, bedrock, _users = _run_scope_turn(
+            index,
+            {
+                "identity": {
+                    "claims": {
+                        "email": _VERIFIED_IDENTITY["claims"]["email"],
+                        "sub": "sub-other-account",
+                    }
+                }
+            },
+            users_items=[
+                {"allowedConfigVersions": ["secret-v1"], "cognitoSub": "sub-owner"}
+            ],
+        )
+        assert result == expected
+
+    @pytest.mark.unit
     def test_a_diverged_email_still_resolves_the_scope_through_the_sub(self):
         """The residual this join exists to close.
 

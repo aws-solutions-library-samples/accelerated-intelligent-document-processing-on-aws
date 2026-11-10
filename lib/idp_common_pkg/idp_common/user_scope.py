@@ -173,16 +173,38 @@ def find_user_row(
     The same order :func:`idp_common.config_scope.resolve_allowed_config_versions`
     reads in, but returning the row whether or not it is scoped, because a writer
     has to find an unscoped row to scope it. Read failures propagate.
+
+    ⚠️ **With a ``cognito_sub``, a row recording a different sub is never returned**,
+    by either leg. Cognito does not make ``email`` unique, so two live accounts can
+    share an address, and each has to keep its own row: a row that records another
+    account's sub holds that account's tenant. An account with no row of its own is
+    given a new one by the grant. A row recording no sub yet (one an Admin created
+    by address) is still returned: it is claimed by the first account to sign in
+    with it, as before. Without a ``cognito_sub`` (an API push knows only the
+    email) every row with the address is a candidate and ``unique`` decides.
     """
     from boto3.dynamodb.conditions import Key
+
+    def owned_by_another(row: Mapping[str, Any]) -> bool:
+        recorded = str(row.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
+        return bool(cognito_sub and recorded and recorded != cognito_sub)
 
     if cognito_sub:
         pointer = table.get_item(Key=sub_pointer_key(cognito_sub)).get("Item")
         user_id = str((pointer or {}).get("userId") or "").strip()
         if user_id:
             row = table.get_item(Key=user_row_key(user_id)).get("Item")
-            if row:
+            if row and not owned_by_another(row):
                 return row
+            if row:
+                # This account's pointer names a row that records another
+                # account's sub, so the row is not this account's. The grant
+                # writes the pointer again, naming the row it does use.
+                logger.warning(
+                    "A SUB# pointer names a user row recording a different Cognito "
+                    "%s; not treating that row as this account's",
+                    SCOPE_SUB_CLAIM,
+                )
     if email:
         items = (
             table.query(
@@ -193,6 +215,22 @@ def find_user_row(
         )
         # Pointer items carry no email (see record_cognito_sub), so every item here
         # is a user row.
+        if cognito_sub:
+            mine = [i for i in items if not owned_by_another(i)]
+            if len(mine) < len(items):
+                logger.info(
+                    "Skipping %d user row(s) with this address that record another "
+                    "Cognito %s",
+                    len(items) - len(mine),
+                    SCOPE_SUB_CLAIM,
+                )
+            # Prefer the row that already records this sub over an unclaimed one.
+            items = sorted(
+                mine,
+                key=lambda i: (
+                    str(i.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip() != cognito_sub
+                ),
+            )
         if unique and len(items) > 1:
             raise ValueError(
                 f"More than one user record has the email {email}, so which one "

@@ -435,7 +435,9 @@ def resolve_allowed_config_versions(
 
         Under strict tenant isolation (:func:`is_strict_isolation`) that branch is
         closed: an unscoped caller gets ``[STRICT_UNSCOPED_DENY]``, which no profile
-        matches.
+        matches. So does a caller whose ``sub`` differs from the one the matched row
+        records, whenever an unscoped caller is denied (:func:`unscoped_is_denied`):
+        that row's scope is another account's grant.
 
         Otherwise the list of profile names (or glob patterns) the caller may see,
         to be passed to :func:`scope_allows`.
@@ -512,11 +514,32 @@ def resolve_allowed_config_versions(
             # leaving it unchecked would be the quieter of the two.
             #
             # The address resolved to a row belonging to a *different* Cognito
-            # account — an address reassigned, or a Cognito account recreated
-            # under the same one. The row is still used: it is the row for this
-            # address, and a scope is a restriction, so applying it is the
-            # conservative direction. But an operator needs to see it, because it
-            # means one of the two accounts has a stale row.
+            # account. Cognito does not make ``email`` unique, so this is an
+            # address reassigned, an account recreated under it, or a second live
+            # account with the same address (a native and a federated one, say).
+            #
+            # ⚠️ Whether the row's scope may be applied depends on what the caller
+            # would get *without* it. Where an unscoped caller is unrestricted
+            # (Manual grants, isolation Off) the row's scope is a restriction and
+            # applying it can only tighten, so it is applied. Where an unscoped
+            # caller is denied (strict isolation, or tenants granted by an IdP
+            # claim or an entitlement push) the row's scope is the other account's
+            # tenant grant, which this caller has not been given, so the caller is
+            # denied.
+            if unscoped_is_denied():
+                logger.warning(
+                    "A UsersTable row found for the caller records a different "
+                    "Cognito %r than the caller presented. Under this stack's "
+                    "isolation or grant source that row's scope is another "
+                    "account's grant, so the caller is denied; the row's %s needs "
+                    "reconciling.",
+                    SCOPE_SUB_CLAIM,
+                    USERS_TABLE_SUB_ATTRIBUTE,
+                )
+                denied = [STRICT_UNSCOPED_DENY]
+                if cache is not None:
+                    cache[cache_key] = {"scope": denied, "timestamp": now}
+                return denied
             logger.warning(
                 "A UsersTable row found by %r records a different Cognito %r than "
                 "the caller presented. Its scope is being applied; the row's %s "

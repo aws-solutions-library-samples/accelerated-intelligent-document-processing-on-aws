@@ -241,6 +241,22 @@ every tenant's **Granted by** values and writes the result to the user's record 
 the token is issued. A user with no record yet gets one, with the role the claim maps
 to.
 
+The grant is bound to the signing-in account's Cognito `sub`. The trigger writes to
+the record that account's `sub` already names or, failing that, to a record with the
+account's email address that names no `sub` yet, such as one an Admin created. It
+never writes to a record that names a different `sub`. Cognito does not require email
+addresses to be unique, so two accounts with the same address (a native and a
+federated account, or an account recreated in the identity provider) each get their
+own record and keep their own tenant. Where a record two accounts already share
+exists, it resolves at each account's next fresh sign-in: the account the record names
+keeps it, and the other gets a record of its own.
+
+When the scope is read for a request, a record that names a different `sub` than the
+caller's is not applied as the caller's under `IdpClaim`, `Api` or
+[Strict mode](#strict-mode): the caller is denied, as a user with no tenant is. Under
+`Manual` with isolation off it is still applied, because there a user with no record
+is unrestricted and the record's scope can only narrow access.
+
 The trigger applies the same two checks it uses for roles: it reads the claim only for
 a user federated through the configured provider, and only on a fresh sign-in, never
 on a token refresh. A user who signs in with a Cognito password rather than through
