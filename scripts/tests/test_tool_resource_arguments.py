@@ -1,0 +1,332 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+"""A model-facing tool argument that names a resource goes through a validator first.
+
+An agent tool's arguments are chosen by the model. When an argument names something
+the tool will read or run (an S3 location, a key, a URL, a path, a SQL statement, a
+function name), the value is model output, so the tool has to check it before using
+it. This gate finds every Strands tool in first-party code and, for each parameter
+whose name says it is such a reference, requires one of:
+
+* the parameter's first use in the function body is as a direct argument of a
+  registered validator (:data:`VALIDATORS`), called unconditionally (a statement of
+  the function body, or of a ``try`` block that is one); or
+* its first use is as a direct argument of another tool in the universe that itself
+  passes for the parameter it receives (a wrapper delegating to a checked tool); or
+* the parameter is annotated ``bool``, ``int`` or ``float`` (:data:`SCALAR_ANNOTATIONS`),
+  so it holds a flag or a number whatever it is called; or
+* the parameter is named in :data:`RESOURCE_ARGUMENTS_PERMITTED_UNVALIDATED` with a
+  reason specific to that one parameter.
+
+"First use" is the first load of the name in source order, so a value logged,
+reformatted or passed anywhere before the validator sees it fails. A tool that never
+reads the parameter passes, since it cannot act on it.
+
+What this does **not** establish: that a validator is *sufficient* for its argument
+(each validator's own tests say what it accepts), or anything about a value the tool
+derives from a parameter whose name does not look like a reference. The name
+vocabulary in :func:`_names_a_resource` is the reach, and it is a reach by spelling.
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: First-party trees whose tools are checked. Tests are not part of the universe.
+TOOL_TREES = ("lib", "src", "nested", "patterns", "feature-platform")
+
+#: Name parts that make a parameter a reference to something a tool reads or runs.
+RESOURCE_NAME_PARTS = frozenset(
+    {"uri", "url", "bucket", "key", "path", "sql", "query", "arn"}
+)
+
+#: A parameter annotated with one of these holds a flag or a number, which cannot
+#: name a resource whatever the parameter is called (``return_full_query_results``).
+SCALAR_ANNOTATIONS = frozenset({"bool", "int", "float"})
+
+#: Validators a resource argument may be passed to first, with the module that
+#: defines each. The module must exist and define the name.
+VALIDATORS: Dict[str, str] = {
+    "validate_read_only_query": (
+        "lib/idp_common_pkg/idp_common/agents/analytics/query_validation.py"
+    ),
+}
+
+#: ``<path>::<function>::<parameter>`` for tool parameters that name a resource and
+#: are used without a validator, each with the reason for that one parameter.
+RESOURCE_ARGUMENTS_PERMITTED_UNVALIDATED: Dict[str, str] = {
+    "lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/dynamodb_tool.py"
+    "::fetch_document_record::object_key": (
+        "Used as the partition key of one GetItem on the stack's own tracking table "
+        "(doc#<object_key>), so it can only select a tracking record, never another "
+        "table or bucket. Which documents a caller may name is a configuration-scope "
+        "question for the agent's caller, and no validator for a document key exists "
+        "yet."
+    ),
+    "lib/idp_common_pkg/idp_common/extraction/agentic_idp.py"
+    "::view_buffer_data_section::path": (
+        "A JSON Pointer into the agent's own in-memory extraction buffer "
+        "(agent.state); the function makes no AWS or HTTP call, which "
+        "test_in_memory_members_make_no_service_call checks."
+    ),
+}
+
+#: Members of the mapping above whose reason rests on the function calling no
+#: service. Checked by reading the function body.
+IN_MEMORY_MEMBERS = (
+    "lib/idp_common_pkg/idp_common/extraction/agentic_idp.py"
+    "::view_buffer_data_section::path",
+)
+
+#: Tools known to exist when this gate was written, so the universe derivation is
+#: checked against something it did not produce.
+MEASURED_TOOLS = {
+    (
+        "lib/idp_common_pkg/idp_common/agents/analytics/tools/athena_tool.py",
+        "run_athena_query",
+    ),
+    (
+        "lib/idp_common_pkg/idp_common/agents/analytics/agent.py",
+        "run_athena_query_with_config",
+    ),
+    (
+        "lib/idp_common_pkg/idp_common/agents/analytics/tools/code_interpreter_tools.py",
+        "write_query_results_to_code_sandbox",
+    ),
+}
+
+
+def _names_a_resource(param: str) -> bool:
+    parts = param.lower().split("_")
+    return param == "function_name" or any(p in RESOURCE_NAME_PARTS for p in parts)
+
+
+def _is_tool_decorator(node: ast.expr) -> bool:
+    target = node.func if isinstance(node, ast.Call) else node
+    if isinstance(target, ast.Name):
+        return target.id == "tool"
+    if isinstance(target, ast.Attribute):
+        return target.attr == "tool"
+    return False
+
+
+@dataclass(frozen=True)
+class Tool:
+    path: str
+    name: str
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+
+    def params(self) -> List[str]:
+        args = self.node.args
+        names = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
+        return [n for n in names if n not in ("self", "cls")]
+
+    def annotation(self, param: str) -> str:
+        args = self.node.args
+        for a in args.posonlyargs + args.args + args.kwonlyargs:
+            if a.arg == param and a.annotation is not None:
+                return ast.unparse(a.annotation)
+        return ""
+
+
+def _tracked_python(trees: Tuple[str, ...]) -> List[str]:
+    out = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", *trees],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    return [
+        p
+        for p in out
+        if p.endswith(".py")
+        and "/tests/" not in f"/{p}"
+        and not Path(p).name.startswith("test_")
+        and (REPO_ROOT / p).is_file()
+    ]
+
+
+def _universe() -> List[Tool]:
+    tools = []
+    for rel in _tracked_python(TOOL_TREES):
+        try:
+            tree = ast.parse((REPO_ROOT / rel).read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                _is_tool_decorator(d) for d in node.decorator_list
+            ):
+                tools.append(Tool(rel, node.name, node))
+    return tools
+
+
+_UNIVERSE: Optional[List[Tool]] = None
+
+
+def universe() -> List[Tool]:
+    global _UNIVERSE
+    if _UNIVERSE is None:
+        _UNIVERSE = _universe()
+    return _UNIVERSE
+
+
+def _unconditional_statements(fn: ast.AST) -> List[ast.stmt]:
+    """Statements that run on every call up to the first exception: the function
+    body, and the body of any ``try`` among them, recursively."""
+    out: List[ast.stmt] = []
+    pending = list(getattr(fn, "body", []))
+    while pending:
+        stmt = pending.pop(0)
+        out.append(stmt)
+        if isinstance(stmt, ast.Try):
+            pending[:0] = stmt.body
+    return out
+
+
+def _first_load(fn: ast.AST, param: str) -> Optional[ast.Name]:
+    loads = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Name) and n.id == param and isinstance(n.ctx, ast.Load)
+    ]
+    return min(loads, key=lambda n: (n.lineno, n.col_offset), default=None)
+
+
+def _call_taking(fn: ast.AST, name_node: ast.Name) -> Optional[Tuple[ast.Call, int]]:
+    """The call that takes ``name_node`` as a direct argument, and its position
+    (``-1`` for a keyword argument)."""
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        for i, arg in enumerate(node.args):
+            if arg is name_node:
+                return node, i
+        for kw in node.keywords:
+            if kw.value is name_node:
+                return node, -1
+    return None
+
+
+def _callee_name(call: ast.Call) -> str:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return ""
+
+
+def _verdict(tool: Tool, param: str, depth: int = 0) -> Tuple[bool, str]:
+    first = _first_load(tool.node, param)
+    if first is None:
+        return True, "never read"
+    taking = _call_taking(tool.node, first)
+    if taking is None:
+        return False, f"first used at line {first.lineno} outside any call"
+    call, position = taking
+    callee = _callee_name(call)
+    if callee in VALIDATORS:
+        top_level_calls = {
+            id(s.value)
+            for s in _unconditional_statements(tool.node)
+            if isinstance(s, (ast.Expr, ast.Assign, ast.AnnAssign, ast.Return))
+            and isinstance(getattr(s, "value", None), ast.Call)
+        }
+        if id(call) in top_level_calls:
+            return True, f"validated by {callee}"
+        return False, f"{callee} is called conditionally (line {call.lineno})"
+    targets = [t for t in universe() if t.name == callee]
+    if targets and depth < 3:
+        target = targets[0]
+        target_params = target.params()
+        if position >= 0 and position < len(target_params):
+            forwarded = target_params[position]
+        else:
+            kw = next(k for k in call.keywords if k.value is first)
+            forwarded = kw.arg or ""
+        ok, why = _verdict(target, forwarded, depth + 1)
+        return ok, f"forwarded to tool {callee}({forwarded}): {why}"
+    return False, f"first passed to {callee or 'a call'}() at line {call.lineno}"
+
+
+def _cases() -> List[Tuple[str, Tool, str]]:
+    return [
+        (f"{t.path}::{t.name}::{p}", t, p)
+        for t in universe()
+        for p in t.params()
+        if _names_a_resource(p) and t.annotation(p) not in SCALAR_ANNOTATIONS
+    ]
+
+
+@pytest.mark.unit
+def test_the_universe_is_derived_and_non_empty():
+    found = {(t.path, t.name) for t in universe()}
+    assert found, "no Strands tool was found in any first-party tree"
+    missing = sorted(MEASURED_TOOLS - found)
+    assert not missing, f"tools the derivation no longer finds: {missing}"
+    assert _cases(), "no tool parameter names a resource; the gate checks nothing"
+
+
+@pytest.mark.unit
+def test_every_validator_is_defined_where_it_is_registered():
+    for name, rel in VALIDATORS.items():
+        tree = ast.parse((REPO_ROOT / rel).read_text())
+        defined = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef,))}
+        assert name in defined, f"{name} is not defined in {rel}"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "member, tool, param", _cases(), ids=[c[0].split("/")[-1] for c in _cases()]
+)
+def test_resource_arguments_are_validated_before_use(member, tool, param):
+    ok, why = _verdict(tool, param)
+    if member in RESOURCE_ARGUMENTS_PERMITTED_UNVALIDATED:
+        assert not ok, (
+            f"{member} is listed in RESOURCE_ARGUMENTS_PERMITTED_UNVALIDATED but now "
+            f"passes ({why}). Remove the stale entry."
+        )
+        return
+    assert ok, (
+        f"{member}: the tool argument names a resource and is not validated before "
+        f"use ({why}). Pass it to a validator in VALIDATORS first, or list it in "
+        "RESOURCE_ARGUMENTS_PERMITTED_UNVALIDATED with the reason for that parameter."
+    )
+
+
+@pytest.mark.unit
+def test_every_listed_member_still_exists():
+    members = {c[0] for c in _cases()}
+    vanished = sorted(set(RESOURCE_ARGUMENTS_PERMITTED_UNVALIDATED) - members)
+    assert not vanished, (
+        f"listed members no longer in the universe (stale entries): {vanished}"
+    )
+
+
+_SERVICE_NAMES = re.compile(
+    r"\b(boto3|botocore|httpx|requests|urllib|client|session)\b"
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("member", IN_MEMORY_MEMBERS)
+def test_in_memory_members_make_no_service_call(member):
+    assert member in RESOURCE_ARGUMENTS_PERMITTED_UNVALIDATED
+    path, name, _ = member.split("::")
+    tool = next(t for t in universe() if t.path == path and t.name == name)
+    body = ast.unparse(tool.node)
+    assert not _SERVICE_NAMES.search(body), (
+        f"{member} is listed because it calls no service, and its body now names "
+        f"{_SERVICE_NAMES.search(body).group(0)!r}"
+    )

@@ -122,10 +122,12 @@ def test_refused(query):
 
 @pytest.mark.unit
 def test_the_corpus_covers_the_shapes_the_tool_must_refuse():
-    """Non-vacuity: the refused corpus is large enough to mean something, and every
-    disallowed keyword is refused when it appears bare in a SELECT, which is the one
-    position the leading-keyword rule alone does not cover."""
+    """Non-vacuity: an empty corpus would make the parametrized tests above vacuous,
+    so both are held to a floor, and every refused keyword is refused when it appears
+    bare in a SELECT, which is the one position the leading-keyword rule alone does
+    not cover."""
     assert len(REFUSED) >= 20
+    assert len(ACCEPTED) >= 10
     for keyword in sorted(REFUSED_KEYWORDS):
         with pytest.raises(QueryNotAllowedError):
             validate_read_only_query(f"SELECT x FROM t WHERE {keyword} = 1")

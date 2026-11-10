@@ -92,8 +92,12 @@ REFUSED = [
 
 @pytest.mark.unit
 def test_the_prompt_examples_are_found():
-    """Non-vacuity for the derived half: an empty list would collect as no cases."""
+    """Non-vacuity: an empty list collects as no cases and the parametrized tests
+    would be vacuous, so the derived examples and both hand-written corpora are held
+    to a floor."""
     assert len(_prompt_examples()) >= 2
+    assert len(ACCEPTED) >= 5
+    assert len(REFUSED) >= 20
 
 
 @pytest.mark.unit
