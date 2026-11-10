@@ -1624,9 +1624,24 @@ Resources:
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           MULTI_DOC_DISCOVERY_STATE_MACHINE_ARN: !Ref MultiDocDiscoveryStateMachineArn
           S3_ENDPOINT_URL: !If [HasS3EndpointUrl, !Ref S3EndpointUrl, !Ref AWS::NoValue]
+          # The caller's allowedConfigVersions, checked against the profile each
+          # discovery operation names.
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref DiscoveryUploadResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions.
+        # The lookup fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - Statement:
             # Configuration-profile revision bodies (config_revisions/<profile>/).
             # This function saves profiles, and a save that cannot cut a revision

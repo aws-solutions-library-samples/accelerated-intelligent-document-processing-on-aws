@@ -12,6 +12,14 @@ from datetime import datetime, timedelta, timezone
 import boto3
 from botocore.config import Config
 import idp_common.s3_targets as s3_targets
+from idp_common.api_adapter import ResourceAccessDenied
+from idp_common.config_scope import (
+    ScopeLookupError,
+    caller_email_from_claims,
+    caller_sub_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -35,6 +43,76 @@ sqs_client = boto3.client('sqs')
 dynamodb = boto3.resource('dynamodb')
 
 sfn_client = boto3.client('stepfunctions')
+
+# Per-container cache of callers' configuration scopes (see config_scope).
+_user_scope_cache: dict = {}
+_USER_SCOPE_CACHE_TTL = 60  # seconds
+
+
+def _caller_config_scope(event):
+    """The caller's ``allowedConfigVersions``, or None when unrestricted.
+
+    Admins are unrestricted and never looked up, as in every other resolver that
+    applies this rule. For everyone else the shared lookup fails CLOSED: a scope
+    that cannot be evaluated is refused, never read as "unrestricted".
+    """
+    if _caller_in_groups(event, ("Admin",)):
+        return None
+    claims = (event.get("identity") or {}).get("claims") or {}
+    try:
+        return resolve_allowed_config_versions(
+            caller_email_from_claims(claims),
+            caller_sub=caller_sub_from_claims(claims),
+            users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+            dynamodb=dynamodb,
+            cache=_user_scope_cache,
+            cache_ttl=_USER_SCOPE_CACHE_TTL,
+        )
+    except ScopeLookupError as e:
+        logger.error(f"Denying discovery request: configuration scope could not be resolved: {e}")
+        raise PermissionError(
+            "Unauthorized: your configuration scope could not be verified"
+        ) from e
+
+
+def _assert_profile_in_scope(event, version, missing_means_active=False):
+    """Refuse a configuration profile outside the caller's allowedConfigVersions.
+
+    Every discovery operation reads the named profile's settings and most of them
+    write the discovered schema back into it, so the rule is the one
+    ``updateConfiguration`` and ``setActiveVersion`` apply: a scoped caller may name
+    only a profile their scope admits, and an empty or missing name is refused for
+    a scoped caller because it cannot be shown to be in scope.
+
+    ``missing_means_active`` is for the one read-only operation that accepts no
+    version and then reads the active profile: the check is then made on the
+    profile that is actually read.
+    """
+    allowed = _caller_config_scope(event)
+    if allowed is None:
+        return
+    if not version and missing_means_active:
+        version = _active_version()
+    if not scope_allows(allowed, version):
+        logger.warning("Refusing discovery request: configuration profile is outside the caller's scope")
+        raise ResourceAccessDenied(
+            f"Unauthorized: configuration profile '{version}' is not in your allowed scope"
+        )
+
+
+def _assert_replace_allowed(version):
+    """Refuse ``saveMode: replace`` against the profile documents are processed under.
+
+    Replace clears the profile's discovered schema before discovery runs, so on the
+    active profile every document arriving during the run would be classified
+    against an empty class list. Augment is unaffected, and replace on any other
+    profile is unaffected.
+    """
+    if version == _active_version():
+        raise ValueError(
+            f"'Replace' cannot be used on the active configuration profile '{version}'. "
+            "Use 'Augment', or run discovery into another profile and activate it afterwards."
+        )
 
 
 def _clear_version_schema(version, discovery_type='classes'):
@@ -143,6 +221,11 @@ def handle_auto_detect_sections(event, context):
     if not document_key or not bucket:
         raise ValueError("documentKey and bucket are required")
 
+    # The profile's discovery settings (model, prompt) are read for this call. With
+    # no version the active profile is read, which is a profile name too, so the
+    # check runs on what is actually read.
+    _assert_profile_in_scope(event, version, missing_means_active=True)
+
     # A read rather than a write, so the bucket allow-list applies and the write-once
     # key rule does not.
     s3_targets.assert_bucket_allowed(bucket, ALLOWED_BUCKETS, logger=logger)
@@ -171,6 +254,12 @@ def handle_auto_detect_sections(event, context):
         raise
 
 
+def _active_version():
+    from idp_common.config.configuration_manager import ConfigurationManager
+
+    return ConfigurationManager().resolve_active_version(raise_errors=True)
+
+
 def handle_upload_discovery_document(event, context):
     """
     Generates a presigned POST URL for S3 uploads and manages discovery job tracking.
@@ -194,12 +283,26 @@ def handle_upload_discovery_document(event, context):
         if not file_name:
             raise ValueError("fileName is required")
 
+        # A discovery job writes its result into this profile, so it has to be
+        # named: falling back to whichever profile is active would write into a
+        # profile the caller never chose. The presign-only call (skipJobCreation)
+        # creates no job and writes nothing.
+        if not skip_job_creation and not version:
+            raise ValueError(
+                "version is required: name the configuration profile to save the discovered schema to"
+            )
+        if version or not skip_job_creation:
+            _assert_profile_in_scope(event, version)
+
         # The 'default' config version is read-only — discovery must target a
         # user-created version so the built-in defaults are never overwritten.
         if version == 'default':
             raise ValueError(
                 "The 'default' configuration version is read-only. Create a new version to save the discovered schema."
             )
+
+        if save_mode == 'replace' and not skip_job_creation:
+            _assert_replace_allowed(version)
 
         # Get bucket from arguments
         bucket_name = arguments.get('bucket')
@@ -419,6 +522,8 @@ def handle_start_multi_doc_discovery(event, context):
     if not config_version:
         raise ValueError("configVersion is required")
 
+    _assert_profile_in_scope(event, config_version)
+
     # The 'default' config version is read-only — discovery must target a
     # user-created version so the built-in defaults are never overwritten.
     if config_version == 'default':
@@ -433,6 +538,7 @@ def handle_start_multi_doc_discovery(event, context):
     # pipeline runs, so the Save step (which merges each discovered class via
     # ClassesDiscovery._merge_and_save_class) rebuilds the list from scratch.
     if save_mode == 'replace':
+        _assert_replace_allowed(config_version)
         _clear_version_schema(config_version, discovery_type='classes')
 
     job_id = str(uuid.uuid4())
@@ -560,6 +666,8 @@ def handle_upload_multi_doc_discovery_zip(event, context):
         raise ValueError("File must be a .zip file")
     if not config_version:
         raise ValueError("configVersion is required")
+
+    _assert_profile_in_scope(event, config_version)
 
     bucket = os.environ.get('DISCOVERY_BUCKET', '')
     object_key = multi_doc_zip_key(file_name)
