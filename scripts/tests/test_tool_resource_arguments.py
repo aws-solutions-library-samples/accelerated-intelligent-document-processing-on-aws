@@ -121,7 +121,7 @@ def _names_a_resource(param: str) -> bool:
 
 def _tool_aliases(module: ast.Module) -> set:
     """Names a module binds to the Strands ``tool`` decorator: ``tool`` itself and
-    any ``from strands... import tool as <alias>``."""
+    any ``from strands... import tool as <alias>`` or ``<alias> = ...tool``."""
     names = {"tool"}
     for node in ast.walk(module):
         if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
@@ -130,6 +130,12 @@ def _tool_aliases(module: ast.Module) -> set:
             for alias in node.names:
                 if alias.name == "tool" and alias.asname:
                     names.add(alias.asname)
+        # agent_tool = tool / agent_tool = strands.tool
+        if isinstance(node, ast.Assign) and (
+            (isinstance(node.value, ast.Name) and node.value.id == "tool")
+            or (isinstance(node.value, ast.Attribute) and node.value.attr == "tool")
+        ):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
     return names
 
 
@@ -206,31 +212,66 @@ def universe() -> List[Tool]:
     return _UNIVERSE
 
 
-def _unconditional_statements(fn: ast.AST) -> List[ast.stmt]:
+def _handler_is_safe(handler: ast.ExceptHandler, param: str) -> bool:
+    """A handler ends in ``return`` or ``raise`` and passes ``param`` to no call."""
+    if not handler.body or not isinstance(handler.body[-1], (ast.Return, ast.Raise)):
+        return False
+    for node in ast.walk(handler):
+        if isinstance(node, ast.Call):
+            args = list(node.args) + [k.value for k in node.keywords]
+            if any(isinstance(a, ast.Name) and a.id == param for a in args):
+                return False
+    return True
+
+
+def _unconditional_statements(fn: ast.AST, param: str) -> List[ast.stmt]:
     """Statements that run on every call up to the first exception: the function
     body, and the body of any ``try`` among them, recursively -- but only a ``try``
-    whose every handler ends in ``return`` or ``raise``. A handler that falls through
-    would let execution continue past a validator that raised."""
+    that has at least one handler, whose every handler ends in ``return`` or
+    ``raise`` without passing ``param`` to a call, and whose ``finally`` (if any)
+    contains no ``return``, ``break`` or ``continue``. Otherwise a validator that
+    raised could be stepped past."""
     out: List[ast.stmt] = []
     pending = list(getattr(fn, "body", []))
     while pending:
         stmt = pending.pop(0)
         out.append(stmt)
-        if isinstance(stmt, ast.Try) and all(
-            h.body and isinstance(h.body[-1], (ast.Return, ast.Raise))
-            for h in stmt.handlers
+        if (
+            isinstance(stmt, ast.Try)
+            and stmt.handlers
+            and all(_handler_is_safe(h, param) for h in stmt.handlers)
+            and not any(
+                isinstance(n, (ast.Return, ast.Break, ast.Continue))
+                for f in stmt.finalbody
+                for n in ast.walk(f)
+            )
         ):
             pending[:0] = stmt.body
     return out
 
 
+def _resolve_import(tool_path: str, node: ast.ImportFrom) -> List[str]:
+    """Repository paths an ``ImportFrom`` can name: relative imports resolved from
+    the tool's file, absolute ones under each ``lib/*`` package root."""
+    parts = (node.module or "").split(".") if node.module else []
+    if node.level:
+        base = Path(tool_path).parent
+        for _ in range(node.level - 1):
+            base = base.parent
+        return [str(base.joinpath(*parts)) + ".py"]
+    return [
+        str(root.relative_to(REPO_ROOT).joinpath(*parts)) + ".py"
+        for root in sorted((REPO_ROOT / "lib").glob("*"))
+        if root.is_dir()
+    ]
+
+
 def _imports_validator(tool: "Tool", name: str) -> bool:
     """The tool's module imports ``name`` from the module :data:`VALIDATORS`
     registers for it, and does not define a function of that name itself."""
-    stem = Path(VALIDATORS[name]).stem
     imported = any(
         isinstance(n, ast.ImportFrom)
-        and (n.module or "").split(".")[-1] == stem
+        and VALIDATORS[name] in _resolve_import(tool.path, n)
         and any(a.name == name and a.asname in (None, name) for a in n.names)
         for n in ast.walk(tool.module)
     )
@@ -293,7 +334,7 @@ def _verdict(tool: Tool, param: str, depth: int = 0) -> Tuple[bool, str]:
             return False, f"{callee} is not the one imported from {VALIDATORS[callee]}"
         top_level_calls = {
             id(s.value)
-            for s in _unconditional_statements(tool.node)
+            for s in _unconditional_statements(tool.node, param)
             if isinstance(s, (ast.Expr, ast.Assign, ast.AnnAssign, ast.Return))
             and isinstance(getattr(s, "value", None), ast.Call)
         }
@@ -314,20 +355,22 @@ def _verdict(tool: Tool, param: str, depth: int = 0) -> Tuple[bool, str]:
     return False, f"first passed to {callee or 'a call'}() at line {call.lineno}"
 
 
-def _cases() -> List[Tuple[str, Tool, str]]:
+def _tool_cases(t: Tool) -> List[Tuple[str, Tool, str]]:
     cases = [
         (f"{t.path}::{t.name}::{p}", t, p)
-        for t in universe()
         for p in t.params()
         if _names_a_resource(p) and t.annotation(p) not in SCALAR_ANNOTATIONS
     ]
     # A variadic parameter can carry any argument under any name, so it is a case
     # whatever it is called, and it can never be validated by name.
-    for t in universe():
-        for variadic in (t.node.args.vararg, t.node.args.kwarg):
-            if variadic is not None:
-                cases.append((f"{t.path}::{t.name}::*{variadic.arg}", t, "*"))
+    for variadic in (t.node.args.vararg, t.node.args.kwarg):
+        if variadic is not None:
+            cases.append((f"{t.path}::{t.name}::*{variadic.arg}", t, "*"))
     return cases
+
+
+def _cases() -> List[Tuple[str, Tool, str]]:
+    return [case for t in universe() for case in _tool_cases(t)]
 
 
 @pytest.mark.unit
@@ -391,3 +434,116 @@ def test_in_memory_members_make_no_service_call(member):
         f"{member} is listed because it calls no service, and its body now names "
         f"{_SERVICE_NAMES.search(body).group(0)!r}"
     )
+
+
+#: A file beside the validator, so a relative import of it resolves.
+_SYNTHETIC_PATH = "lib/idp_common_pkg/idp_common/agents/analytics/tools/synthetic.py"
+
+_HEADER = (
+    "from strands import tool\n"
+    "from ..query_validation import validate_read_only_query\n"
+)
+
+
+def _synthetic(source: str, header: str = _HEADER) -> Tool:
+    module = ast.parse(header + source)
+    aliases = _tool_aliases(module)
+    for node in ast.walk(module):
+        if isinstance(node, ast.FunctionDef) and any(
+            _is_tool_decorator(d, aliases) for d in node.decorator_list
+        ):
+            return Tool(_SYNTHETIC_PATH, node.name, node, module)
+    raise AssertionError("the synthetic source defines no tool")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source, header, passes",
+    [
+        pytest.param(
+            "@tool\ndef t(query: str):\n    query = validate_read_only_query(query)\n"
+            "    return run(query)\n",
+            _HEADER,
+            True,
+            id="validated-first",
+        ),
+        pytest.param(
+            "@tool\ndef t(query: str):\n    try:\n"
+            "        validate_read_only_query(query)\n"
+            "    except ValueError:\n        return None\n    return run(query)\n",
+            _HEADER,
+            True,
+            id="validated-in-try-whose-handler-returns",
+        ),
+        pytest.param(
+            "@tool\ndef t(query: str):\n    try:\n"
+            "        validate_read_only_query(query)\n"
+            "    except ValueError:\n        pass\n    return run(query)\n",
+            _HEADER,
+            False,
+            id="handler-falls-through",
+        ),
+        pytest.param(
+            "@tool\ndef t(query: str):\n    try:\n"
+            "        validate_read_only_query(query)\n"
+            "    except ValueError:\n        return None\n"
+            "    finally:\n        return run(query)\n",
+            _HEADER,
+            False,
+            id="finally-returns",
+        ),
+        pytest.param(
+            "@tool\ndef t(query: str):\n    try:\n"
+            "        validate_read_only_query(query)\n"
+            "    except ValueError:\n        return run(query)\n",
+            _HEADER,
+            False,
+            id="handler-uses-the-argument",
+        ),
+        pytest.param(
+            "@tool\ndef t(query: str):\n    validate_read_only_query(query)\n",
+            "from strands import tool\n"
+            "from elsewhere.query_validation import validate_read_only_query\n",
+            False,
+            id="validator-from-another-module",
+        ),
+        pytest.param(
+            "def validate_read_only_query(q):\n    return q\n"
+            "@tool\ndef t(query: str):\n    validate_read_only_query(query)\n",
+            _HEADER,
+            False,
+            id="validator-redefined",
+        ),
+        pytest.param(
+            "@tool\ndef t(query: str):\n    if query:\n"
+            "        validate_read_only_query(query)\n",
+            _HEADER,
+            False,
+            id="validator-conditional",
+        ),
+    ],
+)
+def test_the_validation_rule_on_synthetic_tools(source, header, passes):
+    """The rule's branches, each driven by a synthetic tool, because the tree has
+    no tool exercising most of them and a rule no input reaches cannot go red."""
+    ok, why = _verdict(_synthetic(source, header), "query")
+    assert ok is passes, why
+
+
+@pytest.mark.unit
+def test_aliased_decorators_are_found():
+    for header in (
+        "from strands import tool as agent_tool\n",
+        "import strands\nagent_tool = strands.tool\n",
+    ):
+        tool = _synthetic("@agent_tool\ndef t(query: str):\n    pass\n", header)
+        assert tool.name == "t"
+
+
+@pytest.mark.unit
+def test_a_variadic_parameter_is_always_a_case():
+    for signature in ("**extra", "*rest", "location: str, **extra"):
+        tool = _synthetic(f"@tool\ndef t({signature}):\n    pass\n")
+        variadic = [c for c in _tool_cases(tool) if c[2] == "*"]
+        assert len(variadic) == 1, signature
+        assert _verdict(tool, "*")[0] is False
