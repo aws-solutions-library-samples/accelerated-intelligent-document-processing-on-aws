@@ -547,11 +547,11 @@ Everything else the run needs is in place, so with such a role the schedule runs
 written, apart from the time limit below.
 
 ⚠️ **The run does not fit the CodeBuild project's time limit either.** Measured on a
-live run, the driver takes about 170 minutes end to end: about 20 to deploy and seed
-the upstream deployment, 77 waiting on DynamoDB (it refuses to turn the agent-jobs
+live run (the passing one), the driver took 166 minutes end to end: about 20 to deploy
+and seed the upstream deployment, 76 waiting on DynamoDB (it refuses to turn the agent-jobs
 table's time-to-live off until about an hour after upstream enabled it at creation,
 and refuses the module's new time-to-live setting until about an hour after that),
-32 for the adoption apply, and about 30 to destroy both deployments. With publish
+33 for the adoption apply, and 27 to destroy both deployments and sweep. With publish
 and the `-iam` pre-stack in front of it, that is more than the project's
 `TimeoutInMinutes: 180` (`scripts/sdlc/cfn/codepipeline-s3.yml`), and the GitLab
 job's `3h30m` leaves little margin. `TERRAFORM_MIGRATION_TIMEOUT_SECONDS` is set to
