@@ -57,10 +57,11 @@ _user_cache: Dict[tuple, Any] = {}
 
 def _client(name: str):
     if name not in _clients:
+        region = os.environ.get("AWS_REGION")
         if name == "dynamodb":
-            _clients[name] = boto3.resource("dynamodb")
+            _clients[name] = boto3.resource("dynamodb", region_name=region)
         else:
-            _clients[name] = boto3.client(name)
+            _clients[name] = boto3.client(name, region_name=region)
     return _clients[name]
 
 

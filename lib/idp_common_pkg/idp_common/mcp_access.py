@@ -450,7 +450,7 @@ def resolve_user_caller(
         raise refusal("the signed-in user is disabled.")
     roles = app_roles(claims.get("cognito:groups") or ())
     if not roles:
-        raise refusal("the signed-in user holds no role in this deployment.")
+        raise refusal("the signed-in user holds no role the MCP server admits.")
     if any(role in UNSCOPED_ROLES for role in roles):
         scope = None
     else:

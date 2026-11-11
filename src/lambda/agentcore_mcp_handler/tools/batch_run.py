@@ -278,8 +278,12 @@ class BatchRunTool(IDPTool):
         table_name = os.environ.get('CONFIGURATION_TABLE_NAME', '')
         if not table_name:
             raise RuntimeError("CONFIGURATION_TABLE_NAME is not set")
-        manager = ConfigurationManager(table_name=table_name)
-        table = boto3.resource('dynamodb').Table(table_name)
+        manager = ConfigurationManager(
+            table_name=table_name, region=os.environ.get('AWS_REGION')
+        )
+        table = boto3.resource(
+            'dynamodb', region_name=os.environ.get('AWS_REGION')
+        ).Table(table_name)
 
         def profile_exists(name: str) -> bool:
             item = table.get_item(

@@ -48,9 +48,9 @@ def config_version_lookup(
     if tracking_table is None:
         import boto3
 
-        tracking_table = boto3.resource("dynamodb").Table(
-            os.environ["TRACKING_TABLE_NAME"]
-        )
+        tracking_table = boto3.resource(
+            "dynamodb", region_name=os.environ.get("AWS_REGION")
+        ).Table(os.environ["TRACKING_TABLE_NAME"])
     memo: Dict[str, Any] = {}
 
     def lookup(key: str) -> Any:

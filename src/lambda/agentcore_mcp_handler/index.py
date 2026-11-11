@@ -72,7 +72,8 @@ def _key() -> bytes:
     secret_id = os.environ.get("CALLER_SIGNING_SECRET_ARN", "")
     if secret_id not in _signing_key:
         _signing_key[secret_id] = mcp_access.load_signing_key(
-            boto3.client("secretsmanager"), secret_id
+            boto3.client("secretsmanager", region_name=os.environ.get("AWS_REGION")),
+            secret_id,
         )
     return _signing_key[secret_id]
 

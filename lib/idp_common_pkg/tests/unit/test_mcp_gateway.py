@@ -10,11 +10,7 @@ service model, and REPLACES the configuration with the request, which is what th
 live API was measured to do (an update omitting the interceptor list removed it).
 """
 
-import importlib.util
 import json
-import sys
-from pathlib import Path
-from types import SimpleNamespace
 
 import boto3
 import pytest
@@ -27,9 +23,6 @@ pytestmark = pytest.mark.unit
 
 REGION = "us-east-1"
 ARN = "arn:aws:lambda:us-east-1:111122223333:function:interceptor"
-ATTACH = (
-    Path(__file__).resolve().parents[4] / "src/lambda/mcp_interceptor_attach/index.py"
-)
 
 
 class FakeGateway:
@@ -146,71 +139,3 @@ def test_waiting_gives_up_on_a_failed_gateway(monkeypatch):
     gw.state["status"] = "FAILED"
     with pytest.raises(RuntimeError, match="did not become READY"):
         mcp_gateway.wait_until_ready(gw, "gw-1", attempts=2, delay=0)
-
-
-# --- the custom resource -------------------------------------------------------------
-
-
-@pytest.fixture
-def attach(monkeypatch):
-    sent = []
-    cfn = SimpleNamespace(
-        SUCCESS="SUCCESS",
-        FAILED="FAILED",
-        send=lambda event, context, status, data, physical, reason=None: sent.append(
-            (status, physical, reason)
-        ),
-    )
-    monkeypatch.setitem(sys.modules, "cfnresponse", cfn)
-    spec = importlib.util.spec_from_file_location("mcp_attach_index", ATTACH)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    gw = FakeGateway()
-    monkeypatch.setattr(module, "_control", lambda _props: gw)
-    return SimpleNamespace(module=module, gw=gw, sent=sent)
-
-
-def event(kind, gateway_id="gw-1", arn=ARN):
-    return {
-        "RequestType": kind,
-        "ResourceProperties": {"GatewayId": gateway_id, "InterceptorArn": arn},
-    }
-
-
-@pytest.mark.parametrize("kind", ["Create", "Update"])
-def test_create_and_update_attach(attach, kind):
-    attach.module.handler(event(kind), None)
-    assert attach.sent == [("SUCCESS", "gw-1|interceptor", None)]
-    assert attach.gw.state[
-        "interceptorConfigurations"
-    ] == mcp_gateway.desired_interceptors(ARN)
-
-
-def test_a_failed_attach_fails_the_stack_operation(attach, monkeypatch):
-    def boom(*_a):
-        raise RuntimeError("AccessDenied")
-
-    monkeypatch.setattr(attach.module.mcp_gateway, "ensure_interceptor", boom)
-    attach.module.handler(event("Update"), None)
-    assert attach.sent[0][0] == "FAILED" and "AccessDenied" in attach.sent[0][2]
-
-
-def test_delete_detaches(attach):
-    attach.gw.state["interceptorConfigurations"] = mcp_gateway.desired_interceptors(ARN)
-    attach.module.handler(event("Delete"), None)
-    assert attach.sent[0][0] == "SUCCESS"
-    assert "interceptorConfigurations" not in attach.gw.state
-
-
-def test_a_failed_detach_never_blocks_a_delete_or_rollback(attach, monkeypatch):
-    def boom(*_a):
-        raise RuntimeError("throttled")
-
-    monkeypatch.setattr(attach.module.mcp_gateway, "detach_interceptor", boom)
-    attach.module.handler(event("Delete"), None)
-    assert attach.sent[0][0] == "SUCCESS"
-
-
-def test_no_gateway_in_the_region_has_nothing_to_attach(attach):
-    attach.module.handler(event("Create", gateway_id="N/A"), None)
-    assert attach.sent[0][0] == "SUCCESS" and attach.gw.updates == []

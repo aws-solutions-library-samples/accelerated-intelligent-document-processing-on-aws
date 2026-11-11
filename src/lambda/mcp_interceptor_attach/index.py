@@ -35,7 +35,10 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 
 def _control(props):
-    return boto3.client("bedrock-agentcore-control", region_name=props.get("Region"))
+    return boto3.client(
+        "bedrock-agentcore-control",
+        region_name=props.get("Region") or os.environ.get("AWS_REGION"),
+    )
 
 
 def handler(event, context):

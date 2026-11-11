@@ -50,7 +50,7 @@ ROLE_REFUSALS = (
     "does not permit the",
     "write tools are not enabled",
     "not available to a caller with a configuration scope",
-    "holds no role in this deployment",
+    "holds no role the MCP server admits",
 )
 #: The one refusal ``document_scope`` writes, the same for every out-of-scope case.
 SCOPE_REFUSAL = "not permitted to act on that document"

@@ -389,7 +389,7 @@ def test_process_resolves_the_destination_with_every_seam(monkeypatch):
         monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
 
         class Manager:
-            def __init__(self, table_name):
+            def __init__(self, table_name, region=None):
                 pass
 
             def resolve_active_version(self):
@@ -434,7 +434,7 @@ def test_process_refuses_a_named_profile_a_mapping_overrides(monkeypatch):
         monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "config")
 
         class Manager:
-            def __init__(self, table_name):
+            def __init__(self, table_name, region=None):
                 pass
 
             def resolve_active_version(self):

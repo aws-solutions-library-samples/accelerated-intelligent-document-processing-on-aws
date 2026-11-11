@@ -34,9 +34,7 @@ from idp_common.config_scope import TENANT_GRANT_SOURCE_ENV, TENANT_ISOLATION_EN
 pytestmark = pytest.mark.unit
 
 REGION = "us-east-1"
-INTERCEPTOR = (
-    Path(__file__).resolve().parents[5] / "src/lambda/mcp_identity_interceptor/index.py"
-)
+INTERCEPTOR = Path(__file__).resolve().parent / "index.py"
 REQUEST_ID = "184bd53c-b0bc-48a5-8d59-bcf4b4ada42c"
 USER_CLIENT = "6g97km074t91v627s3ugutgiae"
 SERVICE_CLIENT = "50hmqfukml41lhoj31r0dchceh"
@@ -141,6 +139,7 @@ def world(monkeypatch):
         )["ARN"]
         env = {
             "AWS_REGION": REGION,
+            "AWS_DEFAULT_REGION": REGION,
             "USER_POOL_ID": pool,
             "USERS_TABLE_NAME": "users",
             "MCP_USER_CLIENT_IDS": USER_CLIENT,
