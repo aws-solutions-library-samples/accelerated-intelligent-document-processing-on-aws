@@ -126,11 +126,11 @@ documentation, testing, code-review).
   Start agent's prompt
   (`lib/idp_common_pkg/idp_common/agents/quick_start/agent.py`),
   `docs/quick-start.md` and its stories in `scripts/ux_stories.toml` still match.
-  A contract changed on one side only, or a prompt, page or story that no longer
-  matches, is 🟡. Where the PR description or commit messages are available, also
-  note whether they say how the Quick Start journey was exercised: open it,
-  describe a document, approve the drafted fields, profile created and activated.
-  The paths are in `.claude/rules/quick-start.md`
+  A contract the diff shows changed on one side only is 🔴; one that may be, or a
+  prompt, page or story that no longer matches, is 🟡. Where the PR description or
+  commit messages are available, also note whether they say how the Quick Start
+  journey was exercised: open it, describe a document, approve the drafted fields,
+  profile created and activated. The paths are in `.claude/rules/quick-start.md`
 - No obvious race conditions, unbounded loops, or missing pagination
 - Error handling uses explicit exceptions (no bare `except:`), with `exc_info=True`
 - No removal of observability (X-Ray `patch_all`, structured logging)
