@@ -204,14 +204,91 @@ def test_a_relative_cache_dir_gives_an_absolute_checkov(gate, tmp_path, monkeypa
     scans run from other directories; a relative executable failed the second
     scan with FileNotFoundError."""
     monkeypatch.chdir(tmp_path)
-    venv = Path(".cache/idp-terraform-check/checkov-9.9.9")
+    venv = gate.checkov_venv("9.9.9", Path(".cache/idp-terraform-check"))
     (venv / "bin").mkdir(parents=True)
     (venv / "bin" / "checkov").write_text("")
     (venv / ".installed").write_text("9.9.9")
     exe = gate.checkov_binary("9.9.9", Path(".cache/idp-terraform-check"))
     assert exe.is_absolute()
-    assert exe == (tmp_path / venv / "bin" / "checkov")
+    assert exe == venv / "bin" / "checkov"
     elsewhere = tmp_path / "module"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
     assert exe.is_file()
+
+
+def test_checkov_runs_through_its_interpreter_not_its_shebang(gate, tmp_path):
+    """GitLab's runners failed every scan with `Exec format error`: pip writes
+    checkov's `#!python` line as the venv interpreter's absolute path, which under
+    `/builds/...` is longer than the kernel reads. A script whose shebang cannot
+    be executed must still run, and both entry points must go through the
+    interpreter."""
+    bin_dir = tmp_path / "checkov-9.9.9" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python").symlink_to(sys.executable)
+    exe = bin_dir / "checkov"
+    exe.write_text(
+        "#!/" + "x" * 300 + "/python\n"
+        "import json, sys\n"
+        "if '--list' in sys.argv:\n"
+        "    print('CKV_AWS_1 CKV2_AWS_2')\n"
+        "else:\n"
+        "    print(json.dumps({'results': {'failed_checks': []}}))\n"
+    )
+    exe.chmod(0o755)
+    assert gate.run_checkov(exe, [], tmp_path) == [{"results": {"failed_checks": []}}]
+    assert gate.check_ids(exe, "terraform") == {"CKV_AWS_1", "CKV2_AWS_2"}
+
+
+def test_a_checkov_venv_built_on_another_architecture_is_never_reused(
+    gate, tmp_path, monkeypatch
+):
+    """CI runners of both architectures share one cache entry, and a venv from the
+    other one fails with Exec format error, so each platform gets its own."""
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(gate.platform, "machine", lambda: "x86_64")
+    amd = gate.checkov_venv("9.9.9", cache)
+    (amd / "bin").mkdir(parents=True)
+    (amd / "bin" / "checkov").write_text("")
+    (amd / ".installed").write_text("9.9.9")
+    assert gate.checkov_binary("9.9.9", cache) == amd / "bin" / "checkov"
+
+    monkeypatch.setattr(gate.platform, "machine", lambda: "aarch64")
+    arm = gate.checkov_venv("9.9.9", cache)
+    assert arm != amd
+    installed = []
+
+    def fake_run(argv, **kwargs):
+        installed.append(argv)
+        if argv[1:3] == ["-m", "venv"]:
+            Path(argv[3]).mkdir(parents=True)
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    exe = gate.checkov_binary("9.9.9", cache)
+    assert exe == arm / "bin" / "checkov"
+    assert installed and str(arm) in installed[0]
+    assert (amd / "bin" / "checkov").is_file()
+
+
+def test_checkov_is_started_through_its_interpreter_not_its_launcher(
+    gate, tmp_path, monkeypatch
+):
+    """A CI checkout's virtualenv path makes the launcher's #! line longer than
+    older kernels accept (Exec format error), so both calls run the venv Python."""
+    exe = tmp_path / "venv" / "bin" / "checkov"
+    calls = []
+
+    class _Done:
+        stdout = "[]"
+        stderr = ""
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return _Done()
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    gate.run_checkov(exe, ["-d", "."], tmp_path)
+    gate.check_ids(exe, "terraform")
+    interpreter = str(exe.parent / "python")
+    assert [argv[:2] for argv in calls] == [[interpreter, str(exe)]] * 2

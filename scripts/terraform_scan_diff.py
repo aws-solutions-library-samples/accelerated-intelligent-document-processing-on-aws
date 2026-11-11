@@ -59,6 +59,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -78,6 +79,21 @@ class GateError(Exception):
 
 
 # ------------------------------------------------------------------ checkov
+def checkov_venv(version: str, cache: Path) -> Path:
+    """The virtualenv ``checkov`` at ``version`` lives in, for this platform.
+
+    Keyed by operating system, CPU architecture and Python version: CI runners of
+    both architectures share one cache entry, and a virtualenv holds
+    interpreter-specific binaries, so one built on another runner fails to start
+    (``Exec format error``).
+    """
+    tag = (
+        f"{platform.system().lower()}-{platform.machine().lower()}"
+        f"-py{sys.version_info.major}{sys.version_info.minor}"
+    )
+    return cache.resolve() / f"checkov-{version}-{tag}"
+
+
 def checkov_binary(version: str, cache: Path) -> Path:
     """``checkov`` at exactly ``version``, installed once into ``cache``.
 
@@ -85,7 +101,7 @@ def checkov_binary(version: str, cache: Path) -> Path:
     (``.cache/idp-terraform-check`` on GitHub), and checkov is then run from
     other working directories, where a relative executable path names nothing.
     """
-    venv = cache.resolve() / f"checkov-{version}"
+    venv = checkov_venv(version, cache)
     exe = venv / "bin" / "checkov"
     marker = venv / ".installed"
     if exe.is_file() and marker.is_file() and marker.read_text() == version:
@@ -109,6 +125,17 @@ def checkov_binary(version: str, cache: Path) -> Path:
     return exe
 
 
+def checkov_command(exe: Path) -> list[str]:
+    """How to start ``checkov``: the virtualenv's Python running its launcher.
+
+    pip writes the launcher's ``#!`` line as the virtualenv's interpreter path,
+    which under a CI checkout is longer than the 127 bytes older Linux kernels
+    accept, so executing the launcher itself fails with ``Exec format error``.
+    Executing the interpreter reads no ``#!`` line.
+    """
+    return [str(exe.parent / "python"), str(exe)]
+
+
 def run_checkov(exe: Path, args: list[str], cwd: Path) -> list[dict]:
     env = {
         **os.environ,
@@ -116,7 +143,7 @@ def run_checkov(exe: Path, args: list[str], cwd: Path) -> list[dict]:
         "CHECKOV_RUN_SCA_PACKAGE_SCAN_V2": "",
     }
     proc = subprocess.run(  # nosec B603 - fixed argv
-        [str(exe), *args, "-o", "json", "--compact", "--skip-download"],
+        [*checkov_command(exe), *args, "-o", "json", "--compact", "--skip-download"],
         cwd=cwd,
         env=env,
         capture_output=True,
@@ -135,7 +162,7 @@ def run_checkov(exe: Path, args: list[str], cwd: Path) -> list[dict]:
 
 def check_ids(exe: Path, framework: str) -> set[str]:
     out = subprocess.run(  # nosec B603 - fixed argv
-        [str(exe), "--list", "--framework", framework],
+        [*checkov_command(exe), "--list", "--framework", framework],
         capture_output=True,
         text=True,
         check=True,

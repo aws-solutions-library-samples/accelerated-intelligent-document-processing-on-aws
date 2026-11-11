@@ -126,6 +126,17 @@ UPSTREAM_EXAMPLE = "examples/unified-processor"
 #: resolved, copied into the example before `init` so every run uses the same
 #: provider builds (`init` verifies their hashes against it).
 UPSTREAM_LOCK_FILE = HERE / "terraform_migration_upstream.terraform.lock.hcl"
+#: Written beside every upstream ``aws_iam_role`` and ``aws_iam_policy`` the
+#: example loads, when the run is given an IAM path and a permissions boundary
+#: (CI always is). Terraform merges ``*_override.tf`` into the blocks it names, so
+#: upstream's files are not edited and the pinned commit is what is deployed,
+#: with two attributes added.
+IAM_OVERRIDE_FILE = "zz_idp_ci_iam_override.tf"
+_IAM_RESOURCE_RE = re.compile(
+    r'^\s*resource\s+"(aws_iam_role|aws_iam_policy)"\s+"([^"]+)"', re.MULTILINE
+)
+#: What IAM accepts as a path, with the leading and trailing slash it requires.
+_IAM_PATH_RE = re.compile(r"^/[A-Za-z0-9+=,.@_-]+/$")
 
 SAMPLE_DOCUMENTS = (
     "samples/lending_package.pdf",
@@ -208,6 +219,65 @@ class PhaseFailed(Exception):
 # ---------------------------------------------------------------------------
 # Pure helpers (unit-tested offline in scripts/sdlc/tests)
 # ---------------------------------------------------------------------------
+
+
+def upstream_iam_overrides(
+    upstream_root: Path, iam_path: str, boundary_arn: str
+) -> Dict[Path, str]:
+    """``{override file: content}`` putting every IAM role and managed policy the
+    upstream example loads under ``iam_path``, and every role under
+    ``boundary_arn``.
+
+    Upstream sets no permissions boundary on any role and names many roles and
+    policies from fixed strings (``ConfigurationResolverRole-<random>``) rather
+    than from its prefix, so the CI deploy role, which may create only roles that
+    carry the run's boundary and whose ARN starts with ``role/idp``, refuses them.
+    With the boundary attached and an ``idp…`` path, ``role/<path><name>`` matches
+    the role's existing grant: no IAM permission is widened, and the run's
+    boundary still marks exactly the roles this run may write. Upstream builds no
+    role or policy ARN from a name and the migration adopts no IAM resource
+    (``RECREATE_SAFE_TYPES``), so neither attribute changes what is tested.
+
+    Reads the module tree and the one example the run deploys; ``sources/`` (the
+    accelerator, a submodule), other examples and test fixtures are not loaded by
+    it and are skipped.
+    """
+    if not _IAM_PATH_RE.match(iam_path):
+        raise ValueError(f"{iam_path!r} is not an IAM path")
+    found: Dict[Path, List[Tuple[str, str]]] = {}
+    for dirpath, dirnames, filenames in os.walk(upstream_root):
+        rel = Path(dirpath).relative_to(upstream_root)
+        if rel.parts and rel.parts[0] in ("sources", ".git"):
+            dirnames[:] = []
+            continue
+        if rel.parts[:1] == ("examples",) and not (
+            Path(UPSTREAM_EXAMPLE).is_relative_to(rel) or rel == Path(UPSTREAM_EXAMPLE)
+        ):
+            dirnames[:] = []
+            continue
+        if ".terraform" in rel.parts or "tests" in rel.parts:
+            dirnames[:] = []
+            continue
+        for name in sorted(filenames):
+            if not name.endswith(".tf") or name.endswith("override.tf"):
+                continue
+            text = (Path(dirpath) / name).read_text(encoding="utf-8")
+            found.setdefault(Path(dirpath), []).extend(_IAM_RESOURCE_RE.findall(text))
+    files: Dict[Path, str] = {}
+    for directory, blocks in sorted(found.items()):
+        if not blocks:
+            continue
+        lines = [
+            "# Written by scripts/sdlc/terraform_migration_test.py: puts upstream's IAM",
+            "# under this run's path and permissions boundary. Not part of upstream.",
+        ]
+        for kind, name in blocks:
+            lines += ["", f'resource "{kind}" "{name}" {{', f'  path = "{iam_path}"']
+            if kind == "aws_iam_role":
+                lines.append(f'  permissions_boundary = "{boundary_arn}"')
+            lines.append("}")
+        files[directory / IAM_OVERRIDE_FILE] = "\n".join(lines) + "\n"
+    return files
 
 
 def validate_names(old_name: str, new_name: str) -> List[str]:
@@ -625,10 +695,14 @@ GATING_PHASES = ("verify",)
 
 
 def stored_name_problems(
-    ctx: Dict[str, Any], old_name: str, new_name: str
+    ctx: Dict[str, Any],
+    old_name: str,
+    new_name: str,
+    upstream_iam_path: Optional[str] = None,
 ) -> List[str]:
     """Each run name given on the command line that differs from the one the work
-    directory's run recorded."""
+    directory's run recorded. The upstream IAM path counts as a name: a resumed
+    run under another path would plan every upstream role for replacement."""
     problems = []
     for key, given in (("oldName", old_name), ("newName", new_name)):
         stored = ctx.get(key)
@@ -636,6 +710,11 @@ def stored_name_problems(
             problems.append(
                 f"{key} is {given!r} here but {stored!r} in this work directory's run"
             )
+    if "upstreamIamPath" in ctx and ctx["upstreamIamPath"] != upstream_iam_path:
+        problems.append(
+            f"the upstream IAM path is {upstream_iam_path!r} here but "
+            f"{ctx['upstreamIamPath']!r} in this work directory's run"
+        )
     return problems
 
 
@@ -752,6 +831,10 @@ class Settings:
     #: starts, so that teardown fits inside an outer time limit (CI's build).
     deadline_seconds: Optional[int] = None
     expected_account: Optional[str] = None
+    #: Both or neither: the IAM path and permissions boundary every upstream role
+    #: is created with (see upstream_iam_overrides). CI passes both.
+    upstream_iam_path: Optional[str] = None
+    upstream_permissions_boundary_arn: Optional[str] = None
 
 
 def first_party_pythonpath() -> str:
@@ -983,7 +1066,9 @@ class Run:
         unusable, differ from the ones the work directory's run used, or the
         credentials are for another account than it ran in."""
         problems = validate_names(self.s.old_name, self.s.new_name)
-        problems += stored_name_problems(self.ctx, self.s.old_name, self.s.new_name)
+        problems += stored_name_problems(
+            self.ctx, self.s.old_name, self.s.new_name, self.s.upstream_iam_path
+        )
         account = self.boto("sts").get_caller_identity()["Account"]
         if self.ctx.get("account") and self.ctx["account"] != account:
             problems.append(
@@ -1098,6 +1183,24 @@ class Run:
     def phase_upstream_deploy(self) -> str:
         tfvars = upstream_tfvars(self.s.old_name, self.ctx["runId"], self.s.region)
         (self.old_dir / "terraform.tfvars").write_text(tfvars)
+        overridden = ""
+        if self.s.upstream_iam_path:
+            files = upstream_iam_overrides(
+                self.work / "upstream",
+                self.s.upstream_iam_path,
+                self.s.upstream_permissions_boundary_arn or "",
+            )
+            if not files:
+                raise PhaseFailed(
+                    "found no upstream aws_iam_role to put under the run's boundary; "
+                    "upstream's layout has changed"
+                )
+            for path, text in files.items():
+                path.write_text(text)
+            count = sum(
+                text.count('resource "aws_iam_role"') for text in files.values()
+            )
+            overridden = f", {count} roles under {self.s.upstream_iam_path}"
         lock = self.old_dir / ".terraform.lock.hcl"
         if not lock.exists():
             shutil.copyfile(UPSTREAM_LOCK_FILE, lock)
@@ -1115,7 +1218,7 @@ class Run:
         outputs = json.loads(self.terraform_capture(self.old_dir, "output", "-json"))
         self.ctx["old"] = outputs["e2e_stack"]["value"]
         write_private(self.work / "old-outputs.json", json.dumps(outputs, indent=1))
-        return f"name prefix {self.ctx['old']['name_prefix']}"
+        return f"name prefix {self.ctx['old']['name_prefix']}{overridden}"
 
     # Seeding -----------------------------------------------------------------------
 
@@ -2230,7 +2333,9 @@ class Run:
         return None
 
     def execute(self) -> int:
-        stored = stored_name_problems(self.ctx, self.s.old_name, self.s.new_name)
+        stored = stored_name_problems(
+            self.ctx, self.s.old_name, self.s.new_name, self.s.upstream_iam_path
+        )
         if stored:
             # Refuse before touching the context: overwriting its names would let a
             # later teardown sweep for the wrong deployment.
@@ -2239,6 +2344,7 @@ class Run:
         self.ctx.update(
             oldName=self.s.old_name,
             newName=self.s.new_name,
+            upstreamIamPath=self.s.upstream_iam_path,
             region=self.s.region,
             moduleUrl=self.s.module_url,
             upstreamTag=self.s.upstream_tag,
@@ -2611,6 +2717,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
     p.add_argument("--upstream-tag", default=UPSTREAM_TAG)
     p.add_argument("--upstream-commit", default=UPSTREAM_COMMIT)
     p.add_argument("--expected-account", help="refuse to run in any other account")
+    p.add_argument(
+        "--upstream-iam-path",
+        help="IAM path for every upstream role and policy (with the boundary below)",
+    )
+    p.add_argument(
+        "--upstream-permissions-boundary-arn",
+        help="permissions boundary for every upstream role (with the path above)",
+    )
     p.add_argument("--min-role-headroom", type=int, default=400)
     p.add_argument(
         "--accept-change",
@@ -2637,6 +2751,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         "--stop-after", choices=PHASES, help="stop (without teardown) after this phase"
     )
     a = p.parse_args(argv)
+    if bool(a.upstream_iam_path) != bool(a.upstream_permissions_boundary_arn):
+        p.error(
+            "--upstream-iam-path and --upstream-permissions-boundary-arn go together"
+        )
+    if a.upstream_iam_path and not _IAM_PATH_RE.match(a.upstream_iam_path):
+        p.error(f"--upstream-iam-path {a.upstream_iam_path!r} is not an IAM path")
     work = (
         Path(a.work_dir).expanduser()
         if a.work_dir
@@ -2666,6 +2786,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         accept_changes=tuple(a.accept_change),
         teardown_only=a.teardown_only,
         deadline_seconds=a.deadline_seconds,
+        upstream_iam_path=a.upstream_iam_path,
+        upstream_permissions_boundary_arn=a.upstream_permissions_boundary_arn,
     )
 
 
