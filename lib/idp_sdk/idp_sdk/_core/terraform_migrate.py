@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from idp_common.config.constants import PRE_HISTORY_NOTES
 from idp_sdk.exceptions import IDPConfigurationError
 
 MODULE_CALL = "idp"
@@ -1843,9 +1844,22 @@ class DocumentScan:
     in_review: List[Dict[str, str]] = field(default_factory=list)
     ignored: List[Dict[str, str]] = field(default_factory=list)
     scanned: int = 0
+    #: Every ``doc#`` row read, whatever its sort key (document records plus
+    #: their ``run#...`` rows).
+    document_rows: int = 0
 
     def findings(self) -> List[str]:
         out = []
+        if self.document_rows and not self.scanned:
+            out.append(
+                f"the tracking table holds {self.document_rows} doc# row(s) and "
+                f"none has the sort key {DOCUMENT_RECORD_SK!r} this check reads "
+                "document records from, so no document's status was read. The old "
+                "deployment may store its records under another sort key; the "
+                "in-flight check cannot pass on a table it could not read. Inspect "
+                "the table, and wait for any document still processing before "
+                "continuing"
+            )
         if self.in_flight:
             out.append(
                 f"{len(self.in_flight)} document(s) are still being processed by the "
@@ -1877,19 +1891,24 @@ def scan_documents(table_name: str, ddb, ignore: Iterable[str] = ()) -> Document
     A document record is the ``doc#<key>`` row with sort key ``none``. The same
     partition also holds one ``run#...`` row per processing run, which carries no
     ``ObjectStatus``; counting those would report every finished document as in
-    flight, so they are skipped (and filtered server-side as well).
+    flight, so they are skipped. They are still counted (``document_rows``): a
+    table holding ``doc#`` rows of which none has that sort key is one this
+    check could not read, which is a finding rather than zero documents.
     """
     skip = set(ignore)
     scan = DocumentScan()
     kwargs: Dict[str, Any] = {
         "TableName": table_name,
-        "FilterExpression": "begins_with(PK, :doc) AND SK = :record",
-        "ExpressionAttributeValues": {":doc": {"S": "doc#"}, ":record": {"S": "none"}},
+        "FilterExpression": "begins_with(PK, :doc)",
+        "ExpressionAttributeValues": {":doc": {"S": "doc#"}},
         "ProjectionExpression": "PK, SK, ObjectStatus",
     }
     while True:
         resp = ddb.scan(**kwargs)
         for item in resp.get("Items", []):
+            if not (item.get("PK") or {}).get("S", "").startswith("doc#"):
+                continue
+            scan.document_rows += 1
             if (item.get("SK") or {}).get("S") != DOCUMENT_RECORD_SK:
                 continue
             scan.scanned += 1
@@ -1959,8 +1978,9 @@ def item_from_json(value: Any) -> Any:
 
 
 #: The notes ``ConfigurationManager`` gives the revision it records, on the first
-#: save after revision history is enabled, of what the profile held before.
-PRE_HISTORY_NOTES = "Configuration as it stood before revision history was enabled"
+#: save after revision history is enabled, of what the profile held before, is
+#: PRE_HISTORY_NOTES, imported from idp_common (which writes it) so the two cannot
+#: drift apart.
 STACK_DEPLOYMENT = "stack-deployment"
 
 
@@ -1975,28 +1995,64 @@ def backed_up_profiles(backup: Dict[str, Any]) -> List[str]:
     return sorted(out)
 
 
-def overwritten_revision(revisions: Sequence[Dict[str, Any]]) -> Optional[int]:
-    """The revision to restore when the new deployment's first deploy replaced a
-    kept profile's content, else None.
+@dataclass
+class RestoreDecision:
+    """What restore-config should do with one kept profile.
+
+    ``outcome`` is ``RESTORE`` (put back ``revision``), ``KEPT`` (the content
+    was not replaced), ``EDITED`` (someone changed the profile after the first
+    deploy, so it is left alone; ``revision`` is still the pre-migration one and
+    ``edited_by`` says who) or ``NO_PRE_HISTORY`` (the profile has revisions but
+    none of what it held before: the first deploy's backfill failed, so only the
+    ``fix-config`` backup holds the old content).
+    """
+
+    outcome: str
+    revision: Optional[int] = None
+    edited_by: List[Tuple[int, str]] = field(default_factory=list)
+
+
+RESTORE, KEPT, EDITED, NO_PRE_HISTORY = "restore", "kept", "edited", "no-pre-history"
+
+
+def restore_decision(revisions: Sequence[Dict[str, Any]]) -> RestoreDecision:
+    """Whether the new deployment's first deploy replaced a kept profile's
+    content, and what restoring it would take.
 
     The first deploy against an adopted configuration table records what the
     profile held as one revision (PRE_HISTORY_NOTES), then saves the module's
     preset for every profile it ships as the next one, created by
     STACK_DEPLOYMENT, and publishes that. For such a profile the old content is
-    kept only as that earlier revision. A profile whose published revision was cut
-    by anyone else, or that has no pre-history revision, is left alone.
+    kept only as that earlier revision, and it is restored only when every
+    revision after it, up to and including the published one, was cut by
+    STACK_DEPLOYMENT: a revision anyone else cut in that span is a change made
+    on purpose after the migration, which a restore would silently undo.
     """
+    if not revisions:
+        return RestoreDecision(KEPT)
     pre = [r for r in revisions if r.get("notes") == PRE_HISTORY_NOTES]
+    if not pre:
+        return RestoreDecision(NO_PRE_HISTORY)
+    pre_rev = int(pre[0]["revision"])
     published = [r for r in revisions if r.get("published")]
-    if not pre or not published:
-        return None
-    head = published[0]
-    if (
-        head.get("createdBy") != STACK_DEPLOYMENT
-        or head["revision"] <= pre[0]["revision"]
-    ):
-        return None
-    return int(pre[0]["revision"])
+    if not published or int(published[0]["revision"]) <= pre_rev:
+        return RestoreDecision(KEPT, pre_rev)
+    head = int(published[0]["revision"])
+    between = [r for r in revisions if pre_rev < int(r["revision"]) <= head]
+    others = sorted(
+        (int(r["revision"]), str(r.get("createdBy") or "unknown"))
+        for r in between
+        if r.get("createdBy") != STACK_DEPLOYMENT
+    )
+    if others:
+        return RestoreDecision(EDITED, pre_rev, others)
+    return RestoreDecision(RESTORE, pre_rev)
+
+
+def overwritten_revision(revisions: Sequence[Dict[str, Any]]) -> Optional[int]:
+    """The revision to restore (see :func:`restore_decision`), else None."""
+    decision = restore_decision(revisions)
+    return decision.revision if decision.outcome == RESTORE else None
 
 
 def scan_all(ddb, table_name: str) -> List[Dict[str, Any]]:
@@ -2696,7 +2752,9 @@ def check_adoption_plan(
             held = prior.get(r.new_address or "")
             if held is None:
                 findings.append(f"{r.new_address} is in the plan but not as an import")
-            elif not _holds_import(held, r.import_id or ""):
+            elif not _holds_import(
+                _resource_type(r.new_address or ""), held, r.import_id or ""
+            ):
                 findings.append(
                     f"{r.new_address} is already in state, but not as {r.import_id!r}"
                 )
@@ -2726,16 +2784,40 @@ def _prior_state_values(plan_json: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def _holds_import(values: Dict[str, Any], import_id: str) -> bool:
+#: Per adopted type, the attributes that identify the resource an import id names
+#: (``_import_id`` builds the id from the same ones). A plain id must equal one of
+#: them; a composite id (``<pool>/<user>``, ``<pool>|<group>``) must equal them
+#: joined in order (``,`` for a group membership). Any other attribute equal to the id (a tag, a description, a
+#: bucket named in a notification) says nothing about which resource is held.
+IMPORT_IDENTITY: Dict[str, Tuple[str, ...]] = {
+    "aws_s3_bucket": ("bucket",),
+    "aws_dynamodb_table": ("name",),
+    "awscc_kms_key": ("key_id",),
+    "aws_cognito_user_pool": ("id",),
+}
+IMPORT_COMPOSITE_IDENTITY: Dict[str, Tuple[str, Tuple[str, ...]]] = {
+    "aws_cognito_user": ("/", ("user_pool_id", "username")),
+    "awscc_cognito_user_pool_group": ("|", ("user_pool_id", "group_name")),
+    "aws_cognito_user_in_group": (",", ("user_pool_id", "group_name", "username")),
+}
+
+
+def _holds_import(tf_type: str, values: Dict[str, Any], import_id: str) -> bool:
     """Whether state values are the resource ``import_id`` names: its ``id`` is the
-    import id, or (for composite ids such as ``<pool>/<user>``) every part of the
-    import id is one of the resource's attribute values."""
+    import id, one of the type's identity attributes (``IMPORT_IDENTITY``) is, or
+    for a composite id the type's identity attributes joined in order are."""
     if not import_id:
         return False
     if values.get("id") == import_id:
         return True
-    strings = {v for v in values.values() if isinstance(v, str)}
-    return all(part in strings for part in import_id.split("/") if part)
+    if any(values.get(a) == import_id for a in IMPORT_IDENTITY.get(tf_type, ())):
+        return True
+    composite = IMPORT_COMPOSITE_IDENTITY.get(tf_type)
+    if composite is None:
+        return False
+    sep, attrs = composite
+    parts = [values.get(a) for a in attrs]
+    return all(isinstance(v, str) and v for v in parts) and sep.join(parts) == import_id
 
 
 def _schema_items_change(rc: Dict[str, Any]) -> bool:

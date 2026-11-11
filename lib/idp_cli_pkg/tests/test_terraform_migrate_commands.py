@@ -136,6 +136,18 @@ def test_nothing_is_applied_without_apply(runner, migration, phase, method, extr
     assert getattr(migration, method).call_args.kwargs["apply"] is True
 
 
+def test_fix_config_passes_restore_after_apply(runner, migration, tmp_path):
+    backup = tmp_path / "backup.json"
+    backup.write_text("{}")
+    migration.fix_config.return_value = step("fix-config")
+    args = [*GROUP, "fix-config", *COMMON, "--restore", str(backup)]
+    result = runner.invoke(cli_module.cli, args)
+    assert result.exit_code == 0, result.output
+    assert migration.fix_config.call_args.kwargs["restore_after_apply"] is False
+    runner.invoke(cli_module.cli, [*args, "--restore-after-apply"])
+    assert migration.fix_config.call_args.kwargs["restore_after_apply"] is True
+
+
 def test_detach_passes_the_old_directory(runner, migration, tmp_path):
     migration.detach.return_value = step("detach")
     result = runner.invoke(
