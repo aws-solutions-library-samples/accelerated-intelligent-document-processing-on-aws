@@ -34,7 +34,7 @@ export const uploadDiscoveryZip = async (zipFile: File, configVersion: string): 
     headers: { 'Content-Type': DISCOVERY_ZIP_CONTENT_TYPE },
   });
   if (!result.ok) {
-    throw new Error(`Upload failed: ${result.statusText}`);
+    throw new Error(`Upload failed: HTTP ${result.status}${result.statusText ? ` ${result.statusText}` : ''}`);
   }
   return upload.objectKey;
 };

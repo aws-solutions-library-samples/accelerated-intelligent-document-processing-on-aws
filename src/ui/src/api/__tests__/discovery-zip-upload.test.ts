@@ -54,9 +54,15 @@ describe('uploadDiscoveryZip', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('reports an upload S3 refuses', async () => {
+  it('reports an upload S3 refuses, with its status', async () => {
     graphqlMock.mockResolvedValue({ data: { uploadMultiDocDiscoveryZip: { presignedUrl: PRESIGNED_PUT_URL, objectKey: OBJECT_KEY } } });
-    fetchMock.mockResolvedValue({ ok: false, statusText: 'Forbidden' });
-    await expect(uploadDiscoveryZip(zip(), 'p')).rejects.toThrow('Upload failed: Forbidden');
+    fetchMock.mockResolvedValue({ ok: false, status: 403, statusText: 'Forbidden' });
+    await expect(uploadDiscoveryZip(zip(), 'p')).rejects.toThrow('Upload failed: HTTP 403 Forbidden');
+  });
+
+  it('names the status when the response carries no status text, as over HTTP/2', async () => {
+    graphqlMock.mockResolvedValue({ data: { uploadMultiDocDiscoveryZip: { presignedUrl: PRESIGNED_PUT_URL, objectKey: OBJECT_KEY } } });
+    fetchMock.mockResolvedValue({ ok: false, status: 403, statusText: '' });
+    await expect(uploadDiscoveryZip(zip(), 'p')).rejects.toThrow(/^Upload failed: HTTP 403$/);
   });
 });
