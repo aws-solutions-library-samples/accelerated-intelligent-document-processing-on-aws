@@ -588,10 +588,15 @@ class CognitoUserMapper:
         lines += render_spec(tr, spec, props, plan.logical_id)
         head, tail = tr.meta_lines(plan, res)
         # Every AWS::Cognito::UserPoolUser property is create-only, so
-        # CloudFormation never changes a user after creating it. Cognito adds
-        # attributes of its own (sub, email_verified) that the template does not
-        # name, and the user may change others; reading those as drift would
-        # strip them, and an adopted user carries whatever its pool gave it.
+        # CloudFormation never updates a user in place: it replaces the user when
+        # a property changes. Cognito adds attributes of its own (sub,
+        # email_verified) that the template does not name, and the user may
+        # change others; reading those as drift would strip them, and an adopted
+        # user carries whatever its pool gave it. So Terraform ignores them, and
+        # unlike CloudFormation a change to the template's attributes alone does
+        # not replace the user. The shipped template cannot produce that case:
+        # AdminUser's Username and email both come from AdminEmail, and a
+        # username change still replaces it.
         tail = tail + [
             "# create-only under CloudFormation; the user owns its attributes "
             "after creation",
