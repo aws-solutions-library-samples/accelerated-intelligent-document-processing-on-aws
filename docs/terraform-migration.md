@@ -27,8 +27,10 @@ copies data across, is described at the end as the fallback.
 ## How much of this has been tested
 
 The command has been run end to end against a live deployment of upstream tag
-`v0.6.9-tf.0` (its `examples/unified-processor` configuration) by a repeatable
-live test that is part of release validation. That test deploys upstream, seeds it with two processed documents, two users with
+`v0.6.9-tf.0` (its `examples/unified-processor` configuration) by the repeatable
+live test `make stacktest-terraform-migration`
+(`scripts/sdlc/terraform_migration_test.py`), which is part of release validation.
+That test deploys upstream, seeds it with two processed documents, two users with
 passwords, a configuration edit, an evaluation baseline and a test set, runs every
 phase below with `--apply`, checks that nothing kept was lost, and destroys both
 deployments. It is still only that one upstream configuration, so rehearse the
