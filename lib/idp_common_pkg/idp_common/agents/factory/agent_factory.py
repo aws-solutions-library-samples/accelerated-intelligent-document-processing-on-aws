@@ -155,6 +155,7 @@ class IDPAgentFactory:
         session_id: str,
         config: Dict[str, Any],
         session: Any,
+        user_id: str = "",
         **kwargs,
     ) -> Any:
         """Create a single specialized agent as the top-level conversational agent.
@@ -163,6 +164,11 @@ class IDPAgentFactory:
         agent (e.g. Quick Start) and that agent is itself multi-turn. Returns the
         raw Strands Agent (not wrapped in IDPAgent), matching
         create_conversational_orchestrator.
+
+        ``user_id`` is the signed-in user the conversation belongs to (their
+        Cognito ``sub``). Memory is stored per user and session, so with no
+        ``user_id`` the agent is built without memory: it neither loads nor
+        stores any earlier turn.
         """
         import logging
         import os
@@ -185,11 +191,17 @@ class IDPAgentFactory:
             logger.warning(
                 "ID_HELPER_CHAT_MEMORY_TABLE not set, memory will not be persisted"
             )
+        elif not user_id:
+            logger.warning(
+                "No user for session %s; building the agent without memory",
+                session_id,
+            )
         else:
             hooks.append(
                 DynamoDBMemoryHookProvider(
                     table_name=memory_table_name,
                     session_id=session_id,
+                    user_id=user_id,
                     region_name=os.environ.get("BEDROCK_REGION", "us-east-1"),
                     max_message_size_kb=float(
                         os.environ.get("MAX_MESSAGE_SIZE_KB", "8.5")
@@ -223,6 +235,7 @@ class IDPAgentFactory:
         session_id: str,
         config: Dict[str, Any],
         session: Any,
+        user_id: str = "",
         **kwargs,
     ) -> Any:
         """
@@ -238,6 +251,9 @@ class IDPAgentFactory:
             agent_ids: List of agent IDs to include as tools in the orchestrator
             session_id: Session ID for conversation memory
             config: Configuration dictionary
+            user_id: The signed-in user the conversation belongs to (their
+                Cognito ``sub``). Memory is keyed on user and session; with no
+                ``user_id`` the orchestrator is built without memory.
             session: Boto3 session for AWS operations
             **kwargs: Additional arguments passed to orchestrator creation
 
@@ -252,7 +268,8 @@ class IDPAgentFactory:
                 agent_ids=["document-analysis", "analytics"],
                 session_id="user-session-123",
                 config=config,
-                session=boto3.Session()
+                session=boto3.Session(),
+                user_id="<cognito sub>",
             )
 
             # Use with streaming
@@ -287,11 +304,17 @@ class IDPAgentFactory:
             logger.warning(
                 "ID_HELPER_CHAT_MEMORY_TABLE not set, memory will not be persisted"
             )
+        elif not user_id:
+            logger.warning(
+                "No user for session %s; building the orchestrator without memory",
+                session_id,
+            )
         else:
             # Create memory hook for conversation history
             memory_provider = DynamoDBMemoryHookProvider(
                 table_name=memory_table_name,
                 session_id=session_id,
+                user_id=user_id,
                 region_name=os.environ.get("BEDROCK_REGION", "us-east-1"),
                 max_message_size_kb=float(os.environ.get("MAX_MESSAGE_SIZE_KB", "8.5")),
                 max_history_turns=int(os.environ.get("MAX_CONVERSATION_TURNS", "20")),
