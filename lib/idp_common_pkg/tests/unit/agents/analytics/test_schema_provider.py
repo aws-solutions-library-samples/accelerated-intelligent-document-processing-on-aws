@@ -69,7 +69,18 @@ class TestMeteringHourlyColumnsInPrompt:
         # in the metering_hourly bullet.
         import re
 
-        m = re.search(r"Columns:\s*([^.]*)", section)
+        # ⚠️ The prompt writes ``- **Columns**: ...`` in markdown. A pattern
+        # anchored on a bare ``Columns:`` matches nothing, which left this
+        # whole guard behind a dead ``if`` — every assertion below was
+        # unreachable, so the defect it exists to catch would have passed.
+        # Terminate on the newline rather than the first ``.``: the column
+        # line carries parenthetical prose with no sentence-ending period.
+        m = re.search(r"Columns\*{0,2}:\s*([^\n]*)", section)
+        assert m, (
+            "no Columns line found in the metering_hourly section — either the "
+            "prompt stopped listing its columns or this pattern has drifted "
+            f"from the markdown again:\n{section[:300]}"
+        )
         if m:
             columns_phrase = m.group(1)
             assert "n_docs" not in columns_phrase, (
@@ -79,6 +90,10 @@ class TestMeteringHourlyColumnsInPrompt:
             assert "sum_pages" not in columns_phrase, (
                 f"metering_hourly Columns: phrase still lists sum_pages: "
                 f"{columns_phrase!r}"
+            )
+            assert "n_runs" not in columns_phrase, (
+                f"metering_hourly Columns: phrase lists n_runs, which lives "
+                f"on metering_docs_hourly: {columns_phrase!r}"
             )
 
     def test_metering_hourly_partitioning_mentions_hour(self):
@@ -111,6 +126,58 @@ class TestMeteringHourlyColumnsInPrompt:
         )
         assert "sum_pages" in section, (
             "metering_docs_* section is missing the sum_pages description"
+        )
+
+    def test_docs_tables_claim_n_runs_and_say_which_table_it_is_not_on(self):
+        """``n_runs`` lives on the two doc-grain tables and nowhere else.
+
+        Same defect shape as the round-27 blocker that this class exists for:
+        a column the prompt attributes to the wrong table produces
+        ``COLUMN_NOT_FOUND`` instead of an answer, and the agent has no way to
+        discover the real home from the error.
+        """
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 3. `metering_docs_hourly`")
+        assert idx > -1, "metering_docs_* section not found in prompt"
+        end = prompt.find("### 5. `control_plane_hourly`", idx)
+        section = prompt[idx:end]
+        for table in ("### 3. `metering_docs_hourly`", "### 4. `metering_docs_daily`"):
+            bullet_at = section.find(table)
+            assert "n_runs" in section[bullet_at : bullet_at + 1600], (
+                f"{table} does not document its n_runs column"
+            )
+
+        import re
+
+        assert re.search(r"NEVER.*n_runs.*metering_hourly", prompt), (
+            "the prompt must say n_runs is NOT on metering_hourly, the same "
+            "way it does for n_docs and sum_pages — a positive claim about "
+            "the right table does not stop a query against the wrong one."
+        )
+
+    def test_the_prompt_states_that_runs_sum_exactly_and_docs_do_not(self):
+        """The asymmetry is the whole reason ``n_runs`` exists as a column.
+
+        ``SUM(n_runs)`` is exact over any set of rows, because a run belongs to
+        exactly one (hour, config_version, document_class) cell.
+        ``SUM(n_docs)`` is an upper bound, because a document that spans cells
+        is counted once in each. An agent told only "n_docs counts documents"
+        answers "how many documents did we process this month?" with a figure
+        that is confidently and invisibly high — the failure mode here is a
+        wrong number, not an error message, so the prompt has to carry the
+        caveat rather than the reader inferring it.
+        """
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 3. `metering_docs_hourly`")
+        end = prompt.find("### 5. `control_plane_hourly`", idx)
+        section = prompt[idx:end]
+        assert "SUM(n_runs)" in section, (
+            "the doc-grain section does not say what SUM(n_runs) means"
+        )
+        assert "upper bound" in section, (
+            "the doc-grain section does not warn that SUM(n_docs) is an upper "
+            "bound on distinct documents, which is the claim an agent would "
+            "otherwise get wrong without any error to signal it"
         )
 
     def test_metering_hourly_bullet_calls_out_anti_pattern(self):

@@ -5515,8 +5515,14 @@ Resources:
           - Name: date
             Type: string
 
-  # Doc-grain hourly rollup — n_docs + sum_pages at (hour, config_version)
-  # grain. Kept in a separate table from metering_hourly because pages and
+  # Doc-grain hourly rollup — n_docs + sum_pages + n_runs at (hour,
+  # config_version) grain. ``n_docs`` counts DOCUMENTS in the cell and
+  # ``n_runs`` counts RUNS — one run is one (document_id, timestamp) pair in
+  # raw metering, so reprocessing a document raises n_runs without raising
+  # n_docs. n_runs is additive across any set of rows (a run belongs to
+  # exactly one cell); SUM(n_docs) is an upper bound on distinct documents,
+  # because a document occupying several cells is counted once in each.
+  # Kept in a separate table from metering_hourly because pages and
   # doc counts fan out across (service_api, unit) — SUM(number_of_pages)
   # grouped by service_api overcounts by the number of metering rows per
   # doc (a 10-page doc with 6 service rows would report 60 pages).
@@ -5528,7 +5534,7 @@ Resources:
       DatabaseName: !Ref ReportingDatabase
       TableInput:
         Name: "metering_docs_hourly"
-        Description: "Hourly doc-grain rollup — n_docs + sum_pages per (hour, config_version). See docs/reporting-sql-layer.md §2."
+        Description: "Hourly doc-grain rollup — n_docs + sum_pages + n_runs per (hour, config_version). See docs/reporting-sql-layer.md §2."
         TableType: "EXTERNAL_TABLE"
         Parameters:
           classification: "parquet"
@@ -5574,6 +5580,8 @@ Resources:
               Type: bigint
             - Name: sum_pages
               Type: bigint
+            - Name: n_runs
+              Type: bigint
           Compressed: true
         PartitionKeys:
           - Name: date
@@ -5581,11 +5589,13 @@ Resources:
           - Name: hour
             Type: string
 
-  # Doc-grain daily rollup — n_docs + sum_pages at (day, config_version).
-  # SUM from metering_docs_hourly, so a document reprocessed across N hours
-  # is counted N times (each hour it appeared in — a "doc-hours" count).
-  # For strict cross-day unique-doc counts, query raw metering with
-  # COUNT(DISTINCT document_id).
+  # Doc-grain daily rollup — n_docs + sum_pages + n_runs at (day,
+  # config_version). SUM from metering_docs_hourly, so a document
+  # reprocessed across N hours is counted N times in n_docs (each hour it
+  # appeared in — a "doc-hours" count). For strict cross-day unique-doc
+  # counts, query raw metering with COUNT(DISTINCT document_id).
+  # n_runs does NOT fan out that way — a run falls in one hour only, so
+  # SUM(n_runs) stays exact however many days it spans.
   MeteringDocsDailyTable:
     Type: AWS::Glue::Table
     Properties:
@@ -5593,7 +5603,7 @@ Resources:
       DatabaseName: !Ref ReportingDatabase
       TableInput:
         Name: "metering_docs_daily"
-        Description: "Daily doc-grain rollup — n_docs + sum_pages per (day, config_version). See docs/reporting-sql-layer.md §2."
+        Description: "Daily doc-grain rollup — n_docs + sum_pages + n_runs per (day, config_version). See docs/reporting-sql-layer.md §2."
         TableType: "EXTERNAL_TABLE"
         Parameters:
           classification: "parquet"
@@ -5634,6 +5644,8 @@ Resources:
             - Name: n_docs
               Type: bigint
             - Name: sum_pages
+              Type: bigint
+            - Name: n_runs
               Type: bigint
           Compressed: true
         PartitionKeys:
@@ -6431,10 +6443,16 @@ Resources:
       # into a customer's SSM Parameter Store and drives future migration
       # decisions.
       #
-      # Current schema state at v1: rollup tables grouped by
-      # (config_version, document_class, service_api, unit). See
+      # Current schema state at v2: rollup tables grouped by
+      # (config_version, document_class, service_api, unit), and the two
+      # metering_docs_* tables carry ``n_runs`` alongside n_docs/sum_pages.
+      # v1 → v2 is that column: rows written under v1 have no n_runs value,
+      # so SUM(n_runs) over them reads NULL and silently understates. The
+      # bump repopulates the migration window (``Days`` below) at the new
+      # schema. Partitions OLDER than that window keep n_runs = NULL — read
+      # a NULL as "not recorded", not as zero runs. See
       # docs/reporting-sql-layer.md §Track A for the design rationale.
-      MigrationVersion: "v1"
+      MigrationVersion: "v2"
       # How many days back to repopulate. Constrained to [1, 90] by
       # ``_plan_migration_chunks``; typical retention is 30 days.
       Days: 30

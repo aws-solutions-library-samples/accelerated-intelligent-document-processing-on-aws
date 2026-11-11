@@ -9,6 +9,10 @@ SPDX-License-Identifier: MIT-0
 
 This runbook covers the `DataMartMigrationStateMachine` that repopulates the four per-document rollup tables (`metering_hourly`, `metering_daily`, `metering_docs_hourly`, `metering_docs_daily`) at the widened `document_class` grain. See [reporting-sql-layer.md](reporting-sql-layer.md) for the reporting-lake design context.
 
+**Current schema state: `v2`.** `v1` is the `document_class` widening above. `v2` adds `n_runs` to `metering_docs_hourly` and `metering_docs_daily` — a run count alongside the document count, defined in [reporting-sql-layer.md](reporting-sql-layer.md). The bump matters because a rollup row written under `v1` has no value for the new column, so `SUM(n_runs)` over it reads NULL and silently understates rather than failing. Repopulating is what gives those rows a value.
+
+⚠️ **Only partitions inside the migration window are repopulated** (`Days`, default 30). A stack whose retention is longer keeps its older rollup aggregates — deliberately, see InitialPurge below — and those keep `n_runs = NULL`. Read a NULL `n_runs` as "not recorded for this partition", never as zero runs: a reader that `COALESCE`es it to 0 turns "unknown" into a confident understatement of the run count for every day before the upgrade. Raising `Days` before the upgrade (up to 90) widens what gets a value; raw `metering` is the fallback for anything older.
+
 ## What runs when
 
 **A regular stack update with an unchanged `MigrationVersion`** does nothing on the migration side — CFN sees no property change on `DataMartRollupMigrationCustomResource` and doesn't fire the dispatcher. The state machine is dormant. The scheduled hourly rollups and reconciler keep writing new partitions at the widened grain (raw `metering` has carried `document_class` since 0.6.10, so those writes come with the column populated).
@@ -125,7 +129,7 @@ If steps 1-5 fail on install, the failure signal will be either the failure alar
 
 | Property | Default | When to change |
 |---|---|---|
-| `MigrationVersion` | `"v1"` | Opaque monotonic version identifier (`v1`, `v2`, …). Change **only** when a rollup Lambda code change alters what the migration produces (schema change, aggregate rewrite). The value is persisted into the SSM marker at completion, and a future deploy with a different string routes to full flow. Do NOT encode a release version or a bug-fix suffix here — this string persists into every customer's Parameter Store and drives their next migration decision. Customer operators never touch this; template authors do, once per schema state. |
+| `MigrationVersion` | `"v2"` | Opaque monotonic version identifier (`v1`, `v2`, …). Change **only** when a rollup Lambda code change alters what the migration produces (schema change, aggregate rewrite). The value is persisted into the SSM marker at completion, and a future deploy with a different string routes to full flow. Do NOT encode a release version or a bug-fix suffix here — this string persists into every customer's Parameter Store and drives their next migration decision. Customer operators never touch this; template authors do, once per schema state. |
 | `Days` | `30` | Increase (up to `90`) if retention is longer and you need older rollup data. Decrease to skip older hours. |
 | `ChunkHours` | `1` | The safest default — worst-case per-chunk work is ~10-30 s of Athena, ~30× under Lambda's 900 s cap. Raise (up to `168` = one week) on nearly-idle stacks to reduce SFN state-transition cost. Do not lower — 1 is the atomic unit and any smaller value is rejected by `_plan_migration_chunks`. |
 | `ForceFresh` | `"false"` | Customer-safe default — never destructively re-migrates on a routine version bump. Set to `"true"` explicitly ONLY when deliberately wiping and restarting from a clean slate. Flip back to `"false"` after the run. |

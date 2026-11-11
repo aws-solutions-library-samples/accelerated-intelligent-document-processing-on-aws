@@ -163,7 +163,7 @@ hour and per-document drilldown.
 
 ### Tier picker (which table for which range)
 
-| Requested range | Cost tier | Volume tier (docs, pages) | Live tail |
+| Requested range | Cost tier | Volume tier (docs, pages, runs) | Live tail |
 |---|---|---|---|
 | `< 2h` | raw `metering` (with `date`/`hour` filter) | raw `metering` (`MAX(number_of_pages)` per doc) | n/a |
 | `2h – 24h` | `metering_hourly` | `metering_docs_hourly` | raw `metering` for current hour |
@@ -172,13 +172,14 @@ hour and per-document drilldown.
 ### Cost-vs-docs column split (Phase-1)
 
 Cost columns live on `metering_hourly` / `metering_daily`. Document
-volume columns (`n_docs`, `sum_pages`) live on the SEPARATE
+volume columns (`n_docs`, `sum_pages`, `n_runs`) live on the SEPARATE
 `metering_docs_hourly` / `metering_docs_daily` tables — grouping by
 `service_api` on the volume grain would fan `number_of_pages` out by the
 number of (service, unit) rows a doc touched.
 
 - **NEVER** `SELECT n_docs FROM metering_hourly` — column does not exist.
 - **NEVER** `SELECT sum_pages FROM metering_hourly` — column does not exist.
+- **NEVER** `SELECT n_runs FROM metering_hourly` — column does not exist.
 - **NEVER** `SELECT sum_cost FROM metering_docs_hourly` — column does not exist.
 - **NEVER** `GROUP BY service_api` or `unit` on `metering_docs_*` — those columns don't exist.
 
@@ -213,16 +214,30 @@ number of (service, unit) rows a doc touched.
 
 ### 3. `metering_docs_hourly`
 - **Grain**: (hour, config_version, document_class)
-- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `document_class` (VARCHAR, nullable — see `metering_hourly` note above), `n_docs`, `sum_pages`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
-- **Meaning**: `n_docs = COUNT(DISTINCT document_id)` inside the hour.
+- **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `document_class` (VARCHAR, nullable — see `metering_hourly` note above), `n_docs`, `sum_pages`, `n_runs`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
+- **Meaning**: `n_docs = COUNT(DISTINCT document_id)` inside the cell. `n_runs` is the
+  number of document RUNS in the cell — one run is one `(document_id, timestamp)`
+  pair in raw `metering`, so a document processed once contributes `n_docs = 1,
+  n_runs = 1` and a document reprocessed twice in the hour contributes `n_docs = 1,
+  n_runs = 2`.
+- **⚠️ `n_runs` is additive; `n_docs` is not.** A run belongs to exactly one cell, so
+  `SUM(n_runs)` over ANY set of rows is the exact run count for that set. `n_docs` is
+  exact only per row: a document that occupies several cells — a different
+  `config_version` or `document_class`, or a different hour — is counted once in each,
+  so `SUM(n_docs)` is an upper bound on distinct documents. Use `n_runs` when the
+  question is "how much processing happened", and raw `metering` with
+  `COUNT(DISTINCT document_id)` when it is strictly "how many distinct documents".
 - **Partitioned by**: `date`, `hour`. Same partition-filter rule as `metering_hourly`.
 
 ### 4. `metering_docs_daily`
 - **Grain**: (day, config_version, document_class)
-- **Columns**: `day` (DATE), `config_version`, `document_class` (VARCHAR, nullable — see `metering_hourly` note above), `n_docs`, `sum_pages`, plus partition key `date` (VARCHAR YYYY-MM-DD)
+- **Columns**: `day` (DATE), `config_version`, `document_class` (VARCHAR, nullable — see `metering_hourly` note above), `n_docs`, `sum_pages`, `n_runs`, plus partition key `date` (VARCHAR YYYY-MM-DD)
 - **⚠️ `n_docs` is a doc-hours count, NOT a cross-day unique-doc count** — it's
   `SUM(hourly n_docs)`, so a doc that appears in 3 hours during the day counts as 3.
   For strict unique docs across days, query raw `metering` with `COUNT(DISTINCT document_id)`.
+- **`n_runs` is `SUM(hourly n_runs)` and stays exact** — it does not fan out the way
+  `n_docs` does, because a run falls in one hour only. `SUM(n_runs)` across any number
+  of days is the exact run count for those days.
 - **Partitioned by**: `date`.
 
 ### 5. `control_plane_hourly`
@@ -265,12 +280,17 @@ WHERE "date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
 GROUP BY "service_api"
 ORDER BY total_cost DESC
 
--- Doc-hours and page-hours by config version this month.
+-- Doc-hours, page-hours and runs by config version this month.
 -- ⚠ On metering_docs_daily, n_docs is a doc-HOURS count (SUM of hourly
 -- n_docs) — a doc appearing in 3 hours of a day counts as 3. For a
 -- strict cross-day unique-doc count, query raw metering with
 -- COUNT(DISTINCT document_id) and accept the wider scan.
-SELECT "config_version", SUM("n_docs") AS doc_hours, SUM("sum_pages") AS page_hours
+-- n_runs has no such caveat: a run falls in one hour, so SUM(n_runs) is
+-- the exact number of document runs in the window.
+SELECT "config_version",
+       SUM("n_docs") AS doc_hours,
+       SUM("sum_pages") AS page_hours,
+       SUM("n_runs") AS runs
 FROM metering_docs_daily
 WHERE "date" >= date_format(current_date - interval '30' day, '%Y-%m-%d')
 GROUP BY "config_version"
@@ -982,7 +1002,8 @@ Table name: `metering_hourly` / `metering_daily`
 
 Table name: `metering_docs_hourly` / `metering_docs_daily`
 **Purpose**: Doc-grain volume and pages per hour/day, one row per (hour|day, config_version).
-**Use for**: "How many docs processed?", "How many pages?" Columns: `n_docs`, `sum_pages`.
+**Use for**: "How many docs processed?", "How many pages?", "How many runs
+(including reprocessing)?" Columns: `n_docs`, `sum_pages`, `n_runs`.
 **Note**: These doc-grain tables OMIT `service_api` and `unit` — those live only on `metering_hourly` / `metering_daily`. Do NOT `GROUP BY service_api` or `unit` on the docs tables (COLUMN_NOT_FOUND).
 
 ### Operational cost (Lambda compute, control-plane vs data-plane)

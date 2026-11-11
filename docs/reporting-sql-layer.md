@@ -43,7 +43,7 @@ Related module docs (developer tier):
 **Column split — cost vs docs (Phase 1 change).** Cost columns
 (`sum_value`, `sum_cost`) live on `metering_hourly` / `metering_daily`
 because they aggregate cleanly per (service_api, unit). Document-level
-metrics (`n_docs`, `sum_pages`) live on the separate `metering_docs_*`
+metrics (`n_docs`, `sum_pages`, `n_runs`) live on the separate `metering_docs_*`
 tables at the coarser (hour, config_version) grain — `number_of_pages`
 is stamped identically on every metering row for a given document, so
 grouping by `service_api` would fan out the page count by the number
@@ -57,16 +57,42 @@ subquery to collapse the fan-out.
 `sum_value`, `sum_cost`.
 
 **Columns on `metering_docs_hourly` / `metering_docs_daily`** (doc-grain
-volume/pages): `hour_ts` (or `day`), `config_version`, `n_docs`,
-`sum_pages`.
+volume/pages/runs): `hour_ts` (or `day`), `config_version`,
+`document_class`, `n_docs`, `sum_pages`, `n_runs`.
 
-**Naming note — `n_docs` counts differently at hour vs day grain.**
-On `metering_docs_hourly`, `n_docs = COUNT(DISTINCT document_id)`
-within the hour — accurate for that hour. On `metering_docs_daily`,
-`n_docs = SUM(hourly n_docs)`, which counts a document once per hour
-it appeared in — a "doc-hours" count, not a cross-day unique count.
-For strict cross-day unique-doc counts, query raw `metering` with
-`COUNT(DISTINCT document_id)`.
+**`n_docs` counts documents, `n_runs` counts runs.** A run is one
+`(document_id, timestamp)` pair in raw `metering` — a single pass of the
+pipeline over one document. So a document processed once contributes
+`n_docs = 1, n_runs = 1`, and the same document reprocessed later
+contributes `n_docs = 1, n_runs = 2`. "How many documents do we hold?" is
+an `n_docs` question; "how much processing did we do?" is an `n_runs` one,
+and a stack with reprocessing in it answers them with different numbers.
+
+**Naming note — `n_docs` counts differently at hour vs day grain, and
+`n_runs` does not.** On `metering_docs_hourly`, `n_docs = COUNT(DISTINCT
+document_id)` within the cell — accurate for that cell. On
+`metering_docs_daily`, `n_docs = SUM(hourly n_docs)`, which counts a
+document once per hour it appeared in — a "doc-hours" count, not a
+cross-day unique count. For strict cross-day unique-doc counts, query raw
+`metering` with `COUNT(DISTINCT document_id)`.
+
+`n_runs` carries no equivalent caveat, and that is the point of having it:
+a run belongs to exactly **one** `(hour, config_version, document_class)`
+cell, so `SUM(n_runs)` over any set of rows — any range, any grain, either
+table — is the exact run count for that set. `SUM(n_docs)` is only ever an
+upper bound on distinct documents, because a document that spans cells is
+counted once in each. Measured against raw `metering` on a live stack,
+`SUM(n_runs)` reconciles exactly while `SUM(n_docs)` runs 50 cells high.
+Re-measure rather than reading a figure here — a stack that is still
+processing moves the totals, though the gap comes from reprocessing and
+multi-hour documents, not from volume.
+
+⚠️ The hourly `n_runs` is a `COUNT(DISTINCT timestamp)` taken **per
+document and then summed**, never at cell level. A batch upload stamps
+several documents with the same instant, so a cell-level distinct count
+collapses them and loses a run for every pair that ties — 89 runs short,
+measured on the same table. Both spellings compile and both return a
+plausible number.
 
 **Where status/timing data actually lives** — NOT on `metering`.
 `metering` carries only cost primitives: `document_id`, `context`,
@@ -87,7 +113,7 @@ by requested range **and by the metric they're asking for**. Cost
 (`sum_value`/`sum_cost`) is on `metering_*`; volume (`n_docs`/`sum_pages`)
 is on `metering_docs_*`:
 
-| Requested range | Cost tier | Volume tier (docs, pages) | Live tail (current partial bucket) |
+| Requested range | Cost tier | Volume tier (docs, pages, runs) | Live tail (current partial bucket) |
 |---|---|---|---|
 | `< 2h` | raw `metering` (partition-pruned to hour) | raw `metering` (`COUNT(DISTINCT document_id)`, `MAX(number_of_pages)` per doc) | n/a — whole window is "current" |
 | `2h – 24h` | `metering_hourly` | `metering_docs_hourly` | raw `metering` for the current hour |
