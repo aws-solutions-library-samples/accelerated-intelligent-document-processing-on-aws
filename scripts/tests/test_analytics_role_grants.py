@@ -122,12 +122,9 @@ DECLARED_OBJECT_ACCESS: Dict[str, Dict[Tuple[str, str, str], str]] = {
         ("write", "ReportingBucket", "/*"): (
             "search runs Athena, which writes results with the caller's credentials"
         ),
-        ("delete", "InputBucket", "/*"): "batch_reprocess clears prior inputs",
         ("delete", "OutputBucket", "/*"): (
             "batch_reprocess clears prior output (idp_sdk rerun_processor)"
         ),
-        ("delete", "MCPContentBucket", "/*"): "batch_run removes staged content",
-        ("delete", "ReportingBucket", "/*"): "granted with the Athena result grant",
     },
 }
 

@@ -7,7 +7,9 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-from .base import IDPTool
+from idp_common import mcp_access
+
+from .base import NO_CALLER, IDPTool, config_version_lookup, document_id_from_ref
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,7 @@ class GetResultsTool(IDPTool):
         section_id: int = 1,
         limit: int = 10,
         next_token: Optional[str] = None,
+        caller: Any = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Execute results retrieval for a batch or a single document.
@@ -52,6 +55,8 @@ class GetResultsTool(IDPTool):
         Returns:
             Dictionary with success flag and document results.
         """
+        if caller is None:
+            return dict(NO_CALLER)
         if not batch_id and not document_id:
             return {
                 "success": False,
@@ -68,7 +73,17 @@ class GetResultsTool(IDPTool):
 
             client = IDPClient(stack_name=self.stack_name)
 
+            scoped = caller is not None and caller.scope is not None
+
             if document_id and not batch_id:
+                if scoped:
+                    # Refused with document_scope's one message, the same for a
+                    # document outside the scope and for one that does not exist.
+                    mcp_access.require_document_keys_in_scope(
+                        caller,
+                        [document_id_from_ref(document_id)],
+                        config_version_of=config_version_lookup(),
+                    )
                 logger.info(
                     f"Retrieving results for document: {document_id}, "
                     f"section: {section_id}"
@@ -98,6 +113,11 @@ class GetResultsTool(IDPTool):
                 f"section: {section_id}, limit: {limit}"
             )
 
+            if scoped:
+                return self._scoped_batch_results(
+                    client, caller, batch_id, section_id, limit, next_token
+                )
+
             result = client.batch.get_results(
                 batch_id=batch_id,
                 section_id=section_id,
@@ -117,6 +137,13 @@ class GetResultsTool(IDPTool):
                 "message": f"Retrieved results for {result.get('count', 0)} documents",
             }
 
+        except PermissionError as e:
+            logger.warning(f"Results retrieval refused: {e}")
+            return {
+                "success": False,
+                "error": "results_retrieval_failed",
+                "message": str(e),
+            }
         except Exception as e:
             logger.error(f"Results retrieval failed: {e}", exc_info=True)
             return {
@@ -124,3 +151,53 @@ class GetResultsTool(IDPTool):
                 "error": "results_retrieval_failed",
                 "message": f"Failed to retrieve results: {str(e)}",
             }
+
+    def _scoped_batch_results(
+        self, client, caller, batch_id, section_id, limit, next_token
+    ) -> Dict[str, Any]:
+        """Batch results over the documents in ``caller``'s scope only.
+
+        Pagination, counts and the page size all run over the in-scope documents,
+        so neither ``total_in_batch`` nor a short page says how many documents of
+        the batch the caller cannot see. A batch with none in scope is reported as
+        not found, as a batch that does not exist is.
+        """
+        import base64
+
+        from idp_sdk.exceptions import IDPResourceNotFoundError
+
+        keys = mcp_access.document_keys_in_scope(
+            caller,
+            client.batch.get_document_ids(batch_id=batch_id),
+            config_version_of=config_version_lookup(),
+        )
+        if not keys:
+            raise IDPResourceNotFoundError(f"Batch not found: {batch_id}")
+        offset = 0
+        if next_token:
+            try:
+                offset = int(base64.b64decode(next_token).decode("utf-8"))
+            except Exception:
+                offset = 0
+        limit = max(1, min(int(limit or 10), 100))
+        page = keys[offset : offset + limit]
+        documents = [
+            client.batch.get_document_results(document_id=key, section_id=section_id)
+            for key in page
+        ]
+        token = None
+        if offset + limit < len(keys):
+            token = base64.b64encode(str(offset + limit).encode("utf-8")).decode(
+                "utf-8"
+            )
+        return {
+            "success": True,
+            "batch_id": batch_id,
+            "section_id": section_id,
+            "count": len(documents),
+            "total_in_batch": len(keys),
+            "documents": documents,
+            "summary": {},
+            "next_token": token,
+            "message": f"Retrieved results for {len(documents)} documents",
+        }

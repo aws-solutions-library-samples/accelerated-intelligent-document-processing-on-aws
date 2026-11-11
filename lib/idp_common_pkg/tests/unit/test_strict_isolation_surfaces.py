@@ -11,12 +11,14 @@ deployment and carry nothing to scope them by:
 * **agent queries** (``submitAgentQuery``) — the same agents, older entry point;
 * the **Document Knowledge Base** (``queryKnowledgeBase``) — a retrieval index over
   every document;
-* **MCP tools** — machine callers through the AgentCore gateway, which supplies no
-  user identity at all.
+* **MCP ``search``** — the analytics agent over the reporting tables, reached
+  through the AgentCore gateway.
 
-In Strict the first three are limited to the Admin group, and MCP is refused
-outright, because nothing there can tell an Admin from anyone else. In Off mode
-each is exactly what it was. Every refusal is asserted to happen before the work
+In Strict the first three are limited to the Admin group. The gateway's interceptor
+resolves each MCP caller, so MCP is scoped like the UI rather than refused: a
+non-admin under Strict carries the deny-all scope and ``search`` is refused to any
+scoped caller, which makes it Admin-only there too. In Off mode each is exactly
+what it was. Every refusal is asserted to happen before the work
 (no Bedrock, no DynamoDB write, no tool execution), not merely to be reported.
 """
 
@@ -265,21 +267,65 @@ def mcp_handler():
                 del sys.modules[name]
 
 
-@pytest.mark.unit
-def test_mcp_tools_are_refused_in_strict(mcp_handler, mode):
-    tool = MagicMock()
-    tool.execute.return_value = {"ok": True}
-    context = SimpleNamespace(
+def _mcp_context():
+    return SimpleNamespace(
         client_context=SimpleNamespace(
-            custom={"bedrockAgentCoreToolName": "t___search"}
+            custom={
+                "bedrockAgentCoreToolName": "IDPTools___search",
+                "bedrockAgentCoreAwsRequestId": "req-1",
+            }
         )
     )
-    with patch.object(mcp_handler, "get_tool", return_value=tool):
-        result = mcp_handler.lambda_handler({"query": "x"}, context)
-    if mode != "Off":
+
+
+def _mcp_caller(roles):
+    """The caller block the interceptor would sign for these roles in this mode."""
+    from idp_common import mcp_access
+    from idp_common.config_scope import STRICT_UNSCOPED_DENY, unscoped_is_denied
+
+    scope = None
+    if "Admin" not in roles and unscoped_is_denied():
+        scope = [STRICT_UNSCOPED_DENY]
+    caller = mcp_access.Caller(
+        kind="user",
+        id="u",
+        name="u",
+        roles=list(roles),
+        scope=scope,
+        tenant=None,
+        write_tools=True,
+    )
+    return mcp_access.sign_caller(caller, key=b"k" * 32, request_id="req-1")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("roles", [["Admin"], ["Author"]])
+def test_mcp_search_is_admin_only_where_unscoped_is_denied(mcp_handler, mode, roles):
+    tool = MagicMock()
+    tool.execute.return_value = {"ok": True}
+    event = {"query": "x", "_caller": _mcp_caller(roles)}
+    with (
+        patch.object(mcp_handler, "get_tool", return_value=tool),
+        patch.object(mcp_handler, "_key", return_value=b"k" * 32),
+    ):
+        result = mcp_handler.lambda_handler(event, _mcp_context())
+    if mode != "Off" and roles != ["Admin"]:
         assert result["statusCode"] == 403
-        assert "tenant isolation" in json.loads(result["body"])["error"]
+        assert "configuration scope" in json.loads(result["body"])["error"]
         tool.execute.assert_not_called()
     else:
         assert result["statusCode"] == 200
         tool.execute.assert_called_once()
+
+
+@pytest.mark.unit
+def test_mcp_tools_are_refused_without_a_verified_caller(mcp_handler, mode):
+    """In every mode, a call that did not come through the interceptor is refused."""
+    tool = MagicMock()
+    with (
+        patch.object(mcp_handler, "get_tool", return_value=tool),
+        patch.object(mcp_handler, "_key", return_value=b"k" * 32),
+    ):
+        result = mcp_handler.lambda_handler({"query": "x"}, _mcp_context())
+    assert result["statusCode"] == 403
+    tool.execute.assert_not_called()
