@@ -50,10 +50,34 @@ class TestBootstrapCommand:
         hints = [argv[i + 1] for i, a in enumerate(argv) if a == "--field-hint"]
         assert hints == list(cbd.QUICK_START_FIELD_HINTS)
         assert argv[argv.index("--count") + 1] == "1"
+        assert argv[argv.index("--model-id") + 1] == cbd.QUICK_START_MODEL
 
     def test_the_profile_is_its_own_so_the_parallel_pool_is_unaffected(self, cbd):
         assert cbd.QUICK_START_PROFILE not in {"default", ""}
         assert "activate" not in cbd.quick_start_bootstrap_command("s")
+
+
+class TestAuthoringModel:
+    def test_the_model_is_the_one_bootstrap_would_default_to(self, cbd):
+        from idp_common.synthesis import schema_author
+
+        src = open(schema_author.__file__).read()
+        assert f'model_id or "{cbd.QUICK_START_MODEL}"' in src
+
+    def test_an_eu_build_authors_with_the_eu_profile(self, cbd):
+        env = {"AWS_REGION": "eu-central-1"}
+        assert cbd.quick_start_model(env) == "eu.anthropic.claude-sonnet-4-6"
+        argv = shlex.split(cbd.quick_start_bootstrap_command("s", env))
+        assert argv[argv.index("--model-id") + 1] == "eu.anthropic.claude-sonnet-4-6"
+
+    @pytest.mark.parametrize("region", ["us-east-1", "eu-central-1", "ca-central-1"])
+    def test_every_ci_region_authors_with_a_model_it_can_call(self, cbd, region):
+        model = cbd.quick_start_model({"AWS_REGION": region})
+        unavailable = cbd._update_configuration_module().CA_UNAVAILABLE_MODELS
+        if region.startswith("ca-"):
+            assert model not in unavailable
+        if region.startswith("eu-"):
+            assert not model.startswith("us.")
 
 
 class TestProfileCheck:
@@ -67,6 +91,29 @@ class TestProfileCheck:
     def test_refuses_a_profile_without_the_requested_class(self, cbd):
         problem = cbd.quick_start_profile_problem(_profile(cbd, class_id="Invoice"))
         assert problem and cbd.QUICK_START_CLASS in problem and "Invoice" in problem
+
+    def test_counts_nested_fields_as_the_authoring_prompt_encourages(self, cbd):
+        nested = {
+            "classes": [
+                {
+                    "$id": cbd.QUICK_START_CLASS,
+                    "properties": {
+                        "Employer": {
+                            "type": "object",
+                            "properties": {"Name": {"type": "string"}},
+                        },
+                        "PayPeriod": {
+                            "type": "object",
+                            "properties": {
+                                "EndDate": {"type": "string"},
+                                "NetPay": {"type": "number"},
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+        assert cbd.quick_start_profile_problem(nested) is None
 
     def test_refuses_a_class_with_fewer_fields_than_hints(self, cbd):
         too_few = len(cbd.QUICK_START_FIELD_HINTS) - 1

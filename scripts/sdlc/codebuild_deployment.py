@@ -966,6 +966,16 @@ def ci_region(environ: dict | None = None) -> str:
     return env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or PRIMARY_CI_REGION
 
 
+def _region_type(environ: dict | None = None) -> str | None:
+    """``eu`` or ``ca`` for a build the model swap covers, else None."""
+    region = ci_region(environ)
+    if region.startswith("eu-"):
+        return "eu"
+    if region.startswith("ca-"):
+        return "ca"
+    return None
+
+
 def _model_swapper():
     """The product's own `swap_model_ids`, from the UpdateConfiguration Lambda.
 
@@ -996,9 +1006,7 @@ def regional_config_file(config_path: str, environ: dict | None = None) -> str:
     import yaml
 
     region = ci_region(environ)
-    region_type = (
-        "eu" if region.startswith("eu-") else "ca" if region.startswith("ca-") else None
-    )
+    region_type = _region_type(environ)
     if region_type is None:
         return config_path
     with open(config_path, "rb") as f:
@@ -2261,14 +2269,24 @@ QUICK_START_PROMPT = (
     "the gross pay and the net pay"
 )
 QUICK_START_FIELD_HINTS = ("employer name", "pay period end date", "net pay")
+QUICK_START_MODEL = "us.anthropic.claude-sonnet-4-6"
 
 
-def quick_start_bootstrap_command(stack_name):
+def quick_start_model(environ: dict | None = None) -> str:
+    """The authoring model, swapped for an EU or CA build as an uploaded config is."""
+    region_type = _region_type(environ)
+    if region_type is None:
+        return QUICK_START_MODEL
+    return _model_swapper()({"model": QUICK_START_MODEL}, region_type)["model"]
+
+
+def quick_start_bootstrap_command(stack_name, environ: dict | None = None):
     hints = " ".join(f'--field-hint "{hint}"' for hint in QUICK_START_FIELD_HINTS)
     return (
         f"idp-cli bootstrap --stack-name {stack_name} "
         f'--prompt "{QUICK_START_PROMPT}" --class-name {QUICK_START_CLASS} '
-        f"--target-profile {QUICK_START_PROFILE} {hints} --count 1"
+        f"--target-profile {QUICK_START_PROFILE} {hints} "
+        f"--model-id {quick_start_model(environ)} --count 1"
     )
 
 
@@ -2276,8 +2294,11 @@ def quick_start_profile_problem(config_data):
     """Why a downloaded Quick Start profile is not the one bootstrap was asked for.
 
     Returns ``None`` when the profile holds the requested class with at least one
-    field per hint. Field names are the model's choice, so only the count is held.
+    leaf field per hint, nested or not. Field names are the model's choice, so only
+    the count is held.
     """
+    from idp_common.synthesis.schema_bridge import leaf_field_paths
+
     classes = (config_data or {}).get("classes") or []
     target = next(
         (
@@ -2290,7 +2311,7 @@ def quick_start_profile_problem(config_data):
     if target is None:
         found = [c.get("$id") for c in classes]
         return f"class {QUICK_START_CLASS} not in profile {QUICK_START_PROFILE} (found {found})"
-    fields = target.get("properties") or {}
+    fields = leaf_field_paths(target)
     if len(fields) < len(QUICK_START_FIELD_HINTS):
         return (
             f"class {QUICK_START_CLASS} has {len(fields)} field(s), fewer than the "

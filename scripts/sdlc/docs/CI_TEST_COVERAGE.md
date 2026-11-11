@@ -1609,8 +1609,12 @@ saves it as a configuration profile on a deployed stack.
   review stack's configuration, so this is the only live check that the Bedrock
   authoring and the Configuration table write still compose.
 - **Verification**: bootstrap reports saving `integration-quick-start`; the
-  downloaded profile holds class `IntegrationPaystub`, with at least one field per
-  `--field-hint`. Field names are the model's choice, so only their count is held.
+  downloaded profile holds class `IntegrationPaystub`, with at least one leaf field
+  per `--field-hint`, nested or not. Field names are the model's choice, so only
+  their count is held.
+- **Model**: `--model-id` is the CLI's default authoring model, swapped for an EU
+  or CA build by the product's `swap_model_ids`, as every config the suite uploads
+  is, so the weekly region runs call a model their region can reach.
 - **Isolation**: saves its own profile and never activates it, so the other steps'
   profiles and the active configuration are unaffected. The CI build does not
   install the document generator, so no test set is generated; `--count 1` bounds
