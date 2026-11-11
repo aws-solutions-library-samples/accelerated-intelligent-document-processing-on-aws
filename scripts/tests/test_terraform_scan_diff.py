@@ -394,13 +394,17 @@ def test_checkov_runs_through_its_interpreter_not_its_shebang(gate, tmp_path):
         "#!/" + "x" * 300 + "/python\n"
         "import json, sys\n"
         "if '--list' in sys.argv:\n"
-        "    print('CKV_AWS_1 CKV2_AWS_2')\n"
+        "    print('| 0 | CKV_AWS_1 | resource | aws_s3_bucket | Policy one | Terraform | x |')\n"
+        "    print('| 1 | CKV2_AWS_2 | resource | aws_iam_role | Policy two | Terraform | x |')\n"
         "else:\n"
         "    print(json.dumps({'results': {'failed_checks': []}}))\n"
     )
     exe.chmod(0o755)
     assert gate.run_checkov(exe, [], tmp_path) == [{"results": {"failed_checks": []}}]
-    assert gate.check_ids(exe, "terraform") == {"CKV_AWS_1", "CKV2_AWS_2"}
+    assert gate.check_policies(exe, "terraform") == {
+        "CKV_AWS_1": {"Policy one"},
+        "CKV2_AWS_2": {"Policy two"},
+    }
 
 
 def test_a_checkov_venv_built_on_another_architecture_is_never_reused(
@@ -452,6 +456,6 @@ def test_checkov_is_started_through_its_interpreter_not_its_launcher(
 
     monkeypatch.setattr(gate.subprocess, "run", fake_run)
     gate.run_checkov(exe, ["-d", "."], tmp_path)
-    gate.check_ids(exe, "terraform")
+    gate.check_policies(exe, "terraform")
     interpreter = str(exe.parent / "python")
     assert [argv[:2] for argv in calls] == [[interpreter, str(exe)]] * 2
