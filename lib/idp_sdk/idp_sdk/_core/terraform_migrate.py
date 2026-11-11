@@ -1865,21 +1865,33 @@ class DocumentScan:
         return out
 
 
+#: The sort key of a tracking table's document record (``PK`` = ``doc#<key>``).
+DOCUMENT_RECORD_SK = "none"
+
+
 def scan_documents(table_name: str, ddb, ignore: Iterable[str] = ()) -> DocumentScan:
-    """Every ``doc#`` row of a tracking table whose ``ObjectStatus`` is not
+    """Every document record of a tracking table whose ``ObjectStatus`` is not
     terminal, split into in flight and awaiting review. Paginates the whole
-    table; ``ignore`` (object keys) moves a document to ``ignored``."""
+    table; ``ignore`` (object keys) moves a document to ``ignored``.
+
+    A document record is the ``doc#<key>`` row with sort key ``none``. The same
+    partition also holds one ``run#...`` row per processing run, which carries no
+    ``ObjectStatus``; counting those would report every finished document as in
+    flight, so they are skipped (and filtered server-side as well).
+    """
     skip = set(ignore)
     scan = DocumentScan()
     kwargs: Dict[str, Any] = {
         "TableName": table_name,
-        "FilterExpression": "begins_with(PK, :doc)",
-        "ExpressionAttributeValues": {":doc": {"S": "doc#"}},
-        "ProjectionExpression": "PK, ObjectStatus",
+        "FilterExpression": "begins_with(PK, :doc) AND SK = :record",
+        "ExpressionAttributeValues": {":doc": {"S": "doc#"}, ":record": {"S": "none"}},
+        "ProjectionExpression": "PK, SK, ObjectStatus",
     }
     while True:
         resp = ddb.scan(**kwargs)
         for item in resp.get("Items", []):
+            if (item.get("SK") or {}).get("S") != DOCUMENT_RECORD_SK:
+                continue
             scan.scanned += 1
             status = (item.get("ObjectStatus") or {}).get("S", "")
             if status in TERMINAL_STATUSES:

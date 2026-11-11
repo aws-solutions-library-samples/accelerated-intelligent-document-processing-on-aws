@@ -1005,12 +1005,36 @@ class PagedTable:
 
 def test_the_document_scan_reads_every_page():
     items = [
-        {"PK": {"S": f"doc#{n}.pdf"}, "ObjectStatus": {"S": "OCR"}} for n in range(1500)
+        {"PK": {"S": f"doc#{n}.pdf"}, "SK": {"S": "none"}, "ObjectStatus": {"S": "OCR"}}
+        for n in range(1500)
     ]
     table = PagedTable(items)
     scan = tm.scan_documents("t", table)
     assert len(scan.in_flight) == 1500 and scan.scanned == 1500
     assert table.calls == 1500
+
+
+def test_a_finished_documents_run_rows_are_not_in_flight():
+    """Upstream writes a ``run#...`` row per processing run in the document's
+    partition, with no ObjectStatus. Measured on a live upstream deployment: two
+    COMPLETED documents were reported in flight with status "" through them."""
+    items = [
+        {
+            "PK": {"S": "doc#seed/a.pdf"},
+            "SK": {"S": "none"},
+            "ObjectStatus": {"S": "COMPLETED"},
+        },
+        {"PK": {"S": "doc#seed/a.pdf"}, "SK": {"S": "run#20261111T013000Z-a.pdf-1"}},
+        {
+            "PK": {"S": "doc#seed/b.pdf"},
+            "SK": {"S": "none"},
+            "ObjectStatus": {"S": "OCR"},
+        },
+        {"PK": {"S": "doc#seed/b.pdf"}, "SK": {"S": "run#20261111T013100Z-b.pdf-2"}},
+    ]
+    scan = tm.scan_documents("t", PagedTable(items))
+    assert [r["key"] for r in scan.in_flight] == ["seed/b.pdf"]
+    assert scan.scanned == 2
 
 
 # ---------------------------------------------------------------------------
