@@ -23,9 +23,9 @@ every string the model wrote that way:
 * whitespace runs are collapsed and the result is capped in length.
 
 **Which strings.** In a schema, every string value is cleaned except the ones that
-are machine syntax rather than text: ``$schema``, ``$id``, ``$ref``, ``type``,
-``format``, ``pattern`` and any key ending in ``-regex``; property names are left
-as they are. Everything else — ``description``, ``title``, ``examples``, ``enum``,
+are machine syntax rather than text: a string under ``$schema``, ``$id``,
+``$ref``, ``type``, ``format``, ``pattern`` or any key ending in ``-regex``, and the
+field names in ``required``; property and definition names are left as they are. Everything else — ``description``, ``title``, ``examples``, ``enum``,
 ``const``, ``default``, ``x-aws-idp-*-prompt``, ``x-aws-idp-list-item-description``,
 the few-shot ``x-aws-idp-examples`` and anything a model adds — is text that can
 reach a prompt or the page, so it is cleaned. A model-written image path is a URL
@@ -68,16 +68,25 @@ _MD_REF_DEFINITION = re.compile(r"^[ \t]{0,3}\[[^\]]+\]:[ \t]*\S+.*$", re.MULTIL
 _HTML_COMMENT = re.compile(r"<!--.*?(?:-->|$)", re.DOTALL)
 # A tag runs to its `>` or, left unclosed, to the end of the text.
 _HTML_TAG = re.compile(r"</?[A-Za-z!?][^<>]*(?:>|$)")
+#: Upper bound on repeated passes (entity decoding, and the removal passes until the
+#: text stops changing). Removing one tag can join two fragments into another, so a
+#: single pass is not enough; the bound keeps a pathological value finite.
+_MAX_PASSES = 10
+
 _URL = re.compile(
     # any scheme followed by one or more slashes or backslashes; no word boundary,
     # so `_https://` and `9https:\\` are found too
-    r"[A-Za-z][A-Za-z0-9+.\-]*:[/\\]+[^\s<>()\[\]\"']*"
+    r"[A-Za-z][A-Za-z0-9+.\-]+:[/\\]+[^\s<>()\[\]\"']*"
     # protocol-relative //host.
     r"|(?<![\w/:])//(?=[\w\-]+\.)[^\s<>()\[\]\"']*"
     # a www. host, after any character
     r"|www\.[^\s<>()\[\]\"']*"
-    # the schemes that mean something with no slash at all
-    r"|(?<![A-Za-z])(?:https?|ftps?|file|data|javascript|vbscript|mailto|blob|wss?):\S+",
+    # the schemes that still mean something with no slash at all, each in the shape
+    # that makes it one: a host with a dot, a media type, an address, any script
+    r"|(?<![A-Za-z])(?:https?|ftps?):[\w\-]+(?:\.[\w\-]+)+\S*"
+    r"|(?<![A-Za-z])data:[a-z]+/[\w.+\-]+\S*"
+    r"|(?<![A-Za-z])mailto:\S*@\S*"
+    r"|(?<![A-Za-z])(?:javascript|vbscript):\S+",
     re.IGNORECASE,
 )
 _SPACES = re.compile(r"[ \t\f\v]+")
@@ -92,7 +101,7 @@ def _normalise(value: str) -> str:
     format characters (``Cf``) this removes.
     """
     text = value
-    for _ in range(3):
+    for _ in range(_MAX_PASSES):
         decoded = html.unescape(text)
         if decoded == text:
             break
@@ -119,13 +128,18 @@ def clean_text(
     if not isinstance(value, str):
         return value
     text = _normalise(value)
-    text = _HTML_COMMENT.sub(" ", text)
-    text = _MD_IMAGE.sub(" ", text)
-    text = _MD_LINK.sub(r"\1", text)
-    text = _MD_REF_LINK.sub(r"\1", text)
-    text = _MD_REF_DEFINITION.sub("", text)
-    text = _HTML_TAG.sub(" ", text)
-    text = _URL.sub(" ", text)
+    for _ in range(_MAX_PASSES):
+        before = text
+        text = _HTML_COMMENT.sub(" ", text)
+        text = _MD_IMAGE.sub(" ", text)
+        text = _MD_LINK.sub(r"\1", text)
+        text = _MD_REF_LINK.sub(r"\1", text)
+        text = _MD_REF_DEFINITION.sub("", text)
+        text = _HTML_TAG.sub(" ", text)
+        text = _URL.sub(" ", text)
+        text = _normalise(text)
+        if text == before:
+            break
     if multiline:
         text = "\n".join(_SPACES.sub(" ", line).strip() for line in text.split("\n"))
         text = _BLANK_LINES.sub("\n\n", text).strip()
@@ -134,8 +148,13 @@ def clean_text(
     return _cap(text, limit)
 
 
-#: Keys whose string values are machine syntax, not text: never cleaned.
+#: Keys whose STRING values are machine syntax, not text: a string under one of these
+#: is kept as written. A dict or list under the same name (a ``$defs`` entry called
+#: ``type``) is walked like any other value.
 SYNTAX_KEYS = frozenset({"$schema", "$id", "$ref", "type", "format", "pattern"})
+
+#: Keys whose values are field NAMES, which must keep matching ``properties``.
+NAME_LIST_KEYS = frozenset({"required", "dependentRequired"})
 
 #: Longest prompt-like value kept (a key containing ``prompt``), in characters.
 MAX_PROMPT_CHARS = 4000
@@ -143,6 +162,12 @@ MAX_PROMPT_CHARS = 4000
 
 def _is_syntax_key(key: Any) -> bool:
     return isinstance(key, str) and (key in SYNTAX_KEYS or key.endswith("-regex"))
+
+
+def _kept_as_written(key: Any, value: Any) -> bool:
+    if key in NAME_LIST_KEYS:
+        return True
+    return _is_syntax_key(key) and isinstance(value, str)
 
 
 def _limit_for(key: Any) -> int:
@@ -177,9 +202,11 @@ def clean_schema_text(node: Any) -> Any:
     if isinstance(node, dict):
         for key in list(node.keys()):
             value = node[key]
-            if _is_syntax_key(key):
+            if _kept_as_written(key, value):
                 continue
-            if key == "properties" and isinstance(value, dict):
+            if key in ("properties", "$defs", "definitions") and isinstance(
+                value, dict
+            ):
                 for prop in value.values():
                     clean_schema_text(prop)
             else:

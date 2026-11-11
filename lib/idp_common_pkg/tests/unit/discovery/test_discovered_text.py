@@ -558,3 +558,72 @@ def test_a_field_named_like_a_syntax_key_is_still_text():
     clean_schema_text(schema)
     assert schema["properties"]["pattern"]["description"] == "Line"
     assert schema["properties"]["type"]["description"] == "Kind"
+
+
+class TestSecondReview:
+    """Shapes a second adversarial review measured getting through."""
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "Total &lt;img&lt;b&gt;src=x onerror=alert(1)&gt; in the header",
+            "Total &lt;x&lt;y&gt;x onfocus=alert(1) autofocus tabindex=1&gt; in the header",
+            "Total &lt;scr&lt;i&gt;ipt&gt;alert(1)&lt;/script&gt; in the header",
+            "Total &amp;amp;amp;amp;lt;img src=x&amp;gt; in the header",
+            "Total <im<b>g src=x> in the header",
+        ],
+    )
+    def test_a_removal_cannot_assemble_a_tag(self, raw):
+        cleaned = clean_text(raw)
+        assert "<" not in cleaned and "img" not in cleaned and "onerror" not in cleaned
+        assert clean_text(cleaned) == cleaned  # idempotent
+
+    @pytest.mark.parametrize(
+        "plain",
+        [
+            "Data:Account 1234",
+            "WS:12 hours",
+            "File:W2.pdf",
+            r"C:\Users\x",
+            "Q:3 total",
+        ],
+    )
+    def test_plain_values_with_a_colon_are_kept(self, plain):
+        assert clean_text(plain) == plain
+
+    def test_an_unlisted_scheme_with_a_slash_is_removed(self):
+        assert clean_text(f"Total _foo:/{REMOTE}/x in the header") == (
+            "Total _ in the header"
+        )
+
+    def test_a_definition_named_like_a_syntax_key_is_walked(self):
+        schema = {
+            "$defs": {"type": {"description": f"Kind https://{REMOTE}"}},
+            "x-aws-idp-date-regex": {"description": f"Date www.{REMOTE}"},
+        }
+        clean_schema_text(schema)
+        assert schema["$defs"]["type"]["description"] == "Kind"
+        assert schema["x-aws-idp-date-regex"]["description"] == "Date"
+
+    def test_required_names_keep_matching_properties(self):
+        names = ["Employer  Name", "AT&amp;T Code", "\uff37ages"]
+        schema = {"required": list(names), "properties": {n: {} for n in names}}
+        clean_schema_text(schema)
+        assert schema["required"] == names
+        assert list(schema["properties"]) == names
+
+    def test_a_regex_value_is_kept_as_written(self):
+        regex = "^https?://www\\.remote\\.example/<id>$"
+        schema = {"x-aws-idp-document-name-regex": regex, "pattern": regex}
+        clean_schema_text(schema)
+        assert schema == {"x-aws-idp-document-name-regex": regex, "pattern": regex}
+
+    def test_a_prompt_keeps_up_to_the_prompt_cap(self):
+        from idp_common.discovery.discovered_text import MAX_PROMPT_CHARS
+
+        prompt = "word " * 900  # 4500 characters
+        schema = {"x-aws-idp-extraction-task-prompt": prompt}
+        clean_schema_text(schema)
+        kept = schema["x-aws-idp-extraction-task-prompt"]
+        assert len(kept) == MAX_PROMPT_CHARS
+        assert len(kept) > MAX_DESCRIPTION_CHARS

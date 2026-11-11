@@ -109,7 +109,10 @@ def _assert_source_in_scope(event, bucket, prefix, is_zip_upload):
     profile it saves into. For a caller with a configuration scope:
 
     * the discovery bucket (including an uploaded zip) is allowed: it is the
-      Admin/Author upload workspace and holds no processed documents;
+      shared Admin/Author discovery workspace — every user's discovery uploads and
+      the documents extracted from multi-document zips — and nothing in it records
+      a profile or an uploader, so there is nothing to check it against (see the
+      Known Limitations in docs/rbac.md);
     * an Input-bucket prefix is allowed only when a configuration prefix mapping
       covers the whole prefix (the prefix lies inside a ``prefix``-kind mapping),
       the mapping's profile is in scope, the mapping lets no document's own
@@ -164,7 +167,9 @@ def _assert_source_in_scope(event, bucket, prefix, is_zip_upload):
     for entry in mappings:
         if not entry.get("enabled") or not entry.get("configProfile"):
             continue
-        if canonical_key(entry["prefix"]).startswith(wanted) and not scope_allows(
+        if not canonical_key(entry["prefix"]).startswith(wanted):
+            continue
+        if entry.get("metadataPrecedence") == PRECEDENCE_METADATA or not scope_allows(
             allowed, entry["configProfile"]
         ):
             logger.warning("Refusing multi-document discovery: a mapping under the source prefix is outside the caller's scope")
@@ -627,8 +632,17 @@ def handle_start_multi_doc_discovery(event, context):
     # point at a location where nothing was uploaded and the Prepare step
     # would 404.
     if is_zip_upload:
-        if not prefix:
-            prefix = multi_doc_zip_key(zip_file_name)
+        # The zip's key is derived from its name, never taken from the caller: the
+        # Prepare step deletes the zip once it is extracted, so a caller-chosen key
+        # would name another upload for deletion. A caller passing back the
+        # objectKey uploadMultiDocDiscoveryZip returned passes the same key.
+        expected = multi_doc_zip_key(zip_file_name)
+        if prefix and prefix != expected:
+            raise ValueError(
+                "s3Prefix must be omitted for a zip upload, or be the objectKey "
+                "uploadMultiDocDiscoveryZip returned for this zipFileName"
+            )
+        prefix = expected
         bucket = os.environ.get('DISCOVERY_BUCKET', '')
 
     logger.info(

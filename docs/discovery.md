@@ -838,8 +838,9 @@ whichever profile happens to be active. See [RBAC](rbac.md#scope-enforcement-poi
 other text — and the multi-document reflection report are kept to plain text before
 they are saved or shown: URLs, markdown images and HTML are removed (a markdown link
 keeps its text), and lengths are capped — 1,000 characters for a description, 4,000
-for a prompt, 200 for other values and 10 example values per field. `$schema`, `$id`,
-`$ref`, `type`, `format`, `pattern` and `-regex` keys are machine syntax and are saved
+for a prompt, 200 for other values and 10 example values per field. String values of `$schema`,
+`$id`, `$ref`, `type`, `format`, `pattern` and `-regex` keys are machine syntax, and
+the field names in `required` must keep matching the properties, so those are saved
 as discovered. Classes you wrote yourself are not changed. Multi-document
 discovery's agent views only documents in the cluster it is analysing, and at most
 the configured `max_sample_size` of them, and for a user with a configuration-profile

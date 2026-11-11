@@ -459,6 +459,13 @@ class TestMultiDocumentSourceScope:
                 "lending/",
             ),
             ([_mapping("lending/a.pdf", "lending-v1")], "lending/a.pdf"),
+            (
+                [
+                    _mapping("lending/", "lending-v1"),
+                    _mapping("lending/sub/", "lending-v1", precedence="metadata"),
+                ],
+                "lending/",
+            ),
         ],
         ids=[
             "unmapped",
@@ -468,6 +475,7 @@ class TestMultiDocumentSourceScope:
             "metadata-precedence",
             "narrower-mapping-out-of-scope",
             "exact-kind-mapping",
+            "narrower-mapping-metadata-precedence",
         ],
     )
     def test_an_input_prefix_not_wholly_in_scope_is_refused(
@@ -509,3 +517,42 @@ class TestMultiDocumentSourceScope:
         assert self._start(index, "test-set-bucket", "x/")["status"] == "QUEUED"
         admin = self._start(index, "test-set-bucket", "x/", groups=("Admin",))
         assert admin["status"] == "QUEUED"
+
+
+class TestZipKey:
+    def test_a_zip_start_takes_its_key_from_the_name(self, index):
+        _call(
+            index,
+            "startMultiDocDiscovery",
+            {"configVersion": "staging", "zipFileName": "My docs.zip"},
+            groups=("Admin",),
+        )
+        sfn_input = index.sfn_client.start_execution.call_args.kwargs["input"]
+        assert '"prefix": "multi-doc-discovery/uploads/My_docs.zip"' in sfn_input
+
+    def test_the_returned_object_key_is_accepted(self, index):
+        _call(
+            index,
+            "startMultiDocDiscovery",
+            {
+                "configVersion": "staging",
+                "zipFileName": "docs.zip",
+                "s3Prefix": "multi-doc-discovery/uploads/docs.zip",
+            },
+            groups=("Admin",),
+        )
+        index.sfn_client.start_execution.assert_called_once()
+
+    def test_another_key_is_refused_for_every_caller(self, index):
+        with pytest.raises(ValueError, match="s3Prefix must be omitted"):
+            _call(
+                index,
+                "startMultiDocDiscovery",
+                {
+                    "configVersion": "staging",
+                    "zipFileName": "docs.zip",
+                    "s3Prefix": "multi-doc-discovery/uploads/someone-elses.zip",
+                },
+                groups=("Admin",),
+            )
+        index.sfn_client.start_execution.assert_not_called()
