@@ -898,6 +898,19 @@ class Translator:
                 else []
             )
             idx = "[0]" if role_plan.condition else ""
+            # The directory is in the bridge bucket, which is SSE-KMS with the
+            # bridge key when there is one (static_files.bridge_tf).
+            key = self.bridge_kms_key()
+            decrypt = (
+                "  }, {\n"
+                '    Effect = "Allow"\n'
+                '    Action = "kms:Decrypt"\n'
+                f"    Resource = {key}\n"
+                '    Condition = { StringEquals = { "kms:ViaService" = '
+                '"s3.${local.pseudo.region}.${local.pseudo.dns_suffix}" } }\n'
+                if key
+                else ""
+            )
             extra.append(
                 hcl.block(
                     f'resource "aws_iam_role_policy" "{role_plan.name}_tf_directory"',
@@ -912,7 +925,8 @@ class Translator:
                         '    Effect = "Allow"\n'
                         '    Action = "s3:GetObject"\n'
                         f'    Resource = "${{aws_s3_bucket.cfn_bridge.arn}}/{DIRECTORY_KEY}"\n'
-                        "  }]\n"
+                        + decrypt
+                        + "  }]\n"
                         "})",
                     ],
                 )

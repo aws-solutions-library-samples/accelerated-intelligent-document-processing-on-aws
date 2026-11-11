@@ -607,3 +607,87 @@ def test_a_parameter_named_like_a_bridge_variable_does_not_collide(schema):
     t["Parameters"] = {"CfnBridgeKmsKeyArn": {"Type": "String"}}
     files = render(t, schema)
     assert "queue_name = var.param_cfn_bridge_kms_key_arn" in files["main.tf"]
+
+
+def _sse(bridge: str) -> str:
+    return _block(
+        bridge,
+        'resource "aws_s3_bucket_server_side_encryption_configuration" "cfn_bridge"',
+    )
+
+
+def test_the_bridge_bucket_is_encrypted_with_the_key_when_there_is_one():
+    """The bucket holds custom-resource responses (which can carry a handler's
+    outputs) and the resource directory, so it takes the stack key the
+    template's own buckets use, and the bridge role, which writes every
+    object handlers and responses put there, may use the key through S3."""
+    from idp_tf.static_files import bridge_tf
+
+    key = "awscc_kms_key.key.arn"
+    bridge = bridge_tf(None, kms_key=key)
+    sse = _sse(bridge)
+    assert re.search(r'^\s*sse_algorithm\s*=\s*"aws:kms"$', sse, re.M), sse
+    assert re.search(rf"^\s*kms_master_key_id\s*=\s*{re.escape(key)}$", sse, re.M)
+    assert re.search(r"^\s*bucket_key_enabled\s*=\s*true$", sse, re.M)
+    assert "AES256" not in bridge
+    policy = _block(bridge, 'resource "aws_iam_role_policy" "cfn_bridge"')
+    grant = re.search(
+        r'Action\s*=\s*\["kms:GenerateDataKey", "kms:Decrypt"\]\s*'
+        rf"Resource\s*=\s*{re.escape(key)}\s*"
+        r'Condition\s*=\s*\{ StringEquals = \{ "kms:ViaService" = '
+        r'"s3\.\$\{local\.pseudo\.region\}\.\$\{local\.pseudo\.dns_suffix\}" \} \}',
+        policy,
+    )
+    assert grant, policy
+
+
+def test_the_bridge_bucket_keeps_sse_s3_without_a_key():
+    from idp_tf.static_files import bridge_tf
+
+    bridge = bridge_tf(None)
+    assert re.search(r'^\s*sse_algorithm\s*=\s*"AES256"$', _sse(bridge), re.M)
+    assert "kms" not in bridge.lower()
+
+
+def _waf_logging_template(**extra) -> dict:
+    return {
+        "Resources": {
+            "Acl": {
+                "Type": "AWS::WAFv2::WebACL",
+                "Properties": {
+                    "Scope": "REGIONAL",
+                    "DefaultAction": {"Block": {}},
+                    "VisibilityConfig": {
+                        "SampledRequestsEnabled": True,
+                        "CloudWatchMetricsEnabled": True,
+                        "MetricName": "m",
+                    },
+                },
+            },
+            "AclLogs": {
+                "Type": "AWS::WAFv2::LoggingConfiguration",
+                "Properties": {
+                    "ResourceArn": {"Fn::GetAtt": ["Acl", "Arn"]},
+                    "LogDestinationConfigs": [
+                        "arn:partition:logs:region:account:log-group:aws-waf-logs-x"
+                    ],
+                    **extra,
+                },
+            },
+        }
+    }
+
+
+def test_a_waf_logging_configuration_maps_to_the_aws_provider(vendored):
+    main_tf = Translator(_waf_logging_template(), vendored).render()["main.tf"]
+    block = _block(
+        main_tf, 'resource "aws_wafv2_web_acl_logging_configuration" "acl_logs"'
+    )
+    assert "resource_arn = aws_wafv2_web_acl.acl.arn" in block
+    assert re.search(r"log_destination_configs = \[\s*\"arn:", block), block
+
+
+def test_a_waf_logging_setting_the_mapping_does_not_carry_fails(vendored):
+    t = _waf_logging_template(RedactedFields=[{"UriPath": {}}])
+    with pytest.raises(TranslationError, match="RedactedFields"):
+        Translator(t, vendored).render()
