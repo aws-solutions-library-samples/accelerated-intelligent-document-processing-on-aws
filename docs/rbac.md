@@ -1171,15 +1171,28 @@ holding the owner's Cognito `sub`):
 
 Sessions written before `ChatSessionOwnersTable` existed have history and no recorded
 owner. Each is registered, on first use, to the caller who holds the earlier record of
-using it — their own `ChatSessionsTable` row, or for Chat-with-Document the ownership
-row in the document-chat sessions table — and to nobody else; a first message from
-anyone else under such an id is refused. Agent conversation memory written under the
-earlier `conversation#<sessionId>` key is no longer read.
+using it: their own `ChatSessionsTable` row, which is keyed by the caller's email
+address (or `cognito:username`), or, on the REST path for Chat-with-Document, the
+ownership row in the document-chat sessions table. A first message from a caller with
+no such record is refused. Two things follow from the earlier record being what it is.
+A row written under another user's session id before this release counts as a record,
+so if two users both hold one, whichever uses the id first after the upgrade owns it.
+And a new account with the same email address as a removed one inherits that address's
+earlier sessions. The streaming document-chat route consults only `ChatSessionsTable`,
+so a document-chat session from before this release that was used only through the
+REST path is refused there to its own owner; the web UI starts a new session id for
+each document chat, so it does not reuse one. Agent conversation memory written under
+the earlier `conversation#<sessionId>` key is no longer read.
 
-The owner row's expiry moves forward on every turn, so it outlives the messages
-written under it. `scripts/tests/test_session_keyed_storage.py` fails on any new
-DynamoDB key built from a session or conversation id without a user component unless
-the file is listed there with the ownership check it relies on.
+The owner row's expiry moves forward on every turn and is kept an hour past the
+retention period, so it outlives the messages written under it.
+`scripts/tests/test_session_keyed_storage.py` reports DynamoDB keys built from a
+session or conversation id with no user component, in every shape its module
+docstring lists: keys passed to any DynamoDB data-plane call however the dict was
+built, key conditions and PartiQL parameters, and `#`-joined key strings. A file that
+legitimately keys on the session id alone is listed there with its pinned site count
+and the ownership check it relies on. What the scan cannot see (a key handed between
+functions, or a session id not named as one) is listed in the same docstring.
 
 ### Layer 3: UI Adaptation (UX Convenience)
 
