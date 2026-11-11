@@ -144,9 +144,8 @@ def test_verified_claims_win_over_an_asserted_identity_that_agrees():
 def test_an_asserted_identity_claiming_an_unverified_group_is_refused():
     """The verified claim says Viewer; the payload says Admin. Refused, not downgraded.
 
-    Refusing rather than quietly using the verified (lesser) claims is the same
-    rule ``resolve_caller_sub`` applies in ``src/lambda/chat_stream_processor``:
-    a supplied identity that contradicts the proven one is never legitimate.
+    Refusing rather than quietly using the verified (lesser) claims: a supplied
+    identity that contradicts the proven one is never legitimate.
     """
     event = _http_event("listUsers", "Viewer")
     event["arguments"] = {}

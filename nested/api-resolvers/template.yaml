@@ -41,6 +41,10 @@ Parameters:
   
   ChatSessionsTableName:
     Type: String
+
+  ChatSessionOwnersTableName:
+    Type: String
+    Description: DynamoDB table recording which user each chat session id belongs to (keyed by sessionId)
   
   NotificationsTableName:
     Type: String
@@ -598,6 +602,7 @@ Resources:
           AGENT_CHAT_PROCESSOR_FUNCTION: !Ref AgentChatProcessorFunctionArn
           DATA_RETENTION_DAYS: !Ref DataRetentionInDays
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTableName
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
       LoggingConfig:
         LogGroup: !Ref AgentChatResolverLogGroup
       Policies:
@@ -609,6 +614,8 @@ Resources:
             TableName: !Ref ChatMessagesTableName
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatSessionsTableName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
         - LambdaInvokePolicy:
             FunctionName: !Ref AgentChatProcessorFunctionArn
         - Statement:
@@ -714,14 +721,23 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Read only: where this resolver recorded owners before
+          # ChatSessionOwnersTable existed.
           CHAT_DOCUMENT_SESSIONS_TABLE: !Ref ChatDocumentSessionsTable
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          # Read to tell an unused session id from one that already has history.
+          CHAT_MESSAGES_TABLE: !Ref ChatMessagesTableName
           CHAT_DOCUMENT_PROCESSOR_FUNCTION_ARN: !Ref ChatWithDocumentProcessorFunctionArn
           DATA_RETENTION_DAYS: !Ref DataRetentionInDays
       LoggingConfig:
         LogGroup: !Ref SendChatDocumentMessageResolverFunctionLogGroup
       Policies:
-        - DynamoDBCrudPolicy:
+        - DynamoDBReadPolicy:
             TableName: !Ref ChatDocumentSessionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
+        - DynamoDBReadPolicy:
+            TableName: !Ref ChatMessagesTableName
         - Statement:
             - Effect: Allow
               Action: lambda:InvokeFunction
@@ -1311,6 +1327,9 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           CHAT_MESSAGES_TABLE: !Ref ChatMessagesTableName
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTableName
+          # The delete checks the session's owner the way getChatMessages does.
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          DATA_RETENTION_DAYS: !Ref DataRetentionInDays
       LoggingConfig:
         LogGroup: !Ref DeleteAgentChatSessionFunctionLogGroup
       Policies:
@@ -1318,6 +1337,8 @@ Resources:
             TableName: !Ref ChatMessagesTableName
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatSessionsTableName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
         - Statement:
             - Effect: Allow
               Action:
@@ -1729,6 +1750,10 @@ Resources:
           # the non-streaming (GovCloud) poll path, so it verifies ownership
           # against this table too.
           CHAT_DOCUMENT_SESSIONS_TABLE: !Ref ChatDocumentSessionsTable
+          # Who each session id belongs to; the ownership check reads it and
+          # registers an owner for a session written before it existed.
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          DATA_RETENTION_DAYS: !Ref DataRetentionInDays
           # Feature flag to disable ownership enforcement in case of legacy
           # session migration. Defaults to "true" (enforce). Customers should
           # only set this to "false" temporarily during data backfill.
@@ -1745,6 +1770,8 @@ Resources:
         # Same ownership check for document-chat sessions.
         - DynamoDBReadPolicy:
             TableName: !Ref ChatDocumentSessionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
         - Statement:
             - Effect: Allow
               Action:

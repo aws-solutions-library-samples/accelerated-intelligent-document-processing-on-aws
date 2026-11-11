@@ -2520,11 +2520,9 @@ type Mutation {
   # onChatDocumentMessageUpdate.
   #
   # An assigned group is required: this sends document content to a model and
-  # bills inference. ⚠️ The directive and the dispatcher's floor both apply to the
-  # REST route only. The streaming Lambda Function URL (POST /chat/document)
-  # reaches the same processor and forwards no cognito:groups claim at all, so a
-  # caller in no group is refused here and is not refused there — GAP-07 in
-  # scripts/api_rbac_expectations.yaml.
+  # bills inference. The directive and the dispatcher's floor apply to this REST
+  # route; the streaming Lambda Function URL (POST /chat/document) applies the
+  # same floor from the Cognito ID token it verifies.
   sendChatDocumentMessage(
     sessionId: String!
     prompt: String!

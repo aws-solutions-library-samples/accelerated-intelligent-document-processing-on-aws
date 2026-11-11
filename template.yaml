@@ -3144,6 +3144,7 @@ Resources:
         AgentTableName: !Ref AgentTable
         ChatMessagesTableName: !Ref ChatMessagesTable
         ChatSessionsTableName: !Ref ChatSessionsTable
+        ChatSessionOwnersTableName: !Ref ChatSessionOwnersTable
         NotificationsTableName: !Ref NotificationsTable
         HITLTableName: !Ref HITLTable
         IdHelperChatMemoryTableName: !Ref IdHelperChatMemoryTable
@@ -12033,6 +12034,9 @@ Resources:
           BEDROCK_REGION: !Ref AWS::Region
           CHAT_MESSAGES_TABLE: !Ref ChatMessagesTable
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTable
+          # Who each chat session id belongs to (keyed by sessionId); checked
+          # before a turn's memory loads. See idp_common/chat_session_owner.py.
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTable
           ID_HELPER_CHAT_MEMORY_TABLE: !Ref IdHelperChatMemoryTable
           MEMORY_METHOD: dynamodb
           MAIN_STACK_NAME: !Ref AWS::StackName
@@ -12107,6 +12111,8 @@ Resources:
             TableName: !Ref ChatMessagesTable
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatSessionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTable
         - DynamoDBCrudPolicy:
             TableName: !Ref IdHelperChatMemoryTable
         - DynamoDBCrudPolicy:
@@ -12377,6 +12383,9 @@ Resources:
           BEDROCK_REGION: !Ref AWS::Region
           CHAT_MESSAGES_TABLE: !Ref ChatMessagesTable
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTable
+          # Who each chat session id belongs to (keyed by sessionId); checked
+          # before a turn's memory loads. See idp_common/chat_session_owner.py.
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTable
           ID_HELPER_CHAT_MEMORY_TABLE: !Ref IdHelperChatMemoryTable
           MEMORY_METHOD: dynamodb
           MAIN_STACK_NAME: !Ref AWS::StackName
@@ -12394,6 +12403,11 @@ Resources:
           AWS_STACK_NAME: !Ref AWS::StackName
           CLOUDWATCH_LOG_GROUP_PREFIX: !Sub "/aws/lambda/${AWS::StackName}"
           SETTINGS_PARAMETER_NAME: !Ref SettingsParameter
+          # The ID token the browser presents (x-idp-id-token) is verified
+          # against this user pool and the web UI's app client — see the "Auth
+          # model" note in src/lambda/chat_stream_processor/app.py.
+          COGNITO_ISSUER: !Sub "https://${UserPool.ProviderName}"
+          USER_POOL_CLIENT_ID: !Ref UserPoolClient
           # No GraphQL API URL — the sink writes to the HTTP stream instead of
           # a GraphQL endpoint, so neither processor constructs that client here.
           BEDROCK_ASSUME_ROLE_ARN:
@@ -12437,6 +12451,8 @@ Resources:
             TableName: !Ref ChatMessagesTable
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatSessionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTable
         - DynamoDBCrudPolicy:
             TableName: !Ref IdHelperChatMemoryTable
         - Statement:
@@ -12586,13 +12602,9 @@ Resources:
                   "aws:ResourceTag/idp:feature-id": "*"
             # RBAC scope enforcement — read the caller's UsersTable row for their
             # `allowedConfigVersions`, on either key space (the SUB#<sub> pointer via
-            # GetItem, or EmailIndex via Query). Retained for this function because
-            # it runs the same Chat-with-Document processor code, but on THIS
-            # transport the check stands down and the grant goes unused: a Function
-            # URL forwards no Cognito claims, so there is no verified per-user
-            # caller to resolve a scope for (GAP-07 in
-            # scripts/api_rbac_expectations.yaml). It becomes live the moment that
-            # endpoint verifies an ID token, with no IAM change needed.
+            # GetItem, or EmailIndex via Query). This function runs the same
+            # Chat-with-Document processor code, and resolves the scope from the
+            # email and sub of the Cognito ID token the endpoint verifies.
             - Effect: Allow
               Action:
                 - dynamodb:Query
@@ -12631,6 +12643,8 @@ Resources:
           - x-amz-date
           - x-amz-content-sha256
           - x-amz-security-token
+          # The caller's Cognito ID token; the endpoint verifies it.
+          - x-idp-id-token
         AllowOrigins:
           - "*"
         MaxAge: 600
@@ -12669,6 +12683,37 @@ Resources:
           KeyType: HASH
         - AttributeName: sessionId
           KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ExpiresAfter
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  ##########################################################################
+  # DynamoDB Table recording which user each chat session id belongs to
+  ##########################################################################
+
+  # Keyed by sessionId alone, so a conditional write can register an id to its
+  # first user and refuse it to everybody else. ChatMessagesTable stores history
+  # under the session id with no user term, and ChatSessionsTable is keyed by
+  # user, so neither can say that nobody else uses an id. Every chat path checks
+  # this table before it stores a message or loads memory, and the history read
+  # and delete check it before they touch a message. See
+  # lib/idp_common_pkg/idp_common/chat_session_owner.py.
+  ChatSessionOwnersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: sessionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: sessionId
+          KeyType: HASH
       TimeToLiveSpecification:
         AttributeName: ExpiresAfter
         Enabled: true
@@ -16033,9 +16078,12 @@ Resources:
           # Chat streaming Function URL (IAM-authed, response streaming). The
           # signed stream client (src/api/stream-client.ts) reads this. Empty
           # under strict tenant isolation or an external TenantGrantSource, which
-          # sends the UI to its REST polling fallback (as on GovCloud): that path
-          # carries the caller's verified Cognito claims, so it can be scoped,
-          # where the Function URL cannot (GAP-07) and refuses every turn there.
+          # sends the UI to its REST polling fallback (as on GovCloud). Both paths
+          # scope a turn from verified claims: the REST API from its Cognito
+          # authorizer, the Function URL from the ID token it verifies. Streaming
+          # under tenant isolation is withheld because the REST path is the one
+          # those modes are validated on, not because the Function URL cannot
+          # attribute a caller.
           - Name: VITE_STREAM_URL
             Value: !If
               - DeniesUnscopedCaller
