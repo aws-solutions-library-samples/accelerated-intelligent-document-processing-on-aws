@@ -3320,18 +3320,7 @@
       "ratchet": "count-pinned",
       "ratchetEvidence": "scripts/tests/test_check_worktree_reach.py",
       "turnsOff": "nothing in a gate. It is the set of destinations the hook does not refuse; every other host is refused.",
-      "reason": "GitHub's web, API, raw-content and archive hosts, PyPI's index and file host and npm's registry are where a fix's legitimate fetches go (source, wheels, packages). Each is a public code or package host the session already reaches through git, pip or npm. The set is pinned by test_the_fetch_host_list_is_pinned, so a new host is a reviewed edit."
-    },
-    "scripts/hooks/check_worktree_reach.py::allowed": {
-      "kind": "enforced-universe",
-      "memberKind": "a hostname a curl, wget or nc command run from an agent worktree may reach",
-      "premise": [
-        "JUDGEMENT"
-      ],
-      "ratchet": "count-pinned",
-      "ratchetEvidence": "scripts/tests/test_check_worktree_reach.py",
-      "turnsOff": "nothing in a gate. It is ALLOWED_FETCH_HOSTS plus the host of the worktree's own `origin` remote, read with git at run time.",
-      "reason": "The repository's own git host is where its merge requests and pipelines live, and is read from `git remote get-url origin` rather than written down, because it is not a public name and differs per clone. The run-time additions to the pinned ALLOWED_FETCH_HOSTS are pinned as well: test_only_the_origin_host_is_added_to_the_pinned_set asserts they are exactly the origin host and its `ssh.`-less web name for each origin spelling, and nothing for an origin that is not a host. An agent that rewrites its own origin remote widens the set; the hook's header lists that among the routes it does not cover."
+      "reason": "GitHub's web, API, raw-content and archive hosts, PyPI's index and file host and npm's registry are where a fix's legitimate fetches go (source, wheels, packages). Each is a public code or package host the session already reaches through git, pip or npm. The set is pinned by test_the_fetch_host_list_is_pinned, so a new host is a reviewed edit. At run time allowed_fetch_hosts adds the worktree's own git origin host and its `ssh.`-less web name, and those additions are pinned too, by test_only_the_origin_host_is_added_to_the_pinned_set."
     }
   }
 }
