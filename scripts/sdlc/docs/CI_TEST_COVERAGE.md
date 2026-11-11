@@ -588,13 +588,53 @@ running into its deadline hours later.
 Check the IAM role
 count too: the two deployments hold several hundred roles between them.
 
-**What a dead build leaves.** The driver tears down in a `finally` and within its
-deadline, but a build that dies outright (a lost container) runs no `finally`, and
-its work directory, holding both Terraform states, goes with the container. The next
-run's startup sweeps remove what carries the new deployment's run-prefix name (its
-label stack, buckets, roles and policies) by name and age once no stack of that run
-remains. The old deployment's resources (upstream's names, `idpo…` or none) are
-reached by none of them and stand until removed by hand.
+**What a dead build leaves, and what reaps it.** The driver tears down in a
+`finally` and within its deadline, but a build that dies outright (a lost container)
+runs no `finally`, and its work directory goes with the container. So the run keeps
+what a teardown needs outside it, under
+`terraform-migration-runs/<run>/` in the CI state bucket
+(`TERRAFORM_MIGRATION_STATE_PREFIX`, a prefix of its own beside the nightly's
+`terraform-runs/`):
+
+- `run.json`, written by the build before the driver starts: both names, the region,
+  the run's `TFDeployRole` and boundary, the upstream IAM path, the module URL and
+  the account;
+- both Terraform states, through S3 backends the driver writes into each root before
+  its first `init` (`--state-mirror`);
+- the driver's context and the new root's configuration, copied at the end of every
+  phase. Its secrets file never is: a teardown needs the run's names, not its
+  passwords.
+
+The driver's preflight writes that mirror before anything is created and fails if it
+cannot, so a run that could not be torn down by a later build creates nothing. The
+prefix is removed only after a leftover check that found nothing; a teardown that
+left something keeps it.
+
+`cleanup_stale_terraform_migrations`, a fatal Step 0 sweep in every build, finds a
+prefix older than the stack sweep's age gate (`IDP_STACK_STALE_AGE_SECONDS`, well
+above the driver's longest phase, the hour-long time-to-live wait, between two of
+which the mirror is rewritten) and runs the driver's own `--resume --teardown-only`
+in a scratch work directory, as the run's `TFDeployRole`, with the names `run.json`
+records. The driver rebuilds what its teardown reads — the pinned upstream clone
+with the run's tfvars, IAM overrides, backend and provider lock, and the new root
+from the mirror — and then tears down exactly as a failed run does, under every
+check it already applies: the names and account must match the stored context, and
+the run must have created something. The `-iam` pre-stack is deleted after a clean
+teardown, and the stack sweep keeps it while the prefix stands. Failures are counted
+beside the state and abandoned to a note for a person after
+`TERRAFORM_REAP_MAX_ATTEMPTS`, as for a Terraform nightly; the note names the prefix
+and the command to finish it by hand.
+
+⚠️ **What is still unprotected.** A build that dies after the `-iam` pre-stack exists
+but before `run.json` is written leaves the pre-stack to the name-based sweeps, which
+already remove it; one that dies after `run.json` but before the driver's preflight
+has created nothing, and its reap finds nothing to do. A reap runs inside another
+build's Step 0, so a teardown needing something that build's environment lacks (the
+upstream release host, the registry, the Docker daemon upstream's image builds use)
+fails there, is counted, and is retried by the next build. If the state listing
+itself fails, the stack sweep keeps every Terraform-labelled run, and a migration
+run whose new deployment never reached its label stack is not among those, so its
+`-iam` pre-stack can be reaped by name before its teardown has run.
 
 ### Why fast_checks is eight jobs
 
