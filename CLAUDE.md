@@ -1383,6 +1383,14 @@ more appeared in ninety seconds, every finding real. The override is
 script, or a `cd` out of the worktree all reach `gh` without spelling it where the hook
 looks. It stops the accident that happened and leaves an audit trail.
 
+`scripts/hooks/check_worktree_reach.py` is a fourth `PreToolUse` hook on `Bash`,
+scoped the same way as the filing hook. From an agent worktree it refuses a command
+that names `~/.aws`, `~/.config/gh`, `~/.netrc` or `/proc/*/environ`, or runs
+`curl`, `wget` or `nc` against a host other than GitHub's, the repository's GitLab
+origin host, PyPI's, npm's or the loopback interface. The override is `ALLOW_WORKTREE_REACH=1`, and an
+honoured one prints a line to stderr. ⚠️ It matches command text and is not a
+capability boundary; its header lists the routes around it.
+
 `scripts/hooks/check_loop_liveness.py` is a **`Stop`** hook, the first in this
 repository. It refuses to let a turn end while a backlog run is live and
 `scratch/backlog-run-state.json` records no live child, which is the failure that cost
@@ -1411,7 +1419,7 @@ make the guard vacuous for exactly those runs, so such a file falls back to fres
 alone. `scripts/tests/test_check_loop_liveness.py` pins both directions and carries a
 regression test keyed on the real file's shape.
 
-Neither hook's override is registered in `scripts/tests/gate_exemptions.json`, for the
+None of these hooks' overrides is registered in `scripts/tests/gate_exemptions.json`, for the
 same reason `ALLOW_SHARED_BRANCH` and `ALLOW_RED_MERGE` are not: that registry governs a
 **gate** turned off for a file, a line or a rule, where the reason is written once and
 outlives what it described. These are per-invocation switches on a local convention,

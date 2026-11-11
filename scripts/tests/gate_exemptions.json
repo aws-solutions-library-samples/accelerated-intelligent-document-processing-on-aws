@@ -3419,6 +3419,17 @@
       "ratchet": "non-vacuity",
       "ratchetEvidence": "lib/idp_common_pkg/tests/unit/agents/analytics/test_sandbox_code_checks.py",
       "reason": "Discovered by name (ACCEPTED is in the discovery vocabulary); a test corpus rather than a carve-out. Why JUDGEMENT: the hand-written members are shapes chosen to cover the import and file-reading rules, which is a reading of the rules rather than a computation; the derived half comes from load_python_plot_generation_examples(). The ratchet is test_the_prompt_examples_are_found, which holds the derived examples and both hand-written corpora to a floor so none can be emptied into a vacuous test."
+    },
+    "scripts/hooks/check_worktree_reach.py::ALLOWED_FETCH_HOSTS": {
+      "kind": "enforced-universe",
+      "memberKind": "a hostname a curl, wget or nc command run from an agent worktree may reach",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_check_worktree_reach.py",
+      "turnsOff": "nothing in a gate. It is the set of destinations the hook does not refuse; every other host is refused.",
+      "reason": "GitHub's web, API, raw-content and archive hosts, PyPI's index and file host and npm's registry are where a fix's legitimate fetches go (source, wheels, packages). Each is a public code or package host the session already reaches through git, pip or npm. The set is pinned by test_the_fetch_host_list_is_pinned, so a new host is a reviewed edit. At run time allowed_fetch_hosts adds the worktree's own git origin host and its `ssh.`-less web name, and those additions are pinned too, by test_only_the_origin_host_is_added_to_the_pinned_set."
     }
   }
 }
