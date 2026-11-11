@@ -86,15 +86,11 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
 
   // Cognito Identity Pool credentials for SigV4-signing the streaming request
   // (httpapi transport only). Unused under the appsync transport.
-  const { currentSession, currentCredentials } = useCurrentSessionCreds({});
+  // The caller's identity is not sent in the body: streamChat presents the
+  // Cognito ID token and the endpoint takes the caller from it.
+  const { currentCredentials } = useCurrentSessionCreds({});
   const credentialsRef = useRef<unknown>(undefined);
   credentialsRef.current = currentCredentials;
-
-  // Caller identity for server-side history persistence. Matches the user_id
-  // the read resolvers key on (identity.username=email, falling back to sub).
-  const callerSubRef = useRef<string>('');
-  const idClaims = (currentSession as { tokens?: { idToken?: { payload?: Record<string, unknown> } } })?.tokens?.idToken?.payload;
-  callerSubRef.current = String(idClaims?.email || idClaims?.['cognito:username'] || idClaims?.sub || '');
 
   // Handle tool execution start messages - creates standalone tool message chronologically
   const handleToolExecutionStart = (newMessage: ChatMessage): void => {
@@ -917,7 +913,6 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
             sessionId,
             method: agentConfig.method,
             enableCodeIntelligence: options.enableCodeIntelligence,
-            callerSub: callerSubRef.current,
           },
           credentials: creds,
           onEvent: (event: StreamEvent) => addMessage(event as unknown as ChatMessage),

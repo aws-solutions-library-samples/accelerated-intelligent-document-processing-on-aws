@@ -22,6 +22,11 @@ from idp_common.agents.analytics import get_analytics_config
 from idp_common.config_scope import unscoped_is_denied
 from idp_common.agents.common.config import configure_logging
 from idp_common.agents.factory import agent_factory
+from idp_common.chat_session_owner import (
+    claim_chat_session,
+    has_stored_messages,
+    holds_session_row,
+)
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 # Import Bedrock error handling
@@ -44,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 _CHAT_MESSAGES_TABLE = os.environ.get("CHAT_MESSAGES_TABLE")
 _CHAT_SESSIONS_TABLE = os.environ.get("CHAT_SESSIONS_TABLE")
+_CHAT_SESSION_OWNERS_TABLE = os.environ.get("CHAT_SESSION_OWNERS_TABLE")
 _DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 
 # Agent Chat is available to Admin/Author/Viewer. This deployment declares FIVE
@@ -119,6 +125,63 @@ def _enforce_agent_chat_groups(event):
             "Agent Chat (which reads across every tenant's documents) is limited to "
             "the Admin group"
         )
+
+
+def _owner_sub(event):
+    """The Cognito ``sub`` of the signed-in user this turn belongs to, or ``""``.
+
+    Read from ``identity``, which only an invoking transport sets: the
+    agent_chat resolver forwards the claims API Gateway verified, and the
+    streaming endpoint forwards the claims of the ID token it verified. A
+    request-body value is never a source for it. ``""`` for an invocation with no
+    identity, which then runs with no memory and stores nothing.
+    """
+    identity = event.get("identity")
+    if not isinstance(identity, dict):
+        return ""
+    return str((identity.get("claims") or {}).get("sub") or "")
+
+
+def _enforce_session_owner(event, session_id, owner_sub, caller_sub):
+    """Refuse a turn on a session id another user owns, before memory loads.
+
+    Registers the id to the caller when nobody owns it yet and it has no stored
+    history (see ``idp_common.chat_session_owner``). The entry paths make the same
+    check first — the agent_chat resolver before it stores the user message, the
+    streaming endpoint before it opens the stream — so this is the same rule
+    applied where the work happens. Deliberately outside the handler's
+    ``try``, for the reason ``_enforce_agent_chat_groups`` is: inside it a
+    refusal would become an error message rather than a refusal.
+
+    Fails closed: with the owner table unconfigured, or a DynamoDB error, the
+    turn is refused rather than run against history nobody could attribute.
+    """
+    if not owner_sub:
+        return
+    if not session_id:
+        return  # rejected by the handler's own parameter validation
+    if not (_CHAT_SESSION_OWNERS_TABLE and _CHAT_MESSAGES_TABLE and _CHAT_SESSIONS_TABLE):
+        raise PermissionError(
+            "Unauthorized: chat session ownership cannot be verified on this "
+            "deployment"
+        )
+    dynamodb = boto3.resource("dynamodb")
+    messages_table = dynamodb.Table(_CHAT_MESSAGES_TABLE)
+    sessions_table = dynamodb.Table(_CHAT_SESSIONS_TABLE)
+    owned = claim_chat_session(
+        dynamodb.Table(_CHAT_SESSION_OWNERS_TABLE),
+        session_id,
+        owner_sub,
+        expires_after=int(time.time()) + (_DATA_RETENTION_DAYS * 24 * 60 * 60),
+        allow_new=True,
+        has_stored_messages=lambda: has_stored_messages(messages_table, session_id),
+        holds_earlier_record=lambda: holds_session_row(
+            sessions_table, caller_sub, session_id
+        ),
+    )
+    if not owned:
+        logger.warning("Rejecting agent chat: the session belongs to another user")
+        raise PermissionError("Unauthorized: this chat session belongs to another user")
 
 
 def _persist_chat_turn(
@@ -1109,6 +1172,11 @@ def handler(event, context):
     # 500 return, which would turn a denial into an application error. Raising
     # PermissionError here matches the resolver so the dispatcher maps it to 403.
     _enforce_agent_chat_groups(event)
+    # The user this turn belongs to, and the id their session list is filed
+    # under. Both come from the invoking transport, never from the request body.
+    owner_sub = _owner_sub(event)
+    caller_sub = event.get("callerSub", "") if owner_sub else ""
+    _enforce_session_owner(event, event.get("sessionId"), owner_sub, caller_sub)
 
     try:
         # Use cached boto3 session for warm Lambda containers (significant performance improvement)
@@ -1122,7 +1190,6 @@ def handler(event, context):
         # `is True` so a non-boolean in the invoke payload cannot opt in.
         enable_code_intelligence = event.get("enableCodeIntelligence") is True
         method = event.get("method", "chat")
-        caller_sub = event.get("callerSub", "")
         # False when invoked by the agent_chat resolver (non-streaming path),
         # which already stored the user message + session metadata itself.
         persist_user_message = event.get("persistUserMessage", True)
@@ -1168,6 +1235,7 @@ def handler(event, context):
                 session_id=session_id,
                 config=config,
                 session=session,
+                user_id=owner_sub,
             )
             logger.info(f"Conversational Quick Start agent created for session {session_id}")
         else:
@@ -1177,7 +1245,8 @@ def handler(event, context):
                 agent_ids=agent_ids,
                 session_id=session_id,
                 config=config,
-                session=session
+                session=session,
+                user_id=owner_sub,
             )
             logger.info(f"Conversational orchestrator created for session {session_id}")
         

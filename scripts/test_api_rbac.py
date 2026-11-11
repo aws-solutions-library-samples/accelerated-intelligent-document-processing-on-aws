@@ -1021,6 +1021,227 @@ def cleanup_seeded_agent_jobs(ctx):
             pass
 
 
+def _stack_resource(ctx, logical):
+    """Physical id of a resource in the parent stack, or "" (cached on ctx)."""
+    cache = ctx.setdefault("_stack_resources", {})
+    if logical not in cache:
+        try:
+            cache[logical] = aws(
+                "cloudformation",
+                "list-stack-resources",
+                "--stack-name",
+                ctx["stack"],
+                "--query",
+                f"StackResourceSummaries[?LogicalResourceId=='{logical}']"
+                ".PhysicalResourceId",
+                "--output",
+                "text",
+                region=ctx["region"],
+            )
+        except Exception:  # noqa: BLE001
+            cache[logical] = ""
+    return cache[logical] or ""
+
+
+def _jwt_claims(token):
+    """The payload of one of this harness's own tokens. Not verified: it is ours."""
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload))
+
+
+def seed_chat_session(ctx, session_id, marker, owner_token):
+    """Seed a chat session OWNED BY the Admin test user, for the chat IDOR suite.
+
+    Writes what a first message from the owner writes: the owner row
+    (ChatSessionOwnersTable, ownerSub = the owner's Cognito sub), the owner's
+    session-list row (ChatSessionsTable, keyed by email as identity.username is)
+    and one message carrying ``marker`` (ChatMessagesTable, PK = session id).
+    Returns True, or None when the stack predates the owner table (-> SKIP).
+    """
+    owners = _stack_resource(ctx, "ChatSessionOwnersTable")
+    sessions = _stack_resource(ctx, "ChatSessionsTable")
+    messages = _stack_resource(ctx, "ChatMessagesTable")
+    if not (owners and sessions and messages):
+        return None
+    claims = _jwt_claims(owner_token)
+    owner_email = claims.get("email") or test_email("Admin")
+    ctx["chat_idor_owner_email"] = owner_email
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime())
+    expires = str(int(time.time()) + 86400)
+    items = [
+        (
+            owners,
+            {
+                "sessionId": {"S": session_id},
+                "ownerSub": {"S": claims["sub"]},
+                "ExpiresAfter": {"N": expires},
+            },
+        ),
+        (
+            sessions,
+            {
+                "userId": {"S": owner_email},
+                "sessionId": {"S": session_id},
+                "title": {"S": "rbac chat idor probe"},
+                "messageCount": {"N": "1"},
+                "ExpiresAfter": {"N": expires},
+            },
+        ),
+        (
+            messages,
+            {
+                "PK": {"S": session_id},
+                "SK": {"S": ts},
+                "role": {"S": "user"},
+                "content": {"S": marker},
+                "timestamp": {"S": ts},
+                "isProcessing": {"BOOL": False},
+                "ExpiresAfter": {"N": expires},
+            },
+        ),
+    ]
+    try:
+        for table, item in items:
+            aws(
+                "dynamodb",
+                "put-item",
+                "--table-name",
+                table,
+                "--item",
+                json.dumps(item),
+                region=ctx["region"],
+            )
+    except Exception as e:  # noqa: BLE001
+        print(f"  (seed_chat_session failed: {e})")
+        cleanup_chat_session(ctx, session_id)
+        return None
+    return True
+
+
+def cleanup_chat_session(ctx, session_id):
+    """Remove everything the chat IDOR suite seeded or caused (best-effort)."""
+    owners = _stack_resource(ctx, "ChatSessionOwnersTable")
+    sessions = _stack_resource(ctx, "ChatSessionsTable")
+    messages = _stack_resource(ctx, "ChatMessagesTable")
+
+    def _delete(table, key):
+        if not table:
+            return
+        try:
+            aws(
+                "dynamodb",
+                "delete-item",
+                "--table-name",
+                table,
+                "--key",
+                json.dumps(key),
+                region=ctx["region"],
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    _delete(owners, {"sessionId": {"S": session_id}})
+    for user in ("Admin", USER_B):
+        _delete(
+            sessions,
+            {"userId": {"S": test_email(user)}, "sessionId": {"S": session_id}},
+        )
+    if not messages:
+        return
+    try:
+        listed = aws(
+            "dynamodb",
+            "query",
+            "--table-name",
+            messages,
+            "--key-condition-expression",
+            "PK = :s",
+            "--expression-attribute-values",
+            json.dumps({":s": {"S": session_id}}),
+            "--projection-expression",
+            "PK, SK",
+            "--output",
+            "json",
+            region=ctx["region"],
+        )
+        for item in json.loads(listed or "{}").get("Items", []):
+            _delete(messages, {"PK": item["PK"], "SK": item["SK"]})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def stream_post(ctx, path, body, id_token, signer_token):
+    """POST to the chat Function URL as a signed-in browser would.
+
+    Signs with SigV4 using Identity Pool credentials obtained for
+    ``signer_token`` (so the request passes the Function URL's IAM check) and
+    sends ``id_token`` in the ``x-idp-id-token`` header, or no such header when it
+    is None. Returns ``(status, body)``, or None when the stack has no streaming
+    endpoint (GovCloud, or tenant isolation with the stream URL withheld).
+    """
+    import boto3
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    from botocore.credentials import Credentials
+
+    if "_stream_url" not in ctx:
+        function = _stack_resource(ctx, "ChatStreamProcessorFunction")
+        url = ""
+        if function:
+            try:
+                url = aws(
+                    "lambda",
+                    "get-function-url-config",
+                    "--function-name",
+                    function,
+                    "--query",
+                    "FunctionUrl",
+                    "--output",
+                    "text",
+                    region=ctx["region"],
+                )
+            except Exception:  # noqa: BLE001
+                url = ""
+        ctx["_stream_url"] = (url or "").rstrip("/")
+    if not ctx["_stream_url"]:
+        return None
+    identity_pool = _stack_resource(ctx, "IdentityPool")
+    if not identity_pool:
+        return None
+    provider = f"cognito-idp.{ctx['region']}.amazonaws.com/{ctx['user_pool']}"
+    cognito = boto3.client("cognito-identity", region_name=ctx["region"])
+    logins = {provider: signer_token}
+    identity_id = cognito.get_id(IdentityPoolId=identity_pool, Logins=logins)[
+        "IdentityId"
+    ]
+    creds = cognito.get_credentials_for_identity(
+        IdentityId=identity_id, Logins=logins
+    )["Credentials"]
+    payload = json.dumps(body).encode()
+    headers = {"content-type": "application/json"}
+    if id_token:
+        headers["x-idp-id-token"] = id_token
+    request = AWSRequest(
+        method="POST", url=f"{ctx['_stream_url']}{path}", data=payload, headers=headers
+    )
+    SigV4Auth(
+        Credentials(creds["AccessKeyId"], creds["SecretKey"], creds["SessionToken"]),
+        "lambda",
+        ctx["region"],
+    ).add_auth(request)
+    req = urllib.request.Request(
+        request.url, data=payload, method="POST", headers=dict(request.headers)
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:  # nosec B310 - the stack's own chat Function URL
+            return r.status, r.read(65536).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(65536).decode("utf-8", "replace")
+    except Exception as e:  # noqa: BLE001
+        return 0, f"<request error: {e}>"
+
+
 def _notifications_table_name(ctx):
     """The parent stack's ``NotificationsTableName`` output (cached on ctx).
 
@@ -2771,6 +2992,22 @@ def main():
             seed_fn=lambda: seed_review_item(ctx),
             call_body=call_body,
             cleanup_fn=lambda seeded: cleanup_review_item(ctx, seeded),
+        )
+        sec.run_chat_session_idor_suite(
+            ctx,
+            _record,
+            results,
+            tokens,
+            seed_fn=lambda sid, marker: seed_chat_session(
+                ctx, sid, marker, tokens["Admin"]
+            ),
+            call_body=call_body,
+            # Every request is signed with User B's own Identity Pool credentials,
+            # so the IAM check passes and what is measured is the endpoint's own.
+            stream_fn=lambda path, body, token: stream_post(
+                ctx, path, body, token, tokens["userB"]
+            ),
+            cleanup_fn=lambda sid: cleanup_chat_session(ctx, sid),
         )
         sec.run_deleted_resource_suite(
             ctx, call, _record, results, tokens, call_body=call_body

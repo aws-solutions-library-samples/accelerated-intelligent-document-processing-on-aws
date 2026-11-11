@@ -20,6 +20,7 @@ Usage:
     memory_provider = DynamoDBMemoryHookProvider(
         table_name="IdpHelperChatMemoryTable",
         session_id="user-session-123",
+        user_id="<cognito sub of the signed-in user>",
         region_name="us-west-2"
     )
 
@@ -132,6 +133,7 @@ class DynamoDBMemoryHookProvider(HookProvider):
         self,
         table_name: str,
         session_id: str,
+        user_id: str,
         region_name: str = "us-west-2",
         max_message_size_kb: float = 8.5,
         max_history_turns: int = 20,
@@ -143,14 +145,27 @@ class DynamoDBMemoryHookProvider(HookProvider):
         Args:
             table_name: Name of the DynamoDB table to store conversations
             session_id: The session ID for this conversation
+            user_id: The signed-in user the conversation belongs to (their
+                Cognito ``sub``). Part of the storage key, so one user's
+                memory is never loaded into another user's turn even when
+                both name the same session id. Must be non-empty.
             region_name: AWS region name for DynamoDB (defaults to us-west-2)
             max_message_size_kb: Maximum message size in KB before truncation
             max_history_turns: Maximum number of conversation turns to load on
                 initialization; 0 loads no history at all
             max_item_size_kb: Maximum item size in KB before creating new item (default 350KB)
         """
+        if not user_id:
+            raise ValueError(
+                "user_id is required: conversation memory is stored per user"
+            )
+        if "#" in user_id:
+            # The key joins user and session with '#', so a user id containing
+            # one could name another user's key. A Cognito sub never does.
+            raise ValueError("user_id must not contain '#'")
         self.table_name = table_name
         self.session_id = session_id
+        self.user_id = user_id
         self.max_message_size_kb = max_message_size_kb
         self.max_history_turns = max_history_turns
         self.max_item_size_kb = max_item_size_kb
@@ -167,10 +182,14 @@ class DynamoDBMemoryHookProvider(HookProvider):
         """
         Generate DynamoDB partition key for the conversation.
 
+        The key names the user as well as the session. The session id arrives in
+        the request body, so a key built from it alone would let a second user
+        who sends the same id read the first user's conversation.
+
         Returns:
-            Partition key string in format: conversation#{session_id}
+            Partition key string in format: conversation#{user_id}#{session_id}
         """
-        return f"conversation#{self.session_id}"
+        return f"conversation#{self.user_id}#{self.session_id}"
 
     def _generate_timestamp_sk(self) -> str:
         """

@@ -91,6 +91,14 @@ def _stub_modules() -> dict[str, types.ModuleType]:
     )
     mod("idp_common.agents.factory", agent_factory=types.SimpleNamespace())
     mod("idp_common.config_scope", unscoped_is_denied=lambda: False)
+    # Ownership is decided before the turn; these tests are about what the stream
+    # emits, so every claim succeeds.
+    mod(
+        "idp_common.chat_session_owner",
+        claim_chat_session=lambda *a, **k: True,
+        has_stored_messages=lambda *a, **k: False,
+        holds_session_row=lambda *a, **k: False,
+    )
     mod("idp_common.utils")
     mod("idp_common.utils.log_sanitizer", sanitize_event_for_logging=lambda e, *a: e)
     return made

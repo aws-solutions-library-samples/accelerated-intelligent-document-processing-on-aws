@@ -294,7 +294,7 @@ Regroup pages, Claim/Release review, Complete section review, Skip all section r
 Work Production queues: list, open, claim, save, skip, finish and reject the items of a Production review queue. A Reviewer works every Production queue and an Annotator the queues that list them; saving, skipping, finishing and rejecting need the claim
 Work Test Studio queues: open a test set's queue and label its documents. An Annotator works only the queues that list them and the sets in their allowedTestSets, and saves or skips only a document assigned to them. Taking a document (claimTestSetDocument) is the Annotator's alone: Admins assign test-set documents, and Admins and Authors label them without taking them. Listing the Test Studio queues (listTestSetQueues) is for Admins and Annotators; an Author opens a set's queue from Test Studio
 View/Edit configuration: getConfigVersion answers a Reviewer or an Annotator with the class names and descriptions only, for the annotation class dropdown
-Chat with agent, Code intelligence: the REST API refuses Reviewers and Annotators; the chat-streaming Function URL forwards no group claim and refuses neither (GAP-07, see the Agent Chat note below)
+Chat with agent, Code intelligence: Reviewers and Annotators are refused on the REST API and on the chat-streaming Function URL, which verifies the caller's ID token (see the Agent Chat note below)
 List/view fine-tuning jobs: the API answers every signed-in user (listFinetuningJobs and getFinetuningJob are ANY); the navigation offers Custom Models to Admin and Author only, and an Annotator-only console has no route to it
 ```
 
@@ -525,7 +525,7 @@ number with no indication. Narrow the date range if a scoped count looks wrong.
 |-------|-------------|
 | **Document List** (server-side) | Both `listDocuments` resolvers filter by the `ConfigVersion` field using `allowedConfigVersions` from UsersTable (fails closed on an unstamped document) |
 | **Document Count** (server-side) | `getDocumentCount` — the header figure beside that list — applies the same two filters, from the same helpers, so it cannot report documents the list does not show |
-| **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents. ⚠️ Applies to turns that reach the processor through the REST API; chat streamed from the Lambda Function URL is **not** restricted by `allowedConfigVersions` — see [Known Limitations](#known-limitations) |
+| **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents. Applies on both chat paths: the REST API, and the streaming Lambda Function URL, which verifies the caller's Cognito ID token and forwards its claims |
 | **Single-Document Operations** (server-side) | Every operation that acts on one document by key — `getDocument`, the three document-version operations, the five review operations on a production document (`claimReview`, `releaseReview`, `skipAllSectionsReview`, `saveSectionReviewEdits`, `completeSectionReview`), `deleteDocument`, `abortWorkflow` and `copyToBaseline` — refuses a scoped caller when the document's `ConfigVersion` is outside their scope, when it has none, or when no document is tracked for the key, with one non-disclosing message for all three. The shared check is `idp_common.document_scope`; Admins are never looked up. A multi-document request is refused whole if any one key is out of scope |
 | **Raw Index Reads** (server-side) | `listDocumentsDateHour` and `listDocumentsDateShard` return index rows that carry no profile, so they are refused to any caller with a scope rather than filtered. The web UI does not call them |
 | **Test Runs** (server-side) | `startTestRun` and `sendTestRunToReview` hold the run's profile to the caller's scope; `getTestRun`, `getTestRunStatus` and `compareTestRuns` refuse a run whose recorded profile is out of scope, and `getTestRuns` filters by it |
@@ -834,14 +834,18 @@ so the new bundle works under any live session. If reports of blank page images 
 after an upgrade, have the user reload before suspecting the deployment — and do not
 re-add an S3 grant to the role, which would reopen the read path this closes.
 
-⚠️ **This layer gates the REST route only.** Chat streaming is served by a Lambda
-Function URL that reaches the chat processors directly, without the dispatcher, and
-that transport forwards no `cognito:groups` claim at all. So
-`sendChatDocumentMessage` refuses a caller in no group on the REST route, and
-`POST /chat/document` on the Function URL does not — recorded as `GAP-07` in
-`scripts/api_rbac_expectations.yaml`. The Function URL exists in the commercial
-partition only; on GovCloud the UI falls back to the dispatcher plus polling, where
-the floor applies.
+**This layer gates the REST route, and the chat-streaming Function URL applies the
+same floors itself.** Chat streaming is served by a Lambda Function URL that reaches
+the chat processors directly, without the dispatcher. The browser signs each request
+with Cognito Identity Pool credentials, which prove only that a signed-in user of the
+pool is calling, and also presents its Cognito ID token in the `x-idp-id-token`
+header. The endpoint verifies that token against the user pool's key set (issuer,
+the web UI's app client as audience, `token_use` of `id`, expiry) and answers 401
+without a valid one. It then applies the floors from the verified claims before the
+stream opens: `POST /chat/document` refuses a caller in no group, as
+`sendChatDocumentMessage` does, and `POST /chat/agent` applies the Admin, Author and
+Viewer check. The Function URL exists in the commercial partition only; on GovCloud
+the UI falls back to the dispatcher plus polling.
 
 **An `identity` carried on the event is no longer authoritative for this check.**
 `idp_common.api_adapter` used to pass an event carrying its own `arguments` +
@@ -950,7 +954,7 @@ enforcement itself is Layer 2.
 | `markInboxMessages`, `markAllInboxMessagesRead`, `deleteInboxMessages`, `clearReadInboxMessages`, `updateInboxPreferences` | Any assigned group (`ANY_GROUP`); every key is built from the caller's verified identity, so another user's message id is not found |
 | `updateChatSessionTitle`, `updateAgentChatMessage` | **Not reachable.** Both are declared in `schema.graphql` and in neither routing surface (`FIELD_FUNCTION_MAP`/`FIELD_ALIASES` and `ddb_direct._HANDLED`), so default-deny refuses them to every caller including Admin. The backend writes DynamoDB directly and does not need them |
 
-> **Agent Chat authorization**: `sendAgentChatMessage` and `listAvailableAgents` restrict Agent Chat to **Admin, Author, Viewer** (Reviewer and Annotator excluded). The restriction is declared in `schema.graphql` **and** enforced server-side in each resolver via a `_caller_in_groups` check — the single REST route's Cognito authorizer only authenticates, so the group gate lives in the resolver. The IAM backend publish path has no Cognito identity and bypasses the check. ⚠️ So does `POST /chat/agent` on the chat-streaming Function URL, which commercial deployments stream agent chat through: that transport forwards no `cognito:groups` claim, so the restriction is not applied there, except under `TenantIsolationMode=Strict` or an external `TenantGrantSource`, where the route refuses every turn it cannot attribute (GAP-07 in `scripts/api_rbac_expectations.yaml`). `listChatSessions` remains open to any authenticated user, bounded by a DynamoDB key condition on the caller's own partition; `getChatMessages` and the session-scoped **mutations** (`deleteChatSession`, `deleteAgentJob`) additionally require an assigned group.
+> **Agent Chat authorization**: `sendAgentChatMessage` and `listAvailableAgents` restrict Agent Chat to **Admin, Author, Viewer** (Reviewer and Annotator excluded). The restriction is declared in `schema.graphql` **and** enforced server-side in each resolver via a `_caller_in_groups` check — the single REST route's Cognito authorizer only authenticates, so the group gate lives in the resolver. The IAM backend publish path has no Cognito identity and is not group-checked. `POST /chat/agent` on the chat-streaming Function URL, which commercial deployments stream agent chat through, applies the same check from the caller's verified ID token before the stream opens. `listChatSessions` remains open to any authenticated user, bounded by a DynamoDB key condition on the caller's own partition; `getChatMessages` and the session-scoped **mutations** (`deleteChatSession`, `deleteAgentJob`) additionally require an assigned group.
 >
 > *(Previously the Reviewer exclusion was UI-only — tracked as accepted-risk gap GAP-03 — because AppSync could not combine a `cognito_groups` restriction with `@aws_iam` on one field. AppSync has since been removed, so the real groups are now enforced.)*
 
@@ -967,7 +971,7 @@ enforcement itself is Layer 2.
 | `listConfigProfileRevisions`, `getConfigProfileRevision` | Admin, Author, Viewer |
 | `listAvailableAgents` | Admin, Author, Viewer (Reviewer and Annotator excluded; enforced server-side — see Agent Chat note above) |
 | `listChatSessions` | All authenticated, session-scoped by a DynamoDB key condition on the caller's own `userId` |
-| `getChatMessages` | Any assigned group (`ANY_GROUP`), plus the session-ownership check. The message read is keyed on `sessionId` alone, so ownership is a separate verification rather than a key condition, and it **fails open** — it returns true when `CHAT_SESSIONS_TABLE` is unset, and an operator can turn it off with `ENFORCE_CHAT_SESSION_OWNERSHIP=false`. Transcripts can quote document content, so the group floor sits under a check that can stand down |
+| `getChatMessages` | Any assigned group (`ANY_GROUP`), plus the session-ownership check. The message read is keyed on `sessionId` alone, so ownership is a separate verification rather than a key condition: the caller must be the owner `ChatSessionOwnersTable` records for the session id (see [Chat sessions belong to the signed-in user](#chat-sessions-belong-to-the-signed-in-user)). It denies when its tables are unconfigured. An operator can still turn it off with `ENFORCE_CHAT_SESSION_OWNERSHIP=false`, and transcripts can quote document content, so the group floor sits under a check that can be switched off |
 | `getAgentChatMessages` | **Not reachable.** It is declared in `schema.graphql` and in neither of the two surfaces the dispatcher routes from — `FIELD_FUNCTION_MAP`/`FIELD_ALIASES` and `ddb_direct._HANDLED` — and it has no entry in the manifest the dispatcher authorizes against, which denies by default. So it returns 403 to every caller including Admin. Schema-only surface; use `getChatMessages` |
 | `submitAgentQuery`, `getAgentJobStatus`, `listAgentJobs` | Admin, Author, Viewer |
 | `listConfigurationLibrary`, `getConfigurationLibraryFile` | Admin, Author, Viewer |
@@ -976,7 +980,7 @@ enforcement itself is Layer 2.
 | `listFinetuningJobs`, `getFinetuningJob` | All authenticated — whole-deployment job, model and deployment state, with no per-caller scope (the rows record no owner). The UI surfaces them to Admin and Author only. The projection deliberately carries no dataset location, and `finetuning_jobs_resolver/test_projected_keys.py` pins its key set so that cannot change silently |
 | `validateTestSetForFinetuning`, `listAvailableModels` | **Not reachable.** Declared in `schema.graphql` and routed from nowhere, so default-deny refuses them to every caller including Admin |
 | `queryKnowledgeBase` | Any assigned group (`ANY_GROUP`); the resolver itself has no group check (GAP-02), so the dispatcher's floor is the only one |
-| `sendChatDocumentMessage` | Any assigned group (`ANY_GROUP`) **on the REST route only** — the chat Function URL reaches the same processor with no group claim (GAP-07). The resolver enforces per-session ownership and forwards the caller's verified claims, from which the processor enforces `allowedConfigVersions` scope on the target document; a scope it cannot evaluate denies the turn. That scope check stands down on the streaming route, which forwards no verified caller — see [Known Limitations](#known-limitations) |
+| `sendChatDocumentMessage` | Any assigned group (`ANY_GROUP`), on the REST route and, from the verified ID token, on the chat Function URL. Both register the session id to the caller or refuse it when another user owns it, and forward the caller's verified claims, from which the processor enforces `allowedConfigVersions` scope on the target document; a scope it cannot evaluate denies the turn |
 | `onChatDocumentMessageUpdate` | **Not reachable.** Declared in `schema.graphql` and routed from nowhere, and the manifest the dispatcher authorizes against carries no subscription fields at all, so default-deny refuses it to every caller including Admin. Its one UI call site is gated off under the `httpapi` transport; replies arrive over the streaming Function URL instead |
 | `listUsers` | **Admin** — it returns every user's email and role. A non-admin reads their own record through `getMyProfile` instead |
 | `getMyProfile` | All authenticated |
@@ -1137,6 +1141,62 @@ filtering based on the caller's identity:
 - `listUsers`: Admin only — a non-admin is refused it at the dispatcher, not filtered inside it
 - `getMyProfile`: Returns the calling user's own profile (including `allowedConfigVersions`)
 
+### Chat sessions belong to the signed-in user
+
+A chat session id is chosen by the browser and arrives in the request body, and chat
+history is stored under it alone (`ChatMessagesTable`, keyed `PK=sessionId`, shared by
+Agent Chat and Chat-with-Document). So what makes a history read the caller's own is a
+record of whose the id is, kept in `ChatSessionOwnersTable` (keyed `sessionId`,
+holding the owner's Cognito `sub`):
+
+- **The first user of a session id owns it.** Every path that stores a turn —
+  `sendAgentChatMessage`, `sendChatDocumentMessage`, and both routes of the
+  chat-streaming Function URL — registers the id to the caller with a conditional
+  write before it stores anything or starts the turn, and refuses with 403 when the
+  id belongs to another user. The agent chat processor checks again before it builds
+  the orchestrator.
+- **Reading or deleting history needs the recorded owner.** `getChatMessages` and
+  `deleteChatSession` accept only the owner the table records. The caller's own row
+  in the per-user session list (`ChatSessionsTable`) does not count for an id that
+  has an owner, because sending one message under any id creates such a row. Neither
+  operation registers an id nobody has used, so asking about one cannot reserve it.
+- **Conversation memory is keyed on the user and the session**
+  (`conversation#<sub>#<sessionId>` in the agent memory table), so a turn only ever
+  loads the caller's own earlier turns. A turn with no verified user is built with
+  no memory and stores nothing.
+- **The caller is always taken from verified claims.** On the REST API those are the
+  claims API Gateway's Cognito authorizer verified. On the Function URL they come from
+  the Cognito ID token the browser presents in the `x-idp-id-token` header, which the
+  endpoint verifies; a `callerSub` in the request body is ignored.
+
+Sessions written before `ChatSessionOwnersTable` existed have history and no recorded
+owner. Each is registered, on first use, to the caller who holds the earlier record of
+using it: their own `ChatSessionsTable` row, which is keyed by the caller's email
+address (or `cognito:username`), or, on the REST path for Chat-with-Document, the
+ownership row in the document-chat sessions table. A first message from a caller with
+no such record is refused. Two things follow from the earlier record being what it is.
+A row written under another user's session id before this release counts as a record,
+so if two users both hold one, whichever uses the id first after the upgrade owns it.
+And a new account with the same email address as a removed one inherits that address's
+earlier sessions. The streaming document-chat route consults only `ChatSessionsTable`,
+so a document-chat session from before this release that was used only through the
+REST path is refused there to its own owner; the web UI starts a new session id for
+each document chat, so it does not reuse one. Agent conversation memory written under
+the earlier `conversation#<sessionId>` key is no longer read.
+
+The owner row's expiry moves forward on every turn and is kept an hour past the
+retention period, so it outlives the messages written under it.
+`scripts/tests/test_session_keyed_storage.py` reports DynamoDB keys built from a
+session or conversation id with no user component: keys passed to any DynamoDB
+data-plane call in the dict shapes its module docstring lists (literals, `dict(...)`,
+names assigned in the same or an enclosing scope, dicts filled in by subscript,
+`update` or `setdefault`, merges, comprehensions, splats and `self` attributes), key
+conditions and PartiQL parameters, and `#`-joined key strings. A file that
+legitimately keys on the session id alone is listed there with its pinned site count
+and the ownership check it relies on. What the scan cannot see — among others a key
+handed between functions, a session id not named as one, a dict built by another
+function call, and an indirect call — is listed in the same docstring.
+
 ### Layer 3: UI Adaptation (UX Convenience)
 
 The UI adapts based on the user's role and scope:
@@ -1227,7 +1287,6 @@ To add a new role:
 
 ## Known Limitations
 
-- **Document Chat streamed from the Lambda Function URL** is not restricted by `allowedConfigVersions`, and in commercial regions that is the path the UI takes — it streams whenever a stream URL is configured, which every commercial deployment has. The browser signs those requests with Cognito Identity Pool credentials, and that transport forwards no Cognito claims: its SigV4 principal is a session name shared by every user of the pool, so it proves *a* signed-in user is calling but not which one. The processor will not key an authorization decision to the caller-supplied identity in the request body, because the caller it would restrict is the one choosing the value. So the route reports an explicitly unverified caller, and the processor logs, once per turn, that it did not enforce the scope. The check **does** apply to turns arriving through the REST API, which is the path GovCloud deployments take, since Function URLs are unavailable there. Closing this needs the streaming endpoint to verify a Cognito ID token; tracked as `GAP-07` in `scripts/api_rbac_expectations.yaml` and [issue #920](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/920).
 - **A row that records no Cognito `sub` is still keyed on an email address, which can stop matching it.** Scope is resolved from the immutable `sub` first and the `email` claim second, so a divergence no longer lifts the restriction for any row that records a `sub` — see [Resolving *whose* Scope](#resolving-whose-scope--two-keys-and-the-lookup-fails-closed). A row that does not yet record one falls back to the email join and keeps the original exposure: matching is exact, so a difference in letter case is a miss, while Cognito re-applies the external-IdP attribute mapping on every federated sign-in; on a pool created with `ExternalIdPEmailMutable=true` a user can change their own address, where email verification stops them adopting someone else's but not orphaning their own row. The `sub` is recorded by `createUser` and back-filled by the Cognito sync that runs on every Admin `listUsers`, so in practice a row reaches an administrator with one — but a deployment whose administrator has never opened User Management since upgrading has none. The back-fill matches a Cognito account to its row on the recorded `sub`, the exact address, or the **case-folded** address, so it does **not** reach a row whose address changed beyond case before it ever ran; that row keeps the email-only exposure indefinitely. The scan above lists exactly which rows are in that state. See [External IdP integration](./external-idp.md) for the detail and the mitigations.
 - **User deletion removes the table row before the Cognito account**, warning rather than failing if the second step does not complete. The orphaned Cognito account then has no row, which means unrestricted.
 - **`allowedTestSets` has no `sub` join.** The Annotator test-set axis (`idp_common/testset_scope.py`) still resolves its row from `EmailIndex` alone, and from a fallback chain of claims rather than the `email` claim by itself. Its polarity is the opposite of `allowedConfigVersions` — `assert_can_access_test_set` requires an *explicit* scope, so an Annotator whose row cannot be found is **denied** rather than granted everything — which makes a diverged address an availability problem (a locked annotation queue) rather than a widening one. `scripts/tests/test_scope_lookup_fail_closed.py` discovers this module and carries it in `PENDING_FIX` with its two rules named, so the suppression is visible and removable; giving that axis the same two-key lookup is the follow-up.

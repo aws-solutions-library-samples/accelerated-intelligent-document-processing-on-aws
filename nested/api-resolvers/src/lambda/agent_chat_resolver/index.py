@@ -15,7 +15,23 @@ from datetime import datetime
 
 import boto3
 from botocore.exceptions import ClientError
+from chat_session_owner import (
+    claim_chat_session,
+    has_stored_messages,
+    holds_session_row,
+)
 from log_sanitizer import sanitize_event_for_logging
+
+
+class ResourceAccessDenied(PermissionError):
+    """A refusal by a per-object control rather than by the caller's group.
+
+    Declared locally because this Lambda's package does not carry ``idp_common``;
+    the canonical class is ``idp_common.api_adapter.ResourceAccessDenied``, and the
+    dispatcher recognises it by class name. Still a ``PermissionError``, so the
+    caller sees 403 ``Unauthorized``.
+    """
+
 
 # Configure logging
 logger = logging.getLogger()
@@ -28,6 +44,8 @@ lambda_client = boto3.client("lambda")
 # Get environment variables
 CHAT_MESSAGES_TABLE = os.environ.get("CHAT_MESSAGES_TABLE")
 CHAT_SESSIONS_TABLE = os.environ.get("CHAT_SESSIONS_TABLE")
+# Who each session id belongs to (keyed by sessionId). See chat_session_owner.py.
+CHAT_SESSION_OWNERS_TABLE = os.environ.get("CHAT_SESSION_OWNERS_TABLE")
 AGENT_CHAT_PROCESSOR_FUNCTION = os.environ.get("AGENT_CHAT_PROCESSOR_FUNCTION")
 DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 
@@ -85,7 +103,51 @@ def _forwarded_identity(event):
     groups = (identity.get("claims") or {}).get("cognito:groups") or []
     if isinstance(groups, str):
         groups = [groups]
-    return {"claims": {"cognito:groups": list(groups)}}
+    # The sub is what the session and its conversation memory belong to.
+    return {"claims": {"cognito:groups": list(groups), "sub": _caller_sub(event)}}
+
+
+def _caller_sub(event):
+    """The caller's Cognito ``sub``, from the verified identity; ``""`` if none."""
+    identity = event.get("identity") or {}
+    return str(identity.get("sub") or (identity.get("claims") or {}).get("sub") or "")
+
+
+def _require_session_owner(event, session_id, user_id, expires_after):
+    """Refuse a message to a session id another user owns, before storing it.
+
+    Registers the id to the caller when nobody owns it and nothing is stored
+    under it yet. Without this, sending one message under someone else's
+    session id created the caller's own session row for it, and that row was
+    what the history read accepted as ownership.
+    """
+    owner_sub = _caller_sub(event)
+    if not (CHAT_SESSION_OWNERS_TABLE and CHAT_MESSAGES_TABLE and CHAT_SESSIONS_TABLE):
+        logger.error("Chat session owner tables are not configured; refusing")
+        raise ResourceAccessDenied(
+            "Unauthorized: chat session ownership cannot be verified."
+        )
+    messages_table = dynamodb.Table(CHAT_MESSAGES_TABLE)
+    sessions_table = dynamodb.Table(CHAT_SESSIONS_TABLE)
+    owned = claim_chat_session(
+        dynamodb.Table(CHAT_SESSION_OWNERS_TABLE),
+        session_id,
+        owner_sub,
+        expires_after=expires_after,
+        allow_new=True,
+        has_stored_messages=lambda: has_stored_messages(messages_table, session_id),
+        holds_earlier_record=lambda: holds_session_row(
+            sessions_table, user_id, session_id
+        ),
+    )
+    if not owned:
+        logger.warning(
+            "Rejecting sendAgentChatMessage: session %s belongs to another user",
+            session_id,
+        )
+        raise ResourceAccessDenied(
+            "Unauthorized: this chat session belongs to another user."
+        )
 
 
 def handler(event, context):
@@ -219,6 +281,27 @@ def handler(event, context):
                 "assistant_error",  # Store final errors for debugging
             ]
         )
+
+        # Assistant messages are written by the chat processor through the
+        # identity-less backend path. A signed-in caller only ever sends a user
+        # message; anything else from one is refused before it is stored.
+        if is_assistant_response and event.get("identity") is not None:
+            logger.warning("Rejecting sendAgentChatMessage: method %s", method)
+            raise PermissionError(
+                "Unauthorized: only the chat processor writes assistant messages"
+            )
+
+        # Every message from a signed-in caller writes under this session id, and a
+        # user message starts a turn that loads its memory, so the id must be
+        # theirs first. Identity-less invocations are the IAM-gated backend path.
+        if event.get("identity") is not None:
+            identity = event.get("identity") or {}
+            _require_session_owner(
+                event,
+                session_id,
+                identity.get("username") or identity.get("sub") or "",
+                expires_after,
+            )
 
         if is_final_response:
             # Store message in DynamoDB with session-based keys
