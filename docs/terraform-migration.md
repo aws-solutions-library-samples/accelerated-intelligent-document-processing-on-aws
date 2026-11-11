@@ -485,7 +485,14 @@ one.
   expires rows on `expiresAfter`; the module sets `ExpiresAfter`, so rows written
   before the migration no longer expire. `apply` refuses that time-to-live change
   until you accept it with `--accept-change
-  module.idp.aws_dynamodb_table.agent_table:ttl-changed`.
+  module.idp.aws_dynamodb_table.agent_table:ttl-changed`. DynamoDB cannot move a
+  table's time-to-live from one attribute to another while it is on, so `apply` also
+  refuses until the old setting is off, and prints the command: `aws dynamodb
+  update-time-to-live --table-name <agent jobs table> --time-to-live-specification
+  Enabled=false,AttributeName=expiresAfter`. Turning it off can take up to an hour;
+  run `apply` again when `aws dynamodb describe-time-to-live` reports `DISABLED`.
+  Run it before the maintenance window, since nothing else depends on it: the old
+  deployment's agent jobs simply stop expiring early.
 - **Some history does not carry over**: discovery jobs, test-set definitions,
   installed features, and the old knowledge base's index (re-sync it).
 

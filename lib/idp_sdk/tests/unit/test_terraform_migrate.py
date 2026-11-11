@@ -2290,3 +2290,66 @@ def test_state_list_still_raises_any_other_failure(tmp_path):
     binary = _fake_terraform(tmp_path, "Error: Backend initialization required", 1)
     with pytest.raises(IDPStackError, match="Backend initialization required"):
         tf.TerraformRunner(binary, tmp_path).state_list()
+
+
+def _ttl_plan(before_attr, after_attr, before_on=True, after_on=True):
+    def ttl(attr, on):
+        return [{"enabled": on, "attribute_name": attr}]
+
+    return {
+        "resource_changes": [
+            {
+                "address": "module.idp.aws_dynamodb_table.agent_table",
+                "type": "aws_dynamodb_table",
+                "change": {
+                    "actions": ["update"],
+                    "before": {
+                        "name": "agent-jobs-x",
+                        "ttl": ttl(before_attr, before_on),
+                    },
+                    "after": {"name": "agent-jobs-x", "ttl": ttl(after_attr, after_on)},
+                },
+            }
+        ]
+    }
+
+
+def test_a_ttl_attribute_switch_is_found():
+    """Measured live: the module moves the agent-jobs table from expiresAfter to
+    ExpiresAfter, and UpdateTimeToLive refused it mid-apply."""
+    assert tm.ttl_switches(_ttl_plan("expiresAfter", "ExpiresAfter")) == [
+        {
+            "address": "module.idp.aws_dynamodb_table.agent_table",
+            "table": "agent-jobs-x",
+            "from": "expiresAfter",
+            "to": "ExpiresAfter",
+        }
+    ]
+    assert tm.ttl_switches(_ttl_plan("a", "a")) == []
+    # Turning TTL on or off is one UpdateTimeToLive call, so it is not a switch.
+    assert tm.ttl_switches(_ttl_plan("a", "b", before_on=False)) == []
+
+
+@pytest.mark.parametrize(
+    "status,expect",
+    [
+        ("ENABLED", "Enabled=false,AttributeName=expiresAfter"),
+        ("DISABLING", "still turning off"),
+    ],
+)
+def test_a_switch_is_refused_until_the_old_ttl_is_off(status, expect):
+    switches = tm.ttl_switches(_ttl_plan("expiresAfter", "ExpiresAfter"))
+    findings = tm.ttl_switch_findings(
+        switches, lambda table: {"TimeToLiveStatus": status}, "us-west-2"
+    )
+    assert len(findings) == 1 and expect in findings[0]
+
+
+def test_a_switch_on_a_table_whose_ttl_is_off_applies():
+    switches = tm.ttl_switches(_ttl_plan("expiresAfter", "ExpiresAfter"))
+    assert (
+        tm.ttl_switch_findings(
+            switches, lambda t: {"TimeToLiveStatus": "DISABLED"}, "r"
+        )
+        == []
+    )
