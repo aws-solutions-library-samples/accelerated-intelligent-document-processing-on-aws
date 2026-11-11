@@ -61,8 +61,21 @@ class TestAuthoringModel:
     def test_the_model_is_the_one_bootstrap_would_default_to(self, cbd):
         from idp_common.synthesis import schema_author
 
-        src = open(schema_author.__file__).read()
-        assert f'model_id or "{cbd.QUICK_START_MODEL}"' in src
+        class RecordingClient:
+            def __init__(self):
+                self.model_ids = []
+
+            def invoke_model(self, *, model_id, **_):
+                self.model_ids.append(model_id)
+                raise RuntimeError("offline")
+
+        client = RecordingClient()
+        authored = schema_author.author_class_schema(
+            "A paystub", bedrock_client=client, max_retries=1
+        )
+
+        assert authored is None
+        assert client.model_ids == [cbd.QUICK_START_MODEL]
 
     def test_an_eu_build_authors_with_the_eu_profile(self, cbd):
         env = {"AWS_REGION": "eu-central-1"}
@@ -128,11 +141,19 @@ class TestProfileCheck:
 class TestStepOutcome:
     def _run(self, cbd, monkeypatch, bootstrap_stdout, downloaded):
         calls = []
+        outputs = (
+            list(bootstrap_stdout)
+            if isinstance(bootstrap_stdout, list)
+            else [bootstrap_stdout] * cbd.QUICK_START_ATTEMPTS
+        )
 
         def fake_run_command(cmd, check=True, timeout=None):
             calls.append(cmd)
             if cmd.startswith("idp-cli bootstrap"):
-                return subprocess.CompletedProcess(cmd, 0, bootstrap_stdout, "")
+                out = outputs.pop(0)
+                if isinstance(out, Exception):
+                    raise out
+                return subprocess.CompletedProcess(cmd, 0, out, "")
             argv = shlex.split(cmd)
             with open(argv[argv.index("--output") + 1], "w") as f:
                 yaml.safe_dump(downloaded, f)
@@ -155,6 +176,38 @@ class TestStepOutcome:
 
         assert result["success"] is False
         assert cbd.QUICK_START_PROFILE in result["error"]
+        assert len(calls) == cbd.QUICK_START_ATTEMPTS
+        assert all(c.startswith("idp-cli bootstrap") for c in calls)
+
+    def test_one_failed_authoring_is_retried_before_the_step_fails(
+        self, cbd, monkeypatch
+    ):
+        saved = f"✓ Config profile: {cbd.QUICK_START_PROFILE}\n"
+        failure = Exception("Command failed: idp-cli bootstrap")
+        result, calls = self._run(cbd, monkeypatch, [failure, saved], _profile(cbd))
+
+        assert result == {"success": True}
+        assert [c.split()[1] for c in calls] == [
+            "bootstrap",
+            "bootstrap",
+            "config-download",
+        ]
+
+    def test_a_suite_that_already_failed_fast_is_not_retried(self, cbd, monkeypatch):
+        calls = []
+
+        def aborted(cmd, check=True, timeout=None):
+            calls.append(cmd)
+            raise Exception(f"Command aborted (test suite failed fast): {cmd}")
+
+        monkeypatch.setattr(cbd, "run_command", aborted)
+        cbd.ABORT_TESTS.set()
+        try:
+            result = cbd.test_step16_quick_start_bootstrap("idp-stack")
+        finally:
+            cbd.ABORT_TESTS.clear()
+
+        assert result["success"] is False
         assert len(calls) == 1
 
     def test_fails_when_the_saved_profile_is_not_what_was_asked_for(

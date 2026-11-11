@@ -2373,6 +2373,7 @@ QUICK_START_PROMPT = (
 )
 QUICK_START_FIELD_HINTS = ("employer name", "pay period end date", "net pay")
 QUICK_START_MODEL = "us.anthropic.claude-sonnet-4-6"
+QUICK_START_ATTEMPTS = 2
 
 
 def quick_start_model(environ: dict | None = None) -> str:
@@ -2423,6 +2424,33 @@ def quick_start_profile_problem(config_data):
     return None
 
 
+def run_quick_start_bootstrap(stack_name):
+    """Run `idp-cli bootstrap`, once more if it fails; return the last problem.
+
+    Authoring is one model call that must return a valid schema, and a failure in
+    the parallel pool fails the whole suite, so one retry keeps a single bad
+    response from costing the run. A suite that has already failed fast is not
+    retried. Returns None once a run reports saving the profile.
+    """
+    saved = f"Config profile: {QUICK_START_PROFILE}"
+    problem = None
+    for attempt in range(1, QUICK_START_ATTEMPTS + 1):
+        try:
+            result = run_command(quick_start_bootstrap_command(stack_name), timeout=600)
+        except Exception as e:
+            if ABORT_TESTS.is_set():
+                raise
+            problem = str(e)
+        else:
+            if saved in (result.stdout or ""):
+                return None
+            problem = (
+                f"idp-cli bootstrap did not report saving profile {QUICK_START_PROFILE}"
+            )
+        print(f"  ⚠️ Bootstrap attempt {attempt} of {QUICK_START_ATTEMPTS}: {problem}")
+    return problem
+
+
 def test_step16_quick_start_bootstrap(stack_name):
     """Step 16: Quick Start's headless path authors a schema and saves a profile.
 
@@ -2434,12 +2462,11 @@ def test_step16_quick_start_bootstrap(stack_name):
     print("Step 16: Testing Quick Start bootstrap (idp-cli bootstrap)...")
 
     try:
-        result = run_command(quick_start_bootstrap_command(stack_name), timeout=600)
-        if f"Config profile: {QUICK_START_PROFILE}" not in (result.stdout or ""):
+        problem = run_quick_start_bootstrap(stack_name)
+        if problem:
             return {
                 "success": False,
-                "error": "Quick Start bootstrap test failed: idp-cli bootstrap "
-                f"did not report saving profile {QUICK_START_PROFILE}",
+                "error": f"Quick Start bootstrap test failed: {problem}",
             }
 
         config_file = "/tmp/quick-start-bootstrap-config.yaml"  # nosec B108

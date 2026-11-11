@@ -1975,7 +1975,8 @@ saves it as a configuration profile on a deployed stack.
 - **Verification**: bootstrap reports saving `integration-quick-start`; the
   downloaded profile holds class `IntegrationPaystub`, with at least one leaf field
   per `--field-hint`, nested or not. Field names are the model's choice, so only
-  their count is held.
+  their count is held. Bootstrap is retried once if it fails, because authoring is
+  one model call and a failure in the parallel pool fails the whole suite.
 - **Model**: `--model-id` is the CLI's default authoring model, swapped for an EU
   or CA build by the product's `swap_model_ids`, as every config the suite uploads
   is, so the weekly region runs call a model their region can reach.
