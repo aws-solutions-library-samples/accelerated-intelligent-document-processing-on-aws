@@ -222,6 +222,43 @@ def iac_requested(environ: dict | None = None) -> str:
     return value
 
 
+#: The weekly Terraform-migration schedule: the build runs
+#: scripts/sdlc/terraform_migration_test.py instead of the primary suite (the same
+#: name codebuild_deployment.py reads in terraform_migration_mode). Reaches the
+#: build in ci_run_options.json as ``terraform_migration``.
+TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
+
+
+def terraform_migration_requested(environ: dict | None = None) -> bool:
+    """Whether this run is the weekly Terraform-migration run.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives. Raises ValueError when the same schedule also asks for the variant
+    probes, a region run or a Terraform run: the migration run replaces the primary
+    suite, so any of those would report a result for a run that never happened.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return False
+    if str(env.get(TERRAFORM_MIGRATION_VARIABLE, "")).strip().lower() != "true":
+        return False
+    for clash, asked in (
+        (f"{VARIANT_PROBES_VARIABLE}=true", variant_probes_requested(env)),
+        (REGION_RUN_VARIABLE, bool(region_run_requested(env))),
+        (
+            f"{IAC_VARIABLE}=terraform",
+            str(env.get(IAC_VARIABLE, "")).strip().lower() == IAC_TERRAFORM,
+        ),
+    ):
+        if asked:
+            raise ValueError(
+                f"{TERRAFORM_MIGRATION_VARIABLE}=true cannot be combined with "
+                f"{clash}: the migration run replaces the primary suite. Give each "
+                "its own schedule."
+            )
+    return True
+
+
 def upload_to_s3(bucket_name):
     """Upload code package to S3 and return version ID"""
     print(f"Uploading to S3 bucket: {bucket_name}")
@@ -562,6 +599,7 @@ def write_ci_run_options(
         "variant_probes": variant_probes_requested(env),
         "region_run": region_run_requested(env) or "",
         "iac": iac_requested(env),
+        "terraform_migration": terraform_migration_requested(env),
     }
     try:
         pathlib.Path(path).write_text(
@@ -956,9 +994,15 @@ def main():
         )
     try:
         iac = iac_requested()
+        migration = terraform_migration_requested()
     except ValueError as e:
         print(f"❌ {e}")
         sys.exit(1)
+    if migration:
+        print(
+            "🔀 Weekly Terraform-migration run — migrating a genai-idp-terraform "
+            "deployment onto the built-in module instead of the primary suite"
+        )
     if iac == IAC_TERRAFORM:
         print("🧱 Nightly Terraform run — deploying the accelerator with Terraform")
     elif os.environ.get(IAC_VARIABLE, "").strip():
@@ -973,7 +1017,9 @@ def main():
 
     # Execute deployment steps
     write_ci_run_options()
-    if iac == IAC_TERRAFORM and not pathlib.Path(CI_RUN_OPTIONS_FILE).is_file():
+    if (iac == IAC_TERRAFORM or migration) and not pathlib.Path(
+        CI_RUN_OPTIONS_FILE
+    ).is_file():
         # The file is the only way the choice reaches CodeBuild, which reads no
         # file as CloudFormation. Running on would deploy and report the
         # CloudFormation suite under a Terraform schedule.
@@ -985,7 +1031,9 @@ def main():
     create_deployment_package()
     version_id = upload_to_s3(bucket_name)
 
-    if variant_probes_requested():
+    if variant_probes_requested() or migration:
+        # The migration run is as long as a probe run: two deployments and their
+        # teardown.
         result = monitor_pipeline(
             pipeline_name,
             version_id,

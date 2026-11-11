@@ -183,11 +183,15 @@ def validate_names(old_name: str, new_name: str) -> List[str]:
     the second deployment is meant to outlive the first.
     """
     problems = []
-    pattern = re.compile(r"^[a-z][a-z0-9]*$")
+    patterns = {
+        "old": re.compile(r"^[a-z][a-z0-9]*$"),
+        "new": re.compile(r"^[a-z][a-z0-9-]*$"),
+    }
     for label, value, limit in (("old", old_name, 12), ("new", new_name, 25)):
-        if not pattern.match(value):
+        if not patterns[label].match(value):
             problems.append(
                 f"the {label} name {value!r} must be lowercase letters and digits"
+                + (" (and hyphens)" if label == "new" else "")
             )
         if len(value) > limit:
             problems.append(

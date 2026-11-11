@@ -109,7 +109,9 @@ def test_password_claim_signs_with_the_derived_key():
     expected = base64.b64encode(
         hmac.new(
             server,
-            b"ABCdef123uid" + base64.b64decode(secret_block) + srp.timestamp(now).encode(),
+            b"ABCdef123uid"
+            + base64.b64decode(secret_block)
+            + srp.timestamp(now).encode(),
             hashlib.sha256,
         ).digest()
     ).decode()
@@ -142,8 +144,14 @@ def test_upstream_tfvars_names_the_prefix_region_and_data_features():
     text = tmt.upstream_tfvars("gitf2", "run1", "us-west-2")
     assert 'prefix      = "gitf2"' in text
     assert 'region      = "us-west-2"' in text
-    for feature in ("create_knowledge_base", "enable_test_studio", "create_bda_project"):
-        assert f"{feature}" in text and "true" in text.split(feature, 1)[1].split("\n")[0]
+    for feature in (
+        "create_knowledge_base",
+        "enable_test_studio",
+        "create_bda_project",
+    ):
+        assert (
+            f"{feature}" in text and "true" in text.split(feature, 1)[1].split("\n")[0]
+        )
 
 
 # -- states and plans -----------------------------------------------------------
@@ -168,12 +176,31 @@ def _state():
             res("aws_s3_bucket", "input_bucket", {"bucket": "gitf2-input-x"}),
             res("aws_s3_bucket", "output_bucket", {"bucket": "gitf2-output-x"}),
             res("aws_s3_bucket", "working_bucket", {"bucket": "gitf2-working-x"}),
-            res("aws_s3_bucket", "evaluation_baseline_bucket", {"bucket": "gitf2-base-x"}),
+            res(
+                "aws_s3_bucket",
+                "evaluation_baseline_bucket",
+                {"bucket": "gitf2-base-x"},
+            ),
             res("aws_s3_bucket", "test_sets", {"bucket": "gitf2-ts"}, module=m, key=0),
-            res("aws_dynamodb_table", "tracking_table", {"name": "idp-tracking-x"}, module=m),
-            res("aws_dynamodb_table", "configuration_table", {"name": "idp-config-x"}, module=m),
+            res(
+                "aws_dynamodb_table",
+                "tracking_table",
+                {"name": "idp-tracking-x"},
+                module=m,
+            ),
+            res(
+                "aws_dynamodb_table",
+                "configuration_table",
+                {"name": "idp-config-x"},
+                module=m,
+            ),
             res("aws_dynamodb_table", "users", {"name": "gitf2-users"}, module=m),
-            res("aws_dynamodb_table", "concurrency_table", {"name": "idp-conc-x"}, module=m),
+            res(
+                "aws_dynamodb_table",
+                "concurrency_table",
+                {"name": "idp-conc-x"},
+                module=m,
+            ),
             res("aws_kms_key", "encryption_key", {"key_id": "k-1"}),
             res("aws_cognito_user_pool", "user_pool", {"id": "us-west-2_P"}, module=m),
             res("aws_cloudwatch_log_group", "lg", {"name": "/aws/lambda/gitf2-a"}),
@@ -258,7 +285,11 @@ def test_kept_resources_lists_adopted_buckets_and_tables_only():
 
 def test_objects_missing_or_changed_are_reported_and_additions_counted():
     before = {"a": {"etag": "1", "size": 1}, "b": {"etag": "2", "size": 2}}
-    after = {"a": {"etag": "1", "size": 1}, "b": {"etag": "X", "size": 2}, "c": {"etag": "3", "size": 3}}
+    after = {
+        "a": {"etag": "1", "size": 1},
+        "b": {"etag": "X", "size": 2},
+        "c": {"etag": "3", "size": 3},
+    }
     assert tmt.compare_objects(before, after) == {
         "missing": [],
         "changed": ["b"],
@@ -281,14 +312,21 @@ def _config_row(**extra):
 
 def test_fix_config_counter_removal_is_the_one_allowed_change():
     before = {"k": _config_row()}
-    after = {"k": {k: v for k, v in _config_row().items() if k not in tmt.CONFIG_COUNTERS}}
+    after = {
+        "k": {k: v for k, v in _config_row().items() if k not in tmt.CONFIG_COUNTERS}
+    }
     cmp = tmt.compare_items("configuration", before, after)
     assert cmp["changed"] == [] and cmp["allowedChanges"] == 1
 
 
 def test_any_other_config_row_change_is_reported():
     before = {"k": _config_row()}
-    after = {"k": {"Configuration": {"S": "Config#default"}, "_compressed_config": {"B": "zzz"}}}
+    after = {
+        "k": {
+            "Configuration": {"S": "Config#default"},
+            "_compressed_config": {"B": "zzz"},
+        }
+    }
     cmp = tmt.compare_items("configuration", before, after)
     assert cmp["changed"][0]["attributes"] == [
         "LatestRevision",
@@ -299,7 +337,9 @@ def test_any_other_config_row_change_is_reported():
 
 def test_counter_removal_outside_the_configuration_table_is_reported():
     before = {"k": _config_row()}
-    after = {"k": {k: v for k, v in _config_row().items() if k not in tmt.CONFIG_COUNTERS}}
+    after = {
+        "k": {k: v for k, v in _config_row().items() if k not in tmt.CONFIG_COUNTERS}
+    }
     assert tmt.compare_items("tracking_table", before, after)["changed"]
 
 
@@ -322,7 +362,12 @@ def test_table_kind_reads_the_plan():
 
 
 def test_profile_differences_compare_scope_not_formatting():
-    before = {"email": "a@example.com", "persona": "Author", "allowedConfigVersions": ["default"], "createdAt": "x"}
+    before = {
+        "email": "a@example.com",
+        "persona": "Author",
+        "allowedConfigVersions": ["default"],
+        "createdAt": "x",
+    }
     same = dict(before, createdAt="2026-01-01T00:00:00Z", status="active")
     assert tmt.profile_differences(before, same) == []
     widened = dict(before, allowedConfigVersions=None)
@@ -353,11 +398,15 @@ def test_owned_name_matches_a_delimited_token(name, owned):
 
 
 def test_a_recorded_name_is_owned_whatever_it_is_called():
-    assert tmt.owned_name("idp-tracking-table-x", "gitf2", "gitfnew2", ["idp-tracking-table-x"])
+    assert tmt.owned_name(
+        "idp-tracking-table-x", "gitf2", "gitfnew2", ["idp-tracking-table-x"]
+    )
 
 
 def test_merge_names_unions_per_kind():
-    assert tmt.merge_names({"buckets": ["a"]}, {"buckets": ["b", "a"], "tables": ["t"]}) == {
+    assert tmt.merge_names(
+        {"buckets": ["a"]}, {"buckets": ["b", "a"], "tables": ["t"]}
+    ) == {
         "buckets": ["a", "b"],
         "tables": ["t"],
     }
@@ -377,7 +426,10 @@ class _Scripted(tmt.Run):
     def __getattribute__(self, name):
         if name.startswith("phase_"):
             phase = name[len("phase_") :].replace("_", "-")
-            calls, fail = object.__getattribute__(self, "calls"), object.__getattribute__(self, "fail")
+            calls, fail = (
+                object.__getattribute__(self, "calls"),
+                object.__getattribute__(self, "fail"),
+            )
 
             def stub():
                 calls.append(phase)
@@ -435,7 +487,10 @@ def test_a_failed_phase_tears_down_new_first_then_old_then_sweeps(tmp_path):
 def test_a_failure_before_anything_is_deployed_only_sweeps(tmp_path):
     run = _Scripted(_settings(tmp_path), fail="upstream-clone")
     assert run.execute() == 1
-    assert run.calls[run.calls.index("upstream-clone") + 1 :] == ["sweep", "leftover-check"]
+    assert run.calls[run.calls.index("upstream-clone") + 1 :] == [
+        "sweep",
+        "leftover-check",
+    ]
 
 
 def test_keep_skips_the_teardown(tmp_path):
@@ -468,7 +523,9 @@ def test_a_resumed_run_does_not_inherit_an_earlier_attempts_verdict(tmp_path):
 
 def test_the_result_never_holds_a_password(tmp_path):
     run = _Scripted(_settings(tmp_path))
-    run.save_secrets({"users": [{"username": "a@example.com", "password": "Sekret-Pw-1!"}]})
+    run.save_secrets(
+        {"users": [{"username": "a@example.com", "password": "Sekret-Pw-1!"}]}
+    )
     run.execute()
     assert "Sekret-Pw-1!" not in (tmp_path / "result.json").read_text()
     assert "Sekret-Pw-1!" not in (tmp_path / "context.json").read_text()
@@ -484,6 +541,8 @@ def test_first_party_pythonpath_names_every_lib_root_absolutely():
 
 def test_api_helpers_unwrap_the_dispatcher_payload():
     assert tmt._find_value({"getMyProfile": {"email": "a"}}, None) == {"email": "a"}
-    assert tmt._json_field({"getConfigVersion": {"Custom": '{"notes": "x"}'}}, "Custom") == {"notes": "x"}
+    assert tmt._json_field(
+        {"getConfigVersion": {"Custom": '{"notes": "x"}'}}, "Custom"
+    ) == {"notes": "x"}
     assert tmt._success({"updateConfiguration": {"success": True}})
     assert not tmt._success({"updateConfiguration": {"success": False}})
