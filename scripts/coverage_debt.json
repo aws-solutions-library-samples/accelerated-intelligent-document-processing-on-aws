@@ -551,6 +551,7 @@
         "idp_sdk/_core/tenancy_policies.py": 84.48,
         "idp_sdk/_core/tenancy_verify.py": 78.49,
         "idp_sdk/_core/terraform_deploy.py": 93.19,
+        "idp_sdk/_core/terraform_migrate.py": 95.21,
         "idp_sdk/_core/terraform_stack.py": 100.0,
         "idp_sdk/_core/ui_api.py": 60.0,
         "idp_sdk/client.py": 100.0,
@@ -569,6 +570,7 @@
         "idp_sdk/models/search.py": 100.0,
         "idp_sdk/models/stack.py": 100.0,
         "idp_sdk/models/tenancy.py": 100.0,
+        "idp_sdk/models/terraform.py": 100.0,
         "idp_sdk/models/testing.py": 100.0,
         "idp_sdk/operations/__init__.py": 100.0,
         "idp_sdk/operations/assessment.py": 100.0,
@@ -583,6 +585,7 @@
         "idp_sdk/operations/search.py": 100.0,
         "idp_sdk/operations/stack.py": 100.0,
         "idp_sdk/operations/tenancy.py": 77.97,
+        "idp_sdk/operations/terraform.py": 92.62,
         "idp_sdk/operations/testing.py": 100.0
       }
     },
@@ -622,7 +625,8 @@
         "idp_cli/display.py": 100.0,
         "idp_cli/parameters.py": 100.0,
         "idp_cli/search_tracking_table.py": 100.0,
-        "idp_cli/tenancy.py": 72.07
+        "idp_cli/tenancy.py": 72.07,
+        "idp_cli/terraform.py": 83.04
       }
     },
     "idp_feature_sdk": {

@@ -151,6 +151,9 @@ client.config.sync_bda(...)
 client.manifest.generate(...)
 client.manifest.validate(...)
 
+# Terraform-only operations (genai-idp-terraform migration)
+client.terraform.migrate_from_genai_idp_terraform.plan(...)
+
 # Testing operations
 client.testing.load_test(...)
 ```
@@ -189,6 +192,54 @@ with no change to your code. The hook applies only inside a process that importe
 Deploying and deleting a Terraform deployment through the SDK's CloudFormation path
 is refused; use `idp-cli deploy --terraform` and `idp-cli delete --terraform`, or
 Terraform itself.
+
+### Terraform migration
+
+`client.terraform.migrate_from_genai_idp_terraform` moves a deployment of the separate
+`awslabs/genai-idp-terraform` implementation onto this repository's Terraform module
+in place, keeping its buckets, tables, KMS key and Cognito user pool. It is what
+`idp-cli terraform migrate-from-genai-idp-terraform` calls; the procedure is in
+[Migrating from genai-idp-terraform](./terraform-migration.md). The client's
+`stack_name` is the **new** deployment's name, and each method takes `terraform_dir`
+(default `./idp-terraform/<stack_name>`).
+
+```python
+client = IDPClient(stack_name="my-idp", region="us-west-2")
+migration = client.terraform.migrate_from_genai_idp_terraform
+
+plan = migration.plan(
+    "old-idp.tfstate",
+    "admin@example.com",
+    pointer_url="https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/"
+    "artifacts/genai-idp/terraform/idp-terraform-latest.json",
+)
+migration.check_retention()
+migration.freeze(apply=True, wait=True)
+migration.fix_config(apply=True)
+migration.adopt_user_pool(apply=True)
+result = migration.apply(apply=True)
+migration.detach("./old-idp", apply=True)
+migration.check_destroy("destroy-plan.json")
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `plan(old_state_path, admin_email, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` | `TerraformMigrationPlanResult` | Writes the root configuration, runs `terraform init`, writes `adopt.tf` and the migration plan. Raises `IDPConfigurationError` on an old stateful resource with no verdict. |
+| `check_retention(terraform_dir=None, accept_expiry=())` | `TerraformMigrationStepResult` | Reads only. |
+| `freeze(terraform_dir=None, *, apply=False, wait=False, timeout_seconds=1800, poll_seconds=30)` | `TerraformMigrationStepResult` | |
+| `fix_config(terraform_dir=None, *, apply=False, restore=None)` | `TerraformMigrationStepResult` | `backup_path` names the backup. |
+| `adopt_user_pool(terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
+| `apply(terraform_dir=None, terraform_bin="terraform", *, apply=False, accept_expiry=())` | `TerraformMigrationStepResult` | `details["counts"]` has the plan's import, add, change and destroy counts. |
+| `detach(old_terraform_dir, terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
+| `check_destroy(destroy_plan_path, terraform_dir=None)` | `TerraformMigrationStepResult` | Reads only. |
+
+Every method that can change something is a dry run unless `apply=True`. A
+`TerraformMigrationStepResult` lists in `changes` exactly what the phase changes (or,
+in a dry run, would change), in `findings` what blocks the next step (`ok` is false
+when there is any), and in `back_out` how to undo it. `TerraformMigrationPlanResult`
+lists one `TerraformMigrationResource` per old resource, with its verdict, the
+address it is adopted into and the import id, plus the stack parameters written, the
+addresses to detach and the commands that detach them.
 
 ---
 

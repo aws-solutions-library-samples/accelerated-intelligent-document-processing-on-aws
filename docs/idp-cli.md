@@ -45,6 +45,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
   - [stop-workflows](#stop-workflows)
   - [load-test](#load-test)
   - [tenancy](#tenancy)
+  - [terraform migrate-from-genai-idp-terraform](#terraform-migrate-from-genai-idp-terraform)
   - [discover](#discover)
   - [discover-multidoc](#discover-multidoc)
   - [remove-deleted-stack-resources](#remove-deleted-stack-resources)
@@ -892,6 +893,57 @@ The command writes `main.tf` (the aws and awscc providers in the region and `mod
 `delete --terraform` (options `--stack-name`, `--terraform-dir`, `--terraform-bin`, `--terraform-assume-role-arn`, `--region`, `--force`) uses the role the deploy wrote into `main.tf`, or, with `--terraform-assume-role-arn`, rewrites the two provider blocks to assume that one first; then it runs `init`, empties every bucket in the state that `destroy` will delete, removes the resources CloudFormation would retain (the module's `retainedAddresses`, under `module.idp.`) from the state so they stay, then runs `destroy -auto-approve`, and lists what was retained. `--force-delete-all` does not apply.
 
 Plain `deploy` and `delete` (without `--terraform`) refuse a Terraform deployment's label stack.
+
+---
+
+### `terraform migrate-from-genai-idp-terraform`
+
+Moves a deployment of the separate
+[`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform)
+implementation onto this repository's Terraform module **in place**: a new deployment
+adopts the old one's buckets, tables, KMS key and Cognito user pool, so documents,
+configuration, users and passwords stay, and recreates everything else. It applies
+only to that implementation; it is not a CloudFormation or a configuration migration.
+The procedure, what each phase checks and how to back out of it are in
+[Migrating from genai-idp-terraform](./terraform-migration.md).
+
+Run the phases in this order. Each takes `--stack-name` (the **new** deployment's
+name), `--region`, `--terraform-dir` (the new deployment's root configuration
+directory, default `./idp-terraform/<stack-name>`) and `--json` (the phase's result
+as JSON on stdout; progress and the human-readable report go to stderr). A phase that
+changes something only lists the changes unless given `--apply`, and every phase exits
+1 when it finds something that blocks the next step.
+
+| Phase | Changes | Options |
+|---|---|---|
+| `plan` | Local files only: `main.tf`, `terraform.tfvars`, `adopt.tf` and `genai-idp-terraform-migration/`; runs `terraform init` | `--old-state` (the old `terraform.tfstate` or `terraform state pull` output), `--admin-email` (an existing user of exactly this name in the old pool is adopted), `--parameters`, `--terraform-module-url` (default: the region's latest module), `--terraform-bin`, `--terraform-assume-role-arn` |
+| `check-retention` | Nothing (lists every object in each adopted bucket) | `--accept-expiry KIND` (repeatable) |
+| `freeze` | Disables the old deployment's EventBridge upload rule | `--apply`, `--wait`, `--timeout` (seconds, default 1800) |
+| `fix-config` | Backs up, then removes `LatestRevision` and `PublishedRevision` from the old `Config#` rows | `--apply`, `--restore <backup>` |
+| `adopt-user-pool` | `terraform import` of the user pool, then a backed-up rewrite of its `schema` in the new state | `--apply`, `--terraform-bin` |
+| `apply` | Applies the checked adoption plan | `--apply`, `--accept-expiry KIND`, `--terraform-bin` |
+| `detach` | Backs up the old state, then removes the adopted and kept resources from it | `--old-terraform-dir` (required), `--apply`, `--terraform-bin` |
+| `check-destroy` | Nothing | `--destroy-plan` (`terraform show -json` of the old deployment's `terraform plan -destroy -out=<file>`) |
+
+```bash
+idp-cli terraform migrate-from-genai-idp-terraform plan --stack-name my-idp \
+    --region us-west-2 --old-state old-idp.tfstate --admin-email admin@example.com
+idp-cli terraform migrate-from-genai-idp-terraform check-retention --stack-name my-idp --region us-west-2
+idp-cli terraform migrate-from-genai-idp-terraform freeze --stack-name my-idp --region us-west-2 --apply --wait
+idp-cli terraform migrate-from-genai-idp-terraform fix-config --stack-name my-idp --region us-west-2 --apply
+idp-cli terraform migrate-from-genai-idp-terraform adopt-user-pool --stack-name my-idp --region us-west-2 --apply
+idp-cli terraform migrate-from-genai-idp-terraform apply --stack-name my-idp --region us-west-2 --apply
+idp-cli terraform migrate-from-genai-idp-terraform detach --stack-name my-idp --region us-west-2 \
+    --old-terraform-dir ./old-idp --apply
+idp-cli terraform migrate-from-genai-idp-terraform check-destroy --stack-name my-idp \
+    --region us-west-2 --destroy-plan destroy-plan.json
+```
+
+`plan` refuses, writing no adoption files, when the old state holds a resource that
+holds data and has no verdict, and names each one. `apply` re-checks the earlier
+phases, then refuses a plan in which any adopted resource is not imported in place,
+the user pool is not yet in state or would lose a schema item, or anything at all is
+replaced or destroyed.
 
 ---
 
