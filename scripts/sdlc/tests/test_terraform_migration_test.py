@@ -600,7 +600,8 @@ def test_binary_attributes_compare_equal_after_a_round_trip_through_the_file():
 
 def test_a_resume_never_continues_past_a_failed_verify(tmp_path):
     ctx = {"phases": [{"phase": "verify", "status": "FAIL"}], "completed": ["verify"]}
-    assert "verify has not passed" in tmt.resume_refusal("migrate-detach", ctx)
+    refusal = tmt.resume_refusal("migrate-detach", ctx)
+    assert refusal is not None and "verify has not passed" in refusal
     # Tearing down is still allowed, and so is anything before the gate.
     assert tmt.resume_refusal("new-destroy", ctx) is None
     assert tmt.resume_refusal("migrate-apply", ctx) is None
