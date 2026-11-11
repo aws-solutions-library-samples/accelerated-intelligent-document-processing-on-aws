@@ -4,7 +4,9 @@ paths:
   - "lib/idp_common_pkg/idp_common/agents/factory/**"
   - "lib/idp_common_pkg/idp_common/synthesis/**"
   - "lib/idp_common_pkg/idp_common/discovery/**"
-  - "lib/idp_common_pkg/idp_common/config/**"
+  - "lib/idp_common_pkg/idp_common/config/configuration_manager.py"
+  - "lib/idp_common_pkg/idp_common/config/schema_constants.py"
+  - "lib/idp_common_pkg/idp_common/config/class_settings.py"
   - "src/lambda/agent_chat_processor/**"
   - "src/lambda/chat_stream_processor/**"
   - "nested/api-resolvers/src/lambda/agent_chat_resolver/**"
@@ -21,6 +23,7 @@ paths:
   - "src/ui/src/components/welcome/**"
   - "src/ui/src/contexts/guidedTour.tsx"
   - "feature-platform/idp-data-generator/**"
+  - "feature-platform/main-stack-extensions/template.yaml"
   - "docs/quick-start.md"
 ---
 
@@ -38,14 +41,21 @@ chat agent, so [agents.md](agents.md) applies too.
   see the profile created and activated.
 - Change Quick Start's callers in the same change as any contract it shares with
   another page: the discovery uploads, the configuration profile API, the chat
-  route and stream, and chat sessions.
+  route and stream, and chat sessions. The stack wiring it reads counts too: the
+  `EnableQuickStartWidget` parameter in `template.yaml`, which sets the UI's
+  `VITE_ENABLE_QUICK_START_WIDGET`, and the
+  `/<stack>/feature-platform/installed-features-table` SSM parameter the agent
+  finds extensions through.
 - When you rename a page, a navigation item or a product term, update the agent's
   system prompt in `agents/quick_start/agent.py`, which names screens and paths, and
   `docs/quick-start.md`.
 - When Quick Start's entry points or journey change, update its stories in
   `scripts/ux_stories.toml` and its flow in `scripts/ux_flows.yaml`.
-- Give a new Quick Start tool or code path an offline test beside the existing ones
-  in `lib/idp_common_pkg/tests/unit/synthesis/`.
+- Give a new Quick Start tool or code path an offline test beside the existing
+  ones: the tools in `lib/idp_common_pkg/tests/unit/synthesis/`, the agent, its
+  tool set and its prompt in `lib/idp_common_pkg/tests/unit/agents/`, and the
+  widget, upload hook and tour in `src/ui/src/components/agent-chat/__tests__/`
+  and `src/ui/src/contexts/__tests__/`.
 
 ## Must not
 - Name a screen, path or extension in the agent's prompt that the UI does not show
@@ -53,7 +63,7 @@ chat agent, so [agents.md](agents.md) applies too.
 
 ## Verify with
 - `cd lib/idp_common_pkg && make test-unit`
-- `cd src/ui && npx vitest run`
+- `make ui-test`
 - `make ai-ux-test-stories-local STORY=draft-setup-from-a-description AS=platform-admin`,
   against the review stack
 

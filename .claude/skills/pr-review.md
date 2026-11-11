@@ -118,13 +118,17 @@ documentation, testing, code-review).
   surfaces other pages own, so it breaks with no failing test. If the PR changes
   the agent chat route or stream, configuration profile creation or activation,
   the discovery upload resolvers, schema authoring or the class catalog, the
-  Welcome page, side navigation or tour, the Test Set Generator extension, or the
-  groups a role holds, say whether the Quick Start journey still works: open it,
+  Welcome page, side navigation or tour, the Test Set Generator extension, the
+  groups a role holds, or the stack wiring Quick Start reads (the
+  `EnableQuickStartWidget` parameter and the installed-features SSM parameter),
+  check that the PR says how the Quick Start journey was exercised: open it,
   describe a document, approve the drafted fields, profile created and activated.
   If it renames a page, navigation item or product term, check that the Quick
-  Start agent's prompt (`agents/quick_start/agent.py`), `docs/quick-start.md` and
-  its stories in `scripts/ux_stories.toml` still match. An impact the PR does not
-  address is 🟡. The paths are in `.claude/rules/quick-start.md`
+  Start agent's prompt
+  (`lib/idp_common_pkg/idp_common/agents/quick_start/agent.py`),
+  `docs/quick-start.md` and its stories in `scripts/ux_stories.toml` still match.
+  An impact the PR does not exercise, or a prompt, page or story that no longer
+  matches, is 🟡. The paths are in `.claude/rules/quick-start.md`
 - No obvious race conditions, unbounded loops, or missing pagination
 - Error handling uses explicit exceptions (no bare `except:`), with `exc_info=True`
 - No removal of observability (X-Ray `patch_all`, structured logging)
