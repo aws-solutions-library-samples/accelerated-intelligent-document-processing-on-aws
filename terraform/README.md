@@ -411,6 +411,14 @@ reason. `STABLE_CUSTOM_OUTPUTS` and `PASS_THROUGH_ATTRS` are described under
   resource rewrites at deploy time. An entry naming a resource the standard template
   no longer has is reported, and `tests/test_upgrade_safety.py` fails on it, so an
   override cannot outlive what it described.
+- **A hand mapper's `ignore_changes`** (`SpecMapper.ignore_changes` in
+  `aws_mappers.py`, or a lifecycle block a mapper emits itself), for a property the
+  service cannot change after creation. Today: a Cognito user pool's
+  `username_configuration`, which Cognito fixes at creation and CloudFormation never
+  updates, and a pool user's attributes, delivery mediums and message action, which are
+  create-only. The second differs from CloudFormation in one case: CloudFormation
+  replaces a user whose attributes change, Terraform leaves it. Both let an existing
+  pool be adopted with an `import {}` block instead of being replaced.
 - **`TERRAFORM_DIRECTORY_READERS`**, keyed by function logical ID. These functions walk
   the stack tree at run time through CloudFormation; today that is
   `DataMartRollupFunction` alone. In the root module each gets

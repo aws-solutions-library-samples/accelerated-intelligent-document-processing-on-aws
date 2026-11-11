@@ -141,9 +141,13 @@ runtime code that looks resources up through CloudFormation.
   `scripts/refresh_create_only.py`), with a translator test. Flag an entry
   added to `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES`,
   `STABLE_CUSTOM_OUTPUTS`, `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS`
-  in `translate.py`, or to `completeness.NOT_APPLICABLE`, without a written
-  reason and a test: each one is a place where Terraform deliberately differs
-  from CloudFormation.
+  in `translate.py`, to a hand mapper's `ignore_changes` (`SpecMapper` in
+  `aws_mappers.py`, or a lifecycle block a mapper class emits itself), or to
+  `completeness.NOT_APPLICABLE`, without a written reason and a test: each one
+  is a place where Terraform deliberately differs from CloudFormation. A
+  mapper's `ignore_changes` is right only for a property the service cannot
+  change after creation, or one CloudFormation never updates; anywhere else it
+  hides a real change.
 - **A property value that does not reach the Terraform.** The completeness check
   (`idp_tf/completeness.py`) fails when a value in the template appears nowhere
   in the HCL emitted for its resource, which is how a hardening setting is lost
@@ -349,8 +353,8 @@ Flag these immediately when seen in any diff:
   create-only property of one with nothing said about upgrading existing
   Terraform deployments
 - A new `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES`, `STABLE_CUSTOM_OUTPUTS`,
-  `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS` entry, or a
-  `completeness.NOT_APPLICABLE` or `scripts/terraform_scan_baseline.json` entry,
-  without a reason and a test
+  `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS` entry, a hand mapper's
+  `ignore_changes`, or a `completeness.NOT_APPLICABLE` or
+  `scripts/terraform_scan_baseline.json` entry, without a reason and a test
 - Runtime code that walks the stack through CloudFormation APIs or the
   `aws:cloudformation:stack-name` tag without the Terraform resource-directory path
