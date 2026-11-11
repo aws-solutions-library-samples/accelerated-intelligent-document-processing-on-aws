@@ -137,6 +137,10 @@ KEPT_VERDICTS = ("adopt", "adopt-after-fix")
 #: Changes ``apply`` refuses by design that docs/terraform-migration.md tells every
 #: migration to accept (its Hazards section). The test accepts these and nothing
 #: else, so a refusal the guide does not document fails the run.
+#: How long after turning the old TTL off the adoption apply waits (the guide: at
+#: least an hour), with a margin.
+TTL_SETTLE_SECONDS = 65 * 60
+
 GUIDE_ACCEPTED_CHANGES = ("module.idp.aws_dynamodb_table.agent_table:ttl-changed",)
 
 #: The only change the migration is allowed to make to an existing item in a kept
@@ -1325,6 +1329,7 @@ class Run:
         for table in tables:
             desc = ddb.describe_time_to_live(TableName=table)["TimeToLiveDescription"]
             if desc.get("TimeToLiveStatus") == "ENABLED":
+                self.ctx["ttlDisabledAt"] = time.time()
                 ddb.update_time_to_live(
                     TableName=table,
                     TimeToLiveSpecification={
@@ -1345,6 +1350,19 @@ class Run:
                     )
                 time.sleep(30)
             done.append(table)
+        # DynamoDB refuses a second TTL change on a table within about an hour of
+        # the first, even once the status reads DISABLED (measured: the apply failed
+        # with "modified multiple times within a fixed interval"), and the guide says
+        # to wait an hour.
+        disabled_at = self.ctx.setdefault("ttlDisabledAt", time.time())
+        self.save()
+        wait = disabled_at + TTL_SETTLE_SECONDS - time.time()
+        if done and wait > 0:
+            print(
+                f"  waiting {wait / 60:.0f} min for DynamoDB's TTL change interval",
+                flush=True,
+            )
+            time.sleep(wait)
         return f"time-to-live off on {done or 'no agent-jobs table'}"
 
     def acceptance_args(self) -> List[str]:
