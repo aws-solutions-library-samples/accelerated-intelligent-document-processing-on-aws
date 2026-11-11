@@ -46,10 +46,16 @@ user-derived only when every branch is, since either may be the one used.
 assembled in one function and handed to another as an argument; a session id
 named with no ``session`` or ``conversation`` in it; a user term that is only a
 user-sounding name for something else (``owner_sub = session_id``, or a sort key
-named ``username_ts``, reads as a user term); a dict built by
-``dict.fromkeys(...)``, ``dict(zip(...))`` or any other function call; and a call
-made indirectly (``getattr(table, "get_item")(...)``, ``functools.partial``, or a
-wrapper that is not itself a DynamoDB call).
+named ``username_ts``, or a ``sub`` field of a session record, reads as a user
+term); a dict built by ``dict.fromkeys(...)``, ``dict(zip(...))``, ``.copy()``,
+``copy.deepcopy``, ``list(...)`` around a comprehension, or any other function
+call; a choice between whole dicts (``a if c else b``); a dict held in a class
+attribute or a lambda's default argument; a dict comprehension whose keys come
+from a named constant rather than a literal; a standalone key string joined with
+a separator other than ``#``; a ``FilterExpression`` on ``scan``, which narrows a
+read without being a key; and a call made indirectly (``getattr(table,
+"get_item")(...)``, ``functools.partial``, or a wrapper that is not itself a
+DynamoDB call).
 A finding is evidence, and a clean run is evidence that none of the recognised
 shapes occur, not a proof.
 """
