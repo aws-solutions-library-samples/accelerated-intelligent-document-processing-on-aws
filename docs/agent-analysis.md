@@ -110,8 +110,8 @@ The analytics agent has access to four specialized tools:
   (optionally starting with `WITH`), or a `SHOW` or `DESCRIBE` statement for schema
   discovery. Anything else (more than one statement, DDL, `INSERT`/`UPDATE`/`DELETE`/`MERGE`,
   `UNLOAD`, `EXPLAIN`, `PREPARE`/`EXECUTE`, external or inline functions, table
-  functions, session statements) is refused before it reaches Athena, and the agent is
-  told why so it can rewrite the query
+  functions, Lambda-backed catalogs, session statements) is refused before it reaches
+  Athena, and the agent is told why so it can rewrite the query
 - **Features**:
   - Automatic column name quoting for Athena compatibility
   - Query result storage in S3
@@ -123,17 +123,18 @@ The analytics agent has access to four specialized tools:
 - **Purpose**: Copies the results of the agent's most recent successful query into the
   AgentCore sandbox as `query_results.csv`
 - **Input**: none. The tool takes no S3 location; it reads only the result object Athena
-  reported for the last query the agent ran successfully, and refuses when there is none
+  reported for the last query the agent ran successfully, refuses when there is none,
+  and names that query in its reply
 - **Data Format**: CSV files containing query results
 
 ### 4. Python Execution Tool
 
 - **Purpose**: Generates visualizations and tables from query data
 - **Libraries**: Pandas, NumPy, Matplotlib and standard-library computation modules.
-  Code that imports anything else, evaluates code dynamically, contains a URL, or reads
-  or writes a file other than by a literal local file name is returned to the agent with an
-  error instead of being run. This is a check on the code's text, not a sandbox
-  boundary
+  Code that imports anything else, evaluates code dynamically, reaches module
+  internals, contains a URL, or reads or writes a path other than a literal file name
+  in the working directory is returned to the agent with an error instead of being run.
+  This is a check on the code's text, not a sandbox boundary
 - **Output**: JSON-formatted charts and tables for web display
 
 ## Using Agent Analysis

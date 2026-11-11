@@ -367,13 +367,17 @@ data are bounded in code rather than by the prompt:
   reported for it, into the Code Interpreter session as `query_results.csv`. The
   agent's Athena tool clears that location before every query and sets it only when
   one succeeds, so a failed or refused query leaves nothing to copy, and the tool
-  refuses when no query has succeeded.
+  refuses when no query has succeeded. Its reply names the query whose results it
+  wrote. The query validator also refuses a quoted `"lambda:<function>"` catalog and a
+  backslash in `SHOW`/`DESCRIBE` (run on Athena's Hive engine).
 
 - **`execute_python`** runs the agent's code only if `analytics/sandbox_code_checks.py`
   accepts it: the code must parse, import only `IMPORTABLE_MODULES` (data, charting
-  and standard-library computation), avoid `DYNAMIC_NAMES` and double-underscore
-  attributes, carry no `://` literal, and pass only literal local file names to
-  `open`, `read_*`, `to_*` and the other `PATH_OPENERS`. Refused code is returned to the agent
+  and standard-library computation), avoid `DYNAMIC_NAMES`, attributes starting with
+  `_` and attributes named like a refused module (`MODULE_ATTRIBUTES`), carry no `://`
+  literal, and call `read_*`, `PATH_OPENERS` and `PATH_WRITERS` only directly, without
+  unpacked arguments, and with a literal file name in the working directory (a writer
+  may also target an empty `io.BytesIO()`/`StringIO()`). Refused code is returned to the agent
   as `{"isError": true, "error": ...}`. The check reads text and syntax only, so it is
   not a boundary; it is checked after the optional description is prepended, so the
   text checked is the text that runs.
