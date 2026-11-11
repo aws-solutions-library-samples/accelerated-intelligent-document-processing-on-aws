@@ -410,6 +410,15 @@ def freeze_cmd(
     type=click.Path(exists=True, dir_okay=False),
     help="Write the rows of a backup this phase made back to the table",
 )
+@click.option(
+    "--restore-after-apply",
+    is_flag=True,
+    help=(
+        "With --restore, write the backup back even though the new deployment has "
+        "already recorded a revision history for its profiles (after the first "
+        "apply). That discards the history; restore-config is the usual remedy"
+    ),
+)
 @json_option
 def fix_config_cmd(
     stack_name: str,
@@ -417,6 +426,7 @@ def fix_config_cmd(
     terraform_dir: Optional[str],
     apply_: bool,
     restore: Optional[str],
+    restore_after_apply: bool,
     as_json: bool,
 ):
     """Back up, then remove the revision counters from the old Config# rows."""
@@ -424,7 +434,10 @@ def fix_config_cmd(
 
     try:
         result = _migration(stack_name, region).fix_config(
-            terraform_dir, apply=apply_, restore=restore
+            terraform_dir,
+            apply=apply_,
+            restore=restore,
+            restore_after_apply=restore_after_apply,
         )
     except IDPError as e:
         _fail(str(e))

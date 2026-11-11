@@ -1037,6 +1037,42 @@ def test_a_finished_documents_run_rows_are_not_in_flight():
     assert scan.scanned == 2
 
 
+def test_document_rows_with_no_record_sort_key_are_a_finding():
+    """An upstream version keying its document records under another sort key
+    would otherwise make the scan read zero documents and pass."""
+    items = [
+        {
+            "PK": {"S": "doc#seed/a.pdf"},
+            "SK": {"S": "document"},
+            "ObjectStatus": {"S": "OCR"},
+        },
+        {"PK": {"S": "doc#seed/a.pdf"}, "SK": {"S": "run#20261111T013000Z-a.pdf-1"}},
+    ]
+    scan = tm.scan_documents("t", PagedTable(items))
+    assert scan.scanned == 0 and scan.document_rows == 2
+    findings = scan.findings()
+    assert len(findings) == 1 and "'none'" in findings[0]
+
+
+def test_a_table_with_no_documents_has_no_finding():
+    scan = tm.scan_documents("t", PagedTable([{"PK": {"S": "lock#x"}}]))
+    assert scan.document_rows == 0 and scan.findings() == []
+
+
+def test_the_document_scan_does_not_filter_on_the_sort_key_server_side():
+    """A server-side ``SK = none`` filter would hide exactly the rows the
+    finding above is about."""
+    seen = {}
+
+    class Recording(PagedTable):
+        def scan(self, **kwargs):
+            seen.update(kwargs)
+            return super().scan(**kwargs)
+
+    tm.scan_documents("t", Recording([]))
+    assert "SK" not in seen["FilterExpression"]
+
+
 # ---------------------------------------------------------------------------
 # fix-config
 # ---------------------------------------------------------------------------
@@ -1121,6 +1157,38 @@ class TestFixConfig:
             i["Configuration"]["S"]
             for i in tm.scan_all(self.ddb, "idp-configuration-table-mr68w2wl")
         ]
+
+    def test_restore_is_refused_after_the_first_apply(
+        self, planned_dir, aws_credentials
+    ):
+        """Once the new deployment has a revision index for a backed-up profile,
+        writing the old rows back would overwrite what it has saved since and put
+        back counters that no longer describe its history."""
+        backup = migration().fix_config(str(planned_dir), apply=True).backup_path
+        self.ddb.put_item(
+            TableName="idp-configuration-table-mr68w2wl",
+            Item=config_row("ConfigRevIndex#default"),
+        )
+        result = migration().fix_config(str(planned_dir), apply=True, restore=backup)
+        assert result.ok is False and result.applied is False
+        assert "ConfigRevIndex#default" in result.findings[0]
+        assert "restore-config" in result.findings[0]
+        assert "--restore-after-apply" in result.findings[0]
+        assert "LatestRevision" not in self.row("Config#default")
+
+    def test_restore_after_the_first_apply_needs_the_override(
+        self, planned_dir, aws_credentials
+    ):
+        backup = migration().fix_config(str(planned_dir), apply=True).backup_path
+        self.ddb.put_item(
+            TableName="idp-configuration-table-mr68w2wl",
+            Item=config_row("ConfigRevIndex#default"),
+        )
+        result = migration().fix_config(
+            str(planned_dir), apply=True, restore=backup, restore_after_apply=True
+        )
+        assert result.ok is True
+        assert self.row("Config#default")["LatestRevision"] == {"N": "3"}
 
     def test_a_table_with_a_revision_history_is_refused(
         self, planned_dir, aws_credentials
@@ -1542,6 +1610,55 @@ class TestAdoptionPlanCheck:
         assert any(
             "input_bucket is already in state, but not as" in f for f in findings
         )
+
+    def test_a_rerun_holding_a_resource_with_an_unrelated_matching_attribute_is_refused(
+        self,
+    ):
+        """A resource whose id is something else is not the adopted one just
+        because some other string attribute (a tag, a log target) equals the
+        import id: only the type's identity attributes count."""
+        plan = build()
+        pj = self._rerun(plan, clean_adoption_plan(plan), lambda r: "something-else")
+        for res in pj["prior_state"]["values"]["root_module"]["child_modules"][0][
+            "resources"
+        ]:
+            r = next(x for x in plan.imports if x.new_address == res["address"])
+            res["values"]["logging_target"] = r.import_id
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
+        assert any(
+            "input_bucket is already in state, but not as" in f for f in findings
+        )
+
+    def test_a_rerun_holding_the_resource_by_its_identity_attribute_is_accepted(
+        self,
+    ):
+        plan = build()
+        pj = self._rerun(plan, clean_adoption_plan(plan), lambda r: "something-else")
+        for res in pj["prior_state"]["values"]["root_module"]["child_modules"][0][
+            "resources"
+        ]:
+            r = next(x for x in plan.imports if x.new_address == res["address"])
+            tf_type = tm._resource_type(r.new_address)
+            if tf_type in tm.IMPORT_IDENTITY:
+                res["values"][tm.IMPORT_IDENTITY[tf_type][0]] = r.import_id
+            else:
+                sep, attrs = tm.IMPORT_COMPOSITE_IDENTITY[tf_type]
+                for attr, part in zip(attrs, r.import_id.split(sep), strict=True):
+                    res["values"][attr] = part
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
+        assert not [f for f in findings if "import" in f], findings
+
+    def test_every_imported_type_has_named_identity_attributes(self):
+        plan = build()
+        types = {tm._resource_type(r.new_address) for r in plan.imports}
+        assert types
+        assert types <= set(tm.IMPORT_IDENTITY) | set(tm.IMPORT_COMPOSITE_IDENTITY)
+
+    def test_a_composite_id_must_match_its_parts_in_order(self):
+        values = {"id": "x", "user_pool_id": "admin", "username": "pool"}
+        assert not tm._holds_import("aws_cognito_user", values, "pool/admin")
+        values = {"id": "x", "user_pool_id": "pool", "username": "admin"}
+        assert tm._holds_import("aws_cognito_user", values, "pool/admin")
 
     def test_a_wrong_import_id_is_refused(self):
         plan = build()
@@ -2417,9 +2534,133 @@ def test_a_profile_whose_content_was_kept_is_left_alone():
     assert (
         tm.overwritten_revision([_rev(1, "system", tm.PRE_HISTORY_NOTES, True)]) is None
     )
+    assert tm.restore_decision([]).outcome == tm.KEPT
+
+
+def test_a_profile_with_revisions_but_no_pre_history_one_is_a_finding_case():
+    """The backfill of the pre-history revision failed: the deploy's revision
+    exists, the old content is in no revision, and only the fix-config backup
+    holds it. That must not read as "content kept"."""
+    decision = tm.restore_decision([_rev(1, "stack-deployment", published=True)])
+    assert decision.outcome == tm.NO_PRE_HISTORY
     assert (
         tm.overwritten_revision([_rev(1, "stack-deployment", published=True)]) is None
     )
+
+
+def test_a_user_edit_between_the_pre_history_and_the_published_head_is_left_alone():
+    """The published head is a deploy's, but someone saved in between: restoring
+    would undo that edit as well as the preset."""
+    revs = [
+        _rev(4, "stack-deployment", published=True),
+        _rev(3, "admin@example.com"),
+        _rev(2, "stack-deployment"),
+        _rev(1, "system", tm.PRE_HISTORY_NOTES),
+    ]
+    decision = tm.restore_decision(revs)
+    assert decision.outcome == tm.EDITED
+    assert decision.revision == 1
+    assert decision.edited_by == [(3, "admin@example.com")]
+    assert tm.overwritten_revision(revs) is None
+
+
+def test_two_deploys_after_the_pre_history_revision_still_restore():
+    revs = [
+        _rev(3, "stack-deployment", published=True),
+        _rev(2, "stack-deployment"),
+        _rev(1, "system", tm.PRE_HISTORY_NOTES),
+    ]
+    assert tm.overwritten_revision(revs) == 1
+
+
+def test_the_pre_history_notes_are_the_ones_idp_common_writes():
+    """restore-config finds the pre-migration revision by its notes, so the text
+    must be exactly what ConfigurationManager records on its backfill."""
+    import inspect
+
+    from idp_common.config import configuration_manager
+
+    assert tm.PRE_HISTORY_NOTES == (
+        "Configuration as it stood before revision history was enabled"
+    )
+    source = inspect.getsource(configuration_manager.ConfigurationManager)
+    assert "notes=PRE_HISTORY_NOTES" in source
+    assert configuration_manager.PRE_HISTORY_NOTES is tm.PRE_HISTORY_NOTES
+
+
+class FakeConfigManager:
+    """Stands in for ConfigurationManager: revisions per profile, and a record of
+    every restore."""
+
+    revisions_by_profile: dict = {}
+    restored: list = []
+
+    def __init__(self, region=None):
+        self.revisions = type("R", (), {"enabled": True})()
+
+    def list_revisions(self, profile):
+        return FakeConfigManager.revisions_by_profile.get(profile, [])
+
+    def restore_revision(self, profile, revision, created_by):
+        FakeConfigManager.restored.append((profile, revision))
+
+
+class TestRestoreConfigOperation:
+    @pytest.fixture(autouse=True)
+    def _fakes(self, monkeypatch, planned_dir, aws_credentials):
+        from idp_common.config import configuration_manager
+        from idp_sdk.operations.config import ConfigOperation
+
+        FakeConfigManager.revisions_by_profile, FakeConfigManager.restored = {}, []
+        monkeypatch.setattr(
+            configuration_manager, "ConfigurationManager", FakeConfigManager
+        )
+        monkeypatch.setattr(
+            ConfigOperation, "_configure_config_env", lambda self, name: "t"
+        )
+        self.backup = (
+            planned_dir / tm.MIGRATION_DIR / "configuration-table-backup-1.json"
+        )
+        self.backup.write_text(
+            json.dumps(
+                {
+                    "TableName": "t",
+                    "Items": [config_row("Config#default"), config_row("Config#bda")],
+                }
+            )
+        )
+        self.dir = planned_dir
+
+    def test_a_failed_backfill_is_a_finding_naming_the_backup(self):
+        FakeConfigManager.revisions_by_profile = {
+            "default": [_rev(1, "stack-deployment", published=True)],
+            "bda": [
+                _rev(2, "stack-deployment", published=True),
+                _rev(1, "system", tm.PRE_HISTORY_NOTES),
+            ],
+        }
+        result = migration().restore_config(str(self.dir), apply=True)
+        assert result.ok is False
+        assert len(result.findings) == 1
+        assert "default" in result.findings[0]
+        assert str(self.backup) in result.findings[0]
+        assert not [n for n in result.notes if "nothing to restore" in n]
+        # The other profile's restore is independent of that finding.
+        assert FakeConfigManager.restored == [("bda", 1)]
+
+    def test_a_user_edit_after_the_first_deploy_is_reported_and_left_alone(self):
+        FakeConfigManager.revisions_by_profile = {
+            "default": [
+                _rev(3, "stack-deployment", published=True),
+                _rev(2, "admin@example.com"),
+                _rev(1, "system", tm.PRE_HISTORY_NOTES),
+            ],
+        }
+        result = migration().restore_config(str(self.dir), apply=True)
+        assert result.ok is True and result.applied is False
+        assert FakeConfigManager.restored == []
+        note = next(n for n in result.notes if n.startswith("default:"))
+        assert "revision 2 by admin@example.com" in note and "revision 1" in note
 
 
 def test_the_backup_names_its_profiles():

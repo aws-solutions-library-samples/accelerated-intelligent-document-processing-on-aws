@@ -27,9 +27,8 @@ copies data across, is described at the end as the fallback.
 ## How much of this has been tested
 
 The command has been run end to end against a live deployment of upstream tag
-`v0.6.9-tf.0` (its `examples/unified-processor` configuration) by the repeatable
-test `make stacktest-terraform-migration` (`scripts/sdlc/terraform_migration_test.py`).
-That test deploys upstream, seeds it with two processed documents, two users with
+`v0.6.9-tf.0` (its `examples/unified-processor` configuration) by a repeatable
+live test that is part of release validation. That test deploys upstream, seeds it with two processed documents, two users with
 passwords, a configuration edit, an evaluation baseline and a test set, runs every
 phase below with `--apply`, checks that nothing kept was lost, and destroys both
 deployments. It is still only that one upstream configuration, so rehearse the
@@ -237,7 +236,10 @@ document is in flight. `--wait` polls until none is in flight or awaiting review
 up to `--timeout` seconds (default 1800). A document you have decided to abandon can
 be named with `--ignore-document <object key>` (repeatable, here and on `apply`); it
 is listed but does not block. Without `--apply` the phase only reports the rule and
-the documents.
+the documents. A document's status is read from its `doc#<key>` row with sort key
+`none`; a tracking table holding `doc#` rows none of which has that sort key is
+reported as a finding rather than as having no documents, because the check could not
+read it.
 
 When the old state has no EventBridge rule on the input bucket, `freeze` (and later
 `apply`) fails, because the command then cannot tell what starts the old
@@ -282,7 +284,13 @@ that means this repository's code has already run against the table, so its coun
 are real. Run this phase before the first apply, never after.
 
 To back out: `fix-config --restore <backup file> --apply` writes the backed-up rows
-back.
+back. Once the first apply has run, the new deployment keeps a revision history for
+those profiles (`ConfigRevIndex#<profile>` rows), and writing the old rows back would
+replace whatever has been saved since and put the old counters on rows they no longer
+describe, so `--restore` is refused then. To get a profile's old content back after
+the first apply, use `restore-config` (step 6a); `--restore-after-apply` overrides the
+refusal when you mean to discard the new history, as when going back to the old
+deployment.
 
 ### 5. Adopt the user pool
 
@@ -391,9 +399,14 @@ For each profile in the `fix-config` backup whose published revision was cut by 
 first deploy (`createdBy: stack-deployment`) right after the revision recording what
 the profile held before the migration, this restores that earlier revision as a new
 revision. History is not rewritten: the preset stays in the history, and
-`idp-cli config-revisions` shows both. A profile the deploy did not replace, or that
-someone has changed since, is left alone and listed as such. Without `--apply` it
-lists what it would restore.
+`idp-cli config-revisions` shows both. A profile the deploy did not replace is left
+alone and listed as such. So is a profile with any revision between the pre-migration
+one and the published one that was not cut by `stack-deployment`: that is a change
+someone made on purpose, which a restore would undo, so the phase names the revision,
+who cut it, and the pre-migration revision to restore by hand if wanted. A profile
+that has revisions but no pre-migration one (the first deploy could not record it) is
+a finding naming the `fix-config` backup file, which is then the only copy of the old
+content. Without `--apply` it lists what it would restore.
 
 In the measured run the `default` profile was the one replaced, and a configuration
 edit made on the old deployment was missing from the new one until this phase ran.
@@ -558,7 +571,8 @@ bucket settings, the tracking table's second index, the pool's new attribute, ap
 client and domain), and both states record them. To return to the old deployment
 before step 8: remove the adopted addresses from the new deployment's state with
 `terraform state rm`, so that destroying it leaves them alone; destroy the new
-deployment; restore the configuration rows with `fix-config --restore`; then run
+deployment; restore the configuration rows with `fix-config --restore <backup file>
+--restore-after-apply --apply`; then run
 `terraform apply` in the old deployment's directory, which re-enables the upload rule
 and puts back its settings. This route has not been tested, and the schema attribute
 the new deployment added to the pool stays, because Cognito cannot remove one.

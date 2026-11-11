@@ -17,7 +17,7 @@ import logging
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from idp_sdk.exceptions import IDPConfigurationError
 from idp_sdk.models.terraform import (
@@ -440,6 +440,7 @@ class GenaiIdpTerraformMigration:
         *,
         apply: bool = False,
         restore: Optional[str] = None,
+        restore_after_apply: bool = False,
     ) -> TerraformMigrationStepResult:
         """Remove the revision counters from the old configuration rows.
 
@@ -450,7 +451,10 @@ class GenaiIdpTerraformMigration:
         With ``apply`` every ``Config#`` row is backed up to a file first, then the
         two attributes are removed. Refuses a table that already holds a revision
         index (that history is real). ``restore`` (a backup file) writes the
-        backed-up rows back, with ``apply``.
+        backed-up rows back, with ``apply``. It is refused once the new deployment
+        has recorded a revision history for a backed-up profile (a
+        ``ConfigRevIndex#<profile>`` row, written by the first apply) unless
+        ``restore_after_apply``: see the refusal for why.
         """
         from idp_sdk._core import terraform_deploy as tf
         from idp_sdk._core import terraform_migrate as tm
@@ -474,6 +478,37 @@ class GenaiIdpTerraformMigration:
                 )
             items = backup_data["Items"]
             changes = [f"put back {i['Configuration']['S']}" for i in items]
+            indexed = [
+                profile
+                for profile in tm.backed_up_profiles(backup_data)
+                if "Item"
+                in ddb.get_item(
+                    TableName=table,
+                    Key={"Configuration": {"S": tm.REVISION_INDEX_PREFIX + profile}},
+                    ProjectionExpression="Configuration",
+                )
+            ]
+            if indexed and not restore_after_apply:
+                return TerraformMigrationStepResult(
+                    phase="fix-config",
+                    applied=False,
+                    ok=False,
+                    changes=changes,
+                    findings=[
+                        "the new deployment has already recorded a revision history "
+                        f"for {', '.join(indexed)} ("
+                        + ", ".join(tm.REVISION_INDEX_PREFIX + p for p in indexed)
+                        + "), so the first apply has run. Writing the backup back now "
+                        "would replace each profile's head with the old row, undoing "
+                        "whatever has been saved since, and put the old deployment's "
+                        "LatestRevision and PublishedRevision counters back on rows "
+                        "whose revision history the new deployment now keeps, where "
+                        "they no longer describe it. To get a profile's pre-migration content "
+                        "back after the first apply, run restore-config instead. "
+                        "Pass --restore-after-apply only if you mean to discard the "
+                        "new deployment's configuration history for these profiles"
+                    ],
+                )
             if apply:
                 for item in items:
                     ddb.put_item(TableName=table, Item=tm.item_from_json(item))
@@ -768,24 +803,53 @@ class GenaiIdpTerraformMigration:
             )
         changes: List[str] = []
         notes: List[str] = []
+        findings: List[str] = []
+        restore: List[Tuple[str, int]] = []
         for profile in profiles:
-            revision = tm.overwritten_revision(manager.list_revisions(profile))
-            if revision is None:
+            decision = tm.restore_decision(manager.list_revisions(profile))
+            if decision.outcome == tm.NO_PRE_HISTORY:
+                findings.append(
+                    f"{profile}: the new deployment recorded revisions for this "
+                    "profile but none of what it held before the migration (the "
+                    "first deploy's backfill of the pre-history revision failed), so "
+                    "whether its content was replaced cannot be told from the "
+                    f"history and there is no revision to restore. The old content "
+                    f"is in the fix-config backup {backups[-1]}; compare the "
+                    f"profile's Config#{profile} row there with the current one and "
+                    "put it back by hand if it was replaced"
+                )
+                continue
+            if decision.outcome == tm.EDITED:
+                who = ", ".join(f"revision {n} by {by}" for n, by in decision.edited_by)
+                notes.append(
+                    f"{profile}: left alone, because it was changed after the first "
+                    f"deploy ({who}); its content before the migration is revision "
+                    f"{decision.revision}, which you can restore yourself if that "
+                    "change did not mean to replace it"
+                )
+                continue
+            if decision.outcome != tm.RESTORE or decision.revision is None:
                 notes.append(f"{profile}: content kept; nothing to restore")
                 continue
+            restore.append((profile, decision.revision))
             changes.append(
-                f"restore revision {revision} of {profile} (its content before the "
-                "migration), replacing the module preset the first deploy published"
+                f"restore revision {decision.revision} of {profile} (its content "
+                "before the migration), replacing the module preset the first "
+                "deploy published"
             )
-            if apply:
+        # A finding is about one profile and cannot be cleared by a re-run (the
+        # backfill does not happen twice), so it does not hold back the others.
+        if apply:
+            for profile, revision in restore:
                 manager.restore_revision(
                     profile, revision, created_by="genai-idp-terraform-migration"
                 )
         return TerraformMigrationStepResult(
             phase="restore-config",
-            applied=apply and bool(changes),
-            ok=True,
+            applied=apply and bool(restore),
+            ok=not findings,
             changes=changes,
+            findings=findings,
             notes=notes,
         )
 
