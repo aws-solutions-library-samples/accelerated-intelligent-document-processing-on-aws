@@ -11,6 +11,7 @@ an allowed one to a listed host, so a hook that refused everything fails here.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -200,6 +201,31 @@ def test_lookalike_paths_are_allowed(command: str) -> None:
         "ncat --proxy proxy.remote.example:3128 github.com 443",
         "nc -x proxy.remote.example:1080 github.com 443",
         "curl -- https://remote.example",
+        "wget --backups https://remote.example/x",
+        "curl --doh-url https://doh.remote.example/q https://github.com",
+        "curl --alt-svc altsvc https://github.com",
+        "curl --dns-servers 203.0.113.5 https://github.com",
+        "curl --proxy1.0 proxy.remote.example:3128 https://github.com",
+        "curl --socks5 proxy.remote.example:1080 https://github.com",
+        "curl --variable h=remote.example --expand-url '{{h}}'",
+        "curl https://github.com -x",
+        "curl -4xproxy.remote.example:3128 https://github.com",
+        "curl -#xproxy.remote.example:3128 https://github.com",
+        "nc -4xproxy.remote.example:1080 github.com 443",
+        "wget --header 'Host: remote.example' https://github.com",
+        "ncat -g remote.example github.com 443",
+        "wget -e httpsproxy=proxy.remote.example https://github.com",
+        "wget -e https-proxy=proxy.remote.example https://github.com",
+        "wget -e h_t_t_p_proxy=proxy.remote.example https://github.com",
+        "wget -e HTTPS_PROXY=proxy.remote.example https://github.com",
+        "wget -4ehttp_proxy=proxy.remote.example https://github.com",
+        "wget --exec https_proxy=proxy.remote.example https://github.com",
+        "wget --execu=https_proxy=proxy.remote.example https://github.com",
+        "wget --execute https_proxy=proxy.remote.example https://github.com",
+        "wget --conf rcfile https://github.com",
+        "wget -e input=urls.txt",
+        "CURL_HOME=. curl https://github.com",
+        "WGETRC=./rc wget https://github.com",
     ],
 )
 def test_a_fetch_to_an_unlisted_host_is_refused(command: str) -> None:
@@ -241,6 +267,8 @@ def test_a_fetch_to_an_unlisted_host_is_refused(command: str) -> None:
         "wget -e use_proxy=off https://github.com",
         "nc -zv localhost 8080",
         "nc -w 5 localhost 8080",
+        "wget --backups=2 https://pypi.org/simple/",
+        "wget -O out.whl --tries=3 https://files.pythonhosted.org/x.whl",
     ],
 )
 def test_a_fetch_to_a_listed_host_is_allowed(command: str) -> None:
@@ -367,41 +395,51 @@ def test_only_the_origin_host_is_added_to_the_pinned_set(tmp_path: Path) -> None
         assert added == expected, (url, added)
 
 
+#: An option and, when it takes one, its value placeholder, as each tool's help
+#: prints them: curl 8 writes ``<value>``, curl 7 also writes ``[proto://]host``,
+#: wget writes ``--opt=VALUE``.
+_HELP_LINE = {
+    "curl": re.compile(r"^\s*(?:(-\w), )?(--[\w.-]+)(\s+(?:<[^>]+>|\[\S+))?"),
+    "wget": re.compile(r"^\s*(?:(-\w),\s+)?(--[\w.-]+)(=\S+|\[=\S+)?"),
+}
+
+
 @pytest.mark.parametrize(
-    ("tool", "argv", "pattern", "constant"),
+    ("tool", "argv", "constant"),
     [
-        (
-            "curl",
-            ["--help", "all"],
-            r"\s*(?:(-\w), )?(--[\w-]+)\s+<[^>]+>",
-            "CURL_VALUE_OPTIONS",
-        ),
-        ("wget", ["--help"], r"\s*(?:(-\w),\s+)?(--[\w-]+)=\S+", "WGET_VALUE_OPTIONS"),
+        ("curl", ["--help", "all"], "CURL_VALUE_OPTIONS"),
+        ("wget", ["--help"], "WGET_VALUE_OPTIONS"),
     ],
 )
-def test_each_option_table_matches_the_tool(
-    tool: str, argv: list[str], pattern: str, constant: str
+def test_no_table_entry_is_a_flag_in_the_installed_tool(
+    tool: str, argv: list[str], constant: str
 ) -> None:
-    """Derived from the tool's own help where it is installed, so a table that
-    drifts from the real option set fails here rather than misreading commands."""
-    import re
+    """Checked against the installed tool's own help, whatever its version.
+
+    The harmful direction is one: a table entry the tool reads as a FLAG makes the
+    hook skip the word after it, which may be the URL. An option the installed
+    version does not have at all (a newer curl's) is harmless, and so is a missing
+    entry, which can only make a value be checked as a host. So this asserts the
+    first and nothing else, which is what lets it pass on the CI image's older
+    curl as well as on a newer one.
+    """
     import shutil
 
     binary = shutil.which(tool)
     if binary is None:
-        pytest.skip(f"{tool} is not installed here; the table cannot be re-derived")
+        pytest.skip(f"{tool} is not installed here; the table cannot be checked")
     out = subprocess.run(  # noqa: S603 - fixed argv
         [binary, *argv], capture_output=True, text=True, check=False
     ).stdout
-    derived = set()
+    flags: set[str] = set()
+    valued: set[str] = set()
     for line in out.splitlines():
-        found = re.match(pattern, line)
+        found = _HELP_LINE[tool].match(line)
         if found:
-            derived.update(group for group in found.groups() if group)
-    assert len(derived) > 50, f"{tool} --help yielded {len(derived)} options"
+            names = {found.group(1), found.group(2)} - {None}
+            (valued if found.group(3) else flags).update(names)
+    flags -= valued  # a short letter shared by a flag and a valued option
+    assert len(valued) > 50 and len(flags) > 50, (len(valued), len(flags))
     table = getattr(_hook_module(), constant)
-    assert table == derived, (
-        f"{constant} differs from {tool}'s own options that take a value: "
-        f"missing {sorted(derived - table)}, extra {sorted(table - derived)}. An "
-        "extra entry is the harmful direction: it makes a flag swallow the host."
-    )
+    wrong = sorted(table & flags)
+    assert not wrong, f"{constant} lists options {tool} reads as flags: {wrong}"

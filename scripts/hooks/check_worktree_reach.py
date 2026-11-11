@@ -204,12 +204,12 @@ VALUE_OPTIONS: dict[str, frozenset[str]] = {
 DESTINATION_OPTIONS: dict[str, frozenset[str]] = {
     "curl": frozenset({
         "-x", "--proxy", "--preproxy", "--url", "--socks4", "--socks4a",
-        "--socks5", "--socks5-hostname",
+        "--socks5", "--socks5-hostname", "--proxy1.0", "--doh-url",
     }),
     "wget": frozenset(),
     "nc": frozenset({"-x"}),
     "netcat": frozenset({"-x"}),
-    "ncat": frozenset({"--proxy"}),
+    "ncat": frozenset({"--proxy", "-g"}),
 }  # fmt: skip
 
 #: Per tool, the options that redirect the connection in a form this hook does
@@ -217,7 +217,16 @@ DESTINATION_OPTIONS: dict[str, frozenset[str]] = {
 #: read the URLs from a file (curl's ``-K`` config, which can hold ``url =``
 #: lines; wget's ``-i`` list and ``--config``). A fetch carrying one is refused.
 UNREADABLE_OPTIONS: dict[str, frozenset[str]] = {
-    "curl": frozenset({"--connect-to", "--resolve", "-K", "--config"}),
+    "curl": frozenset(
+        {
+            "--connect-to",
+            "--resolve",
+            "-K",
+            "--config",
+            "--alt-svc",
+            "--dns-servers",
+        }
+    ),
     "wget": frozenset({"-i", "--input-file", "--config"}),
     "nc": frozenset(),
     "netcat": frozenset(),
@@ -225,8 +234,27 @@ UNREADABLE_OPTIONS: dict[str, frozenset[str]] = {
 }
 
 #: wget ``-e`` settings that name a proxy, and the one that turns on proxies taken
-#: from the environment, which this hook cannot see.
-WGET_PROXY_SETTINGS = frozenset({"http_proxy", "https_proxy", "ftp_proxy"})
+#: from the environment, which this hook cannot see. wget ignores ``-`` and
+#: ``_`` in a setting's name and its case, so names are compared that way.
+WGET_PROXY_SETTINGS = frozenset({"httpproxy", "httpsproxy", "ftpproxy"})
+
+#: Variables that point curl or wget at a configuration file this hook never sees.
+CONFIG_VARIABLES = frozenset({"CURL_HOME", "WGETRC", "SYSTEM_WGETRC"})
+
+#: Tools whose long options getopt_long reads, which accepts any unambiguous
+#: prefix (``wget --exec`` is ``--execute``), and whose long options take a value
+#: only when it is attached with ``=``: wget's help cannot tell an optional value
+#: (``--backups``) from a required one, and reading the next word as a value would
+#: skip a URL, so a separate word is always read as an argument. That can refuse
+#: ``wget --output-document file <url>``; write ``-O file`` instead.
+GETOPT_LONG = frozenset({"wget", "ncat"})
+
+#: The long options of those tools whose value is required, by their manuals, so
+#: a separate word after one is its value: wget's ``--execute``, ``--config``,
+#: ``--input-file`` and ``--header``, ncat's ``--proxy``.
+REQUIRED_LONG_VALUES = frozenset(
+    {"--execute", "--config", "--input-file", "--header", "--proxy"}
+)
 
 #: Commands that run a later word as the command, so ``sudo curl`` and
 #: ``xargs curl`` run curl, with the options of each that take a separate value.
@@ -376,6 +404,8 @@ def _command_word(tokens: list[str]) -> tuple[str, list[str]] | None:
         if assigned:
             if PROXY_VARIABLE.match(assigned.group(1)):
                 proxies += ["-x", assigned.group(2)]
+            elif assigned.group(1) in CONFIG_VARIABLES:
+                proxies.append("$" + assigned.group(1))  # read as unreadable
             index += 1
         elif token in SHELL_KEYWORDS:
             index += 1
@@ -413,7 +443,7 @@ def _short_cluster(token: str, takes_value: frozenset[str]) -> tuple[str, str] |
     """For a short-option cluster such as ``-sSLx`` or ``-xhttp://p``, the first
     option in it that takes a value for this tool, and the value attached after
     it (empty when the value is the next word)."""
-    if not re.match(r"^-[A-Za-z]", token) or token.startswith("--"):
+    if not re.match(r"^-[A-Za-z0-9#]", token) or token.startswith("--"):
         return None
     for position, letter in enumerate(token[1:], start=1):
         if f"-{letter}" in takes_value:
@@ -421,15 +451,25 @@ def _short_cluster(token: str, takes_value: frozenset[str]) -> tuple[str, str] |
     return None
 
 
+def _resolve_prefix(option: str, known: frozenset[str] | set[str]) -> str:
+    """``option``, or the one known long option it is an unambiguous prefix of."""
+    if option in known or len(option) < 4:
+        return option
+    matches = [candidate for candidate in known if candidate.startswith(option)]
+    return matches[0] if len(matches) == 1 else option
+
+
 def _wget_setting(value: str) -> str | None:
     """The host a wget ``-e key=value`` setting sends traffic to, ``"?"`` for one
     this hook cannot read, or ``None`` for a setting that changes neither."""
     key, _, setting = value.partition("=")
-    key = key.strip().lower()
+    key = re.sub(r"[-_\s]", "", key).lower()
+    setting = setting.strip()
     if key in WGET_PROXY_SETTINGS:
-        setting = setting.strip()
         return _host(setting) or _host(f"http://{setting}") or "?"
-    if key == "use_proxy" and setting.strip().lower() in AFFIRMATIVE:
+    if key == "useproxy" and setting.lower() in AFFIRMATIVE:
+        return "?"
+    if key == "input":  # the same as -i: URLs read from a file
         return "?"
     return None
 
@@ -468,7 +508,7 @@ def _fetch_hosts(tokens: list[str]) -> tuple[str, list[str]] | None:
             hosts.append("?")
         elif option in destination:
             hosts.append(_host(value) or _host(f"http://{value}") or "?")
-        elif name == "curl" and option in ("-H", "--header"):
+        elif option in ("-H", "--header"):
             if value.lower().startswith("host:"):
                 hosts.append("?")
         elif name == "wget" and option in ("-e", "--execute"):
@@ -483,13 +523,17 @@ def _fetch_hosts(tokens: list[str]) -> tuple[str, list[str]] | None:
             pending = ""
         elif token.startswith("--"):
             option, equals, inline = token.partition("=")
-            if option in takes_value or option in unreadable or option in destination:
+            if name in GETOPT_LONG:
+                option = _resolve_prefix(
+                    option, unreadable | destination | {"--execute"}
+                )
+            if name == "curl" and option.startswith("--expand-"):
+                hosts.append("?")  # curl 8.3+: a value built from --variable
+            elif option in takes_value or option in unreadable or option in destination:
                 if equals:
                     option_value(option, inline)
-                else:
+                elif name not in GETOPT_LONG or option in REQUIRED_LONG_VALUES:
                     pending = option
-            elif option in unreadable:
-                hosts.append("?")
         elif token.startswith("-") and token != "-":
             cluster = _short_cluster(token, takes_value | unreadable | destination)
             if cluster:
