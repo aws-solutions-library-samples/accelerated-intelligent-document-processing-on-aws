@@ -636,6 +636,16 @@ integration_tests:
   #     no Terraform run happens. It holds the same resource_group as the
   #     CloudFormation nightly, so the two serialise; schedule it to start after
   #     the nightly normally finishes (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
+  #   - the weekly Terraform-migration schedule  → auto, and NOT the primary suite:
+  #     the build runs scripts/sdlc/terraform_migration_test.py instead, which
+  #     deploys a pinned awslabs/genai-idp-terraform release, migrates it in place
+  #     onto the module the build published, verifies and destroys both. The
+  #     schedule carries IDP_RUN_TERRAFORM_MIGRATION=true, honoured on a schedule
+  #     only (terraform_migration_requested) and refused beside IDP_RUN_PROBES,
+  #     IDP_TEST_REGION or IDP_IAC=terraform. Like the others it is inactive until
+  #     the schedule is created, and holds the same resource_group. ⚠️ Under the
+  #     run's TFDeployRole the upstream deploy is refused today (upstream's IAM
+  #     roles carry no permissions boundary); see CI_TEST_COVERAGE.md.
   #   - any MR targeting develop                 → MANUAL button on the MR page
   #   - push to develop                          → MANUAL button on the pipeline
   #   - anything else                            → never
@@ -1019,6 +1029,14 @@ integration_tests:
           status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
       if terraform_run:
           status = "🧱 NIGHTLY TERRAFORM RUN · " + status
+      # The weekly Terraform-migration run, read the same way as the build reads it
+      # (terraform_migration_requested in integration_test_deployment.py).
+      migration_run = (
+          os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+          and os.environ.get("IDP_RUN_TERRAFORM_MIGRATION", "").strip().lower() == "true"
+      )
+      if migration_run:
+          status = "🔀 WEEKLY TERRAFORM MIGRATION RUN · " + status
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
@@ -2076,6 +2094,14 @@ nightly_notification:
           )
           if terraform_run:
               status = "🧱 NIGHTLY TERRAFORM RUN · " + status
+          # And the weekly Terraform-migration run, read exactly as the post in
+          # integration_tests reads it.
+          migration_run = (
+              os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+              and os.environ.get("IDP_RUN_TERRAFORM_MIGRATION", "").strip().lower() == "true"
+          )
+          if migration_run:
+              status = "🔀 WEEKLY TERRAFORM MIGRATION RUN · " + status
 
           # Same flat, all-string contract as the post in integration_tests: these
           # four keys are declared on the Slack Workflow Builder trigger as Text, and
@@ -2173,6 +2199,8 @@ ai_ux_test_stories_nightly:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_TEST_REGION
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_IAC =~ /^\s*terraform\s*$/i
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_TERRAFORM_MIGRATION =~ /^\s*true\s*$/i
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "develop"
       when: always

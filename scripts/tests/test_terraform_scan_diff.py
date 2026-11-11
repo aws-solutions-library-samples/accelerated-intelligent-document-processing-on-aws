@@ -204,14 +204,44 @@ def test_a_relative_cache_dir_gives_an_absolute_checkov(gate, tmp_path, monkeypa
     scans run from other directories; a relative executable failed the second
     scan with FileNotFoundError."""
     monkeypatch.chdir(tmp_path)
-    venv = Path(".cache/idp-terraform-check/checkov-9.9.9")
+    venv = gate.checkov_venv("9.9.9", Path(".cache/idp-terraform-check"))
     (venv / "bin").mkdir(parents=True)
     (venv / "bin" / "checkov").write_text("")
     (venv / ".installed").write_text("9.9.9")
     exe = gate.checkov_binary("9.9.9", Path(".cache/idp-terraform-check"))
     assert exe.is_absolute()
-    assert exe == (tmp_path / venv / "bin" / "checkov")
+    assert exe == venv / "bin" / "checkov"
     elsewhere = tmp_path / "module"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
     assert exe.is_file()
+
+
+def test_a_checkov_venv_built_on_another_architecture_is_never_reused(
+    gate, tmp_path, monkeypatch
+):
+    """CI runners of both architectures share one cache entry, and a venv from the
+    other one fails with Exec format error, so each platform gets its own."""
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(gate.platform, "machine", lambda: "x86_64")
+    amd = gate.checkov_venv("9.9.9", cache)
+    (amd / "bin").mkdir(parents=True)
+    (amd / "bin" / "checkov").write_text("")
+    (amd / ".installed").write_text("9.9.9")
+    assert gate.checkov_binary("9.9.9", cache) == amd / "bin" / "checkov"
+
+    monkeypatch.setattr(gate.platform, "machine", lambda: "aarch64")
+    arm = gate.checkov_venv("9.9.9", cache)
+    assert arm != amd
+    installed = []
+
+    def fake_run(argv, **kwargs):
+        installed.append(argv)
+        if argv[1:3] == ["-m", "venv"]:
+            Path(argv[3]).mkdir(parents=True)
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    exe = gate.checkov_binary("9.9.9", cache)
+    assert exe == arm / "bin" / "checkov"
+    assert installed and str(arm) in installed[0]
+    assert (amd / "bin" / "checkov").is_file()

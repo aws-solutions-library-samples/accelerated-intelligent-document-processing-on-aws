@@ -108,7 +108,9 @@ _KNOWN_UNPRESERVED_HEAD_WRITERS: Dict[Tuple[str, str], str] = {
 # of it unnoticed.
 # 6: ConfigurationManager._restore_head (#1778) puts back the head a failed
 # revision replaced, re-reading _PRESERVED_HEAD_FIELDS as _write_record does.
-_EXPECTED_HEAD_WRITE_SITES = 6
+# 7: the Terraform migration's `fix-config --restore` puts back the backed-up
+# rows, keeping the current values of the fields other writers own.
+_EXPECTED_HEAD_WRITE_SITES = 7
 _MIN_METADATA_LISTS = 3
 
 

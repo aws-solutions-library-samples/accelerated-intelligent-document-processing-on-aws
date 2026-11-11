@@ -59,6 +59,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -78,6 +79,21 @@ class GateError(Exception):
 
 
 # ------------------------------------------------------------------ checkov
+def checkov_venv(version: str, cache: Path) -> Path:
+    """The virtualenv ``checkov`` at ``version`` lives in, for this platform.
+
+    Keyed by operating system, CPU architecture and Python version: CI runners of
+    both architectures share one cache entry, and a virtualenv holds
+    interpreter-specific binaries, so one built on another runner fails to start
+    (``Exec format error``).
+    """
+    tag = (
+        f"{platform.system().lower()}-{platform.machine().lower()}"
+        f"-py{sys.version_info.major}{sys.version_info.minor}"
+    )
+    return cache.resolve() / f"checkov-{version}-{tag}"
+
+
 def checkov_binary(version: str, cache: Path) -> Path:
     """``checkov`` at exactly ``version``, installed once into ``cache``.
 
@@ -85,7 +101,7 @@ def checkov_binary(version: str, cache: Path) -> Path:
     (``.cache/idp-terraform-check`` on GitHub), and checkov is then run from
     other working directories, where a relative executable path names nothing.
     """
-    venv = cache.resolve() / f"checkov-{version}"
+    venv = checkov_venv(version, cache)
     exe = venv / "bin" / "checkov"
     marker = venv / ".installed"
     if exe.is_file() and marker.is_file() and marker.read_text() == version:
