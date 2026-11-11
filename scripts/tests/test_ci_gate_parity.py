@@ -145,7 +145,7 @@ GATE_SECTION_PREFIXES = (
 #: justification really is a property of every member: no target in "Stack tests" is a
 #: gate a pull-request run could hold. Members fall into three kinds:
 #:
-#: * most deploy or talk to a live IDP stack, as the section heading says;
+#: * most deploy or talk to a live stack, as the section heading says;
 #: * ``live-auth-checks`` and ``stacktest-sandbox-network`` need no stack, but they
 #:   need live AWS credentials and create throwaway AWS resources of their own;
 #: * ``stacktest-list``, ``transform-deploy-test-list``, ``stacktest-upgrade`` and

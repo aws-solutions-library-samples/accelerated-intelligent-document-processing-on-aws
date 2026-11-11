@@ -489,19 +489,31 @@ def test_an_empty_metadata_token_is_not_reachable(monkeypatch, capsys):
 
 
 def _botocore_credential_env_names():
+    """Every environment variable botocore's credential chain reads.
+
+    Static keys and container credentials come from their providers; web
+    identity from its provider's mapping; profile and file selection from the
+    session variables. ``AWS_ROLE_SESSION_NAME`` is left out: it names a
+    session and grants nothing on its own.
+    """
     import botocore.credentials as bc
+    from botocore.configprovider import BOTOCORE_DEFAUT_SESSION_VARIABLES as session
 
     names = {bc.EnvProvider.ACCESS_KEY, bc.EnvProvider.SECRET_KEY}
     names |= set(bc.EnvProvider.TOKENS)
     names |= {bc.ContainerProvider.ENV_VAR, bc.ContainerProvider.ENV_VAR_FULL}
     names.add(bc.ContainerProvider.ENV_VAR_AUTH_TOKEN)
+    web = bc.AssumeRoleWithWebIdentityProvider._CONFIG_TO_ENV_VAR
+    names |= {web["web_identity_token_file"], web["role_arn"]}
+    names |= set(session["profile"][1])
+    names |= {session["credentials_file"][1], session["config_file"][1]}
     return sorted(names)
 
 
-def test_credential_env_names_cover_botocore_providers():
+def test_credential_env_names_are_botocores_credential_chain():
     names = _botocore_credential_env_names()
-    assert names
-    assert set(names) <= set(snp.CREDENTIAL_ENV_NAMES)
+    assert len(names) >= 10
+    assert set(names) == set(snp.CREDENTIAL_ENV_NAMES)
 
 
 @pytest.mark.parametrize("name", snp.CREDENTIAL_ENV_NAMES)
@@ -525,13 +537,14 @@ def test_a_credential_file_under_home_is_detected(
     assert "SECRETEXAMPLE" not in out
 
 
+@pytest.mark.parametrize("variable", ["AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE"])
 def test_a_credential_file_named_by_the_environment_is_detected(
-    monkeypatch, capsys, tmp_path
+    monkeypatch, capsys, tmp_path, variable
 ):
     f = tmp_path / "elsewhere"
     f.write_text("x")
     parsed = snp.parse_session_output(
-        _run_program(monkeypatch, capsys, env={"AWS_SHARED_CREDENTIALS_FILE": str(f)})
+        _run_program(monkeypatch, capsys, env={variable: str(f)})
     )
     assert parsed["creds_files"]["ok"] is True
 
