@@ -153,6 +153,68 @@ def emit_json(payload: Any) -> None:
     )
 
 
+def _build_terraform_module_from_local_code(
+    from_code_dir: str,
+    region: str,
+    *,
+    headless: bool = False,
+    govcloud: bool = False,
+    bucket_basename: Optional[str] = None,
+    prefix: Optional[str] = None,
+    public: bool = False,
+    max_workers: Optional[int] = None,
+    clean_build: bool = False,
+    no_validate: bool = False,
+) -> str:
+    """Build and publish the templates from a local checkout, translate them to
+    a Terraform module (`idp-cli publish --terraform`), and return the module
+    URL for `idp-cli deploy --terraform`.
+
+    With `headless` or `govcloud`, that variant's module is returned. A build
+    that publishes no module for the requested variant is refused, never
+    replaced by the standard module.
+    """
+    console.print(
+        "[bold cyan]Building project and Terraform module from source...[/bold cyan]"
+    )
+    console.print(f"[dim]Source: {from_code_dir}[/dim]")
+    console.print(f"[dim]Region: {region}[/dim]")
+    console.print()
+    client = IDPClient(region=region)
+    result = client.publish.build(
+        source_dir=from_code_dir,
+        bucket=bucket_basename,
+        prefix=prefix,
+        region=region,
+        headless=headless,
+        govcloud=govcloud,
+        public=public,
+        max_workers=max_workers,
+        clean_build=clean_build,
+        no_validate=no_validate,
+        terraform=True,
+    )
+    if not result.success:
+        console.print(f"[red]✗ Build failed: {result.error}[/red]")
+        sys.exit(1)
+    variant = "govcloud" if govcloud else ("headless" if headless else None)
+    if variant:
+        module_url = (
+            (result.terraform_variant_modules or {}).get(variant, {}).get("moduleUrl")
+        )
+    else:
+        module_url = result.terraform_module_url
+    if not module_url:
+        label = f"{variant} " if variant else ""
+        console.print(
+            f"[red]✗ Error: the build published no {label}Terraform module.[/red]"
+        )
+        sys.exit(1)
+    console.print(f"[green]✓ Terraform module: {module_url}[/green]")
+    console.print()
+    return module_url
+
+
 def _build_from_local_code(
     from_code_dir: str,
     region: str,
@@ -700,7 +762,7 @@ def cli():
 @click.option(
     "--from-code",
     type=click.Path(exists=True, file_okay=False, dir_okay=True),
-    help="Deploy from local code by building with publish.py (path to project root)",
+    help="Deploy from local code by building with publish.py (path to project root). With --terraform, also publishes the Terraform module from that checkout and deploys it",
 )
 @click.option(
     "--template-url",
@@ -926,10 +988,52 @@ def deploy(
 
       # Deploy with Terraform (root configuration in ./idp-terraform/my-idp)
       idp-cli deploy --terraform --stack-name my-idp --admin-email user@example.com
+
+      # Build and deploy with Terraform from a local checkout
+      idp-cli deploy --terraform --from-code . --stack-name my-idp --admin-email user@example.com
     """
     if terraform:
+        if from_code and terraform_module_url:
+            console.print(
+                "[red]✗ Error: --from-code builds and publishes its own Terraform "
+                "module; do not also pass --terraform-module-url.[/red]"
+            )
+            sys.exit(1)
+        if from_code:
+            build_region = region
+            if not build_region:
+                import boto3
+
+                build_region = boto3.session.Session().region_name  # type: ignore
+                if not build_region:
+                    console.print(
+                        "[red]✗ Error: Region could not be determined. Please specify "
+                        "--region or configure AWS_DEFAULT_REGION.[/red]"
+                    )
+                    sys.exit(1)
+            if headless and govcloud:
+                console.print(
+                    "[red]✗ Error: --headless and --govcloud are mutually exclusive. "
+                    "Each selects its own Terraform module.[/red]"
+                )
+                sys.exit(1)
+            terraform_module_url = _build_terraform_module_from_local_code(
+                from_code,
+                build_region,
+                headless=headless,
+                govcloud=govcloud,
+                bucket_basename=bucket_basename,
+                prefix=prefix,
+                public=public,
+                max_workers=build_max_workers,
+                clean_build=clean_build,
+                no_validate=no_validate_template,
+            )
+            region = build_region
+            # The build already chose the variant's module, which is what these
+            # flags otherwise select; passing both would read as a conflict.
+            headless = govcloud = False
         ignored = {
-            "--from-code": from_code,
             "--template-url": template_url,
             "--template-file": template_file,
             "--custom-config": custom_config,
