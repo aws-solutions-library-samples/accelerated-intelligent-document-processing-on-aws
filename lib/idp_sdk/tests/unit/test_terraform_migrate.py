@@ -35,6 +35,9 @@ FIXTURES = Path(__file__).parent / "fixtures" / "genai_idp_terraform"
 REGION = "us-west-2"
 POOL = "us-west-2_EXAMPLE01"
 ADMIN = "admin@example.com"
+KEY_ID = "1234abcd-12ab-34cd-56ef-1234567890ab"
+# Built, not written out, so no tool reads it as a real ARN.
+ROLE_ARN = "arn:aws:iam::" + "1" * 12 + ":role/idp-terraform-deployer"
 
 SPIKE_IMPORTS = {
     "module.idp.aws_s3_bucket.input_bucket": "oldidp-input-i2pfi4o2",
@@ -111,6 +114,26 @@ def build(state=None, **kwargs):
     kwargs.setdefault("admin_email", ADMIN)
     kwargs.setdefault("user_lookup", admin_exists)
     return tm.build_plan(state or old_state(), module(), **kwargs)
+
+
+def kept_bucket_names(plan):
+    """Every bucket the plan keeps and checks: adopted, and named by parameter."""
+    return [b["bucket"] for b in plan.adopted_buckets] + [
+        r.physical_id for r in plan.resources if r.verdict == tm.ADOPT_BY_PARAMETER
+    ]
+
+
+def module_copy(tmp_path, append="", replace=()):
+    """A copy of the fixture module with ``append`` added to main.tf and each
+    (old, new) in ``replace`` applied to it."""
+    root = tmp_path / "module-copy"
+    shutil.copytree(FIXTURES / "module", root)
+    text = (root / "main.tf").read_text()
+    for old, new in replace:
+        assert old in text, old
+        text = text.replace(old, new)
+    (root / "main.tf").write_text(text + append)
+    return tm.ModuleSource.read(root)
 
 
 def add_resource(state, tf_type, name, attributes, module_path=None):
@@ -368,6 +391,145 @@ class TestPlan:
         again = tm.MigrationPlan.from_json(json.loads(json.dumps(plan.to_json())))
         assert again.to_json() == plan.to_json()
 
+    def test_the_plan_records_the_old_states_lineage(self):
+        plan = build()
+        assert (plan.old_lineage, plan.old_serial) == (
+            "00000000-0000-0000-0000-00000000abcd",
+            42,
+        )
+
+    def test_a_state_without_a_lineage_is_refused(self):
+        state = old_state()
+        del state["lineage"]
+        with pytest.raises(IDPConfigurationError, match="no lineage"):
+            build(state)
+
+
+def verdict_of(state, address):
+    return {r.old_address: r for r in build(state).resources}[address]
+
+
+class TestTypeClassification:
+    """Every old-state type is classified; an unclassified one is refused."""
+
+    def test_every_type_in_the_live_state_is_classified(self):
+        handled = (
+            tm.STATEFUL_TYPES
+            | tm.RECREATE_SAFE_TYPES
+            | tm.POOL_SETTING_TYPES
+            | tm.POOL_MEMBER_TYPES
+            | tm.BDA_MEMBER_TYPES
+            | set(tm.TABLE_SETTING_TYPES)
+            | set(tm.KEY_SETTING_TYPES)
+            | {"aws_kms_alias", "aws_lambda_invocation"}
+        )
+        types = {r["type"] for r in old_state()["resources"]}
+        assert [
+            t
+            for t in sorted(types)
+            if t not in handled and not tm._is_bucket_setting(t)
+        ] == []
+
+    def test_a_type_in_neither_list_is_refused_naming_it(self):
+        state = add_resource(old_state(), "aws_mystery_store", "x", {"id": "m"})
+        with pytest.raises(
+            IDPConfigurationError, match=r"resource type aws_mystery_store is not one"
+        ):
+            build(state)
+
+    @pytest.mark.parametrize(
+        "tf_type,attrs",
+        [
+            (
+                "aws_dynamodb_table_replica",
+                {"global_table_arn": "t", "id": "idp-tracking-table-mr68w2wl:eu"},
+            ),
+            ("aws_backup_vault", {"name": "vault", "id": "vault"}),
+            ("aws_kms_replica_key", {"key_id": "mrk-1", "id": "mrk-1"}),
+        ],
+    )
+    def test_a_stateful_type_with_no_verdict_is_refused(self, tf_type, attrs):
+        state = add_resource(old_state(), tf_type, "probe", attrs)
+        with pytest.raises(IDPConfigurationError, match=f"{tf_type}.probe.*holds data"):
+            build(state)
+
+    @pytest.mark.parametrize(
+        "tf_type",
+        ["aws_vpc", "aws_cloudformation_stack", "aws_security_group"],
+    )
+    def test_types_needing_a_decision_are_refused(self, tf_type):
+        state = add_resource(old_state(), tf_type, "probe", {"id": "p"})
+        with pytest.raises(IDPConfigurationError, match=f"resource type {tf_type}"):
+            build(state)
+
+    def test_a_ui_customization_on_the_adopted_pool_is_detached(self):
+        state = add_resource(
+            old_state(),
+            "aws_cognito_user_pool_ui_customization",
+            "ui",
+            {"user_pool_id": POOL, "client_id": "ALL", "id": POOL},
+        )
+        ui = verdict_of(state, "aws_cognito_user_pool_ui_customization.ui")
+        assert (ui.verdict, ui.detach) == (tm.SETTING, True)
+        assert (
+            "aws_cognito_user_pool_ui_customization.ui" in build(state).detach_addresses
+        )
+
+    def test_a_pool_setting_that_names_no_pool_is_refused(self):
+        state = add_resource(
+            old_state(), "aws_cognito_user_pool_ui_customization", "ui", {"id": "x"}
+        )
+        with pytest.raises(IDPConfigurationError, match="which user pool"):
+            build(state)
+
+    @pytest.mark.parametrize("scope", ["CRUD", None])
+    def test_an_invocation_that_runs_on_destroy_is_detached(self, scope):
+        attrs = {"function_name": "oldidp-bda-ocr-project", "id": "f,$LATEST,x"}
+        if scope:
+            attrs["lifecycle_scope"] = scope
+        state = add_resource(old_state(), "aws_lambda_invocation", "ocr", attrs)
+        inv = verdict_of(state, "aws_lambda_invocation.ocr")
+        assert (inv.verdict, inv.detach) == (tm.KEEP_UNMANAGED, True)
+        assert "delete action" in inv.note
+
+    def test_a_create_only_invocation_is_destroyed_with_the_old_deployment(self):
+        seeder = next(
+            r for r in build().resources if r.old_type == "aws_lambda_invocation"
+        )
+        assert (seeder.verdict, seeder.detach) == (tm.RECREATE, False)
+
+    def test_the_adopted_keys_alias_is_detached(self):
+        alias = verdict_of(old_state(), "aws_kms_alias.encryption_key")
+        assert (alias.verdict, alias.detach) == (tm.KEEP_UNMANAGED, True)
+
+    def test_an_alias_of_another_key_is_destroyed(self):
+        state = add_resource(
+            old_state(),
+            "aws_kms_alias",
+            "other",
+            {"name": "alias/o", "target_key_id": "arn:aws:kms:r:a:key/other"},
+        )
+        assert verdict_of(state, "aws_kms_alias.other").detach is False
+
+    def test_an_alias_whose_key_is_not_recorded_is_refused(self):
+        state = add_resource(old_state(), "aws_kms_alias", "other", {"name": "alias/o"})
+        with pytest.raises(IDPConfigurationError, match="which KMS key"):
+            build(state)
+
+    def test_a_bucket_setting_that_names_no_bucket_is_refused(self):
+        state = add_resource(
+            old_state(), "aws_s3_bucket_policy", "orphan", {"id": "x", "policy": "{}"}
+        )
+        with pytest.raises(IDPConfigurationError, match="which bucket"):
+            build(state)
+
+    def test_a_blueprint_is_kept_with_the_bda_project(self):
+        state = add_resource(
+            old_state(), "awscc_bedrock_blueprint", "w2", {"blueprint_arn": "b"}
+        )
+        bp = verdict_of(state, "awscc_bedrock_blueprint.w2")
+        assert (bp.verdict, bp.detach) == (tm.KEEP_UNMANAGED, True)
+
 
 # ---------------------------------------------------------------------------
 # retention
@@ -380,48 +542,52 @@ class TestRetention:
         with mock_aws():
             self.s3 = boto3.client("s3", region_name=REGION)
             self.plan = build()
-            for b in self.plan.adopted_buckets:
+            for name in kept_bucket_names(self.plan):
                 self.s3.create_bucket(
-                    Bucket=b["bucket"],
+                    Bucket=name,
                     CreateBucketConfiguration={"LocationConstraint": REGION},
                 )
             self.s3.put_object(Bucket="oldidp-input-i2pfi4o2", Key="old.pdf", Body=b"x")
             yield
 
-    def check(self, values=None, accept=(), days_later=400):
+    def check(self, values=None, accept=(), days_later=400, mod=None):
         now = datetime.now(timezone.utc) + timedelta(days=days_later)
         return tm.check_retention(
-            self.plan, module(), values or {}, self.s3, accept_expiry=accept, now=now
+            self.plan,
+            mod or module(),
+            values or {},
+            self.s3,
+            accept_expiry=accept,
+            now=now,
         )
 
+    def row(self, rows, kind):
+        return next(r for r in rows if r["kind"] == kind)
+
     def test_an_object_older_than_the_expiry_is_a_finding(self):
-        rows, findings = self.check()
+        rows, findings, _ = self.check()
         assert (
             len(findings) == 1 and "input_bucket oldidp-input-i2pfi4o2" in findings[0]
         )
         assert "data_retention_in_days" in findings[0]
-        row = next(r for r in rows if r["kind"] == "input_bucket")
+        row = self.row(rows, "input_bucket")
         assert (row["expiryDays"], row["ok"]) == (365, False)
 
     def test_a_longer_retention_parameter_clears_it(self):
-        _, findings = self.check(values={"data_retention_in_days": 500})
+        _, findings, _ = self.check(values={"data_retention_in_days": 500})
         assert findings == []
 
     def test_younger_objects_are_fine(self):
-        _, findings = self.check(days_later=10)
+        _, findings, _ = self.check(days_later=10)
         assert findings == []
 
     def test_accept_expiry_clears_one_kind(self):
-        rows, findings = self.check(accept=("input_bucket",))
-        assert (
-            findings == []
-            and "accepted"
-            in next(r for r in rows if r["kind"] == "input_bucket")["note"]
-        )
+        rows, findings, _ = self.check(accept=("input_bucket",))
+        assert findings == [] and "accepted" in self.row(rows, "input_bucket")["note"]
 
     def test_a_fixed_rule_says_so(self):
         self.s3.put_object(Bucket="oldidp-bf1fipnn-logs", Key="log", Body=b"x")
-        _, findings = self.check(values={"data_retention_in_days": 500})
+        _, findings, _ = self.check(values={"data_retention_in_days": 500})
         assert (
             len(findings) == 1
             and "fixed in the module" in findings[0]
@@ -429,10 +595,183 @@ class TestRetention:
         )
 
     def test_the_working_bucket_uses_log_retention(self):
-        rows, _ = self.check(values={"log_retention_days": 14})
-        assert (
-            next(r for r in rows if r["kind"] == "working_bucket")["expiryDays"] == 14
+        rows, _, _ = self.check(values={"log_retention_days": 14})
+        assert self.row(rows, "working_bucket")["expiryDays"] == 14
+
+    def test_the_result_says_what_was_not_checked(self):
+        rows, _, notes = self.check(days_later=10)
+        assert notes == [f"Not checked: {line}" for line in tm.RETENTION_LIMITS]
+        row = self.row(rows, "input_bucket")
+        assert row["checked"][0].startswith("current objects (ListObjectsV2)")
+        assert row["checked"][1] == (
+            "noncurrent versions: none, the bucket has never been versioned"
         )
+
+    def test_an_expiry_it_cannot_evaluate_is_a_finding(self, tmp_path):
+        mod = module_copy(
+            tmp_path,
+            replace=[
+                (
+                    "bucket = aws_s3_bucket.output_bucket.id\n  rule {\n"
+                    "    expiration {\n      days = var.data_retention_in_days",
+                    "bucket = aws_s3_bucket.output_bucket.id\n  rule {\n"
+                    "    expiration {\n      days = local.output_days",
+                )
+            ],
+        )
+        rows, findings, _ = self.check(days_later=10, mod=mod)
+        assert len(findings) == 1
+        assert "output_bucket oldidp-output-i2pfi4o2" in findings[0]
+        assert "`local.output_days`" in findings[0]
+        assert "--accept-expiry output_bucket" in findings[0]
+        assert self.row(rows, "output_bucket")["ok"] is False
+        _, findings, _ = self.check(days_later=10, mod=mod, accept=("output_bucket",))
+        assert findings == []
+
+    def test_an_expiration_with_no_days_is_a_finding(self, tmp_path):
+        mod = module_copy(
+            tmp_path,
+            replace=[
+                (
+                    "bucket = aws_s3_bucket.output_bucket.id\n  rule {\n"
+                    "    expiration {\n      days = var.data_retention_in_days",
+                    "bucket = aws_s3_bucket.output_bucket.id\n  rule {\n"
+                    '    expiration {\n      date = "2027-01-01T00:00:00Z"',
+                )
+            ],
+        )
+        _, findings, _ = self.check(days_later=10, mod=mod)
+        assert len(findings) == 1 and "no `days`" in findings[0]
+
+    def test_a_lifecycle_whose_bucket_it_cannot_resolve_is_a_finding(self, tmp_path):
+        mod = module_copy(
+            tmp_path,
+            append=(
+                'resource "aws_s3_bucket_lifecycle_configuration" "mystery" {\n'
+                "  bucket = local.some_bucket\n"
+                "  rule {\n    expiration {\n      days = 1\n    }\n  }\n}\n"
+            ),
+        )
+        _, findings, _ = self.check(days_later=10, mod=mod)
+        assert findings == [
+            "aws_s3_bucket_lifecycle_configuration.mystery: its bucket is "
+            "`local.some_bucket`, which this command cannot resolve to a bucket, so "
+            "it may put an expiry rule on a kept one; nothing about it was checked"
+        ]
+
+    def test_a_submodule_rule_on_an_adopted_bucket_counts(self, tmp_path):
+        mod_root = tmp_path / "module-copy"
+        shutil.copytree(FIXTURES / "module", mod_root)
+        main = mod_root / "main.tf"
+        main.write_text(
+            main.read_text().replace(
+                'source = "./modules/apiresolverstack"',
+                'source = "./modules/apiresolverstack"\n'
+                "  input_bucket_name = aws_s3_bucket.input_bucket.id",
+            )
+        )
+        sub = mod_root / "modules" / "apiresolverstack" / "main.tf"
+        sub.write_text(
+            sub.read_text()
+            + 'resource "aws_s3_bucket_lifecycle_configuration" "nested" {\n'
+            "  bucket = var.input_bucket_name\n"
+            "  rule {\n    expiration {\n      days = 5\n    }\n  }\n}\n"
+        )
+        rows, findings, _ = self.check(
+            days_later=10, mod=tm.ModuleSource.read(mod_root)
+        )
+        assert self.row(rows, "input_bucket")["expiryDays"] == 5
+        assert len(findings) == 1 and "expires objects after 5 days" in findings[0]
+
+    def test_a_module_call_it_cannot_read_is_a_finding(self, tmp_path):
+        mod = module_copy(
+            tmp_path,
+            append='module "remote" {\n  source = "example/remote/aws"\n}\n',
+        )
+        _, findings, _ = self.check(days_later=10, mod=mod)
+        assert findings == [
+            "module call remote has no local source this command can read, so a "
+            "lifecycle rule inside it could target a kept bucket unseen"
+        ]
+
+    def test_an_inline_lifecycle_rule_is_a_finding(self, tmp_path):
+        mod = module_copy(
+            tmp_path,
+            replace=[
+                (
+                    'resource "aws_s3_bucket" "output_bucket" {\n',
+                    'resource "aws_s3_bucket" "output_bucket" {\n'
+                    "  lifecycle_rule {\n    enabled = true\n  }\n",
+                )
+            ],
+        )
+        _, findings, _ = self.check(days_later=10, mod=mod)
+        assert len(findings) == 1 and "inline `lifecycle_rule`" in findings[0]
+
+    def test_a_bucket_kept_by_parameter_is_checked_too(self, tmp_path):
+        mod = module_copy(
+            tmp_path,
+            append=(
+                'resource "aws_s3_bucket_lifecycle_configuration" "by_name" {\n'
+                "  bucket = var.reporting_bucket_name\n"
+                "  rule {\n    expiration {\n      days = 3\n    }\n  }\n}\n"
+            ),
+        )
+        self.s3.put_object(Bucket="oldidp-reporting-i2pfi4o2", Key="r", Body=b"x")
+        rows, findings, _ = self.check(
+            days_later=10,
+            mod=mod,
+            values={"reporting_bucket_name": "oldidp-reporting-i2pfi4o2"},
+        )
+        assert self.row(rows, "reporting_bucket")["expiryDays"] == 3
+        assert len(findings) == 1 and "reporting_bucket" in findings[0]
+
+    def test_an_old_noncurrent_version_is_a_finding(self, tmp_path):
+        mod = module_copy(
+            tmp_path,
+            replace=[
+                (
+                    "bucket = aws_s3_bucket.output_bucket.id\n  rule {\n"
+                    "    expiration {\n      days = var.data_retention_in_days\n"
+                    "    }\n    noncurrent_version_expiration {\n"
+                    "      noncurrent_days = var.data_retention_in_days",
+                    "bucket = aws_s3_bucket.output_bucket.id\n  rule {\n"
+                    "    expiration {\n      days = var.data_retention_in_days\n"
+                    "    }\n    noncurrent_version_expiration {\n"
+                    "      noncurrent_days = 7",
+                )
+            ],
+        )
+        bucket = "oldidp-output-i2pfi4o2"
+        self.s3.put_bucket_versioning(
+            Bucket=bucket, VersioningConfiguration={"Status": "Enabled"}
+        )
+        self.s3.put_object(Bucket=bucket, Key="r.json", Body=b"1")
+        self.s3.put_object(Bucket=bucket, Key="r.json", Body=b"2")
+        rows, findings, _ = self.check(days_later=10, mod=mod)
+        row = self.row(rows, "output_bucket")
+        # S3 dates to the second, so ten days and a fraction rounds up
+        assert row["noncurrentExpiryDays"] == 7
+        assert row["oldestNoncurrentAgeDays"] in (10, 11)
+        assert len(findings) == 1 and "noncurrent object version" in findings[0]
+        assert "versioning Enabled" in row["checked"][1]
+        # the current objects alone are fine (10 days, 365-day rule)
+        assert row["expiryDays"] == 365 and row["oldestObjectAgeDays"] in (10, 11)
+
+    def test_a_delete_marker_dates_the_version_it_hides(self):
+        s3 = boto3.client("s3", region_name=REGION)
+        s3.create_bucket(
+            Bucket="versions-probe",
+            CreateBucketConfiguration={"LocationConstraint": REGION},
+        )
+        s3.put_bucket_versioning(
+            Bucket="versions-probe", VersioningConfiguration={"Status": "Enabled"}
+        )
+        s3.put_object(Bucket="versions-probe", Key="k", Body=b"1")
+        assert tm.oldest_noncurrent(s3, "versions-probe") is None
+        s3.delete_object(Bucket="versions-probe", Key="k")
+        marker = s3.list_object_versions(Bucket="versions-probe")["DeleteMarkers"][0]
+        assert tm.oldest_noncurrent(s3, "versions-probe") == marker["LastModified"]
 
 
 # ---------------------------------------------------------------------------
@@ -492,13 +831,18 @@ def fake_tf(monkeypatch):
     return FakeRunner
 
 
+def write_planned_dir(directory, plan=None, role_arn=None):
+    mdir = directory / tm.MIGRATION_DIR
+    mdir.mkdir(parents=True, exist_ok=True)
+    (mdir / tm.PLAN_FILE).write_text(json.dumps((plan or build()).to_json()))
+    (directory / "main.tf").write_text(tf.render_provider_blocks(REGION, role_arn))
+
+
 @pytest.fixture
 def planned_dir(tmp_path):
     """A new deployment's directory as the `plan` phase leaves it."""
     directory = tmp_path / "idp-terraform" / "newidp"
-    mdir = directory / tm.MIGRATION_DIR
-    mdir.mkdir(parents=True)
-    (mdir / tm.PLAN_FILE).write_text(json.dumps(build().to_json()))
+    write_planned_dir(directory)
     mod = directory / ".terraform" / "modules"
     mod.mkdir(parents=True)
     (mod / "modules.json").write_text(
@@ -604,7 +948,69 @@ class TestFreeze:
             str(planned_dir), apply=True, wait=True, poll_seconds=0, timeout_seconds=5
         )
         assert result.ok is True and result.details["inFlightCount"] == 0
-        assert any("in flight; waiting" in n for n in result.notes)
+        assert any("in flight" in n and "waiting" in n for n in result.notes)
+
+    @pytest.mark.parametrize(
+        "status",
+        ["REJECTED", "REDACTED_SUPERSEDED", "QUARANTINED", "MALWARE_SCAN_FAILED"],
+    )
+    def test_every_terminal_status_is_finished(self, planned_dir, status):
+        doc(self.ddb, "a.pdf", status)
+        result = migration().freeze(str(planned_dir), apply=True)
+        assert result.ok is True and result.findings == []
+
+    def test_a_document_awaiting_review_is_reported_on_its_own(self, planned_dir):
+        doc(self.ddb, "r.pdf", "HITL_IN_PROGRESS")
+        result = migration().freeze(str(planned_dir), apply=True)
+        assert result.ok is False
+        assert result.details["inReview"] == [
+            {"key": "r.pdf", "status": "HITL_IN_PROGRESS"}
+        ]
+        assert result.details["inFlightCount"] == 0
+        assert "waiting for human review" in result.findings[0]
+
+    def test_an_ignored_document_does_not_block(self, planned_dir):
+        doc(self.ddb, "a.pdf", "EXTRACTING")
+        doc(self.ddb, "r.pdf", "HITL_IN_PROGRESS")
+        result = migration().freeze(
+            str(planned_dir), apply=True, ignore_documents=["a.pdf", "r.pdf"]
+        )
+        assert result.ok is True
+        assert {d["key"] for d in result.details["ignored"]} == {"a.pdf", "r.pdf"}
+
+    def test_no_upload_rule_in_the_old_state_is_a_finding(self, tmp_path):
+        plan = build()
+        plan.upload_rules = []
+        directory = tmp_path / "d"
+        write_planned_dir(directory, plan)
+        result = migration().freeze(str(directory), apply=True)
+        assert result.findings == [tm.NO_UPLOAD_RULE]
+
+
+class PagedTable:
+    """A scan that answers in pages of one item, as a large table does."""
+
+    def __init__(self, items):
+        self.items = items
+        self.calls = 0
+
+    def scan(self, **kwargs):
+        self.calls += 1
+        i = int((kwargs.get("ExclusiveStartKey") or {}).get("i", 0))
+        resp = {"Items": self.items[i : i + 1]}
+        if i + 1 < len(self.items):
+            resp["LastEvaluatedKey"] = {"i": i + 1}
+        return resp
+
+
+def test_the_document_scan_reads_every_page():
+    items = [
+        {"PK": {"S": f"doc#{n}.pdf"}, "ObjectStatus": {"S": "OCR"}} for n in range(1500)
+    ]
+    table = PagedTable(items)
+    scan = tm.scan_documents("t", table)
+    assert len(scan.in_flight) == 1500 and scan.scanned == 1500
+    assert table.calls == 1500
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +1077,20 @@ class TestFixConfig:
         migration().fix_config(str(planned_dir), apply=True, restore=backup)
         assert self.row("Config#default")["LatestRevision"] == {"N": "3"}
 
+    def test_restore_refuses_a_backup_of_another_table(
+        self, planned_dir, aws_credentials, tmp_path
+    ):
+        other = tmp_path / "other-backup.json"
+        other.write_text(
+            json.dumps({"TableName": "someone-elses-table", "Items": [config_row("x")]})
+        )
+        with pytest.raises(IDPConfigurationError, match="someone-elses-table"):
+            migration().fix_config(str(planned_dir), apply=True, restore=str(other))
+        assert "x" not in [
+            i["Configuration"]["S"]
+            for i in tm.scan_all(self.ddb, "idp-configuration-table-mr68w2wl")
+        ]
+
     def test_a_table_with_a_revision_history_is_refused(
         self, planned_dir, aws_credentials
     ):
@@ -725,6 +1145,63 @@ class TestPoolSchema:
             before, rc["change"]["after"]["schema"]
         )
         assert len(conflicts) == 1 and "ExternalIdPEmailMutable" in conflicts[0]
+
+    @pytest.mark.parametrize(
+        "pool_bounds,module_bounds",
+        [
+            ([{"max_length": "256", "min_length": "0"}], []),
+            ([{"max_length": "2048", "min_length": "5"}], []),
+            (
+                [{"max_length": "2048", "min_length": "0"}],
+                [{"max_length": "100", "min_length": None}],
+            ),
+        ],
+    )
+    def test_a_real_bound_difference_is_a_conflict(self, pool_bounds, module_bounds):
+        rc = spike_pool_change()
+        before = json.loads(json.dumps(rc["change"]["before"]["schema"]))
+        after = json.loads(json.dumps(rc["change"]["after"]["schema"]))
+        before[0]["string_attribute_constraints"] = pool_bounds
+        after[0]["string_attribute_constraints"] = module_bounds
+        _, changes, conflicts = tm.normalise_pool_schema(before, after)
+        assert len(conflicts) == 1 and "string_attribute_constraints" in conflicts[0]
+        assert not any(c.startswith("rewrite 'email'") for c in changes)
+
+    @pytest.mark.parametrize(
+        "pool_bounds,module_bounds",
+        [
+            ([{"max_length": "2048", "min_length": "0"}], None),
+            ([{"max_length": "256", "min_length": "0"}], [{"max_length": "256"}]),
+            (
+                [{"max_length": "256", "min_length": ""}],
+                [{"max_length": "256", "min_length": None}],
+            ),
+        ],
+    )
+    def test_null_empty_and_default_bounds_are_only_normalised(
+        self, pool_bounds, module_bounds
+    ):
+        rc = spike_pool_change()
+        before = json.loads(json.dumps(rc["change"]["before"]["schema"]))
+        after = json.loads(json.dumps(rc["change"]["after"]["schema"]))
+        before[0]["string_attribute_constraints"] = pool_bounds
+        after[0]["string_attribute_constraints"] = module_bounds
+        _, _, conflicts = tm.normalise_pool_schema(before, after)
+        assert conflicts == []
+
+    def test_a_number_bound_difference_is_a_conflict(self):
+        before = [
+            {
+                "name": "custom:n",
+                "attribute_data_type": "Number",
+                "mutable": True,
+                "required": False,
+                "number_attribute_constraints": [{"min_value": "1", "max_value": "9"}],
+            }
+        ]
+        after = [dict(before[0], number_attribute_constraints=[])]
+        _, _, conflicts = tm.normalise_pool_schema(before, after)
+        assert len(conflicts) == 1 and "min_value" in conflicts[0]
 
     def test_an_attribute_the_module_does_not_declare_is_dropped_from_state(self):
         rc = spike_pool_change()
@@ -820,11 +1297,64 @@ class TestAdoptUserPoolOperation:
 # ---------------------------------------------------------------------------
 
 
+# What each adopted type's before and after carry in a clean plan: every attribute
+# a REFUSED_CHANGES row reads, at a value no row refuses.
+SAFE_ATTRIBUTES = {
+    "aws_s3_bucket": {"force_destroy": False},
+    "aws_dynamodb_table": {
+        "point_in_time_recovery": [{"enabled": True}],
+        "deletion_protection_enabled": False,
+        "global_secondary_index": [{"name": "gsi1"}],
+        "local_secondary_index": [],
+        "stream_enabled": False,
+        "ttl": [{"enabled": False, "attribute_name": ""}],
+        "server_side_encryption": [{"enabled": True, "kms_key_arn": "k"}],
+    },
+    "awscc_kms_key": {
+        "enable_key_rotation": True,
+        "enabled": True,
+        "pending_window_in_days": None,
+    },
+    "aws_cognito_user_pool": {
+        "deletion_protection": "ACTIVE",
+        "mfa_configuration": "OFF",
+        "lambda_config": [{"pre_token_generation": "arn-old"}],
+    },
+    "aws_cognito_user": {"enabled": True},
+}
+
+# The settings resources a clean plan creates on each adopted bucket.
+SAFE_SETTINGS = {
+    "aws_s3_bucket_versioning": {"versioning_configuration": [{"status": "Enabled"}]},
+    "aws_s3_bucket_server_side_encryption_configuration": {
+        "rule": [
+            {
+                "apply_server_side_encryption_by_default": [
+                    {"sse_algorithm": "aws:kms", "kms_master_key_id": "arn-of-key"}
+                ]
+            }
+        ]
+    },
+    "aws_s3_bucket_public_access_block": {
+        "block_public_acls": True,
+        "block_public_policy": True,
+        "ignore_public_acls": True,
+        "restrict_public_buckets": True,
+    },
+}
+
+
 def clean_adoption_plan(plan):
     """A plan JSON in which every planned import is imported in place."""
     rcs = []
     for r in plan.imports:
-        change = {"actions": ["update"], "before": {}, "after": {}}
+        tf_type = tm._resource_type(r.new_address)
+        safe = SAFE_ATTRIBUTES.get(tf_type, {})
+        change = {
+            "actions": ["update"],
+            "before": json.loads(json.dumps(safe)),
+            "after": json.loads(json.dumps(safe)),
+        }
         if r.import_in_adopt_tf:
             change["importing"] = {"id": r.import_id}
         else:
@@ -832,39 +1362,79 @@ def clean_adoption_plan(plan):
                 tm._module_created_form(i)
                 for i in spike_pool_change()["change"]["after"]["schema"][:1]
             ]
-            change["before"] = {"schema": normal}
-            change["after"] = {
-                "schema": spike_pool_change()["change"]["after"]["schema"]
+            change["before"]["schema"] = normal
+            change["after"]["schema"] = spike_pool_change()["change"]["after"]["schema"]
+            change["after"]["lambda_config"] = [{"pre_token_generation": None}]
+            change["after_unknown"] = {
+                "lambda_config": [{"pre_token_generation": True}]
             }
-        rcs.append({"address": r.new_address, "type": "x", "change": change})
+        rcs.append({"address": r.new_address, "type": tf_type, "change": change})
+    for b in plan.adopted_buckets:
+        for tf_type, attrs in SAFE_SETTINGS.items():
+            rcs.append(
+                {
+                    "address": f"module.idp.{tf_type}.{b['resource']}",
+                    "type": tf_type,
+                    "change": {
+                        "actions": ["create"],
+                        "before": None,
+                        "after": {
+                            "bucket": b["bucket"],
+                            **json.loads(json.dumps(attrs)),
+                        },
+                    },
+                }
+            )
     rcs.append(
         {
             "address": "module.idp.aws_sqs_queue.q",
-            "type": "x",
+            "type": "aws_sqs_queue",
             "change": {"actions": ["create"]},
         }
     )
     return {"resource_changes": rcs}
 
 
+def change_at(pj, suffix):
+    return next(rc for rc in pj["resource_changes"] if rc["address"].endswith(suffix))[
+        "change"
+    ]
+
+
 class TestAdoptionPlanCheck:
     def test_the_live_single_pass_plan_is_refused_for_the_pool(self):
         spike = json.loads((FIXTURES / "adopt_plan.json").read_text())
-        counts, findings = tm.check_adoption_plan(spike, build())
+        counts, findings, _ = tm.check_adoption_plan(spike, build())
         assert counts["import"] == 17 and counts["destroy"] == 0
         assert any("run `adopt-user-pool` first" in f for f in findings)
         assert any("modify or remove existing schema items" in f for f in findings)
 
     def test_a_clean_plan_passes(self):
         plan = build()
-        counts, findings = tm.check_adoption_plan(clean_adoption_plan(plan), plan)
+        counts, findings, review = tm.check_adoption_plan(
+            clean_adoption_plan(plan), plan
+        )
         assert findings == []
+        settings = len(plan.adopted_buckets) * len(SAFE_SETTINGS)
         assert counts == {
             "import": len(plan.imports) - 1,
-            "add": 1,
+            "add": 1 + settings,
             "change": len(plan.imports),
             "destroy": 0,
         }
+        # every setting created on a kept bucket is listed for the operator
+        assert sum("created on kept bucket" in r for r in review) == settings
+
+    def test_an_allowed_in_place_change_is_listed_for_review(self):
+        plan = build()
+        pj = clean_adoption_plan(plan)
+        change_at(pj, "tracking_table")["after"]["billing_mode"] = "PROVISIONED"
+        _, findings, review = tm.check_adoption_plan(pj, plan)
+        assert findings == []
+        assert (
+            "module.idp.aws_dynamodb_table.tracking_table: changes billing_mode"
+            in review
+        )
 
     def test_any_destroy_is_refused(self):
         plan = build()
@@ -876,35 +1446,33 @@ class TestAdoptionPlanCheck:
                 "change": {"actions": ["delete"]},
             }
         )
-        _, findings = tm.check_adoption_plan(pj, plan)
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
         assert findings == [
             "module.idp.aws_x.y would be destroyed; an adoption destroys nothing, so stop and find out why"
         ]
 
+    def test_a_forget_is_refused(self):
+        plan = build()
+        pj = clean_adoption_plan(plan)
+        change_at(pj, "users_table")["actions"] = ["forget"]
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
+        assert any("users_table would be forgotten" in f for f in findings)
+
     def test_a_replaced_adopted_resource_is_refused(self):
         plan = build()
         pj = clean_adoption_plan(plan)
-        rc = next(
-            rc
-            for rc in pj["resource_changes"]
-            if rc["address"].endswith("tracking_table")
-        )
-        rc["change"]["actions"] = ["delete", "create"]
-        _, findings = tm.check_adoption_plan(pj, plan)
+        change_at(pj, "tracking_table")["actions"] = ["delete", "create"]
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
         assert any("tracking_table would be replaced" in f for f in findings)
         assert any("tracking_table plans ['delete', 'create']" in f for f in findings)
 
     def test_a_create_instead_of_an_import_is_refused(self):
         plan = build()
         pj = clean_adoption_plan(plan)
-        rc = next(
-            rc
-            for rc in pj["resource_changes"]
-            if rc["address"].endswith("input_bucket")
-        )
-        del rc["change"]["importing"]
-        rc["change"]["actions"] = ["create"]
-        _, findings = tm.check_adoption_plan(pj, plan)
+        change = change_at(pj, "input_bucket")
+        del change["importing"]
+        change["actions"] = ["create"]
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
         assert any(
             "input_bucket is in the plan but not as an import" in f for f in findings
         )
@@ -912,12 +1480,214 @@ class TestAdoptionPlanCheck:
     def test_a_wrong_import_id_is_refused(self):
         plan = build()
         pj = clean_adoption_plan(plan)
-        rc = next(
-            rc for rc in pj["resource_changes"] if rc["address"].endswith("users_table")
-        )
-        rc["change"]["importing"]["id"] = "other"
-        _, findings = tm.check_adoption_plan(pj, plan)
+        change_at(pj, "users_table")["importing"]["id"] = "other"
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
         assert any("imports 'other'" in f for f in findings)
+
+    # One case per REFUSED_CHANGES row: (address suffix, attribute, before, after,
+    # rule). `before` None means the case edits only `after`.
+    REFUSAL_CASES = [
+        (
+            "tracking_table",
+            "point_in_time_recovery",
+            None,
+            [{"enabled": False}],
+            "pitr-off",
+        ),
+        (
+            "tracking_table",
+            "deletion_protection_enabled",
+            True,
+            False,
+            "table-deletion-protection-off",
+        ),
+        ("tracking_table", "global_secondary_index", None, [], "gsi-removed"),
+        ("tracking_table", "local_secondary_index", [{"name": "l"}], [], "lsi-removed"),
+        ("tracking_table", "stream_enabled", True, False, "stream-off"),
+        (
+            "tracking_table",
+            "ttl",
+            [{"enabled": True, "attribute_name": "expiresAfter"}],
+            [{"enabled": True, "attribute_name": "ExpiresAfter"}],
+            "ttl-changed",
+        ),
+        (
+            "tracking_table",
+            "server_side_encryption",
+            None,
+            [{"enabled": False, "kms_key_arn": ""}],
+            "table-encryption-removed",
+        ),
+        (
+            "aws_s3_bucket.input_bucket",
+            "force_destroy",
+            None,
+            True,
+            "bucket-force-destroy-on",
+        ),
+        (
+            "user_pool",
+            "deletion_protection",
+            None,
+            "INACTIVE",
+            "pool-deletion-protection-off",
+        ),
+        ("user_pool", "mfa_configuration", "ON", "OPTIONAL", "pool-mfa-relaxed"),
+        ("user_pool", "lambda_config", None, [], "pool-trigger-removed"),
+        ("user_pool", "schema", None, [], "pool-schema-item-removed"),
+        (
+            "customer_managed_encryption_key",
+            "enable_key_rotation",
+            None,
+            False,
+            "key-rotation-off",
+        ),
+        ("customer_managed_encryption_key", "enabled", None, False, "key-disabled"),
+        (
+            "customer_managed_encryption_key",
+            "pending_window_in_days",
+            30,
+            7,
+            "key-deletion-window-shortened",
+        ),
+        ("aws_cognito_user.admin_user", "enabled", None, False, "user-disabled"),
+    ]
+
+    @pytest.mark.parametrize(
+        "suffix,attr,before,after,rule",
+        REFUSAL_CASES,
+        ids=[c[4] for c in REFUSAL_CASES],
+    )
+    def test_a_refused_transition_on_an_adopted_resource(
+        self, suffix, attr, before, after, rule
+    ):
+        plan = build()
+        pj = clean_adoption_plan(plan)
+        change = change_at(pj, suffix)
+        if before is not None:
+            change["before"][attr] = before
+        change["after"][attr] = after
+        change.pop("after_unknown", None)
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
+        address = next(
+            rc["address"]
+            for rc in pj["resource_changes"]
+            if rc["address"].endswith(suffix)
+        )
+        flag = f"--accept-change {address}:{rule}"
+        assert [f for f in findings if flag in f], findings
+        # and the flag it names clears exactly that finding
+        _, again, review = tm.check_adoption_plan(pj, plan, [f"{address}:{rule}"])
+        assert not [f for f in again if flag in f]
+        assert any(r.startswith(address) and "(accepted)" in r for r in review)
+
+    SETTING_CASES = [
+        (
+            "aws_s3_bucket_versioning",
+            "versioning_configuration",
+            [{"status": "Suspended"}],
+            "versioning-suspended",
+        ),
+        (
+            "aws_s3_bucket_server_side_encryption_configuration",
+            "rule",
+            [
+                {
+                    "apply_server_side_encryption_by_default": [
+                        {"sse_algorithm": "AES256", "kms_master_key_id": ""}
+                    ]
+                }
+            ],
+            "bucket-encryption-key-removed",
+        ),
+        *(
+            (
+                "aws_s3_bucket_public_access_block",
+                attr,
+                False,
+                f"public-access-{attr.replace('_', '-')}-off",
+            )
+            for attr in (
+                "block_public_acls",
+                "block_public_policy",
+                "ignore_public_acls",
+                "restrict_public_buckets",
+            )
+        ),
+    ]
+
+    @pytest.mark.parametrize(
+        "tf_type,attr,after,rule", SETTING_CASES, ids=[c[3] for c in SETTING_CASES]
+    )
+    def test_a_refused_setting_created_on_a_kept_bucket(
+        self, tf_type, attr, after, rule
+    ):
+        plan = build()
+        pj = clean_adoption_plan(plan)
+        change_at(pj, f"{tf_type}.input_bucket")["after"][attr] = after
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
+        assert [
+            f
+            for f in findings
+            if f"--accept-change module.idp.{tf_type}.input_bucket:{rule}" in f
+        ], findings
+
+    def test_an_updated_setting_on_a_kept_bucket_is_checked(self):
+        plan = build()
+        pj = clean_adoption_plan(plan)
+        change = change_at(pj, "aws_s3_bucket_versioning.input_bucket")
+        change["actions"] = ["update"]
+        change["before"] = {
+            "bucket": "oldidp-input-i2pfi4o2",
+            "versioning_configuration": [{"status": "Enabled"}],
+        }
+        change["after"]["versioning_configuration"] = [{"status": "Suspended"}]
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
+        assert any("suspends versioning" in f for f in findings)
+
+    def test_a_setting_on_a_new_bucket_is_not_checked(self):
+        plan = build()
+        pj = clean_adoption_plan(plan)
+        pj["resource_changes"].append(
+            {
+                "address": "module.idp.aws_s3_bucket_versioning.web",
+                "type": "aws_s3_bucket_versioning",
+                "change": {
+                    "actions": ["create"],
+                    "before": None,
+                    "after": {"versioning_configuration": [{"status": "Suspended"}]},
+                    "after_unknown": {"bucket": True},
+                },
+            }
+        )
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
+        assert findings == []
+
+    def test_an_attribute_the_plan_does_not_record_is_a_finding(self):
+        plan = build()
+        pj = clean_adoption_plan(plan)
+        del change_at(pj, "tracking_table")["before"]["point_in_time_recovery"]
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
+        assert findings == [
+            "module.idp.aws_dynamodb_table.tracking_table: the plan does not record "
+            "`point_in_time_recovery`, so this command cannot see whether the apply "
+            "turns point-in-time recovery off"
+        ]
+
+    def test_an_unknown_trigger_is_a_replacement_not_a_removal(self):
+        plan = build()
+        pj = clean_adoption_plan(plan)
+        # the clean plan already replaces the pre-token trigger with an unknown ARN
+        assert change_at(pj, "user_pool")["after_unknown"]["lambda_config"]
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
+        assert findings == []
+
+    def test_every_row_has_a_case(self):
+        rules = {row.rule for row in tm.REFUSED_CHANGES}
+        cased = {c[4] for c in self.REFUSAL_CASES} | {c[3] for c in self.SETTING_CASES}
+        assert rules <= cased
+        # one row per rule, so a case per rule is a case per row
+        assert len(rules) == len(tm.REFUSED_CHANGES)
 
 
 class TestApplyOperation:
@@ -928,9 +1698,9 @@ class TestApplyOperation:
             self.ddb = boto3.client("dynamodb", region_name=REGION)
             self.s3 = boto3.client("s3", region_name=REGION)
             tracking_and_config_tables(self.ddb)
-            for b in build().adopted_buckets:
+            for name in kept_bucket_names(build()):
                 self.s3.create_bucket(
-                    Bucket=b["bucket"],
+                    Bucket=name,
                     CreateBucketConfiguration={"LocationConstraint": REGION},
                 )
             yield
@@ -956,8 +1726,9 @@ class TestApplyOperation:
         fake_tf.plan_json = clean_adoption_plan(build())
         result = migration().apply(str(planned_dir), apply=True)
         assert (result.ok, result.applied) == (True, True)
-        assert result.changes[0].startswith("Plan: 22 to import, 1 to add")
+        assert result.changes[0].startswith("Plan: 22 to import, ")
         assert [c[0] for c in fake_tf.calls] == ["plan", "apply"]
+        assert result.details["review"]
 
     def test_a_dry_run_plans_but_does_not_apply(
         self, fake_tf, planned_dir, aws_credentials
@@ -968,19 +1739,72 @@ class TestApplyOperation:
         assert (result.ok, result.applied) == (True, False)
         assert [c[0] for c in fake_tf.calls] == ["plan"]
 
+    def test_a_document_in_flight_blocks_unless_ignored(
+        self, fake_tf, planned_dir, aws_credentials
+    ):
+        upload_rule(self.events, "DISABLED")
+        doc(self.ddb, "a.pdf", "CLASSIFYING")
+        doc(self.ddb, "r.pdf", "HITL_IN_PROGRESS")
+        fake_tf.plan_json = clean_adoption_plan(build())
+        result = migration().apply(str(planned_dir), apply=True)
+        assert result.applied is False
+        assert any("still being processed" in f for f in result.findings)
+        assert any("waiting for human review" in f for f in result.findings)
+        result = migration().apply(
+            str(planned_dir), apply=True, ignore_documents=["a.pdf", "r.pdf"]
+        )
+        assert (result.ok, result.applied) == (True, True)
+
+    def test_no_upload_rule_blocks_the_apply_as_it_blocks_freeze(
+        self, fake_tf, tmp_path, aws_credentials
+    ):
+        plan = build()
+        plan.upload_rules = []
+        directory = tmp_path / "d"
+        write_planned_dir(directory, plan)
+        mod = directory / ".terraform" / "modules"
+        mod.mkdir(parents=True)
+        (mod / "modules.json").write_text(
+            json.dumps({"Modules": [{"Key": "idp", "Dir": str(FIXTURES / "module")}]})
+        )
+        fake_tf.plan_json = clean_adoption_plan(plan)
+        result = migration().apply(str(directory), apply=True)
+        assert tm.NO_UPLOAD_RULE in result.findings and result.applied is False
+
+    def test_a_refused_change_is_applied_only_when_accepted(
+        self, fake_tf, planned_dir, aws_credentials
+    ):
+        upload_rule(self.events, "DISABLED")
+        pj = clean_adoption_plan(build())
+        change_at(pj, "tracking_table")["after"]["stream_enabled"] = False
+        change_at(pj, "tracking_table")["before"]["stream_enabled"] = True
+        fake_tf.plan_json = pj
+        result = migration().apply(str(planned_dir), apply=True)
+        assert result.applied is False
+        key = "module.idp.aws_dynamodb_table.tracking_table:stream-off"
+        result = migration().apply(str(planned_dir), apply=True, accept_changes=[key])
+        assert result.applied is True
+
 
 # ---------------------------------------------------------------------------
 # detach and the old destroy plan
 # ---------------------------------------------------------------------------
 
+LINEAGE = "00000000-0000-0000-0000-00000000abcd"
+
 
 class TestDetach:
+    def old_dir(self, tmp_path, fake_tf, addresses, lineage=LINEAGE):
+        old = (tmp_path / "old").resolve()
+        old.mkdir()
+        fake_tf.state_lists[old] = addresses
+        fake_tf.pulled[old] = {"version": 4, "serial": 9, "lineage": lineage}
+        return old
+
     def test_refused_until_the_new_state_holds_the_adopted_resources(
         self, fake_tf, planned_dir, tmp_path
     ):
-        old = tmp_path / "old"
-        old.mkdir()
-        fake_tf.state_lists[old.resolve()] = SPIKE_DETACHED
+        old = self.old_dir(tmp_path, fake_tf, SPIKE_DETACHED)
         result = migration().detach(str(old), str(planned_dir), apply=True)
         assert result.ok is False and result.findings
         assert not [c for c in fake_tf.calls if c[0] == "state rm"]
@@ -988,30 +1812,28 @@ class TestDetach:
     def test_apply_backs_up_the_old_state_then_removes_the_addresses(
         self, fake_tf, planned_dir, tmp_path
     ):
-        old = (tmp_path / "old").resolve()
-        old.mkdir()
         plan = build()
         fake_tf.state_lists[planned_dir] = [r.new_address for r in plan.imports]
-        fake_tf.state_lists[old] = plan.detach_addresses[:-1] + [
-            "aws_lambda_function.other"
-        ]
-        fake_tf.pulled[old] = {"version": 4, "serial": 9}
+        old = self.old_dir(
+            tmp_path,
+            fake_tf,
+            plan.detach_addresses[:-1] + ["aws_lambda_function.other"],
+        )
         result = migration().detach(str(old), str(planned_dir), apply=True)
         assert result.ok is True
         removed = next(c for c in fake_tf.calls if c[0] == "state rm")
         assert removed[1] == old and list(removed[2]) == plan.detach_addresses[:-1]
         assert json.loads(Path(result.backup_path).read_text())["serial"] == 9
+        assert oct(Path(result.backup_path).stat().st_mode & 0o777) == "0o600"
         assert result.notes == [
             f"already absent from the old state: {plan.detach_addresses[-1]}"
         ]
         assert "state push -force" in result.back_out[0]
 
     def test_a_dry_run_removes_nothing(self, fake_tf, planned_dir, tmp_path):
-        old = (tmp_path / "old").resolve()
-        old.mkdir()
         plan = build()
         fake_tf.state_lists[planned_dir] = [r.new_address for r in plan.imports]
-        fake_tf.state_lists[old] = plan.detach_addresses
+        old = self.old_dir(tmp_path, fake_tf, plan.detach_addresses)
         result = migration().detach(str(old), str(planned_dir))
         assert (
             len(result.changes) == len(plan.detach_addresses)
@@ -1019,80 +1841,197 @@ class TestDetach:
         )
         assert not [c for c in fake_tf.calls if c[0] == "state rm"]
 
+    def test_a_state_holding_none_of_the_addresses_is_refused(
+        self, fake_tf, planned_dir, tmp_path
+    ):
+        plan = build()
+        fake_tf.state_lists[planned_dir] = [r.new_address for r in plan.imports]
+        old = self.old_dir(tmp_path, fake_tf, ["aws_lambda_function.other"])
+        result = migration().detach(str(old), str(planned_dir), apply=True)
+        assert result.ok is False
+        assert any(
+            "none of the" in f and "addresses to detach" in f for f in result.findings
+        )
+
+    def test_a_state_of_another_lineage_is_refused(
+        self, fake_tf, planned_dir, tmp_path
+    ):
+        plan = build()
+        fake_tf.state_lists[planned_dir] = [r.new_address for r in plan.imports]
+        old = self.old_dir(
+            tmp_path, fake_tf, plan.detach_addresses, lineage="another-deployment"
+        )
+        result = migration().detach(str(old), str(planned_dir), apply=True)
+        assert result.ok is False and result.applied is False
+        assert any("lineage 'another-deployment'" in f for f in result.findings)
+        assert not [c for c in fake_tf.calls if c[0] == "state rm"]
+
 
 def deletion(address, tf_type, **before):
     return {
         "address": address,
+        "mode": "managed",
         "type": tf_type,
         "change": {"actions": ["delete"], "before": before},
     }
 
 
+def destroy_plan(*changes):
+    return {"format_version": "1.2", "resource_changes": list(changes)}
+
+
+def recreated(plan, tf_type):
+    return next(
+        r.old_address
+        for r in plan.resources
+        if r.old_type == tf_type and r.verdict == tm.RECREATE
+    )
+
+
 class TestDestroyPlanCheck:
-    def test_deleting_a_kept_bucket_or_its_setting_is_a_finding(self):
+    def test_deleting_a_kept_resource_is_a_finding(self):
         plan = build()
-        findings = tm.check_destroy_plan(
-            {
-                "resource_changes": [
-                    deletion(
-                        "aws_s3_bucket.input_bucket",
-                        "aws_s3_bucket",
-                        bucket="oldidp-input-i2pfi4o2",
-                        id="oldidp-input-i2pfi4o2",
-                    ),
-                    deletion(
-                        "aws_s3_bucket_policy.p",
-                        "aws_s3_bucket_policy",
-                        bucket="oldidp-output-i2pfi4o2",
-                    ),
-                    deletion(
-                        "aws_kms_key.k",
-                        "aws_kms_key",
-                        key_id="1234abcd-12ab-34cd-56ef-1234567890ab",
-                    ),
-                    deletion(
-                        "aws_cognito_user.u",
-                        "aws_cognito_user",
-                        user_pool_id=POOL,
-                        username="x",
-                    ),
-                ]
-            },
+        findings, _ = tm.check_destroy_plan(
+            destroy_plan(
+                deletion(recreated(plan, "aws_lambda_function"), "aws_lambda_function"),
+                deletion(
+                    recreated(plan, "aws_sqs_queue_policy"),
+                    "aws_sqs_queue_policy",
+                    bucket="oldidp-output-i2pfi4o2",
+                ),
+                deletion(
+                    recreated(plan, "aws_cloudwatch_event_rule"),
+                    "aws_cloudwatch_event_rule",
+                    key_id=KEY_ID,
+                ),
+                deletion(
+                    recreated(plan, "aws_iam_role"),
+                    "aws_iam_role",
+                    user_pool_id=POOL,
+                ),
+            ),
             plan,
         )
-        assert len(findings) == 4
+        assert len(findings) == 3
+        assert all("touches kept" in f for f in findings)
 
     def test_the_old_deployments_own_resources_may_go(self):
         plan = build()
-        findings = tm.check_destroy_plan(
-            {
-                "resource_changes": [
-                    deletion(
-                        "aws_cognito_user_pool_client.c",
-                        "aws_cognito_user_pool_client",
-                        user_pool_id=POOL,
-                        id="c",
-                    ),
-                    deletion(
-                        "aws_wafv2_web_acl_association.cognito",
-                        "aws_wafv2_web_acl_association",
-                        resource_arn="arn",
-                    ),
-                    deletion(
-                        "aws_s3_bucket.assets",
-                        "aws_s3_bucket",
-                        bucket="oldidp-bf1fipnn-assets-dyabdfvp",
-                    ),
-                    deletion(
-                        "aws_lambda_function.f",
-                        "aws_lambda_function",
-                        function_name="oldidp-input-i2pfi4o2",
-                    ),
-                ]
-            },
+        findings, details = tm.check_destroy_plan(
+            destroy_plan(
+                deletion(
+                    recreated(plan, "aws_cognito_user_pool_client"),
+                    "aws_cognito_user_pool_client",
+                    user_pool_id=POOL,
+                    id="c",
+                ),
+                deletion(
+                    recreated(plan, "aws_wafv2_web_acl_association"),
+                    "aws_wafv2_web_acl_association",
+                    resource_arn="arn",
+                ),
+                deletion(
+                    recreated(plan, "aws_lambda_function"),
+                    "aws_lambda_function",
+                    function_name="oldidp-input-i2pfi4o2",
+                ),
+            ),
             plan,
         )
         assert findings == []
+        assert details["deletions"] == 3 and details["recordedDeletions"] == 3
+
+    @pytest.mark.parametrize(
+        "payload,match",
+        [
+            ({}, "not `terraform show -json` output"),
+            ([], "not a Terraform plan"),
+            (old_state(), "Terraform state file"),
+            ({"format_version": "1.2", "resource_changes": []}, "no resource changes"),
+            (
+                {"format_version": "1.2", "errored": True, "resource_changes": [{}]},
+                "errored",
+            ),
+        ],
+        ids=["empty", "a-list", "the-state-file", "no-changes", "errored"],
+    )
+    def test_anything_but_a_destroy_plan_is_refused(self, payload, match):
+        findings, _ = tm.check_destroy_plan(payload, build())
+        assert len(findings) == 1 and match in findings[0]
+
+    def test_a_change_that_is_not_a_delete_is_refused(self):
+        plan = build()
+        rc = deletion(recreated(plan, "aws_lambda_function"), "aws_lambda_function")
+        rc["change"]["actions"] = ["create"]
+        findings, _ = tm.check_destroy_plan(destroy_plan(rc), plan)
+        assert findings and "not a destroy plan" in findings[0]
+
+    def test_another_deployments_destroy_plan_is_refused(self):
+        findings, _ = tm.check_destroy_plan(
+            destroy_plan(
+                deletion("aws_lambda_function.somebody_else", "aws_lambda_function")
+            ),
+            build(),
+        )
+        assert findings == [
+            "none of this plan's deletions is an address the migration plan recorded "
+            "for the old deployment, so this is not the old deployment's destroy plan "
+            "(or the plan was built from another state)"
+        ]
+
+    def test_a_detached_address_still_in_the_plan_is_a_finding(self):
+        plan = build()
+        findings, _ = tm.check_destroy_plan(
+            destroy_plan(
+                deletion(recreated(plan, "aws_lambda_function"), "aws_lambda_function"),
+                deletion("aws_s3_bucket.input_bucket", "aws_s3_bucket"),
+            ),
+            plan,
+        )
+        assert findings == [
+            "aws_s3_bucket.input_bucket is in the destroy plan, but the migration "
+            "detached it from the old state; run `detach --apply` first"
+        ]
+
+    def test_an_address_the_migration_plan_never_saw_is_a_finding(self):
+        plan = build()
+        findings, _ = tm.check_destroy_plan(
+            destroy_plan(
+                deletion(recreated(plan, "aws_lambda_function"), "aws_lambda_function"),
+                deletion("aws_lambda_function.added_later", "aws_lambda_function"),
+            ),
+            plan,
+        )
+        assert len(findings) == 1
+        assert findings[0].startswith(
+            "aws_lambda_function.added_later is in the destroy plan but not in the "
+            "migration plan"
+        )
+
+    def test_the_operation_reports_the_recorded_resources_left_behind(
+        self, planned_dir, tmp_path
+    ):
+        plan = build()
+        path = tmp_path / "destroy.json"
+        path.write_text(
+            json.dumps(
+                destroy_plan(
+                    deletion(
+                        recreated(plan, "aws_lambda_function"), "aws_lambda_function"
+                    )
+                )
+            )
+        )
+        result = migration().check_destroy(str(path), str(planned_dir))
+        assert result.ok is True
+        assert result.details["recordedNotInDestroyPlan"]
+        assert "would be left behind" in result.notes[0]
+
+    def test_the_operation_refuses_the_state_file(self, planned_dir):
+        result = migration().check_destroy(
+            str(FIXTURES / "old_state.tfstate"), str(planned_dir)
+        )
+        assert result.ok is False and "state file" in result.findings[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1142,7 +2081,14 @@ class TestPlanOperation:
         assert (
             directory / tm.MIGRATION_DIR / tm.DETACH_FILE
         ).read_text().splitlines() == result.detach_addresses
-        assert result.detach_commands[0].startswith("terraform state pull > ")
+        backup = (
+            directory.resolve()
+            / tm.MIGRATION_DIR
+            / "old-state-backup-before-detach.tfstate"
+        )
+        assert result.detach_commands[0] == (
+            f"(umask 077 && terraform state pull > '{backup}')"
+        )
         assert ("init", directory.resolve()) in fake_tf.calls
 
     def test_a_refusal_writes_no_adoption_files(self, wired, tmp_path):
@@ -1191,3 +2137,96 @@ class TestUserLookup:
         assert op._user_lookup(pool, "nobody@example.com") == tm.UserLookup(
             exists=False
         )
+
+
+# ---------------------------------------------------------------------------
+# the credentials the migration's own AWS calls use
+# ---------------------------------------------------------------------------
+
+
+class TestTerraformCredentials:
+    def test_the_role_is_read_from_both_provider_blocks(self, tmp_path):
+        main = tmp_path / "main.tf"
+        main.write_text(tf.render_provider_blocks(REGION, ROLE_ARN))
+        assert tm.terraform_role_arn(main) == ROLE_ARN
+        main.write_text(tf.render_provider_blocks(REGION))
+        assert tm.terraform_role_arn(main) is None
+
+    def test_providers_that_disagree_are_refused(self, tmp_path):
+        main = tmp_path / "main.tf"
+        text = tf.render_provider_blocks(REGION, ROLE_ARN)
+        cut = text.index('provider "awscc"')
+        main.write_text(text[:cut] + 'provider "awscc" {\n  region = "us-west-2"\n}\n')
+        with pytest.raises(IDPConfigurationError, match="assume different roles"):
+            tm.terraform_role_arn(main)
+
+    def test_no_main_tf_is_refused(self, tmp_path):
+        with pytest.raises(
+            IDPConfigurationError, match="cannot tell which credentials"
+        ):
+            tm.terraform_role_arn(tmp_path / "main.tf")
+
+    def test_a_phase_acts_as_the_role_terraform_assumes(
+        self, tmp_path, aws_credentials
+    ):
+        directory = tmp_path / "d"
+        write_planned_dir(directory, role_arn=ROLE_ARN)
+        with mock_aws():
+            op = migration()
+            # The role is in another account, so its tables are not the ambient
+            # credentials' tables: the phase can only find them through the role.
+            op._use_role(ROLE_ARN)
+            tracking_and_config_tables(op._boto("dynamodb"))
+            op._use_role(None)
+            ambient = boto3.client("dynamodb", region_name=REGION).list_tables()
+            assert ambient["TableNames"] == []
+            result = op.fix_config(str(directory))
+            arn = op._boto("sts").get_caller_identity()["Arn"]
+        assert result.ok is True
+        assert arn.endswith(
+            "assumed-role/idp-terraform-deployer/idp-cli-terraform-migrate"
+        )
+
+    def test_without_a_role_a_phase_uses_the_ambient_credentials(
+        self, planned_dir, aws_credentials
+    ):
+        with mock_aws():
+            ddb = boto3.client("dynamodb", region_name=REGION)
+            tracking_and_config_tables(ddb)
+            op = migration()
+            op.fix_config(str(planned_dir))
+            arn = op._boto("sts").get_caller_identity()["Arn"]
+        assert "assumed-role" not in arn
+
+    def test_the_plan_phase_looks_up_users_as_the_role(
+        self, monkeypatch, fake_tf, tmp_path, aws_credentials
+    ):
+        manifest = json.loads((FIXTURES / "module" / "idp-terraform.json").read_text())
+        monkeypatch.setattr(tf, "load_module_manifest", lambda url, sha=None: manifest)
+        monkeypatch.setattr(tm, "module_dir_from_root", lambda d: FIXTURES / "module")
+        monkeypatch.setattr(
+            "idp_sdk.operations.stack.StackOperation._describe_stack",
+            lambda self, d, n: None,
+        )
+        seen = []
+
+        def lookup(self, pool_id, username):
+            seen.append(self._boto("sts").get_caller_identity()["Arn"])
+            return tm.UserLookup(exists=True, groups=["Admin"])
+
+        monkeypatch.setattr(
+            "idp_sdk.operations.terraform.GenaiIdpTerraformMigration._user_lookup",
+            lookup,
+        )
+        state = tmp_path / "old.tfstate"
+        state.write_text((FIXTURES / "old_state.tfstate").read_text())
+        with mock_aws():
+            migration().plan(
+                str(state),
+                ADMIN,
+                module_url="https://example.com/m.zip",
+                terraform_dir=str(tmp_path / "new"),
+                assume_role_arn=ROLE_ARN,
+            )
+        assert len(seen) == 1 and "assumed-role/idp-terraform-deployer/" in seen[0]
+        assert tm.terraform_role_arn(tmp_path / "new" / "main.tf") == ROLE_ARN

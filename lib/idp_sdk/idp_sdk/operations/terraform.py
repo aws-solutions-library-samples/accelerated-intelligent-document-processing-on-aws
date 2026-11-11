@@ -16,6 +16,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from idp_sdk.exceptions import IDPConfigurationError
@@ -53,6 +54,8 @@ class GenaiIdpTerraformMigration:
     def __init__(self, client, sleep: Callable[[float], None] = time.sleep):
         self._client = client
         self._sleep = sleep
+        self._role_arn: Optional[str] = None
+        self._session: Any = None
 
     # -- helpers ------------------------------------------------------------
 
@@ -64,10 +67,45 @@ class GenaiIdpTerraformMigration:
             )
         return region
 
+    def _use_role(self, role_arn: Optional[str]) -> None:
+        """Make every AWS call this object makes use ``role_arn``, as Terraform
+        does (None: the ambient credentials, as Terraform then does too)."""
+        if role_arn != self._role_arn or self._session is None:
+            self._role_arn = role_arn
+            self._session = None
+
+    def _use_terraform_credentials(self, directory: Path) -> None:
+        from idp_sdk._core import terraform_migrate as tm
+
+        self._use_role(tm.terraform_role_arn(directory / "main.tf"))
+
     def _boto(self, service: str):
+        """A client with the credentials Terraform uses for this deployment.
+
+        Terraform's providers assume ``--terraform-assume-role-arn`` when one was
+        given, so the migration's own reads and writes (the admin-user lookup,
+        the freeze, the configuration fix, the retention check and the apply's
+        preconditions) assume the same role, from the ambient credentials, rather
+        than acting in whatever account those point at.
+        """
         import boto3
 
-        return boto3.client(service, region_name=self._region())
+        region = self._region()
+        if self._session is None:
+            if self._role_arn:
+                creds = boto3.client("sts", region_name=region).assume_role(
+                    RoleArn=self._role_arn,
+                    RoleSessionName="idp-cli-terraform-migrate",
+                )["Credentials"]
+                self._session = boto3.session.Session(
+                    aws_access_key_id=creds["AccessKeyId"],
+                    aws_secret_access_key=creds["SecretAccessKey"],
+                    aws_session_token=creds["SessionToken"],
+                    region_name=region,
+                )
+            else:
+                self._session = boto3.session.Session(region_name=region)
+        return self._session.client(service, region_name=region)
 
     def _directory(self, terraform_dir: Optional[str]) -> Path:
         name = self._client._require_stack(None)
@@ -86,7 +124,9 @@ class GenaiIdpTerraformMigration:
             raise IDPConfigurationError(
                 f"{path} does not exist; run the `plan` phase for this deployment first"
             )
-        return tm.MigrationPlan.from_json(json.loads(path.read_text()))
+        plan = tm.MigrationPlan.from_json(json.loads(path.read_text()))
+        self._use_terraform_credentials(directory)
+        return plan
 
     def _tfvars(self, directory: Path) -> Dict[str, Any]:
         from idp_sdk._core import terraform_deploy as tf
@@ -150,7 +190,9 @@ class GenaiIdpTerraformMigration:
             pointer_url: URL of an ``idp-terraform-latest.json`` pointer.
             terraform_dir: The new deployment's root configuration directory.
             terraform_bin: ``terraform``, ``tofu`` or a path to either.
-            assume_role_arn: As for ``client.stack.deploy_terraform``.
+            assume_role_arn: As for ``client.stack.deploy_terraform``. The
+                migration's own AWS calls (here and in every later phase, which
+                read it back from ``main.tf``) assume the same role.
 
         Raises:
             IDPConfigurationError: An old stateful resource with no verdict, an
@@ -159,11 +201,12 @@ class GenaiIdpTerraformMigration:
         """
         from idp_sdk._core import terraform_deploy as tf
         from idp_sdk._core import terraform_migrate as tm
-        from idp_sdk._core.stack import StackDeployer
         from idp_sdk._core.terraform_stack import is_terraform_label
 
         name = self._client._require_stack(None)
         region = self._region()
+        # The lookups below use the identity Terraform will use.
+        self._use_role(tf.check_assume_role_arn(assume_role_arn))
         directory = self._directory(terraform_dir)
         runner = tf.TerraformRunner(terraform_bin, directory)
         try:
@@ -179,7 +222,9 @@ class GenaiIdpTerraformMigration:
                 f"{adopt_path} exists and was not written by this command; refusing to "
                 "overwrite it"
             )
-        stack = self._client.stack._describe_stack(StackDeployer(region=region), name)
+        stack = self._client.stack._describe_stack(
+            SimpleNamespace(cfn=self._boto("cloudformation")), name
+        )
         if stack is not None and not is_terraform_label(stack):
             raise IDPConfigurationError(
                 f"{name} is a CloudFormation stack; the new deployment needs a name no "
@@ -239,7 +284,7 @@ class GenaiIdpTerraformMigration:
             parameters=plan.parameters,
             detach_addresses=plan.detach_addresses,
             detach_commands=tm.detach_commands(
-                plan.detach_addresses, Path(terraform_bin).name
+                plan.detach_addresses, Path(terraform_bin).name, mdir
             ),
             warnings=plan.warnings,
             files={
@@ -258,20 +303,25 @@ class GenaiIdpTerraformMigration:
         terraform_dir: Optional[str] = None,
         accept_expiry: Iterable[str] = (),
     ) -> TerraformMigrationStepResult:
-        """Compare each adopted bucket's oldest object with the module's expiry.
+        """Compare each kept bucket's objects with the module's expiry rules.
 
         The module puts a lifecycle rule on the buckets it manages (for example
-        ``DataRetentionInDays`` on the input and output buckets). Adopting a
-        bucket applies that rule to objects that are already there, so a bucket
-        holding an object older than the rule is a finding unless its kind is in
-        ``accept_expiry``. Reads only (``ListObjectsV2`` over every object).
+        ``DataRetentionInDays`` on the input and output buckets), expiring both
+        current objects and noncurrent versions. Adopting a bucket applies that
+        rule to what is already there, so a bucket holding an object, or a
+        noncurrent version, older than the rule is a finding unless its kind is in
+        ``accept_expiry``. So is a rule whose period cannot be evaluated, a
+        lifecycle configuration whose bucket cannot be resolved, and a module
+        directory that cannot be read. The result's notes say what was not
+        checked. Reads only (``ListObjectsV2``, ``GetBucketVersioning`` and, for a
+        versioned bucket, ``ListObjectVersions`` over every version).
         """
         from idp_sdk._core import terraform_migrate as tm
 
         directory = self._directory(terraform_dir)
         plan = self._load(directory)
         module = tm.ModuleSource.read(tm.module_dir_from_root(directory))
-        rows, findings = tm.check_retention(
+        rows, findings, notes = tm.check_retention(
             plan,
             module,
             self._tfvars(directory),
@@ -283,6 +333,7 @@ class GenaiIdpTerraformMigration:
             applied=False,
             ok=not findings,
             findings=findings,
+            notes=notes,
             details={"buckets": rows},
         )
 
@@ -296,6 +347,7 @@ class GenaiIdpTerraformMigration:
         wait: bool = False,
         timeout_seconds: int = 1800,
         poll_seconds: int = 30,
+        ignore_documents: Iterable[str] = (),
     ) -> TerraformMigrationStepResult:
         """Stop the old deployment taking new uploads, and wait for in-flight work.
 
@@ -303,9 +355,12 @@ class GenaiIdpTerraformMigration:
         EventBridge rule on that bucket would start a second workflow for every
         upload. With ``apply`` the rule is disabled (``DisableRule``; the old
         deployment's state still says enabled, which does not matter because it
-        is never applied again). Then the tracking table is scanned for documents
-        whose status is not COMPLETED, FAILED or ABORTED; with ``wait`` the scan
+        is never applied again). Then the whole tracking table is scanned for
+        documents that have not finished, and documents awaiting human review
+        (``HITL_IN_PROGRESS``) are reported separately; with ``wait`` the scan
         repeats until there are none or ``timeout_seconds`` passes.
+        ``ignore_documents`` names documents (object keys) you have decided to
+        abandon; they are listed but do not block.
         """
         from idp_sdk._core import terraform_migrate as tm
 
@@ -318,11 +373,7 @@ class GenaiIdpTerraformMigration:
         changes: List[str] = []
         back_out: List[str] = []
         if not plan.upload_rules:
-            findings.append(
-                "the old state has no EventBridge rule on the input bucket, so this "
-                "command cannot stop the old deployment's uploads; find what starts "
-                "its workflows before going on"
-            )
+            findings.append(tm.NO_UPLOAD_RULE)
         for rule in tm.upload_rule_states(plan, events):
             if rule["state"] != "DISABLED":
                 changes.append(
@@ -340,18 +391,28 @@ class GenaiIdpTerraformMigration:
         if not apply and changes:
             findings.append("the old upload rule is still enabled (dry run)")
         deadline = time.monotonic() + timeout_seconds
-        in_flight: List[Dict[str, str]] = []
+        scan = tm.DocumentScan()
         if plan.tracking_table:
             while True:
-                in_flight = tm.in_flight_documents(plan.tracking_table, ddb)
-                if not in_flight or not wait or time.monotonic() >= deadline:
+                scan = tm.scan_documents(plan.tracking_table, ddb, ignore_documents)
+                busy = scan.in_flight or scan.in_review
+                if not busy or not wait or time.monotonic() >= deadline:
                     break
-                notes.append(f"{len(in_flight)} document(s) in flight; waiting")
+                notes.append(
+                    f"{len(scan.in_flight)} document(s) in flight, "
+                    f"{len(scan.in_review)} awaiting review; waiting"
+                )
                 self._sleep(poll_seconds)
-        if in_flight:
+        else:
             findings.append(
-                f"{len(in_flight)} document(s) are still being processed by the old "
-                "deployment; wait for them (--wait) before applying"
+                "the migration plan records no tracking table, so nothing can say "
+                "whether documents are in flight"
+            )
+        findings += scan.findings()
+        if scan.ignored:
+            notes.append(
+                f"ignored with --ignore-document: {len(scan.ignored)} document(s) "
+                "that have not finished"
             )
         return TerraformMigrationStepResult(
             phase="freeze",
@@ -361,7 +422,14 @@ class GenaiIdpTerraformMigration:
             findings=findings,
             notes=notes,
             back_out=back_out,
-            details={"inFlight": in_flight[:50], "inFlightCount": len(in_flight)},
+            details={
+                "inFlight": scan.in_flight[:50],
+                "inFlightCount": len(scan.in_flight),
+                "inReview": scan.in_review[:50],
+                "inReviewCount": len(scan.in_review),
+                "ignored": scan.ignored,
+                "documentsScanned": scan.scanned,
+            },
         )
 
     # -- configuration fix -------------------------------------------------------
@@ -397,7 +465,14 @@ class GenaiIdpTerraformMigration:
         ddb = self._boto("dynamodb")
         region = self._region()
         if restore:
-            items = json.loads(Path(restore).read_text())["Items"]
+            backup_data = json.loads(Path(restore).read_text())
+            if backup_data.get("TableName") != table:
+                raise IDPConfigurationError(
+                    f"{restore} is a backup of {backup_data.get('TableName')!r}, not of "
+                    f"this deployment's configuration table {table!r}; refusing to "
+                    "write it there"
+                )
+            items = backup_data["Items"]
             changes = [f"put back {i['Configuration']['S']}" for i in items]
             if apply:
                 for item in items:
@@ -550,14 +625,21 @@ class GenaiIdpTerraformMigration:
         *,
         apply: bool = False,
         accept_expiry: Iterable[str] = (),
+        accept_changes: Iterable[str] = (),
+        ignore_documents: Iterable[str] = (),
     ) -> TerraformMigrationStepResult:
         """Plan the adoption, check it, and (with ``apply``) apply exactly that plan.
 
-        First re-checks the earlier phases: retention, the old upload rule
-        disabled, nothing in flight, the configuration counters removed, and the
-        user pool in state. Then saves a plan and refuses it unless every
-        resource in ``adopt.tf`` is imported in place and nothing at all is
-        replaced or destroyed.
+        First re-checks the earlier phases: retention, an old upload rule found
+        and disabled, nothing in flight or awaiting review (but the documents in
+        ``ignore_documents``), the configuration counters removed, and the user
+        pool in state. Then saves a plan and refuses it unless every resource in
+        ``adopt.tf`` is imported in place, nothing at all is replaced, destroyed
+        or forgotten, and no adopted resource (or setting resource on a kept
+        bucket) makes one of the refused transitions in
+        ``terraform_migrate.REFUSED_CHANGES``, unless named in ``accept_changes``
+        as ``<address>:<rule>``. Every other in-place change to those resources
+        is listed in ``details["review"]``.
         """
         from idp_sdk._core import terraform_deploy as tf
         from idp_sdk._core import terraform_migrate as tm
@@ -569,17 +651,22 @@ class GenaiIdpTerraformMigration:
         retention = self.check_retention(terraform_dir, accept_expiry)
         findings += retention.findings
         events = self._boto("events")
+        if not plan.upload_rules:
+            findings.append(tm.NO_UPLOAD_RULE)
         for rule in tm.upload_rule_states(plan, events):
             if rule["state"] != "DISABLED":
                 findings.append(
                     f"the old upload rule {rule['name']} is enabled; run `freeze`"
                 )
         ddb = self._boto("dynamodb")
-        if plan.tracking_table and tm.in_flight_documents(
-            plan.tracking_table, ddb, limit=1
-        ):
+        if plan.tracking_table:
+            findings += tm.scan_documents(
+                plan.tracking_table, ddb, ignore_documents
+            ).findings()
+        else:
             findings.append(
-                "documents are still in flight in the old deployment; run `freeze --wait`"
+                "the migration plan records no tracking table, so nothing can say "
+                "whether documents are in flight"
             )
         if plan.configuration_table:
             targets, _ = tm.config_fix_targets(
@@ -593,11 +680,12 @@ class GenaiIdpTerraformMigration:
         runner = tf.TerraformRunner(terraform_bin, directory)
         plan_path = directory / MIGRATION_PLAN_FILE
         counts: Dict[str, int] = {}
+        review: List[str] = []
         applied = False
         try:
             runner.plan(MIGRATION_PLAN_FILE)
-            counts, plan_findings = tm.check_adoption_plan(
-                runner.show_plan(MIGRATION_PLAN_FILE), plan
+            counts, plan_findings, review = tm.check_adoption_plan(
+                runner.show_plan(MIGRATION_PLAN_FILE), plan, accept_changes
             )
             findings += plan_findings
             if apply and not findings:
@@ -609,14 +697,21 @@ class GenaiIdpTerraformMigration:
             f"Plan: {counts.get('import', 0)} to import, {counts.get('add', 0)} to add, "
             f"{counts.get('change', 0)} to change, {counts.get('destroy', 0)} to destroy."
         )
+        notes = [] if applied else ["nothing was applied"]
+        if review:
+            notes.append(
+                f"{len(review)} in-place change(s) to adopted resources and kept "
+                "buckets' settings are allowed; read them (details.review, or below) "
+                "before applying"
+            )
         return TerraformMigrationStepResult(
             phase="apply",
             applied=applied,
             ok=not findings,
             changes=[summary],
             findings=findings,
-            notes=[] if applied else ["nothing was applied"],
-            details={"counts": counts},
+            notes=notes,
+            details={"counts": counts, "review": review},
         )
 
     # -- detach -------------------------------------------------------------------------
@@ -633,7 +728,9 @@ class GenaiIdpTerraformMigration:
 
         After this, ``terraform destroy`` in the old deployment's directory leaves
         them alone. Refuses until the new deployment's state holds every adopted
-        resource. With ``apply`` the old state is saved to a backup file first
+        resource; refuses an old directory whose state is not the one the plan
+        was built from (another lineage) or holds none of the addresses to
+        detach. With ``apply`` the old state is saved to a backup file first
         (``terraform state pull``), then ``terraform state rm`` runs in
         ``old_terraform_dir``.
         """
@@ -651,15 +748,33 @@ class GenaiIdpTerraformMigration:
             for a in missing_new
         ]
         old = tf.TerraformRunner(terraform_bin, Path(old_terraform_dir).resolve())
+        pulled = old.capture("state", "pull")
+        try:
+            lineage = json.loads(pulled).get("lineage") if pulled.strip() else None
+        except ValueError:
+            lineage = None
+        if not plan.old_lineage or lineage != plan.old_lineage:
+            findings.append(
+                f"the state in {old.directory} has lineage {lineage!r}, and the "
+                f"migration plan was built from lineage {plan.old_lineage!r}; this is "
+                "not the old deployment's state"
+            )
         old_list = set(old.state_list())
         present = [a for a in plan.detach_addresses if a in old_list]
         absent = [a for a in plan.detach_addresses if a not in old_list]
+        if plan.detach_addresses and not present:
+            findings.append(
+                f"none of the {len(plan.detach_addresses)} addresses to detach is in "
+                f"the state in {old.directory}: either they were detached already "
+                "(check `terraform state list` there) or this is not the old "
+                "deployment's directory"
+            )
         backup: Optional[str] = None
         if apply and present and not findings:
             mdir = self._migration_dir(directory)
             mdir.mkdir(parents=True, exist_ok=True)
             path = mdir / f"old-state-backup-before-detach-{tm.timestamp()}.tfstate"
-            tf.write_private(path, old.capture("state", "pull"))
+            tf.write_private(path, pulled)
             backup = str(path)
             old.state_rm(present)
         binary = Path(terraform_bin).name
@@ -685,23 +800,30 @@ class GenaiIdpTerraformMigration:
 
         ``destroy_plan_path`` is ``terraform show -json`` of a plan saved with
         ``terraform plan -destroy -out=<file>`` in the old deployment's directory.
-        Reads only.
+        Refuses anything else: a state file, an empty or errored plan, a plan that
+        does more than delete, or a plan of another deployment. Reads only.
         """
         from idp_sdk._core import terraform_migrate as tm
 
         directory = self._directory(terraform_dir)
         plan = self._load(directory)
-        destroy = json.loads(Path(destroy_plan_path).read_text())
-        findings = tm.check_destroy_plan(destroy, plan)
-        deletes = sum(
-            1
-            for rc in destroy.get("resource_changes", [])
-            if "delete" in rc["change"]["actions"]
-        )
+        try:
+            destroy = json.loads(Path(destroy_plan_path).read_text())
+        except (OSError, ValueError) as e:
+            raise IDPConfigurationError(f"cannot read {destroy_plan_path}: {e}") from e
+        findings, details = tm.check_destroy_plan(destroy, plan)
+        notes = []
+        if details.get("recordedNotInDestroyPlan"):
+            notes.append(
+                f"{len(details['recordedNotInDestroyPlan'])} resource(s) the migration "
+                "plan expects to be destroyed are not in this destroy plan (a "
+                "targeted plan, or already gone); they would be left behind"
+            )
         return TerraformMigrationStepResult(
             phase="check-destroy",
             applied=False,
             ok=not findings,
             findings=findings,
-            details={"deletions": deletes},
+            notes=notes,
+            details=details,
         )
