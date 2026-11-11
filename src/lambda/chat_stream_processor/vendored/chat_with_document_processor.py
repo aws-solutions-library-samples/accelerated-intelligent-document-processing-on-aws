@@ -378,13 +378,30 @@ def _get_user_allowed_config_versions(
                 )
                 row = None
         if row is None and caller_email:
-            resp = table.query(
-                IndexName=USERS_TABLE_SCOPE_INDEX,
-                KeyConditionExpression=Key(USERS_TABLE_SCOPE_KEY).eq(caller_email),
-                Limit=1,
-            )
-            items = resp.get("Items") or []
-            row = items[0] if items else None
+            # Every row for the address, because Cognito does not make `email`
+            # unique and each account sharing an address can hold a row of its own.
+            # Chosen in the grant writer's order: the row recording this caller's
+            # sub, then one recording no sub, then any other (which the rule below
+            # decides). Mirrors `_row_by_email` in `idp_common.config_scope`.
+            query = {
+                "IndexName": USERS_TABLE_SCOPE_INDEX,
+                "KeyConditionExpression": Key(USERS_TABLE_SCOPE_KEY).eq(caller_email),
+            }
+            items = []
+            while True:
+                resp = table.query(**query)
+                items.extend(resp.get("Items") or [])
+                if not resp.get("LastEvaluatedKey"):
+                    break
+                query["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+            def _rank(item):
+                recorded = str(item.get("cognitoSub") or "").strip()
+                if caller_sub and recorded == caller_sub:
+                    return 0
+                return 1 if not recorded else 2
+
+            row = min(items, key=_rank) if items else None
     except Exception as e:  # noqa: BLE001
         logger.error(
             "User scope lookup failed, denying chat turn (%s / %s on %s): %s",
@@ -402,6 +419,22 @@ def _get_user_allowed_config_versions(
         )
     if row is None:
         return None  # no scope row for this user → unrestricted
+    recorded_sub = str(row.get("cognitoSub") or "").strip()
+    if caller_sub and recorded_sub and recorded_sub != caller_sub:
+        # The row records a different Cognito account (Cognito does not make
+        # `email` unique). Where an unscoped caller is denied, that row's scope is
+        # another account's grant, not a restriction on this one, so deny. Mirrors
+        # `resolve_allowed_config_versions` in `idp_common.config_scope`.
+        if unscoped_is_denied():
+            logger.warning(
+                "A UsersTable row found for the caller records a different Cognito "
+                "sub; denying the chat turn"
+            )
+            return [STRICT_UNSCOPED_DENY]
+        logger.warning(
+            "A UsersTable row found for the caller records a different Cognito "
+            "sub; its scope is being applied"
+        )
     scope = row.get("allowedConfigVersions")
     return list(scope) if scope else None
 

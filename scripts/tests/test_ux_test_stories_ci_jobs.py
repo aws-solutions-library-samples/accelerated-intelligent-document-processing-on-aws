@@ -629,6 +629,25 @@ _NIGHTLY_CASES = [
         _branch_pipeline("schedule", IDP_TEST_REGION="eu-central-1"),
         "never",
     ),
+    # The Terraform schedule runs every night on develop, exactly as the
+    # CloudFormation nightly does, so its variable is the only thing the rules can
+    # tell the two apart by. These cases pin that the rule reads the value of
+    # IDP_IAC, spelled as iac_requested() accepts it, and nothing about cadence.
+    (
+        "the nightly Terraform schedule",
+        _branch_pipeline("schedule", IDP_IAC="terraform"),
+        "never",
+    ),
+    (
+        "the nightly Terraform schedule, capitalised and padded",
+        _branch_pipeline("schedule", IDP_IAC=" Terraform "),
+        "never",
+    ),
+    (
+        "a schedule naming CloudFormation explicitly",
+        _branch_pipeline("schedule", IDP_IAC="cloudformation"),
+        "always",
+    ),
     (
         "the weekly variant-probe schedule, capitalised",
         _branch_pipeline("schedule", IDP_RUN_PROBES="True"),
@@ -880,12 +899,14 @@ def test_the_mr_job_clones_the_history_its_inputs_are_diffed_over(
 
 
 @pytest.mark.unit
-def test_the_digest_needs_every_shard_and_a_shard_takes_only_the_deploy_summary(
+def test_the_digest_needs_every_shard_and_a_shard_reads_the_deploy_log(
     ci_config: dict[str, Any], jobs: dict[str, dict[str, Any]], orchestrator: ModuleType
 ) -> None:
     """A shard has no ``needs``, so it starts once the deploy and ``notify`` are
     done, and it downloads ``integration_tests``' artifacts alone, among them the
-    summary that names the review stack's state."""
+    build's log, whose consolidated summary names the review stack's state.
+    ``deployment_summary.txt`` is not the one: when the job falls back to the log,
+    it keeps only what follows that table."""
     assert jobs[DIGEST_JOB]["needs"] == [{"job": NIGHTLY_JOB, "artifacts": True}]
     nightly = jobs[NIGHTLY_JOB]
     assert "needs" not in nightly
@@ -895,7 +916,7 @@ def test_the_digest_needs_every_shard_and_a_shard_takes_only_the_deploy_summary(
         str(_parsed(orchestrator, argv).deploy_summary)
         for argv in _entry_argvs(nightly, values)
     }
-    assert summaries == {"deployment_summary.txt"}
+    assert summaries == {"codebuild_logs.txt"}
     assert summaries <= set(ci_config["integration_tests"]["artifacts"]["paths"])
 
 
@@ -1339,7 +1360,7 @@ def test_each_story_command_line_is_one_the_orchestrators_parser_reads_as_meant(
         for args in (precheck, run):
             assert args.all is True and args.mr is None
             assert orchestrator.parse_shard(args.shard) == (index, total)
-            assert args.deploy_summary == Path("deployment_summary.txt")
+            assert args.deploy_summary == Path("codebuild_logs.txt")
             assert args.artifact_dir == Path(f"ux-test-stories/shard-{index}")
         assert precheck.precheck is True and run.precheck is False
     (digest,) = parsed[DIGEST_JOB]

@@ -12,8 +12,8 @@ the PRs, and report back in the shape under **Reporting**. Do not ask which tier
 run — the tier list is the deliverable. Ask only for the two things you genuinely
 cannot infer (see **Inputs**), and only if they are not already in the request.
 
-**The eight tiers, and what each is the only source of.** A release is validated when
-all eight have a row in the record — including any that could not run, with the reason.
+**The tiers, and what each is the only source of.** A release is validated when
+every tier has a row in the record — including any that could not run, with the reason.
 
 | | Tier | The only thing it proves |
 |---|---|---|
@@ -25,6 +25,8 @@ all eight have a row in the record — including any that could not run, with th
 | F | Benchmarks — release A/B, then the guidance refresh | whether this release regressed, and what a customer should configure |
 | G | Browser UX review | whether a person can complete the web-UI flows |
 | H | Library integration tests | `idp_common` against real AWS rather than `moto` |
+| I | Terraform property parity | a Terraform deployment of the release stores what a CloudFormation deployment of it stores |
+| J | Migration from `genai-idp-terraform` | a deployment of the separate upstream Terraform implementation moves onto this release's module in place, keeping its data, users and passwords |
 
 > **What "validated" means here.** `docs/release-validation/README.md` defines the
 > tier list and the record format; `docs/release-validation/v0.6.6.md` is the worked
@@ -236,6 +238,10 @@ cannot prove otherwise once the bucket is gone.
 
 Skill: `test-upgrade.md` (including rollback-deadlock recovery).
 
+Tier J below is the same question for a Terraform customer coming from the separate
+`awslabs/genai-idp-terraform` implementation, and unlike this tier it is scripted end
+to end.
+
 ### F. Benchmarks — the release A/B **and** the full documentation refresh
 
 Tier F has two halves and both are mandatory. F1 answers "did this release regress?"
@@ -373,6 +379,74 @@ stack is at `v<VERSION>`. Record the count and every failure. Two things to get 
 
 Skill: `testing-qa.md` for the markers and fixtures.
 
+### I. Terraform property parity (two deployments of `VERSION`, same parameters)
+
+Deploy the release twice in the same account and Region with the same parameters:
+once with CloudFormation (the tier-B stack will do if its parameters are recorded)
+and once with `idp-cli deploy --terraform --stack-name <tf name>` from the published
+module. Then:
+
+```bash
+make terraform-parity CFN_STACK=<cfn name> TF_STACK=<tf name> REGION=<region>
+```
+
+It reads every resource of both, main and nested stacks (the Terraform side through
+its label stack's resource directory), through Cloud Control and, for functions,
+the Lambda API, and diffs them with the names that necessarily differ normalised
+away. **Pass:** exit 0, which means no unexplained difference, no resource on one
+side only, and no stale entry in `terraform/tools/parity_baseline.json`. A
+difference is a finding to fix in the translator; add a baseline entry only for a
+difference that is the same configuration stored differently, one entry per type
+and property path, with the reason. Record in the release record the compared
+count, the explained and unexplained counts, and the types Cloud Control could not
+read (listed, not compared). Tear both deployments down afterwards
+(`idp-cli delete --terraform` for the Terraform one). It is read-only; the deploys
+are what cost money.
+
+### J. Migration from `genai-idp-terraform` (in place, onto the release module)
+
+The Terraform counterpart of tier E, for customers of the separate
+[`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform)
+implementation: `docs/terraform-migration.md`, run by a script rather than by hand.
+It needs the release's module zip URL, which `idp-cli publish --terraform` prints
+(for a published release, the versioned `idp-terraform-<VERSION>.zip` the release's
+`idp-terraform-latest.json` pointer names), and two unused names:
+
+```bash
+make stacktest-terraform-migration OLD_NAME=gitfN NEW_NAME=gitfnewN \
+    TERRAFORM_MODULE_URL=<module zip url> REGION=<region> \
+    WORK_DIR=<a directory outside /tmp> TERRAFORM_BIN=<terraform 1.7+>
+```
+
+The driver (`scripts/sdlc/terraform_migration_test.py`) clones upstream at the tag
+and commit it pins, deploys `examples/unified-processor` as `OLD_NAME`, seeds it
+(`lending_package.pdf` and a W-2 processed, an Admin and a scoped Author with random
+passwords and `@example.com` emails, one configuration edit through the API, a
+baseline and a test set), turns the agent-jobs table's old time-to-live off (the
+guide's hazard; DynamoDB accepts that only about an hour after upstream enabled it,
+and the module's setting only about an hour after that; the passing run took 166
+minutes, 76 of them those two waits), snapshots every kept bucket and table once the frozen old deployment has
+stopped writing, and runs each phase of `idp-cli terraform
+migrate-from-genai-idp-terraform` in the guide's order with `--apply`, including
+`restore-config`. It then verifies, destroys the old deployment through its own Terraform
+after `check-destroy` passes, checks the adopted resources survived that, and destroys
+the new deployment with `idp-cli delete --terraform`, sweeping what either retained by
+name. A failed phase still tears down (`KEEP=1` or `STOP_AFTER=<phase>` keep the
+deployments; `RESUME=1` continues from `WORK_DIR`, never past a failed `verify`).
+
+**Pass:** exit 0 and `result.json` status `PASS`, which means every phase passed, the
+snapshot compare found no lost or changed object or item beyond the named changes the
+migration makes (the two configuration counters `fix-config` removes, the profiles
+`restore-config` restores, the configuration rows every deploy rewrites, and the
+attributes the module's index backfill adds to tracking rows), both users signed in to the new app client by SRP with
+their old passwords and kept their scope, the new document ran on the new state machine
+and not the old, and the leftover check found nothing. Record the per-phase table from
+`summary.txt` (status and minutes), the adoption plan's import / add / change / destroy
+counts from the `migrate-apply` row, and any finding. Check the IAM role count against
+the quota first: the two deployments hold several hundred roles between them for the
+length of the run. On GitLab it also runs on the weekly Terraform-migration schedule,
+while that schedule is active; see `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
+
 ## Operating a multi-hour run — what actually goes wrong
 
 The tiers above are the easy part. A full battery is **two days of wall clock** with
@@ -452,7 +526,7 @@ appears only at exit. Track progress from CloudFormation and `runmap.json`, not 
 
 | Deliverable | Path | Notes |
 |---|---|---|
-| Release validation record | `docs/release-validation/v<VERSION>.md` + a new row at the top of `docs/release-validation/README.md` | copy the previous record's structure: **Verdict → Results per tier group → Findings (ordered by how much they matter) → What was NOT validated → Reproduce**. Every tier A–H gets a row, including the ones that were NOT RUN, with the reason |
+| Release validation record | `docs/release-validation/v<VERSION>.md` + a new row at the top of `docs/release-validation/README.md` | copy the previous record's structure: **Verdict → Results per tier group → Findings (ordered by how much they matter) → What was NOT validated → Reproduce**. Every tier A–I gets a row, including the ones that were NOT RUN, with the reason |
 | Security results | `security/test-results/<VERSION>/` | produced by `make security-results`; eyeball redactions. Compare all four gate values against `<PREV>`'s snapshot — movement in either direction is a finding |
 | **Test coverage report** | the *Test coverage* section of the validation record, plus `scripts/coverage_debt.json` if the ratchet moved | the measured per-tree table (tree · files · coverage), its **delta against PREV's record**, the lowest-covered tree named explicitly, and whether `make check-coverage-debt` passed. Measured with `make coverage-all` — never the recorded baseline |
 | Benchmark results **and** the config guide | `docs/benchmarking/releases/v<VERSION>.md` + README row (F1); `docs/benchmarking/config-guidance.md` re-headed to `v<VERSION>` with the model-selection section, `index.md` model table, and every other paper in the folder whose data was re-measured (F2–F4); `benchmarks/results/v<VERSION>/<suite>/…` for every suite run; `baseline.json`; cited images | see tier F. A PR that carries only the A/B entry is an incomplete tier F and the record must say so |

@@ -176,6 +176,7 @@ def _caller_context(event: dict) -> ReviewCaller:
         raise PermissionError("ROLE: no caller identity") from None
     email = caller_email_from_claims(claims).lower()
     is_admin = "Admin" in groups
+    sub = caller_sub_from_claims(claims)
     allowed = None
     if not is_admin:
         try:
@@ -183,7 +184,7 @@ def _caller_context(event: dict) -> ReviewCaller:
                 email,
                 users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
                 dynamodb=_DYNAMODB,
-                caller_sub=caller_sub_from_claims(claims),
+                caller_sub=sub,
                 cache=_SCOPE_CACHE,
             )
         except Exception:
@@ -198,6 +199,7 @@ def _caller_context(event: dict) -> ReviewCaller:
         groups=groups,
         is_admin=is_admin,
         allowed_versions=allowed,
+        sub=sub,
     )
 
 

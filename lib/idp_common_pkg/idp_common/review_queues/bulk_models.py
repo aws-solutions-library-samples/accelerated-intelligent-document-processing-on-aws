@@ -133,6 +133,10 @@ class ReviewCaller(BaseModel):
     is_admin: bool = False
     #: ``None`` = unscoped; otherwise the allowed profile patterns.
     allowed_versions: Optional[list[str]] = None
+    #: The verified Cognito ``sub`` (empty when the transport verifies none). A
+    #: background job re-checks the requester's scope with it, so a grant is bound
+    #: to the account that made the request, not to another one sharing its email.
+    sub: str = ""
 
     def to_context(self) -> CallerContext:
         return CallerContext(

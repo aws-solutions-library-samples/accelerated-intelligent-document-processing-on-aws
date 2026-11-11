@@ -8223,6 +8223,17 @@ Resources:
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt QueueSenderDLQ.Arn
+      # Lambda's own default, stated because the malware gate depends on it.
+      # EventBridge invokes this function asynchronously, so an error it raises
+      # is retried by Lambda: two retries, about one and then about two minutes
+      # after the first attempt, then the event goes to QueueSenderDLQ above.
+      # The gate raises when a verdict outruns the upload event that writes the
+      # document row, and these retries are what turn that race into a short
+      # delay. The upload has been observed landing within half a second of the
+      # verdict, so the three-minute window is ample; the upper bound is the
+      # Lambda maximum. MaximumEventAgeInSeconds is left at its default.
+      EventInvokeConfig:
+        MaximumRetryAttempts: 2
       LoggingConfig:
         LogGroup: !Ref QueueSenderLogGroup
       Environment:
@@ -8559,17 +8570,14 @@ Resources:
       Targets:
         - Arn: !GetAtt QueueSender.Arn
           Id: QueueSenderMalwareGate
-          # Load-bearing, not boilerplate. A verdict can in principle arrive
-          # before the Object Created event that creates the document row, and
-          # the gate raises in that case rather than creating the row itself
-          # (which would race the upload path into overwriting a terminal status).
-          # These retries are what turn that race into a short delay.
-          #
-          # MaximumEventAgeInSeconds is set as well, and it is the half that
-          # actually bounds the race: EventBridge's backoff between attempts is
-          # not documented, so three attempts could all land inside a second,
-          # which is no use against an ingest event that has not arrived yet.
-          # Giving the event 15 minutes of life lets the retries spread.
+          # Covers DELIVERY only: EventBridge retries when it cannot hand the
+          # verdict to Lambda (throttling, a service error, a missing
+          # permission), and an event it gives up on lands in
+          # MalwareScanVerdictDLQ. Lambda accepts an asynchronous invoke before
+          # the function runs, so an error the function RAISES is not retried
+          # here. The gate raises on purpose when a verdict outruns the upload
+          # event that writes the document row, and that re-delivery is Lambda's:
+          # see QueueSender's EventInvokeConfig, and QueueSenderDLQ after it.
           RetryPolicy:
             MaximumRetryAttempts: 5
             MaximumEventAgeInSeconds: 900
@@ -9891,7 +9899,7 @@ Resources:
   QueueSenderDLQAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when an upload event lands in the ${AWS::StackName} queue-sender dead-letter queue. The document never entered the pipeline, and nothing else reports it: no execution ever started, so no workflow metric has a datapoint for it. Read the messages in QueueSenderDLQ for the S3 keys and check the QueueSender logs for the cause. The tracking row is written BEFORE the enqueue, so look for the document stuck at QUEUED in the Web UI; if it has no record at all, the DynamoDB write is what failed. Recovery is to re-upload the object — this is a Lambda async-invoke DLQ, so SQS redrive (StartMessageMoveTask) does not apply to it."
+      AlarmDescription: !Sub "Alert when an upload event lands in the ${AWS::StackName} queue-sender dead-letter queue. The document never entered the pipeline, and nothing else reports it: no execution ever started, so no workflow metric has a datapoint for it. Read the messages in QueueSenderDLQ for the S3 keys and check the QueueSender logs for the cause. The tracking row is written BEFORE the enqueue, so look for the document stuck at QUEUED in the Web UI; if it has no record at all, the DynamoDB write is what failed. Recovery is to re-upload the object — this is a Lambda async-invoke DLQ, so SQS redrive (StartMessageMoveTask) does not apply to it. With malware scanning on, a message can instead be a GuardDuty verdict that kept arriving before its upload was recorded, through every Lambda retry; that document waits in MALWARE_SCANNING, and re-uploading it re-scans it."
       Namespace: AWS/SQS
       MetricName: ApproximateNumberOfMessagesVisible
       Dimensions:

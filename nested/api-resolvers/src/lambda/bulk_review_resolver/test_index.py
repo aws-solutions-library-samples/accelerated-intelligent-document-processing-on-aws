@@ -184,6 +184,8 @@ class TestJobs:
             False,
             "brj-x",
         )
+        # The verified sub travels with the caller, so a job binds its scope to it.
+        assert caller.sub == "sub-1"
 
     def test_a_job_that_is_not_yours_cannot_be_cancelled_or_deleted(self, mod):
         mod._SERVICES.bulk.cancel_job.return_value = None

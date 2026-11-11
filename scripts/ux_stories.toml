@@ -194,6 +194,46 @@ rbac = "Upload documents"
 docs = ["web-ui.md#upload-documents"]
 terms = ["upload documents"]
 
+[[stories]]
+id = "draft-setup-from-a-description"
+title = "Get a setup drafted for a new kind of document"
+intent = "Your team will soon process employee paystubs, and nobody has set this application up for them yet. Get the application to draft that setup for you from a plain description of what a paystub contains."
+kind = "commit_point"
+documented_steps = 3
+as = { platform-admin = "allowed" }
+first_visit = true
+tier = "p0"
+since = "0.6.0"
+origin = "smoke"
+
+[stories.match]
+docs = ["quick-start.md#web-ui"]
+terms = ["quick start"]
+ui_paths = [
+    "src/ui/src/components/agent-chat/QuickStart*",
+    "src/ui/src/components/agent-chat/AgentChatLayout.tsx",
+    "src/ui/src/components/welcome/**",
+]
+
+[[stories]]
+id = "return-to-the-setup-assistant"
+title = "Start drafting the setup for another kind of document"
+intent = "A colleague said this application can draft the setup for a new kind of document if you describe it. Start that for purchase orders that list a vendor, line items and a total."
+kind = "commit_point"
+documented_steps = 2
+as = { platform-admin = "allowed" }
+tier = "p0"
+since = "0.6.0"
+origin = "smoke"
+
+[stories.match]
+docs = ["quick-start.md#a-typical-conversation"]
+ui_paths = [
+    "src/ui/src/components/agent-chat/QuickStart*",
+    "src/ui/src/components/agent-chat/AgentChatLayout.tsx",
+    "src/ui/src/components/genaiidp-layout/navigation.tsx",
+]
+
 # ---- p1 ----------------------------------------------------------------------------
 
 [[stories]]

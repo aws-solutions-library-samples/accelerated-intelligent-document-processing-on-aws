@@ -4,9 +4,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.3 |
-| **Last Updated** | 2026-10-29 |
-| **Applies to release** | v0.6.13 |
+| **Document Version** | 3.4 |
+| **Last Updated** | 2026-11-09 |
+| **Applies to release** | v0.6.14 |
 | **Classification** | Internal |
 | **System Name** | GenAI Intelligent Document Processing (IDP) Accelerator |
 
@@ -23,7 +23,8 @@
 > `nested/bedrockkb`, `nested/multi-doc-discovery`, the feature-platform main-stack
 > extensions), `patterns/unified/statemachine/workflow.asl.json`,
 > `scripts/api_rbac_expectations.yaml` and the dispatcher / queue-processor /
-> review-queue source. The main user pool has **five** groups; **164** operations
+> review-queue source, and checked against the same sources at v0.6.14, which adds
+> tenant isolation (TB8 below). The main user pool has **five** groups; **168** operations
 > are routable through the dispatcher, with the group distribution in §5 taken from
 > `scripts/api_rbac_expectations.yaml`; §5 names what each layer does *not* cover;
 > §5.2 covers the two non-REST authenticated entry points, §5.3 admission control
@@ -247,6 +248,7 @@ flowchart TD
 | **TB5: Analytics Layer** | Data analytics and search | Athena workgroup isolation, OpenSearch encryption |
 | **TB6: Customer Extensions** | Customer/third-party hooks, MCP agents, and **installed features** | Separate IAM roles, invocation-only permissions from core. **Feature UI bundles execute in the host SPA's origin with the user's session** — see FEAT.T01. `onError: fail` is terminal at **every** hook point: each of the seven routes `HookFatalError` (what `onError: fail` raises) to a terminal failure state (HOOK.T07, closed by **issue #919**). Under queue review the four hooks before the review point run in both executions (§5.4) |
 | **TB7: Deployment / IaC** | The principal that creates the stack, and the optional CloudFormation service role shipped for it | CloudTrail attribution, `iam:PassRole` gating, `scripts/sdlc/validate_service_role_permissions.py` in both CI systems. The shipped role now carries a **permissions boundary**, which bounds what it can reach; its own policy still grants `iam:*`, so it is not yet narrowed to the resources the stack needs — see §7.1 and SDK.T05 (**issue #927**, closed on the boundary) |
+| **TB8: Tenant (inside one stack)** | Several tenants sharing one deployment, each a set of Input-bucket prefixes tied to a profile name pattern; the principals who decide tenancy (Admins under `TenantGrantSource=Manual`, the identity provider's role administration under `IdpClaim`, an entitlement system under `Api`) and whoever deploys the per-tenant S3 Access Points | Write-time boundary checks on mappings, tenants and scopes; under `TenantIsolationMode=Strict` or an external grant source, unscoped non-Admins denied, unscopable surfaces closed, ingest tenant check, access-point delegation with confining policies. Enforced by the application, not by IAM; Admins are cross-tenant. See [`tenant-isolation.md`](../feature-threats/tenant-isolation.md) (TEN.T01–T05) |
 
 > **Critical boundary note (new in v3.0).** TB6 now contains code that executes
 > *inside* TB1's browser context at the host's origin: an installed feature's
@@ -284,29 +286,36 @@ table.
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
 | **Resolver Lambda** (~40 functions) | **Enforces `allowedConfigVersions` and `allowedTestSets` scope, per-object ownership and review-queue eligibility**, and repeats the group check | Nothing forces a per-object check to exist or to match the right object (AUTH.T16) |
 
-**164 operations** are routable — 42 mapped directly by the
+**168 operations** are routable — 42 mapped directly by the
 `FIELD_FUNCTION_MAP` published to SSM at
-`/${StackName}/http-api/field-function-map`, **112** aliased onto shared
+`/${StackName}/http-api/field-function-map`, **116** aliased onto shared
 resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Those
-three sets sum to 165, not 164, because one field (`getCircuitBreakerStatus`)
+three sets sum to 169, not 168, because one field (`getCircuitBreakerStatus`)
 appears in both `FIELD_FUNCTION_MAP` and `ddb_direct._HANDLED`; the distinct
-union is 164, which is exactly the number of entries in
+union is 168, which is exactly the number of entries in
 `scripts/api_rbac_expectations.yaml`. Their required-group distribution:
 
 | Required groups | Ops |
 |---|---|
+| Admin only | 43 |
 | Admin + Author | 42 |
-| Admin only | 39 |
 | Any assigned group, whichever one (`ANY_GROUP`) | 27 |
 | Admin + Author + Viewer | 15 |
-| Any authenticated user, group or no group (`ANY`) | 8 |
+| Admin + Annotator + Reviewer | 14 |
 | Admin + Annotator + Author | 11 |
-| Admin + Annotator | 11 |
-| Admin + Annotator + Reviewer | 4 |
+| Any authenticated user, group or no group (`ANY`) | 8 |
 | Admin + Reviewer | 3 |
+| Admin + Annotator | 1 |
 | Annotator only | 1 |
-| Admin + Annotator + Author + Viewer | 1 |
+| All five groups | 1 |
 | IAM/backend only (Cognito callers rejected) | 2 |
+
+The four operations 0.6.14 adds — `listTenants`, `putTenant`, `deleteTenant` and
+`setUserTenant` — are all Admin only. The same release removes `Reviewer` from the
+Test Studio queue, labelling and test-set operations, which now admit Admin,
+Author and Annotator (Admin and Annotator for `listTestSetQueues`, Annotator alone for
+`claimTestSetDocument`), so a Reviewer
+works production review queues only.
 
 `ANY_GROUP` is resolved at build time into every group `template.yaml` creates, so a
 group added there joins those 27 without an edit per operation; what they refuse is a
@@ -387,6 +396,14 @@ CORS is wildcard-origin on both the REST route and the Function URL. Because
 credentials travel in headers (bearer token or SigV4) and `AllowCredentials` is
 false, this is not itself the authorization gap — but it does mean any origin can
 drive both APIs with credentials it can obtain.
+
+Under `TenantIsolationMode=Strict` or an external `TenantGrantSource` (the
+`DeniesUnscopedCaller` condition in `template.yaml`) the Web UI is built with an
+empty `VITE_STREAM_URL`, so it uses the REST chat path, which carries verified
+Cognito claims and can be scoped. The streaming function itself refuses any turn it
+cannot attribute to a verified caller (`chat_stream_processor/app.py`), which on the
+Function URL is every turn. The Function URL and its Identity Pool grant still
+exist in those modes, but they serve nothing.
 
 ### 5.3 Admission control at ingestion
 
@@ -495,9 +512,14 @@ to overwrite a document's sections while it is in review.
   tenant declarations (Input-bucket prefixes tied to a profile name pattern). With
   `TenantIsolationMode: Off` (the default) declarations are enforced when mappings,
   tenants and user scopes are written; `Strict` also denies unscoped non-admins,
-  refuses documents whose key and profile belong to different tenants at ingest, and
-  makes the cross-document agent and Knowledge Base surfaces Admin-only. Admins are
-  cross-tenant in both modes
+  refuses documents whose key and profile belong to different tenants at ingest,
+  makes the cross-document agent and Knowledge Base surfaces Admin-only, refuses MCP
+  tools, and lets the Input and Output bucket policies delegate to per-tenant S3
+  Access Points. `TenantGrantSource` decides who writes a non-Admin's scope
+  (`Manual`, `IdpClaim` or `Api`); under the two external sources an unscoped
+  non-Admin is denied whatever the isolation mode, and Admin scope edits are
+  refused. Admins are cross-tenant in every mode. Threats: TEN.T01–T05 in
+  [`tenant-isolation.md`](../feature-threats/tenant-isolation.md)
 - **Infrastructure as Code**: `template.yaml` + nested stacks (`api-resolvers`, `bedrockkb`, `multi-doc-discovery`, feature-platform)
 
 ### 7.1 Deployment-time privilege

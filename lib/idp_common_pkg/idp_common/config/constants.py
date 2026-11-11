@@ -46,3 +46,8 @@ ACTIVE_POINTER_KEY = f"{CONFIG_TYPE_CONFIG}#{ACTIVE_POINTER_VERSION}"
 # Without this guard a user could create a profile literally named "__active"
 # and overwrite the active-profile pointer.
 RESERVED_VERSION_NAMES = frozenset({ACTIVE_POINTER_VERSION})
+
+# Notes of the revision ConfigurationManager records, on the first save after
+# revision history is enabled, of what the profile held before that save. The
+# Terraform migration's restore-config reads revisions by this text.
+PRE_HISTORY_NOTES = "Configuration as it stood before revision history was enabled"

@@ -43,7 +43,13 @@ if _IDP_COMMON_DIR.is_dir() and str(_IDP_COMMON_DIR) not in sys.path:
 #: tests inherit them too, and a test calling main() would then act as the weekly
 #: run it is sitting in: on the eu-central-1 schedule, `IDP_TEST_REGION` made six
 #: tests fail and the run never reached its deploy. A test that needs one sets it.
-CI_RUN_SELECTORS = ("CI_PIPELINE_SOURCE", "IDP_TEST_REGION", "IDP_RUN_PROBES")
+CI_RUN_SELECTORS = (
+    "CI_PIPELINE_SOURCE",
+    "IDP_TEST_REGION",
+    "IDP_RUN_PROBES",
+    "IDP_IAC",
+    "IDP_RUN_TERRAFORM_MIGRATION",
+)
 
 
 @pytest.fixture(autouse=True)

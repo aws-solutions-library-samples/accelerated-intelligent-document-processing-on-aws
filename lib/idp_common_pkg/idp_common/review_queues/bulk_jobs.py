@@ -539,6 +539,7 @@ class BulkSkipService:
             "RequesterEmail": caller.email,
             "RequesterUsername": caller.username,
             "RequesterGroups": sorted(caller.groups),
+            **({"RequesterSub": caller.sub} if caller.sub else {}),
             "Total": total,
             "Processed": 0,
             "Counts": {o.value: 0 for o in SKIP_OUTCOMES},

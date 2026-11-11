@@ -155,6 +155,16 @@ class TestWorkerStep:
 
 
 @pytest.mark.unit
+class TestRequesterSub:
+    def test_the_job_records_the_requester_sub_when_there_is_one(self, env):
+        with_sub = REV.model_copy(update={"sub": "sub-1"})
+        job_id, _ = _job(env, with_sub, [f"d{i}.pdf" for i in range(7)])
+        assert _meta(env, job_id)["RequesterSub"] == "sub-1"
+        other, _ = _job(env, SCOPED, [f"s{i}.pdf" for i in range(7)])
+        assert "RequesterSub" not in _meta(env, other)
+
+
+@pytest.mark.unit
 class TestCancel:
     def test_a_queued_job_is_cancelled_and_never_starts(self, review_table):
         notifier = MagicMock()

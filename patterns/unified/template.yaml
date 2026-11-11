@@ -4715,17 +4715,22 @@ Resources:
       # checkov:skip=CKV_AWS_163: "ECR scanning controlled by parameter for environment-specific deployment requirements"
       ImageScanningConfiguration:
         ScanOnPush: !If [IsECRImageScanningEnabled, true, false]
+      # Keeps two complete versions plus slack. A version is one image per entry
+      # in DockerBuildRun's ExpectedImages, and a rollback reuses the previous
+      # version's images only while all of them are still here (#1824), so the
+      # count must be at least twice that list's length.
+      # scripts/tests/test_docker_build_run_wiring.py checks it.
       LifecyclePolicy:
         LifecyclePolicyText: |
           {
             "rules": [
               {
                 "rulePriority": 1,
-                "description": "Keep last 15 images",
+                "description": "Keep last 30 images",
                 "selection": {
                   "tagStatus": "any",
                   "countType": "imageCountMoreThan",
-                  "countNumber": 15
+                  "countNumber": 30
                 },
                 "action": {
                   "type": "expire"
@@ -4941,6 +4946,12 @@ Resources:
                   - ecr:DescribeImages
                 Resource:
                   - !GetAtt ECRRepository.Arn
+              # Read this stack's own status, to tell a rollback from an update
+              # (#1824). Scoped to this stack only.
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: !Ref AWS::StackId
         # Used by custom resource helper poller
         # https://github.com/aws-cloudformation/custom-resource-helper
         - PolicyName: CustomResourcePoller
@@ -5030,6 +5041,9 @@ Resources:
       CodeLocation: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactPrefix}/${SourceZipfile}"
       ImageVersion: !Ref ImageVersion
       LambdaArchitecture: !Ref LambdaArchitecture
+      # Lets a rollback reuse the previous version's images, which are still in
+      # this repository, instead of rebuilding them (#1824).
+      RepositoryName: !Ref ECRRepository
       ExpectedImages:
         - "bda-invoke-function"
         - "bda-completion-function"

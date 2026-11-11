@@ -79,6 +79,20 @@ class TestWorker:
         record = {**_record(), "body": "not json"}
         assert mod.handler({"Records": [record]}, CONTEXT) == {"batchItemFailures": []}
 
+    def test_the_scope_recheck_uses_the_recorded_sub(self, mod, monkeypatch):
+        import idp_common.config_scope as config_scope
+
+        seen = []
+        monkeypatch.setattr(
+            config_scope,
+            "resolve_allowed_config_versions",
+            lambda email, **kw: seen.append((email, kw["caller_sub"])) or ["claims"],
+        )
+        meta = {"RequesterEmail": "rev@example.com", "RequesterSub": "sub-1"}
+        assert mod._scope_resolver(meta) == ["claims"]
+        mod._scope_resolver({"RequesterEmail": "old@example.com"})
+        assert seen == [("rev@example.com", "sub-1"), ("old@example.com", "")]
+
     def test_queue_depth_adds_visible_and_delayed(self, mod, monkeypatch):
         monkeypatch.setenv("QUEUE_URL", "q")
         mod._SQS = MagicMock()

@@ -10,7 +10,8 @@
 # Ids match the user stories in the ground-truth correction QA plan, so a finding
 # can be referenced the same way in either place. That numbering exists so
 # stories gathered in review can be logged against the same ids rather
-# than described free-form and reported twice in different words.
+# than described free-form and reported twice in different words. A flow for a
+# feature outside that plan takes a short prefix instead: QS is Quick Start.
 #
 # This file is the FALLBACK and the memory — not the definition of scope. A
 # review normally starts from whatever the user asks for at run time ("look at
@@ -240,6 +241,39 @@ flows:
         document, and that a skip is recorded with the reason?
       - Does a by-profile run that becomes a background job leave the person
         somewhere they can follow it?
+
+  - id: 'QS.1'
+    title: Start setting up a new kind of document with Quick Start
+    persona: Admin
+    priority: p1
+    paths:
+      - src/ui/src/components/agent-chat/QuickStart*
+      - src/ui/src/components/agent-chat/useQuickStartUpload.ts
+      - src/ui/src/components/agent-chat/AgentChatLayout.tsx
+      - src/ui/src/components/welcome/**
+      - src/ui/src/contexts/guidedTour.tsx
+    setup:
+      - Nothing to seed. The review stack has the widget on (EnableQuickStartWidget).
+      - Never send a message in Quick Start. Its agent creates and activates a
+        configuration profile on the shared review stack once a draft is approved.
+    steps:
+      - Open Quick Start from the Welcome page if it shows, and from the Quick
+        Start button at the top of the side navigation.
+      - Read the panel's introduction and its suggested prompts.
+      - Type a description of a document, such as paystubs with employer, pay
+        period and net pay, and stop before sending it.
+      - Minimize the panel, reopen it from the launcher, then close it.
+    expect:
+      - Each entry point opens the same Quick Start panel.
+      - The message box accepts the typed description.
+      - Minimizing keeps the typed text; the launcher appears only once the panel
+        is minimized.
+    ux_watch:
+      - Before anything is sent, is it clear what Quick Start will create and that
+        it will make the result the active configuration?
+      - Does the panel say which files can be attached, before the file chooser
+        opens?
+      - Does the panel cover controls on the page behind it?
 
 # Flows still to add, gathered in review. Listed rather than
 # invented so it is visible that they are known-missing rather than overlooked:

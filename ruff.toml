@@ -108,7 +108,6 @@ exclude = [
     "lib/idp_common_pkg/idp_common/config/configuration_manager.py",
     "lib/idp_common_pkg/idp_common/config/migration.py",
     "lib/idp_common_pkg/idp_common/utils/__init__.py",
-    "lib/idp_common_pkg/idp_common/utils/few_shot_example_builder.py",
     "lib/idp_common_pkg/idp_common/utils/lambda_metering.py",
     "lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py",
     "nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py",

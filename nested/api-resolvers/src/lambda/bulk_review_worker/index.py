@@ -27,14 +27,16 @@ _SERVICE: Any = None
 
 
 def _scope_resolver(meta: dict) -> Optional[list]:
-    """The requester's current ``allowedConfigVersions`` (``None`` = unscoped)."""
+    """The requester's current ``allowedConfigVersions`` (``None`` = unscoped),
+    looked up with the ``sub`` recorded at submission so a grant stays bound to the
+    requesting account (a job recorded without one falls back to the email join)."""
     from idp_common.config_scope import resolve_allowed_config_versions
 
     return resolve_allowed_config_versions(
         str(meta.get("RequesterEmail") or ""),
         users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
         dynamodb=_DYNAMODB,
-        caller_sub=None,
+        caller_sub=str(meta.get("RequesterSub") or ""),
         cache=_SCOPE_CACHE,
     )
 
