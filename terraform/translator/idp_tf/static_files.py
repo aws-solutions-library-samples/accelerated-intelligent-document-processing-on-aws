@@ -50,9 +50,20 @@ def bridge_tf(
     template's own log groups are encrypted with and the bucket its own buckets
     log to. With a key, the bridge's log group is encrypted with it, as the
     template's are; the key policy must already let CloudWatch Logs use it,
-    which it does wherever the template's own log groups use the same key. With
-    a bucket, the bridge bucket's server access logs go to it under
-    ``cfn-bridge-logs/<stack_name>/``. None leaves that setting off.
+    which it does wherever the template's own log groups use the same key. The
+    bridge bucket is then SSE-KMS with the same key too: it holds
+    custom-resource responses, which can carry a handler's outputs. S3 uses a
+    key with the caller's own permissions, so the bridge role, which writes
+    every response (handlers PUT to a URL it presigns) and reads them back, is
+    granted ``kms:GenerateDataKey`` and ``kms:Decrypt`` on the key through S3,
+    which the key policy delegates to IAM (the template's keys allow the
+    account root). The principal that runs ``terraform apply`` writes the label
+    template and the resource directory there and CloudFormation reads the
+    label template with that principal's credentials, so it needs the same two
+    actions; a deployer able to create the key has them. With a bucket, the
+    bridge bucket's server access logs go to it under
+    ``cfn-bridge-logs/<stack_name>/``. None leaves that setting off: without a
+    key the bucket is SSE-S3.
     """
     role_lines = [f"name = {default_name('CfnBridge', 64, global_name=True)}"]
     if boundary_var:
@@ -65,6 +76,25 @@ def bridge_tf(
         f"  {line}" for line in GENERATED_NAME_ROLE_LIFECYCLE.splitlines()
     )
     log_group_kms = f"\n  kms_key_id        = {kms_key}" if kms_key else ""
+    if kms_key:
+        bucket_sse = f"""    apply_server_side_encryption_by_default {{
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = {kms_key}
+    }}
+    bucket_key_enabled = true"""
+        bucket_key_grant = f"""
+      {{
+        # The bucket is SSE-KMS with this key (see the encryption configuration).
+        Effect    = "Allow"
+        Action    = ["kms:GenerateDataKey", "kms:Decrypt"]
+        Resource  = {kms_key}
+        Condition = {{ StringEquals = {{ "kms:ViaService" = "s3.${{local.pseudo.region}}.${{local.pseudo.dns_suffix}}" }} }}
+      }},"""
+    else:
+        bucket_sse = """    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }"""
+        bucket_key_grant = ""
     access_logging = (
         f"""
 resource "aws_s3_bucket_logging" "cfn_bridge" {{
@@ -95,9 +125,7 @@ resource "aws_s3_bucket_public_access_block" "cfn_bridge" {{
 resource "aws_s3_bucket_server_side_encryption_configuration" "cfn_bridge" {{
   bucket = aws_s3_bucket.cfn_bridge.id
   rule {{
-    apply_server_side_encryption_by_default {{
-      sse_algorithm = "AES256"
-    }}
+{bucket_sse}
   }}
 }}
 
@@ -173,7 +201,7 @@ resource "aws_iam_role_policy" "cfn_bridge" {{
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "${{aws_cloudwatch_log_group.cfn_bridge.arn}}:*"
-      }},
+      }},{bucket_key_grant}
     ]
   }})
 }}
