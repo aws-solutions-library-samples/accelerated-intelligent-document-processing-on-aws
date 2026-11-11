@@ -499,3 +499,63 @@ def test_fields_beside_the_filtered_ones_are_dropped(world):
     event = _event(body, user_token(world, "open", "Viewer"), response=listing)
     out = world.mod.handler(event, _context())["mcp"]["transformedGatewayResponse"]
     assert set(out["body"]["result"]) == {"tools", "nextCursor"}
+
+
+# --- the user cache ---------------------------------------------------------------
+
+
+def _counting(world, monkeypatch):
+    calls = []
+    real = world.mod.mcp_access.resolve_caller
+
+    def counted(claims, **kw):
+        calls.append(claims.get("username") or claims.get("client_id"))
+        return real(claims, **kw)
+
+    monkeypatch.setattr(world.mod.mcp_access, "resolve_caller", counted)
+    return calls
+
+
+def _status(token):
+    return _event(_call("IDPTools___status", {"batch_id": "b"}), token)
+
+
+def test_a_cached_user_is_not_resolved_again(world, monkeypatch):
+    calls = _counting(world, monkeypatch)
+    token = user_token(world, "open", "Viewer")
+    world.mod.handler(_status(token), _context())
+    world.mod.handler(_status(token), _context())
+    assert calls == ["open"]
+
+
+def test_two_users_issued_in_the_same_second_get_their_own_caller(world, monkeypatch):
+    """The key carries the user, so one user's role and scope never serve another."""
+    a = user_token(world, "scoped", "Viewer")
+    b = user_token(world, "open", "Author")
+    first = forwarded_args(world.mod.handler(_status(a), _context()))["_caller"]
+    second = forwarded_args(world.mod.handler(_status(b), _context()))["_caller"]
+    assert (first["id"], first["scope"]) == (world.subs["scoped"], ["acme-*"])
+    assert (second["id"], second["roles"], second["scope"]) == (
+        world.subs["open"],
+        ["Author"],
+        None,
+    )
+
+
+def test_a_service_caller_is_never_cached(world, monkeypatch):
+    calls = _counting(world, monkeypatch)
+    token = service_token(world)
+    world.mod.handler(_status(token), _context())
+    world.mod.handler(_status(token), _context())
+    assert len(calls) == 2
+
+
+def test_a_cached_user_expires(world, monkeypatch):
+    calls = _counting(world, monkeypatch)
+    token = user_token(world, "open", "Viewer")
+    now = [1_000_000.0]
+    monkeypatch.setattr(world.mod.time, "time", lambda: now[0])
+    world.mod.handler(_status(token), _context())
+    now[0] += world.mod.USER_CACHE_SECONDS + 1
+    world.mod.handler(_status(token), _context())
+    assert calls == ["open", "open"]

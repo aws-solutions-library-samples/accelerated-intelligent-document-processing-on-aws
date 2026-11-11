@@ -50,7 +50,8 @@ _scope_cache: Dict[str, Any] = {}
 # request and a tools/list on both request and response, and each resolution reads
 # the user pool, whose read quota the web UI shares. Only users are cached; the
 # window bounds how long a user disabled in Cognito keeps their open token working
-# here, on top of the token's own lifetime.
+# here, on top of the token's own lifetime; a role or scope change likewise reaches
+# an already-cached token within that window.
 USER_CACHE_SECONDS = 30.0
 _user_cache: Dict[tuple, Any] = {}
 
@@ -100,6 +101,7 @@ def _resolve(request: Dict[str, Any]) -> mcp_access.Caller:
     key = (
         str(claims.get("client_id") or ""),
         str(claims.get("sub") or ""),
+        str(claims.get("username") or ""),
         str(claims.get("iat") or ""),
     )
     cached = _user_cache.get(key)

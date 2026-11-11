@@ -47,14 +47,25 @@ def full_update_request(
     return request
 
 
+#: States from which an update may be attempted. A gateway left in
+#: ``UPDATE_UNSUCCESSFUL`` by an earlier failed update still serves its previous
+#: configuration and accepts a new update; refusing to try from it would make every
+#: later stack operation fail without ever retrying.
+UPDATABLE = ("READY", "UPDATE_UNSUCCESSFUL")
+
+
 def wait_until_ready(
-    control_client: Any, gateway_id: str, attempts: int = 60, delay: float = 5
+    control_client: Any,
+    gateway_id: str,
+    attempts: int = 60,
+    delay: float = 5,
+    accept: Sequence[str] = ("READY",),
 ) -> Dict[str, Any]:
     status = None
     for _ in range(attempts):
         gateway = control_client.get_gateway(gatewayIdentifier=gateway_id)
         status = gateway.get("status")
-        if status == "READY":
+        if status in accept:
             return gateway
         if status in ("FAILED", "UPDATE_UNSUCCESSFUL"):
             break
@@ -77,10 +88,16 @@ def desired_interceptors(interceptor_arn: str) -> List[Dict[str, Any]]:
 def ensure_interceptor(control_client: Any, gateway_id: str, interceptor_arn: str):
     """Attach the caller interceptor, keeping everything else. ``True`` when an
     update was made. Raises when it cannot be applied, so the caller's operation
-    fails rather than leaving a gateway without it."""
+    fails rather than leaving a gateway without it.
+
+    The stack owns the gateway's interceptor list: it is set to exactly this one,
+    so an interceptor added to the gateway by hand is removed on the next stack
+    update. That is deliberate. The handler accepts only this interceptor's signed
+    caller block, and an interceptor the stack did not deploy is one nothing here
+    has tested in front of it."""
     if not interceptor_arn:
         raise ValueError("InterceptorArn is required")
-    gateway = wait_until_ready(control_client, gateway_id)
+    gateway = wait_until_ready(control_client, gateway_id, accept=UPDATABLE)
     desired = desired_interceptors(interceptor_arn)
     if gateway.get("interceptorConfigurations") == desired:
         logger.info(f"Gateway {gateway_id} already carries the caller interceptor")
@@ -101,7 +118,7 @@ def detach_interceptor(control_client: Any, gateway_id: str, interceptor_arn: st
     """Remove the interceptor naming ``interceptor_arn``, keeping everything else.
     ``True`` when an update was made; a gateway that does not exist is a no-op."""
     try:
-        gateway = wait_until_ready(control_client, gateway_id)
+        gateway = wait_until_ready(control_client, gateway_id, accept=UPDATABLE)
     except control_client.exceptions.ResourceNotFoundException:
         return False
     current = list(gateway.get("interceptorConfigurations") or [])

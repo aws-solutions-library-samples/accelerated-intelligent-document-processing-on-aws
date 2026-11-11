@@ -30,6 +30,8 @@ import cfnresponse
 
 from idp_common import mcp_gateway
 
+PHYSICAL_SUFFIX = "|interceptor"
+
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
@@ -45,19 +47,27 @@ def handler(event, context):
     props = event.get("ResourceProperties") or {}
     gateway_id = str(props.get("GatewayId") or "")
     interceptor_arn = str(props.get("InterceptorArn") or "")
-    physical_id = f"{gateway_id}|interceptor"
+    physical_id = f"{gateway_id}{PHYSICAL_SUFFIX}"
     request = event.get("RequestType")
     try:
         if request == "Delete":
+            # The gateway this resource was attached to is the one its physical id
+            # names, which is what CloudFormation sends a Delete for. The
+            # properties can name another gateway (a replacement), and detaching
+            # there would remove the interceptor from the live one.
+            sent = str(event.get("PhysicalResourceId") or physical_id)
+            target = (
+                sent[: -len(PHYSICAL_SUFFIX)] if sent.endswith(PHYSICAL_SUFFIX) else ""
+            )
             try:
-                if gateway_id and not gateway_id.startswith("N/A"):
+                if target and not target.startswith("N/A"):
                     detached = mcp_gateway.detach_interceptor(
-                        _control(props), gateway_id, interceptor_arn
+                        _control(props), target, interceptor_arn
                     )
-                    logger.info(f"Detach from {gateway_id}: changed={detached}")
+                    logger.info(f"Detach from {target}: changed={detached}")
             except Exception as exc:  # noqa: BLE001 - never block a delete/rollback
                 logger.error(f"Could not detach the interceptor: {exc}", exc_info=True)
-            cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physical_id)
+            cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, sent)
             return
         if not gateway_id or gateway_id.startswith("N/A"):
             logger.warning("No gateway exists in this region; nothing to attach to")

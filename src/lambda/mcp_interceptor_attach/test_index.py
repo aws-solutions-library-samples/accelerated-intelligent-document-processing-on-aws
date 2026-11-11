@@ -49,8 +49,10 @@ class FakeGateway:
             },
         }
         self.updates = []
+        self.seen = []
 
     def get_gateway(self, gatewayIdentifier):
+        self.seen.append(gatewayIdentifier)
         return json.loads(json.dumps(self.state))
 
     def update_gateway(self, **request):
@@ -129,3 +131,31 @@ def test_a_failed_detach_never_blocks_a_delete_or_rollback(attach, monkeypatch):
 def test_no_gateway_in_the_region_has_nothing_to_attach(attach):
     attach.module.handler(event("Create", gateway_id="N/A"), None)
     assert attach.sent[0][0] == "SUCCESS" and attach.gw.updates == []
+
+
+def test_delete_detaches_from_the_gateway_its_physical_id_names(attach):
+    """Not the one its properties name: after a gateway replacement the properties
+    name the new gateway, and detaching there would strip the live one."""
+    attach.gw.state["interceptorConfigurations"] = mcp_gateway.desired_interceptors(ARN)
+    e = event("Delete", gateway_id="gw-new")
+    e["PhysicalResourceId"] = "gw-old|interceptor"
+    attach.module.handler(e, None)
+    assert set(attach.gw.seen) == {"gw-old"}
+    assert attach.sent[0][:2] == ("SUCCESS", "gw-old|interceptor")
+
+
+def test_attaching_from_an_unsuccessful_update_is_attempted(attach):
+    """A gateway an earlier update left UPDATE_UNSUCCESSFUL still takes an update;
+    refusing to try would fail every later stack operation."""
+    attach.gw.state["status"] = "UPDATE_UNSUCCESSFUL"
+    statuses = iter(["UPDATE_UNSUCCESSFUL"] + ["READY"] * 5)
+    real = attach.gw.get_gateway
+
+    def get(gatewayIdentifier):
+        state = real(gatewayIdentifier)
+        state["status"] = next(statuses)
+        return state
+
+    attach.gw.get_gateway = get
+    attach.module.handler(event("Update"), None)
+    assert attach.sent[0][0] == "SUCCESS" and attach.gw.updates
