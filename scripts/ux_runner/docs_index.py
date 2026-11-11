@@ -147,8 +147,11 @@ HASH_CHARS = 12
 PAGE_MAX_BYTES = 1024 * 1024
 #: The largest index file :func:`save` writes and :func:`load` reads.
 INDEX_MAX_BYTES = 32 * 1024 * 1024
-#: The most page bytes :func:`snapshot_from_git` writes.
-SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024
+#: The most page bytes :func:`snapshot_from_git` writes. Sized so a snapshot at the
+#: cap still builds an index :func:`load` accepts: the index of the published tree
+#: is about 1.25x its pages, so 16 MiB of pages makes roughly 20 MiB of index
+#: against INDEX_MAX_BYTES. The current-tree test checks both halves.
+SNAPSHOT_MAX_BYTES = 16 * 1024 * 1024
 #: The most pages :func:`snapshot_from_git` writes.
 SNAPSHOT_MAX_FILES = 1000
 #: What a read of an address no page answers to returns, as the site's 404 does.

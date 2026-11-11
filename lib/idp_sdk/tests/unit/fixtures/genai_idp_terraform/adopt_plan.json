@@ -1,0 +1,517 @@
+{
+ "format_version": "1.2",
+ "terraform_version": "1.17.1",
+ "resource_changes": [
+  {
+   "address": "module.idp.aws_cloudformation_stack.tf_label[0]",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_cloudformation_stack",
+   "name": "tf_label",
+   "index": 0,
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {
+     "name": "newidp"
+    }
+   }
+  },
+  {
+   "address": "module.idp.aws_cloudfront_distribution.cloud_front_distribution[0]",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_cloudfront_distribution",
+   "name": "cloud_front_distribution",
+   "index": 0,
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {}
+   }
+  },
+  {
+   "address": "module.idp.aws_cloudwatch_dashboard.main_template_subset_dashboard",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_cloudwatch_dashboard",
+   "name": "main_template_subset_dashboard",
+   "change": {
+    "actions": [
+     "create"
+    ],
+    "before": null,
+    "after": {}
+   }
+  },
+  {
+   "address": "module.idp.aws_cognito_user.admin_user",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_cognito_user",
+   "name": "admin_user",
+   "change": {
+    "actions": [
+     "no-op"
+    ],
+    "before": {
+     "id": "us-west-2_EXAMPLE01/admin@example.com",
+     "user_pool_id": "us-west-2_EXAMPLE01",
+     "username": "admin@example.com"
+    },
+    "after": {
+     "id": "us-west-2_EXAMPLE01/admin@example.com",
+     "user_pool_id": "us-west-2_EXAMPLE01",
+     "username": "admin@example.com"
+    },
+    "importing": {
+     "id": "us-west-2_EXAMPLE01/admin@example.com"
+    }
+   }
+  },
+  {
+   "address": "module.idp.aws_cognito_user_in_group.admin_user_to_group_attachment",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_cognito_user_in_group",
+   "name": "admin_user_to_group_attachment",
+   "change": {
+    "actions": [
+     "no-op"
+    ],
+    "before": {
+     "group_name": "Admin",
+     "id": "us-west-2_EXAMPLE01,Admin,admin@example.com",
+     "user_pool_id": "us-west-2_EXAMPLE01",
+     "username": "admin@example.com"
+    },
+    "after": {
+     "group_name": "Admin",
+     "id": "us-west-2_EXAMPLE01,Admin,admin@example.com",
+     "user_pool_id": "us-west-2_EXAMPLE01",
+     "username": "admin@example.com"
+    },
+    "importing": {
+     "id": "us-west-2_EXAMPLE01,Admin,admin@example.com"
+    }
+   }
+  },
+  {
+   "address": "module.idp.aws_cognito_user_pool.user_pool",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_cognito_user_pool",
+   "name": "user_pool",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "id": "us-west-2_EXAMPLE01",
+     "name": "oldidp-i2pfi4o2-user-pool",
+     "schema": [
+      {
+       "attribute_data_type": "String",
+       "developer_only_attribute": false,
+       "mutable": true,
+       "name": "email",
+       "number_attribute_constraints": [],
+       "required": true,
+       "string_attribute_constraints": [
+        {
+         "max_length": "2048",
+         "min_length": "0"
+        }
+       ]
+      }
+     ],
+     "username_configuration": []
+    },
+    "after": {
+     "id": "us-west-2_EXAMPLE01",
+     "name": "newidp-users",
+     "schema": [
+      {
+       "attribute_data_type": "String",
+       "developer_only_attribute": null,
+       "mutable": true,
+       "name": "email",
+       "number_attribute_constraints": [],
+       "required": true,
+       "string_attribute_constraints": []
+      },
+      {
+       "attribute_data_type": "String",
+       "developer_only_attribute": null,
+       "mutable": true,
+       "name": "idp_groups",
+       "number_attribute_constraints": [],
+       "required": false,
+       "string_attribute_constraints": [
+        {
+         "max_length": "2048",
+         "min_length": ""
+        }
+       ]
+      }
+     ],
+     "username_configuration": []
+    },
+    "importing": {
+     "id": "us-west-2_EXAMPLE01"
+    }
+   }
+  },
+  {
+   "address": "module.idp.aws_dynamodb_table.chat_sessions_table",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_dynamodb_table",
+   "name": "chat_sessions_table",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "hash_key": "userId",
+     "id": "oldidp-bf1fipnn-api-agent-chat-sessions",
+     "name": "oldidp-bf1fipnn-api-agent-chat-sessions",
+     "range_key": "sessionId"
+    },
+    "after": {
+     "hash_key": "userId",
+     "id": "oldidp-bf1fipnn-api-agent-chat-sessions",
+     "name": "oldidp-bf1fipnn-api-agent-chat-sessions",
+     "range_key": "sessionId"
+    },
+    "importing": {
+     "id": "oldidp-bf1fipnn-api-agent-chat-sessions"
+    }
+   }
+  },
+  {
+   "address": "module.idp.aws_dynamodb_table.configuration_table",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_dynamodb_table",
+   "name": "configuration_table",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "hash_key": "Configuration",
+     "id": "idp-configuration-table-mr68w2wl",
+     "name": "idp-configuration-table-mr68w2wl",
+     "range_key": null
+    },
+    "after": {
+     "hash_key": "Configuration",
+     "id": "idp-configuration-table-mr68w2wl",
+     "name": "idp-configuration-table-mr68w2wl",
+     "range_key": null
+    },
+    "importing": {
+     "id": "idp-configuration-table-mr68w2wl"
+    }
+   }
+  },
+  {
+   "address": "module.idp.aws_dynamodb_table.tracking_table",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_dynamodb_table",
+   "name": "tracking_table",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "hash_key": "PK",
+     "id": "idp-tracking-table-mr68w2wl",
+     "name": "idp-tracking-table-mr68w2wl",
+     "range_key": "SK"
+    },
+    "after": {
+     "hash_key": "PK",
+     "id": "idp-tracking-table-mr68w2wl",
+     "name": "idp-tracking-table-mr68w2wl",
+     "range_key": "SK"
+    },
+    "importing": {
+     "id": "idp-tracking-table-mr68w2wl"
+    }
+   }
+  },
+  {
+   "address": "module.idp.aws_dynamodb_table.users_table",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_dynamodb_table",
+   "name": "users_table",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "hash_key": "PK",
+     "id": "oldidp-bf1fipnn-api-users",
+     "name": "oldidp-bf1fipnn-api-users",
+     "range_key": "SK"
+    },
+    "after": {
+     "hash_key": "PK",
+     "id": "oldidp-bf1fipnn-api-users",
+     "name": "oldidp-bf1fipnn-api-users",
+     "range_key": "SK"
+    },
+    "importing": {
+     "id": "oldidp-bf1fipnn-api-users"
+    }
+   }
+  },
+  {
+   "address": "module.idp.aws_s3_bucket.evaluation_baseline_bucket[0]",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_s3_bucket",
+   "name": "evaluation_baseline_bucket",
+   "index": 0,
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "bucket": "oldidp-baseline-i2pfi4o2",
+     "id": "oldidp-baseline-i2pfi4o2"
+    },
+    "after": {
+     "bucket": "oldidp-baseline-i2pfi4o2",
+     "id": "oldidp-baseline-i2pfi4o2"
+    },
+    "importing": {
+     "id": "oldidp-baseline-i2pfi4o2"
+    }
+   }
+  },
+  {
+   "address": "module.idp.aws_s3_bucket.input_bucket",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_s3_bucket",
+   "name": "input_bucket",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "bucket": "oldidp-input-i2pfi4o2",
+     "id": "oldidp-input-i2pfi4o2"
+    },
+    "after": {
+     "bucket": "oldidp-input-i2pfi4o2",
+     "id": "oldidp-input-i2pfi4o2"
+    },
+    "importing": {
+     "id": "oldidp-input-i2pfi4o2"
+    }
+   }
+  },
+  {
+   "address": "module.idp.aws_s3_bucket.output_bucket",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_s3_bucket",
+   "name": "output_bucket",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "bucket": "oldidp-output-i2pfi4o2",
+     "id": "oldidp-output-i2pfi4o2"
+    },
+    "after": {
+     "bucket": "oldidp-output-i2pfi4o2",
+     "id": "oldidp-output-i2pfi4o2"
+    },
+    "importing": {
+     "id": "oldidp-output-i2pfi4o2"
+    }
+   }
+  },
+  {
+   "address": "module.idp.aws_s3_bucket.test_set_bucket",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_s3_bucket",
+   "name": "test_set_bucket",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "bucket": "oldidp-bf1fipnn-api-test-sets",
+     "id": "oldidp-bf1fipnn-api-test-sets"
+    },
+    "after": {
+     "bucket": "oldidp-bf1fipnn-api-test-sets",
+     "id": "oldidp-bf1fipnn-api-test-sets"
+    },
+    "importing": {
+     "id": "oldidp-bf1fipnn-api-test-sets"
+    }
+   }
+  },
+  {
+   "address": "module.idp.aws_s3_bucket.working_bucket",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "aws_s3_bucket",
+   "name": "working_bucket",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "bucket": "oldidp-working-i2pfi4o2",
+     "id": "oldidp-working-i2pfi4o2"
+    },
+    "after": {
+     "bucket": "oldidp-working-i2pfi4o2",
+     "id": "oldidp-working-i2pfi4o2"
+    },
+    "importing": {
+     "id": "oldidp-working-i2pfi4o2"
+    }
+   }
+  },
+  {
+   "address": "module.idp.awscc_cognito_user_pool_group.admin_group",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "awscc_cognito_user_pool_group",
+   "name": "admin_group",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "group_name": "Admin",
+     "id": "us-west-2_EXAMPLE01|Admin",
+     "user_pool_id": "us-west-2_EXAMPLE01"
+    },
+    "after": {
+     "group_name": "Admin",
+     "id": "us-west-2_EXAMPLE01|Admin",
+     "user_pool_id": "us-west-2_EXAMPLE01"
+    },
+    "importing": {
+     "id": "us-west-2_EXAMPLE01|Admin"
+    }
+   }
+  },
+  {
+   "address": "module.idp.awscc_cognito_user_pool_group.author_group",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "awscc_cognito_user_pool_group",
+   "name": "author_group",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "group_name": "Author",
+     "id": "us-west-2_EXAMPLE01|Author",
+     "user_pool_id": "us-west-2_EXAMPLE01"
+    },
+    "after": {
+     "group_name": "Author",
+     "id": "us-west-2_EXAMPLE01|Author",
+     "user_pool_id": "us-west-2_EXAMPLE01"
+    },
+    "importing": {
+     "id": "us-west-2_EXAMPLE01|Author"
+    }
+   }
+  },
+  {
+   "address": "module.idp.awscc_cognito_user_pool_group.reviewer_group",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "awscc_cognito_user_pool_group",
+   "name": "reviewer_group",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "group_name": "Reviewer",
+     "id": "us-west-2_EXAMPLE01|Reviewer",
+     "user_pool_id": "us-west-2_EXAMPLE01"
+    },
+    "after": {
+     "group_name": "Reviewer",
+     "id": "us-west-2_EXAMPLE01|Reviewer",
+     "user_pool_id": "us-west-2_EXAMPLE01"
+    },
+    "importing": {
+     "id": "us-west-2_EXAMPLE01|Reviewer"
+    }
+   }
+  },
+  {
+   "address": "module.idp.awscc_cognito_user_pool_group.viewer_group",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "awscc_cognito_user_pool_group",
+   "name": "viewer_group",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "group_name": "Viewer",
+     "id": "us-west-2_EXAMPLE01|Viewer",
+     "user_pool_id": "us-west-2_EXAMPLE01"
+    },
+    "after": {
+     "group_name": "Viewer",
+     "id": "us-west-2_EXAMPLE01|Viewer",
+     "user_pool_id": "us-west-2_EXAMPLE01"
+    },
+    "importing": {
+     "id": "us-west-2_EXAMPLE01|Viewer"
+    }
+   }
+  },
+  {
+   "address": "module.idp.awscc_kms_key.customer_managed_encryption_key",
+   "module_address": "module.idp",
+   "mode": "managed",
+   "type": "awscc_kms_key",
+   "name": "customer_managed_encryption_key",
+   "change": {
+    "actions": [
+     "update"
+    ],
+    "before": {
+     "id": "1234abcd-12ab-34cd-56ef-1234567890ab",
+     "key_id": "1234abcd-12ab-34cd-56ef-1234567890ab"
+    },
+    "after": {
+     "id": "1234abcd-12ab-34cd-56ef-1234567890ab",
+     "key_id": "1234abcd-12ab-34cd-56ef-1234567890ab"
+    },
+    "importing": {
+     "id": "1234abcd-12ab-34cd-56ef-1234567890ab"
+    }
+   }
+  }
+ ]
+}

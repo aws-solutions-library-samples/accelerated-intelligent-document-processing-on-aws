@@ -1784,6 +1784,27 @@ rule reads one line at a time, a value written inside a list with no spaces
 (`10,20,30`) or inside a date, or a value the model shortened (`14` for `14.8`),
 now gets the box of another line that prints the same digits on their own.
 
+**A value inside a longer line is boxed to its own words.** When the value is
+only part of an OCR line — a date after its label (`Issue Date 14.05.2024`), a
+name inside a sentence, an amount at the end of a row — the box is narrowed from
+the whole line to the words that spell the value, using the per-word boxes the
+OCR backend returns and `pageData.json` keeps: Amazon Textract, and the BDA OCR
+backend, which adapts its output to the same shape. The highlight then covers the
+value, not its label or the other values on the line. Arabic and mixed
+Arabic/English lines benefit too wherever the OCR lists the line's words in
+reading order.
+
+The box stays on the whole line when the OCR backend gives no word boxes (the
+Mistral hook's paragraph boxes, the Cohere Parse hook's table and figure boxes,
+plain LLM OCR), when the value appears in more than one place on the line (a
+plain substring search, so `Main` on the line `Main Street Maintenance` counts
+twice), or when the line's `words[]` do not spell the value in the same order as the line's own text.
+`ocr_confidence` is still the line's.
+
+![Whole-line box versus word-span box on fictional specimen documents: the whole-line box includes the label; the word-span box covers just the certificate number, reference number, application number and recipient name](../images/ocr-grounding-word-span-documents.png)
+
+![Whole-line box versus word-span box on synthetic Arabic and mixed Arabic/English pages: an Arabic-Indic date, Arabic names, a place name inside a sentence, an academic year in calligraphy, a size, an email address, a phone number and a receipt number each highlighted on its own words instead of the whole line](../images/ocr-grounding-word-span-benchmark.png)
+
 **Format-aware matching.** Extraction often canonicalizes a value to a schema
 format that differs from how it appears in the document (a date extracted as
 `2022-04-04` but printed `04/04/2022`; an amount `1234.00` printed `$1,234.00`; a
@@ -1895,8 +1916,9 @@ For each assessed leaf field, the service:
 
 1. Loads `pageData.json` for the section's pages via `Page.ocr_page_data_uri` (older documents without this artifact are skipped — see fallback).
 2. Matches the value against the page's OCR `lines[]`, in precision order: **exact** line → **value contained in a line** → **a number contained only inside a longer number** → **multi-line span** (boxes unioned) → **fragment covering at least half the value** → **token-overlap fuzzy** (Jaccard ≥ 0.6) → **character similarity** (≥ 0.8) → **fragment covering less than half the value** (last).
-3. **Disambiguates repeated values spatially** (for `llm_grounded`): all candidates are collected and the one whose box center is nearest the LLM-estimated box is chosen. Without a usable LLM reference box, an ambiguous match keeps the LLM box rather than risk attaching the wrong row's geometry.
-4. On a confident match, **replaces** the field's `geometry` with the real OCR box and adds provenance keys.
+3. When the value is contained in a longer line, narrows that candidate's box to the words that spell it (the backend's word boxes, from Textract or BDA OCR; the line box otherwise). This happens while the candidates are collected, so the next step compares the narrowed boxes.
+4. **Disambiguates repeated values spatially** (for `llm_grounded`): all candidates are collected and the one whose box center is nearest the LLM-estimated box is chosen. Without a usable LLM reference box, an ambiguous match keeps the LLM box rather than risk attaching the wrong row's geometry.
+5. On a confident match, **replaces** the field's `geometry` with the real OCR box and adds provenance keys.
 
 **Output additions** on grounded fields:
 

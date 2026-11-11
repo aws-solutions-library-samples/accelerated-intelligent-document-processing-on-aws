@@ -517,7 +517,7 @@ roughly one paid review. What makes GitHub's hourly sweep affordable on top of
 that is the per-head-SHA idempotency marker — a tick that finds no new head posts
 nothing and pays nothing.
 
-**On GitLab the no-AWS gates are seven parallel jobs, not one.** `static_checks` ran
+**On GitLab the no-AWS gates are eight parallel jobs, not one.** `static_checks` ran
 lint, typecheck and every pytest suite in sequence for 45 minutes, 80% of it
 pytest, and `make test-packages-cicd` was 25 of those minutes because every one of
 its pytest invocations ran serial and single-process on a 16-vCPU runner. Both
@@ -553,9 +553,21 @@ skipped them — the same class of gap as the SRT/dep-audit note below. Now on b
 `make test-packages-cicd`, `make coverage-all-cicd`,
 `make check-coverage-debt-cicd`, the UI vitest suite,
 `scripts/check_first_party_deps.py`,
-`scripts/sdlc/validate_service_role_permissions.py`, `make srt-scan` and
-`scripts/security/dep_audit.py`. The type gate is the whole-tree `make typecheck`;
-`make typecheck-pr` is a developer convenience and runs in neither CI.
+`scripts/sdlc/validate_service_role_permissions.py`, `make srt-scan`,
+`scripts/security/dep_audit.py` and `make terraform-check`. The type gate is the
+whole-tree `make typecheck`; `make typecheck-pr` is a developer convenience and runs
+in neither CI.
+
+`make terraform-check` is its own job on each side (`terraform_checks`). It
+translates `template.yaml` with `terraform/translator` offline, then runs
+`init -backend=false` and `validate` on the generated module with every Terraform
+and OpenTofu release pinned in the `Makefile` (`TERRAFORM_*_VERSION`,
+`OPENTOFU_*_VERSION`, mirrored in both CI configs and asserted by
+`test_ci_gate_parity.py`). Errors fail it and warnings do not. It proves the
+generated HCL loads and checks against the provider schemas; it plans and deploys
+nothing. It needs network access: binaries are installed only when their archive
+matches both the published `SHA256SUMS` and the hash committed in
+`scripts/terraform_binaries.lock.json`, which also pins the provider versions.
 
 ⚠️ **The coverage ratchet reads one report per tree, and the `-cicd` spelling is what
 makes that a requirement rather than a hope.** `make check-coverage-debt` with no
@@ -678,12 +690,13 @@ every draft pull request with no review having run.
 
 Three things about what it reads. GitHub can require job-level contexts only, never
 individual steps, so how the jobs are arranged decides the mapping:
-ten of the twelve shared gates live in `developer-tests.yml` (four parallel jobs)
+eleven of the thirteen shared gates live in `developer-tests.yml` (five parallel jobs)
 and the other two in
-`security-checks.yml` (two), so the twelve shared gates produce
-six requireable contexts in total. ⚠️ That means **requiring only the lint context is weaker
-than it looks** — the test suites are their own contexts now, so all six have to be
-required; `test_check_branch_protection.py`'s `MUST_BE_REQUIRED` names all six so that
+`security-checks.yml` (two), so the thirteen shared gates produce
+seven requireable contexts in total. ⚠️ That means **requiring only the lint context is weaker
+than it looks** — the test suites and the Terraform gate are their own contexts now, so all
+seven have to be required; `test_check_branch_protection.py`'s `MUST_BE_REQUIRED` names all
+seven so that
 regression fails rather than passing quietly. It reads classic branch protection **and** rulesets,
 because a branch can be governed entirely by a ruleset while the classic endpoint
 reports nothing. And it separates "not protected" from "cannot see": the classic

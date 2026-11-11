@@ -1,0 +1,4 @@
+cell,n_success,n_fail,cost_mean,cost_stdev,cost_cv,cost_min,cost_max,recall_mean,acc_mean,wall_mean
+split-disabled,20,0,0.12293,0.03442,0.28,0.0622,0.1428,0.9,1.0,51.9197
+split-llm,20,0,0.12976,0.02923,0.2252,0.0802,0.1494,1.0,0.875,45.6722
+split-llm-v067prompt,20,0,0.12984,0.02935,0.226,0.0802,0.1497,1.0,0.8,47.93264

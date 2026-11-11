@@ -28,7 +28,7 @@ record of its last run.
 | Layer | Needs AWS? | Runs in CI? | Entry point |
 |---|---|---|---|
 | [1. Offline test suites](#1-offline-test-suites) | no | ✅ both CIs, but through two other targets — see below | `make test` |
-| [2. Static gates](#2-static-gates-lint-types-and-hand-written-scanners) | no | ✅ both CIs | `make lint-cicd` · `make typecheck` |
+| [2. Static gates](#2-static-gates-lint-types-and-hand-written-scanners) | no | ✅ both CIs | `make lint-cicd` · `make typecheck` · `make terraform-check` |
 | [3. Web UI unit tests](#3-web-ui-unit-tests) | no | ✅ both CIs | `make ui-test` |
 | [4. Security scanning](#4-security-scanning-sast-and-sca) | no | ✅ both CIs | `make srt-scan` · `make dep-audit` |
 | [5. Integration smoke suite](#5-integration-smoke-suite-ci-only) | **yes** | ⚠️ GitLab **scheduled** (primary suite nightly) + manual button — not a merge gate | pipeline `integration_tests` |
@@ -311,6 +311,40 @@ than the environment, using relative paths so it cannot resolve against another
 checkout, and the suite asserts that first-party imports really do resolve — by
 running basedpyright, not by inspecting the JSON.
 
+### The Terraform offline gate
+
+`make terraform-check` is a static gate that is not part of `make lint`, because it
+needs network access and about two gigabytes of cache. Each CI runs it as its own job,
+`terraform_checks`. It works in four steps:
+
+1. It translates `template.yaml`, with the nested templates read from source, into a
+   temporary directory using `terraform/translator` in `--offline` mode. No AWS call
+   is made.
+2. It installs each binary in `TERRAFORM_CHECK_BINARIES` into a cache. By default
+   these are the floor and latest-stable releases of both Terraform and OpenTofu,
+   pinned in the `Makefile` and mirrored in both CI configs. An archive is accepted
+   only when its SHA256 matches both the release's published `SHA256SUMS` and the
+   hash committed in `scripts/terraform_binaries.lock.json`.
+3. It runs `init -backend=false` and `validate` on the generated module with each
+   binary. Provider versions are pinned exactly through an override file: `aws` and
+   `time` from the lock file, and `awscc` to the vendored schema's version. Errors
+   fail the gate. Warnings are counted and printed but do not fail it.
+4. It runs `make terraform-scan-diff`: a pinned `checkov` (`CHECKOV_VERSION` in the
+   `Makefile`) over the CloudFormation templates and over the generated module,
+   failing on a Terraform finding the CloudFormation side does not have unless
+   `scripts/terraform_scan_baseline.json` explains it.
+
+The gate proves that the generated HCL parses, that its references resolve, and that
+every resource and attribute type-checks against the pinned provider schemas, on the
+oldest and newest releases the module claims to support. It does **not** plan or
+deploy anything, so a value AWS would reject at apply time, an IAM policy grammar
+error, or an ordering problem between resources is outside what it can see. The
+translator's and bridge's own unit tests run in `make test` (layer 1) and are not
+repeated here. `scripts/tests/test_terraform_check.py` covers the gate's own checks
+offline: refusing an archive that matches neither hash, failing on an error while
+passing on warnings, and keeping the provider pins inside the module's declared
+ranges.
+
 ### Whether any of this actually blocks a merge
 
 Parity means both CIs *run* a gate. Whether a red gate can *stop* a merge is a
@@ -336,12 +370,12 @@ path-filtered, and `Test Results` is a check run an action creates behind an `if
 so none of them reports on every PR and requiring one would leave a check pending
 forever and block every merge.
 
-Three details are worth knowing about what it reads. Ten of the twelve shared gates
+Three details are worth knowing about what it reads. Eleven of the thirteen shared gates
 live in `developer-tests.yml` and the other two — the SRT scan and the dependency
 audit — in `security-checks.yml`; because a context is a *job*, and those two
-workflows hold four and two jobs respectively, the twelve gates produce six
+workflows hold five and two jobs respectively, the thirteen gates produce seven
 requireable contexts. ⚠️ **Requiring only the lint context is therefore weaker than
-it looks**: the test suites are their own contexts, so all six have to be required
+it looks**: the test suites are their own contexts, so all seven have to be required
 for a red test run to block a merge. It reads **both** enforcement mechanisms,
 classic branch protection and
 rulesets, because a branch can be fully governed by a ruleset while the classic
@@ -466,7 +500,16 @@ carrying `IDP_RUN_PROBES=true`), not something in this repository; the probes ru
 only while it exists and is active.
 Two more weekly schedules, while they are active, run the primary suite in
 `eu-central-1` and `ca-central-1`; each result is labelled with its region, in the
-same Slack channel.
+same Slack channel. A second nightly schedule, while it is active (carrying
+`IDP_IAC=terraform`), runs the primary suite against a
+[Terraform deployment](./terraform.md) of the accelerator instead of a
+CloudFormation stack, labelled `NIGHTLY TERRAFORM RUN`. It is told apart from the
+CloudFormation nightly by that variable alone, so it leaves the UX review stack and
+the nightly first-time-user stories to the CloudFormation nightly, and the two runs
+queue for the same deploy lock rather than overlapping. To run that mode by hand, set
+`IDP_IAC=terraform` for the deploy driver, `scripts/sdlc/codebuild_deployment.py`;
+how it differs from the CloudFormation run, and the CI pipeline-stack update it
+needs before the schedule is turned on, are in the coverage document below.
 
 Two things follow. **Click the button before merging anything that touches the
 deploy path** — `template.yaml`, `publish.py`, `patterns/`, `nested/`, `src/`,
@@ -511,7 +554,9 @@ the rows run only when a person asks.
 | Deploy variants (also on the weekly probe schedule, while it is active) | that each hosting/parameter combination actually creates and serves | `make stacktest-hosting-global` · `make stacktest-waf` · `make stacktest-hosting-private` (VPC) · `make stacktest-jobsapi` (VPC) — list them with `make stacktest-list` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Template transforms | that a **transformed** template deploys and processes a real document — the only tier that can | `make transform-deploy-test-headless` · `make transform-deploy-test-govcloud` · both: `make transform-deploy-test-all` | [`transform-deploy-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/transform-deploy-test.md) |
 | Seller Entitlement Service e2e | that the service deploys into a seller account, grants correctly, and **refuses** correctly | `make stacktest-seller` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
+| Terraform property parity | that a Terraform deployment of the release stores the same configuration as a CloudFormation deployment of it with the same parameters, every resource of the main and nested stacks read back through Cloud Control, beyond the explained differences in `terraform/tools/parity_baseline.json`. Read-only; needs both deployments | `make terraform-parity CFN_STACK=… TF_STACK=…` | [`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation.md) (tier I) |
 | In-place upgrade (X→Y) | that an existing customer stack survives `update-stack` without rollback **and still works afterwards** | `make stacktest-upgrade` (pointer) | [`test-upgrade`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/test-upgrade.md) |
+| Migration from `genai-idp-terraform` (also on the weekly Terraform-migration schedule, while it is active) | that a deployment of the separate [`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform) implementation, at a pinned tag and seeded with documents, users, a configuration edit, a baseline and a test set, moves onto this repository's module with every phase of `idp-cli terraform migrate-from-genai-idp-terraform`, keeping every object and item, and that afterwards both users sign in to the new deployment with their old passwords and keep their scope, a new document is processed by the new deployment only, and destroying the old deployment leaves the adopted resources standing. Deploys and destroys both deployments: measured end to end at 166 minutes, 76 of them waiting on DynamoDB's two time-to-live intervals and 33 the adoption apply and writes `result.json` and `summary.txt` in its work directory | `make stacktest-terraform-migration OLD_NAME=… NEW_NAME=… TERRAFORM_MODULE_URL=…` | [`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation.md) (tier J) |
 
 ### The UX review, and recording it
 

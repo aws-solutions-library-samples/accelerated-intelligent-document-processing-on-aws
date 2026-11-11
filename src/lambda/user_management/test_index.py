@@ -936,6 +936,33 @@ class TestTheBackFill:
         assert table.update_item.call_count == 1
         table.delete_item.assert_not_called()
 
+    def test_a_row_another_live_account_records_stays_bound_to_it(self, users_table):
+        """Two accounts in the pool share an address, and the row records the first.
+        Cognito does not make ``email`` unique, and a row belongs to the account it
+        records, so the sync leaves it bound to that account whichever order the
+        pool lists them in, and creates no second row."""
+        index = _load_index()
+        first, second = "sub-first-account", "sub-second-account"
+        users_table.put_item(
+            Item=dict(
+                ANNOTATOR_ITEM, cognitoSub=first, allowedConfigVersions=["tenant-a"]
+            )
+        )
+        index._record_cognito_sub(users_table, "u-1", first, scoped=True)
+        email = ANNOTATOR_ITEM["email"]
+        for order in ((second, first), (first, second)):
+            pages = [
+                {"Users": [self._page(email, sub)[0]["Users"][0] for sub in order]}
+            ]
+            with patch.object(
+                index, "cognito", _cognito_double(list_users_pages=pages)
+            ):
+                index.sync_cognito_users_to_dynamodb()
+            (row,) = self._rows(users_table)
+            assert row["cognitoSub"] == first
+            assert self._pointer(users_table, first)["Item"]["userId"] == "u-1"
+            assert "Item" not in self._pointer(users_table, second)
+
     def test_a_row_that_already_records_its_sub_is_not_rewritten(self, users_table):
         index = _load_index()
         users_table.put_item(Item=dict(ANNOTATOR_ITEM, cognitoSub=_SUB))

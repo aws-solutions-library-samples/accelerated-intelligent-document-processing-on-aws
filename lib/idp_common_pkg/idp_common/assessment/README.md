@@ -706,8 +706,10 @@ Before the ceiling, the largest shortfall this rung said nothing about was **115
 unscored rows of 3,200** (3.6%) on `scale_3200.pdf`, against 24 of 800 (3.0%) when it
 was last measured — the share barely moved while the row count grew 4.8×, because the
 document grew 4×, which is what a purely multiplicative rung does. With the 10-row
-ceiling the largest silent shortfall over this whole corpus is **6 unscored rows of
-400** (1.5%), and it cannot exceed 9 whatever the list's length
+ceiling the largest silent shortfall over the committed grids through v0.6.14 is **8
+unscored rows of 202** (4.0%), on three Nova Lite runs of the 17-page document whose
+extraction had itself stopped at 202 of 800 rows (6 of 400 before the v0.6.14 grids), and
+it cannot exceed 9 whatever the list's length
 ([#1495](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1495)).
 
 The two error paths are disjoint on this corpus, and together they account for
@@ -1323,6 +1325,43 @@ Key behaviors:
   the same, and the tag now names the form that matched whole, `"ocr-normalized"`.
   Over the same sample documents (all but the 17-page fund factsheet, left out of
   that pass for time) none of 11,466 unchanged boxes changed tag.
+- **Word-span narrowing** of a value found inside a longer line (the value-in-line
+  tiers, `_TIER_SUBSTRING` and `_TIER_SUBSTRING_EMBEDDED`): `_word_span_box` joins the
+  line's `words[]` in the order the line lists them, normalizes the result the way
+  `_normalize` normalizes a line while tracking which word each character came from,
+  finds the value there, and returns the union of the words it covers. So
+  `"14.05.2024"` in `"Issue Date 14.05.2024"` gets that word's box rather than the
+  line's. It returns `None`, keeping the line box, when the line has fewer than two
+  words, the value is not in the joined words (for instance words listed in another
+  order than the line text), the value occurs there more than once, or it covers a
+  word with no box. Matching and tiers are unchanged, but narrowing happens while
+  each candidate is built (`_build_match(..., narrow_to=)`), so the spatial
+  tie-break (`llm_grounded`, nearest to the LLM box) compares the narrowed boxes:
+  which of several equal-tier candidates wins can change, toward the line whose
+  value words sit where the model pointed. The row-order tie-break (`ocr_only` list
+  items, `_reading_order_key`) deliberately does **not**: a narrowed candidate
+  carries its line box under a private key (`_ORDER_BOX_KEY`, stripped before the
+  geometry is returned), and rows are ordered by that, so narrowing never changes
+  which occurrence a list item is given, not even for two columns on one visual row
+  printing the same amount. `TestNarrowedBoxesFeedTheTieBreaks` pins all three. Narrowing does not itself change how a candidate is tagged in `geometry_source`, and `ocr_confidence` stays the line's: it is
+  the value the HITL review screens and earlier artifacts already show, and changing
+  it to a per-word figure would move confidence alerts, which this change does not
+  set out to do. On a 36-page Arabic/English benchmark (333 targets, Textract OCR,
+  scored by ink coverage, each value grounded on its own with no LLM box and no row
+  index, i.e. the `ocr_only` scalar path) this moved CORRECT boxes from 70.0% to
+  88.6% — 62 better, none worse: every value previously given a LOOSE whole-line
+  box.
+  The benchmark harness was ad hoc and is not kept in the repository; the
+  dataset is private.
+
+  Two things this deliberately does not change. **It records no provenance of its
+  own:** a narrowed box carries the same `geometry_source` as the line box it
+  replaced, so a stored artifact cannot tell the two apart. That is a choice, not
+  an oversight — `"ocr-weak"` exists because a fragment-based box is *weaker*
+  evidence of location, whereas a word-span box is the same match located more
+  precisely, and a new tag would split every downstream count of `"ocr"` boxes
+  for no change in trust. Whether narrowing fired is recoverable by comparing the
+  box with its line in `pageData.json`. **It does not reorder rows,** as above.
 - **Spatial disambiguation** of repeated values: when a value matches multiple lines, the
   candidate nearest the LLM-estimated box wins; with no usable reference box the field keeps
   its LLM box (so identical amounts across table rows don't collapse onto one line).

@@ -49,7 +49,7 @@ Concierge support for customization, deployment, and integration of production u
 
 **Prefer AWS CDK?** This solution is also available as [GenAI IDP Accelerator for AWS CDK](https://github.com/cdklabs/genai-idp), providing the same functional capabilities through AWS CDK constructs for customers who prefer Infrastructure-as-Code with CDK.
 
-**Prefer Terraform?** This solution is also available as [GenAI IDP Terraform](https://github.com/awslabs/genai-idp-terraform), providing the same functional capabilities as a Terraform module that integrates with existing infrastructure and supports customization through module variables.
+**Prefer Terraform?** Each release also publishes a Terraform module generated from this repository's CloudFormation templates, deployable with Terraform or OpenTofu (experimental). See [Terraform Deployment](./docs/terraform.md), and [Migrating to the built-in Terraform module](./docs/terraform-migration.md) if you deploy with a separate Terraform implementation today.
 
 ## Key Features
 
@@ -250,7 +250,7 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 Security artifacts live under [`security/`](./security/README.md) so that coverage
 and results are auditable rather than asserted.
 
-- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 104 threats
+- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 109 threats
   across the architecture, pipeline, web UI and API, agent and chat
   features, extension points and analytics stack. Each entry records the controls
   that address it and, where they do not fully cover it, the residual risk. Threats
@@ -300,7 +300,7 @@ issue or a pull request before you open one:
 
 - **[GOVERNANCE.md](./GOVERNANCE.md)** — who decides, how a change gets accepted,
   the `develop`/`main` branch and release model, and this repository's relationship
-  to the CDK and Terraform ports.
+  to the CDK port.
 - **[.github/CODEOWNERS](./.github/CODEOWNERS)** — who reviews what, and what
   routes review requests.
 - **[ROADMAP.md](./ROADMAP.md)** — direction, priorities and explicit non-goals.

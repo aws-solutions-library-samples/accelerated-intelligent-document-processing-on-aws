@@ -15,6 +15,7 @@ from .publish import PublishOperation
 from .search import SearchOperation
 from .stack import StackOperation
 from .tenancy import TenancyOperation
+from .terraform import TerraformOperation
 from .testing import TestingOperation
 
 __all__ = [
@@ -30,5 +31,6 @@ __all__ = [
     "SearchOperation",
     "StackOperation",
     "TenancyOperation",
+    "TerraformOperation",
     "TestingOperation",
 ]

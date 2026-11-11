@@ -179,7 +179,7 @@ def _build_repo_tree(root):
         "nested/multi-doc-discovery/template.yaml": "Resources: {}\n",
         "nested/multi-doc-discovery/Dockerfile": "FROM scratch\n",
         "nested/multi-doc-discovery/requirements.txt": "boto3==1.40.0\n",
-        "nested/multi-doc-discovery/docker_build_lambda/index.py": "def h(): pass\n",
+        "src/lambda/start_codebuild/index.py": "def h(): pass\n",
         "patterns/unified/template.yaml": "Resources: {}\n",
         "patterns/unified/src/ocr/index.py": "def handler(): pass\n",
         "patterns/unified/statemachine/workflow.asl.json": '{"StartAt": "A"}\n',

@@ -21,6 +21,7 @@ import yaml
 
 from idp_common.config.merge_utils import load_system_defaults
 from idp_common.extraction.service import ExtractionService
+from idp_common.prompt_comments import strip_prompt_comments
 from idp_common.utils.few_shot_example_builder import (
     build_few_shot_extraction_examples_content,
 )
@@ -123,7 +124,11 @@ class TestShippedPromptsCarryPlaceholder:
         for key in path:
             prompt = prompt[key]
 
-        _assert_placeholder_is_cacheable(prompt, "classification." + ".".join(path))
+        # As sent: the defaults document their contract in {# ... #} comments,
+        # which name the placeholder too and are removed before any request.
+        _assert_placeholder_is_cacheable(
+            strip_prompt_comments(prompt), "classification." + ".".join(path)
+        )
 
 
 @pytest.mark.unit

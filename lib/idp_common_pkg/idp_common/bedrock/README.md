@@ -472,6 +472,14 @@ Values are not re-scanned — they are inserted by the `%` operator, which does
 not re-read what it wrote — so a `%` arriving from a class description, an
 attribute description or an OCR page needs no handling at the call site.
 
+Comments (`{# ... #}`) are removed from the template first
+(`idp_common.prompt_comments.strip_prompt_comments`), so a comment is never sent
+and a placeholder that appears only inside a comment does not satisfy
+`required_placeholders`. Templates loaded through the runtime config reader
+already arrive without comments; this covers a template handed to
+`format_prompt` directly. Only the template is stripped: substituted values, such
+as document text that itself contains `{#`, are inserted as they are.
+
 `required_placeholders` is a check on the **template**, not on the substitutions
 dict: it asks whether the prompt offers a slot the caller needs to fill, and
 raises `ValueError` naming the missing ones.

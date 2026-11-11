@@ -241,6 +241,13 @@ every tenant's **Granted by** values and writes the result to the user's record 
 the token is issued. A user with no record yet gets one, with the role the claim maps
 to.
 
+The grant is bound to the signing-in account's Cognito `sub`. The trigger writes to
+the record that account's `sub` already names or, failing that, to a record with the
+account's email address that names no `sub` yet, such as one an Admin created, and it
+records the `sub` in the same write. It never writes to a record that names a
+different `sub`, so each account gets a record of its own; see
+[Accounts that share an email address](#accounts-that-share-an-email-address).
+
 The trigger applies the same two checks it uses for roles: it reads the claim only for
 a user federated through the configured provider, and only on a fresh sign-in, never
 on a token refresh. A user who signs in with a Cognito password rather than through
@@ -296,12 +303,46 @@ provisioning script, owns tenant membership. It calls one of:
 - `client.tenancy.set_user_tenant(email, tenant_id)` in the SDK.
 
 The user must already exist: the call refuses an unknown address rather than create an
-account. It also refuses an address that more than one user record holds, because
-it could not tell which record decides that user's access; remove the duplicate in
-User Management first. A `tenantId` that is not declared is refused, and so is an Admin. Granting a
+account. It also refuses an address that more than one user record holds, one for
+each account with that address, because it cannot tell which account the grant is
+for; see [Accounts that share an email address](#accounts-that-share-an-email-address).
+A `tenantId` that is not declared is refused, and so is an Admin. Granting a
 tenant replaces the previous one. The tenant's **Granted by** values are not used by
 this route; the tenant ID is what the entitlement system sends. All three refuse when
 the stack's `TenantGrantSource` is not `Api`.
+
+### Accounts that share an email address
+
+Cognito does not require email addresses to be unique, so two accounts in the user
+pool can have the same one: a native and a federated account, for example, or an
+account recreated in the identity provider. A user record belongs to the Cognito
+account whose `sub` it names.
+
+When the scope is read for a request, a record that names a different `sub` than the
+caller's is not applied as the caller's under `IdpClaim`, `Api` or
+[Strict mode](#strict-mode): the caller is denied, as a user with no tenant is. Under
+`Manual` with isolation off it is still applied, because there a user with no record
+is unrestricted and the record's scope can only narrow access. Where an address holds
+several records, the one naming the caller's `sub` is used.
+
+What gives the second account access depends on the grant source:
+
+- **`IdpClaim`:** nothing to do. Each account gets its own record at its fresh
+  sign-in. A record that two accounts already share is sorted out at each account's
+  next fresh sign-in: the account the record names keeps it, and the other gets a
+  record of its own.
+- **`Api`, and `Manual` with Strict mode:** an address has one record, because User
+  Management creates one per address and the entitlement push addresses users by
+  email. The record stays with the account it names. When User Management lists
+  users it re-binds a record only if the account the record names is no longer in
+  the user pool, and never moves it from one account in the pool to another. To give
+  the address to the other account, delete the account that should not hold it in
+  the Cognito user pool, or give that account a different address, and then open
+  User Management, which binds the record to the remaining account. Under `Api` the
+  entitlement system's next push for the address then applies to that account; under
+  `Manual` an Admin can review its scope there. An address that holds a record per
+  account, which a period under `IdpClaim` can leave behind, is refused by
+  `setUserTenant` until only one record for it remains.
 
 ### How quickly a removal takes effect
 

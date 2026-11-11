@@ -4345,3 +4345,32 @@ class TestDocumentSectionsDiscovery:
         with self._stub_glue(rollup, [table]):
             result = rollup._discover_document_sections_tables()
         assert result == ["document_sections_invoice"]
+
+
+def _load_with_env(**env):
+    """Load the rollup module with ``IDP_TF_RESOURCE_DIRECTORY`` as given."""
+    with patch.dict(os.environ):
+        os.environ.pop("IDP_TF_RESOURCE_DIRECTORY", None)
+        os.environ.update(env)
+        return _load_module()
+
+
+@pytest.mark.unit
+class TestStackNameTag:
+    """The tag the rollup finds a deployment's functions by.
+
+    A CloudFormation deployment's functions carry CloudFormation's own
+    ``aws:cloudformation:stack-name``; that key is reserved, so a Terraform
+    deployment tags them ``idp:stack-name`` and sets ``IDP_TF_RESOURCE_DIRECTORY``
+    on this function. Getting the default wrong finds no function in every
+    CloudFormation deployment, which is all of them today.
+    """
+
+    def test_a_cloudformation_deployment_uses_cloudformations_tag(self):
+        assert _load_with_env()._STACK_NAME_TAG == "aws:cloudformation:stack-name"
+
+    def test_a_terraform_deployment_uses_the_idp_tag(self):
+        module = _load_with_env(
+            IDP_TF_RESOURCE_DIRECTORY="s3://b/terraform/cfn-resource-directory.json"
+        )
+        assert module._STACK_NAME_TAG == "idp:stack-name"

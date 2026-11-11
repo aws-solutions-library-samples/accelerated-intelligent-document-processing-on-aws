@@ -13,6 +13,8 @@ This guide covers how to deploy, build, publish, and test the GenAI Intelligent 
 
 The GenAI IDP Accelerator can be deployed using either the AWS CloudFormation console (recommended for first-time users) or the IDP CLI (recommended for automation and programmatic deployments).
 
+It can also be deployed with Terraform or OpenTofu, from a module generated from these same CloudFormation templates with every release. Terraform support is experimental; see [Terraform Deployment](./terraform.md) for how to get the module, deploy it from your own configuration or with `idp-cli deploy --terraform`, and what differs from a CloudFormation deployment. Teams moving from the separate `genai-idp-terraform` repository should also read [Migrating from genai-idp-terraform](./terraform-migration.md).
+
 ### Administrator Access Requirements
 
 **Important**: Deploying the GenAI IDP Accelerator requires administrator access to your AWS account. However, for organizations that want to enable non-administrator users to deploy and manage IDP stacks, we provide an optional CloudFormation service role approach:

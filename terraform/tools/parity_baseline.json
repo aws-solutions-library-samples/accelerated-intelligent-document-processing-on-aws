@@ -1,0 +1,22 @@
+{
+  "$comment": [
+    "Explained property differences for `make terraform-parity` (terraform/tools/parity.py).",
+    "One entry per (CloudFormation type, property path) with its reason; a path covers",
+    "everything below it. Measured on the nested/multi-doc-discovery prototype run of",
+    "2026-11-05 (terraform/prototype/RESULTS.md); the full-stack run has not been made",
+    "with this tool yet, so expect to add entries, one at a time and each with its reason,",
+    "on its first run. An entry that explains nothing in a run is reported stale."
+  ],
+  "entries": [
+    {
+      "type": "AWS::CodeBuild::Project",
+      "path": ".Artifacts.OverrideArtifactName",
+      "reason": "the provider writes CodeBuild's default (false) where CloudFormation stores nothing"
+    },
+    {
+      "type": "AWS::CodeBuild::Project",
+      "path": ".LogsConfig",
+      "reason": "the provider writes CodeBuild's default logging (CloudWatch on, S3 off) where CloudFormation stores nothing"
+    }
+  ]
+}

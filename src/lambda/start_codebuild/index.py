@@ -30,6 +30,7 @@ try:
     )
     CODEBUILD_CLIENT = boto3.client("codebuild", config=CLIENT_CONFIG)
     ECR_CLIENT = boto3.client("ecr", config=CLIENT_CONFIG)
+    CFN_CLIENT = boto3.client("cloudformation", config=CLIENT_CONFIG)
 except Exception as init_exception:  # pylint: disable=broad-except
     HELPER.init_failure(init_exception)
 
@@ -48,11 +49,12 @@ CUSTOM_RESOURCE_BUDGET_SECONDS = 3600
 # crhelper polls by scheduling itself on a CloudWatch Events rule; HELPER above
 # does not override polling_interval, so the rule is rate(2 minutes).
 #
-# The Lambda timeout is CodeBuildTrigger's (patterns/unified/template.yaml), which
-# is the only function that reaches this wait. The root template also deploys this
+# The Lambda timeout is that of the functions that reach this wait:
+# CodeBuildTrigger (patterns/unified/template.yaml) and DockerBuildRunFunction
+# (nested/multi-doc-discovery/template.yaml). The root template also deploys this
 # code, as StartUICodeBuild, but its CodeBuildRun supplies no ECR_URI, so the
-# poller takes the "could not extract ECR_URI" branch and never gets here. Both
-# are Timeout: 60 today; only the first one is load-bearing here.
+# poller takes the "could not extract ECR_URI" branch and never gets here. All
+# three are Timeout: 60 today; the first two are load-bearing here.
 POLL_INTERVAL_SECONDS = 120
 LAMBDA_TIMEOUT_SECONDS = 60
 
@@ -101,6 +103,24 @@ VERIFY_LOG_PREFIX = "ECR IMAGE VERIFICATION"
 # here: a realistic AccessDeniedException is well over 256 characters on its own,
 # and a message that leads with the identifier loses exactly the identifier.
 VERIFY_FAILURE_SUFFIX = "ECR image verification failed"
+
+# The resource types this function runs a CodeBuild build for. `Custom::DockerBuild`
+# is the multi-document-discovery stack's resource. It is the same job as the
+# unified pattern's `Custom::CodeBuildRun` and is handled identically; it keeps its
+# own type name because CloudFormation refuses to change the type of an existing
+# resource in place, and renaming the logical id instead would replace the
+# resource on every stack that already has it.
+CODEBUILD_RUN_TYPES = ("Custom::CodeBuildRun", "Custom::DockerBuild")
+
+# A nested stack reports this status for the whole of a rollback, whether the
+# rollback started in the stack itself, was initiated by its parent, or was
+# resumed with continue-update-rollback. During it, CloudFormation sends this
+# resource an Update carrying the PREVIOUS version's properties (#1824).
+ROLLBACK_STACK_STATUS = "UPDATE_ROLLBACK_IN_PROGRESS"
+
+# Recorded in the resource's Data when a rollback reuses the previous version's
+# images instead of rebuilding them, so the poller can answer without a build id.
+BUILD_SKIPPED_KEY = "build_skipped"
 
 
 # The only fields of a `batch_get_builds` build entry this function logs.
@@ -158,6 +178,80 @@ def _scan_wait_remaining_seconds(
     return (deadline - datetime.now(timezone.utc)).total_seconds()
 
 
+def _rollback_can_reuse_images(event) -> bool:
+    """Whether this request is a rollback whose images are all still in ECR.
+
+    A rollback restores the previous version's properties, and the image tags those
+    properties name were built when that version was deployed. Rebuilding them is
+    what deadlocked the rollback in #1824: the build needs a working CodeBuild, so
+    the slowdown that failed the update failed its rollback too, and the stack was
+    left in UPDATE_ROLLBACK_FAILED.
+
+    The skip is taken only when every condition holds, and any doubt means build:
+
+    * the request is an Update, and its properties name a repository, an image
+      version and the expected images (the root template's UI build names none of
+      them, so it never gets this far and needs no CloudFormation permission);
+    * the stack reports ROLLBACK_STACK_STATUS. Nothing in the custom-resource event
+      itself marks a rollback, so the stack is asked;
+    * every expected tag is present. That check is required, not a refinement:
+      both repositories carry an image-count lifecycle rule, so an older version's
+      images can expire, and a rollback whose images are gone has to rebuild them.
+    """
+    if event.get("RequestType") != "Update":
+        return False
+
+    properties = event.get("ResourceProperties", {})
+    repository_name = properties.get("RepositoryName")
+    image_version = properties.get("ImageVersion")
+    expected_images = properties.get("ExpectedImages")
+    if not (repository_name and image_version and expected_images):
+        return False
+
+    try:
+        stacks = CFN_CLIENT.describe_stacks(StackName=event["StackId"])["Stacks"]
+        stack_status = stacks[0]["StackStatus"]
+    except Exception as exception:  # pylint: disable=broad-except
+        LOGGER.warning(
+            "could not read the stack status (%s); building as for any update",
+            exception,
+        )
+        return False
+
+    if stack_status != ROLLBACK_STACK_STATUS:
+        return False
+
+    try:
+        # No build start time: with no build running there is no scan to order, so
+        # this is a presence check only. The first argument takes a repository URI
+        # and keeps the segment after its last "/", so a bare repository name (no
+        # "/", as !Ref ECRRepository yields) passes through unchanged.
+        present = _verify_ecr_images_available(
+            repository_name, image_version, expected_images, None
+        )
+    except EcrImageVerificationError as error:
+        LOGGER.warning(
+            "rollback: could not confirm the previous images (%s); rebuilding", error
+        )
+        return False
+
+    if not present:
+        LOGGER.info(
+            "rollback: an image for version %s is no longer in %s; rebuilding",
+            image_version,
+            repository_name,
+        )
+        return False
+
+    LOGGER.info(
+        "rollback: every image for version %s is still in %s; reusing them "
+        "instead of rebuilding",
+        image_version,
+        repository_name,
+    )
+    return True
+
+
 @HELPER.create
 @HELPER.update
 def create_or_update(event, _):
@@ -165,7 +259,11 @@ def create_or_update(event, _):
     resource_type = event["ResourceType"]
     resource_properties = event["ResourceProperties"]
 
-    if resource_type == "Custom::CodeBuildRun":
+    if resource_type in CODEBUILD_RUN_TYPES:
+        if _rollback_can_reuse_images(event):
+            HELPER.Data[BUILD_SKIPPED_KEY] = "rollback-reused-existing-images"
+            return
+
         try:
             project_name = resource_properties["BuildProjectName"]
             response = CODEBUILD_CLIENT.start_build(projectName=project_name)
@@ -441,7 +539,11 @@ def poll_create_or_update(event, _):
     resource_type = event["ResourceType"]
     helper_data = event["CrHelperData"]
 
-    if resource_type == "Custom::CodeBuildRun":
+    if resource_type in CODEBUILD_RUN_TYPES:
+        if helper_data.get(BUILD_SKIPPED_KEY):
+            LOGGER.info("no build was started (%s)", helper_data[BUILD_SKIPPED_KEY])
+            return True
+
         try:
             build_id = helper_data["build_id"]
             response = CODEBUILD_CLIENT.batch_get_builds(ids=[build_id])
@@ -520,7 +622,7 @@ def delete_resource(event, _):
     """Delete Resource"""
     resource_type = event["ResourceType"]
 
-    if resource_type == "Custom::CodeBuildRun":
+    if resource_type in CODEBUILD_RUN_TYPES:
         LOGGER.info(
             "delete event ignored for CodeBuild custom resource: %s",
             sanitize_event_for_logging(event),

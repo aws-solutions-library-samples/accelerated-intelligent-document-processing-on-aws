@@ -72,7 +72,9 @@ MIN_ZERO_SHORTFALL_SHARE = 0.95
 MAX_WARNING_FIRING_SHARE = 0.02
 
 # The largest number of unscored rows recorded on a run the warning rung says nothing
-# about: 6 of 400 (1.5%). Re-measured for #1495, when the warning rung gained the
+# about: 8 of 202 (4.0%), on three v0.6.14 Nova Lite `simplegrid` runs of
+# `large_narrow.pdf` whose extraction was itself truncated to 202 of 800 rows. Before the
+# v0.6.14 grids it was 6 of 400 (1.5%), re-measured for #1495, when the warning rung gained the
 # absolute ceiling the error rung's absolute floor always had. The figure it replaces
 # was 24 of 800 (3.0%) over the grids up to v0.6.11 and 115 of 3,200 (3.6%) once a
 # 3,200-row document was benchmarked — the count grew 4.8x on a 4x larger document at
@@ -86,7 +88,7 @@ MAX_WARNING_FIRING_SHARE = 0.02
 # pin. A grid that lands between 7 and 9 unscored rows therefore fails this pin while
 # the structural bound still holds; re-pin it in that case. A grid at or above the
 # ceiling means the ceiling is not being enforced, which is a defect in the guard.
-MAX_SILENT_UNSCORED_ROWS = 6
+MAX_SILENT_UNSCORED_ROWS = 8
 
 
 def _rows():
@@ -479,7 +481,7 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
     # ⚠️ Six runs record a non-zero `rows_extracted` here, and the defect is in
     # THIS SCORER rather than in the coverage walk (#1505). On six
     # `coresynth__extraction-model-sonnet55` runs over `med_narrow.pdf` — four in the
-    # v0.6.12 grid and two in the v0.6.13 grid — the
+    # v0.6.12 grid, two in the v0.6.13 grid and two in the v0.6.14 grid — the
     # `Transactions` field came back as a prose refusal — "The statement contains 400
     # transactions (SEQ00000 to SEQ00399). They are too many to list in full here
     # ..." — so there was no array, and `expected_rows == 0` is the coverage walk
@@ -493,8 +495,8 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
     # So the carve-out stands but the premise it carves out of is intact: no rows were
     # extracted on these runs, and the extraction-side signal for the shape is
     # `extraction_list_field_not_a_list` (#1505). It postdates the v0.6.12 grid, and
-    # both v0.6.13 instances carry it, which is the detection working on the shape
-    # rather than a new defect.
+    # both v0.6.13 instances and both v0.6.14 instances carry it, which is the
+    # detection working on the shape rather than a new defect.
     # `rows_extracted` is deliberately NOT re-derived: the raw section objects these
     # grids were scored from are not committed, so a changed scan cannot be
     # re-measured over them and would leave two incomparable definitions in one
@@ -508,6 +510,7 @@ def test_an_undefined_coverage_run_extracted_nothing(corpus_located):
     KNOWN_UNDEFINED_WITH_ROWS = {
         ("v0.6.12/coresynth__extraction-model-sonnet55", "med_narrow.pdf"): 4,
         ("v0.6.13/coresynth__extraction-model-sonnet55", "med_narrow.pdf"): 2,
+        ("v0.6.14/coresynth__extraction-model-sonnet55", "med_narrow.pdf"): 2,
     }
 
     known = [(g, r) for g, r in with_rows if (g, r["doc"]) in KNOWN_UNDEFINED_WITH_ROWS]

@@ -80,8 +80,8 @@ to run a typed-truth document into a release grid, after which this row can go.
 
 It is promoted by copying a `corefast/summary.json`, but the file it is copied from is
 not necessarily the one committed under `v<PREV>/corefast/`, and it diverges afterwards.
-Today's `baseline.json` is a copy of `v0.6.13/corefast/summary.json` (stack
-`IDPUpg0612to0613`, `meta.scored_at` `2026-10-31T05:19:55Z`), and it carries the
+Today's `baseline.json` is a copy of `v0.6.14/corefast/summary.json` (stack
+`IDPUpg0613to0614`, `meta.scored_at` `2026-11-07T02:29:10Z`), and it carries the
 calibration and confidence-coverage metrics natively, so it needs no backfill. That has not
 always been so: the v0.6.8 grid it replaced was scored on a different stack from the
 `v0.6.8/corefast/` copy, with matching keys and different data, and had been `--augment`ed

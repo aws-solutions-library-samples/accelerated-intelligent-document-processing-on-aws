@@ -289,8 +289,18 @@ Resources:
             Value: !Ref AWS::URLSuffix
           - Name: ECR_REPO_URI
             Value: !GetAtt ECRRepository.RepositoryUri
+          # The tag carries the content hash of the image's inputs, so each
+          # version's image stays addressable after the next one is pushed. A
+          # rollback can then reuse it, and an upgrade changes every function's
+          # ImageUri, so the functions pick up the new image (#1824).
           - Name: IMAGE_TAG
-            Value: latest
+            Value: !Sub "multi-doc-discovery-${BuildHash}"
+          # Read by the build-run handler (src/lambda/start_codebuild) to verify
+          # the pushed image before the functions are created or updated.
+          - Name: ECR_URI
+            Value: !GetAtt ECRRepository.RepositoryUri
+          - Name: IMAGE_VERSION
+            Value: !Ref BuildHash
       Source:
         Type: S3
         Location: !Sub "${ArtifactBucket}/${SourceZipfile}"
@@ -326,7 +336,30 @@ Resources:
                 # Build context is the zip root so the Dockerfile can COPY both
                 # lib/idp_common_pkg and src/lambda/multi_doc_discovery.
                 - echo "Building Docker image..."
-                - docker build -f nested/multi-doc-discovery/Dockerfile -t $ECR_REPO_URI:$IMAGE_TAG .
+                # A failed image build is usually environmental rather than a
+                # defect in the Dockerfile: a PyPI or ECR connection drop
+                # mid-download surfaces as a hard pip exit 2. One more attempt
+                # turns that into a couple of minutes of delay instead of a failed
+                # stack operation. The retry lives here because the build-run
+                # handler waits on one build id for the whole operation, which
+                # also makes it narrower than the whole-build retry the previous
+                # handler did: only docker build (here) and docker push (below)
+                # are retried, so a failure in another step, such as the ECR
+                # login in pre_build, fails the build.
+                - |
+                  built=0
+                  for attempt in 1 2; do
+                    if docker build -f nested/multi-doc-discovery/Dockerfile -t $ECR_REPO_URI:$IMAGE_TAG .; then
+                      built=1
+                      break
+                    fi
+                    echo "docker build failed (attempt $attempt); retrying in 30s..."
+                    sleep 30
+                  done
+                  if [ "$built" -ne 1 ]; then
+                    echo "ERROR: docker build failed after 2 attempts"
+                    exit 1
+                  fi
             post_build:
               commands:
                 - echo Pushing Docker image to ECR...
@@ -347,7 +380,11 @@ Resources:
                     exit 1
                   fi
                 - echo Build completed on `date`
-      TimeoutInMinutes: 30
+      TimeoutInMinutes: 55
+      # 55: room for both docker build attempts in the build phase above, and
+      # still inside CloudFormation's 60-minute custom-resource limit, so a slow
+      # build fails as a CodeBuild timeout rather than as an unanswered custom
+      # resource. Matches the unified pattern's DockerBuildProject.
       EncryptionKey: !Ref CustomerManagedEncryptionKeyArn
 
   ##########################################################################
@@ -380,6 +417,17 @@ Resources:
                   - codebuild:StartBuild
                   - codebuild:BatchGetBuilds
                 Resource: !GetAtt DockerBuildProject.Arn
+              # Verify the pushed image, and let a rollback find the previous one.
+              - Effect: Allow
+                Action:
+                  - ecr:DescribeImages
+                Resource: !GetAtt ECRRepository.Arn
+              # Read this stack's own status, to tell a rollback from an update
+              # (#1824).
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: !Ref AWS::StackId
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -397,6 +445,32 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DockerBuildRunFunctionLogGroup}"
                   - !GetAtt DockerBuildRunFunctionLogGroup.Arn
+        # crhelper waits for the build by re-invoking this function from an
+        # EventBridge rule every two minutes, rather than inside one invocation,
+        # so the build has CloudFormation's full hour instead of Lambda's 15
+        # minutes (#1824). The scoping rests on crhelper's own naming, read from
+        # crhelper 2.0.12's resource_helper.py (requirements.txt pins ~=2.0.10):
+        # _put_rule names the rule LogicalResourceId plus eight random
+        # characters, hence rule/DockerBuildRun*, and _add_permission adds the
+        # permission to context.function_name, which is this function. If a
+        # crhelper release changes either, PutRule or AddPermission is denied and
+        # this resource fails on its first deploy rather than silently.
+        - PolicyName: CustomResourcePoller
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                Resource: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/DockerBuildRun*"
+              - Effect: Allow
+                Action:
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:GENAIIDP-${StackName}-MultiDocBuildRun"
 
   DockerBuildRunFunction:
     Type: AWS::Serverless::Function
@@ -416,10 +490,14 @@ Resources:
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Handler: index.handler
       Runtime: python3.12
-      CodeUri: ./docker_build_lambda
+      # The same handler the unified pattern's DockerBuildRun uses, so both
+      # container builds wait the same hour and both reuse images on rollback.
+      CodeUri: ../../src/lambda/start_codebuild
       Description: Custom resource handler - triggers CodeBuild for multi-doc discovery image
       MemorySize: 128
-      Timeout: 900
+      # Each invocation only starts or checks the build; the wait is spread over
+      # polls (see CustomResourcePoller above).
+      Timeout: 60
       Role: !GetAtt DockerBuildRunFunctionRole.Arn
       LoggingConfig:
         LogGroup: !Ref DockerBuildRunFunctionLogGroup
@@ -437,8 +515,12 @@ Resources:
       - ECRRepository
     Properties:
       ServiceToken: !GetAtt DockerBuildRunFunction.Arn
-      ProjectName: !Ref DockerBuildProject
+      BuildProjectName: !Ref DockerBuildProject
       BuildHash: !Ref BuildHash
+      ImageVersion: !Ref BuildHash
+      RepositoryName: !Ref ECRRepository
+      ExpectedImages:
+        - "multi-doc-discovery"
 
   ##########################################################################
   # Container Image Lambda Functions (4 heavy functions)
@@ -462,7 +544,7 @@ Resources:
     Properties:
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       PackageType: Image
-      ImageUri: !Sub "${ECRRepository.RepositoryUri}:latest"
+      ImageUri: !Sub "${ECRRepository.RepositoryUri}:multi-doc-discovery-${BuildHash}"
       ImageConfig:
         Command: ["embed_handler.handler"]
       Description: Multi-doc discovery - generate multimodal embeddings
@@ -546,7 +628,7 @@ Resources:
     Properties:
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       PackageType: Image
-      ImageUri: !Sub "${ECRRepository.RepositoryUri}:latest"
+      ImageUri: !Sub "${ECRRepository.RepositoryUri}:multi-doc-discovery-${BuildHash}"
       ImageConfig:
         Command: ["cluster_handler.handler"]
       Description: Multi-doc discovery - cluster documents by embedding similarity
@@ -610,7 +692,7 @@ Resources:
     Properties:
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       PackageType: Image
-      ImageUri: !Sub "${ECRRepository.RepositoryUri}:latest"
+      ImageUri: !Sub "${ECRRepository.RepositoryUri}:multi-doc-discovery-${BuildHash}"
       ImageConfig:
         Command: ["analyze_handler.handler"]
       Description: Multi-doc discovery - analyze cluster with Strands agent
@@ -687,7 +769,7 @@ Resources:
     Properties:
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       PackageType: Image
-      ImageUri: !Sub "${ECRRepository.RepositoryUri}:latest"
+      ImageUri: !Sub "${ECRRepository.RepositoryUri}:multi-doc-discovery-${BuildHash}"
       ImageConfig:
         Command: ["save_handler.handler"]
       Description: Multi-doc discovery - save results and generate reflection

@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from idp_common import bedrock, image, metrics, s3, utils
 from idp_common.bedrock import format_prompt, is_openai_responses_model
+from idp_common.config import without_prompt_comments
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
     ID_FIELD,
@@ -248,7 +249,14 @@ class ExtractionService:
         else:
             config_model = config
 
-        self.config = config_model
+        # A configuration handed in directly (not read through
+        # ConfigurationReader) may still carry {# ... #} prompt comments. The
+        # prompts are split on {FEW_SHOT_EXAMPLES} and {DOCUMENT_IMAGE} before
+        # format_prompt sees them, so a placeholder named inside a comment would
+        # split the prompt; remove the comments here, once, for every prompt this
+        # service sends (task, system, confidence, bbox, per-class overrides). A
+        # configuration without comments is kept as the same object.
+        self.config = without_prompt_comments(config_model, as_model=True)
         self.region = region or os.environ.get("AWS_REGION")
 
         # Instance variables for prompt context

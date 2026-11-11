@@ -441,7 +441,7 @@ convention), matching what the UI bounding-box renderer consumes.
       },
       "geometrySource": "line",                  // line | paragraph | none
       "textType": "PRINTED",                     // PRINTED | HANDWRITING | null
-      "words": [                                  // optional (Textract)
+      "words": [                                  // optional (Textract; BDA OCR)
         { "text": "Account:", "confidence": 99.0, "geometry": { "boundingBox": {} } },
         { "text": "12345",    "confidence": 92.0, "geometry": null }
       ]
@@ -455,6 +455,7 @@ convention), matching what the UI bounding-box renderer consumes.
 | Backend | text | confidence | geometry | `geometrySource` |
 |---|---|---|---|---|
 | **Textract** | LINE + WORD | per-LINE & per-WORD | per-LINE & per-WORD (box + polygon) | `line` |
+| **BDA OCR** (`backend: bda`, adapted to the Textract shape by `bda/bda_ocr.py`) | LINE + WORD | per-LINE & per-WORD | per-LINE & per-WORD (box + polygon) | `line` |
 | **Mistral LambdaHook** | LINE + WORD | per-LINE & per-WORD | paragraph-level box shared by sibling lines; WORDs none | `paragraph` |
 | **Cohere Parse LambdaHook** | LINE | none (Parse returns no scores) | tables & figures only — box shared by the lines derived from each element; body text none | `paragraph` (elements) / `none` (text) |
 | **Chandra / plain Bedrock LLM** | lines synthesized from markdown | none | none | `none` |

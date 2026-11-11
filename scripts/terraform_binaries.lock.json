@@ -1,0 +1,33 @@
+{
+  "_comment": "Everything scripts/terraform_check.py downloads, pinned. `binaries`: the SHA256 of each Terraform/OpenTofu release archive, per platform, recorded with `python3 scripts/terraform_check.py --update-lock <tool>@<version>` from the vendor's published SHA256SUMS; review a new entry against the vendor's signed release before committing it. An archive is installed only when its hash equals both the published entry and the entry here. `providers`: the exact provider versions the gate validates against (awscc is pinned to the vendored schema's version and is not listed). Both CI caches are keyed on this file.",
+  "providers": {
+    "hashicorp/aws": "6.72.0",
+    "hashicorp/time": "0.14.2"
+  },
+  "binaries": {
+    "terraform@1.17.1": {
+      "linux_amd64": "4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135061",
+      "linux_arm64": "988e950a1c23058093b0e66ab2d5fb53fc18345ecfbd5871acf51dbac9325edd",
+      "darwin_amd64": "fde92387cf9c0de74255003c85291f8fbede54585c10d0635ca7a43633d4d171",
+      "darwin_arm64": "b1ecb3fe0d0a0290c1ab6f83d967d43f25da05d0b671ee0fb355252268dce95a"
+    },
+    "terraform@1.7.5": {
+      "linux_amd64": "3ff056b5e8259003f67fd0f0ed7229499cfb0b41f3ff55cc184088589994f7a5",
+      "linux_arm64": "08631c385667dd28f03b3a3f77cb980393af4a2fcfc2236c148a678ad9150c8c",
+      "darwin_amd64": "0eaf64e28f82e2defd06f7a6f3187d8cea03d5d9fcd2af54f549a6c32d6833f7",
+      "darwin_arm64": "99c4d4feafb0183af2f7fbe07beeea6f83e5f5a29ae29fee3168b6810e37ff98"
+    },
+    "tofu@1.13.9": {
+      "linux_amd64": "bc44eb6b06446ba83bd4072114891987f590f66cca712737a7f1147c50c539ce",
+      "linux_arm64": "04f7c93828b859d420269ed30f923ffebf09157b5d7fb95bf8d88a4d208b7fa3",
+      "darwin_amd64": "ac5505dd19d896f327d0ab727d4b853413c694931a7602b31f93c3a3e9d46d00",
+      "darwin_arm64": "29ba2f4c78556a8d25476e5070fe4745495ef649c4a3b827170eb7436d23feb3"
+    },
+    "tofu@1.7.10": {
+      "linux_amd64": "ef97612fdde380de15c821da4ca11dfc111913c6700ff576bf85b3a03b452e73",
+      "linux_arm64": "68e4a9337b3d629ccb56e21b5c43b66b55bd05f3f130e2353b3b6599d4628a33",
+      "darwin_amd64": "2975f8f050bf0901e435b0b91e5d63af7366158ecd32b14a582d9cc926293377",
+      "darwin_arm64": "8ffe14bf1f02e7da3d13dc484ddbb41b0d29d0b548f103115510b206e839d516"
+    }
+  }
+}

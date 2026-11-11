@@ -14,6 +14,8 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Architecture](./architecture.md) - Detailed component architecture and data flow
 - [Quick Start](./quick-start.md) - Cold-start configuration authoring for new deployments (chat widget + `idp-cli bootstrap`)
 - [Deployment](./deployment.md) - Build, publish, deploy, and test instructions
+- [Terraform Deployment](./terraform.md) - Experimental: deploy the generated Terraform module with Terraform or OpenTofu, or with `idp-cli deploy --terraform`
+- [Migrating from genai-idp-terraform](./terraform-migration.md) - Move a deployment of the separate `awslabs/genai-idp-terraform` repository onto the built-in module in place, keeping its data and users
 - [Headless Deployment](./headless-deployment.md) - Backend-only deployment (no Web UI, no UI REST API, no Cognito, no WAF) — for API-only / pipeline integrations in Commercial regions or GovCloud
 - [Configuration](./configuration.md) - Configuration and customization options
 - [Configuration Profiles](./configuration-profiles.md) - Managing multiple named configurations and their revision history

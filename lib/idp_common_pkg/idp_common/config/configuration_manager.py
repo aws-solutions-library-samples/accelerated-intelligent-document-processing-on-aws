@@ -40,6 +40,7 @@ from .constants import (
     RESERVED_VERSION_NAMES,
     VALID_CONFIG_TYPES,
     DEFAULT_VERSION,
+    PRE_HISTORY_NOTES,
 )
 from .revisions import ConfigRevisionStore, RevisionNotRecordedError
 
@@ -1122,7 +1123,7 @@ class ConfigurationManager:
                     profile,
                     previous_dict,
                     created_by="system",
-                    notes="Configuration as it stood before revision history was enabled",
+                    notes=PRE_HISTORY_NOTES,
                     publish=unchanged,
                     stored_hash=self._stored_hash_of_body(profile, previous_dict)
                     if unchanged

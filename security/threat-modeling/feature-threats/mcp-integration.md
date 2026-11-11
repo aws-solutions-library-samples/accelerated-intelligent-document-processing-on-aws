@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.0 |
-| **Last Updated** | 2026-07-28 |
+| **Document Version** | 3.1 |
+| **Last Updated** | 2026-11-09 |
 | **Applies to release** | v0.6.3 |
 | **Feature** | Model Context Protocol (MCP) Integration |
 | **Classification** | Internal |
@@ -70,7 +70,7 @@ flowchart TD
 | **Likelihood** | Medium |
 | **Severity** | Critical |
 | **Affected Components** | Custom MCP Lambdas, MCP Gateway Lambda, external services |
-| **Mitigations** | Customer-managed MCP Lambda security review, IAM least-privilege for MCP Lambdas, network-level egress controls (VPC), audit logging of all MCP tool invocations, data classification awareness in agent prompts |
+| **Mitigations** | Under `TenantIsolationMode=Strict` or an external `TenantGrantSource` the MCP handler refuses every tool, and refuses them too when the mode cannot be read (`agentcore_mcp_handler/index.py`), because no tool can be confined to one tenant (TEN.T01). Customer-managed MCP Lambda security review, IAM least-privilege for MCP Lambdas, network-level egress controls (VPC), audit logging of all MCP tool invocations, data classification awareness in agent prompts |
 
 ### MCP.T02: Malicious Tool Injection
 
@@ -140,7 +140,7 @@ flowchart TD
 | **Likelihood** | Low |
 | **Severity** | Medium |
 | **Affected Components** | AgentCore Gateway Manager Lambda, Bedrock AgentCore |
-| **Mitigations** | IAM restrictions on gateway management operations, CloudWatch alarms on gateway status changes, gateway health monitoring |
+| **Mitigations** | IAM restrictions on gateway management operations: since 0.6.14 the manager's role holds `bedrock-agentcore:*` for the gateway and target lifecycle, the two delivery deletes, `logs:DeleteLogGroup` on the gateway's vended log-group path only, and `iam:PassRole` on the single `AgentCoreGatewayExecutionRole`, where it previously also held `bedrock-agent:*`, Cognito read, log-group create and delivery-create grants and an account-wide log-group delete (`template.yaml`). CloudWatch alarms on gateway status changes, gateway health monitoring |
 
 ## 4. Security Controls Summary
 

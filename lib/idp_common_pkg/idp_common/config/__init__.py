@@ -6,6 +6,12 @@ import os
 from typing import Dict, Any, Optional, Union, overload, Literal
 from botocore.exceptions import ClientError
 import logging
+
+from idp_common.prompt_comments import (
+    has_prompt_comments,
+    strip_prompt_comments_in_config,
+)
+
 from .configuration_manager import (
     ConfigurationManager,
     ConfigurationValidationError as ConfigurationValidationError,
@@ -38,6 +44,27 @@ from .constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def without_prompt_comments(
+    config: IDPConfig, *, as_model: bool
+) -> Union[IDPConfig, Dict[str, Any]]:
+    """``config`` with ``{# ... #}`` comments removed from every prompt.
+
+    The dict form (``as_model=False``, what most runtime readers ask for) is the
+    stripped dump itself, so it costs one dump and one walk and no model rebuild.
+    The model form is rebuilt from that stripped dump, and is ``config`` itself
+    when no prompt carries a comment, so a configuration without comments is
+    handed on exactly as before. The input, which a caller may also be holding,
+    is never modified. The shipped defaults carry comments, so the model form is
+    rebuilt on every read; its cost is one model validation, which grows with the
+    size of the configuration (chiefly its class schemas).
+    """
+    dumped = config.model_dump(mode="python")
+    if not has_prompt_comments(dumped):
+        return config if as_model else dumped
+    stripped = strip_prompt_comments_in_config(dumped)
+    return IDPConfig(**stripped) if as_model else stripped
 
 
 class ConfigurationReader:
@@ -208,11 +235,9 @@ class ConfigurationReader:
             if config is None:
                 raise ValueError(f"Configuration not found for version: {version}")
 
-            if as_model:
-                return config
-
-            # Return as dict
-            return config.model_dump(mode="python")
+            # Runtime readers never see prompt comments ({# ... #}); the stored
+            # configuration keeps them. See idp_common.prompt_comments.
+            return without_prompt_comments(config, as_model=as_model)
 
         except Exception as e:
             logger.error(f"Error getting merged configuration: {str(e)}")

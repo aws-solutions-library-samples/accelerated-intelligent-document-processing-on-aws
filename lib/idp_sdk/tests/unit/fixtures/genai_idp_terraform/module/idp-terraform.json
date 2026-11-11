@@ -1,0 +1,606 @@
+{
+ "formatVersion": 2,
+ "version": "0.0.0-test",
+ "parameters": {
+  "AdminEmail": {
+   "variable": "admin_email",
+   "type": "String",
+   "required": true,
+   "sensitive": false
+  },
+  "ReportingBucketName": {
+   "variable": "reporting_bucket_name",
+   "type": "String",
+   "required": false,
+   "sensitive": false
+  },
+  "DataRetentionInDays": {
+   "variable": "data_retention_in_days",
+   "type": "Number",
+   "required": false,
+   "sensitive": false
+  },
+  "LogRetentionDays": {
+   "variable": "log_retention_days",
+   "type": "Number",
+   "required": false,
+   "sensitive": false
+  },
+  "ExternalIdPEmailMutable": {
+   "variable": "external_idp_email_mutable",
+   "type": "String",
+   "required": false,
+   "sensitive": false
+  },
+  "EvaluationBaselineBucketName": {
+   "variable": "evaluation_baseline_bucket_name",
+   "type": "String",
+   "required": false,
+   "sensitive": false
+  }
+ },
+ "retainedAddresses": [
+  "aws_s3_bucket.configuration_bucket",
+  "aws_s3_bucket.discovery_bucket",
+  "aws_s3_bucket.evaluation_baseline_bucket",
+  "aws_s3_bucket.finetuning_data_bucket",
+  "aws_s3_bucket.input_bucket",
+  "aws_s3_bucket.logging_bucket",
+  "aws_s3_bucket.mcp_content_bucket",
+  "aws_s3_bucket.output_bucket",
+  "aws_s3_bucket.reporting_bucket",
+  "aws_s3_bucket.test_set_bucket",
+  "aws_s3_bucket.web_ui_bucket",
+  "aws_s3_bucket.working_bucket",
+  "aws_s3_bucket_cors_configuration.configuration_bucket_cors",
+  "aws_s3_bucket_cors_configuration.discovery_bucket_cors",
+  "aws_s3_bucket_cors_configuration.evaluation_baseline_bucket_cors",
+  "aws_s3_bucket_cors_configuration.input_bucket_cors",
+  "aws_s3_bucket_cors_configuration.output_bucket_cors",
+  "aws_s3_bucket_cors_configuration.reporting_bucket_cors",
+  "aws_s3_bucket_cors_configuration.test_set_bucket_cors",
+  "aws_s3_bucket_lifecycle_configuration.configuration_bucket_lifecycle",
+  "aws_s3_bucket_lifecycle_configuration.discovery_bucket_lifecycle",
+  "aws_s3_bucket_lifecycle_configuration.finetuning_data_bucket_lifecycle",
+  "aws_s3_bucket_lifecycle_configuration.input_bucket_lifecycle",
+  "aws_s3_bucket_lifecycle_configuration.logging_bucket_lifecycle",
+  "aws_s3_bucket_lifecycle_configuration.mcp_content_bucket_lifecycle",
+  "aws_s3_bucket_lifecycle_configuration.output_bucket_lifecycle",
+  "aws_s3_bucket_lifecycle_configuration.reporting_bucket_lifecycle",
+  "aws_s3_bucket_lifecycle_configuration.test_set_bucket_lifecycle",
+  "aws_s3_bucket_lifecycle_configuration.working_bucket_lifecycle",
+  "aws_s3_bucket_logging.configuration_bucket_logging",
+  "aws_s3_bucket_logging.discovery_bucket_logging",
+  "aws_s3_bucket_logging.evaluation_baseline_bucket_logging",
+  "aws_s3_bucket_logging.finetuning_data_bucket_logging",
+  "aws_s3_bucket_logging.input_bucket_logging",
+  "aws_s3_bucket_logging.mcp_content_bucket_logging",
+  "aws_s3_bucket_logging.output_bucket_logging",
+  "aws_s3_bucket_logging.reporting_bucket_logging",
+  "aws_s3_bucket_logging.test_set_bucket_logging",
+  "aws_s3_bucket_logging.web_ui_bucket_logging",
+  "aws_s3_bucket_logging.working_bucket_logging",
+  "aws_s3_bucket_notification.configuration_bucket_notification",
+  "aws_s3_bucket_notification.discovery_bucket_notification",
+  "aws_s3_bucket_notification.input_bucket_notification",
+  "aws_s3_bucket_notification.output_bucket_notification",
+  "aws_s3_bucket_ownership_controls.logging_bucket_ownership",
+  "aws_s3_bucket_public_access_block.configuration_bucket_public_access",
+  "aws_s3_bucket_public_access_block.discovery_bucket_public_access",
+  "aws_s3_bucket_public_access_block.evaluation_baseline_bucket_public_access",
+  "aws_s3_bucket_public_access_block.finetuning_data_bucket_public_access",
+  "aws_s3_bucket_public_access_block.input_bucket_public_access",
+  "aws_s3_bucket_public_access_block.logging_bucket_public_access",
+  "aws_s3_bucket_public_access_block.mcp_content_bucket_public_access",
+  "aws_s3_bucket_public_access_block.output_bucket_public_access",
+  "aws_s3_bucket_public_access_block.reporting_bucket_public_access",
+  "aws_s3_bucket_public_access_block.test_set_bucket_public_access",
+  "aws_s3_bucket_public_access_block.web_ui_bucket_public_access",
+  "aws_s3_bucket_public_access_block.working_bucket_public_access",
+  "aws_s3_bucket_server_side_encryption_configuration.configuration_bucket_encryption",
+  "aws_s3_bucket_server_side_encryption_configuration.discovery_bucket_encryption",
+  "aws_s3_bucket_server_side_encryption_configuration.evaluation_baseline_bucket_encryption",
+  "aws_s3_bucket_server_side_encryption_configuration.finetuning_data_bucket_encryption",
+  "aws_s3_bucket_server_side_encryption_configuration.input_bucket_encryption",
+  "aws_s3_bucket_server_side_encryption_configuration.logging_bucket_encryption",
+  "aws_s3_bucket_server_side_encryption_configuration.mcp_content_bucket_encryption",
+  "aws_s3_bucket_server_side_encryption_configuration.output_bucket_encryption",
+  "aws_s3_bucket_server_side_encryption_configuration.reporting_bucket_encryption",
+  "aws_s3_bucket_server_side_encryption_configuration.test_set_bucket_encryption",
+  "aws_s3_bucket_server_side_encryption_configuration.web_ui_bucket_encryption",
+  "aws_s3_bucket_server_side_encryption_configuration.working_bucket_encryption",
+  "aws_s3_bucket_versioning.configuration_bucket_versioning",
+  "aws_s3_bucket_versioning.discovery_bucket_versioning",
+  "aws_s3_bucket_versioning.evaluation_baseline_bucket_versioning",
+  "aws_s3_bucket_versioning.finetuning_data_bucket_versioning",
+  "aws_s3_bucket_versioning.input_bucket_versioning",
+  "aws_s3_bucket_versioning.logging_bucket_versioning",
+  "aws_s3_bucket_versioning.mcp_content_bucket_versioning",
+  "aws_s3_bucket_versioning.output_bucket_versioning",
+  "aws_s3_bucket_versioning.reporting_bucket_versioning",
+  "aws_s3_bucket_versioning.test_set_bucket_versioning",
+  "aws_s3_bucket_versioning.web_ui_bucket_versioning",
+  "aws_s3_bucket_versioning.working_bucket_versioning",
+  "aws_s3_bucket_website_configuration.web_ui_bucket_website",
+  "module.apiresolverstack.aws_iam_role.api_gateway_cloud_watch_role",
+  "module.apiresolverstack.awscc_apigateway_account.api_gateway_account",
+  "module.documentkb.aws_iam_role.data_source_scheduler_role",
+  "module.documentkb.aws_iam_role.start_ingestion_job_function_role",
+  "module.feature_platform_stack.aws_dynamodb_table.installed_features_table"
+ ],
+ "statefulAddresses": [
+  "aws_cognito_user_pool.api_user_pool",
+  "aws_cognito_user_pool.user_pool",
+  "aws_dynamodb_table.agent_table",
+  "aws_dynamodb_table.bootstrap_tracking_table",
+  "aws_dynamodb_table.chat_messages_table",
+  "aws_dynamodb_table.chat_sessions_table",
+  "aws_dynamodb_table.concurrency_table",
+  "aws_dynamodb_table.configuration_table",
+  "aws_dynamodb_table.discovery_tracking_table",
+  "aws_dynamodb_table.hitl_table",
+  "aws_dynamodb_table.id_helper_chat_memory_table",
+  "aws_dynamodb_table.notifications_table",
+  "aws_dynamodb_table.tracking_table",
+  "aws_dynamodb_table.users_table",
+  "aws_s3_bucket.configuration_bucket",
+  "aws_s3_bucket.discovery_bucket",
+  "aws_s3_bucket.evaluation_baseline_bucket",
+  "aws_s3_bucket.finetuning_data_bucket",
+  "aws_s3_bucket.input_bucket",
+  "aws_s3_bucket.logging_bucket",
+  "aws_s3_bucket.mcp_content_bucket",
+  "aws_s3_bucket.output_bucket",
+  "aws_s3_bucket.reporting_bucket",
+  "aws_s3_bucket.staging_bucket",
+  "aws_s3_bucket.test_set_bucket",
+  "aws_s3_bucket.web_ui_bucket",
+  "aws_s3_bucket.working_bucket",
+  "awscc_kms_key.bastion_key",
+  "awscc_kms_key.customer_managed_encryption_key",
+  "awscc_secretsmanager_secret.external_mcp_agents_secret",
+  "awscc_ssm_parameter.settings_parameter",
+  "module.apiresolverstack.aws_dynamodb_table.chat_document_sessions_table",
+  "module.documentkb.aws_lambda_invocation.invoke_create_oss_index_lambda_function",
+  "module.documentkb.aws_lambda_invocation.knowledge_base_s3_vectors_custom",
+  "module.documentkb.aws_lambda_invocation.s3_vector_bucket_and_index",
+  "module.documentkb.awscc_bedrock_data_source.s3_data_source",
+  "module.documentkb.awscc_bedrock_data_source.web_data_source",
+  "module.documentkb.awscc_bedrock_knowledge_base.knowledge_base_open_search_native",
+  "module.documentkb.awscc_opensearchserverless_collection.oss_collection",
+  "module.feature_platform_stack.aws_dynamodb_table.installed_features_table",
+  "module.patternstack.aws_dynamodb_table.bda_metadata_table"
+ ],
+ "customOutputEdges": [],
+ "moves": [],
+ "resources": [
+  {
+   "stack": "",
+   "logicalId": "MCPContentBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.mcp_content_bucket",
+   "addresses": [
+    "aws_s3_bucket.mcp_content_bucket",
+    "aws_s3_bucket_lifecycle_configuration.mcp_content_bucket_lifecycle",
+    "aws_s3_bucket_logging.mcp_content_bucket_logging",
+    "aws_s3_bucket_public_access_block.mcp_content_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.mcp_content_bucket_encryption",
+    "aws_s3_bucket_versioning.mcp_content_bucket_versioning"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "FinetuningDataBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.finetuning_data_bucket",
+   "addresses": [
+    "aws_s3_bucket.finetuning_data_bucket",
+    "aws_s3_bucket_lifecycle_configuration.finetuning_data_bucket_lifecycle",
+    "aws_s3_bucket_logging.finetuning_data_bucket_logging",
+    "aws_s3_bucket_public_access_block.finetuning_data_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.finetuning_data_bucket_encryption",
+    "aws_s3_bucket_versioning.finetuning_data_bucket_versioning"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "ApiUserPool",
+   "cfnType": "AWS::Cognito::UserPool",
+   "address": "aws_cognito_user_pool.api_user_pool",
+   "addresses": [
+    "aws_cognito_user_pool.api_user_pool"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "ChatSessionsTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "aws_dynamodb_table.chat_sessions_table",
+   "addresses": [
+    "aws_dynamodb_table.chat_sessions_table"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "UsersTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "aws_dynamodb_table.users_table",
+   "addresses": [
+    "aws_dynamodb_table.users_table"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "BootstrapTrackingTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "aws_dynamodb_table.bootstrap_tracking_table",
+   "addresses": [
+    "aws_dynamodb_table.bootstrap_tracking_table"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "DiscoveryBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.discovery_bucket",
+   "addresses": [
+    "aws_s3_bucket.discovery_bucket",
+    "aws_s3_bucket_cors_configuration.discovery_bucket_cors",
+    "aws_s3_bucket_lifecycle_configuration.discovery_bucket_lifecycle",
+    "aws_s3_bucket_logging.discovery_bucket_logging",
+    "aws_s3_bucket_notification.discovery_bucket_notification",
+    "aws_s3_bucket_public_access_block.discovery_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.discovery_bucket_encryption",
+    "aws_s3_bucket_versioning.discovery_bucket_versioning"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "ViewerGroup",
+   "cfnType": "AWS::Cognito::UserPoolGroup",
+   "address": "awscc_cognito_user_pool_group.viewer_group",
+   "addresses": [
+    "awscc_cognito_user_pool_group.viewer_group"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "InputBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.input_bucket",
+   "addresses": [
+    "aws_s3_bucket.input_bucket",
+    "aws_s3_bucket_cors_configuration.input_bucket_cors",
+    "aws_s3_bucket_lifecycle_configuration.input_bucket_lifecycle",
+    "aws_s3_bucket_logging.input_bucket_logging",
+    "aws_s3_bucket_notification.input_bucket_notification",
+    "aws_s3_bucket_public_access_block.input_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.input_bucket_encryption",
+    "aws_s3_bucket_versioning.input_bucket_versioning"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "DiscoveryTrackingTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "aws_dynamodb_table.discovery_tracking_table",
+   "addresses": [
+    "aws_dynamodb_table.discovery_tracking_table"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "OutputBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.output_bucket",
+   "addresses": [
+    "aws_s3_bucket.output_bucket",
+    "aws_s3_bucket_cors_configuration.output_bucket_cors",
+    "aws_s3_bucket_lifecycle_configuration.output_bucket_lifecycle",
+    "aws_s3_bucket_logging.output_bucket_logging",
+    "aws_s3_bucket_notification.output_bucket_notification",
+    "aws_s3_bucket_public_access_block.output_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.output_bucket_encryption",
+    "aws_s3_bucket_versioning.output_bucket_versioning"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "AdminGroup",
+   "cfnType": "AWS::Cognito::UserPoolGroup",
+   "address": "awscc_cognito_user_pool_group.admin_group",
+   "addresses": [
+    "awscc_cognito_user_pool_group.admin_group"
+   ]
+  },
+  {
+   "stack": "FeaturePlatformStack",
+   "logicalId": "InstalledFeaturesTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "module.feature_platform_stack.aws_dynamodb_table.installed_features_table",
+   "addresses": [
+    "module.feature_platform_stack.aws_dynamodb_table.installed_features_table",
+    "module.feature_platform_stack.time_static.installed_features_table_name_suffix"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "HITLTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "aws_dynamodb_table.hitl_table",
+   "addresses": [
+    "aws_dynamodb_table.hitl_table"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "UserPool",
+   "cfnType": "AWS::Cognito::UserPool",
+   "address": "aws_cognito_user_pool.user_pool",
+   "addresses": [
+    "aws_cognito_user_pool.user_pool"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "TestSetBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.test_set_bucket",
+   "addresses": [
+    "aws_s3_bucket.test_set_bucket",
+    "aws_s3_bucket_cors_configuration.test_set_bucket_cors",
+    "aws_s3_bucket_lifecycle_configuration.test_set_bucket_lifecycle",
+    "aws_s3_bucket_logging.test_set_bucket_logging",
+    "aws_s3_bucket_public_access_block.test_set_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.test_set_bucket_encryption",
+    "aws_s3_bucket_versioning.test_set_bucket_versioning"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "ReviewerGroup",
+   "cfnType": "AWS::Cognito::UserPoolGroup",
+   "address": "awscc_cognito_user_pool_group.reviewer_group",
+   "addresses": [
+    "awscc_cognito_user_pool_group.reviewer_group"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "NotificationsTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "aws_dynamodb_table.notifications_table",
+   "addresses": [
+    "aws_dynamodb_table.notifications_table"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "ConfigurationTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "aws_dynamodb_table.configuration_table",
+   "addresses": [
+    "aws_dynamodb_table.configuration_table"
+   ]
+  },
+  {
+   "stack": "APIRESOLVERSTACK",
+   "logicalId": "ChatDocumentSessionsTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "module.apiresolverstack.aws_dynamodb_table.chat_document_sessions_table",
+   "addresses": [
+    "module.apiresolverstack.aws_dynamodb_table.chat_document_sessions_table"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "StagingBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.staging_bucket",
+   "addresses": [
+    "aws_s3_bucket.staging_bucket",
+    "aws_s3_bucket_lifecycle_configuration.staging_bucket_lifecycle",
+    "aws_s3_bucket_logging.staging_bucket_logging",
+    "aws_s3_bucket_notification.staging_bucket_notification",
+    "aws_s3_bucket_public_access_block.staging_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.staging_bucket_encryption",
+    "aws_s3_bucket_versioning.staging_bucket_versioning"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "ReportingBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.reporting_bucket",
+   "addresses": [
+    "aws_s3_bucket.reporting_bucket",
+    "aws_s3_bucket_cors_configuration.reporting_bucket_cors",
+    "aws_s3_bucket_lifecycle_configuration.reporting_bucket_lifecycle",
+    "aws_s3_bucket_logging.reporting_bucket_logging",
+    "aws_s3_bucket_public_access_block.reporting_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.reporting_bucket_encryption",
+    "aws_s3_bucket_versioning.reporting_bucket_versioning"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "TrackingTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "aws_dynamodb_table.tracking_table",
+   "addresses": [
+    "aws_dynamodb_table.tracking_table"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "AdminUser",
+   "cfnType": "AWS::Cognito::UserPoolUser",
+   "address": "aws_cognito_user.admin_user",
+   "addresses": [
+    "aws_cognito_user.admin_user"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "AgentTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "aws_dynamodb_table.agent_table",
+   "addresses": [
+    "aws_dynamodb_table.agent_table"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "ConcurrencyTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "aws_dynamodb_table.concurrency_table",
+   "addresses": [
+    "aws_dynamodb_table.concurrency_table"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "IdHelperChatMemoryTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "aws_dynamodb_table.id_helper_chat_memory_table",
+   "addresses": [
+    "aws_dynamodb_table.id_helper_chat_memory_table"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "ConfigurationBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.configuration_bucket",
+   "addresses": [
+    "aws_s3_bucket.configuration_bucket",
+    "aws_s3_bucket_cors_configuration.configuration_bucket_cors",
+    "aws_s3_bucket_lifecycle_configuration.configuration_bucket_lifecycle",
+    "aws_s3_bucket_logging.configuration_bucket_logging",
+    "aws_s3_bucket_notification.configuration_bucket_notification",
+    "aws_s3_bucket_public_access_block.configuration_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.configuration_bucket_encryption",
+    "aws_s3_bucket_versioning.configuration_bucket_versioning"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "LoggingBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.logging_bucket",
+   "addresses": [
+    "aws_s3_bucket.logging_bucket",
+    "aws_s3_bucket_lifecycle_configuration.logging_bucket_lifecycle",
+    "aws_s3_bucket_ownership_controls.logging_bucket_ownership",
+    "aws_s3_bucket_public_access_block.logging_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.logging_bucket_encryption",
+    "aws_s3_bucket_versioning.logging_bucket_versioning"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "WebUIBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.web_ui_bucket",
+   "addresses": [
+    "aws_s3_bucket.web_ui_bucket",
+    "aws_s3_bucket_logging.web_ui_bucket_logging",
+    "aws_s3_bucket_public_access_block.web_ui_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.web_ui_bucket_encryption",
+    "aws_s3_bucket_versioning.web_ui_bucket_versioning",
+    "aws_s3_bucket_website_configuration.web_ui_bucket_website"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "CustomerManagedEncryptionKey",
+   "cfnType": "AWS::KMS::Key",
+   "address": "awscc_kms_key.customer_managed_encryption_key",
+   "addresses": [
+    "awscc_kms_key.customer_managed_encryption_key"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "WorkingBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.working_bucket",
+   "addresses": [
+    "aws_s3_bucket.working_bucket",
+    "aws_s3_bucket_lifecycle_configuration.working_bucket_lifecycle",
+    "aws_s3_bucket_logging.working_bucket_logging",
+    "aws_s3_bucket_public_access_block.working_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.working_bucket_encryption",
+    "aws_s3_bucket_versioning.working_bucket_versioning"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "AnnotatorGroup",
+   "cfnType": "AWS::Cognito::UserPoolGroup",
+   "address": "awscc_cognito_user_pool_group.annotator_group",
+   "addresses": [
+    "awscc_cognito_user_pool_group.annotator_group"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "AuthorGroup",
+   "cfnType": "AWS::Cognito::UserPoolGroup",
+   "address": "awscc_cognito_user_pool_group.author_group",
+   "addresses": [
+    "awscc_cognito_user_pool_group.author_group"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "ChatMessagesTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "aws_dynamodb_table.chat_messages_table",
+   "addresses": [
+    "aws_dynamodb_table.chat_messages_table"
+   ]
+  },
+  {
+   "stack": "PATTERNSTACK",
+   "logicalId": "BDAMetadataTable",
+   "cfnType": "AWS::DynamoDB::Table",
+   "address": "module.patternstack.aws_dynamodb_table.bda_metadata_table",
+   "addresses": [
+    "module.patternstack.aws_dynamodb_table.bda_metadata_table"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "BastionKey",
+   "cfnType": "AWS::KMS::Key",
+   "address": "awscc_kms_key.bastion_key",
+   "addresses": [
+    "awscc_kms_key.bastion_key"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "EvaluationBaselineBucket",
+   "cfnType": "AWS::S3::Bucket",
+   "address": "aws_s3_bucket.evaluation_baseline_bucket",
+   "addresses": [
+    "aws_s3_bucket.evaluation_baseline_bucket",
+    "aws_s3_bucket_cors_configuration.evaluation_baseline_bucket_cors",
+    "aws_s3_bucket_logging.evaluation_baseline_bucket_logging",
+    "aws_s3_bucket_public_access_block.evaluation_baseline_bucket_public_access",
+    "aws_s3_bucket_server_side_encryption_configuration.evaluation_baseline_bucket_encryption",
+    "aws_s3_bucket_versioning.evaluation_baseline_bucket_versioning"
+   ]
+  },
+  {
+   "stack": "",
+   "logicalId": "AdminUserToGroupAttachment",
+   "cfnType": "AWS::Cognito::UserPoolUserToGroupAttachment",
+   "address": "aws_cognito_user_in_group.admin_user_to_group_attachment",
+   "addresses": [
+    "aws_cognito_user_in_group.admin_user_to_group_attachment"
+   ]
+  }
+ ]
+}

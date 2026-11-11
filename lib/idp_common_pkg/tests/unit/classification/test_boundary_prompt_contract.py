@@ -29,6 +29,8 @@ import pathlib
 import pytest
 import yaml
 
+from idp_common.prompt_comments import strip_prompt_comments
+
 DEFAULTS = (
     pathlib.Path(__file__).resolve().parents[3]
     / "idp_common"
@@ -43,7 +45,11 @@ def task_prompt() -> str:
     if not DEFAULTS.exists():  # pragma: no cover - packaged install
         pytest.skip(f"{DEFAULTS} not present")
     cfg = yaml.safe_load(DEFAULTS.read_text())
-    return cfg["classification"]["combined"]["page"]["task_prompt"]
+    # The prompt as it is sent: the default documents its contract in
+    # {# ... #} comments, which are removed before any request.
+    return strip_prompt_comments(
+        cfg["classification"]["combined"]["page"]["task_prompt"]
+    )
 
 
 def test_the_rules_block_is_present(task_prompt):

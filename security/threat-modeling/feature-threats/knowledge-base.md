@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.0 |
-| **Last Updated** | 2026-07-28 |
+| **Document Version** | 3.1 |
+| **Last Updated** | 2026-11-09 |
 | **Applies to release** | v0.6.3 |
 | **Feature** | Bedrock Knowledge Base (RAG Integration) |
 | **Classification** | Internal |
@@ -81,7 +81,7 @@ flowchart TD
 | **Likelihood** | Low |
 | **Severity** | Medium |
 | **Affected Components** | OpenSearch Serverless collection |
-| **Mitigations** | OpenSearch Serverless encryption at rest and in transit, IAM-based access policies, network policies restricting access to VPC endpoints, no public access |
+| **Mitigations** | Under `TenantIsolationMode=Strict` or an external `TenantGrantSource`, Knowledge Base queries are Admin-only (`query_knowledgebase_resolver`), because retrieval cannot be confined to one tenant (TEN.T01). With S3 Vectors, the vector manager can pass only the knowledge base's own service role and only to Bedrock (`S3VectorManagerPassRolePolicy` in `nested/bedrockkb/template.yaml`); before 0.6.14 it held `iam:PassRole` on every role in the account. OpenSearch Serverless encryption at rest and in transit, IAM-based access policies, network policies restricting access to VPC endpoints, no public access |
 
 ### KB.T04: Excessive RAG Retrieval
 

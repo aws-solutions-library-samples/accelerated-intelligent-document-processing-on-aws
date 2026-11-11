@@ -43,7 +43,40 @@ confidence instruction on the page-level path only).
 from __future__ import annotations
 
 import copy
+import importlib.util
+import os
 from typing import Any, Dict, List, Tuple
+
+
+def _load_prompt_comments():
+    """This checkout's ``idp_common/prompt_comments.py``, loaded by path.
+
+    Not imported by package name: ``release_model_check`` imports this module in a
+    child interpreter whose ``idp_common`` is an extracted earlier release, which
+    predates prompt comments. The module imports only the standard library, so
+    loading the one file is safe and keeps a single definition of the rules.
+    """
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "..",
+        "..",
+        "lib",
+        "idp_common_pkg",
+        "idp_common",
+        "prompt_comments.py",
+    )
+    spec = importlib.util.spec_from_file_location("_idp_prompt_comments", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_prompt_comments = _load_prompt_comments()
+strip_prompt_comments = _prompt_comments.strip_prompt_comments
+strip_prompt_comments_in_config = _prompt_comments.strip_prompt_comments_in_config
 
 #: The v0.9 classification blocks. A release that predates the nesting reads none
 #: of them; :func:`with_flat_classification` carries their content in flat keys.
@@ -132,10 +165,15 @@ def flat_classification(classification: Dict[str, Any]) -> Tuple[Dict, List[str]
             flat[key] = copy.deepcopy(llm[key])
 
     # The old release has one prompt pair; it is the selected granularity's.
+    # Every flat prompt is written with its {# ... #} comments removed: a release
+    # that predates them sends a comment as prompt text, and substitutes and splits
+    # on any placeholder a comment names, so the default prompts' contract comments
+    # would put the document text in twice. The current reader strips them anyway,
+    # so both sides of the A/B are sent the same prompt.
     prompts = _dict(one.get(granularity))
     for key in ("system_prompt", "task_prompt"):
         if key in prompts:
-            flat[key] = prompts[key]
+            flat[key] = strip_prompt_comments(prompts[key])
     page = _dict(one.get("page"))
     if "contextPagesCount" in page:
         flat["contextPagesCount"] = page["contextPagesCount"]
@@ -150,7 +188,7 @@ def flat_classification(classification: Dict[str, Any]) -> Tuple[Dict, List[str]
         k: confidence[k] for k in _FLAT_CONFIDENCE_KEYS if k in confidence
     }
     if flat_confidence:
-        flat["confidence"] = copy.deepcopy(flat_confidence)
+        flat["confidence"] = strip_prompt_comments_in_config(flat_confidence)
 
     if "fallback_class" in classification:
         flat["invalidClassFallback"] = classification["fallback_class"]

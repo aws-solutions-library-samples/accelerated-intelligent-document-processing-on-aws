@@ -39,6 +39,11 @@ make_configs = harness_module("make_configs")
 
 from idp_common.config.migrations import migrate_config  # noqa: E402
 from idp_common.config.models import IDPConfig  # noqa: E402
+from idp_common.prompt_comments import (  # noqa: E402
+    has_prompt_comments,
+    strip_prompt_comments,
+    strip_prompt_comments_in_config,
+)
 
 PREVIOUS_RELEASE = "v0.6.12"
 # The first release whose own models declare the nested v0.9 blocks.
@@ -66,7 +71,11 @@ def _packet(cfg):
 
 
 def _resolved(cfg):
-    return IDPConfig(**migrate_config(copy.deepcopy(cfg))).classification.model_dump()
+    """The classification block the current reader resolves, as sent: the runtime
+    reader removes {# ... #} prompt comments, and the compat copy's flat prompts
+    carry none, so the comparison is between the prompts each side sends."""
+    resolved = IDPConfig(**migrate_config(copy.deepcopy(cfg))).classification
+    return strip_prompt_comments_in_config(resolved.model_dump())
 
 
 def _diff(a, b, path=()):
@@ -157,12 +166,30 @@ def test_flat_keys_carry_the_cell_settings(built):
     assert flat["sectionSplitting"] == "disabled"
     assert flat["classificationMethod"] == "multimodalPageLevelClassification"
     assert flat["model"] == nested["combined"]["llm"]["model"]
-    assert flat["task_prompt"] == nested["combined"]["page"]["task_prompt"]
+    assert flat["task_prompt"] == strip_prompt_comments(
+        nested["combined"]["page"]["task_prompt"]
+    )
     assert flat["task_prompt"].strip(), (
         "an empty flat prompt is what the bug looked like"
     )
     assert flat["invalidClassFallback"] == nested["fallback_class"]
     assert notes == []
+
+
+@pytest.mark.parametrize("cid", [c[0] for c in CELLS])
+def test_flat_keys_carry_no_prompt_comments(built, cid):
+    """The flat keys are what a release predating {# ... #} comments reads, and it
+    sends a comment as prompt text and substitutes any placeholder one names, so
+    the default prompts' contract comments would put the document in twice."""
+    original = built[cid]
+    assert has_prompt_comments(original["classification"]), (
+        "the shipped classification prompts carry comments; without them this "
+        "test checks nothing"
+    )
+    compat, _ = classification_flat.with_flat_classification(original)
+    flat, _ = classification_flat.flat_classification(original["classification"])
+    assert flat.keys() <= compat["classification"].keys()
+    assert not has_prompt_comments(flat)
     # The input is not modified.
     assert "classificationMethod" not in built["split-disabled"]["classification"]
 
@@ -173,8 +200,8 @@ def test_packet_granularity_uses_the_packet_prompts_and_reports_what_differs(bui
     flat = compat["classification"]
     packet = original["classification"]["combined"]["packet"]
     assert flat["classificationMethod"] == "textbasedHolisticClassification"
-    assert flat["task_prompt"] == packet["task_prompt"]
-    assert flat["system_prompt"] == packet["system_prompt"]
+    assert flat["task_prompt"] == strip_prompt_comments(packet["task_prompt"])
+    assert flat["system_prompt"] == strip_prompt_comments(packet["system_prompt"])
     assert any("window_pages" in n for n in notes)
     assert any("confidence" in n for n in notes)
 

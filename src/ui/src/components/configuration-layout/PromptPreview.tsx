@@ -15,6 +15,7 @@
  */
 
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import { stripPromptCommentsInConfig } from './promptComments';
 import {
   Box,
   SpaceBetween,
@@ -1160,59 +1161,71 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
   // 'extraction' and 'confidence' views this composes the actual template that
   // will run given confidence.mode + geometry.mode (mirrors the Python
   // prompt_assembly selectors), so the preview reflects real behavior.
-  const stepConfig = useMemo((): StepConfig => {
-    const extraction = (formValues?.extraction as Record<string, unknown>) || {};
-    const confidence = (extraction.confidence as Record<string, unknown>) || {};
-    const geometry = (extraction.geometry as Record<string, unknown>) || {};
-    const mode = String(confidence.mode ?? 'separate');
-    const geomMode = String(geometry.mode ?? 'ocr_only');
-    const needsBbox = LLM_BOX_GEOMETRY_MODES.includes(geomMode);
-    // v0.6: bbox block lives under geometry; confidence prompt under confidence.
-    const bboxBlock = String(geometry.task_prompt_bbox ?? '');
+  // The step's prompts, built from either the values as typed (the Raw tabs show
+  // exactly that, comments included) or the values as sent: {# ... #} comments
+  // are removed before any request (idp_common/prompt_comments.py), so the
+  // rendered tabs and the token counts use the stripped values.
+  const stepConfigFor = useCallback(
+    (sent: Record<string, unknown>): StepConfig => {
+      const extraction = (sent.extraction as Record<string, unknown>) || {};
+      const confidence = (extraction.confidence as Record<string, unknown>) || {};
+      const geometry = (extraction.geometry as Record<string, unknown>) || {};
+      const mode = String(confidence.mode ?? 'separate');
+      const geomMode = String(geometry.mode ?? 'ocr_only');
+      const needsBbox = LLM_BOX_GEOMETRY_MODES.includes(geomMode);
+      // v0.6: bbox block lives under geometry; confidence prompt under confidence.
+      const bboxBlock = String(geometry.task_prompt_bbox ?? '');
 
-    if (selectedStep === 'extraction') {
-      // A Simple + integrated section on a list-bearing class is downgraded to a
-      // separate pass server-side and gets the PLAIN prompt; show that.
-      const integrated = mode === 'integrated' && !simpleIntegratedDowngraded(formValues, selectedClass);
-      let task = String(extraction.task_prompt ?? '');
-      if (integrated) {
-        // Mirrors prompt_assembly.select_extraction_task_prompt: Simple mode uses
-        // the 1S-TopK template, Advanced the tool-based one. The two differ, so
-        // picking by mode is load-bearing rather than cosmetic.
-        const topk = String(extraction.task_prompt_extraction_with_confidence_topk ?? '');
-        const tool = String(extraction.task_prompt_extraction_with_confidence ?? '');
-        task = (extractionModeOf(formValues) === 'simple' ? topk : tool) || String(extraction.task_prompt ?? '');
-        if (needsBbox) task = appendBboxBlock(task, bboxBlock);
+      if (selectedStep === 'extraction') {
+        // A Simple + integrated section on a list-bearing class is downgraded to a
+        // separate pass server-side and gets the PLAIN prompt; show that.
+        const integrated = mode === 'integrated' && !simpleIntegratedDowngraded(formValues, selectedClass);
+        let task = String(extraction.task_prompt ?? '');
+        if (integrated) {
+          // Mirrors prompt_assembly.select_extraction_task_prompt: Simple mode uses
+          // the 1S-TopK template, Advanced the tool-based one. The two differ, so
+          // picking by mode is load-bearing rather than cosmetic.
+          const topk = String(extraction.task_prompt_extraction_with_confidence_topk ?? '');
+          const tool = String(extraction.task_prompt_extraction_with_confidence ?? '');
+          task = (extractionModeOf(formValues) === 'simple' ? topk : tool) || String(extraction.task_prompt ?? '');
+          if (needsBbox) task = appendBboxBlock(task, bboxBlock);
+        }
+        return {
+          system_prompt: String(extraction.system_prompt ?? ''),
+          task_prompt: task,
+          model: String(extraction.model ?? ''),
+        };
       }
-      return {
-        system_prompt: String(extraction.system_prompt ?? ''),
-        task_prompt: task,
-        model: String(extraction.model ?? ''),
-      };
-    }
 
-    if (selectedStep === 'confidence') {
-      let task = String(confidence.task_prompt ?? '');
-      if (needsBbox) task = appendBboxBlock(task, bboxBlock);
-      return {
-        system_prompt: String(confidence.system_prompt ?? ''),
-        task_prompt: task,
-        model: String(confidence.model ?? ''),
-      };
-    }
+      if (selectedStep === 'confidence') {
+        let task = String(confidence.task_prompt ?? '');
+        if (needsBbox) task = appendBboxBlock(task, bboxBlock);
+        return {
+          system_prompt: String(confidence.system_prompt ?? ''),
+          task_prompt: task,
+          model: String(confidence.model ?? ''),
+        };
+      }
 
-    if (CLASSIFICATION_STEPS.includes(selectedStep)) {
-      return resolveClassificationStepPrompt(
-        (formValues?.classification as Record<string, unknown>) || {},
-        selectedStep as ClassificationStep,
-        classes.length,
-      );
-    }
+      if (CLASSIFICATION_STEPS.includes(selectedStep)) {
+        return resolveClassificationStepPrompt(
+          (sent.classification as Record<string, unknown>) || {},
+          selectedStep as ClassificationStep,
+          classes.length,
+        );
+      }
 
-    const cfg = formValues?.[selectedStep];
-    if (!cfg || typeof cfg !== 'object') return {};
-    return cfg as StepConfig;
-  }, [formValues, selectedStep, selectedClass, classes]);
+      const cfg = sent[selectedStep];
+      if (!cfg || typeof cfg !== 'object') return {};
+      return cfg as StepConfig;
+    },
+    [formValues, selectedStep, selectedClass, classes],
+  );
+  const stepConfig = useMemo(
+    () => stepConfigFor(stripPromptCommentsInConfig(formValues || {}) as Record<string, unknown>),
+    [stepConfigFor, formValues],
+  );
+  const rawStepConfig = useMemo(() => stepConfigFor(formValues || {}), [stepConfigFor, formValues]);
 
   // Whether this step needs a class selection
   const needsClassSelection = selectedStep === 'extraction' || selectedStep === 'confidence';
@@ -1314,10 +1327,10 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     return {
       renderedSystemPrompt: renderedSystem,
       renderedTaskPrompt: renderPrompt(taskTemplate, subs),
-      rawSystemPrompt: sysTemplate,
-      rawTaskPrompt: taskTemplate,
+      rawSystemPrompt: rawStepConfig.system_prompt || '',
+      rawTaskPrompt: rawStepConfig.task_prompt || '',
     };
-  }, [stepConfig, buildSubstitutions, schemaDivergence.restatesSchema, selectedClass]);
+  }, [stepConfig, rawStepConfig, buildSubstitutions, schemaDivergence.restatesSchema, selectedClass]);
 
   // The forced toolSpec, when one is actually sent. Empty otherwise, which is what
   // keeps it out of both the tab list and the token total. Two forms: the pretty

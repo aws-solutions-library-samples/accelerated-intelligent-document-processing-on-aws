@@ -108,6 +108,11 @@ from .tenancy import (
     TenantVerifyOutcome,
     TenantVerifyResult,
 )
+from .terraform import (
+    TerraformMigrationPlanResult,
+    TerraformMigrationResource,
+    TerraformMigrationStepResult,
+)
 from .testing import (
     DocumentsAbortedResult,
     ExecutionsStoppedResult,
@@ -225,6 +230,9 @@ __all__ = [
     "TenantPlanItem",
     "TenantAccessPoint",
     "TenantPolicyDeployResult",
+    "TerraformMigrationPlanResult",
+    "TerraformMigrationResource",
+    "TerraformMigrationStepResult",
     "TenantPolicyResult",
     "TenantVerifyCheck",
     "TenantVerifyOutcome",

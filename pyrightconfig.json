@@ -11,7 +11,8 @@
     "samples",
     "scripts",
     "security",
-    "src"
+    "src",
+    "terraform"
   ],
 
   "exclude": [

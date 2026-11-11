@@ -918,3 +918,174 @@ def test_the_not_found_branch_names_the_build_instead_of_dumping_the_reply(index
     message = str(excinfo.value)
     assert build_id in message
     assert planted_value not in message, f"the reply reached the message: {message!r}"
+
+
+# --------------------------------------------------------------------------- #
+# Rollback reuses the previous version's images (#1824)
+#
+# A rollback sends this resource an Update carrying the previous version's
+# properties. Rebuilding them needs a working CodeBuild, so the slowdown that
+# failed the update failed the rollback too and left the stack in
+# UPDATE_ROLLBACK_FAILED. When the stack is rolling back and every image the
+# previous properties name is still in ECR, no build is started.
+# --------------------------------------------------------------------------- #
+
+_STACK_ID = (
+    "arn:aws:cloudformation:us-east-1:123456789012:stack/"
+    "idp-PATTERNSTACK-EXAMPLE/11111111-2222-3333-4444-555555555555"
+)
+_REPOSITORY = "idp-repo"
+
+
+def _update_event(resource_type="Custom::CodeBuildRun", **property_overrides):
+    properties = {
+        "BuildProjectName": "DockerBuildProject-EXAMPLE",
+        "ImageVersion": _VERSION,
+        "RepositoryName": _REPOSITORY,
+        "ExpectedImages": _IMAGES,
+    }
+    properties.update(property_overrides)
+    return {
+        "RequestType": "Update",
+        "ResourceType": resource_type,
+        "StackId": _STACK_ID,
+        "ResourceProperties": {k: v for k, v in properties.items() if v is not None},
+    }
+
+
+@pytest.fixture
+def clients(index, monkeypatch):
+    """Fresh CodeBuild, ECR and CloudFormation stubs, and an empty Data dict."""
+    codebuild = MagicMock(name="codebuild")
+    codebuild.start_build.return_value = {"build": {"id": "proj:new-build"}}
+    ecr = MagicMock(name="ecr")
+    cfn = MagicMock(name="cloudformation")
+    monkeypatch.setattr(index, "CODEBUILD_CLIENT", codebuild)
+    monkeypatch.setattr(index, "ECR_CLIENT", ecr)
+    monkeypatch.setattr(index, "CFN_CLIENT", cfn)
+    monkeypatch.setattr(index.HELPER, "Data", {})
+    return SimpleNamespace(codebuild=codebuild, ecr=ecr, cfn=cfn)
+
+
+def _stack_status(clients, status):
+    clients.cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": status}]}
+
+
+def _images_present(clients, present=True):
+    clients.ecr.describe_images.side_effect = _describe_images_returning(
+        None, found=present
+    )
+
+
+@pytest.mark.parametrize(
+    "resource_type", ["Custom::CodeBuildRun", "Custom::DockerBuild"]
+)
+def test_a_rollback_with_every_image_present_starts_no_build(
+    index, clients, resource_type
+):
+    _stack_status(clients, "UPDATE_ROLLBACK_IN_PROGRESS")
+    _images_present(clients)
+
+    index.create_or_update(_update_event(resource_type), None)
+
+    clients.codebuild.start_build.assert_not_called()
+    assert index.HELPER.Data.get(index.BUILD_SKIPPED_KEY)
+    clients.cfn.describe_stacks.assert_called_once_with(StackName=_STACK_ID)
+    asked = [c.kwargs["imageIds"] for c in clients.ecr.describe_images.call_args_list]
+    assert asked == [[{"imageTag": f"{img}-{_VERSION}"}] for img in _IMAGES]
+
+
+def test_the_poller_completes_a_rollback_that_started_no_build(index, clients):
+    event = {
+        "ResourceType": "Custom::CodeBuildRun",
+        "CrHelperData": {index.BUILD_SKIPPED_KEY: "rollback-reused-existing-images"},
+        "ResourceProperties": {"ExpectedImages": _IMAGES},
+    }
+
+    assert index.poll_create_or_update(event, None) is True
+    clients.codebuild.batch_get_builds.assert_not_called()
+
+
+def test_a_rollback_with_an_image_missing_rebuilds(index, clients):
+    _stack_status(clients, "UPDATE_ROLLBACK_IN_PROGRESS")
+    _images_present(clients, present=False)
+
+    index.create_or_update(_update_event(), None)
+
+    clients.codebuild.start_build.assert_called_once_with(
+        projectName="DockerBuildProject-EXAMPLE"
+    )
+    assert index.BUILD_SKIPPED_KEY not in index.HELPER.Data
+    assert index.HELPER.Data["build_id"] == "proj:new-build"
+
+
+def test_a_rollback_whose_image_check_errors_rebuilds(index, clients):
+    _stack_status(clients, "UPDATE_ROLLBACK_IN_PROGRESS")
+    clients.ecr.describe_images.side_effect = _client_error("AccessDeniedException")
+
+    index.create_or_update(_update_event(), None)
+
+    clients.codebuild.start_build.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "status", ["UPDATE_IN_PROGRESS", "UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS"]
+)
+def test_an_update_that_is_not_a_rollback_always_builds(index, clients, status):
+    _stack_status(clients, status)
+    _images_present(clients)
+
+    index.create_or_update(_update_event(), None)
+
+    clients.codebuild.start_build.assert_called_once()
+    clients.ecr.describe_images.assert_not_called()
+
+
+def test_a_create_never_asks_whether_it_is_a_rollback(index, clients):
+    event = dict(_update_event(), RequestType="Create")
+
+    index.create_or_update(event, None)
+
+    clients.cfn.describe_stacks.assert_not_called()
+    clients.codebuild.start_build.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "missing", ["RepositoryName", "ImageVersion", "ExpectedImages"]
+)
+def test_a_build_that_names_no_image_set_never_reads_the_stack(index, clients, missing):
+    """The root template's UI build names none of these, and its role has no
+    cloudformation:DescribeStacks permission, so it must not ask."""
+    index.create_or_update(_update_event(**{missing: None}), None)
+
+    clients.cfn.describe_stacks.assert_not_called()
+    clients.codebuild.start_build.assert_called_once()
+
+
+def test_an_unreadable_stack_status_builds(index, clients):
+    clients.cfn.describe_stacks.side_effect = _client_error("AccessDenied")
+
+    index.create_or_update(_update_event(), None)
+
+    clients.codebuild.start_build.assert_called_once()
+
+
+def test_the_multi_doc_resource_type_keeps_polling_a_queued_build(index, clients):
+    """A build still queued after Lambda's 15 minutes is polled, not failed.
+
+    The multi-document-discovery stack's ``Custom::DockerBuild`` used to be served
+    by a handler that waited inside one 900-second invocation and failed the
+    resource when that ran out. It is now served by this poller, which answers
+    "poll again" for a build that has not finished, for as long as
+    CloudFormation's hour allows.
+    """
+    clients.codebuild.batch_get_builds.return_value = {
+        "builds": [{"id": "proj:queued", "buildStatus": "IN_PROGRESS"}]
+    }
+    event = {
+        "ResourceType": "Custom::DockerBuild",
+        "CrHelperData": {"build_id": "proj:queued"},
+        "ResourceProperties": {"ExpectedImages": ["multi-doc-discovery"]},
+    }
+
+    assert index.poll_create_or_update(event, None) is None

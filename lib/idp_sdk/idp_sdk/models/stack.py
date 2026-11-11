@@ -40,6 +40,14 @@ class StackDeletionResult(BaseModel):
     cleanup_result: Optional[Dict[str, Any]] = Field(
         default=None, description="Results of force-delete cleanup phase"
     )
+    retained_resources: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Resources a Terraform delete left in place because CloudFormation "
+            "would retain them, categorized as dynamodb_tables, log_groups, "
+            "s3_buckets and other"
+        ),
+    )
 
 
 class StackOperationInProgress(BaseModel):

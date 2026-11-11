@@ -55,6 +55,10 @@ from idp_common.lambda_deadline import (
     remaining_invocation_seconds,
 )
 
+# Prompt-template comments ({# ... #}), removed in format_prompt. A standard-
+# library-only leaf module for the same reason as ``lambda_deadline`` above.
+from idp_common.prompt_comments import strip_prompt_comments
+
 # The shard invocation's time budget. Imported rather than restated, because this
 # client's read timeout is one of its terms and a term written in two places is
 # exactly how the budget stopped adding up (#1014). ``timeout_budget`` is a leaf
@@ -2916,6 +2920,12 @@ class BedrockClient:
         Raises:
             ValueError: If a required placeholder is missing from the template
         """
+        # Comments ({# ... #}) document a template and are never sent. Services
+        # normally receive templates with them already removed by the runtime
+        # config reader; this covers a template handed in directly. A placeholder
+        # that appears only inside a comment does not count as present.
+        prompt_template = strip_prompt_comments(prompt_template)
+
         # Validate required placeholders against the template the caller passed,
         # before any rewriting below changes what the string looks like.
         if required_placeholders:

@@ -2096,3 +2096,384 @@ class TestTheSpatialSignalOutranksTheVerbatimPreference:
         geom, source, _conf = g.match_value_to_geometry("4-15-11", pd)
         assert geom["boundingBox"]["top"] == pytest.approx(0.10)
         assert source == "ocr"
+
+
+def _word(text, left, top=0.30, width=0.05, height=0.02):
+    return {
+        "text": text,
+        "confidence": 99.0,
+        "geometry": {
+            "boundingBox": {"left": left, "top": top, "width": width, "height": height}
+        },
+    }
+
+
+def _worded_line(words, top=0.30):
+    """A LINE whose text is its words in the given (engine) order, with WORD boxes."""
+    left = min(w["geometry"]["boundingBox"]["left"] for w in words)
+    right = max(
+        w["geometry"]["boundingBox"]["left"] + w["geometry"]["boundingBox"]["width"]
+        for w in words
+    )
+    line = _line(" ".join(w["text"] for w in words), left, top, width=right - left)
+    line["words"] = words
+    return line
+
+
+class TestWordSpanNarrowing:
+    """A value inside a longer line is boxed to its own words, not the line."""
+
+    def test_value_after_a_label_gets_only_its_words(self):
+        line = _worded_line(
+            [
+                _word("Issue", 0.10),
+                _word("Date", 0.16),
+                _word("14.05.2024", 0.30, width=0.12),
+            ]
+        )
+        geom, source, _ = g.match_value_to_geometry("14.05.2024", {1: _page([line])})
+        assert source == "ocr"
+        assert geom["boundingBox"] == pytest.approx(
+            {"left": 0.30, "top": 0.30, "width": 0.12, "height": 0.02}
+        )
+        # The internal order box never leaks into the public geometry.
+        assert set(geom) == {"boundingBox", "page"}
+
+    def test_multi_word_value_unions_its_words(self):
+        line = _worded_line(
+            [
+                _word("To:", 0.10),
+                _word("Omar", 0.16),
+                _word("Faisal", 0.22),
+                _word("Haddad", 0.28),
+            ]
+        )
+        geom, _, _ = g.match_value_to_geometry("Omar Faisal Haddad", {1: _page([line])})
+        assert geom["boundingBox"] == pytest.approx(
+            {"left": 0.16, "top": 0.30, "width": 0.17, "height": 0.02}
+        )
+
+    def test_arabic_value_after_an_arabic_label_gets_only_its_words(self):
+        # Words listed in the line's text order (here reading order), boxes RTL.
+        line = _worded_line(
+            [_word("الاسم", 0.30), _word("سارة", 0.20), _word("أحمد", 0.10)]
+        )
+        geom, _, _ = g.match_value_to_geometry("سارة أحمد", {1: _page([line])})
+        assert geom["boundingBox"] == pytest.approx(
+            {"left": 0.10, "top": 0.30, "width": 0.15, "height": 0.02}
+        )
+
+    def test_value_not_in_word_order_keeps_the_line_box(self):
+        # The value matches the line text, but the words spell it in another order
+        # (text and word lists disagree): narrowing is not certain, so no change.
+        line = _line("Sara Ahmed Abdullah", 0.10, 0.30, width=0.3)
+        line["words"] = [
+            _word("Abdullah", 0.30),
+            _word("Ahmed", 0.20),
+            _word("Sara", 0.10),
+        ]
+        geom, _, _ = g.match_value_to_geometry("Sara Ahmed", {1: _page([line])})
+        assert geom["boundingBox"] == pytest.approx(g._line_box(line))
+
+    def test_mixed_row_value_in_latin_words_beside_arabic(self):
+        line = _worded_line(
+            [
+                _word("Serial", 0.10),
+                _word("No.", 0.16),
+                _word("UTA", 0.22),
+                _word("7712", 0.28),
+                _word("0045", 0.34),
+            ]
+        )
+        geom, _, _ = g.match_value_to_geometry("UTA 7712 0045", {1: _page([line])})
+        assert geom["boundingBox"] == pytest.approx(
+            {"left": 0.22, "top": 0.30, "width": 0.17, "height": 0.02}
+        )
+
+    def test_word_without_a_box_outside_the_value_is_fine(self):
+        line = _worded_line(
+            [
+                _word("Issue", 0.10),
+                _word("Date", 0.16),
+                _word("14.05.2024", 0.30, width=0.12),
+            ]
+        )
+        line["words"][0] = {"text": "Issue"}  # no geometry
+        geom, _, _ = g.match_value_to_geometry("14.05.2024", {1: _page([line])})
+        assert geom["boundingBox"] == pytest.approx(
+            {"left": 0.30, "top": 0.30, "width": 0.12, "height": 0.02}
+        )
+
+    def test_value_covering_a_word_without_a_box_keeps_the_line_box(self):
+        line = _worded_line(
+            [_word("To:", 0.10), _word("Omar", 0.16), _word("Haddad", 0.22)]
+        )
+        line["words"][1] = {"text": "Omar"}  # no geometry
+        geom, _, _ = g.match_value_to_geometry("Omar Haddad", {1: _page([line])})
+        assert geom["boundingBox"] == pytest.approx(g._line_box(line))
+
+    def test_punctuation_inside_the_value_matches_like_the_line(self):
+        # "Mr." keeps its period inside the value, as it does in the line text.
+        line = _worded_line(
+            [
+                _word("To:", 0.10),
+                _word("Mr.", 0.15),
+                _word("Omar", 0.20),
+                _word("Haddad", 0.26),
+            ]
+        )
+        geom, _, _ = g.match_value_to_geometry("Mr. Omar Haddad", {1: _page([line])})
+        assert geom["boundingBox"] == pytest.approx(
+            {"left": 0.15, "top": 0.30, "width": 0.16, "height": 0.02}
+        )
+
+    def test_separator_collapsed_like_the_line(self):
+        # The line normalizes "Haddad, Omar" to "haddad omar"; the words must too.
+        line = _worded_line(
+            [_word("Name", 0.10), _word("Haddad,", 0.20), _word("Omar", 0.28)]
+        )
+        geom, _, _ = g.match_value_to_geometry("Haddad Omar", {1: _page([line])})
+        assert geom["boundingBox"] == pytest.approx(
+            {"left": 0.20, "top": 0.30, "width": 0.13, "height": 0.02}
+        )
+
+    def test_value_repeated_within_the_line_keeps_the_line_box(self):
+        line = _worded_line(
+            [_word("A", 0.10), _word("12", 0.16), _word("B", 0.22), _word("12", 0.28)]
+        )
+        geom, _, _ = g.match_value_to_geometry("12", {1: _page([line])})
+        assert geom["boundingBox"] == pytest.approx(g._line_box(line))
+
+    def test_line_without_word_boxes_keeps_the_line_box(self):
+        line = _line("Issue Date 14.05.2024", 0.10, 0.30, width=0.32)
+        line["words"] = [{"text": "Issue"}, {"text": "Date"}, {"text": "14.05.2024"}]
+        geom, _, _ = g.match_value_to_geometry("14.05.2024", {1: _page([line])})
+        assert geom["boundingBox"] == pytest.approx(g._line_box(line))
+
+    def test_exact_line_match_is_not_narrowed(self):
+        line = _worded_line([_word("Sara", 0.10), _word("Ahmed", 0.16)])
+        geom, _, _ = g.match_value_to_geometry("Sara Ahmed", {1: _page([line])})
+        assert geom["boundingBox"] == pytest.approx(g._line_box(line))
+
+    def test_reformatted_value_narrows_to_the_printed_form(self):
+        # A date extracted as ISO is found through its dd/mm/yyyy variant, and the
+        # box is narrowed to the word printing that variant.
+        line = _worded_line(
+            [
+                _word("Date", 0.10),
+                _word("04/04/2022", 0.20, width=0.12),
+                _word("ok", 0.40),
+            ]
+        )
+        geom, source, _ = g.match_value_to_geometry("2022-04-04", {1: _page([line])})
+        assert source == "ocr-normalized"
+        assert geom["boundingBox"]["left"] == pytest.approx(0.20)
+        assert geom["boundingBox"]["width"] == pytest.approx(0.12)
+
+    def test_textract_blocks_through_build_page_data(self):
+        # Contract with the real page-data builder: Textract LINE/WORD blocks become
+        # line["words"] with geometry, and grounding narrows on them.
+        from idp_common.ocr.service import OcrService
+
+        def bb(left, width):
+            return {
+                "BoundingBox": {
+                    "Left": left,
+                    "Top": 0.3,
+                    "Width": width,
+                    "Height": 0.02,
+                }
+            }
+
+        words = [
+            ("Licence", 0.10, 0.08),
+            ("No.", 0.19, 0.04),
+            ("DL-2024-0048213", 0.30, 0.15),
+        ]
+        blocks = [
+            {
+                "BlockType": "LINE",
+                "Id": "L1",
+                "Text": "Licence No. DL-2024-0048213",
+                "Confidence": 99.5,
+                "Geometry": bb(0.10, 0.35),
+                "Relationships": [{"Type": "CHILD", "Ids": ["W1", "W2", "W3"]}],
+            }
+        ] + [
+            {
+                "BlockType": "WORD",
+                "Id": f"W{i}",
+                "Text": t,
+                "Confidence": 99.0,
+                "Geometry": bb(left, width),
+            }
+            for i, (t, left, width) in enumerate(words, 1)
+        ]
+        svc = OcrService.__new__(OcrService)
+        page_data = svc._build_page_data(
+            {"Blocks": blocks}, "Licence No. DL-2024-0048213", "textract"
+        )
+        geom, _, _ = g.match_value_to_geometry("DL-2024-0048213", {1: page_data})
+        assert geom["boundingBox"]["left"] == pytest.approx(0.30)
+        assert geom["boundingBox"]["width"] == pytest.approx(0.15)
+
+
+class TestNarrowedBoxesFeedTheTieBreaks:
+    """Narrowing happens while each candidate is built, so the spatial and the
+    row-order tie-breaks compare the narrowed boxes, not the line boxes."""
+
+    def test_llm_grounded_picks_the_line_whose_value_words_are_nearest(self):
+        # Line A is long and prints the value at its far right; line B is short.
+        # The model box sits on A's value. Compared by line boxes B's centre is
+        # nearer and would win; compared by the value's own words A wins.
+        line_a = _worded_line(
+            [
+                _word("Amount", 0.10, top=0.30),
+                _word("due", 0.20, top=0.30),
+                _word("100.00", 0.80, top=0.30, width=0.10),
+            ],
+            top=0.30,
+        )
+        line_b = _worded_line(
+            [_word("Paid", 0.60, top=0.34), _word("100.00", 0.66, top=0.34)],
+            top=0.34,
+        )
+        preferred = {
+            "boundingBox": {"left": 0.80, "top": 0.30, "width": 0.10, "height": 0.02},
+            "page": 1,
+        }
+        geom, _, _ = g.match_value_to_geometry(
+            "100.00", {1: _page([line_a, line_b])}, preferred
+        )
+        assert geom["boundingBox"] == pytest.approx(
+            {"left": 0.80, "top": 0.30, "width": 0.10, "height": 0.02}
+        )
+        assert set(geom) == {"boundingBox", "page"}
+
+    def test_ocr_only_rows_keep_their_row_order(self):
+        # The same amount on three rows; row i must still map to occurrence i now
+        # that each candidate's top comes from the value's word, not its line.
+        rows = [
+            _worded_line(
+                [
+                    _word(f"Item {i}", 0.10, top=top),
+                    _word("12.00", 0.70, top=top + 0.003),
+                ],
+                top=top,
+            )
+            for i, top in enumerate((0.20, 0.30, 0.40), 1)
+        ]
+        pd = {1: _page(rows)}
+        for index, top in enumerate((0.203, 0.303, 0.403)):
+            geom, _, _ = g.match_value_to_geometry("12.00", pd, occurrence_index=index)
+            assert geom["boundingBox"]["left"] == pytest.approx(0.70)
+            assert geom["boundingBox"]["top"] == pytest.approx(top), index
+
+    def test_two_columns_on_one_row_keep_their_left_to_right_order(self):
+        # A unit-price and a total column print the same amount as two OCR lines
+        # on one visual row. The total's value word happens to sit a fraction
+        # higher than the unit price's. Row mapping must still follow the lines
+        # (unit price first), not the sub-line position of the value words.
+        unit = _worded_line(
+            [_word("Unit", 0.10, top=0.30), _word("12.00", 0.30, top=0.303)],
+            top=0.30,
+        )
+        total = _worded_line(
+            [_word("Total", 0.60, top=0.30), _word("12.00", 0.70, top=0.300)],
+            top=0.30,
+        )
+        pd = {1: _page([unit, total])}
+        first, _, _ = g.match_value_to_geometry("12.00", pd, occurrence_index=0)
+        second, _, _ = g.match_value_to_geometry("12.00", pd, occurrence_index=1)
+        assert first["boundingBox"]["left"] == pytest.approx(0.30)
+        assert second["boundingBox"]["left"] == pytest.approx(0.70)
+        # The returned geometry carries only the public keys.
+        assert set(first) == {"boundingBox", "page"}
+        assert set(second) == {"boundingBox", "page"}
+
+
+class TestWordSpanNormalizationMatchesTheLine:
+    """``_word_span_box`` re-applies ``_normalize``'s rules character by character.
+
+    If the two ever diverged, ``joined.find`` would miss and the line box would be
+    kept (benign), but silently. This pins them together: the joined words,
+    normalized per character, equal ``_normalize`` of the joined text, apart from
+    the leading/trailing punctuation strip, which a substring search does not need.
+    """
+
+    @pytest.mark.parametrize(
+        "texts",
+        [
+            ["Issue", "Date", "14.05.2024"],
+            ["To:", "Mr.", "Omar", "Haddad"],
+            ["Name", "Haddad,", "Omar"],
+            ["A;", "B", "C,,", "D"],
+            ["STRASSE", "Groß"],
+            # A separator NOT followed by whitespace is digit grouping and is kept.
+            ["Total", "$1,234.00", "USD"],
+            # A separator run at the very end of the text (nothing after it).
+            ["A", "B,"],
+        ],
+    )
+    def test_the_per_character_rules_match_normalize(self, texts):
+        joined, owners = g._normalized_words(texts)
+        assert len(owners) == len(joined)
+        assert g._normalize(joined) == g._normalize(" ".join(texts))
+        assert joined.strip(" \t\n\r.,;:!?\"'()[]{}<>|$%*#-_=") == g._normalize(
+            " ".join(texts)
+        )
+
+
+class TestWordSpanEdges:
+    def test_an_amount_with_digit_grouping_narrows_to_its_word(self):
+        line = _worded_line(
+            [
+                _word("Total", 0.10),
+                _word("$1,234.00", 0.30, width=0.12),
+                _word("USD", 0.50),
+            ]
+        )
+        geom, _, _ = g.match_value_to_geometry("$1,234.00", {1: _page([line])})
+        assert geom["boundingBox"]["left"] == pytest.approx(0.30)
+        assert geom["boundingBox"]["width"] == pytest.approx(0.12)
+
+    def test_a_number_inside_a_longer_number_narrows_to_that_word(self):
+        # _TIER_SUBSTRING_EMBEDDED: "75" is found only inside "08337510". The box
+        # is the word holding the longer number - deliberately not the bare value,
+        # and still tighter than the whole line.
+        line = _worded_line(
+            [
+                _word("Invoice", 0.10),
+                _word("08337510", 0.30, width=0.12),
+                _word("due", 0.50),
+            ]
+        )
+        geom, _, _ = g.match_value_to_geometry(
+            75, {1: _page([line])}, schema_hint={"type": "number"}
+        )
+        assert geom["boundingBox"]["left"] == pytest.approx(0.30)
+        assert geom["boundingBox"]["width"] == pytest.approx(0.12)
+
+    def test_the_normalized_words_are_computed_once_per_line(self):
+        rows = [
+            _worded_line(
+                [_word(f"Item {i}", 0.10, top=top), _word("USD", 0.70, top=top)],
+                top=top,
+            )
+            for i, top in enumerate((0.20, 0.30, 0.40))
+        ]
+        pd = {1: _page(rows)}
+        with patch.object(g, "_normalized_words", wraps=g._normalized_words) as spy:
+            for index in range(3):
+                g.match_value_to_geometry("USD", pd, occurrence_index=index)
+            g.match_value_to_geometry("USD", pd, occurrence_index=0)
+        assert spy.call_count == 3  # once per line, not once per value x line
+
+    def test_a_line_whose_words_have_no_box_skips_the_normalization(self):
+        # A blocks-based backend whose WORD children carry no Geometry.
+        line = _line("Issue Date 14.05.2024", 0.10, 0.30, width=0.32)
+        line["words"] = [{"text": "Issue"}, {"text": "Date"}, {"text": "14.05.2024"}]
+        with patch.object(g, "_normalized_words") as spy:
+            geom, _, _ = g.match_value_to_geometry("14.05.2024", {1: _page([line])})
+        spy.assert_not_called()
+        assert geom["boundingBox"] == pytest.approx(g._line_box(line))

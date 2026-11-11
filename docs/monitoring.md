@@ -51,7 +51,7 @@ the dashboard widget.
 | `MalwareScanUnscannableBlocked` | Refused because no verdict was obtainable |
 | `MalwareScanUnscannableAllowed` | Admitted *without* a verdict, under the configured policy — worth watching, because these documents were not scanned |
 | `MalwareScanVerdictSuperseded` | The key was re-uploaded mid-scan, so the verdict described bytes no longer in the bucket and was discarded. Self-healing: the newer upload's own verdict decides |
-| `MalwareScanVerdictBeforeIngest` | A verdict outran the upload event and the delivery was retried. A few are normal; a sustained rate means verdicts are beating EventBridge |
+| `MalwareScanVerdictBeforeIngest` | A verdict outran the upload event — for a new key, or for a new upload of an existing key — so the gate raised and Lambda's asynchronous retry re-delivers it (two retries, about one and two minutes later, then `QueueSenderDLQ`). A few are normal; a sustained rate means verdicts are beating EventBridge |
 | `MalwareScanVerdictDuplicate` | GuardDuty re-delivered a verdict already applied. Expected — delivery is at-least-once — and harmless |
 | `MalwareScanJobFinalizeFailed` | A refused `/Jobs` API document could not be marked terminal in its job, so that batch may hang |
 
@@ -870,7 +870,7 @@ on.
 | `ConcurrencyDecrementFailedAlarm` | Any compensating hand-back whose counter write **raised** rather than being refused — logged at ERROR (`Failed to decrement counter`) and continued by design, so each occurrence is one leaked slot that until now moved no metric | `AlertsTopic` | — |
 | `ConcurrencyCounterNegativeAlarm` | Concurrency counter observed below 0 in 5 min — the ceiling is being exceeded | `AlertsTopic` | — |
 | `DocumentQueueDLQAlarm` | Any message in the document DLQ — a document that failed every retry | `AlertsTopic` | — |
-| `QueueSenderDLQAlarm` | Any message in the queue-sender DLQ — an upload that was never enqueued | `AlertsTopic` | — |
+| `QueueSenderDLQAlarm` | Any message in the queue-sender DLQ — an upload that was never enqueued, or a malware verdict that outran its upload event through every Lambda retry | `AlertsTopic` | — |
 | `DocumentQueueStalledAlarm` | Oldest queued document older than the threshold **and** nothing left the queue, for 30 min | `AlertsTopic` | `QueueStalledAgeThresholdSeconds` (default `1800`, i.e. 30 min) |
 | `QueueProcessorErrorsAlarm` | Any `QueueProcessor` invocation error in 5 min — for this function, a timeout or out-of-memory before its SQS batch finished | `AlertsTopic` | — |
 | `WorkflowTrackerDLQAlarm` | Any message in the Workflow Tracker DLQ | `AlertsTopic` | — |
@@ -1105,7 +1105,7 @@ notify on recovery (`OKActions`) — DLQ depth does not decay on its own, so the
 | Alarm | What a message means | Recovery |
 |---|---|---|
 | `DocumentQueueDLQAlarm` | The document exhausted `DocumentQueue`'s redrive policy — `maxReceiveCount` 500 against a 60 s visibility timeout, roughly **8 hours** of retries — and never processed. | Read the messages for the object keys, find the cause in the QueueProcessor and state-machine logs, then redrive or re-upload. Redrive needs `kms:Decrypt` on the stack's CMK. |
-| `QueueSenderDLQAlarm` | The upload event never reached the queue, so the document never entered the pipeline. | Read the messages for the S3 keys, check the QueueSender logs, then **re-upload**. See the note below on which state the document is left in — and note that SQS redrive does **not** apply to this queue. |
+| `QueueSenderDLQAlarm` | The upload event never reached the queue, so the document never entered the pipeline. With malware scanning on, the message can instead be a GuardDuty verdict that kept arriving before its upload was recorded; that document waits in `MALWARE_SCANNING`. | Read the messages for the S3 keys, check the QueueSender logs, then **re-upload**. See the note below on which state the document is left in — and note that SQS redrive does **not** apply to this queue. |
 
 > **What a `QueueSenderDLQ` message means for the document, precisely.** The
 > queue sender writes the tracking record *before* it enqueues

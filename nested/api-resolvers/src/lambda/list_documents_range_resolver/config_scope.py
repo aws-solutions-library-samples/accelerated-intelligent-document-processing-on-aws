@@ -374,17 +374,46 @@ def _row_by_sub(table: Any, caller_sub: str) -> Optional[Mapping[str, Any]]:
     return row
 
 
+def _recorded_sub(row: Optional[Mapping[str, Any]]) -> str:
+    """The Cognito ``sub`` a user row records, or the empty string."""
+    return str((row or {}).get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
+
+
 def _row_by_email(
-    table: Any, caller_email: str, key_factory: Any
+    table: Any, caller_email: str, key_factory: Any, caller_sub: str = ""
 ) -> Optional[Mapping[str, Any]]:
-    """The caller's row reached through :data:`USERS_TABLE_SCOPE_INDEX`, or None."""
-    response = table.query(
-        IndexName=USERS_TABLE_SCOPE_INDEX,
-        KeyConditionExpression=key_factory(USERS_TABLE_SCOPE_KEY).eq(caller_email),
-        Limit=1,
-    )
-    items = response.get("Items") or []
-    return items[0] if items else None
+    """The caller's row reached through :data:`USERS_TABLE_SCOPE_INDEX`, or None.
+
+    Cognito does not make ``email`` unique, and the grant writer gives each account
+    sharing an address a row of its own, so an address can hold several rows. Every
+    row for the address is read and one is chosen in the writer's order: the row
+    recording ``caller_sub``, then a row recording no sub, then any other. A row
+    recording another sub is returned rather than dropped so that
+    :func:`resolve_allowed_config_versions` decides it — applied as a restriction
+    where an unscoped caller is unrestricted, denied where one is not.
+    """
+    items: List[Mapping[str, Any]] = []
+    kwargs: dict = {
+        "IndexName": USERS_TABLE_SCOPE_INDEX,
+        "KeyConditionExpression": key_factory(USERS_TABLE_SCOPE_KEY).eq(caller_email),
+    }
+    while True:
+        response = table.query(**kwargs)
+        items.extend(response.get("Items") or [])
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        kwargs["ExclusiveStartKey"] = last_key
+    if not items:
+        return None
+
+    def rank(row: Mapping[str, Any]) -> int:
+        recorded = _recorded_sub(row)
+        if caller_sub and recorded == caller_sub:
+            return 0
+        return 1 if not recorded else 2
+
+    return min(items, key=rank)
 
 
 def resolve_allowed_config_versions(
@@ -435,7 +464,9 @@ def resolve_allowed_config_versions(
 
         Under strict tenant isolation (:func:`is_strict_isolation`) that branch is
         closed: an unscoped caller gets ``[STRICT_UNSCOPED_DENY]``, which no profile
-        matches.
+        matches. So does a caller whose ``sub`` differs from the one the matched row
+        records, whenever an unscoped caller is denied (:func:`unscoped_is_denied`):
+        that row's scope is another account's grant.
 
         Otherwise the list of profile names (or glob patterns) the caller may see,
         to be passed to :func:`scope_allows`.
@@ -464,7 +495,7 @@ def resolve_allowed_config_versions(
     if cache is not None:
         cached = cache.get(cache_key)
         if cached and (now - cached["timestamp"]) < cache_ttl:
-            return _apply_isolation_mode(cached["scope"])
+            return _resolve_for_mode(cached["scope"], cached.get("foreign", False))
 
     # Imported here, not at module scope, so the matcher above stays importable
     # with no boto3 present and the vendored copies of this file add no
@@ -475,7 +506,7 @@ def resolve_allowed_config_versions(
         table = dynamodb.Table(users_table_name)
         row = _row_by_sub(table, caller_sub) if caller_sub else None
         if row is None and caller_email:
-            row = _row_by_email(table, caller_email, Key)
+            row = _row_by_email(table, caller_email, Key, caller_sub)
     except Exception as exc:  # noqa: BLE001
         # Deliberately no caller email, no sub and no table name in the message:
         # this lands in a log group, and the message is re-raised to a consumer
@@ -502,33 +533,47 @@ def resolve_allowed_config_versions(
             f"caller's Cognito {SCOPE_SUB_CLAIM!r}"
         )
 
-    if row is not None and caller_sub:
-        recorded_sub = str(row.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
-        if recorded_sub and recorded_sub != caller_sub:
-            # Checked on **whichever** leg matched, not only the email one. On the
-            # email leg this is the interesting case below. On the pointer leg it
-            # means the pointer and the row it names disagree about whose row it is,
-            # which the writer never produces — and since that leg is read first,
-            # leaving it unchecked would be the quieter of the two.
-            #
-            # The address resolved to a row belonging to a *different* Cognito
-            # account — an address reassigned, or a Cognito account recreated
-            # under the same one. The row is still used: it is the row for this
-            # address, and a scope is a restriction, so applying it is the
-            # conservative direction. But an operator needs to see it, because it
-            # means one of the two accounts has a stale row.
-            logger.warning(
-                "A UsersTable row found by %r records a different Cognito %r than "
-                "the caller presented. Its scope is being applied; the row's %s "
-                "needs reconciling.",
-                SCOPE_KEY_CLAIM,
-                SCOPE_SUB_CLAIM,
-                USERS_TABLE_SUB_ATTRIBUTE,
-            )
+    # Whether the row records a *different* Cognito account than the caller.
+    # Checked on whichever leg matched, not only the email one: on the pointer leg
+    # it means the pointer and the row it names disagree about whose row it is.
+    #
+    # Cognito does not make ``email`` unique, so this is an address reassigned, an
+    # account recreated under it, or a second live account with the same address
+    # (a native and a federated one, say). What may be done with the row's scope
+    # depends on the mode, so the raw scope and this flag are what is cached, and
+    # :func:`_resolve_for_mode` decides per call.
+    recorded_sub = _recorded_sub(row)
+    foreign = bool(caller_sub and recorded_sub and recorded_sub != caller_sub)
+    if foreign:
+        logger.warning(
+            "A UsersTable row found for the caller records a different Cognito %r "
+            "than the caller presented; the row's %s needs reconciling.",
+            SCOPE_SUB_CLAIM,
+            USERS_TABLE_SUB_ATTRIBUTE,
+        )
 
     scope = normalize_scope(row.get("allowedConfigVersions")) if row else None
     if cache is not None:
-        cache[cache_key] = {"scope": scope, "timestamp": now}
+        cache[cache_key] = {"scope": scope, "foreign": foreign, "timestamp": now}
+    return _resolve_for_mode(scope, foreign)
+
+
+def _resolve_for_mode(scope: Optional[List[str]], foreign: bool) -> Optional[List[str]]:
+    """The answer for a looked-up ``scope``, judged against the current mode.
+
+    ``foreign`` is whether the row the scope came from records a different Cognito
+    ``sub`` than the caller's. Where an unscoped caller is unrestricted (Manual
+    grants, isolation Off) that row's scope is a restriction, and applying it can
+    only tighten, so it is applied. Where an unscoped caller is denied (strict
+    isolation, or tenants granted by an IdP claim or an entitlement push) it is the
+    other account's tenant grant, which this caller has not been given, so the
+    caller is denied.
+
+    Applied after the cache, like :func:`_apply_isolation_mode`, so a cached answer
+    is re-judged against the mode the function is running in.
+    """
+    if foreign and unscoped_is_denied():
+        return [STRICT_UNSCOPED_DENY]
     return _apply_isolation_mode(scope)
 
 

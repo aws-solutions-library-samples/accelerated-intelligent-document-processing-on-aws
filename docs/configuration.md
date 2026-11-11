@@ -1374,6 +1374,56 @@ renders as a single `%`.
 A `{NAME}` the step does not recognise is also left as written rather than
 emptied, so a prompt can refer to literal brace-wrapped text.
 
+## Comments in a prompt
+
+A prompt template can document itself with comments written as `{# ... #}`. They are
+removed when the processing steps load their configuration, so no comment text
+reaches the model:
+
+```yaml
+task_prompt: |-
+  {# Must return JSON with "class" and "document_boundary".
+     Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. #}
+  <task-description> Classify the page. </task-description>
+  ...
+```
+
+- A comment runs from `{#` to the next `#}` and can span several lines.
+- A line that holds only a comment is removed together with its line break, so
+  commenting a prompt does not add blank lines to it.
+- A `{#` with no closing `#}` is not a comment and is sent as written.
+- A placeholder or `<<CACHEPOINT>>` written inside a comment does not count:
+  `idp-cli config-validate` and the processing steps judge the prompt without its
+  comments, so a placeholder that appears only in a comment is reported missing.
+- The comments stay in the stored configuration: the configuration editor, the
+  Prompt Preview's Raw Template tabs and `idp-cli config-download` show them, and the
+  rendered Prompt Preview shows the prompt as sent, without them.
+- Values filled into a prompt are never touched, so a document whose own text
+  contains `{#` is sent unchanged.
+- In a folded YAML block (`>-`), leave a blank line after a comment that starts the
+  prompt. Without it YAML folds the comment into the first line of text, and the
+  prompt is sent starting with a space.
+- Code that builds a configuration itself and hands it straight to a service (a
+  notebook or script, rather than the deployed stack) should load it with
+  `idp_common.config.get_config`, or pass it through
+  `idp_common.prompt_comments.strip_prompt_comments_in_config` first, rather than
+  relying on the service. Classification, extraction and assessment remove
+  comments from a configuration handed to them, and few-shot example prompts are
+  stripped where they are built; the other services remove them from task
+  prompts only, so a system prompt written with comments would otherwise be sent
+  with them.
+- **Upgrading.** `{#` followed later by `#}` was not special before, so a stored
+  prompt that already contains that pair (for example an example in Jinja syntax)
+  now has the text between them removed from what is sent. Search your
+  configuration for `{#` before upgrading, and rewrite any such text, for example
+  as `{ #`.
+
+Comments work in every prompt field (OCR, classification, extraction,
+confidence, summarization, rule validation, evaluation, discovery and chat) and to
+the prompt keys of a class schema, such as `x-aws-idp-class-prompt`. The default
+classification prompts use comments to state their contract: the output each must
+ask for, the placeholders it can use, and where `<<CACHEPOINT>>` goes.
+
 ## Prompt Optimization
 
 ### Bedrock Prompt Caching
