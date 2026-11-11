@@ -215,3 +215,26 @@ def test_a_relative_cache_dir_gives_an_absolute_checkov(gate, tmp_path, monkeypa
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
     assert exe.is_file()
+
+
+def test_checkov_runs_through_its_interpreter_not_its_shebang(gate, tmp_path):
+    """GitLab's runners failed every scan with `Exec format error`: pip writes
+    checkov's `#!python` line as the venv interpreter's absolute path, which under
+    `/builds/...` is longer than the kernel reads. A script whose shebang cannot
+    be executed must still run, and both entry points must go through the
+    interpreter."""
+    bin_dir = tmp_path / "checkov-9.9.9" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python").symlink_to(sys.executable)
+    exe = bin_dir / "checkov"
+    exe.write_text(
+        "#!/" + "x" * 300 + "/python\n"
+        "import json, sys\n"
+        "if '--list' in sys.argv:\n"
+        "    print('CKV_AWS_1 CKV2_AWS_2')\n"
+        "else:\n"
+        "    print(json.dumps({'results': {'failed_checks': []}}))\n"
+    )
+    exe.chmod(0o755)
+    assert gate.run_checkov(exe, [], tmp_path) == [{"results": {"failed_checks": []}}]
+    assert gate.check_ids(exe, "terraform") == {"CKV_AWS_1", "CKV2_AWS_2"}
