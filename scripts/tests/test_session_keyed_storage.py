@@ -79,8 +79,9 @@ SESSION_KEYED_EXEMPT: dict[str, tuple[int, str, str]] = {
     "nested/api-resolvers/src/lambda/agent_chat_resolver/index.py": (
         1,
         "nested/api-resolvers/src/lambda/agent_chat_resolver/index.py",
-        "stores the user message under PK=sessionId; _require_session_owner runs "
-        "first in the handler for every user message from a signed-in caller",
+        "stores a message under PK=sessionId; a signed-in caller may send only "
+        "user messages, and _require_session_owner runs before any of them is "
+        "stored. Assistant messages come only from the identity-less backend path",
     ),
     "nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver/index.py": (
         2,
@@ -90,9 +91,10 @@ SESSION_KEYED_EXEMPT: dict[str, tuple[int, str, str]] = {
         "evidence inside that check",
     ),
     "nested/api-resolvers/src/lambda/delete_agent_chat_session_resolver/index.py": (
-        1,
+        2,
         "nested/api-resolvers/src/lambda/delete_agent_chat_session_resolver/index.py",
-        "queries and deletes messages by PK=sessionId only after _caller_owns_session",
+        "queries messages by PK=sessionId and batch-deletes the keys it read, both "
+        "only after _caller_owns_session",
     ),
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/index.py": (
         1,
@@ -257,6 +259,85 @@ FLAGGED = {
     "formatted-key": (
         'def f(session_id):\n    return "conversation#{}".format(session_id)\n'
     ),
+    "dict-call": "def f(t, session_id):\n    t.get_item(Key=dict(PK=session_id))\n",
+    "annotated-assignment": (
+        "def f(t, session_id):\n"
+        '    key: dict = {"PK": session_id}\n'
+        "    t.get_item(Key=key)\n"
+    ),
+    "annotated-values": (
+        "def f(t, session_id):\n"
+        '    values: dict = {":s": session_id}\n'
+        '    t.query(KeyConditionExpression="PK = :s", ExpressionAttributeValues=values)\n'
+    ),
+    "subscript-built": (
+        "def f(t, session_id):\n"
+        "    key = {}\n"
+        '    key["PK"] = session_id\n'
+        "    t.get_item(Key=key)\n"
+    ),
+    "module-level-subscript": (
+        'key = {}\nkey["PK"] = session_id\ndef f(t):\n    t.get_item(Key=key)\n'
+    ),
+    "splat": (
+        "def f(t, session_id):\n"
+        '    kw = {"Key": {"PK": session_id}}\n'
+        "    t.get_item(**kw)\n"
+    ),
+    "batch-get": (
+        "def f(c, session_id):\n"
+        '    c.batch_get_item(RequestItems={"T": {"Keys": [{"PK": session_id}]}})\n'
+    ),
+    "transaction": (
+        "def f(c, session_id):\n"
+        '    c.transact_write_items(TransactItems=[{"Put": {"Item": {"PK": session_id}}}])\n'
+    ),
+    "legacy-key-conditions": (
+        "def f(t, session_id):\n"
+        '    t.query(KeyConditions={"PK": {"AttributeValueList": [session_id]}})\n'
+    ),
+    "partiql": (
+        "def f(c, session_id):\n"
+        '    c.execute_statement(Statement="SELECT * FROM T WHERE PK=?", '
+        'Parameters=[{"S": session_id}])\n'
+    ),
+    "loop-variable": (
+        "def f(t, session_ids):\n"
+        "    for sid in session_ids:\n"
+        '        t.get_item(Key={"PK": sid})\n'
+    ),
+    "comprehension": (
+        "def f(t, session_ids):\n"
+        '    [t.get_item(Key={"PK": sid}) for sid in session_ids]\n'
+    ),
+    "with-as": (
+        "def f(t, open_session_id):\n"
+        "    with open_session_id() as sid:\n"
+        '        t.get_item(Key={"PK": sid})\n'
+    ),
+    "hash-join": (
+        'def f(session_id):\n    return "#".join(("conversation", session_id))\n'
+    ),
+    "percent-format": 'def f(session_id):\n    return "conversation#%s" % session_id\n',
+    "a-user-sounding-sort-key": (
+        "def f(t, session_id, caller_ts):\n"
+        '    t.put_item(Item={"PK": session_id, "SK": caller_ts})\n'
+    ),
+    "either-branch-may-be-the-session": (
+        "def f(t, session_id, owner_hint):\n"
+        '    t.get_item(Key={"PK": session_id or owner_hint})\n'
+    ),
+    "a-session-or-a-user": (
+        "def f(t, session_id, owner_sub):\n"
+        '    t.get_item(Key={"PK": session_id or owner_sub})\n'
+    ),
+    "self-attribute-across-methods": (
+        "class C:\n"
+        "    def __init__(self, session_id):\n"
+        '        self.key = {"PK": session_id}\n'
+        "    def read(self, t):\n"
+        "        t.get_item(Key=self.key)\n"
+    ),
     "a-user-message-timestamp-is-not-a-user": (
         "def f(t, session_id, user_ts):\n"
         '    t.put_item(Item={"PK": session_id, "SK": user_ts})\n'
@@ -275,6 +356,15 @@ CLEAN = {
     ),
     "concatenated-with-the-user": (
         'def f(user_id, session_id):\n    return "c#" + user_id + "#" + session_id\n'
+    ),
+    "every-branch-is-a-user": (
+        "def f(user_id, owner_sub, session_id):\n"
+        '    return f"{user_id or owner_sub}#{session_id}"\n'
+    ),
+    "partiql-with-the-user": (
+        "def f(c, user_id, session_id):\n"
+        '    c.execute_statement(Statement="SELECT * FROM T WHERE userId=? AND sessionId=?", '
+        'Parameters=[{"S": user_id}, {"S": session_id}])\n'
     ),
     "arithmetic": "def f(session_id, n):\n    return n + 1\n",
     "a-log-line": 'def f(session_id):\n    print(f"session {session_id}")\n',
