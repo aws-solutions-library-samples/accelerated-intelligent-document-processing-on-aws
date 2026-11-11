@@ -15,6 +15,11 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
+<<<<<<< HEAD
+=======
+- **Home › Jobs: Cancel and Delete, and the Inbox table format.** Each job's ⋮ menu cancels a queued or running job (it stops after the page in progress and shows Cancelled) or deletes a finished one; a Reviewer acts on their own jobs, an Admin on any. The table now has find, pagination and settings, showing Job ID, Type, Requested by, Created, Finished and Action by default. New operations `cancelBulkReviewJob` and `deleteBulkReviewJob`. See [Skip All Reviews for many documents](docs/human-review.md#skip-all-reviews-for-many-documents).
+
+>>>>>>> 9015b9570e351688a306c5c0417ddea6badd023b
 - **Inbox: the messages table fits the page.** Received is wider and Title has a fixed width, so a long title no longer makes the table scroll sideways.
 
 - **Configuration page: the Configuration tab is now Processing Settings, and Prompt Preview is a Preview prompts button.** The button, beside Refresh, opens the prompt preview in a dialog; a link to the former tab opens the dialog. See [Prompt Preview](docs/web-ui.md#prompt-preview).
