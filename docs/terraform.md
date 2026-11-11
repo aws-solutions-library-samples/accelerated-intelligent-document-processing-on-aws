@@ -60,7 +60,11 @@ You need the following before you deploy:
   `DeleteResource`, `ListResources` and `GetResourceRequestStatus`) in addition to the
   permissions of the underlying services. The module also creates one CloudFormation
   stack (the label stack described below), which needs `cloudformation:CreateStack`
-  and its related actions unless you turn the label off. A deploying role that is
+  and its related actions unless you turn the label off. When the deployment uses a
+  customer-managed KMS key, the credentials also need `kms:Decrypt` and
+  `kms:GenerateDataKey` on that key: the label stack's template is stored in the
+  custom-resource bridge's bucket, which is encrypted with the key, and CloudFormation
+  reads it with the caller's credentials. A deploying role that is
   scoped rather than administrator-level is described under
   [Deploying with a scoped role](#deploying-with-a-scoped-role).
 - Terraform 1.7 or later, or OpenTofu 1.7 or later, on your path.
