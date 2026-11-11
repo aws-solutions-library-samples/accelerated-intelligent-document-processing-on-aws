@@ -1974,6 +1974,15 @@ class Run:
         except PhaseFailed:
             pass
         self.save()
+        # Upstream sets force_destroy on some buckets only; its versioned test-set
+        # bucket holds the seeded objects and refuses DeleteBucket (measured). These
+        # are this run's own buckets, so empty them, every version, first.
+        for bucket in (self.ctx.get("oldNames") or {}).get("buckets", []):
+            if owned_name(bucket, self.s.old_name, self.s.new_name, [bucket]):
+                try:
+                    empty_bucket(self.boto("s3"), bucket)
+                except Exception as e:  # noqa: BLE001 - the destroy reports what is left
+                    print(f"  could not empty {bucket}: {e}", flush=True)
         for attempt in (1, 2):
             proc = self.terraform(
                 self.old_dir,
@@ -2263,6 +2272,12 @@ class Sweeper:
 
 
 def empty_and_delete_bucket(s3, bucket: str) -> None:
+    empty_bucket(s3, bucket)
+    s3.delete_bucket(Bucket=bucket)
+
+
+def empty_bucket(s3, bucket: str) -> None:
+    """Delete every object version and delete marker in ``bucket``."""
     paginator = s3.get_paginator("list_object_versions")
     for page in paginator.paginate(Bucket=bucket):
         batch = [
@@ -2273,7 +2288,6 @@ def empty_and_delete_bucket(s3, bucket: str) -> None:
             s3.delete_objects(
                 Bucket=bucket, Delete={"Objects": batch[i : i + 1000], "Quiet": True}
             )
-    s3.delete_bucket(Bucket=bucket)
 
 
 def delete_role(iam, role: str) -> None:
