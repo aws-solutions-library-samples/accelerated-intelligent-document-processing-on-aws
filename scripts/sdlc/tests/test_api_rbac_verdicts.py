@@ -946,3 +946,31 @@ def test_live_matrix_roles_are_every_template_group():
         "Reviewer",
         "Viewer",
     }
+
+
+#: The one scope-checked discovery operation the live suite does not drive, and why:
+#: refusing it needs a real allow-listed bucket, and with an empty one the resolver
+#: answers 400 before the scope check in either build.
+_DISCOVERY_NOT_PROBED_LIVE = {"autoDetectSections"}
+_REPO = Path(__file__).resolve().parents[3]
+
+
+def test_every_scope_checked_discovery_operation_is_probed_live_or_named():
+    """Closure over the discovery resolver's scope-checked operations: each is a
+    live cell or is named above, so none is unaccounted for and neither list holds
+    a name the other universe lacks."""
+    import yaml
+
+    ops = yaml.safe_load(
+        (_REPO / "scripts" / "api_rbac_expectations.yaml").read_text()
+    )["operations"]
+    universe = {
+        op
+        for op, o in ops.items()
+        if o.get("scope_checked")
+        and o["enforced_in"].endswith("discovery_upload_resolver/index.py")
+    }
+    assert universe, "no scope-checked discovery operation found"
+    probed = {field for field, _ in h.SCOPED_DISCOVERY_CELLS}
+    assert not probed & _DISCOVERY_NOT_PROBED_LIVE
+    assert probed | _DISCOVERY_NOT_PROBED_LIVE == universe
