@@ -1966,8 +1966,9 @@ without an upload tag.
 path, `idp-cli bootstrap`, authors a document-class schema from a description and
 saves it as a configuration profile on a deployed stack.
 - **Why it exists**: the Quick Start agent's tools and `idp-cli bootstrap` share
-  the schema authoring, the catalog match over existing profiles and the profile
-  merge in `idp_common.synthesis`. The web UI's first-time-user stories stop
+  the schema authoring and the profile write in `idp_common.synthesis`. The step
+  names no starting profile, so the catalog is empty and the catalog match over
+  existing profiles is not exercised. The web UI's first-time-user stories stop
   before a Quick Start message is sent, because the agent would change the shared
   review stack's configuration, so this is the only live check that the Bedrock
   authoring and the Configuration table write still compose.

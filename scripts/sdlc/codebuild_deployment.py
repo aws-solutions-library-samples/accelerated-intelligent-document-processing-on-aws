@@ -2426,8 +2426,9 @@ def quick_start_profile_problem(config_data):
 def test_step16_quick_start_bootstrap(stack_name):
     """Step 16: Quick Start's headless path authors a schema and saves a profile.
 
-    `idp-cli bootstrap` shares the schema authoring, catalog match and profile merge
-    the Quick Start agent's tools use. It saves its own profile and never activates
+    `idp-cli bootstrap` shares the schema authoring and profile write the Quick
+    Start agent's tools use. It names no starting profile, so the catalog is empty
+    and the catalog match does not run. It saves its own profile and never activates
     it, so it is safe in the parallel pool.
     """
     print("Step 16: Testing Quick Start bootstrap (idp-cli bootstrap)...")
