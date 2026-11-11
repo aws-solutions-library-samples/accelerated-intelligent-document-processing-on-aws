@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime
 
 import boto3
@@ -18,6 +19,7 @@ from botocore.exceptions import ClientError
 from chat_session_owner import (
     claim_chat_session,
     has_stored_messages,
+    holds_data_results,
     holds_session_row,
 )
 from log_sanitizer import sanitize_event_for_logging
@@ -111,6 +113,26 @@ def _caller_sub(event):
     """The caller's Cognito ``sub``, from the verified identity; ``""`` if none."""
     identity = event.get("identity") or {}
     return str(identity.get("sub") or (identity.get("claims") or {}).get("sub") or "")
+
+
+def _session_holds_data_results(session_id):
+    """Whether the session already holds Analytics or Error Analyzer results.
+
+    Read from the session's owner row (``chat_session_owner.holds_data_results``),
+    which the chat processor flags the first time one of those agents returns a
+    result. A read that fails answers True, which only moves an opt-in turn to a
+    new session.
+    """
+    try:
+        return holds_data_results(dynamodb.Table(CHAT_SESSION_OWNERS_TABLE), session_id)
+    except ClientError as e:
+        logger.warning(
+            "Could not read the data-results flag for session %s; treating it as "
+            "set: %s",
+            session_id,
+            e,
+        )
+        return True
 
 
 def _require_session_owner(event, session_id, user_id, expires_after):
@@ -211,6 +233,9 @@ def handler(event, context):
         # the HTTP path, but direct (IAM) invocations are not validated, and
         # bool("false") is True.
         enable_code_intelligence = arguments.get("enableCodeIntelligence") is True
+        # Default off for the same reason, and with the same literal-True rule:
+        # External MCP agents send their query to a server outside the deployment.
+        enable_external_mcp_agents = arguments.get("enableExternalMcpAgents") is True
         tool_metadata = arguments.get("toolMetadata")
 
         # Validate required parameters
@@ -296,12 +321,29 @@ def handler(event, context):
         # theirs first. Identity-less invocations are the IAM-gated backend path.
         if event.get("identity") is not None:
             identity = event.get("identity") or {}
-            _require_session_owner(
-                event,
-                session_id,
-                identity.get("username") or identity.get("sub") or "",
-                expires_after,
-            )
+            session_user_id = identity.get("username") or identity.get("sub") or ""
+            _require_session_owner(event, session_id, session_user_id, expires_after)
+            # A session holding Analytics or Error Analyzer results never gets an
+            # opt-in agent, because its memory replays those results into every
+            # later turn. A message that opts in on one starts a new session with
+            # empty memory instead; the response carries the new session id, and
+            # the processor applies the same rule again where the turn runs.
+            if (
+                not is_assistant_response
+                and (enable_code_intelligence or enable_external_mcp_agents)
+                and _session_holds_data_results(session_id)
+            ):
+                previous_session_id = session_id
+                session_id = str(uuid.uuid4())
+                _require_session_owner(
+                    event, session_id, session_user_id, expires_after
+                )
+                logger.info(
+                    "Session %s holds data-agent results; this opt-in message "
+                    "starts new session %s",
+                    previous_session_id,
+                    session_id,
+                )
 
         if is_final_response:
             # Store message in DynamoDB with session-based keys
@@ -356,6 +398,7 @@ def handler(event, context):
                         "method": method,
                         "timestamp": timestamp,
                         "enableCodeIntelligence": enable_code_intelligence,
+                        "enableExternalMcpAgents": enable_external_mcp_agents,
                         "callerSub": caller_sub,
                         # Group membership the caller was authorized under, so the
                         # processor can apply the same group gate at the point the

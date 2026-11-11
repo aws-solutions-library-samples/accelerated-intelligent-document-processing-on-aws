@@ -2325,6 +2325,13 @@
         {
           "elem_non_null": false,
           "is_list": false,
+          "name": "enableExternalMcpAgents",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
           "name": "toolMetadata",
           "non_null": false,
           "type": "ToolMetadataInput"

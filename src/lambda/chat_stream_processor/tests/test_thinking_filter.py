@@ -63,6 +63,23 @@ REASONING = "reasoning"
 # that has to fail if the filter regresses.
 
 
+# The agent-selection rules are plain standard-library code, loaded by path so
+# this suite still runs where idp_common is not installed.
+_SESSION_AGENTS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(_LAMBDA)),
+    "lib",
+    "idp_common_pkg",
+    "idp_common",
+    "chat_session_agents.py",
+)
+_spec = importlib.util.spec_from_file_location(
+    "_chat_session_agents_for_filter_tests", _SESSION_AGENTS_PATH
+)
+assert _spec and _spec.loader
+_session_agents = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_session_agents)
+
+
 def _stub_modules() -> dict[str, types.ModuleType]:
     """The idp_common surface the processor touches at import time."""
     made: dict[str, types.ModuleType] = {}
@@ -98,6 +115,16 @@ def _stub_modules() -> dict[str, types.ModuleType]:
         claim_chat_session=lambda *a, **k: True,
         has_stored_messages=lambda *a, **k: False,
         holds_session_row=lambda *a, **k: False,
+        holds_data_results=lambda *a, **k: False,
+        record_data_results=lambda *a, **k: True,
+    )
+    mod(
+        "idp_common.chat_session_agents",
+        **{
+            k: getattr(_session_agents, k)
+            for k in dir(_session_agents)
+            if not k.startswith("__")
+        },
     )
     mod("idp_common.utils")
     mod("idp_common.utils.log_sanitizer", sanitize_event_for_logging=lambda e, *a: e)

@@ -23,6 +23,7 @@ from moto import mock_aws
 
 pytest.importorskip("idp_common.chat_session_owner")
 
+import idp_common.chat_session_agents as chat_session_agents  # noqa: E402
 import idp_common.chat_session_owner as chat_session_owner  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -83,6 +84,7 @@ def _stubs(factory) -> dict[str, types.ModuleType]:
     mod("idp_common.agents.factory", agent_factory=factory)
     mod("idp_common.config_scope", unscoped_is_denied=lambda: False)
     made["idp_common.chat_session_owner"] = chat_session_owner
+    made["idp_common.chat_session_agents"] = chat_session_agents
     mod("idp_common.utils")
     mod("idp_common.utils.log_sanitizer", sanitize_event_for_logging=lambda e, *a: e)
     return made
