@@ -167,7 +167,9 @@ ship without the layer).
 
 **Schema**:
 - **PK**: `sessionId`
-- **Attributes**: `ownerSub` (the owner's Cognito `sub`), `ExpiresAfter`
+- **Attributes**: `ownerSub` (the owner's Cognito `sub`), `ExpiresAfter`, and
+  `dataResultsAt` (epoch seconds; present once the session holds Analytics or Error
+  Analyzer results, see [Opt-in agents per session](#opt-in-agents-per-session))
 
 The first user to use an id registers it with a conditional write; a second user can
 neither register it nor read its history. A path that writes a turn registers an
@@ -335,7 +337,7 @@ true token-by-token path.
 
 ```
 POST <streamUrl>/chat/agent        (SigV4, IAM-authed)
-body: { prompt, sessionId, method, enableCodeIntelligence, callerSub }
+body: { prompt, sessionId, method, enableCodeIntelligence, enableExternalMcpAgents }
 
 → text/event-stream; one event per chunk, terminal event marks completion
 ```
@@ -379,7 +381,46 @@ The system includes several specialized agents:
 4. **Sample Calculator Agent**: Performs calculations and data analysis
 5. **External MCP Agents**: Connects to external MCP servers
 
-All agents are automatically available to the orchestrator - no manual selection needed.
+Every agent is available to the orchestrator except the opt-in ones below.
+
+### Opt-in agents per session
+
+`idp_common.chat_session_agents` decides which agents a chat orchestrator is built
+with. An agent registered with `opt_in` (`register_agent(..., opt_in=...)`, reported
+by `list_available_agents()`) sends its query to a service outside the deployment:
+the Code Intelligence Agent (`opt_in="code_intelligence"`) and every External MCP
+agent (`opt_in="external_mcp"`). Each is included only when the request opts in to
+its kind (`enableCodeIntelligence`, `enableExternalMcpAgents`, both literal `true`,
+both off by default).
+
+The data agents (`DATA_AGENT_IDS`: Analytics, Error Analyzer) read the deployment's
+own data, and their results reach later turns through memory. The two never share a
+session:
+
+- The processor hands the orchestrator a per-turn `SessionAgentGate` as
+  `session_gate` (popped by `create_orchestrator_agent`, never forwarded to a
+  sub-agent). A data agent's tool calls `note_data_result` before it yields its
+  result — also when its stream ends without a `result` event — and the first call
+  in a session records `dataResultsAt` on the owner row
+  (`chat_session_owner.record_data_results`, conditional on `#owner = :owner`,
+  first time kept). If the record cannot be written, the tool yields an error in
+  place of the result. From then on an opt-in agent's tool answers
+  `UNAVAILABLE_MESSAGE` without building its sub-agent.
+- On every later turn the processor reads the flag
+  (`chat_session_owner.holds_data_results`; a failed read counts as set) and
+  `select_orchestrator_agent_ids` leaves every opt-in agent out.
+- A turn that opts in on a flagged session (`needs_new_session`) runs in a new
+  session id instead, which has no memory: the agent_chat resolver does this before
+  it stores the user message and returns the new id, and on the streaming path the
+  processor does it and sends a `session_replaced` event. When the processor is
+  invoked with `persistUserMessage: false` it cannot move the turn, so it only
+  leaves the agents out. It also sends `session_data_results` whenever the session
+  is flagged, which the web UI uses to start a new session when an opt-in is turned
+  on.
+
+The flag lives as long as the owner row, whose expiry moves forward on every turn;
+memory items carry no expiry, so a session idle for longer than the retention
+period and then resumed under the same id starts again without the flag.
 
 ### A system prompt names only tools its agent registers
 

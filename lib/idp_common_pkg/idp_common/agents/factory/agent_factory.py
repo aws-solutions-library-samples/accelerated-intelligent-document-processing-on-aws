@@ -5,7 +5,7 @@
 Factory for creating IDP agents.
 """
 
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from ..common.idp_agent import IDPAgent
 
@@ -26,6 +26,7 @@ class IDPAgentFactory:
             ..., Any
         ],  # Now returns Strands Agent instead of IDPAgent
         sample_queries: List[str] = None,
+        opt_in: Optional[str] = None,
     ) -> None:
         """
         Register an agent creator function with metadata.
@@ -36,12 +37,18 @@ class IDPAgentFactory:
             agent_description: Description of what the agent does
             creator_func: Function that creates and returns a Strands Agent instance
             sample_queries: List of example queries for the agent
+            opt_in: For an agent that sends its query to a service outside the
+                deployment, the request flag that must opt in to it
+                (``idp_common.chat_session_agents.OPT_IN_*``). Such an agent is
+                left out of a chat orchestrator unless the request opts in, and
+                always in a session holding Analytics or Error Analyzer results.
         """
         self._registry[agent_id] = {
             "agent_name": agent_name,
             "agent_description": agent_description,
             "creator_func": creator_func,
             "sample_queries": sample_queries or [],
+            "opt_in": opt_in,
         }
 
     def list_available_agents(self) -> List[Dict[str, str]]:
@@ -49,7 +56,8 @@ class IDPAgentFactory:
         List all available agents with their metadata.
 
         Returns:
-            List of dicts containing agent_id, agent_name, agent_description, and sample_queries
+            List of dicts containing agent_id, agent_name, agent_description,
+            sample_queries, and opt_in (``None`` for an agent that needs none)
         """
         return [
             {
@@ -57,6 +65,7 @@ class IDPAgentFactory:
                 "agent_name": info["agent_name"],
                 "agent_description": info["agent_description"],
                 "sample_queries": info["sample_queries"],
+                "opt_in": info.get("opt_in"),
             }
             for agent_id, info in self._registry.items()
         ]
