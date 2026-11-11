@@ -66,6 +66,7 @@ docs-site/src/content/docs/*.md
 docs-site/src/content/docs/extensions/
 docs-site/src/content/docs/benchmarking/
 docs-site/src/content/docs/release-validation/
+docs-site/src/content/docs/idp-fundamentals/
 docs-site/src/content/images
 docs-site/public/images
 docs-site/public/analyst-reports
