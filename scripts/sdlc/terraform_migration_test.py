@@ -51,10 +51,22 @@ WHAT IT DOES NOT PROVE
 SAFETY
 ------
 Everything it deletes is either named in this run's own Terraform states (recorded
-before each destroy) or carries one of this run's two names. Preflight refuses to
-start when anything in the account already matches those names, so the sweep cannot
-reach a resource this run did not create. Passwords live only in
-``<work-dir>/secrets.json`` (mode 0600); the result JSON never holds one.
+before each destroy) or starts with one of this run's two exact name prefixes
+(``owned_prefixes``; never a substring, never case-folded). Preflight runs the very
+inventory the sweep and the leftover check use, and refuses to start when it finds
+anything, so the sweep cannot reach a resource this run did not create. No teardown
+of any kind runs unless this invocation's preflight passed (names usable, the same
+as the work directory's run, unclaimed, right account) and the run created
+something; ``--teardown-only`` checks the same. Passwords live only in
+``<work-dir>/secrets.json``; every file the run writes, Terraform's state included,
+is owner-only (umask 077).
+
+Running upstream runs third-party code: ``terraform apply`` executes upstream's
+``local-exec`` provisioners (its layer, web-UI and agent builds call the AWS CLI with
+the run's credentials). Upstream ships no provider lock and constrains providers with
+``>=`` only; the driver installs ``terraform_migration_upstream.terraform.lock.hcl``,
+the lock the passing run resolved, before ``init``, so the provider builds are pinned
+and hash-checked. Upstream's commit and its ``sources/`` submodule are pinned too.
 
 USAGE
 -----
@@ -109,6 +121,11 @@ UPSTREAM_COMMIT = "5fdac033b2376f16beddffc2a391422d18cf2292"
 #: same reason as the commit above.
 UPSTREAM_SOURCES_COMMIT = "325794a6ffe1c89bac41a0180c991e681eb70bc8"
 UPSTREAM_EXAMPLE = "examples/unified-processor"
+#: Upstream ships no provider lock file, so its `>=` constraints would resolve to
+#: whatever the registry has on the day. This is the lock the passing run
+#: resolved, copied into the example before `init` so every run uses the same
+#: provider builds (`init` verifies their hashes against it).
+UPSTREAM_LOCK_FILE = HERE / "terraform_migration_upstream.terraform.lock.hcl"
 
 SAMPLE_DOCUMENTS = (
     "samples/lending_package.pdf",
@@ -202,15 +219,14 @@ def validate_names(old_name: str, new_name: str) -> List[str]:
     the second deployment is meant to outlive the first.
     """
     problems = []
-    patterns = {
-        "old": re.compile(r"^[a-z][a-z0-9]*$"),
-        "new": re.compile(r"^[a-z][a-z0-9-]*$"),
-    }
-    for label, value, limit in (("old", old_name, 12), ("new", new_name, 25)):
-        if not patterns[label].match(value):
+    pattern = re.compile(r"^[a-z][a-z0-9-]*[a-z0-9]$")
+    # The old name is upstream's `prefix`: its longest IAM role name is the prefix
+    # plus 51 characters (measured), and IAM caps role names at 64.
+    for label, value, limit in (("old", old_name, 13), ("new", new_name, 25)):
+        if not pattern.match(value):
             problems.append(
-                f"the {label} name {value!r} must be lowercase letters and digits"
-                + (" (and hyphens)" if label == "new" else "")
+                f"the {label} name {value!r} must be lowercase letters, digits and "
+                "hyphens, starting with a letter"
             )
         if len(value) > limit:
             problems.append(
@@ -374,6 +390,47 @@ def kept_resources(plan: Dict[str, Any]) -> Dict[str, List[str]]:
     return {"buckets": sorted(buckets), "tables": sorted(tables)}
 
 
+def write_private(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` readable by the owner only, from creation."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.chmod(path, 0o600)
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def log_tail(path: Path, lines: int = 30) -> str:
+    """The last ``lines`` lines of a log, without terminal colour codes, so a CI
+    job shows the actual error (an AccessDenied, say) rather than a path."""
+    try:
+        text = _ANSI.sub("", path.read_text(errors="replace"))
+    except OSError:
+        return ""
+    return "\n".join(text.rstrip().splitlines()[-lines:])
+
+
+def restored_profiles(changes: Sequence[str]) -> List[str]:
+    """The profiles a ``restore-config`` result says it restored. Each change reads
+    ``restore revision <n> of <profile> ...``; a change of any other shape is an
+    error rather than a silent skip, since the profile list decides what verify
+    allows."""
+    out = []
+    for change in changes:
+        m = re.match(r"^restore revision \d+ of (\S+)( |$)", change)
+        if not m:
+            raise ValueError(f"unrecognised restore-config change: {change!r}")
+        out.append(m.group(1))
+    return out
+
+
+def profile_listed(listing: str, profile: str) -> bool:
+    """Whether ``config-list`` output names ``profile`` as a whole word, not as part
+    of a longer profile name."""
+    return bool(re.search(rf"(?<![\w-]){re.escape(profile)}(?![\w-])", listing))
+
+
 def _json_default(value: Any) -> Any:
     import base64
 
@@ -532,24 +589,54 @@ def profile_differences(before: Dict[str, Any], after: Dict[str, Any]) -> List[s
     ]
 
 
+def owned_prefixes(run_name: str) -> Tuple[str, ...]:
+    """The name prefixes a deployment called ``run_name`` gives what it creates:
+    ``<name>-`` for buckets, tables, roles, pools and stacks, and the log-group
+    paths Lambda, Step Functions, CodeBuild and the module use. Case-sensitive."""
+    return (
+        f"{run_name}-",
+        f"/{run_name}/",
+        f"/aws/lambda/{run_name}-",
+        f"/aws/vendedlogs/states/{run_name}-",
+        f"/aws/codebuild/{run_name}-",
+    )
+
+
 def owned_name(
     name: str, old_name: str, new_name: str, recorded: Iterable[str] = ()
 ) -> bool:
-    """Whether the sweep may delete ``name``: recorded from this run's states, or
-    carrying one of the run's two names as a delimited token."""
-    if name in set(recorded):
+    """Whether the sweep may delete ``name``: recorded from this run's own states,
+    or exactly one of the run's names, or starting with one of its
+    :func:`owned_prefixes`. Never a substring match and never case-folded, so
+    ``tfidp1-x`` is not ``idp1``'s and ``IDP1-x`` is not ``idp1``'s."""
+    if name in set(recorded) or name in (old_name, new_name):
         return True
-    token = re.compile(
-        rf"(^|[^a-z0-9])({re.escape(old_name)}|{re.escape(new_name)})([^a-z0-9]|$)",
-        re.I,
+    return any(
+        name.startswith(prefix)
+        for run in (old_name, new_name)
+        for prefix in owned_prefixes(run)
     )
-    return bool(token.search(name))
 
 
 #: Phases whose recorded result must be PASS before any later phase runs: a
 #: resumed run never continues past a verification that failed, however the
 #: context file came to list it as completed.
 GATING_PHASES = ("verify",)
+
+
+def stored_name_problems(
+    ctx: Dict[str, Any], old_name: str, new_name: str
+) -> List[str]:
+    """Each run name given on the command line that differs from the one the work
+    directory's run recorded."""
+    problems = []
+    for key, given in (("oldName", old_name), ("newName", new_name)):
+        stored = ctx.get(key)
+        if stored and stored != given:
+            problems.append(
+                f"{key} is {given!r} here but {stored!r} in this work directory's run"
+            )
+    return problems
 
 
 def resume_refusal(phase: str, ctx: Dict[str, Any]) -> Optional[str]:
@@ -661,6 +748,9 @@ class Settings:
     document_timeout: int = 2400
     accept_changes: Tuple[str, ...] = ()
     teardown_only: bool = False
+    #: Seconds from the start of this invocation after which no forward phase
+    #: starts, so that teardown fits inside an outer time limit (CI's build).
+    deadline_seconds: Optional[int] = None
     expected_account: Optional[str] = None
 
 
@@ -694,6 +784,8 @@ class Run:
         )
         self.secrets_path = self.work / "secrets.json"
         self._boto_cache: Dict[str, Any] = {}
+        self.started = time.monotonic()
+        self.preflight_passed = False
 
     # -- plumbing --------------------------------------------------------------
 
@@ -788,7 +880,8 @@ class Run:
             )
         if check and proc.returncode != 0:
             raise PhaseFailed(
-                f"terraform {args[0]} in {directory.name} exited {proc.returncode}; see {log_path}"
+                f"terraform {args[0]} in {directory.name} exited {proc.returncode}; "
+                f"see {log_path}; last lines:\n{log_tail(log_path)}"
             )
         return proc
 
@@ -880,17 +973,36 @@ class Run:
         return {}
 
     def save_secrets(self, data: Dict[str, Any]) -> None:
-        fd = os.open(self.secrets_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f)
+        # write_private re-applies 0600 to a file that already existed.
+        write_private(self.secrets_path, json.dumps(data))
 
     # -- phases ---------------------------------------------------------------------
 
-    def phase_preflight(self) -> str:
+    def identity_problems(self) -> List[str]:
+        """Why this invocation must not act on this work directory: the names are
+        unusable, differ from the ones the work directory's run used, or the
+        credentials are for another account than it ran in."""
         problems = validate_names(self.s.old_name, self.s.new_name)
+        problems += stored_name_problems(self.ctx, self.s.old_name, self.s.new_name)
+        account = self.boto("sts").get_caller_identity()["Account"]
+        if self.ctx.get("account") and self.ctx["account"] != account:
+            problems.append(
+                f"credentials are for account {account}, but this work directory's "
+                f"run was in {self.ctx['account']}"
+            )
+        if self.s.expected_account and account != self.s.expected_account:
+            problems.append(
+                f"credentials are for account {account}, not {self.s.expected_account}"
+            )
+        self._account = account
+        return problems
+
+    def phase_preflight(self) -> str:
+        self.preflight_passed = False
+        problems = self.identity_problems()
         if problems:
             raise PhaseFailed("; ".join(problems))
-        ident = self.boto("sts").get_caller_identity()
+        ident = {"Account": self._account}
         self.ctx["account"] = ident["Account"]
         if self.s.expected_account and ident["Account"] != self.s.expected_account:
             raise PhaseFailed(
@@ -913,30 +1025,14 @@ class Run:
                     "reach something this run did not create: "
                     + ", ".join(clashes[:10])
                 )
+        self.preflight_passed = True
         return f"account ok, {headroom} roles of headroom, terraform {self.ctx['terraformVersion']}"
 
     def existing_matches(self) -> List[str]:
-        found = []
-        cf = self.boto("cloudformation")
-        try:
-            stack = cf.describe_stacks(StackName=self.s.new_name)["Stacks"][0]
-            if stack["StackStatus"] != "DELETE_COMPLETE":
-                found.append(f"stack {self.s.new_name}")
-        except Exception:  # noqa: BLE001 - ValidationError: no such stack
-            pass
-        for b in self.boto("s3").list_buckets().get("Buckets", []):
-            if owned_name(b["Name"], self.s.old_name, self.s.new_name):
-                found.append(f"bucket {b['Name']}")
-        for page in self.boto("dynamodb").get_paginator("list_tables").paginate():
-            found += [
-                f"table {t}"
-                for t in page["TableNames"]
-                if owned_name(t, self.s.old_name, self.s.new_name)
-            ]
-        for pool in self._user_pools():
-            if owned_name(pool["Name"], self.s.old_name, self.s.new_name):
-                found.append(f"user pool {pool['Name']}")
-        return found
+        """Everything already in the account that the sweep would select for this
+        run's names: the same inventory the sweep and the leftover check use, so
+        preflight cannot check fewer kinds than the sweep deletes."""
+        return Sweeper(self, {}).inventory()
 
     def _user_pools(self) -> List[Dict[str, Any]]:
         out = []
@@ -1002,11 +1098,15 @@ class Run:
     def phase_upstream_deploy(self) -> str:
         tfvars = upstream_tfvars(self.s.old_name, self.ctx["runId"], self.s.region)
         (self.old_dir / "terraform.tfvars").write_text(tfvars)
+        lock = self.old_dir / ".terraform.lock.hcl"
+        if not lock.exists():
+            shutil.copyfile(UPSTREAM_LOCK_FILE, lock)
         self.terraform(self.old_dir, "init", "-input=false", log="old-init.log")
         self.terraform(
             self.old_dir, "plan", "-input=false", "-out=old.tfplan", log="old-plan.log"
         )
         self.ctx["oldDeployStarted"] = True
+        self.ctx["created"] = True
         self.save()
         self.terraform(
             self.old_dir, "apply", "-input=false", "old.tfplan", log="old-apply.log"
@@ -1014,7 +1114,7 @@ class Run:
         (self.old_dir / "old.tfplan").unlink(missing_ok=True)
         outputs = json.loads(self.terraform_capture(self.old_dir, "output", "-json"))
         self.ctx["old"] = outputs["e2e_stack"]["value"]
-        (self.work / "old-outputs.json").write_text(json.dumps(outputs, indent=1))
+        write_private(self.work / "old-outputs.json", json.dumps(outputs, indent=1))
         return f"name prefix {self.ctx['old']['name_prefix']}"
 
     # Seeding -----------------------------------------------------------------------
@@ -1321,22 +1421,40 @@ class Run:
         # Binary attributes as base64, so a snapshot read back from its file
         # compares equal to one taken in memory.
         snap = json.loads(json.dumps(snap, default=_json_default))
-        (self.work / f"snapshot-{label}.json").write_text(json.dumps(snap))
+        write_private(self.work / f"snapshot-{label}.json", json.dumps(snap))
         return snap
 
+    def required_targets(self) -> Dict[str, List[str]]:
+        """The buckets and tables of the old state that REQUIRED_KEPT names."""
+        state = self.old_state()
+        write_private(self.work / "old-before.tfstate", json.dumps(state))
+        self.ctx["oldNames"] = merge_names(
+            self.ctx.get("oldNames") or {}, physical_names(state)
+        )
+        targets: Dict[str, set] = {"buckets": set(), "tables": set()}
+        for inst in state_instances(state):
+            key = (inst["type"], inst["name"])
+            if key in REQUIRED_KEPT and inst["type"] == "aws_s3_bucket":
+                targets["buckets"].add(inst["attributes"]["bucket"])
+            if key in REQUIRED_KEPT and inst["type"] == "aws_dynamodb_table":
+                targets["tables"].add(inst["attributes"]["name"])
+        return {k: sorted(v) for k, v in targets.items()}
+
     def snapshot_targets(self) -> Dict[str, List[str]]:
+        """Every bucket and table the migration keeps: REQUIRED_KEPT (the test's own
+        list, so a plan that drops one cannot shrink the comparison) united with
+        everything the plan adopts, once there is a plan."""
         if "snapshotTargets" not in self.ctx:
-            state = self.old_state()
-            (self.work / "old-before.tfstate").write_text(json.dumps(state))
-            targets: Dict[str, set] = {"buckets": set(), "tables": set()}
-            for inst in state_instances(state):
-                key = (inst["type"], inst["name"])
-                if key in REQUIRED_KEPT and inst["type"] == "aws_s3_bucket":
-                    targets["buckets"].add(inst["attributes"]["bucket"])
-                if key in REQUIRED_KEPT and inst["type"] == "aws_dynamodb_table":
-                    targets["tables"].add(inst["attributes"]["name"])
-            self.ctx["snapshotTargets"] = {k: sorted(v) for k, v in targets.items()}
-            self.ctx["oldNames"] = physical_names(state)
+            targets = self.required_targets()
+            plan_file = (
+                self.new_dir / "genai-idp-terraform-migration" / "migration-plan.json"
+            )
+            if plan_file.is_file():
+                kept = kept_resources(json.loads(plan_file.read_text()))
+                targets = {
+                    k: sorted(set(targets[k]) | set(kept.get(k, []))) for k in targets
+                }
+            self.ctx["snapshotTargets"] = targets
         return self.ctx["snapshotTargets"]
 
     def phase_snapshot_before(self) -> str:
@@ -1365,8 +1483,9 @@ class Run:
 
     def phase_migrate_plan(self) -> str:
         old_state_file = self.work / "old.tfstate"
-        old_state_file.write_text(self.terraform_capture(self.old_dir, "state", "pull"))
-        os.chmod(old_state_file, 0o600)
+        write_private(
+            old_state_file, self.terraform_capture(self.old_dir, "state", "pull")
+        )
         admin = self.secrets()["users"][0]["username"]
         args = [
             "--old-state",
@@ -1396,10 +1515,10 @@ class Run:
         kept = kept_resources(plan)
         extra = {
             "buckets": sorted(
-                set(kept["buckets"]) - set(self.snapshot_targets()["buckets"])
+                set(kept["buckets"]) - set(self.required_targets()["buckets"])
             ),
             "tables": sorted(
-                set(kept["tables"]) - set(self.snapshot_targets()["tables"])
+                set(kept["tables"]) - set(self.required_targets()["tables"])
             ),
         }
         self.ctx["keptByPlan"] = kept
@@ -1522,6 +1641,12 @@ class Run:
             + TTL_SETTLE_SECONDS
             - time.time()
         )
+        left = self.remaining_seconds()
+        if tables and wait > 0 and left is not None and wait > left:
+            raise PhaseFailed(
+                f"DynamoDB's TTL interval needs {wait / 60:.0f} more minutes, past the "
+                "run's deadline; tearing down"
+            )
         if tables and wait > 0:
             print(
                 f"  waiting {wait / 60:.0f} min for DynamoDB's TTL change interval",
@@ -1581,9 +1706,10 @@ class Run:
         out = self.migrate(
             "restore-config", "--terraform-dir", str(self.new_dir), "--apply"
         )
-        restored = [
-            c.split(" of ", 1)[1].split(" ", 1)[0] for c in out.get("changes") or []
-        ]
+        try:
+            restored = restored_profiles(out.get("changes") or [])
+        except ValueError as e:
+            raise PhaseFailed(str(e)) from e
         self.ctx["restoredProfiles"] = restored
         return f"restored {restored or 'nothing'}"
 
@@ -1722,7 +1848,7 @@ class Run:
             log="config-list.log",
             check=False,
         )
-        missing_profiles = [p for p in profiles if p not in str(listing)]
+        missing_profiles = [p for p in profiles if not profile_listed(str(listing), p)]
         if missing_profiles:
             findings.append(f"idp-cli config-list does not show {missing_profiles}")
 
@@ -2025,12 +2151,12 @@ class Run:
         # Upstream sets force_destroy on some buckets only; its versioned test-set
         # bucket holds the seeded objects and refuses DeleteBucket (measured). These
         # are this run's own buckets, so empty them, every version, first.
+        # Recorded from this run's own old state, so each one is this run's.
         for bucket in (self.ctx.get("oldNames") or {}).get("buckets", []):
-            if owned_name(bucket, self.s.old_name, self.s.new_name, [bucket]):
-                try:
-                    empty_bucket(self.boto("s3"), bucket)
-                except Exception as e:  # noqa: BLE001 - the destroy reports what is left
-                    print(f"  could not empty {bucket}: {e}", flush=True)
+            try:
+                empty_bucket(self.boto("s3"), bucket)
+            except Exception as e:  # noqa: BLE001 - the destroy reports what is left
+                print(f"  could not empty {bucket}: {e}", flush=True)
         for attempt in (1, 2):
             proc = self.terraform(
                 self.old_dir,
@@ -2062,7 +2188,16 @@ class Run:
 
     def teardown_only(self) -> int:
         """Destroy what this work directory's run created and sweep, without any
-        forward phase: for a run whose own teardown did not finish."""
+        forward phase: for a run whose own teardown did not finish. Refuses unless
+        the names and account match the work directory's run and it created
+        something."""
+        problems = self.identity_problems()
+        if not self.ctx.get("created"):
+            problems.append("the work directory's run created nothing")
+        if problems:
+            print("✗ teardown refused: " + "; ".join(problems), flush=True)
+            return 2
+        self.preflight_passed = True
         self.emergency_teardown()
         left = self.ctx.get("leftovers")
         # Its own files: a teardown-only pass must not rewrite the run's verdict.
@@ -2071,7 +2206,36 @@ class Run:
         )
         return 0 if left == [] else 1
 
+    def remaining_seconds(self) -> Optional[float]:
+        if self.s.deadline_seconds is None:
+            return None
+        return self.s.deadline_seconds - (time.monotonic() - self.started)
+
+    def past_deadline(self) -> bool:
+        left = self.remaining_seconds()
+        return left is not None and left <= 0
+
+    def teardown_permitted(self) -> Optional[str]:
+        """Why no teardown may run in this invocation, or None.
+
+        A teardown deletes by the run's names, so it runs only when this
+        invocation's preflight passed (the names are usable, consistent with the
+        work directory, unclaimed by anything else, and in the right account) and
+        the run has created something. A preflight that refused is refusing exactly
+        the cases where a sweep would reach another deployment's resources."""
+        if not getattr(self, "preflight_passed", False):
+            return "preflight did not pass in this invocation"
+        if not self.ctx.get("created"):
+            return "this run created nothing"
+        return None
+
     def execute(self) -> int:
+        stored = stored_name_problems(self.ctx, self.s.old_name, self.s.new_name)
+        if stored:
+            # Refuse before touching the context: overwriting its names would let a
+            # later teardown sweep for the wrong deployment.
+            print("✗ " + "; ".join(stored), flush=True)
+            return 2
         self.ctx.update(
             oldName=self.s.old_name,
             newName=self.s.new_name,
@@ -2088,6 +2252,11 @@ class Run:
                 refusal = resume_refusal(name, self.ctx)
                 if refusal:
                     raise PhaseFailed(refusal)
+                if name not in TEARDOWN_PHASES and self.past_deadline():
+                    raise PhaseFailed(
+                        f"the run's deadline passed before {name}; tearing down so "
+                        "that the teardown fits the outer time limit"
+                    )
                 self.run_phase(name)
                 if self.s.stop_after == name:
                     stopped = True
@@ -2100,7 +2269,11 @@ class Run:
             failed = True
         finally:
             if failed and not self.s.keep:
-                self.emergency_teardown()
+                refusal = self.teardown_permitted()
+                if refusal:
+                    print(f"⚠ no teardown: {refusal}", flush=True)
+                else:
+                    self.emergency_teardown()
             self.write_result(failed, stopped)
         return 1 if failed or (self.ctx["findings"] and not stopped) else 0
 
@@ -2123,6 +2296,8 @@ class Run:
             "terraformVersion": self.ctx.get("terraformVersion"),
             "phases": self.ctx["phases"],
             "findings": self.ctx["findings"],
+            # An earlier attempt's findings: a run that passed only on a retry says so.
+            "previousFindings": self.ctx.get("previousFindings") or [],
             "planVerdicts": self.ctx.get("planVerdicts"),
             "newDocument": self.ctx.get("newDocument"),
             "leftovers": self.ctx.get("leftovers"),
@@ -2145,9 +2320,11 @@ class Sweeper:
     """Find and delete resources this run created that outlived both destroys.
 
     A resource is in scope only when :func:`owned_name` says so: named in one of
-    this run's Terraform states (recorded before each destroy), or carrying one of
-    the run's two names as a token. Preflight refused to start if anything in scope
-    already existed.
+    this run's Terraform states (recorded before each destroy), or starting with
+    one of the run's exact name prefixes. Preflight runs the same inventory and
+    refuses to start if anything is in scope already. The CI's ``<new>-iam``
+    pre-stack and its roles are never in scope: the build created them before the
+    driver ran, and the build deletes them.
     """
 
     def __init__(self, run: Run, recorded: Dict[str, List[str]]):
@@ -2156,6 +2333,8 @@ class Sweeper:
         self.old, self.new = run.s.old_name, run.s.new_name
 
     def owned(self, name: str, kind: str) -> bool:
+        if name.startswith(f"{self.new}-iam"):
+            return False
         return owned_name(name, self.old, self.new, self.recorded.get(kind, []))
 
     def _buckets(self) -> List[str]:
@@ -2172,22 +2351,17 @@ class Sweeper:
 
     def _log_groups(self) -> List[str]:
         logs = self.owner.boto("logs")
-        prefixes = {
-            f"/aws/lambda/{self.old}-",
-            f"/aws/vendedlogs/states/{self.old}-",
-            f"/aws/codebuild/{self.old}-",
-            f"/{self.new}/",
-            f"/aws/lambda/{self.new}-",
-            f"/aws/vendedlogs/states/{self.new}-",
-            f"/aws/codebuild/{self.new}-",
-            f"{self.new}-",
-        }
+        prefixes = set(owned_prefixes(self.old)) | set(owned_prefixes(self.new))
         found = set()
         for prefix in prefixes:
             for page in logs.get_paginator("describe_log_groups").paginate(
                 logGroupNamePrefix=prefix
             ):
-                found.update(g["logGroupName"] for g in page["logGroups"])
+                found.update(
+                    g["logGroupName"]
+                    for g in page["logGroups"]
+                    if self.owned(g["logGroupName"], "log_groups")
+                )
         for name in self.recorded.get("log_groups", []):
             page = logs.describe_log_groups(logGroupNamePrefix=name)
             found.update(
@@ -2211,8 +2385,7 @@ class Sweeper:
             out += [
                 r["RoleName"]
                 for r in page["Roles"]
-                if r["RoleName"].startswith((f"{self.old}-", f"{self.new}-"))
-                or r["RoleName"] in self.recorded.get("roles", [])
+                if self.owned(r["RoleName"], "roles")
             ]
         return out
 
@@ -2242,7 +2415,7 @@ class Sweeper:
     def _stacks(self) -> List[str]:
         cf = self.owner.boto("cloudformation")
         out = []
-        for name in (self.new, f"{self.new}-iam"):
+        for name in (self.new,):
             try:
                 stack = cf.describe_stacks(StackName=name)["Stacks"][0]
             except Exception:  # noqa: BLE001
@@ -2447,6 +2620,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         help="also accept this refused change in `apply` (beyond the guide's own)",
     )
     p.add_argument(
+        "--deadline-seconds",
+        type=int,
+        help="start no forward phase after this many seconds (teardown still runs)",
+    )
+    p.add_argument(
         "--teardown-only",
         action="store_true",
         help="with --resume: only destroy what the run created and sweep",
@@ -2487,10 +2665,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         expected_account=a.expected_account,
         accept_changes=tuple(a.accept_change),
         teardown_only=a.teardown_only,
+        deadline_seconds=a.deadline_seconds,
     )
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    # Terraform's own state files, the snapshots and every log are owner-only.
+    os.umask(0o077)
     settings = parse_args(argv)
     run = Run(settings)
     return run.teardown_only() if settings.teardown_only else run.execute()

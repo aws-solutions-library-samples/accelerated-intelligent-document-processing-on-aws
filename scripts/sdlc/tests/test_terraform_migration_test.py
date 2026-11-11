@@ -435,6 +435,10 @@ class _Scripted(tmt.Run):
                 calls.append(phase)
                 if phase == fail:
                     raise tmt.PhaseFailed(f"{phase} broke")
+                if phase == "preflight":
+                    object.__setattr__(self, "preflight_passed", True)
+                if phase == "upstream-deploy":
+                    self.ctx["created"] = True
                 return "ok"
 
             return stub
@@ -476,6 +480,7 @@ def test_a_failed_phase_tears_down_new_first_then_old_then_sweeps(tmp_path):
     run = _Scripted(_settings(tmp_path), fail="verify")
     run.ctx["oldDeployStarted"] = True
     run.ctx["newApplyStarted"] = True
+    run.ctx["created"] = True
     assert run.execute() == 1
     after = run.calls[run.calls.index("verify") + 1 :]
     assert after == ["new-destroy", "old-destroy-forced", "sweep", "leftover-check"]
@@ -484,13 +489,29 @@ def test_a_failed_phase_tears_down_new_first_then_old_then_sweeps(tmp_path):
     assert any("verify broke" in f for f in result["findings"])
 
 
-def test_a_failure_before_anything_is_deployed_only_sweeps(tmp_path):
+def test_a_preflight_failure_runs_no_teardown_at_all(tmp_path):
+    """A refusing preflight refuses exactly the cases where a sweep is
+    catastrophic: overlapping names, a clash with existing resources, the wrong
+    account. Measured on the earlier code: ['preflight', 'sweep', 'leftover-check']."""
+    run = _Scripted(_settings(tmp_path), fail="preflight")
+    assert run.execute() == 1
+    assert run.calls == ["preflight"]
+
+
+def test_a_failure_before_anything_was_created_runs_no_teardown(tmp_path):
     run = _Scripted(_settings(tmp_path), fail="upstream-clone")
     assert run.execute() == 1
-    assert run.calls[run.calls.index("upstream-clone") + 1 :] == [
-        "sweep",
-        "leftover-check",
-    ]
+    assert run.calls == ["preflight", "upstream-clone"]
+
+
+def test_a_stored_created_marker_alone_does_not_permit_teardown(tmp_path):
+    """A resumed run whose preflight fails (wrong account, say) tears nothing
+    down, even though the work directory says it created something."""
+    run = _Scripted(_settings(tmp_path), fail="preflight")
+    run.ctx["created"] = True
+    run.ctx["oldDeployStarted"] = True
+    assert run.execute() == 1
+    assert run.calls == ["preflight"]
 
 
 def test_keep_skips_the_teardown(tmp_path):
@@ -799,3 +820,175 @@ def test_the_accepted_changes_are_exactly_the_ones_the_guide_prescribes():
         f"stale in the driver: {set(tmt.GUIDE_ACCEPTED_CHANGES) - prescribed}; "
         f"prescribed by the guide but not passed: {prescribed - set(tmt.GUIDE_ACCEPTED_CHANGES)}"
     )
+
+
+# -- review fixes: names, ownership, targets, budget, files -------------------------
+
+
+def test_a_resume_with_other_names_is_refused_before_anything_runs(tmp_path):
+    first = _Scripted(_settings(tmp_path, stop_after="seed"))
+    first.execute()
+    second = _Scripted(
+        _settings(tmp_path, resume=True, old_name="idp1", new_name="tfidp1")
+    )
+    assert second.execute() == 2
+    assert second.calls == []
+    ctx = json.loads((tmp_path / "context.json").read_text())
+    assert (ctx["oldName"], ctx["newName"]) == ("gitf2", "gitfnew2")
+
+
+def test_teardown_only_refuses_other_names_overlapping_names_and_another_account(
+    tmp_path, monkeypatch
+):
+    run = _Scripted(_settings(tmp_path, stop_after="seed"))
+    run.execute()
+
+    class Sts:
+        def __init__(self, account):
+            self.account = account
+
+        def get_caller_identity(self):
+            return {"Account": self.account}
+
+    for kw, account in (
+        (dict(old_name="idp1", new_name="tfidp1"), "123456789012"),
+        (dict(), "999999999999"),
+    ):
+        other = tmt.Run(_settings(tmp_path, resume=True, **kw))
+        other.ctx["account"] = "123456789012"
+        monkeypatch.setattr(other, "boto", lambda service, a=account: Sts(a))
+        monkeypatch.setattr(
+            other, "emergency_teardown", lambda: pytest.fail("tore down")
+        )
+        assert other.teardown_only() == 2
+
+
+def test_names_overlapping_or_too_long_for_upstreams_iam_names_are_refused():
+    assert tmt.validate_names("idp1", "tfidp1")  # overlap
+    assert any(
+        "longer than 13" in p
+        for p in tmt.validate_names("idp-9911-235959", "idp-1111-235959")
+    )
+    assert tmt.validate_names("idpo11112359", "idp-1111-235959") == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "idp1-tracking",
+        "tfidp1-users",
+        "IDP1-x",
+        "IDP1",
+        "/aws/lambda/idp1-fn",
+        "abc-gitf2-x",
+        "gitf20-x",
+        "mygitf2",
+    ],
+)
+def test_another_deployments_resources_are_never_selected(name):
+    assert tmt.owned_name(name, "gitf2", "gitfnew2") is False
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "gitf2-input-x",
+        "/aws/lambda/gitf2-fn",
+        "gitfnew2-users",
+        "/gitfnew2/lambda/x",
+        "gitfnew2",
+    ],
+)
+def test_the_runs_own_prefixes_are_selected(name):
+    assert tmt.owned_name(name, "gitf2", "gitfnew2") is True
+
+
+def test_the_ci_pre_stack_and_its_role_are_never_swept(tmp_path):
+    run = tmt.Run(
+        _settings(tmp_path, new_name="idp-1111-235959", old_name="idpo11112359")
+    )
+    sweeper = tmt.Sweeper(run, {})
+    assert not sweeper.owned("idp-1111-235959-iam-TFDeployRole", "roles")
+    assert sweeper.owned("idp-1111-235959-SomeFunctionRole", "roles")
+
+
+def test_preflight_inventories_exactly_what_the_sweep_would_delete(
+    tmp_path, monkeypatch
+):
+    run = tmt.Run(_settings(tmp_path))
+    seen = []
+    monkeypatch.setattr(
+        tmt.Sweeper, "inventory", lambda self: seen.append(self) or ["role gitf2-x"]
+    )
+    assert run.existing_matches() == ["role gitf2-x"]
+    assert seen and seen[0].recorded == {}
+
+
+def test_the_snapshot_covers_everything_the_plan_keeps(tmp_path, monkeypatch):
+    run = tmt.Run(_settings(tmp_path))
+    monkeypatch.setattr(
+        run, "required_targets", lambda: {"buckets": ["b1"], "tables": ["t1"]}
+    )
+    plan_dir = run.new_dir / "genai-idp-terraform-migration"
+    plan_dir.mkdir(parents=True)
+    state = _state()
+    (plan_dir / "migration-plan.json").write_text(json.dumps(_plan(state)))
+    targets = run.snapshot_targets()
+    assert "b1" in targets["buckets"] and "t1" in targets["tables"]
+    # the agent-jobs-like extras the plan adopts are snapshotted too
+    assert "gitf2-users" in targets["tables"] and "gitf2-ts" in targets["buckets"]
+
+
+def test_the_deadline_stops_forward_phases_and_tears_down(tmp_path):
+    run = _Scripted(_settings(tmp_path, deadline_seconds=0))
+    assert run.execute() == 1
+    # preflight is the first forward phase; it is refused, so nothing ran at all
+    assert run.calls == []
+
+
+def test_a_failing_terraform_command_reports_its_log_tail(tmp_path):
+    log = tmp_path / "x.log"
+    log.write_text(
+        "".join(f"line {i}\n" for i in range(100))
+        + "\x1b[31mError: AccessDenied\x1b[0m\n"
+    )
+    tail = tmt.log_tail(log)
+    assert (
+        tail.endswith("Error: AccessDenied")
+        and "line 71" in tail
+        and "line 70" not in tail
+    )
+
+
+def test_private_files_are_owner_only_even_when_they_existed(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text("old")
+    path.chmod(0o644)
+    tmt.write_private(path, "new")
+    assert oct(path.stat().st_mode & 0o777) == "0o600" and path.read_text() == "new"
+
+
+def test_a_retried_run_reports_its_earlier_findings(tmp_path):
+    first = _Scripted(_settings(tmp_path, keep=True), fail="seed")
+    first.execute()
+    second = _Scripted(_settings(tmp_path, resume=True))
+    second.execute()
+    result = json.loads((tmp_path / "result.json").read_text())
+    assert result["previousFindings"] and "seed broke" in result["previousFindings"][0]
+
+
+def test_restored_profiles_are_parsed_from_the_commands_wording_or_refused():
+    changes = [
+        "restore revision 1 of default (its content before the migration), replacing "
+        "the module preset the first deploy published"
+    ]
+    assert tmt.restored_profiles(changes) == ["default"]
+    with pytest.raises(ValueError):
+        tmt.restored_profiles(["put back default"])
+
+
+def test_config_list_is_matched_by_whole_profile_name():
+    listing = "│ default-copy │ active │\n│ bda │ │"
+    assert not tmt.profile_listed(listing, "default")
+    assert tmt.profile_listed(listing, "bda")
+    assert tmt.profile_listed("│ default │", "default")
