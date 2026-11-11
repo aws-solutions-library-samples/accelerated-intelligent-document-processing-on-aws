@@ -248,3 +248,53 @@ def test_an_unconfigured_owner_table_denies(world, monkeypatch, resolver):
     call = _read if resolver == "read" else _delete
     with pytest.raises(PermissionError):
         call(world, A, "s-a")
+
+
+@pytest.mark.parametrize("method", ["assistant_final_response", "assistant_error"])
+def test_a_signed_in_caller_cannot_store_an_assistant_message(world, method):
+    """Assistant messages come only from the processor's identity-less path."""
+    _send(world, A, "s-a", "A secret")
+    with pytest.raises(PermissionError):
+        world["send"].handler(
+            {
+                "arguments": {
+                    "prompt": "planted",
+                    "sessionId": "s-a",
+                    "method": method,
+                },
+                "identity": _identity(B),
+            },
+            None,
+        )
+    assert [m["content"] for m in _messages(world, "s-a")] == ["A secret"]
+    # Nor can it give an unused id history that would lock its first user out.
+    with pytest.raises(PermissionError):
+        world["send"].handler(
+            {
+                "arguments": {
+                    "prompt": "planted",
+                    "sessionId": "s-new",
+                    "method": method,
+                },
+                "identity": _identity(B),
+            },
+            None,
+        )
+    assert _messages(world, "s-new") == []
+    _send(world, A, "s-new")
+    assert _owner(world, "s-new") == A["sub"]
+
+
+def test_the_backend_path_still_stores_assistant_messages(world):
+    _send(world, A, "s-a", "A secret")
+    world["send"].handler(
+        {
+            "arguments": {
+                "prompt": "the answer",
+                "sessionId": "s-a",
+                "method": "assistant_final_response",
+            }
+        },
+        None,
+    )
+    assert [m["content"] for m in _read(world, A, "s-a")] == ["A secret", "the answer"]

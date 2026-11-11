@@ -282,10 +282,19 @@ def handler(event, context):
             ]
         )
 
-        # A user message from a signed-in caller writes under this session id and
-        # starts a turn that loads its memory, so the id must be theirs first.
-        # Identity-less invocations are the IAM-gated backend path.
-        if not is_assistant_response and event.get("identity") is not None:
+        # Assistant messages are written by the chat processor through the
+        # identity-less backend path. A signed-in caller only ever sends a user
+        # message; anything else from one is refused before it is stored.
+        if is_assistant_response and event.get("identity") is not None:
+            logger.warning("Rejecting sendAgentChatMessage: method %s", method)
+            raise PermissionError(
+                "Unauthorized: only the chat processor writes assistant messages"
+            )
+
+        # Every message from a signed-in caller writes under this session id, and a
+        # user message starts a turn that loads its memory, so the id must be
+        # theirs first. Identity-less invocations are the IAM-gated backend path.
+        if event.get("identity") is not None:
             identity = event.get("identity") or {}
             _require_session_owner(
                 event,
