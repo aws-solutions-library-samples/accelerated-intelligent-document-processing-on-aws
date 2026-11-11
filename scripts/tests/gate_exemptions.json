@@ -3332,6 +3332,30 @@
       "reason": "Chat history is stored under PK=sessionId and the owner registry is keyed by sessionId by design, so these sites cannot carry a user term; what makes them the caller's own is claim_chat_session deciding whose the id is before they run. Whether that call precedes each site on every path is read from the handler, not computed, so it is a judgement per file, written beside the entry. What IS computed per member: the named guard file must define or call claim_chat_session (test_each_entry_names_a_guard_that_decides_ownership), and the site count is pinned at the number audited when the entry was written.",
       "ratchet": "count-pinned",
       "ratchetEvidence": "scripts/tests/test_session_keyed_storage.py"
+    },
+    "scripts/tests/test_model_call_guardrail.py::MODEL_CALL_GUARDRAIL_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "a (path, enclosing function, callee) triple naming Bedrock model call sites in lib/ or src/lambda/, with a pinned site count",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_model_call_guardrail.py",
+      "ratchetDetail": "test_every_model_call_is_accounted_for derives every model call by AST and fails on any site that is in neither the enforced verdicts nor this map (unaccounted). test_exemptions_are_live_and_count_pinned also fails when an entry shields a different number of sites than it records, so a dead entry and a new site inside an exempt function both go red.",
+      "reason": "Each member is a call the guardrail does not apply to for a reason specific to that call: an embedding request whose response is a vector, and three references inside a retry wrapper that forwards its caller's arguments unchanged, so the decision is made at a caller this gate also reads. Why JUDGEMENT: whether a call should carry a guardrail depends on what the call produces, which is not a property of its syntax.",
+      "turnsOff": "the requirement that a Bedrock model call attaches GUARDRAIL_ID_AND_VERSION, for the listed sites only"
+    },
+    "scripts/tests/test_model_call_guardrail.py::GUARDRAIL_ENV_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "a (template, logical id) pair naming a deployed Lambda whose role can invoke a Bedrock model",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_model_call_guardrail.py",
+      "ratchetDetail": "test_every_model_invoking_lambda_gets_the_guardrail derives every Lambda in the deployed templates holding a model-invoke grant and fails on any that neither sets the variable nor is listed here; test_env_exemptions_are_live fails on a member that no longer exists, no longer holds the grant, or now sets the variable.",
+      "reason": "Each member records why that one function is not given the configured guardrail: classification broke when it was applied, OCR output is the page text itself, assessment output is parsed JSON, the LLM evaluation compares values from a baseline, the embed function makes only embedding calls, and the configuration resolver translates rule text an administrator types. Why JUDGEMENT: whether applying a guardrail to a pipeline step is acceptable is a product decision about that step's output, not computable from the template.",
+      "turnsOff": "the requirement that a model-invoking Lambda sets GUARDRAIL_ID_AND_VERSION and may call bedrock:ApplyGuardrail, for the listed functions only"
     }
   }
 }
