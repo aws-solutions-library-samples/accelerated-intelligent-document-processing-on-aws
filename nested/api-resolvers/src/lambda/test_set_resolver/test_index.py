@@ -1054,3 +1054,44 @@ def test_an_admin_naming_any_profile_is_served(profile_scoped):
         None,
     )
     reached["estimate_review_effort"].assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field,arguments,function",
+    _NAMED_PROFILE_OPS,
+    ids=[o[0] for o in _NAMED_PROFILE_OPS],
+)
+def test_naming_the_sets_own_profile_is_served_like_omitting_it(
+    profile_scoped, monkeypatch, field, arguments, function
+):
+    """The UI names the set's own profile on a re-extract. That profile is used
+    unchecked when omitted, so naming it is not refused either."""
+    index, reached = profile_scoped
+    monkeypatch.setattr(
+        index, "_resolve_set_config_version", lambda *a, **k: ("payroll", "test-set")
+    )
+    index.handler(
+        _event(field, _with_version(arguments, "payroll"), groups=("Author",)), None
+    )
+    reached[function].assert_called_once()
+
+
+@pytest.mark.unit
+def test_naming_a_profile_other_than_the_sets_own_is_still_refused(
+    profile_scoped, monkeypatch
+):
+    index, reached = profile_scoped
+    monkeypatch.setattr(
+        index, "_resolve_set_config_version", lambda *a, **k: ("lending-v1", "test-set")
+    )
+    with pytest.raises(index.ResourceAccessDenied):
+        index.handler(
+            _event(
+                "estimateReviewEffort",
+                {"testSetId": TEST_SET_ID, "configVersion": "payroll"},
+                groups=("Author",),
+            ),
+            None,
+        )
+    reached["estimate_review_effort"].assert_not_called()

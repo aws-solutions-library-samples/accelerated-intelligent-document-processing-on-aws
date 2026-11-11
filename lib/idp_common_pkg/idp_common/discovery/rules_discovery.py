@@ -159,10 +159,12 @@ class RulesDiscovery:
     ``_warn_if_no_regex``).
 
     Usage:
-        # With S3
+        # With S3, saving into a named configuration profile (required: there is
+        # no fallback to the active profile)
         discovery = RulesDiscovery(
             input_bucket="my-bucket",
             input_prefix="policies/ncci-policy.pdf",
+            version="my-profile",
         )
         result = discovery.discovery_rules_from_document(
             input_bucket="my-bucket",

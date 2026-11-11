@@ -1228,3 +1228,33 @@ class TestProductionDocumentProfileScope:
         )
         assert result["success"] is True
         assert tracking.get_item_calls == 0
+
+    def test_a_tracking_read_that_fails_refuses_a_scoped_caller(
+        self, resolver, document
+    ):
+        """Author + Annotator reaches only this check's read (the test-set check
+        exempts Author), so a failure here is the failure under test."""
+        service = MagicMock()
+        service.get_document.return_value = document
+        tracking = _FakeTable(raises=RuntimeError("ProvisionedThroughputExceeded"))
+        users = _ScopedUsersTable(["lending-*"])
+        tables = {"tracking-table": tracking, "users-table": users}
+        resource = MagicMock()
+        resource.Table.side_effect = lambda name: tables[name]
+        env = {"TRACKING_TABLE": "tracking-table", "USERS_TABLE_NAME": "users-table"}
+        with (
+            patch.dict(os.environ, env),
+            patch("boto3.resource", return_value=resource),
+        ):
+            with patch.object(
+                resolver, "create_document_service", return_value=service
+            ):
+                with pytest.raises(resolver.ResourceAccessDenied):
+                    resolver.handler(
+                        _annotator_event(
+                            sections=self._regroup(), groups=("Author", "Annotator")
+                        ),
+                        None,
+                    )
+        assert tracking.get_item_calls == 1
+        service.update_document.assert_not_called()
