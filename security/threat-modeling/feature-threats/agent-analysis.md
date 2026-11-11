@@ -73,7 +73,8 @@ flowchart TD
 | **Likelihood** | Medium |
 | **Severity** | Medium |
 | **Affected Components** | Analytics Agent, Bedrock AgentCore |
-| **Mitigations** | AgentCore runs in AWS-managed sandboxed environment (no AWS credentials; no public internet access; reaches Amazon S3 and the instance metadata service (which lists no role) in the session's region), code output validation, execution time limits, output size limits |
+| **Mitigations** | AgentCore runs in AWS-managed sandboxed environment (no AWS credentials; no public internet access; reaches Amazon S3 in the session's region and the instance metadata service, which lists no role), code output validation, execution time limits, output size limits |
+| **Residual risk / recommendation** | Code running in a session can write data, including the result of the query the agent ran, to Amazon S3 in the session's region. The session holds no AWS credentials and cannot reach public internet hosts. `make stacktest-sandbox-network` measures this. |
 
 ### AGT.T03: Agent Routing Manipulation
 
@@ -122,7 +123,7 @@ flowchart TD
 | Control | Implementation | Threats Mitigated |
 |---------|---------------|-------------------|
 | **Athena read-only** | IAM role with only SELECT permissions | AGT.T01 |
-| **AgentCore sandbox** | AWS-managed isolation (no credentials; no public internet access; reaches Amazon S3 and the instance metadata service (which lists no role) in the session's region) | AGT.T02 |
+| **AgentCore sandbox** | AWS-managed isolation (no credentials; no public internet access; reaches Amazon S3 in the session's region and the instance metadata service, which lists no role) | AGT.T02 |
 | **RBAC** | Cognito group-based agent access | AGT.T03, AGT.T05 |
 | **Audit logging** | All agent invocations logged to CloudWatch | AGT.T01, AGT.T03 |
 | **Query validation** | SQL sanitization before Athena execution | AGT.T01 |

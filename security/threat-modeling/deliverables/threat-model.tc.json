@@ -50,8 +50,8 @@
       "component": "Agent Analysis",
       "affectedComponents": "Analytics Agent, Bedrock AgentCore",
       "status": "Mitigated",
-      "mitigations": "AgentCore runs in AWS-managed sandboxed environment (no AWS credentials; no public internet access; reaches Amazon S3 and the instance metadata service (which lists no role) in the session's region), code output validation, execution time limits, output size limits",
-      "residualRisk": "",
+      "mitigations": "AgentCore runs in AWS-managed sandboxed environment (no AWS credentials; no public internet access; reaches Amazon S3 in the session's region and the instance metadata service, which lists no role), code output validation, execution time limits, output size limits",
+      "residualRisk": "Code running in a session can write data, including the result of the query the agent ran, to Amazon S3 in the session's region. The session holds no AWS credentials and cannot reach public internet hosts. `make stacktest-sandbox-network` measures this.",
       "source": "feature-threats/agent-analysis.md"
     },
     {
