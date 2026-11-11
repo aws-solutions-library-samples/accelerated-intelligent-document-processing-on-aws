@@ -265,6 +265,8 @@ OPERATION_ENTRY_KEYS = frozenset(
         "alias_of",
         "args",
         "conditional",
+        # Read by scan_api_rbac.py (S10), like testset_checked below.
+        "document_scope_checked",
         "enforced_in",
         "groups",
         "kind",

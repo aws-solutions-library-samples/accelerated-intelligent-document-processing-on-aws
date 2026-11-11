@@ -60,6 +60,11 @@
 #                  SCOPE_ITEM_PREDICATES in scan_api_rbac.py). scope_enforced_in
 #                  does not change where that search starts: it starts at the
 #                  op's own dispatch.
+#   document_scope_checked: true -> op names a document, key or prefix AND a
+#                  profile, and checks the object against the caller's profile
+#                  scope through the profile the object is recorded or mapped
+#                  under. S10 requires a DOCUMENT_SCOPE_PATTERNS entry point in
+#                  the code the op reaches.
 #   testset_checked: true -> op names a test-set document (objectKey) and confines
 #                  the caller with the test-set scope (allowedTestSets) rather than
 #                  the profile scope. Static scan (S10) requires the code this op
@@ -68,11 +73,13 @@
 #
 #                  S10 is the other direction of S4: an op whose arguments
 #                  (schema.graphql, input types included, plus `args:` below) name
-#                  a configuration profile (configVersion, version, versionName,
-#                  profile), a document (documentKey, objectKey) or a session
-#                  (sessionId) must declare how that object is scoped:
-#                  scope_checked/scope_filtered for a profile; those, testset_checked
-#                  or ownership for a document; ownership or scope_checked for a
+#                  a configuration profile, a stored object or a session — decided
+#                  by the words of the argument's name (SCOPE_KEYED_WORDS in
+#                  scan_api_rbac.py), not a list of spellings — must declare how
+#                  that object is scoped:
+#                  scope_checked/scope_filtered for a profile; those,
+#                  document_scope_checked, testset_checked or ownership for a
+#                  document; ownership or scope_checked for a
 #                  session. On an op naming both a profile and a document,
 #                  scope_checked answers for the profile only. An op callable only
 #                  by Admin or IAM needs none, since neither carries a profile scope.
@@ -425,6 +432,7 @@ operations:
   reprocessDocument:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py
     args: { objectKeys: ["__nope__"] }
@@ -444,6 +452,7 @@ operations:
   uploadDocument:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/upload_resolver/index.py
     scope_enforced_in: _handle_upload_document
@@ -468,6 +477,7 @@ operations:
   uploadSampleDocument:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/upload_resolver/index.py
     scope_enforced_in: _handle_upload_sample_document
@@ -742,6 +752,7 @@ operations:
   startMultiDocDiscovery:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     args: { configVersion: "__nope__" }

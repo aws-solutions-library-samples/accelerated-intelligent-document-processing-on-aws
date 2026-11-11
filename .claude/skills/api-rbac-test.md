@@ -36,9 +36,9 @@ complementary layers that share one source of truth:
 > index no template declares.
 >
 > **S10** is what makes an operation declare a scope in the first place: any
-> operation whose arguments name a profile, a document key or a session must carry
-> `scope_checked`, `scope_filtered`, `testset_checked` or `ownership` (by argument
-> kind), be callable only by Admin/IAM, or have a `known_gap` or a
+> operation whose arguments name a profile, a stored object or a session (read from
+> the words of the argument name) must carry `scope_checked`, `scope_filtered`,
+> `document_scope_checked`, `testset_checked` or `ownership` (by argument kind), be callable only by Admin/IAM, or have a `known_gap` or a
 > `SCOPE_KEYED_ARGUMENT_EXEMPT` entry. **Adding an operation that takes
 > `configVersion`, `objectKey` or `sessionId`? Declare its scope, or S10 fails.**
 

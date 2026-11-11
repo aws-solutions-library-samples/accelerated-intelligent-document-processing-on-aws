@@ -76,12 +76,13 @@ CHECKS
       (WARN, FAIL under --strict) and requires a gap id — so aligning the
       declared policy cannot make the real divergence disappear from the report.
   S10 Scope-keyed arguments — an operation whose arguments name a configuration
-      profile, a document or a session (`SCOPE_KEYED_ARGUMENTS`, read from
-      schema.graphql including input types, and from the entry's `args:`) must
-      declare how that object is scoped: `scope_checked`/`scope_filtered` (verified
-      by S4), `testset_checked` (the code it reaches calls the test-set scope
-      check) or `ownership` (verified as S3 verifies it, whatever the op's
-      groups). An operation only Admins or IAM principals can call satisfies it by
+      profile, a stored object or a session (decided by the words of each
+      argument's name, `SCOPE_KEYED_WORDS`, over schema.graphql including input
+      types and the entry's `args:`) must declare how that object is scoped:
+      `scope_checked`/`scope_filtered` (verified by S4), `document_scope_checked`
+      (the code it reaches checks the object's own profile), `testset_checked`
+      (the code it reaches calls the test-set scope check) or `ownership`
+      (verified as S3 verifies it, whatever the op's groups). An operation only Admins or IAM principals can call satisfies it by
       its policy, since neither carries a configuration scope. S4 alone could not
       see an undeclared operation: it checks only the operations that opt in.
 
@@ -1478,29 +1479,85 @@ def op_per_item_scope_filter(
 # operation whose arguments (schema.graphql, following input types, plus the
 # entry's own `args:`) include one of these names, compared case-insensitively.
 #
-#: Argument name (lowercased) -> the kind of object it names. The kind decides which
-#: declarations answer for it, in `SCOPE_KEYED_DECLARATIONS`.
-SCOPE_KEYED_ARGUMENTS: dict[str, str] = {
-    "configversion": "profile",
-    "version": "profile",
-    "versionname": "profile",
-    "profile": "profile",
-    "documentkey": "object",
-    "objectkey": "object",
-    "sessionid": "session",
+#: The kind of object an argument names is decided by a RULE over the words of its
+#: name, not by a list of spellings: a list of seven names missed `objectKeys`,
+#: `s3Uri`, `s3Prefix`, `profileName` and `configProfile`, which name the same
+#: things. A name is split into words at case changes, digits and underscores
+#: (`s3Prefix` -> s, 3, prefix) and is of a kind when any word is in that kind's set.
+#: Profile wins over object, and object over session, when a name has words of two.
+SCOPE_KEYED_WORDS: dict[str, frozenset[str]] = {
+    # a configuration profile, or a revision or version of one (but see
+    # SCOPE_VERSION_OF_OTHER_THING_WORDS)
+    "profile": frozenset({"profile", "profiles", "version", "versions", "revision"}),
+    # a stored object: an S3 key, URI, prefix, path or bucket
+    "object": frozenset(
+        {"key", "keys", "uri", "uris", "prefix", "prefixes", "path", "bucket"}
+    ),
+    # a chat or agent session
+    "session": frozenset({"session", "sessions"}),
 }
+#: A version or revision word names a configuration profile's version unless the
+#: name also says whose version it is: `versionId` (an S3 object version),
+#: `baseRevision` (the revision an edit was based on), `testSetVersion`,
+#: `installedVersion` (a feature's). The rule is "a version qualified by another
+#: noun is that noun's version"; these are the qualifying nouns the API uses. A
+#: name with the word `profile` or `config` is a profile whatever else it says.
+SCOPE_VERSION_OF_OTHER_THING_WORDS = frozenset({"id", "base", "test", "installed"})
+_NAME_WORDS = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
+_VERSION_WORDS = frozenset({"version", "versions", "revision"})
+
+
+def scope_keyed_kind(name: str) -> str | None:
+    """The kind of object argument ``name`` names, or None (see SCOPE_KEYED_WORDS)."""
+    words = {w.lower() for w in _NAME_WORDS.findall(name)}
+    if words & {"profile", "profiles", "config"} and words & (
+        SCOPE_KEYED_WORDS["profile"]
+    ):
+        return "profile"
+    if words & {"profile", "profiles"}:
+        return "profile"
+    if words & _VERSION_WORDS and not words & SCOPE_VERSION_OF_OTHER_THING_WORDS:
+        return "profile"
+    for kind in ("object", "session"):
+        if words & SCOPE_KEYED_WORDS[kind]:
+            return kind
+    return None
+
+
 #: Which entry flags answer for each kind of argument. A profile argument needs the
 #: profile scope; a document key may instead be governed by the test-set scope (a
 #: test-set document) or by ownership; a session needs ownership or profile scope.
 SCOPE_KEYED_DECLARATIONS: dict[str, tuple[str, ...]] = {
     "profile": ("scope_checked", "scope_filtered"),
-    "object": ("scope_checked", "scope_filtered", "testset_checked", "ownership"),
+    "object": (
+        "scope_checked",
+        "scope_filtered",
+        "document_scope_checked",
+        "testset_checked",
+        "ownership",
+    ),
     "session": ("ownership", "scope_checked"),
 }
 #: What `testset_checked` must be backed by in the code the operation reaches: the
 #: shared per-set rule (`idp_common.testset_scope.assert_can_access_test_set`) or the
 #: test-set resolver's one-line wrapper over it.
 TESTSET_SCOPE_PATTERNS = ("assert_can_access_test_set", "_assert_set_access")
+#: What `document_scope_checked` must be backed by: a call that checks the OBJECT an
+#: operation names (a document, key, or source/destination prefix) against the
+#: caller's profile scope, through the profile the object is recorded or mapped
+#: under. It is the declaration an operation needs when it names a profile AND an
+#: object, because `scope_checked` is then read as the profile check. Entry points,
+#: as SCOPE_PATTERNS lists them; each must be reached by at least one declaring
+#: operation (test_scan_api_rbac_scope_keyed_arguments.py).
+DOCUMENT_SCOPE_PATTERNS = (
+    # reprocess_document_resolver: each document's recorded profile
+    "_enforce_document_scope",
+    # discovery_upload_resolver: a multi-document source prefix's mapped profile
+    "_assert_source_in_scope",
+    # upload_resolver: the destination's mapped (or named) profile, through
+    # prefix_mappings.resolve_config_assignment's scope argument
+    "allowed_profiles=",
+)
 #: (operation, argument kind) pairs S10 does not require a declaration for, each with
 #: the reason for that one pair. Registered in scripts/tests/gate_exemptions.json.
 #: An entry that no longer shields a finding (the op is gone, takes no argument of
@@ -1513,6 +1570,30 @@ SCOPE_KEYED_ARGUMENT_EXEMPT: dict[tuple[str, str], str] = {
         "stamped with a profile or an uploader, so there is no per-object scope to "
         "check it against. The profile the operation reads is scope-checked. "
         "Follow-up: stamp discovery uploads so the key can be checked."
+    ),
+    ("uploadDiscoveryDocument", "object"): (
+        "bucket and prefix are the destination of a new upload, not a stored object "
+        "being read: the presigned POST is limited to the deployment's bucket "
+        "allow-list and the write-once key rule (s3_targets), and IAM gives this "
+        "function write on the discovery bucket only, the shared Admin/Author "
+        "workspace, where nothing is stamped with a profile."
+    ),
+    ("getSampleDocumentUrl", "object"): (
+        "s3Key must lie under the bundled samples/ prefix (the resolver refuses any "
+        "other key, '..' and a leading '/'): those are the sample documents shipped "
+        "with the solution, which belong to no profile."
+    ),
+    ("generateDraftLabels", "object"): (
+        "objectKeys select documents inside the named test set, read under that "
+        "set's own prefix; Admins and Authors are not test-set scoped by design "
+        "(docs/rbac.md), and a document enters a test set only through operations "
+        "that check its profile. The profile this operation runs is scope-checked."
+    ),
+    ("startTestRun", "object"): (
+        "objectKeys select documents inside the named test set, read under that "
+        "set's own prefix; Admins and Authors are not test-set scoped by design "
+        "(docs/rbac.md), and a document enters a test set only through operations "
+        "that check its profile. The run's profile is scope-checked."
     ),
 }
 
@@ -1564,7 +1645,7 @@ def scope_keyed_kinds(argument_names) -> dict[str, list[str]]:
     """``{kind: [argument names of that kind]}`` for the scope-keyed arguments."""
     kinds: dict[str, list[str]] = {}
     for name in sorted(argument_names):
-        kind = SCOPE_KEYED_ARGUMENTS.get(name.lower())
+        kind = scope_keyed_kind(name)
         if kind:
             kinds.setdefault(kind, []).append(name)
     return kinds
@@ -1918,6 +1999,22 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                     "S10",
                     "declared testset_checked, but nothing this operation can reach "
                     f"in {o['enforced_in']} calls one of {list(TESTSET_SCOPE_PATTERNS)}",
+                )
+        if o.get("document_scope_checked"):
+            error, reachable = op_scope_source(
+                text,
+                op,
+                declared_entry=o.get("scope_enforced_in"),
+                sole_op=ops_per_file[o["enforced_in"]] == 1,
+            )
+            if error:
+                gap_or_fail(op, "S10", f"{error} ({o['enforced_in']})")
+            elif not any(p in reachable for p in DOCUMENT_SCOPE_PATTERNS):
+                gap_or_fail(
+                    op, "S10",
+                    "declared document_scope_checked, but nothing this operation can "
+                    f"reach in {o['enforced_in']} calls one of "
+                    f"{list(DOCUMENT_SCOPE_PATTERNS)}",
                 )
         if o.get("ownership") and isinstance(o["groups"], list):
             # S3 verified ownership for ANY/ANY_GROUP ops only.

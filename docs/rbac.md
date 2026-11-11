@@ -566,12 +566,16 @@ The per-site unit suites and the live scope suite in `make api-test` cover those
 **Which operations have to declare a scope** is check **S10**. S4 can only check
 the operations that opt in, so S10 starts from the other end: any operation whose
 arguments (read from `schema.graphql`, input types included, and from the entry's
-`args:`) name a configuration profile (`configVersion`, `version`, `versionName`,
-`profile`), a document (`documentKey`, `objectKey`) or a session (`sessionId`) must
-declare how that object is scoped — `scope_checked` or `scope_filtered` for a
-profile; one of those, `testset_checked` (the test-set scope) or `ownership` for a
-document; `ownership` or `scope_checked` for a session. On an operation that names
-both a profile and a document, `scope_checked` answers for the profile only. Each
+`args:`) name a configuration profile, a stored object or a session must declare how
+that object is scoped. Which kind an argument is comes from the words of its name,
+not from a list of spellings: `profile`, `version` or `revision` (unless the name
+says whose version it is, as `versionId` and `baseRevision` do) is a profile; `key`,
+`uri`, `prefix`, `path` or `bucket` is an object; `session` is a session. A profile
+needs `scope_checked` or `scope_filtered`; an object needs one of those,
+`document_scope_checked` (the object's own recorded or mapped profile is checked),
+`testset_checked` (the test-set scope) or `ownership`; a session needs `ownership`
+or `scope_checked`. On an operation that names both a profile and an object,
+`scope_checked` answers for the profile only. Each
 declaration is itself checked against the code the operation reaches. An operation
 only Admins or IAM principals can call needs none, because neither carries a
 profile scope. Anything else needs a `known_gap` or a per-operation entry in

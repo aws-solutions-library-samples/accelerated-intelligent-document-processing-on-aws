@@ -280,3 +280,117 @@ class TestTheRepository:
             assert op in ops
             assert kind in scanner.SCOPE_KEYED_DECLARATIONS
             assert len(reason) > 40
+
+
+class TestTheVocabularyIsARule:
+    """The kind is read from the words of a name, so a spelling nobody listed is
+    still recognised. The names below are the ones a seven-name list missed."""
+
+    @pytest.mark.parametrize(
+        "name,kind",
+        [
+            ("objectKeys", "object"),
+            ("s3Uri", "object"),
+            ("s3Key", "object"),
+            ("s3Prefix", "object"),
+            ("s3Bucket", "object"),
+            ("documentKey", "object"),
+            ("ObjectKey", "object"),
+            ("uiBundlePath", "object"),
+            ("profileName", "profile"),
+            ("configProfile", "profile"),
+            ("metadataProfile", "profile"),
+            ("queueProfile", "profile"),
+            ("configRevision", "profile"),
+            ("configVersion", "profile"),
+            ("versionName", "profile"),
+            ("version", "profile"),
+            ("revision", "profile"),
+            ("sessionId", "session"),
+            # a version or revision of something other than a profile
+            ("versionId", None),
+            ("baseRevision", None),
+            ("testSetVersion", None),
+            ("installedVersion", None),
+            # words that are not scope-bearing at all
+            ("testSetId", None),
+            ("jobId", None),
+            ("customConfig", None),
+            ("monkeyBusiness", None),
+        ],
+    )
+    def test_the_kind_of_a_name(self, name, kind):
+        assert scanner.scope_keyed_kind(name) == kind
+
+    def test_a_name_never_written_down_is_found(self, tmp_path):
+        """No word list names `invoiceUris`; the rule reads its words."""
+        schema = _SCHEMA.replace(
+            "doPlain(name: String): String",
+            "doPlain(name: String): String\n  doNew(invoiceUris: [String]): String",
+        )
+        repo = _fixture(tmp_path, _entry("doNew"))
+        (repo / "nested/api-resolvers/src/api/schema.graphql").write_text(schema)
+        assert [op for op, _ in _s10(repo)] == ["doNew"]
+
+
+class TestDocumentScopeDeclaration:
+    _ARGS = '{ configVersion: "x", objectKeys: ["y"] }'
+
+    def test_declared_and_backed_passes(self, tmp_path):
+        resolver = _SCOPED_RESOLVER.replace(
+            '    raise PermissionError("Unauthorized")\n',
+            '    if field == "ddbOnly":\n'
+            "        if not scope_allows(allowed, v):\n"
+            '            raise PermissionError("x")\n'
+            "        _enforce_document_scope(allowed, keys)\n"
+            "        return {}\n"
+            '    raise PermissionError("Unauthorized")\n',
+        )
+        repo = _fixture(
+            tmp_path,
+            _entry(
+                "ddbOnly",
+                "scope_checked: true\ndocument_scope_checked: true",
+                args=self._ARGS,
+            ),
+            resolver,
+        )
+        assert _s10(repo) == []
+
+    def test_declared_but_not_backed_fails(self, tmp_path):
+        repo = _fixture(
+            tmp_path,
+            _entry(
+                "ddbOnly",
+                "scope_checked: true\ndocument_scope_checked: true",
+                args=self._ARGS,
+            ),
+        )
+        messages = [m for op, m in _s10(repo) if op == "ddbOnly"]
+        assert messages and "document_scope_checked" in messages[0]
+
+
+class TestTheRepositoryPatterns:
+    def test_every_document_scope_pattern_is_reached_by_a_declaring_operation(self):
+        """A pattern nothing reaches would pre-approve the next file containing it."""
+        import yaml
+
+        ops = yaml.safe_load(
+            (scanner.REPO / "scripts" / "api_rbac_expectations.yaml").read_text()
+        )["operations"]
+        per_file = scanner.operations_per_enforced_file(ops)
+        reached = ""
+        declaring = [op for op, o in ops.items() if o.get("document_scope_checked")]
+        assert declaring
+        for op in declaring:
+            o = ops[op]
+            error, source = scanner.op_scope_source(
+                (scanner.REPO / o["enforced_in"]).read_text(),
+                op,
+                declared_entry=o.get("scope_enforced_in"),
+                sole_op=per_file[o["enforced_in"]] == 1,
+            )
+            assert error is None, (op, error)
+            reached += source
+        dead = [p for p in scanner.DOCUMENT_SCOPE_PATTERNS if p not in reached]
+        assert dead == []
