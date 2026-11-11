@@ -555,15 +555,12 @@ DASHBOARD = SpecMapper(
 )
 
 
-class CognitoUserMapper:
-    tf_type = "aws_cognito_user"
-    ref_attr = "username"
+class CognitoUserMapper(SpecMapper):
+    """A pool user: its attributes are a list of name/value pairs, and the
+    lifecycle block below comes from ``ignore_changes`` (see emit for why)."""
 
     def getatt(self, attr: str) -> Any:
         raise TranslationError(f"UserPoolUser has no attribute {attr}")
-
-    def plan(self, tr: Translator, plan: Plan) -> None:
-        return None
 
     def emit(self, tr: Translator, plan: Plan, res: dict[str, Any]) -> str:
         props = dict(plan.props)
@@ -587,10 +584,39 @@ class CognitoUserMapper:
         }
         lines += render_spec(tr, spec, props, plan.logical_id)
         head, tail = tr.meta_lines(plan, res)
+        # Every AWS::Cognito::UserPoolUser property is create-only, so
+        # CloudFormation never updates a user in place: it replaces the user when
+        # a property changes. Cognito adds attributes of its own (sub,
+        # email_verified) that the template does not name, and the user may
+        # change others; reading those as drift would strip them, and an adopted
+        # user carries whatever its pool gave it. So Terraform ignores them, and
+        # unlike CloudFormation a change to the template's attributes alone does
+        # not replace the user. The shipped template cannot produce that case:
+        # AdminUser's Username and email both come from AdminEmail, and a
+        # username change still replaces it.
+        tail = tail + [
+            f"# {self.ignore_reason}",
+            hcl.block(
+                "lifecycle",
+                [f"ignore_changes = [{', '.join(self.ignore_changes)}]"],
+            ).rstrip(),
+        ]
         return hcl.block(
-            f'resource "aws_cognito_user" "{plan.name}"', head + lines + tail
+            f'resource "{self.tf_type}" "{plan.name}"', head + lines + tail
         )
 
+
+COGNITO_USER = CognitoUserMapper(
+    tf_type="aws_cognito_user",
+    ref_attr="username",
+    spec={},
+    attrs={},
+    # Registered with the user pool's in scripts/tests/gate_exemptions.json.
+    ignore_changes=("attributes", "desired_delivery_mediums", "message_action"),
+    ignore_reason=(
+        "create-only under CloudFormation; the user owns its attributes after creation"
+    ),
+)
 
 USER_IN_GROUP = SpecMapper(
     tf_type="aws_cognito_user_in_group",
@@ -605,7 +631,7 @@ USER_IN_GROUP = SpecMapper(
 
 STORAGE_MAPPERS: dict[str, Any] = {
     "AWS::CloudWatch::Dashboard": DASHBOARD,
-    "AWS::Cognito::UserPoolUser": CognitoUserMapper(),
+    "AWS::Cognito::UserPoolUser": COGNITO_USER,
     "AWS::Cognito::UserPoolUserToGroupAttachment": USER_IN_GROUP,
     "AWS::S3::Bucket": S3BucketMapper(),
     "AWS::S3::BucketPolicy": BUCKET_POLICY,

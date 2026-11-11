@@ -360,11 +360,13 @@
         "scripts/sdlc/check_retired_models.py": 51.49,
         "scripts/sdlc/check_retired_services.py": 94.34,
         "scripts/sdlc/codebuild_deployment.py": 42.37,
+        "scripts/sdlc/cognito_srp.py": 82.19,
         "scripts/sdlc/failure_agent.py": 54.04,
         "scripts/sdlc/generate_api_rbac_manifest.py": 31.87,
         "scripts/sdlc/integration_test_deployment.py": 30.22,
         "scripts/sdlc/run_stacktest.py": 86.08,
         "scripts/sdlc/scan_api_rbac.py": 88.55,
+        "scripts/sdlc/terraform_migration_test.py": 48.21,
         "scripts/sdlc/transform_deploy_test.py": 70.31,
         "scripts/sdlc/typecheck_pr_changes.py": 70.55,
         "scripts/sdlc/validate_buildspec.py": 78.12,
@@ -551,6 +553,7 @@
         "idp_sdk/_core/tenancy_policies.py": 84.48,
         "idp_sdk/_core/tenancy_verify.py": 78.49,
         "idp_sdk/_core/terraform_deploy.py": 93.19,
+        "idp_sdk/_core/terraform_migrate.py": 95.21,
         "idp_sdk/_core/terraform_stack.py": 100.0,
         "idp_sdk/_core/ui_api.py": 60.0,
         "idp_sdk/client.py": 100.0,
@@ -569,6 +572,7 @@
         "idp_sdk/models/search.py": 100.0,
         "idp_sdk/models/stack.py": 100.0,
         "idp_sdk/models/tenancy.py": 100.0,
+        "idp_sdk/models/terraform.py": 100.0,
         "idp_sdk/models/testing.py": 100.0,
         "idp_sdk/operations/__init__.py": 100.0,
         "idp_sdk/operations/assessment.py": 100.0,
@@ -583,6 +587,7 @@
         "idp_sdk/operations/search.py": 100.0,
         "idp_sdk/operations/stack.py": 100.0,
         "idp_sdk/operations/tenancy.py": 77.97,
+        "idp_sdk/operations/terraform.py": 92.62,
         "idp_sdk/operations/testing.py": 100.0
       }
     },
@@ -622,7 +627,8 @@
         "idp_cli/display.py": 100.0,
         "idp_cli/parameters.py": 100.0,
         "idp_cli/search_tracking_table.py": 100.0,
-        "idp_cli/tenancy.py": 72.07
+        "idp_cli/tenancy.py": 72.07,
+        "idp_cli/terraform.py": 83.04
       }
     },
     "idp_feature_sdk": {

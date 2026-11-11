@@ -17,8 +17,9 @@ listed under [Differences from CloudFormation and current limitations](#differen
 
 If you deploy the accelerator today with the separate `awslabs/genai-idp-terraform`
 repository, read [Migrating from genai-idp-terraform](./terraform-migration.md) as
-well. That repository is a different implementation, and its state cannot be moved
-onto this module.
+well. That repository is a different implementation, so its state cannot simply be
+moved onto this module; a new deployment of the module adopts its buckets, tables,
+KMS key and user pool instead, with `idp-cli terraform migrate-from-genai-idp-terraform`.
 
 ## What it is
 

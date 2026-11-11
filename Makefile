@@ -1372,6 +1372,38 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 	@echo "It deploys a FROM release, update-stacks to a TO release, and watches"
 	@echo "the UpdateDefaultConfig custom resource. Follow that skill's steps."
 
+# In-place migration of an awslabs/genai-idp-terraform deployment onto this
+# repository's Terraform module: deploys the pinned upstream tag as OLD_NAME, seeds
+# it (documents, users, a config edit, a baseline and test set), runs every phase of
+# `idp-cli terraform migrate-from-genai-idp-terraform` with --apply onto a new
+# deployment NEW_NAME of TERRAFORM_MODULE_URL, verifies nothing was lost and the old
+# passwords still sign in, then destroys both and sweeps what they retained. Measured
+# at 166 minutes, 76 of them waiting on DynamoDB's TTL intervals. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>; RESUME=1
+# continues a stopped or failed run from WORK_DIR. See docs/testing.md and
+# .claude/skills/release-validation.md (tier J).
+#   make stacktest-terraform-migration OLD_NAME=gitf2 NEW_NAME=gitfnew2 \
+#       TERRAFORM_MODULE_URL=https://.../idp-terraform-<version>.zip
+_TFMIG_ARGS = --old-name $(OLD_NAME) --new-name $(NEW_NAME) \
+	--terraform-module-url $(TERRAFORM_MODULE_URL) \
+	$(if $(REGION),--region $(REGION),) \
+	$(if $(WORK_DIR),--work-dir $(WORK_DIR),) \
+	$(if $(TERRAFORM_BIN),--terraform-bin $(TERRAFORM_BIN),) \
+	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
+	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
+	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
+
+stacktest-terraform-migration: ## Migrate a live genai-idp-terraform deployment onto the built-in module in place, verify, tear both down (OLD_NAME= NEW_NAME= TERRAFORM_MODULE_URL=)
+ifndef OLD_NAME
+	$(error OLD_NAME is not set. Usage: make stacktest-terraform-migration OLD_NAME=<prefix> NEW_NAME=<stack> TERRAFORM_MODULE_URL=<zip url>)
+endif
+ifndef NEW_NAME
+	$(error NEW_NAME is not set. Usage: make stacktest-terraform-migration OLD_NAME=<prefix> NEW_NAME=<stack> TERRAFORM_MODULE_URL=<zip url>)
+endif
+ifndef TERRAFORM_MODULE_URL
+	$(error TERRAFORM_MODULE_URL is not set: the module zip `idp-cli publish --terraform` prints)
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/terraform_migration_test.py $(_TFMIG_ARGS)
+
 ##@ UI Development
 
 # ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND SIX OF THEM
