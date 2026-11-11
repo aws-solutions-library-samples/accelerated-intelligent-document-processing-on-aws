@@ -227,7 +227,7 @@ UNREADABLE_OPTIONS: dict[str, frozenset[str]] = {
             "--dns-servers",
         }
     ),
-    "wget": frozenset({"-i", "--input-file", "--config"}),
+    "wget": frozenset({"-i", "--input-file", "--config", "--input-metalink"}),
     "nc": frozenset(),
     "netcat": frozenset(),
     "ncat": frozenset(),
@@ -239,22 +239,22 @@ UNREADABLE_OPTIONS: dict[str, frozenset[str]] = {
 WGET_PROXY_SETTINGS = frozenset({"httpproxy", "httpsproxy", "ftpproxy"})
 
 #: Variables that point curl or wget at a configuration file this hook never sees.
-CONFIG_VARIABLES = frozenset({"CURL_HOME", "WGETRC", "SYSTEM_WGETRC"})
+#: ``HOME`` and ``XDG_CONFIG_HOME`` count because curl reads ``$HOME/.curlrc`` and
+#: ``$XDG_CONFIG_HOME/curlrc``.
+CONFIG_VARIABLES = frozenset(
+    {"CURL_HOME", "WGETRC", "SYSTEM_WGETRC", "HOME", "XDG_CONFIG_HOME"}
+)
 
 #: Tools whose long options getopt_long reads, which accepts any unambiguous
-#: prefix (``wget --exec`` is ``--execute``), and whose long options take a value
-#: only when it is attached with ``=``: wget's help cannot tell an optional value
-#: (``--backups``) from a required one, and reading the next word as a value would
-#: skip a URL, so a separate word is always read as an argument. That can refuse
-#: ``wget --output-document file <url>``; write ``-O file`` instead.
+#: prefix (``wget --exec`` is ``--execute``), so a long option is resolved against
+#: the tool's table before it is read.
 GETOPT_LONG = frozenset({"wget", "ncat"})
 
-#: The long options of those tools whose value is required, by their manuals, so
-#: a separate word after one is its value: wget's ``--execute``, ``--config``,
-#: ``--input-file`` and ``--header``, ncat's ``--proxy``.
-REQUIRED_LONG_VALUES = frozenset(
-    {"--execute", "--config", "--input-file", "--header", "--proxy"}
-)
+#: Long options whose value is optional, so it is taken only when attached with
+#: ``=`` and a separate word after one is an argument. Measured by running every
+#: entry of ``WGET_VALUE_OPTIONS`` against a local port: only ``--backups`` left
+#: the next word alone. Every other listed option takes the next word.
+OPTIONAL_LONG_VALUES = frozenset({"--backups"})
 
 #: Commands that run a later word as the command, so ``sudo curl`` and
 #: ``xargs curl`` run curl, with the options of each that take a separate value.
@@ -469,7 +469,9 @@ def _wget_setting(value: str) -> str | None:
         return _host(setting) or _host(f"http://{setting}") or "?"
     if key == "useproxy" and setting.lower() in AFFIRMATIVE:
         return "?"
-    if key == "input":  # the same as -i: URLs read from a file
+    if key in ("input", "inputmetalink"):  # the same as -i: URLs from a file
+        return "?"
+    if key == "header" and setting.lower().startswith("host:"):
         return "?"
     return None
 
@@ -524,15 +526,13 @@ def _fetch_hosts(tokens: list[str]) -> tuple[str, list[str]] | None:
         elif token.startswith("--"):
             option, equals, inline = token.partition("=")
             if name in GETOPT_LONG:
-                option = _resolve_prefix(
-                    option, unreadable | destination | {"--execute"}
-                )
+                option = _resolve_prefix(option, takes_value | unreadable | destination)
             if name == "curl" and option.startswith("--expand-"):
                 hosts.append("?")  # curl 8.3+: a value built from --variable
             elif option in takes_value or option in unreadable or option in destination:
                 if equals:
                     option_value(option, inline)
-                elif name not in GETOPT_LONG or option in REQUIRED_LONG_VALUES:
+                elif option not in OPTIONAL_LONG_VALUES:
                     pending = option
         elif token.startswith("-") and token != "-":
             cluster = _short_cluster(token, takes_value | unreadable | destination)

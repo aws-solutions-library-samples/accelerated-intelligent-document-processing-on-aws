@@ -226,6 +226,25 @@ def test_lookalike_paths_are_allowed(command: str) -> None:
         "wget -e input=urls.txt",
         "CURL_HOME=. curl https://github.com",
         "WGETRC=./rc wget https://github.com",
+        # A long option that takes a value swallows the next word, so a word
+        # spelled like a short option is that value, not an option.
+        "wget --user-agent -O https://remote.example/x",
+        "wget --referer -O https://remote.example/x",
+        "wget --post-data -O https://remote.example/x",
+        "wget --body-data -O https://remote.example/x",
+        "wget --http-user -O https://remote.example/x",
+        "wget --password -O https://remote.example/x",
+        "wget --output-document -O https://remote.example/x",
+        "wget --default-page -O https://remote.example/x",
+        "ncat --sh-exec -x remote.example 443",
+        "ncat --output -p remote.example 443",
+        "wget --head 'Host: remote.example' https://github.com",
+        "wget --heade='Host: remote.example' https://github.com",
+        "wget -e header='Host: remote.example' https://github.com",
+        "HOME=. curl https://github.com",
+        "XDG_CONFIG_HOME=. curl https://github.com",
+        "wget --input-metalink f.meta4",
+        "wget -e inputmetalink=f.meta4",
     ],
 )
 def test_a_fetch_to_an_unlisted_host_is_refused(command: str) -> None:
@@ -269,6 +288,16 @@ def test_a_fetch_to_an_unlisted_host_is_refused(command: str) -> None:
         "nc -w 5 localhost 8080",
         "wget --backups=2 https://pypi.org/simple/",
         "wget -O out.whl --tries=3 https://files.pythonhosted.org/x.whl",
+        "wget --output-document out.tar.gz https://github.com/o/r/archive/x.tar.gz",
+        "wget --post-file body.json https://api.github.com/x",
+        "wget --body-file body.json --method PUT https://api.github.com/x",
+        "wget --output-file wget.log https://pypi.org/simple/",
+        "wget --append-output wget.log https://pypi.org/simple/",
+        "wget --load-cookies c.txt --save-cookies c.txt https://github.com",
+        "wget --ca-certificate ca.pem https://pypi.org/simple/",
+        "wget -r --reject index.html https://pypi.org/simple/",
+        "wget --warc-file arc.warc https://pypi.org/simple/",
+        "ncat --output session.log localhost 8080",
     ],
 )
 def test_a_fetch_to_a_listed_host_is_allowed(command: str) -> None:
@@ -443,3 +472,15 @@ def test_no_table_entry_is_a_flag_in_the_installed_tool(
     table = getattr(_hook_module(), constant)
     wrong = sorted(table & flags)
     assert not wrong, f"{constant} lists options {tool} reads as flags: {wrong}"
+
+
+def test_a_prefix_resolves_only_when_unambiguous_and_long_enough() -> None:
+    resolve = _hook_module()._resolve_prefix
+    known = frozenset({"--execute", "--exclude", "--config"})
+    assert resolve("--exec", known) == "--execute"
+    assert resolve("--c", known) == "--c", "too short to resolve"
+    assert resolve("--co", known) == "--co", "too short to resolve"
+    assert resolve("--exc", known) == "--exclude"
+    assert resolve("--e", known) == "--e"
+    ambiguous = frozenset({"--execute", "--exempt"})
+    assert resolve("--exe", ambiguous) == "--exe", "ambiguous between two"
