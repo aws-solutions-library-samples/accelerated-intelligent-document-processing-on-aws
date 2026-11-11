@@ -28,8 +28,11 @@ over:
 Each finding is reduced to (resource identity, check id). The identity is the
 nested-stack path and logical id the translator's manifest records for every
 Terraform address, so a bucket's ``aws_s3_bucket_versioning`` is the bucket.
-Only checks ``checkov`` implements for both frameworks are compared. Then each
-failed Terraform check is one of:
+A Terraform check is compared with its CloudFormation counterpart: the check
+with the same id, or else the one CloudFormation check whose policy text is
+identical (``checkov`` numbers some rules separately per framework, so the
+IAM write-without-constraints rule is ``CKV_AWS_111`` for CloudFormation and
+``CKV_AWS_290`` for Terraform). Then each failed Terraform check is one of:
 
 - **equal**: the CloudFormation side fails or skips the same check on the same
   resource;
@@ -43,11 +46,22 @@ failed Terraform check is one of:
   pinned, so a new one fails;
 - **no counterpart**: anything else. The gate fails.
 
+- **terraform-only check**: the check has no CloudFormation counterpart, so
+  nothing on the CloudFormation side can be compared with it.
+
 Every finding the gate would fail on must have an entry, with its reason, in
 ``scripts/terraform_scan_baseline.json``; an entry that matches nothing fails
-too, as does a change in the pinned count. Findings on checks only the Terraform
-framework has are counted and printed, never compared: they say nothing about
-the translation.
+too, as does a change in the pinned count.
+
+Findings on Terraform-only checks are ratcheted rather than compared, in
+``scripts/terraform_scan_tf_only_baseline.json``: one entry per check id with
+one reason (what the check is, and why it is accepted, what CloudFormation-side
+setting covers it, or that it is a known gap), and a pinned count per
+(check id, Terraform resource type). A check id with no entry fails, so does a
+count above its pin, and so does a count below it (stale: lower the pin to the
+number printed), as does a pinned pair that no longer occurs. So a change that
+adds a Terraform-only finding fails here even though no CloudFormation result
+exists to compare it with.
 
 What it does not prove: a scanner sees what its rules look at. A guardrail
 wired to an empty string, which started this, is invisible to every ``checkov``
@@ -70,6 +84,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRANSLATOR_DIR = REPO_ROOT / "terraform" / "translator"
 BASELINE = Path(__file__).resolve().with_name("terraform_scan_baseline.json")
+TF_ONLY_BASELINE = (
+    Path(__file__).resolve().with_name("terraform_scan_tf_only_baseline.json")
+)
 CHECK_ID = re.compile(r"\b(CKV2?_AWS_\d+)\b")
 
 
@@ -133,14 +150,51 @@ def run_checkov(exe: Path, args: list[str], cwd: Path) -> list[dict]:
     return data if isinstance(data, list) else [data]
 
 
-def check_ids(exe: Path, framework: str) -> set[str]:
+def check_policies(exe: Path, framework: str) -> dict[str, set[str]]:
+    """``{AWS check id: {policy text}}`` from ``checkov --list``."""
     out = subprocess.run(  # nosec B603 - fixed argv
         [str(exe), "--list", "--framework", framework],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    return set(CHECK_ID.findall(out))
+    return parse_check_list(out)
+
+
+def parse_check_list(text: str) -> dict[str, set[str]]:
+    """Parse the Markdown table ``checkov --list`` prints: ``| n | Id | Type |
+    Entity | Policy | IaC | Link |``. A check appears once per entity."""
+    policies: dict[str, set[str]] = {}
+    for line in text.splitlines():
+        cells = [c.strip() for c in line.split("|")]
+        if len(cells) < 6 or not CHECK_ID.fullmatch(cells[2]):
+            continue
+        policies.setdefault(cells[2], set()).add(cells[5])
+    return policies
+
+
+def counterparts(cfn: dict[str, set[str]], tf: dict[str, set[str]]) -> dict[str, str]:
+    """``{Terraform check id: CloudFormation check id}`` for every Terraform
+    check with a CloudFormation counterpart: the same id, else the one
+    CloudFormation check whose policy text is identical. Two candidates is no
+    counterpart: the comparison would be a guess."""
+    by_policy: dict[str, set[str]] = {}
+    for cid, texts in cfn.items():
+        for t in texts:
+            by_policy.setdefault(_norm(t), set()).add(cid)
+    out: dict[str, str] = {}
+    for tid, texts in tf.items():
+        if tid in cfn:
+            out[tid] = tid
+            continue
+        found = set().union(*(by_policy.get(_norm(t), set()) for t in texts))
+        if len(found) == 1:
+            out[tid] = found.pop()
+    return out
+
+
+def _norm(policy: str) -> str:
+    return " ".join(policy.lower().rstrip(".").split())
 
 
 # --------------------------------------------------------------- translation
@@ -249,7 +303,7 @@ def classify(
     status: dict[tuple[str, str, str], str],
     manifest: dict,
     conditional: set[tuple[str, str]],
-    comparable: set[str],
+    counterpart: dict[str, str],
 ) -> dict[str, list[dict]]:
     identity = {
         a: (e["stack"], e["logicalId"])
@@ -263,8 +317,10 @@ def classify(
         check = r["check_id"]
         address = tf_address(r)
         finding = {"check": check, "address": address, "name": r.get("check_name")}
-        if check not in comparable:
+        cfn_check = counterpart.get(check)
+        if cfn_check is None:
             cls = "terraform-only check"
+            finding["resourceType"] = _bare(address).split(".", 1)[0]
         elif address not in identity:
             cls = "translator-added"
             # The same generated file is emitted into every module that needs it.
@@ -272,7 +328,9 @@ def classify(
         else:
             stack, lid = identity[address]
             finding["resource"] = f"{stack}/{lid}" if stack else lid
-            cfn = status.get((stack, lid, check))
+            if cfn_check != check:
+                finding["cfnCheck"] = cfn_check
+            cfn = status.get((stack, lid, cfn_check))
             if cfn in ("failed", "skipped"):
                 cls = "equal"
             elif cfn == "passed":
@@ -343,8 +401,55 @@ def verdict(classes: dict[str, list[dict]], baseline: dict, version: str) -> lis
     return problems
 
 
+def tf_only_verdict(findings: list[dict], baseline: dict, version: str) -> list[str]:
+    """Failures of the Terraform-only ratchet: a check id with no entry or no
+    reason, a (check id, resource type) count above its pin, below it (stale),
+    or pinned and no longer occurring, and a baseline from another checkov."""
+    name = TF_ONLY_BASELINE.name
+    problems = []
+    if baseline.get("checkovVersion") != version:
+        problems.append(
+            f"{name} was measured with checkov {baseline.get('checkovVersion')} "
+            f"and the gate runs {version}; re-measure it with the pinned version"
+        )
+    actual = Counter((f["check"], f["resourceType"]) for f in findings)
+    names = {f["check"]: f.get("name") for f in findings}
+    checks = baseline.get("checks", {})
+    for check in sorted({c for c, _ in actual} - set(checks)):
+        types = {t: n for (c, t), n in sorted(actual.items()) if c == check}
+        problems.append(
+            f"new Terraform-only check {check} ({names[check]}) fails on {types}. "
+            f"It has no CloudFormation counterpart to compare with: fix the "
+            f"finding, or add an entry to {name} with a reason and these counts"
+        )
+    for check, entry in sorted(checks.items()):
+        if not str(entry.get("reason", "")).strip():
+            problems.append(f"{name}: {check} has no reason")
+        pinned = entry.get("counts", {})
+        for rtype in sorted(set(pinned) | {t for c, t in actual if c == check}):
+            n, pin = actual.get((check, rtype), 0), pinned.get(rtype)
+            if pin is None:
+                problems.append(
+                    f"Terraform-only {check} now fails on {n} {rtype}, which "
+                    f"{name} does not pin. Fix it, or pin it with a reason"
+                )
+            elif n > pin:
+                problems.append(
+                    f"Terraform-only {check} fails on {n} {rtype}, pinned at {pin} "
+                    f"in {name}: a new finding. Fix it, or raise the pin and say why"
+                )
+            elif n < pin:
+                problems.append(
+                    f"stale: Terraform-only {check} fails on {n} {rtype}, pinned "
+                    f"at {pin} in {name}. Lower the pin to {n}"
+                    + (" (remove the pair)" if n == 0 else "")
+                )
+    return problems
+
+
 def run(args: argparse.Namespace) -> int:
     baseline = json.loads(BASELINE.read_text())
+    tf_only_baseline = json.loads(TF_ONLY_BASELINE.read_text())
     exe = checkov_binary(args.checkov_version, args.cache_dir)
     with tempfile.TemporaryDirectory(prefix="idp-tf-scan-") as tmp:
         work = Path(tmp)
@@ -370,10 +475,12 @@ def run(args: argparse.Namespace) -> int:
             ],
             module,
         )
-        comparable = check_ids(exe, "cloudformation") & check_ids(exe, "terraform")
+        counterpart = counterparts(
+            check_policies(exe, "cloudformation"), check_policies(exe, "terraform")
+        )
         status = cfn_status(cfn_src, cfn_exp, sources)
         classes = classify(
-            tf, status, manifest, conditional_resources(tree), comparable
+            tf, status, manifest, conditional_resources(tree), counterpart
         )
     counts = Counter({k: len(v) for k, v in classes.items()})
     print(f"checkov {args.checkov_version}: failed Terraform checks by class:")
@@ -390,7 +497,17 @@ def run(args: argparse.Namespace) -> int:
         print(f"  not evaluated: {f['check']} {f['address']}")
     if args.json:
         args.json.write_text(json.dumps(classes, indent=1, sort_keys=True) + "\n")
+    tf_only = Counter(
+        (f["check"], f["resourceType"]) for f in classes.get("terraform-only check", [])
+    )
+    for (check, rtype), n in sorted(tf_only.items()):
+        print(f"  terraform-only: {check} {rtype} {n}")
     problems = verdict(classes, baseline, args.checkov_version)
+    problems += tf_only_verdict(
+        classes.get("terraform-only check", []),
+        tf_only_baseline,
+        args.checkov_version,
+    )
     for p in problems:
         print(f"FAIL {p}")
     if problems:
@@ -398,7 +515,8 @@ def run(args: argparse.Namespace) -> int:
         return 1
     print(
         "terraform-scan-diff: no Terraform finding without a CloudFormation "
-        "counterpart beyond the explained baseline"
+        "counterpart beyond the explained baseline, and every Terraform-only "
+        "finding at its pinned count"
     )
     return 0
 

@@ -45,9 +45,19 @@ RESOURCE_KEYS = {
     "Version",
 }
 STACK_NAME_VAR = "stack_name"
+#: The root module's ``stack_name`` validation: the main template's
+#: IsStacknameLengthOK limit, refused at plan.
+STACK_NAME_MAX_LENGTH = 25
 #: The parameter every IDP template uses for an optional IAM permissions
 #: boundary; the bridge role the translator adds honours it too.
 PERMISSIONS_BOUNDARY_PARAMETER = "PermissionsBoundaryArn"
+#: Translator-owned variables every nested module declares and its parent
+#: always passes: the KMS key and the access-log bucket the custom-resource
+#: bridge uses (see ``Translator.bridge_kms_key``). A nested template usually
+#: has a key parameter but no logging bucket of its own, so the root's flow down.
+BRIDGE_KMS_VAR = "cfn_bridge_kms_key_arn"
+BRIDGE_LOG_BUCKET_VAR = "cfn_bridge_access_log_bucket"
+RESERVED_VARS = (STACK_NAME_VAR, BRIDGE_KMS_VAR, BRIDGE_LOG_BUCKET_VAR)
 # A module variable carrying a plan-time-known stand-in for a parameter that a
 # condition reads. Resource attributes are replaced by a non-empty placeholder,
 # which is exactly what CloudFormation's condition sees: a resource id is never
@@ -243,7 +253,7 @@ class Translator:
         self.param_vars: dict[str, str] = {}
         for p in self.params:
             v = variable_name(p)
-            if v == STACK_NAME_VAR:
+            if v in RESERVED_VARS:
                 v = "param_" + v
             self.param_vars[p] = v
         self.conditions: dict[str, Any] = template.get("Conditions", {})
@@ -269,6 +279,10 @@ class Translator:
         # source inside a module that has depends_on is deferred to apply, which
         # would make every condition reading it unknown at plan time.
         self.is_root = True
+        self.parent: Translator | None = None
+        #: ``DependsOn`` edges left out so the bridge can use the key
+        #: (``Translator._bridge_usable``); filled in by ``render``.
+        self.bridge_dropped_deps: set[tuple[str, str]] = set()
         # Off for unit tests on fragments; the CLI turns it on for a real tree.
         self.directory_readers = False
         # True while writing the resource directory, which keeps CloudFormation's
@@ -364,6 +378,7 @@ class Translator:
             nested_loader=self.nested_loader,
         )
         child.is_root = False
+        child.parent = self
         self.children[plan.name] = child
         # CloudFormation makes anything that references a nested stack wait for
         # the whole stack. A reference to one module output waits only for what
@@ -656,6 +671,8 @@ class Translator:
             deps = [deps]
         addrs: list[str] = []
         for d in deps:
+            if (plan.logical_id, d) in self.bridge_dropped_deps:
+                continue
             target = self.plans[d]
             if not target.virtual:
                 addrs.append(target.address)
@@ -812,6 +829,8 @@ class Translator:
             "pseudo = local.pseudo",
             # CloudFormation names a nested stack <parent>-<LogicalId>-<random>.
             f'{STACK_NAME_VAR} = "${{var.{STACK_NAME_VAR}}}-{plan.logical_id}"',
+            f"{BRIDGE_KMS_VAR} = {self.bridge_kms_key() or 'null'}",
+            f"{BRIDGE_LOG_BUCKET_VAR} = {self.bridge_access_log_bucket() or 'null'}",
         ]
         for p, value in params.items():
             if p not in child.param_vars:
@@ -905,6 +924,15 @@ class Translator:
         # Logical id -> the HCL emitted for it; read by the completeness check
         # and by the manifest, which records every address a resource became.
         self.emitted: dict[str, str] = {}
+        # Before any resource renders: it decides which DependsOn edges drop.
+        for lid, check in sorted(self._bridge_dropped()):
+            note = (
+                f"{lid}: DependsOn {check} left out, so the custom-resource "
+                f"bridge can use the key; stack_name's validation enforces "
+                f"{check} at plan"
+            )
+            if note not in self.report.warnings:  # render() may run again
+                self.report.warn(note)
         resources: list[str] = []
         if self.is_root and self.directory_readers:
             resources.extend(self._inject_directory_readers())
@@ -956,9 +984,10 @@ class Translator:
                                 # The main template's IsStacknameLengthOK refuses
                                 # more than 25; caught here at plan instead of
                                 # part-way through an apply.
-                                f"condition = length(var.{STACK_NAME_VAR}) <= 25",
-                                'error_message = "stack_name must be at most 25 '
-                                'characters."',
+                                f"condition = length(var.{STACK_NAME_VAR}) "
+                                f"<= {STACK_NAME_MAX_LENGTH}",
+                                'error_message = "stack_name must be at most '
+                                f'{STACK_NAME_MAX_LENGTH} characters."',
                             ],
                         ).rstrip(),
                         hcl.block(
@@ -978,6 +1007,28 @@ class Translator:
                 ),
             )
         ]
+        if not self.is_root:
+            # Required, so nothing scanning this module alone reads a null
+            # default as the value; the parent always passes both.
+            for name, text in (
+                (
+                    BRIDGE_KMS_VAR,
+                    "KMS key ARN for the custom-resource bridge's log group, "
+                    "passed from the parent module (null: CloudWatch's default "
+                    "encryption).",
+                ),
+                (
+                    BRIDGE_LOG_BUCKET_VAR,
+                    "Bucket the custom-resource bridge bucket's access logs go "
+                    "to, passed from the parent module (null: no access logging).",
+                ),
+            ):
+                out.append(
+                    hcl.block(
+                        f'variable "{name}"',
+                        ["type = string", f"description = {hcl.string(text)}"],
+                    )
+                )
         for p, spec in self.params.items():
             ptype = spec.get("Type", "String")
             lines = []
@@ -1089,6 +1140,163 @@ class Translator:
         for name, child in self.children.items():
             out.extend(f"module.{name}.{a}" for a in child.retained_addresses())
         return sorted(set(out))
+
+    # ------------------------------------------------- custom-resource bridge
+    def _template_refs(self, node: Any) -> set[str]:
+        """Logical ids of this template's resources ``node`` references."""
+        resources = self.t.get("Resources", {})
+        out: set[str] = set()
+        if isinstance(node, list):
+            for x in node:
+                out |= self._template_refs(x)
+        elif isinstance(node, dict):
+            for k, x in node.items():
+                if k == "Ref" and isinstance(x, str):
+                    out.add(x)
+                elif k == "Fn::GetAtt":
+                    name = x[0] if isinstance(x, list) else str(x).split(".", 1)[0]
+                    out.add(name)
+                elif k == "Fn::Sub":
+                    text = x[0] if isinstance(x, list) else x
+                    if isinstance(text, str):
+                        for m in re.finditer(r"\$\{([^}!][^}]*)\}", text):
+                            out.add(m.group(1).split(".", 1)[0])
+                    if isinstance(x, list) and len(x) > 1:
+                        out |= self._template_refs(x[1])
+                else:
+                    out |= self._template_refs(x)
+        return {r for r in out if r in resources}
+
+    def _plan_enforced_check(self, lid: str) -> bool:
+        """True for a stack-name length check the root's ``stack_name``
+        validation (``STACK_NAME_MAX_LENGTH``) already refuses at plan, before
+        anything is created, so waiting for it orders nothing."""
+        res = self.t.get("Resources", {}).get(lid, {})
+        props = res.get("Properties", {})
+        limit = props.get("MaxLength")
+        return (
+            self.is_root
+            and res.get("Type") == "Custom::StacknameCheck"
+            and props.get("InputString") == {"Ref": "AWS::StackName"}
+            and isinstance(limit, int)
+            and limit >= STACK_NAME_MAX_LENGTH
+        )
+
+    def _bridge_usable(self, value: Any) -> set[tuple[str, str]] | None:
+        """Whether the bridge's own resources may reference ``value``.
+
+        The bridge runs every custom resource, so nothing it references may wait
+        for one: that is a dependency cycle. Returns None when ``value``
+        reaches a custom resource or a nested stack (through references or
+        ``DependsOn``), else the ``(resource, check)`` ``DependsOn`` edges on a
+        plan-enforced check that have to be dropped to keep it acyclic.
+        """
+        resources = self.t.get("Resources", {})
+        drop: set[tuple[str, str]] = set()
+        seen: set[str] = set()
+        todo = sorted(self._template_refs(value))
+        while todo:
+            lid = todo.pop()
+            if lid in seen:
+                continue
+            seen.add(lid)
+            res = resources[lid]
+            rtype = str(res.get("Type", ""))
+            if rtype.startswith(CUSTOM_TYPES) or rtype == "AWS::CloudFormation::Stack":
+                return None
+            deps = res.get("DependsOn", [])
+            for d in [deps] if isinstance(deps, str) else deps:
+                if self._plan_enforced_check(d):
+                    drop.add((lid, d))
+                else:
+                    todo.append(d)
+            todo.extend(sorted(self._template_refs(res.get("Properties", {}))))
+        return drop
+
+    def _most_common_own(
+        self, cfn_type: str, path: tuple[str, ...], acyclic: bool
+    ) -> tuple[str, set[tuple[str, str]]] | None:
+        """The value this template's own unconditional ``cfn_type`` resources
+        most often set at ``path``, rendered as HCL, with the ``DependsOn``
+        edges to drop for it (see ``_bridge_usable``); None if none sets one.
+
+        A value carrying ``Fn::If`` is ignored: the bridge has no condition of
+        its own to mirror it with. With ``acyclic``, so is a value the bridge
+        cannot wait for. Ties go to the first in template order.
+        """
+        counts: dict[str, int] = {}
+        drops: dict[str, set[tuple[str, str]]] = {}
+        saved = self._refs
+        try:
+            for res in self.t.get("Resources", {}).values():
+                if res.get("Type") != cfn_type or res.get("Condition"):
+                    continue
+                v: Any = res.get("Properties", {})
+                for key in path:
+                    v = v.get(key) if isinstance(v, dict) else None
+                if v is None or "Fn::If" in json.dumps(v, default=str):
+                    continue
+                drop = self._bridge_usable(v) if acyclic else set()
+                if drop is None:
+                    continue
+                rendered = self.expr(v)
+                counts[rendered] = counts.get(rendered, 0) + 1
+                drops[rendered] = drop
+        finally:
+            self._refs = saved
+        if not counts:
+            return None
+        best = max(counts, key=lambda k: counts[k])
+        return best, drops[best]
+
+    def _bridge_dropped(self) -> set[tuple[str, str]]:
+        self.bridge_kms_key()
+        return self.bridge_dropped_deps
+
+    def bridge_kms_key(self) -> str | None:
+        """HCL for the KMS key the bridge's log group is encrypted with.
+
+        The key this template's own log groups use, mirroring their encryption;
+        in a nested module with none of its own, the one its parent passes down
+        (``BRIDGE_KMS_VAR``). None when neither has one. The key policy must let
+        CloudWatch Logs use the key, which it does wherever the template's own
+        log groups are encrypted with it.
+        """
+        if not hasattr(self, "_bridge_kms"):
+            own = self._most_common_own(
+                "AWS::Logs::LogGroup", ("KmsKeyId",), acyclic=True
+            )
+            if own is not None:
+                self._bridge_kms: str | None = own[0]
+                self.bridge_dropped_deps = own[1]
+            elif self.parent is None or self.parent.bridge_kms_key() is None:
+                self._bridge_kms = None
+            else:
+                self._bridge_kms = f"var.{BRIDGE_KMS_VAR}"
+        return self._bridge_kms
+
+    def bridge_access_log_bucket(self) -> str | None:
+        """HCL for the bucket the bridge bucket's access logs go to: the one
+        this template's own buckets log to, else the parent's
+        (``BRIDGE_LOG_BUCKET_VAR``), else None.
+
+        No cycle check: ``aws_s3_bucket_logging`` is a leaf nothing in the
+        bridge waits for. Decided here rather than with a ``count`` on the
+        value, which at the root is a resource attribute unknown at plan time.
+        """
+        if not hasattr(self, "_bridge_log_bucket"):
+            own = self._most_common_own(
+                "AWS::S3::Bucket",
+                ("LoggingConfiguration", "DestinationBucketName"),
+                acyclic=False,
+            )
+            if own is not None:
+                self._bridge_log_bucket: str | None = own[0]
+            elif self.parent is None or self.parent.bridge_access_log_bucket() is None:
+                self._bridge_log_bucket = None
+            else:
+                self._bridge_log_bucket = f"var.{BRIDGE_LOG_BUCKET_VAR}"
+        return self._bridge_log_bucket
 
     def permissions_boundary_variable(self) -> str | None:
         """The variable for this template's ``PermissionsBoundaryArn``, if any."""
