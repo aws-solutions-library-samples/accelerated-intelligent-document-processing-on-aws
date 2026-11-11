@@ -30,6 +30,7 @@ import yaml
 
 import idp_common.config.system_defaults as system_defaults
 from idp_common.bedrock.client import BedrockClient
+from idp_common.prompt_comments import strip_prompt_comments
 
 #: ``format_prompt`` reads no instance state, so an unconstructed client is
 #: enough and avoids needing AWS credentials or a session.
@@ -186,10 +187,14 @@ def test_every_shipped_prompt_renders_byte_identically(label, prompt):
     in YAML comments that never reach a template. So an equality failure here
     means the escaping reached something it should not have.
     """
-    keys = sorted(set(PLACEHOLDER.findall(prompt)))
+    # The oracle starts from the template as sent: {# ... #} comments are removed
+    # before rendering, and format_prompt (given the raw template below) does that
+    # itself. Placeholders named only inside a comment are not offered.
+    sent = strip_prompt_comments(prompt)
+    keys = sorted(set(PLACEHOLDER.findall(sent)))
     substitutions = {key: f"<{key}>" for key in keys}
 
-    expected = prompt
+    expected = sent
     for key, value in substitutions.items():
         expected = expected.replace(f"{{{key}}}", value)
 

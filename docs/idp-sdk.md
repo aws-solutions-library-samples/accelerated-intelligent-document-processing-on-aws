@@ -151,6 +151,9 @@ client.config.sync_bda(...)
 client.manifest.generate(...)
 client.manifest.validate(...)
 
+# Terraform-only operations (genai-idp-terraform migration)
+client.terraform.migrate_from_genai_idp_terraform.plan(...)
+
 # Testing operations
 client.testing.load_test(...)
 ```
@@ -176,6 +179,69 @@ client.stack_name = "new-stack"
 |-----------|------|----------|-------------|
 | `stack_name` | str | No | CloudFormation stack name |
 | `region` | str | No | AWS region (defaults to boto3 default) |
+
+### Terraform deployments
+
+`stack_name` also accepts the name of a [Terraform deployment](./terraform.md)
+(experimental). Such a deployment has a read-only CloudFormation label stack of the
+same name, and importing `idp_sdk` installs a hook on botocore's CloudFormation clients
+that answers resource lookups for a label stack from the deployment's resource
+directory. Every client operation therefore works against either kind of deployment
+with no change to your code. The hook applies only inside a process that imported
+`idp_sdk`; the AWS CLI and other tools see only the label stack's single resource.
+Deploying and deleting a Terraform deployment through the SDK's CloudFormation path
+is refused; use `idp-cli deploy --terraform` and `idp-cli delete --terraform`, or
+Terraform itself.
+
+### Terraform migration
+
+`client.terraform.migrate_from_genai_idp_terraform` moves a deployment of the separate
+`awslabs/genai-idp-terraform` implementation onto this repository's Terraform module
+in place, keeping its buckets, tables, KMS key and Cognito user pool. It is what
+`idp-cli terraform migrate-from-genai-idp-terraform` calls; the procedure is in
+[Migrating from genai-idp-terraform](./terraform-migration.md). The client's
+`stack_name` is the **new** deployment's name, and each method takes `terraform_dir`
+(default `./idp-terraform/<stack_name>`). The methods' own AWS calls assume the role
+the new deployment's providers assume (`assume_role_arn` of `plan`, read back from
+`main.tf` by the later methods), or use the ambient credentials when there is none.
+
+```python
+client = IDPClient(stack_name="my-idp", region="us-west-2")
+migration = client.terraform.migrate_from_genai_idp_terraform
+
+plan = migration.plan(
+    "old-idp.tfstate",
+    "admin@example.com",
+    pointer_url="https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/"
+    "artifacts/genai-idp/terraform/idp-terraform-latest.json",
+)
+migration.check_retention()
+migration.freeze(apply=True, wait=True)
+migration.fix_config(apply=True)
+migration.adopt_user_pool(apply=True)
+result = migration.apply(apply=True)
+migration.detach("./old-idp", apply=True)
+migration.check_destroy("destroy-plan.json")
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `plan(old_state_path, admin_email, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` | `TerraformMigrationPlanResult` | Writes the root configuration, runs `terraform init`, writes `adopt.tf` and the migration plan. Raises `IDPConfigurationError` on an old stateful resource with no verdict. |
+| `check_retention(terraform_dir=None, accept_expiry=())` | `TerraformMigrationStepResult` | Reads only. `notes` says what was not checked. |
+| `freeze(terraform_dir=None, *, apply=False, wait=False, timeout_seconds=1800, poll_seconds=30, ignore_documents=())` | `TerraformMigrationStepResult` | `details` separates documents in flight from documents awaiting review. |
+| `fix_config(terraform_dir=None, *, apply=False, restore=None)` | `TerraformMigrationStepResult` | `backup_path` names the backup. |
+| `adopt_user_pool(terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
+| `apply(terraform_dir=None, terraform_bin="terraform", *, apply=False, accept_expiry=(), accept_changes=(), ignore_documents=())` | `TerraformMigrationStepResult` | `details["counts"]` has the plan's import, add, change and destroy counts; `details["review"]` lists the allowed in-place changes to adopted resources. `accept_changes` takes `"<address>:<rule>"` as a finding names it. |
+| `detach(old_terraform_dir, terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
+| `check_destroy(destroy_plan_path, terraform_dir=None)` | `TerraformMigrationStepResult` | Reads only. |
+
+Every method that can change something is a dry run unless `apply=True`. A
+`TerraformMigrationStepResult` lists in `changes` exactly what the phase changes (or,
+in a dry run, would change), in `findings` what blocks the next step (`ok` is false
+when there is any), and in `back_out` how to undo it. `TerraformMigrationPlanResult`
+lists one `TerraformMigrationResource` per old resource, with its verdict, the
+address it is adopted into and the import id, plus the stack parameters written, the
+addresses to detach and the commands that detach them.
 
 ---
 
@@ -1146,6 +1212,16 @@ result = client.stack.delete(
 print(f"Status: {result.status}")
 ```
 
+### stack.deploy_terraform() / stack.delete_terraform()
+
+Deploy or destroy the accelerator with Terraform or OpenTofu, from a module published by `publish.build(terraform=True)`. These are what `idp-cli deploy --terraform` and `idp-cli delete --terraform` call; see [Terraform deployments](./idp-cli.md#terraform-deployments) for the behaviour.
+
+- `deploy_terraform(stack_name=None, admin_email=None, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None, allow_replace_stateful=False, allow_replace_retained=False)` returns a `StackDeploymentResult` (`status="APPLY_COMPLETE"`, the label stack's outputs). With no `module_url`, `pointer_url` names an `idp-terraform-latest.json`; `default_terraform_pointer_url(template_url, variant=None)` derives it from a default template URL, for the standard module or the `headless`/`govcloud` one. It applies a saved plan after checking it, and raises `IDPStackError` without applying anything when the plan deletes or replaces a resource that holds data or that CloudFormation would retain (the module's `statefulAddresses` and `retainedAddresses`), unless `allow_replace_stateful=True` (`allow_replace_retained` is the earlier name).
+- `assume_role_arn` (both) is an IAM role the `aws` and `awscc` providers assume: `deploy_terraform` writes it into `main.tf`, and `delete_terraform` rewrites the provider blocks of an idp-cli `main.tf` with it before `init`, keeping the region the deploy recorded there and refusing a client in another region.
+- `delete_terraform(stack_name=None, *, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` returns a `StackDeletionResult` whose `retained_resources` lists the resources left in place, categorized as `dynamodb_tables`, `log_groups`, `s3_buckets` and `other`.
+
+Both raise `IDPConfigurationError` when the binary is missing or the inputs are invalid, and `IDPStackError` when a Terraform command fails.
+
 ### stack.get_resources()
 
 Get stack resource information.
@@ -1331,6 +1407,7 @@ This is the programmatic equivalent of `idp-cli publish` — see [Headless Deplo
 - `no_validate` (bool, optional): If `True`, skip CloudFormation template validation. Default: `False`.
 - `verbose` (bool, optional): If `True`, enable verbose build output. Default: `False`.
 - `lint` (bool, optional): If `True`, enable ruff linting and cfn-lint. Default: `True`.
+- `terraform` (bool, optional): If `True`, also translate the published main template into a Terraform module and upload it (`publish.publish_terraform()`), and do the same for each variant `headless`/`govcloud` produce (`publish_terraform(..., variant="headless")`). Default: `False`.
 
 **Returns:** `PublishResult` with:
 - `success` (bool)
@@ -1341,6 +1418,8 @@ This is the programmatic equivalent of `idp-cli publish` — see [Headless Deplo
 - `bucket` (str, optional): S3 bucket used (region-suffixed)
 - `prefix` (str, optional): S3 prefix used
 - `version` (str, optional): Version string from the project's `VERSION` file
+- `terraform_module_url`, `terraform_module_sha256`, `terraform_pointer_url` (str, optional): The Terraform module zip's HTTPS URL, its SHA-256, and the latest-pointer URL (only when `terraform=True`)
+- `terraform_variant_modules` (dict): Variant name (`headless`, `govcloud`) to `{"moduleUrl", "sha256", "pointerUrl", "version"}`, for the variant modules published with `terraform=True`
 - `error` (str, optional): Error message if the build failed
 
 **Raises:**

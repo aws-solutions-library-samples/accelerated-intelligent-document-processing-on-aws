@@ -359,6 +359,19 @@ def _contents(cbd, sweep, with_target):
             "list_policies": [{"Policies": policies}],
         }
 
+    if sweep == "cleanup_stale_terraform_deployments":
+        objects = (
+            [
+                {
+                    "Key": f"{cbd.TERRAFORM_STATE_PREFIX}{DEAD_RUN}/{cbd.TERRAFORM_STATE_KEY}",
+                    "LastModified": old,
+                }
+            ]
+            if with_target
+            else []
+        )
+        return {"list_objects_v2": [{"Contents": objects}]}
+
     if sweep == "cleanup_stale_ci_diagnostics":
         objects = (
             # Keyed by build AND stack, the shape persist_diagnostics_bundle writes.
@@ -411,6 +424,15 @@ _SWEEP_SPECS = {
         "per_item": None,  # delete_apigw_test_vpc returns False; see below
         "quiet_line": "✅ No stale apigw test VPC stacks to reap",
         "age_gate": {"field": "CreationTime", "young_line": "skipping — only"},
+    },
+    "cleanup_stale_terraform_deployments": {
+        "enumerations": ("list_objects_v2",),
+        "per_item": None,  # _reap_terraform_run reports findings; patched below
+        "quiet_line": "✅ No Terraform state left by a dead run",
+        "age_gate": {
+            "field": "LastModified",
+            "young_line": "younger than the age gate",
+        },
     },
     "cleanup_stale_idp_stacks": {
         "enumerations": ("list_stacks",),
@@ -506,7 +528,12 @@ def _install(
         aws.deleted.append(name)
         return (True, "")
 
+    def _reap_terraform_run(name, _bucket, _keys, s3=None):
+        aws.deleted.append(name)
+        return {"findings": [], "timed_out": False}
+
     monkeypatch.setattr(cbd, "delete_apigw_test_vpc", _reap_vpc)
+    monkeypatch.setattr(cbd, "_reap_terraform_run", _reap_terraform_run)
     monkeypatch.setattr(cbd, "_delete_managed_policy", _reap_policy)
     monkeypatch.setattr(cbd, "_delete_iam_role", _reap_role)
     return aws
@@ -1994,6 +2021,11 @@ def _sweeps_that_never_read_the_set():
         "cleanup_stale_ci_diagnostics": (
             "expires evidence bundles in the source bucket after their 30-day "
             "window, which a build writes about a failed run and no stack owns"
+        ),
+        "cleanup_stale_terraform_deployments": (
+            "destroys only deployments whose state a Terraform run wrote under "
+            "terraform-runs/ in the source bucket, and a long-lived stack is a "
+            "CloudFormation stack that writes no such state"
         ),
     }
 

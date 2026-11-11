@@ -98,19 +98,20 @@ payload-robustness corpus covers that goal directly. See
 
 The GitLab pipeline's stages are below. Every gate a merge request runs is in the
 first one; the two deploy stages are **scheduled plus a manual button** (the nightly runs
-the primary suite, a separate weekly schedule the probes), and the
+the primary suite, a second nightly schedule runs it against a Terraform deployment,
+and separate weekly schedules run the probes and the other regions), and the
 advisory `ux_review` stage runs only on a merge request that changes `src/ui/` or
 `CHANGELOG.md`. The advisory `ux_nightly` stage comes last, after `notify`, on the
 nightly schedule or on request.
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
-| **fast_checks** | Seven **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
+| **fast_checks** | Eight **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `terraform_checks` (offline Terraform translation, then `init`/`validate` under each pinned Terraform and OpenTofu), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack**. The deployment-variant probes run here only on the **weekly variant-probe schedule** — see below. | Yes (deploys) | ~1 hour; longer with the probes |
 | **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/`; `ai_ux_test_stories` (advisory first-time-user stories)⁴, only on non-Draft MRs to `develop` that change `CHANGELOG.md` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only; the stories job stops at its precheck in about a minute on most CHANGELOG MRs, and otherwise keeps to the catalogue's deadline inside a 60-minute job |
 | **notify** | `nightly_notification`: on a scheduled pipeline, posts the result to Slack when `integration_tests` did not | No | seconds |
-| **ux_nightly** | `ai_ux_test_stories_nightly` (the nightly story set, in parallel shards), then `ai_ux_test_stories_digest` (merges the shards into the night's digest and, on the schedule, compares it with earlier scheduled nights)⁴; on the scheduled `develop` pipeline (not the weekly variant-probe schedule), on a manual one with `UX_TEST_STORIES_RUN=all`, and as a manual button on a push to `develop` | Yes for the shards (Bedrock, Polly; they read the review stack); the digest needs none | after `notify`, so `nightly_notification` never waits for it; each shard keeps to the catalogue's dollar cap and deadline inside a 60-minute job |
+| **ux_nightly** | `ai_ux_test_stories_nightly` (the nightly story set, in parallel shards), then `ai_ux_test_stories_digest` (merges the shards into the night's digest and, on the schedule, compares it with earlier scheduled nights)⁴; on the scheduled `develop` pipeline (not the weekly variant-probe or region schedules, nor the nightly Terraform schedule), on a manual one with `UX_TEST_STORIES_RUN=all`, and as a manual button on a push to `develop` | Yes for the shards (Bedrock, Polly; they read the review stack); the digest needs none | after `notify`, so `nightly_notification` never waits for it; each shard keeps to the catalogue's dollar cap and deadline inside a 60-minute job |
 
 **The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE
 hosting, Jobs API, tenant isolation) run on their own weekly scheduled pipeline**, not on the nightly,
@@ -260,7 +261,342 @@ subscription, then create the region's schedule carrying `IDP_TEST_REGION`.
 Add the region to both `REGION_RUN_REGIONS` and `CI_INFRA_REGIONS`;
 `test_weekly_region_runs.py` fails if the two disagree.
 
-### Why fast_checks is seven jobs
+### Nightly Terraform run: the primary suite against a Terraform deployment
+
+Every other run deploys the accelerator as a CloudFormation stack. A second nightly
+schedule, while it is active, deploys it with Terraform instead, from the module the
+same build publishes (`idp-cli publish --terraform`), and runs the **primary suite**
+against that deployment unchanged. The schedule carries `IDP_IAC=terraform`, and
+`iac_requested` in `scripts/sdlc/integration_test_deployment.py` honours it only on a
+scheduled pipeline. Any other value on a schedule **fails the job**, and so does
+`IDP_IAC=terraform` combined with `IDP_RUN_PROBES=true` or `IDP_TEST_REGION`, because
+the probes and the region runs deploy through CloudFormation only. The schedule is a
+GitLab project setting like the others, so until somebody creates it with that
+variable, no Terraform run happens.
+
+| Pipeline | `IDP_IAC` | Runs |
+|---|---|---|
+| Nightly, probe run, region runs, buttons | not set (ignored off a schedule) | CloudFormation |
+| Nightly Terraform schedule | `terraform` | primary suite against a Terraform deployment in `us-east-1`; labelled `NIGHTLY TERRAFORM RUN` in the summary, the failure email and both Slack posts; leaves the UX review stack and the nightly story jobs alone |
+| Any schedule, with `IDP_IAC=terraform` set as a **project or group** CI/CD variable | `terraform`, inherited | every schedule becomes a Terraform run, the nightly included. Set the variable on the Terraform schedule only |
+
+It is the same `integration_tests` job, distinguished by the variable, as the probe
+and region runs are, so it holds the same `integration_deploy` resource group.
+`nightly_notification` covers it as it covers every schedule, with one change: its
+fallback post carries the same `NIGHTLY TERRAFORM RUN` label as the job's own post. It
+is not a merge gate and is in neither CI's gate set; there is no GitHub equivalent,
+because integration runs are GitLab-only.
+
+**How it is kept apart from the CloudFormation nightly.** Both are scheduled
+pipelines of `develop` that fire every night, so nothing about cadence, source or
+ref tells them apart, and a schedule's description is not read anywhere. Every rule
+that means "the CloudFormation nightly" therefore excludes `IDP_IAC=terraform`
+explicitly, spelled as `iac_requested` accepts it (any case, surrounding space
+ignored):
+
+- **The nightly story jobs.** `ai_ux_test_stories_nightly` and
+  `ai_ux_test_stories_digest` share one rule list in `.gitlab-ci.yml`, which admits
+  a scheduled `develop` pipeline only after refusing one carrying `IDP_RUN_PROBES`,
+  `IDP_TEST_REGION` or `IDP_IAC=terraform`. Without the last of those the story set
+  would run twice a night against the same review stack, and the digest would
+  compare a night with itself. `scripts/tests/test_ux_test_stories_ci_jobs.py`
+  evaluates those rules for a Terraform schedule, and for one naming
+  CloudFormation explicitly, which still runs them.
+- **The UX review stack.** `ux_nightly_update_requested` in
+  `codebuild_deployment.py` moves `idp-ux-nightly` only on a scheduled `develop` run
+  whose `ci_run_options.json` names neither the probes, a region nor Terraform, so
+  the review stack still moves once a night, on the CloudFormation nightly.
+- **Notifications.** Both Slack posts, the consolidated summary and the failure
+  email's subject carry the `NIGHTLY TERRAFORM RUN` label, and the summary says it
+  is not the CloudFormation nightly result, so a red Terraform night in the shared
+  channel is not read as a product regression of the CloudFormation deploy.
+- **The digest's history.** It lists `develop`'s newest scheduled pipelines
+  (`SCHEDULED_PIPELINES` in `scripts/ux_runner/gitlab_api.py`) and skips any without
+  a digest job, so a Terraform pipeline is never read as a night. ⚠️ It is still
+  counted against that listing's length, though, and with one every night the
+  listing reaches back over fewer CloudFormation nights than before — fewer than
+  the `HISTORY_NIGHTS` the digest is written to compare with. The comparison still
+  works while at least `BASELINE_NIGHTS` are reached; widening the listing is a
+  separate change.
+- **Cleanup.** The startup sweeps reap a run's leftovers once its run prefix has no
+  CloudFormation stack left (`_live_idp_run_prefixes`) and spare `idp-ux-nightly`
+  by name. A Terraform run has CloudFormation stacks of its own — its `-iam`
+  pre-stack and the deployment's label stack — so the same rule covers both kinds
+  of run, and nothing in it depends on which schedule started the sweep. The
+  resource group keeps the two runs from overlapping in any case.
+
+**Scheduling it after the CloudFormation nightly.** Both runs hold
+`resource_group: integration_deploy`, so whichever reaches `integration_tests`
+second waits for the first to release it. Waiting is safe — a queued job's timeout
+does not run — but the order matters: if the Terraform run takes the group first,
+the CloudFormation nightly's deploy, its review-stack update and the story jobs
+that read that stack all start a full Terraform run later. Give the Terraform
+schedule a cron that fires after the CloudFormation nightly is normally done. The
+nightly's own cron is a GitLab project setting and is not recorded in this
+repository; the one recorded start is the 20:03 nightly of 2026-10-14 mentioned in
+`.gitlab-ci.yml`, without a time zone. What is recorded is its shape: the
+`fast_checks` stage costs its slowest job, measured at about a quarter of an hour,
+and the deploy plus primary suite took 62–113 minutes when it ran on every
+pipeline. So the CloudFormation nightly normally releases the group a little over
+two hours after it fires. **Start the Terraform schedule three hours after the
+CloudFormation nightly's cron** — `0 23 * * *` for a nightly at `0 20 * * *`, in the
+same schedule time zone — which covers the slowest recorded deploy with margin and
+still leaves the Terraform run inside the same night. On the nights a weekly
+probe or region schedule also fires, check that its cron does not sit between the
+two, or one of the three queues behind the others. If the nightly's timing has
+drifted from those figures, re-measure from its pipeline history rather than
+trusting this offset.
+
+**What it costs.** Running nightly instead of weekly adds one more full deployment,
+primary-suite run and teardown of the accelerator every night, on top of the
+CloudFormation nightly: the AWS resources of a complete stack for the length of the
+run, the primary suite's Bedrock, Textract and BDA calls, the CodeBuild minutes of
+the build, and the GitLab runner minutes of a second scheduled pipeline, its
+`fast_checks` stage included. The Terraform prototype measured a first `apply` of
+the full stack at about 28 minutes and a `destroy` at about 21
+(`terraform/README.md`); the run's own wall clock and its dollar cost in CI have
+not been measured, so no figure is given here. It also lengthens the night: with
+the two runs serialised on the deploy lock, the account's deploy window is roughly
+twice as long, and a manual button pressed during it queues behind both.
+
+⚠️ **Order: update the `genaiic-sdlc-codepipeline` stack, then turn the Terraform
+schedule on.** The CodeBuild role needs the `AssumePerRunTerraformDeployRole`
+statement in `scripts/sdlc/cfn/codepipeline-s3.yml` to assume the per-run deploy role
+described below. Until the stack is updated to that template, the assume rests on
+the deploy role's trust policy alone, which names the CodeBuild role; whether that is
+enough without the identity-side grant has not been verified against the CI account.
+If it is not, the run stops before `init` (`_wait_until_assumable` gives up) and
+tears down.
+
+What the build (`scripts/sdlc/codebuild_deployment.py`) does differently:
+
+- **The mode reaches the build in `ci_run_options.json`** as `iac`, because CodeBuild
+  sees the zip and not the GitLab job's environment. `IDP_IAC` set in the build's own
+  environment wins over the file, which is how a run started by hand selects it. On a
+  Terraform schedule a failed write of that file fails the GitLab job, because the
+  build reads a missing file as CloudFormation.
+- **Credentials.** The CloudFormation path creates the stack's resources as the
+  per-run CloudFormation service role, which only CloudFormation can assume. The
+  CodeBuild role itself lacks most of what the deployment creates (Cloud Control
+  among it), and those service grants are not added to it, because a merge-request
+  button runs the MR's own code under it. So the run's `-iam` pre-stack gains a
+  sibling role,
+  `<stack>-iam-TFDeployRole`, built by `terraform_deploy_role_template` from the
+  customer service-role template at run time: the service role's own inline policies
+  by value, `cloudcontrol:*`, a Deny on changing itself, and a trust policy admitting
+  only the principal the build runs as. The customer template, and the service role's
+  trust, are unchanged. Both providers assume that role through
+  `idp-cli deploy --terraform --terraform-assume-role-arn`. The CodeBuild role's new
+  `sts:AssumeRole` grant names only `idp-*-TFDeployRole`, but that bounds nothing:
+  the same role already holds `iam:*` on `role/idp-*`, so it could already rewrite
+  such a role's trust and assume it. The grant shortens that existing path to one
+  call; it does not contain it, and removing that `iam:*` grant is outside this
+  change.
+- **What the deploy role can create.** It carries the service role's IAM scoping,
+  so every role the module creates must be named with the managed prefix (`idp`,
+  which the CI stack names begin with) and carry the run's permissions boundary.
+  `scripts/tests/test_terraform_role_names_match_deploy_role.py` translates
+  `template.yaml` offline and holds every generated `aws_iam_role` to those patterns,
+  read off the derived role. That holds for a new deployment, which every CI run is;
+  the module keeps a role's generated name for the role's lifetime, so a deployment
+  first applied with an earlier module keeps the names it was created with.
+- **Terraform and its providers are pinned** by the offline Terraform gate's own
+  installer and lock file (`scripts/terraform_check.py`,
+  `scripts/terraform_binaries.lock.json`): the build installs
+  `TERRAFORM_BINARY_SPEC` when `IDP_TERRAFORM_BIN` (default `terraform`) is not on
+  `PATH`, refuses an archive whose checksum is not the locked one, and writes the
+  gate's provider-override file before `init`. The GitLab job installs nothing,
+  because CodeBuild is where Terraform runs.
+- **Publish** adds `--terraform` and takes the module URL from the output. A
+  Terraform run with no module URL fails at publish rather than deploying the latest
+  *published* module, which is not the code under test.
+- **State is durable.** Before `init`, the build writes the root configuration, an
+  S3 backend (`backend.tf`, encrypted, with S3-native locking (`use_lockfile`), keyed
+  `terraform-runs/<stack>/terraform.tfstate`
+  in the CI source bucket) and the provider pins, and copies them, with a
+  `run.json` naming the module and the role, to that prefix. The teardown removes
+  the prefix once the deployment is destroyed.
+- **Deploy** is `idp-cli deploy --terraform` with the CloudFormation deploy's
+  `--parameters` (the same `PermissionsBoundaryArn` and `MalwareScanning` pairs).
+  There is no transient-race retry: that classifier reads CloudFormation events.
+- **Healthy** means the CloudFormation label stack exists in a `COMPLETE` state with
+  `(Terraform)` in its description, and `terraform output` succeeds.
+- **A time reserve.** Before the steps, the build reads its own CodeBuild timeout and
+  refuses to start them, and tears down, unless what publish and deploy left still
+  holds `TERRAFORM_SUITE_ALLOWANCE_SECONDS` for the suite plus
+  `TERRAFORM_TEARDOWN_RESERVE_SECONDS` for the destroy. Both are estimates, not
+  measurements of a Terraform run.
+- **The steps** run unchanged. They address the deployment by its name, and the SDK's
+  hook answers their CloudFormation resource lookups from the label stack's resource
+  directory; the build installs the same hook in its own process before its first
+  CloudFormation client.
+- **Teardown** is `idp-cli delete --terraform` as the deploy role, then the sweep of
+  what it retains (the resources whose `DeletionPolicy` keeps them, listed from the
+  state *before* the delete, plus the log groups Lambda created under the stack's
+  prefix), run as the deploy role too, then the IAM pre-stack and boundary as usual.
+  The CloudFormation stack-status read and stack events are skipped with a printed
+  note. A failed destroy, an unswept retained resource, and a retained resource of a
+  kind the sweep does not delete are **teardown findings** and fail the run.
+- **A failed deployment is never retained.** `IDP_KEEP_FAILED_STACK` does not apply:
+  the retention markers and their reaper delete CloudFormation stacks, which for a
+  Terraform deployment is only the label.
+- **Failure evidence** is the tail of the Terraform log (`idp-cli-deploy.log` and
+  `idp-cli-delete.log` in the work directory) instead of stack events, and the
+  failure analysis uses a Terraform prompt built from it. The advisory failure agent
+  (`scripts/sdlc/failure_agent.py`) is not Terraform-aware: its CloudFormation reads
+  see only the label stack.
+
+**Dead runs.** `cleanup_stale_terraform_deployments`, a fatal Step 0 sweep run before
+the stack sweep in every build (whatever its mode), destroys a deployment whose state
+prefix is older than the stack sweep's age gate: it downloads the saved root
+configuration and runs the same teardown as the run's deploy role. Every stack of a
+run whose state is still in the bucket afterwards, its label and `-iam` pre-stack
+included, is kept by `cleanup_stale_idp_stacks`, so a failed attempt can be retried
+by the next build; if the state listing itself fails, every Terraform-labelled run is
+kept. A dead run's destroy is bounded by `TERRAFORM_REAP_TIMEOUT_SECONDS`, and each
+failed reap is counted beside its state (`reap-attempts.json`). A failure is fatal
+only while the run is still worth retrying: from the `TERRAFORM_REAP_MAX_ATTEMPTS`-th
+failure on, or on a destroy that times out again after a first attempt, the build
+stops retrying it and reports it, non-fatally, in the summary under "Terraform
+deployments needing a manual destroy", with the prefix and the commands to run. Its
+stacks stay kept. Without that bound, one deployment that cannot be destroyed would
+fail every later build, the CloudFormation nightlies included. A stale label stack with **no** state behind it (a run from before the state
+backend, or a prefix removed by hand) has its resource directory swept before the
+label is deleted: buckets, tables, Lambda functions and state machines are deleted,
+and every other resource it names is reported as a finding.
+
+⚠️ **What is still unprotected.** A run killed after the role exists but before the
+configuration is staged leaves no state and, if `apply` had not yet created the
+label, no resource directory either; the resources `apply` created in that window are
+found only by the name-and-age sweeps (stacks, buckets, IAM roles and policies), and
+the rest stay. A stale label swept from its directory leaves standing every type the
+directory sweep does not delete (queues, log groups, Cognito pools, KMS keys and so
+on), named in the finding but not removed. A dead run's destroy needs its `-iam`
+pre-stack's role, which the stack sweep keeps only while the state prefix exists.
+
+### Weekly Terraform-migration run: genai-idp-terraform onto the built-in module
+
+A weekly schedule carrying `IDP_RUN_TERRAFORM_MIGRATION=true` runs
+`scripts/sdlc/terraform_migration_test.py` (`make stacktest-terraform-migration`)
+**instead of** the primary suite. The driver deploys the separate
+[`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform)
+implementation at the tag and commit it pins, seeds it, migrates it in place onto the
+Terraform module the build just published with every phase of `idp-cli terraform
+migrate-from-genai-idp-terraform`, verifies, and destroys both deployments. What it
+proves is in [docs/testing.md](../../../docs/testing.md) (the live-stack tiers) and in
+tier J of `.claude/skills/release-validation.md`.
+
+| Pipeline | `IDP_RUN_TERRAFORM_MIGRATION` | Runs |
+|---|---|---|
+| Every other pipeline, buttons included | not set, or ignored off a schedule | as before |
+| Weekly Terraform-migration schedule | `true` | the migration driver only: no primary suite, no headless check, no probes; labelled `WEEKLY TERRAFORM MIGRATION RUN` in the summary, the failure email and both Slack posts; leaves the UX review stack and the nightly story jobs alone |
+
+How it is kept apart, the same way as the other schedules:
+
+- **Inactive until created.** Nothing in `.gitlab-ci.yml` turns it on. It runs only
+  once a pipeline schedule on `develop` carrying the variable exists and is active in
+  the GitLab project.
+- **Schedule-only.** `terraform_migration_requested` in
+  `scripts/sdlc/integration_test_deployment.py` honours the variable on a scheduled
+  pipeline only, and refuses it beside `IDP_RUN_PROBES`, `IDP_TEST_REGION` or
+  `IDP_IAC=terraform`, because the run replaces the primary suite. The choice reaches
+  the build as `terraform_migration` in `ci_run_options.json`, and
+  `terraform_migration_mode` in `codebuild_deployment.py` reads it.
+- **Not a merge gate.** It is a scheduled run of `integration_tests`, which is a gate
+  on nothing (footnote ¹ below), and no shared gate names it
+  (`scripts/tests/test_ci_gate_parity.py`'s `SHARED_GATES`). Its job is
+  `integration_tests` itself, so it holds the `integration_deploy` resource group and
+  serialises with the nightly runs.
+- **Labelled.** `label_terraform_migration_run` heads the summary, `failure_subject`
+  names it, and both Slack posts prefix `🔀 WEEKLY TERRAFORM MIGRATION RUN`.
+
+**Credentials.** The run uses the per-run model of a Terraform nightly: the build
+creates the run's `-iam` pre-stack with `create_iam_resources(...,
+terraform_deployer_arn=<the build's role>)`, whose `TFDeployRole` trusts only this
+build, and deletes it afterwards with `cleanup_iam_resources`. The driver and every
+process it starts (upstream's Terraform, the `aws` commands upstream's provisioners
+run, `idp-cli`) use one AWS profile that assumes that role with
+`credential_source = EcsContainer`, so the SDKs refresh it for the whole run; the new
+deployment's providers also receive it as `--terraform-assume-role-arn`. The names
+are derived from the build's stack name (`terraform_migration_names`). The new
+deployment *is* the run's stack name (`idp-MMDD-HHMMSS`), so its pre-stack role
+matches the CodeBuild role's grant on `role/idp-*-TFDeployRole` and the startup
+sweeps recognise its leftovers. The old one is `idpo<MMDDHHMM>`: it starts with the
+`ManagedStackNamePrefix` the role requires, but it cannot also be a run-prefix name,
+because upstream's longest IAM role name is its prefix plus 51 characters and IAM
+allows 64, so the prefix can be at most 13 characters. The driver's own sweep never
+touches the `<new>-iam` pre-stack or its roles; `cleanup_iam_resources` does.
+
+**Upstream's IAM under that role.** The role comes from
+`iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml`, which
+allows IAM writes only on roles whose ARN starts with `role/<ManagedStackNamePrefix>`
+(`idp`) and, for role creation and policy changes, only when the role carries the
+run's permissions boundary (`iam:PermissionsBoundary` equal to
+`CreatedRolePermissionsBoundaryArn`). Upstream meets neither as published: it has no
+permissions-boundary variable and sets a boundary on none of its roles, and it names
+many roles and policies from fixed strings (`ConfigurationResolverRole…`,
+`UploadResolverS3Policy…`) rather than from its `prefix`.
+
+So the driver adds two attributes to every `aws_iam_role` and `aws_iam_policy` the
+example loads, through Terraform override files (`upstream_iam_overrides`, written as
+`zz_idp_ci_iam_override.tf` beside each module's own files; upstream's files are not
+edited): the run's boundary on each role, and the IAM path `/<run>-upstream/`
+(`terraform_migration_upstream_iam_path`) on each role and policy. The path starts
+with the prefix, so `role/<path><name>` falls inside the role's existing grant
+whatever upstream calls the role. **No IAM permission is widened and no role is
+added**: the run uses the same per-run `TFDeployRole` as a Terraform nightly, and its
+boundary condition still confines it to roles carrying this run's boundary, so
+another deployment's roles — the same names without the path, or another run's
+boundary — stay out of reach. `scripts/sdlc/tests/test_weekly_terraform_migration.py`
+holds the derived role's statements to that, and the driver's own tests hold the
+override generation to every role and policy the example loads.
+
+Neither attribute changes what is migrated. Upstream builds no role or policy ARN
+from a name, and the migration adopts no IAM resource: every IAM type is in
+`RECREATE_SAFE_TYPES` in `lib/idp_sdk/idp_sdk/_core/terraform_migrate.py`, so the old
+deployment's roles are destroyed with it and the new deployment creates its own. The
+boundary is the CI's `Allow *` boundary, which changes no role's effective
+permissions. A run without `--upstream-iam-path`, such as one started by hand with
+an administrator's credentials, deploys upstream as published.
+
+**The time limit.** Measured on a live run (the passing one), the driver took 166
+minutes end to end: about 20 to deploy and seed the upstream deployment, 76 waiting on
+DynamoDB (it refuses to turn the agent-jobs table's time-to-live off until about an
+hour after upstream enabled it at creation, and refuses the module's new
+time-to-live setting until about an hour after that), 33 for the adoption apply, and
+27 to destroy both deployments and sweep. With publish and the `-iam` pre-stack in
+front of it, the run needs the CodeBuild project's `TimeoutInMinutes: 240`
+(`scripts/sdlc/cfn/codepipeline-s3.yml`, `TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES`
+in `codebuild_deployment.py`). The value is the project's, so it applies to every
+run; for the others it is a backstop they finish well inside. The pipeline monitor
+watches a migration run longer than any other (`MIGRATION_RUN_MONITOR_*` in
+`integration_test_deployment.py`), and the GitLab job's `4h30m` sits above that.
+
+So that running out of time still leaves nothing behind, the build gives the driver a
+deadline (`terraform_migration_budget`): what is left of the build's own timeout, read
+from CodeBuild, less `TERRAFORM_MIGRATION_RESERVE_SECONDS` (45 minutes, the measured
+teardown plus the `-iam` cleanup). After it the driver starts no forward phase,
+refuses a TTL wait that would run past it, and tears down; the hard stop is five
+minutes short of the limit. Because the deadline is read from the build rather than
+from a constant, changing the project's timeout moves it too.
+
+⚠️ **Order: update the `genaiic-sdlc-codepipeline` stack, then run the schedule.** A
+build whose timeout is below 240 minutes is refused before publish
+(`terraform_migration_timeout_shortfall`), naming the stack to update, rather than
+running into its deadline hours later.
+
+Check the IAM role
+count too: the two deployments hold several hundred roles between them.
+
+**What a dead build leaves.** The driver tears down in a `finally` and within its
+deadline, but a build that dies outright (a lost container) runs no `finally`, and
+its work directory, holding both Terraform states, goes with the container. The next
+run's startup sweeps remove what carries the new deployment's run-prefix name (its
+label stack, buckets, roles and policies) by name and age once no stack of that run
+remains. The old deployment's resources (upstream's names, `idpo…` or none) are
+reached by none of them and stand until removed by hand.
+
+### Why fast_checks is eight jobs
 
 It was one `static_checks` job that ran lint, typecheck and every pytest suite in
 sequence, and it took **45 minutes** — of which 80% was pytest. Two independent
@@ -347,16 +683,16 @@ required-but-never-reported (a renamed job) or reported-but-not-required (a new
 gate).
 
 GitHub can only require job-level contexts — never individual steps — so the
-mapping from gates to contexts is decided by how the jobs are arranged. Ten of
-the twelve shared gates live in `developer-tests.yml` (four jobs) and the other two in
-`security-checks.yml` (two jobs), which is how twelve gates produce
-six requireable contexts.
+mapping from gates to contexts is decided by how the jobs are arranged.
+Eleven of the thirteen shared gates live in `developer-tests.yml` (five jobs) and the other two in
+`security-checks.yml` (two jobs), which is how thirteen gates produce
+seven requireable contexts.
 
-Splitting `developer-tests.yml` into four parallel jobs **improved** this. It used
-to be one job holding ten of the twelve shared gates, which collapsed those ten
+Splitting `developer-tests.yml` into parallel jobs **improved** this. It used
+to be one job holding most of the shared gates, which collapsed them
 into a single requireable context: they shared one red mark, so a required-check
-failure did not say which of them had failed. They are now four contexts, so a red
-mark names the half of the work that broke.
+failure did not say which of them had failed. Each job is now its own context, so a red
+mark names the part of the work that broke.
 
 ⚠️ **One consequence to act on if branch protection is ever enabled:** requiring
 only the lint context is now strictly weaker than requiring the old single job was,
@@ -428,6 +764,8 @@ GitHub's own Merge button runs no code from this tree.
 | **Nightly schedule** | ✅ | — | ✅ auto | ✅ auto¹ | — | — | ✅ auto |
 | **Weekly variant-probe schedule** | ✅ | — | ✅ auto | ✅ auto¹, plus the probes | — | — | — |
 | **Weekly region schedule** (eu-central-1, ca-central-1) | ✅ | — | ✅ auto | ✅ auto¹, in that region | — | — | — |
+| **Nightly Terraform schedule** (`IDP_IAC=terraform`) | ✅ | — | ✅ auto | ✅ auto¹, against a Terraform deployment | — | — | — |
+| **Weekly Terraform-migration schedule** (`IDP_RUN_TERRAFORM_MIGRATION=true`) | ✅ | — | ✅ auto | ✅ auto¹, the migration driver instead of the primary suite | — | — | — |
 
 ¹ ⚠️ **THE DEPLOY IS NO LONGER A MERGE GATE.** This is the central trade in the
 current pipeline shape and it has to be read before a green MR pipeline is relied
@@ -1051,18 +1389,43 @@ and absent from `test_ci_gate_parity.py`'s `SHARED_GATES`. The entry point is
   log on the MR, which is kept when a newer push cancels a job or it times out.
 - **At night.** `ux_nightly` comes after `notify`, so it neither delays
   `nightly_notification` nor feeds it. `ai_ux_test_stories_nightly` runs the nightly
-  set in parallel shards, each with a dollar cap of its own and a time gate that starts
-  a flow only when it can finish. `ai_ux_test_stories_digest` merges the shards
+  set in parallel shards, each with a dollar cap of its own and a time gate that
+  starts a flow only when it can finish. `ai_ux_test_stories_digest` merges the shards
   and writes `digest.md` and `digest.json`. In the scheduled pipeline it also compares
   the night with earlier scheduled nights, read with `GITLAB_REVIEW_TOKEN` by GET
-  requests alone, and with `UX_TEST_STORIES_SLACK_WEBHOOK_URL` set posts a one-line
-  summary to Slack, with a status that begins `🧭 UX STORIES ·`; a manual run
-  compares nothing and says so. It runs no model and
-  no browser. A night is compared only when the review stack's row in
-  `deployment_summary.txt` says it was updated or already up to date and every socket
-  audit was clean. A bad result is a regression once a second attempt confirms it;
-  when that confirming re-run did not fit in a shard's budget or time, the result is
-  still listed, marked unconfirmed in `digest.md` and on Slack.
+  requests alone, and with `UX_TEST_STORIES_SLACK_WEBHOOK_URL` set posts the night to
+  Slack; a manual run compares nothing and says so. It runs no model and no browser. A
+  night is compared only when the review stack's row says it was updated or already up
+  to date and every socket audit was clean. The shards read that row from the
+  integration build's `codebuild_logs.txt`, in the consolidated summary the build
+  prints near the end of its log: within the log's last MiB, under the last such
+  header before the `🤖 Generating deployment summary with Bedrock...` line, so the
+  model's narrative after it is never read. Not from `deployment_summary.txt`, which
+  keeps only the log from that line on whenever `integration_tests` cannot fetch the
+  build's summary from S3. A bad result is a regression once a second attempt confirms
+  it; when that confirming re-run did not fit in a shard's budget or time, the result
+  is still listed, marked unconfirmed in `digest.md` and on Slack.
+- **The Slack post.** It reads like the integration build's own: `status` is the
+  night's outcome from its stories (`✅ 13 of 13 passed`, `❌ 2 regressions` for
+  confirmed regressions only, `⚠️ harness problem` for a harness error or an unclean
+  audit, `⚠️ 11 of 13 passed` when a flow did not pass and none is a confirmed
+  regression, `⏭️ not run`). Once no night has been compared for four nights in a row,
+  tonight included and a night with no readable digest counted as not compared, the
+  tally says so instead of carrying a ✅:
+  `⚠️ 13 of 13 passed, not compared for 4 nights`. A regression or a harness problem
+  still comes first. And `summary` names develop's commit and the review stack's
+  version, then lists every flow under its catalogue title and persona with one icon
+  per outcome: confirmed regressions first, then the other flows that did not pass,
+  each saying why, then the passes, with their steps. A night that could not be
+  compared says why in words on a line of its own, and keeps its ✅ when every story
+  passed and the run of uncompared nights is shorter than four. It closes with what
+  tonight was compared with, the night's hesitations and dead ends, and its spend
+  against the night's cap. The summary is plain text, because the workflow shows
+  Slack's `<url|label>`, `*` and backticks as typed, and stays within 2,000 characters
+  by folding passes into "and N more passed" before any failure is cut. Every value is
+  a closed one, a count, fixed text or a catalogue title reduced to letters, digits
+  and plain punctuation, so nothing in it can mention a channel or carry a link but
+  the job's own `job_url`.
 - **Artifacts.** The MR job keeps `ux-test-stories/`, each nightly shard
   `ux-test-stories/shard-<i>/` and the digest `ux-test-stories-digest/`. Each holds
   `report.html`, the run as one page to open in a browser once downloaded: every
@@ -1106,7 +1469,7 @@ without `GITLAB_REVIEW_TOKEN` still writes the night's digest and compares nothi
 |---|---|---|
 | `UX_TEST_STORIES` | the three jobs' rules | unset or empty runs all three; `mr` only the MR job; `nightly` only the nightly pair; any other value, `off` among them, none. Keep it at environment scope All (`*`): GitLab can leave an environment-scoped variable undefined while it evaluates `rules`, so a scoped `off` can read as unset and stop nothing |
 | `UX_TEST_STORIES_RUN` | the nightly pair's rules | `all`, on a pipeline run by hand for `develop`, runs the nightly pair. At All (`*`) scope, for the same reason |
-| `UX_TEST_STORIES_SLACK_WEBHOOK_URL` | the digest, on the schedule | optional and masked: a Slack Workflow Builder webhook of its own for the night's one-line summary, which is a bearer credential. Set it at environment scope `ux-stories-digest`, which only the digest declares, so no other job receives it, and protect that environment where `develop` is a protected branch. The digest never posts through `SLACK_WEBHOOK_URL`: that variable reaches every job, so a test running the digest in a scheduled pipeline would post through it, and its workflow's message names the integration deploy |
+| `UX_TEST_STORIES_SLACK_WEBHOOK_URL` | the digest, on the schedule | optional and masked: a Slack Workflow Builder webhook of its own for the night's summary, which is a bearer credential. Its workflow declares four Text variables, `status`, `commit`, `job_url` and `summary`, and puts `{{job_url}}` on a line of its own. Set it at environment scope `ux-stories-digest`, which only the digest declares, so no other job receives it, and protect that environment where `develop` is a protected branch. The digest never posts through `SLACK_WEBHOOK_URL`: that variable reaches every job, so a test running the digest in a scheduled pipeline would post through it, and its workflow's message names the integration deploy |
 | `UX_TEST_UI_ENV` | the MR job and the shards | `ai_ux_test`'s, plus a `UX_TEST_WEB_URL=<the stack's ApplicationWebURL>` line, which every run against the deployed UI needs (an MR that changes the docs but not `src/ui`, and every nightly flow), because nothing else in the variable names the web host |
 | `UX_TEST_PERSONAS` | the MR job and the shards | `ai_ux_test`'s, with an entry for each Cognito group the stories sign in as, and one for each persona that names its own `credentials` (the profile-limited Annotator's `Annotator-scoped`); a flow whose entry is missing is not run |
 | `UX_TEST_AWS_ACCOUNT_ID` | the MR job and the shards | `ai_ux_test`'s |
@@ -1117,7 +1480,7 @@ run, in Docker, as a dry run; see
 [docs/testing.md](../../../docs/testing.md#first-time-user-stories).
 
 Notes:
-- **Every push runs fast_checks** (all seven jobs), so lint/typecheck/unit and
+- **Every push runs fast_checks** (all eight jobs), so lint/typecheck/unit and
   security feedback is immediate on any branch — **including doc-only commits**
   (fast_checks has no changes: filter). GitLab emails the committer on failure.
 - The **~1h integration deploy runs on the nightly schedule**, plus a manual play

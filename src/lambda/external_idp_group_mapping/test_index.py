@@ -1332,3 +1332,58 @@ class TestClaimTenantGrant:
         monkeypatch.setenv("TENANT_GRANT_SOURCE", source)
         self.mod.handler(self._event('["IdP-Viewers", "tenant.acme"]'), None)
         assert self._scope() == ["globex_*"]
+
+
+@pytest.mark.unit
+class TestClaimGrantIsBoundToTheAccount:
+    """Two live Cognito accounts with one address, each signing in fresh through
+    the trigger with a different tenant claim. Each must keep its own tenant, as
+    the scope readers compute it."""
+
+    EMAIL = "shared@example.com"
+
+    @pytest.fixture(autouse=True)
+    def _load(self, monkeypatch):
+        from moto import mock_aws
+
+        for key, value in GRANT_ENV.items():
+            monkeypatch.setenv(key, value)
+        with mock_aws():
+            self.users = _grant_tables()
+            self.users.delete_item(Key=USER_ROW_KEY)
+            self.mod = load_standalone_copy(GRANT_ENV)
+            self.mock_cognito = MagicMock()
+            self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
+            self.mock_cognito.admin_list_groups_for_user.return_value = {"Groups": []}
+            self.mod.cognito = self.mock_cognito
+            yield
+
+    def _sign_in(self, sub, claim):
+        event = _make_event(
+            username=f"{IDP_NAME}_{sub}",
+            idp_groups=claim,
+            extra_attrs={"email": self.EMAIL, "sub": sub},
+        )
+        self.mod.handler(event, None)
+
+    def _resolve(self, sub):
+        import boto3
+
+        from idp_common.config_scope import resolve_allowed_config_versions
+
+        return resolve_allowed_config_versions(
+            self.EMAIL,
+            users_table_name=USERS_TABLE,
+            dynamodb=boto3.resource("dynamodb"),
+            caller_sub=sub,
+        )
+
+    @pytest.mark.parametrize("first_signs_in_first", [True, False])
+    def test_each_account_keeps_its_own_tenant(self, first_signs_in_first):
+        first = ("sub-first", '["IdP-Viewers", "tenant.acme"]')
+        second = ("sub-second", '["IdP-Viewers", "tenant.globex"]')
+        order = (first, second) if first_signs_in_first else (second, first)
+        for sub, claim in order:
+            self._sign_in(sub, claim)
+        assert self._resolve("sub-first") == ["acme-*"]
+        assert self._resolve("sub-second") == ["globex_*"]

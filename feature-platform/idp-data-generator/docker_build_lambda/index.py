@@ -1,101 +1,90 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Custom resource Lambda: triggers CodeBuild and waits for completion.
+"""Custom resource Lambda: starts the generator image build and waits for it.
 
-Generator-agnostic — copied verbatim from the host's
-nested/synthesis-runtime/docker_build_lambda. Starts the DockerBuildProject on
-Create/Update and polls until the image build SUCCEEDS (or fails), so the
-AgentCore runtime custom resource only runs once the image is in ECR.
+Starts the DockerBuildProject on Create/Update and reports success once the
+build has SUCCEEDED, so the AgentCore runtime custom resource only runs once the
+image is in ECR.
+
+The wait is spread over polls rather than held inside one invocation (#1824).
+crhelper re-invokes this function from an EventBridge rule every two minutes
+until the build settles, so the build has CloudFormation's full hour for a custom
+resource instead of Lambda's 15 minutes. Waiting inside one invocation is what
+failed an upgrade when CodeBuild was slow to start builds, and then failed its
+rollback the same way.
+
+This is the feature's own handler rather than the host's
+``src/lambda/start_codebuild``: a feature is versioned and published as its own
+artifact, so its code has to live inside the feature directory, where a change
+to it is a change to the feature.
+
+There is no rollback shortcut here, unlike the host's handler. The image is
+tagged ``latest``, and the AgentCore runtime re-pulls ``latest`` on every update,
+rollbacks included, so a rollback that skipped the rebuild would leave the
+runtime on whatever image ``latest`` holds, which can be the newer version's.
 """
 
-import json
 import logging
-import time
-import urllib.request
+from os import getenv
 
 import boto3
+from crhelper import CfnResource  # type: ignore[import-untyped]
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+LOGGER = logging.getLogger(__name__)
 
-codebuild = boto3.client("codebuild")
+HELPER = CfnResource(json_logging=True, log_level=getenv("LOG_LEVEL", "INFO"))
+
+try:
+    CODEBUILD = boto3.client("codebuild")
+except Exception as init_exception:  # pylint: disable=broad-except
+    HELPER.init_failure(init_exception)
+
+#: Kept from the handler this replaces, so a resource already deployed keeps its
+#: physical id and an update is not reported as a replacement.
+DEFAULT_PHYSICAL_ID = "docker-build-run"
+
+
+@HELPER.create
+@HELPER.update
+def start_build(event, _context):
+    """Start the image build; the poller below waits for it."""
+    project_name = event["ResourceProperties"]["ProjectName"]
+    build_id = CODEBUILD.start_build(projectName=project_name)["build"]["id"]
+    LOGGER.info("started build %s of project %s", build_id, project_name)
+    HELPER.Data["build_id"] = build_id
+
+
+@HELPER.poll_create
+@HELPER.poll_update
+def poll_build(event, _context):
+    """Return the physical id once the build succeeds, None to poll again.
+
+    A build that ends in any other state fails the resource, with a reason that
+    names the status and the build so the CodeBuild log can be found.
+    """
+    build_id = event["CrHelperData"]["build_id"]
+    builds = CODEBUILD.batch_get_builds(ids=[build_id])["builds"]
+    if not builds:
+        raise RuntimeError(f"could not find build {build_id}")
+
+    status = builds[0]["buildStatus"]
+    LOGGER.info("build %s status: %s", build_id, status)
+    if status == "SUCCEEDED":
+        return event.get("PhysicalResourceId", DEFAULT_PHYSICAL_ID)
+    if status == "IN_PROGRESS":
+        return None
+    raise RuntimeError(
+        f"CodeBuild failed with status: {status} (build {build_id}). The root "
+        f"cause is in that build's CloudWatch log stream."
+    )
+
+
+@HELPER.delete
+def delete(_event, _context):
+    """Nothing to clean up: the image is removed with the ECR repository."""
 
 
 def handler(event, context):
-    """Handle CloudFormation custom resource events to trigger CodeBuild."""
-    request_type = event["RequestType"]
-    physical_resource_id = event.get("PhysicalResourceId", "docker-build-run")
-
-    try:
-        if request_type == "Delete":
-            send_response(event, context, "SUCCESS", physical_resource_id)
-            return
-
-        project_name = event["ResourceProperties"]["ProjectName"]
-        logger.info("Starting CodeBuild project: %s", project_name)
-
-        build = codebuild.start_build(projectName=project_name)
-        build_id = build["build"]["id"]
-        logger.info("Build started: %s", build_id)
-
-        # Poll for completion (max ~14 minutes to stay within Lambda 15-min limit)
-        max_wait = 840
-        poll_interval = 15
-        elapsed = 0
-
-        while elapsed < max_wait:
-            time.sleep(poll_interval)
-            elapsed += poll_interval
-
-            result = codebuild.batch_get_builds(ids=[build_id])
-            build_status = result["builds"][0]["buildStatus"]
-            logger.info("Build status: %s (elapsed: %ds)", build_status, elapsed)
-
-            if build_status == "SUCCEEDED":
-                send_response(
-                    event,
-                    context,
-                    "SUCCESS",
-                    physical_resource_id,
-                    data={"BuildId": build_id},
-                )
-                return
-            elif build_status in ("FAILED", "FAULT", "TIMED_OUT", "STOPPED"):
-                reason = f"CodeBuild failed with status: {build_status}"
-                logger.error(reason)
-                send_response(
-                    event, context, "FAILED", physical_resource_id, reason=reason
-                )
-                return
-
-        reason = f"Build {build_id} did not complete within {max_wait}s"
-        logger.error(reason)
-        send_response(event, context, "FAILED", physical_resource_id, reason=reason)
-
-    except Exception as e:
-        logger.exception("Error in custom resource handler")
-        send_response(event, context, "FAILED", physical_resource_id, reason=str(e))
-
-
-def send_response(event, context, status, physical_resource_id, data=None, reason=""):
-    """Send response to CloudFormation."""
-    body = json.dumps(
-        {
-            "Status": status,
-            "Reason": reason or f"See CloudWatch Log Stream: {context.log_stream_name}",
-            "PhysicalResourceId": physical_resource_id,
-            "StackId": event["StackId"],
-            "RequestId": event["RequestId"],
-            "LogicalResourceId": event["LogicalResourceId"],
-            "Data": data or {},
-        }
-    ).encode("utf-8")
-
-    req = urllib.request.Request(
-        event["ResponseURL"],
-        data=body,
-        headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
-        method="PUT",
-    )
-    urllib.request.urlopen(req)  # noqa: S310  # nosec B310 - CloudFormation-supplied custom-resource callback URL (https), not user input
+    """Lambda entry point."""
+    HELPER(event, context)
