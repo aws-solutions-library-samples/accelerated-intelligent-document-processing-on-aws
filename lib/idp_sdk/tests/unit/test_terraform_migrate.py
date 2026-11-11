@@ -2452,7 +2452,7 @@ def test_a_recreated_table_named_like_a_kept_bucket_may_be_destroyed():
                         "name": bucket.physical_id,
                         "id": bucket.physical_id,
                         "arn": "arn:aws:dynamodb:us-west-2:123456789012:table/"
-                        + bucket.physical_id,
+                        f"{bucket.physical_id}",
                     },
                 },
             }
