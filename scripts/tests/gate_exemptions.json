@@ -3343,6 +3343,49 @@
       "ratchet": "count-pinned",
       "ratchetEvidence": "src/ui/src/components/common/__tests__/markdown-surfaces.test.ts",
       "reason": "Discovered by name: the file matches the *allowlist*.json glob, and it is one. Each entry is one file and one reason: the SafeMarkdown component (the renderer the check routes everything else through), the file viewer's HTML document view (DOMPurify output in a sandboxed data: iframe), the report print window (writes SafeMarkdown's own rendered output), and the Test Studio print helper (a CSS string literal into a style element it creates). Why JUDGEMENT: whether the HTML a write receives can carry document- or model-derived markup is a reading of the data flow at that site, not a property the check can compute. Each entry pins its expected count of sites, so a new site inside a listed file fails, and an entry whose file holds none fails as stale."
+    },
+    "scripts/sdlc/scan_api_rbac.py::SCOPE_KEYED_ARGUMENT_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "(operation, argument kind) pair",
+      "turnsOff": "S10's requirement that an operation whose arguments name a configuration profile, document or session declare how that object is scoped, for one argument kind of one named operation",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Each member carries its own reason beside it in the constant, one (operation, argument kind) pair per entry: autoDetectSections and uploadDiscoveryDocument name a key or destination in the discovery bucket, the shared Admin/Author workspace whose uploads carry no profile; getSampleDocumentUrl names a bundled sample under samples/, which belongs to no profile; generateDraftLabels and startTestRun select documents inside a named test set, which Admins and Authors are not scoped on by design. In every case the operation's profile argument, where it has one, is declared and checked; only the object kind is exempted. Whether an object carries a scope is a property of the data model rather than of the source the gate reads, so these are judgements.",
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/sdlc/scan_api_rbac.py",
+      "ratchetDetail": "run_checks records every (operation, kind) an entry actually shields and reports each entry that shielded nothing as an S10 FAIL ('shields no finding'), so an entry is stale -- and fails -- as soon as its operation is gone, stops taking that kind of argument, or declares a scope. test_an_exemption_that_shields_nothing_fails in scripts/sdlc/tests/test_scan_api_rbac_scope_keyed_arguments.py pins it; the same file pins that an entry shields only its own pair.",
+      "ratchetGap": "A live entry is not re-judged: if discovery uploads gained a profile stamp, the entry would keep shielding the missing check until someone deleted it."
+    },
+    "scripts/test_api_rbac.py::SCOPED_DISCOVERY_CELLS": {
+      "kind": "enforced-universe",
+      "memberKind": "(operation, arguments) cell the live scope suite drives with the profile-scoped Author",
+      "turnsOff": "nothing. The list is the set of discovery operations the live scope suite ASSERTS refuse an out-of-scope profile; an operation left off it is not exempted from anything, it is simply not probed live, and its scope check is still required statically by S10/S4 and by its unit suite.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Discovered by the prose of its comment, which explains why autoDetectSections is not probed live. Which operations can be probed live without doing real work depends on what each resolver does with its arguments before and after the scope check, which is a reading of code, not a property of a path.",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/sdlc/tests/test_api_rbac_verdicts.py",
+      "ratchetDetail": "test_every_scope_checked_discovery_operation_is_probed_live_or_named derives the scope-checked operations of the discovery resolver from the expectations file and requires each to be a live cell or named in _DISCOVERY_NOT_PROBED_LIVE, so an operation dropped from the list, or a new scope-checked discovery operation, fails until it is accounted for.",
+      "crossReferences": [
+        "scripts/sdlc/tests/test_api_rbac_verdicts.py::_DISCOVERY_NOT_PROBED_LIVE"
+      ]
+    },
+    "scripts/sdlc/tests/test_api_rbac_verdicts.py::_DISCOVERY_NOT_PROBED_LIVE": {
+      "kind": "exemption",
+      "memberKind": "discovery operation name",
+      "turnsOff": "the requirement that a scope-checked discovery operation be driven live by the scope suite (SCOPED_DISCOVERY_CELLS), for one operation",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "One member, autoDetectSections. A live cell can refuse it on the profile only if the resolver reaches the scope check, which needs a non-empty bucket and key: an empty one is refused with 400 before the check in both builds, and a bucket outside the allow-list would be refused by that check instead, so the cell would pass for the wrong reason. The suite does not know the deployment's discovery bucket. Its scope check is covered by discovery_upload_resolver/test_profile_scope.py.",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/sdlc/tests/test_api_rbac_verdicts.py",
+      "ratchetDetail": "The closure test requires the live cells and this set to be disjoint and together to equal the scope-checked discovery operations derived from the expectations file, so a name here that is not such an operation, or that is also probed, fails.",
+      "crossReferences": [
+        "scripts/test_api_rbac.py::SCOPED_DISCOVERY_CELLS"
+      ]
     }
   }
 }

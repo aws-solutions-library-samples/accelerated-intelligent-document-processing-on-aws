@@ -25,6 +25,7 @@ from idp_common.bedrock.client import document_blocks_unsupported_reason
 from idp_common.config import ConfigurationReader
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
+from idp_common.discovery.discovered_text import clean_rule_classes
 from idp_common.utils import extract_json_from_text
 from idp_common.utils.s3util import S3Util
 
@@ -44,6 +45,13 @@ except ImportError as _agentic_import_error:
         "Traditional rule discovery will still work; set discovery.rules.agentic.enabled=False to suppress this message.",
         _agentic_import_error,
     )
+
+
+#: Raised when rules would be saved with no configuration profile named.
+MISSING_VERSION_MESSAGE = (
+    "Rules discovery needs the configuration profile to save into: pass version=. "
+    "There is no fallback to the active profile."
+)
 
 
 def to_policy_class(rule_class: Dict[str, Any], unique_type: str) -> Dict[str, Any]:
@@ -91,6 +99,9 @@ def to_policy_class(rule_class: Dict[str, Any], unique_type: str) -> Dict[str, A
     }
     if rule_class.get("description"):
         reshaped_class["description"] = rule_class["description"]
+    # The persisted shape is cleaned here too, so the local/notebook path that
+    # calls this directly gets the same plain text as the S3 path.
+    clean_rule_classes([reshaped_class])
     return reshaped_class
 
 
@@ -148,10 +159,12 @@ class RulesDiscovery:
     ``_warn_if_no_regex``).
 
     Usage:
-        # With S3
+        # With S3, saving into a named configuration profile (required: there is
+        # no fallback to the active profile)
         discovery = RulesDiscovery(
             input_bucket="my-bucket",
             input_prefix="policies/ncci-policy.pdf",
+            version="my-profile",
         )
         result = discovery.discovery_rules_from_document(
             input_bucket="my-bucket",
@@ -185,8 +198,9 @@ class RulesDiscovery:
             input_prefix: S3 key prefix for the policy document
             region: AWS region (defaults to AWS_REGION env var)
             config: Optional IDPConfig. If not provided, loads from DynamoDB.
-            version: Config version to save extracted rules into. Defaults to
-                the active version if omitted.
+            version: Config version to save extracted rules into. Required
+                whenever the rules are saved (that is, when ``config`` is not
+                given); there is no fallback to the active version.
         """
         self.input_bucket = input_bucket
         self.input_prefix = input_prefix
@@ -243,6 +257,9 @@ class RulesDiscovery:
         logger.info(
             f"Extracting rules from policy document: s3://{input_bucket}/{input_prefix}"
         )
+        # Refuse before the model runs rather than after: the save is what needs it.
+        if self.config_manager and not self.version:
+            raise ValueError(MISSING_VERSION_MESSAGE)
 
         try:
             file_in_bytes = S3Util.get_bytes(bucket=input_bucket, key=input_prefix)
@@ -254,6 +271,10 @@ class RulesDiscovery:
 
             if extracted_rules is None:
                 raise Exception("Failed to extract rules from document")
+
+            # Rule text is saved into the profile, shown in the UI and later read
+            # by rule validation, so it is kept to plain text before either.
+            clean_rule_classes(extracted_rules)
 
             # Override the model-assigned rule type with a filename-derived
             # name so each uploaded document produces a distinguishable policy
@@ -317,6 +338,10 @@ class RulesDiscovery:
 
             if extracted_rules is None:
                 raise Exception("Failed to extract rules from document")
+
+            # Rule text is saved into the profile, shown in the UI and later read
+            # by rule validation, so it is kept to plain text before either.
+            clean_rule_classes(extracted_rules)
 
             # Reshape to the persisted contract. Names are de-duplicated within
             # this batch only; there is no existing config to collide with here.
@@ -887,12 +912,10 @@ class RulesDiscovery:
         """
         version = getattr(self, "version", None)
         if not version:
-            for v in self.config_manager.list_config_versions():
-                if v.get("isActive"):
-                    version = v.get("versionName")
-                    break
-            if not version:
-                version = "default"
+            # No fallback to the active profile: that would write discovered rules
+            # into whichever profile documents are currently processed under, which
+            # is not a profile anyone chose for this run.
+            raise ValueError(MISSING_VERSION_MESSAGE)
 
         existing_item_raw = self.config_manager.get_configuration(
             "Config", version=version

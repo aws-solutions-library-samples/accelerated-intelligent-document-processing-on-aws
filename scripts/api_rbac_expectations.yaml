@@ -60,6 +60,32 @@
 #                  SCOPE_ITEM_PREDICATES in scan_api_rbac.py). scope_enforced_in
 #                  does not change where that search starts: it starts at the
 #                  op's own dispatch.
+#   document_scope_checked: true -> op names a document, key or prefix AND a
+#                  profile, and checks the object against the caller's profile
+#                  scope through the profile the object is recorded or mapped
+#                  under. S10 requires a DOCUMENT_SCOPE_PATTERNS entry point in
+#                  the code the op reaches.
+#   testset_checked: true -> op names a test-set document (objectKey) and confines
+#                  the caller with the test-set scope (allowedTestSets) rather than
+#                  the profile scope. Static scan (S10) requires the code this op
+#                  reaches to call assert_can_access_test_set (or the resolver's
+#                  _assert_set_access wrapper over it).
+#
+#                  S10 is the other direction of S4: an op whose arguments
+#                  (schema.graphql, input types included, plus `args:` below) name
+#                  a configuration profile, a stored object or a session — decided
+#                  by the words of the argument's name (SCOPE_KEYED_WORDS in
+#                  scan_api_rbac.py), not a list of spellings — must declare how
+#                  that object is scoped:
+#                  scope_checked/scope_filtered for a profile; those,
+#                  document_scope_checked, testset_checked or ownership for a
+#                  document; ownership or scope_checked for a
+#                  session. On an op naming both a profile and a document,
+#                  scope_checked answers for the profile only. An op callable only
+#                  by Admin or IAM needs none, since neither carries a profile scope.
+#                  Otherwise the op needs a known_gap, or a per-op entry in
+#                  SCOPE_KEYED_ARGUMENT_EXEMPT (scan_api_rbac.py), registered in
+#                  scripts/tests/gate_exemptions.json.
 #   scope_enforced_in: OPTIONAL function name, for a scope_checked/scope_filtered
 #                  op whose module has no dispatch S4 can find on the op's name.
 #                  S4 reads only the code THIS op can reach — its dispatch branch
@@ -406,6 +432,7 @@ operations:
   reprocessDocument:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py
     args: { objectKeys: ["__nope__"] }
@@ -425,6 +452,7 @@ operations:
   uploadDocument:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/upload_resolver/index.py
     scope_enforced_in: _handle_upload_document
@@ -449,6 +477,7 @@ operations:
   uploadSampleDocument:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/upload_resolver/index.py
     scope_enforced_in: _handle_upload_sample_document
@@ -699,11 +728,14 @@ operations:
   uploadDiscoveryDocument:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
+    scope_enforced_in: handle_upload_discovery_document
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     args: { fileName: "x.pdf", contentType: "application/pdf" }
   autoDetectSections:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     # EMPTY rather than "__nope__", and the difference decides which control the
     # matrix measures. This op now calls s3_targets.assert_bucket_allowed, which
@@ -720,11 +752,14 @@ operations:
   startMultiDocDiscovery:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     args: { configVersion: "__nope__" }
   uploadMultiDocDiscoveryZip:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     args: { fileName: "x.zip", fileSize: 1, configVersion: "__nope__" }
 
@@ -806,11 +841,13 @@ operations:
     # enforces allowedTestSets per set.
     groups: [Admin, Author, Annotator]
     kind: read
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   getAnnotationQueue:
     groups: [Admin, Author, Annotator]
     kind: read
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   assignTestSetDocuments:
@@ -830,6 +867,7 @@ operations:
   skipTestSetDocument:
     groups: [Admin, Author, Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", reason: "Other (see note)" }
     note: >-
@@ -838,6 +876,7 @@ operations:
   claimTestSetDocument:
     groups: [Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__" }
     note: >-
@@ -845,6 +884,7 @@ operations:
   saveTestSetDocumentSection:
     groups: [Admin, Author, Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", sectionId: "1" }
     note: >-
@@ -852,6 +892,7 @@ operations:
   saveTestSetDocumentSectionDraft:
     groups: [Admin, Author, Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", sectionId: "1", data: "{}" }
     note: >-
@@ -898,11 +939,13 @@ operations:
     # resolver additionally enforces allowedTestSets per set.
     groups: [Admin, Author, Annotator]
     kind: read
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   generateDraftLabels:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     # schema: generateDraftLabels(input: GenerateDraftLabelsInput!)
     args: { input: {} }
@@ -932,6 +975,7 @@ operations:
     # history are preserved.
     groups: [Admin, Author, Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__", sections: [] } }
 
@@ -940,6 +984,8 @@ operations:
     # additionally enforces allowedTestSets per set.
     groups: [Admin, Author, Annotator]
     kind: mutation
+    scope_checked: true
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__" } }
   resetTestSetLabels:
@@ -1043,6 +1089,9 @@ operations:
     # regenerates extraction data. Refused while the document is in flight.
     groups: [Admin, Reviewer, Annotator]
     kind: mutation
+    scope_checked: true
+    scope_enforced_in: update_document_sections
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf", sections: [] }
     object_scoped_roles: [Annotator]
@@ -1070,6 +1119,8 @@ operations:
   processChanges:
     groups: [Admin, Reviewer]
     kind: mutation
+    scope_checked: true
+    scope_enforced_in: _assert_caller_may_process
     enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
     args: { objectKey: "__x__", modifiedSections: [] }
   completeSectionReview:
