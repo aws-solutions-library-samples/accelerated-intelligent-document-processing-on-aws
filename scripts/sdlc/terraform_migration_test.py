@@ -154,6 +154,7 @@ PHASES = (
     "migrate-freeze",
     "migrate-fix-config",
     "migrate-adopt-user-pool",
+    "old-ttl-off",
     "migrate-apply-dry-run",
     "migrate-apply",
     "verify",
@@ -1304,6 +1305,47 @@ class Run:
             "--apply",
         )
         return f"{len(out.get('changes') or [])} changes"
+
+    def phase_old_ttl_off(self) -> str:
+        """The guide's hazard for the agent-jobs table: DynamoDB cannot move its
+        time-to-live from ``expiresAfter`` to the module's ``ExpiresAfter`` while it
+        is on, so turn it off and wait for DISABLED before the adoption apply."""
+        plan = json.loads(
+            (
+                self.new_dir / "genai-idp-terraform-migration" / "migration-plan.json"
+            ).read_text()
+        )
+        tables = [
+            r["physical_id"]
+            for r in plan["resources"]
+            if r["kind"] == "agent_table" and r.get("physical_id")
+        ]
+        ddb = self.boto("dynamodb")
+        done = []
+        for table in tables:
+            desc = ddb.describe_time_to_live(TableName=table)["TimeToLiveDescription"]
+            if desc.get("TimeToLiveStatus") == "ENABLED":
+                ddb.update_time_to_live(
+                    TableName=table,
+                    TimeToLiveSpecification={
+                        "Enabled": False,
+                        "AttributeName": desc["AttributeName"],
+                    },
+                )
+            deadline = time.monotonic() + 3900
+            while (
+                ddb.describe_time_to_live(TableName=table)["TimeToLiveDescription"].get(
+                    "TimeToLiveStatus"
+                )
+                != "DISABLED"
+            ):
+                if time.monotonic() > deadline:
+                    raise PhaseFailed(
+                        f"time-to-live on {table} did not turn off in 65 minutes"
+                    )
+                time.sleep(30)
+            done.append(table)
+        return f"time-to-live off on {done or 'no agent-jobs table'}"
 
     def acceptance_args(self) -> List[str]:
         """``--accept-change`` for each change the guide documents as expected, and
