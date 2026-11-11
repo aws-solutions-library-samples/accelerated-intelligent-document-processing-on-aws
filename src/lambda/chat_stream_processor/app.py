@@ -72,7 +72,7 @@ import agent_chat_processor as agent_proc  # type: ignore
 import chat_with_document_processor as doc_proc  # type: ignore
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from id_token import ID_TOKEN_HEADER, InvalidIdToken, verified_identity
+from id_token import IDENTITY_HEADER, InvalidIdToken, verified_identity
 from pydantic import BaseModel, Field, StrictBool
 from sse import (
     CallerIdentityConflict,
@@ -148,7 +148,7 @@ def _caller_identity(request: Request) -> dict:
     error frame in the body.
     """
     try:
-        return verified_identity(request.headers.get(ID_TOKEN_HEADER, ""))
+        return verified_identity(request.headers.get(IDENTITY_HEADER, ""))
     except InvalidIdToken as exc:
         logger.warning("Rejecting streamed chat: %s", exc)
         raise HTTPException(

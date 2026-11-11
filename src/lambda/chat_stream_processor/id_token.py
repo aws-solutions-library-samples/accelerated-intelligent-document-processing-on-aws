@@ -5,7 +5,7 @@
 The Function URL authenticates a request by SigV4 with the Identity Pool role,
 which proves the caller is a signed-in user of this deployment but not which one,
 or in which groups. The browser therefore also sends its User Pool ID token in
-``ID_TOKEN_HEADER``, and this module verifies it: RS256 signature against the
+``IDENTITY_HEADER``, and this module verifies it: RS256 signature against the
 pool's published JWKS, the pool as ``iss``, the web UI's app client as ``aud``,
 ``token_use`` of ``id``, and an unexpired ``exp``.
 
@@ -22,7 +22,7 @@ from collections.abc import Mapping
 import jwt
 from jwt import PyJWKClient
 
-ID_TOKEN_HEADER = "x-idp-id-token"
+IDENTITY_HEADER = "x-idp-id-token"
 
 _REQUIRED_CLAIMS = ["exp", "iat", "iss", "aud", "sub", "token_use"]
 _JWKS_TIMEOUT_SECONDS = 5

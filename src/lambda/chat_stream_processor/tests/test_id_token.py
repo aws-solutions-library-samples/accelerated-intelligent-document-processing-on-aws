@@ -27,6 +27,7 @@ pytestmark = pytest.mark.unit
 ISSUER = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE"
 CLIENT_ID = "exampleclientid"
 SUB = "11111111-2222-3333-4444-555555555555"
+USE_CLAIM = "token_use"
 
 
 class _SigningKey:
@@ -57,7 +58,7 @@ def _claims(**overrides):
         "sub": SUB,
         "iss": ISSUER,
         "aud": CLIENT_ID,
-        "token_use": "id",
+        USE_CLAIM: "id",
         "iat": now,
         "exp": now + 3600,
         "email": "analyst@example.com",
@@ -94,8 +95,8 @@ def test_a_token_from_this_pool_and_client_is_accepted(keys):
         ("another app client", {"aud": "someotherclient"}),
         ("another pool", {"iss": ISSUER.replace("EXAMPLE", "OTHER")}),
         ("expired", {"exp": int(time.time()) - 60}),
-        ("an access token", {"token_use": "access"}),
-        ("no token_use", {"token_use": None}),
+        ("an access token", {USE_CLAIM: "access"}),
+        ("no token_use", {USE_CLAIM: None}),
         ("no sub", {"sub": None}),
     ],
 )
