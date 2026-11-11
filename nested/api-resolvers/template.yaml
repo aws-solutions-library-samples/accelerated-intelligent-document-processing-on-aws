@@ -1618,6 +1618,10 @@ Resources:
         Variables:
           LOG_LEVEL: !Ref LogLevel
           DISCOVERY_BUCKET: !Ref DiscoveryBucketName
+          # Multi-document discovery's source is scope-checked by bucket: Input
+          # bucket prefixes through the configuration prefix mappings. Not named
+          # INPUT_BUCKET, which s3_targets reads into the upload allow-list.
+          SCOPED_SOURCE_INPUT_BUCKET: !Ref InputBucketName
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTableName
           DISCOVERY_QUEUE_URL: !Ref DiscoveryQueueUrl
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName

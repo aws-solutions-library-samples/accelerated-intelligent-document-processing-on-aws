@@ -100,6 +100,77 @@ def _assert_profile_in_scope(event, version, missing_means_active=False):
         )
 
 
+def _assert_source_in_scope(event, bucket, prefix, is_zip_upload):
+    """Refuse a scoped caller a multi-document source outside their scope.
+
+    ``startMultiDocDiscovery`` reads every document under ``s3Bucket``/``s3Prefix``
+    and saves a schema, example values included, into a profile the caller can
+    read, so the documents it reads are held to the caller's scope as well as the
+    profile it saves into. For a caller with a configuration scope:
+
+    * the discovery bucket (including an uploaded zip) is allowed: it is the
+      Admin/Author upload workspace and holds no processed documents;
+    * an Input-bucket prefix is allowed only when a configuration prefix mapping
+      covers the whole prefix (the prefix lies inside a ``prefix``-kind mapping),
+      the mapping's profile is in scope, the mapping lets no document's own
+      metadata pick another profile (``metadataPrecedence`` other than
+      ``metadata``), and no more specific mapping under the prefix names a profile
+      outside scope;
+    * anything else — the Test Set bucket, an unmapped Input prefix, any other
+      bucket — is refused, because nothing maps it to a profile or test set the
+      caller holds. A mapping table that cannot be read refuses too.
+
+    Admins and unscoped callers are not affected.
+    """
+    allowed = _caller_config_scope(event)
+    if allowed is None:
+        return
+    discovery_bucket = os.environ.get("DISCOVERY_BUCKET", "")
+    if is_zip_upload or not bucket or bucket == discovery_bucket:
+        return
+    refusal = ResourceAccessDenied(
+        "Unauthorized: that document source is outside your allowed configuration scope"
+    )
+    input_bucket = os.environ.get("SCOPED_SOURCE_INPUT_BUCKET", "")
+    if not input_bucket or bucket != input_bucket or not prefix:
+        logger.warning("Refusing multi-document discovery: source bucket is not mapped to the caller's scope")
+        raise refusal
+
+    from idp_common.config.prefix_mappings import (
+        MATCH_PREFIX,
+        PRECEDENCE_METADATA,
+        PrefixMappingStore,
+        canonical_key,
+        find_match,
+    )
+
+    try:
+        table = dynamodb.Table(os.environ["CONFIGURATION_TABLE_NAME"])
+        mappings = PrefixMappingStore(table).list()
+    except Exception as e:  # noqa: BLE001 — an unreadable mapping cannot admit
+        logger.error(f"Refusing multi-document discovery: prefix mappings unreadable: {e}")
+        raise refusal from e
+
+    wanted = canonical_key(prefix)
+    governing = find_match(prefix, mappings)
+    if (
+        governing is None
+        or governing["matchKind"] != MATCH_PREFIX
+        or governing["metadataPrecedence"] == PRECEDENCE_METADATA
+        or not scope_allows(allowed, governing["configProfile"])
+    ):
+        logger.warning("Refusing multi-document discovery: the source prefix is not mapped into the caller's scope")
+        raise refusal
+    for entry in mappings:
+        if not entry.get("enabled") or not entry.get("configProfile"):
+            continue
+        if canonical_key(entry["prefix"]).startswith(wanted) and not scope_allows(
+            allowed, entry["configProfile"]
+        ):
+            logger.warning("Refusing multi-document discovery: a mapping under the source prefix is outside the caller's scope")
+            raise refusal
+
+
 def _assert_replace_allowed(version):
     """Refuse ``saveMode: replace`` against the profile documents are processed under.
 
@@ -533,6 +604,8 @@ def handle_start_multi_doc_discovery(event, context):
 
     if not s3_bucket and not zip_file_name:
         raise ValueError("Either s3Bucket/s3Prefix or zipFileName is required")
+
+    _assert_source_in_scope(event, s3_bucket, s3_prefix, bool(zip_file_name))
 
     # Replace mode: clear the version's classes before the Step Functions
     # pipeline runs, so the Save step (which merges each discovered class via

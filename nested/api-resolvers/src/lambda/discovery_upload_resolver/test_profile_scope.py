@@ -393,3 +393,119 @@ class TestReplaceIsRefusedOnTheActiveProfile:
         )
         assert result["configVersion"] == "production"
         clear.assert_not_called()
+
+
+INPUT_BUCKET = "input-bucket"
+
+
+def _mapping(prefix, profile, precedence="mapping", enabled=True):
+    return {
+        "prefix": prefix,
+        "configProfile": profile,
+        "metadataPrecedence": precedence,
+        "enabled": enabled,
+    }
+
+
+class TestMultiDocumentSourceScope:
+    """The documents multi-document discovery READS are held to the caller's scope,
+    not only the profile it saves into."""
+
+    @pytest.fixture
+    def mappings(self, index, monkeypatch):
+        import idp_common.config.prefix_mappings as pm
+
+        monkeypatch.setenv("SCOPED_SOURCE_INPUT_BUCKET", INPUT_BUCKET)
+        monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "config-table")
+        current = {"entries": []}
+
+        class _Store:
+            def __init__(self, table):
+                pass
+
+            def list(self):
+                if isinstance(current["entries"], Exception):
+                    raise current["entries"]
+                return pm.sort_entries(current["entries"])
+
+        monkeypatch.setattr(pm, "PrefixMappingStore", _Store)
+        return current
+
+    def _start(self, index, bucket, prefix, groups=("Author",)):
+        return _call(
+            index,
+            "startMultiDocDiscovery",
+            {"configVersion": "lending-v2", "s3Bucket": bucket, "s3Prefix": prefix},
+            groups,
+        )
+
+    def test_a_prefix_mapped_into_scope_runs(self, index, scoped, mappings):
+        mappings["entries"] = [_mapping("lending/", "lending-v1")]
+        assert self._start(index, INPUT_BUCKET, "lending/2026/")["status"] == "QUEUED"
+
+    @pytest.mark.parametrize(
+        "entries,prefix",
+        [
+            ([], "lending/"),
+            ([_mapping("payroll/", "payroll")], "payroll/"),
+            ([_mapping("lending/", "lending-v1")], "lend"),
+            ([_mapping("lending/", "lending-v1")], ""),
+            ([_mapping("lending/", "lending-v1", precedence="metadata")], "lending/"),
+            (
+                [
+                    _mapping("lending/", "lending-v1"),
+                    _mapping("lending/payroll/", "payroll"),
+                ],
+                "lending/",
+            ),
+            ([_mapping("lending/a.pdf", "lending-v1")], "lending/a.pdf"),
+        ],
+        ids=[
+            "unmapped",
+            "mapped-out-of-scope",
+            "wider-than-mapping",
+            "whole-bucket",
+            "metadata-precedence",
+            "narrower-mapping-out-of-scope",
+            "exact-kind-mapping",
+        ],
+    )
+    def test_an_input_prefix_not_wholly_in_scope_is_refused(
+        self, index, scoped, mappings, entries, prefix
+    ):
+        mappings["entries"] = entries
+        with pytest.raises(index.ResourceAccessDenied):
+            self._start(index, INPUT_BUCKET, prefix)
+        index.sfn_client.start_execution.assert_not_called()
+
+    def test_another_bucket_is_refused(self, index, scoped, mappings):
+        with pytest.raises(index.ResourceAccessDenied):
+            self._start(index, "test-set-bucket", "my-set/input/")
+        index.sfn_client.start_execution.assert_not_called()
+
+    def test_a_mapping_does_not_admit_the_same_prefix_in_another_bucket(
+        self, index, scoped, mappings
+    ):
+        """Mappings route Input-bucket keys only, so they say nothing about the
+        Test Set bucket even when the prefix spells the same."""
+        mappings["entries"] = [_mapping("lending/", "lending-v1")]
+        with pytest.raises(index.ResourceAccessDenied):
+            self._start(index, "test-set-bucket", "lending/")
+
+    def test_unreadable_mappings_refuse(self, index, scoped, mappings):
+        mappings["entries"] = RuntimeError("throttled")
+        with pytest.raises(index.ResourceAccessDenied):
+            self._start(index, INPUT_BUCKET, "lending/")
+
+    def test_the_discovery_bucket_is_allowed(self, index, scoped, mappings):
+        assert self._start(index, DISCOVERY_BUCKET, "mine/")["status"] == "QUEUED"
+
+    def test_an_admin_and_an_unscoped_author_are_unaffected(
+        self, index, mappings, monkeypatch
+    ):
+        monkeypatch.setattr(
+            index, "resolve_allowed_config_versions", mock.MagicMock(return_value=None)
+        )
+        assert self._start(index, "test-set-bucket", "x/")["status"] == "QUEUED"
+        admin = self._start(index, "test-set-bucket", "x/", groups=("Admin",))
+        assert admin["status"] == "QUEUED"
