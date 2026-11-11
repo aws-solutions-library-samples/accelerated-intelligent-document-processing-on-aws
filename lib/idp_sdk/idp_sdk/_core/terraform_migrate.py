@@ -2537,6 +2537,7 @@ def check_adoption_plan(
     findings: List[str] = []
     review: List[str] = []
     by_address = {rc["address"]: rc for rc in plan_json.get("resource_changes", [])}
+    prior = _prior_state_values(plan_json)
     counts = {"import": 0, "add": 0, "change": 0, "destroy": 0}
     for rc in by_address.values():
         actions = rc["change"]["actions"]
@@ -2646,7 +2647,16 @@ def check_adoption_plan(
             continue
         imp = rc["change"].get("importing")
         if not imp:
-            findings.append(f"{r.new_address} is in the plan but not as an import")
+            # A re-run after an apply that failed part way: the import already
+            # happened, so the resource is in state and the plan updates it. That is
+            # fine only when the state holds the very resource adopt.tf names.
+            held = prior.get(r.new_address or "")
+            if held is None:
+                findings.append(f"{r.new_address} is in the plan but not as an import")
+            elif not _holds_import(held, r.import_id or ""):
+                findings.append(
+                    f"{r.new_address} is already in state, but not as {r.import_id!r}"
+                )
         elif imp.get("id") != r.import_id:
             findings.append(
                 f"{r.new_address} imports {imp.get('id')!r}, expected {r.import_id!r}"
@@ -2656,6 +2666,33 @@ def check_adoption_plan(
                 f"{r.new_address} plans {actions}, expected an import in place"
             )
     return counts, findings, review
+
+
+def _prior_state_values(plan_json: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Address -> attribute values of every resource the plan's prior state holds."""
+    out: Dict[str, Dict[str, Any]] = {}
+    stack = [
+        ((plan_json.get("prior_state") or {}).get("values") or {}).get("root_module")
+        or {}
+    ]
+    while stack:
+        mod = stack.pop()
+        for res in mod.get("resources") or []:
+            out[res["address"]] = res.get("values") or {}
+        stack.extend(mod.get("child_modules") or [])
+    return out
+
+
+def _holds_import(values: Dict[str, Any], import_id: str) -> bool:
+    """Whether state values are the resource ``import_id`` names: its ``id`` is the
+    import id, or (for composite ids such as ``<pool>/<user>``) every part of the
+    import id is one of the resource's attribute values."""
+    if not import_id:
+        return False
+    if values.get("id") == import_id:
+        return True
+    strings = {v for v in values.values() if isinstance(v, str)}
+    return all(part in strings for part in import_id.split("/") if part)
 
 
 def _schema_items_change(rc: Dict[str, Any]) -> bool:

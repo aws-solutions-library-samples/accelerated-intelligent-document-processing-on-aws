@@ -1508,6 +1508,41 @@ class TestAdoptionPlanCheck:
             "input_bucket is in the plan but not as an import" in f for f in findings
         )
 
+    @staticmethod
+    def _rerun(plan, pj, state_id):
+        """The plan of a second `apply` after one that failed part way: the
+        imports happened, so each adopted resource is in state and only updated."""
+        resources = []
+        for r in plan.imports:
+            if not r.import_in_adopt_tf:
+                continue
+            change = pj_change = next(
+                rc for rc in pj["resource_changes"] if rc["address"] == r.new_address
+            )
+            del pj_change["change"]["importing"]
+            change["change"]["actions"] = ["update"]
+            resources.append({"address": r.new_address, "values": {"id": state_id(r)}})
+        pj["prior_state"] = {
+            "values": {"root_module": {"child_modules": [{"resources": resources}]}}
+        }
+        return pj
+
+    def test_a_rerun_after_a_partial_apply_accepts_what_is_already_imported(self):
+        """Measured live: an apply that failed part way could not be re-run,
+        because every resource it had imported was refused as "not as an import"."""
+        plan = build()
+        pj = self._rerun(plan, clean_adoption_plan(plan), lambda r: r.import_id)
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
+        assert not [f for f in findings if "import" in f], findings
+
+    def test_a_rerun_holding_another_resource_at_the_address_is_refused(self):
+        plan = build()
+        pj = self._rerun(plan, clean_adoption_plan(plan), lambda r: "something-else")
+        _, findings, _ = tm.check_adoption_plan(pj, plan)
+        assert any(
+            "input_bucket is already in state, but not as" in f for f in findings
+        )
+
     def test_a_wrong_import_id_is_refused(self):
         plan = build()
         pj = clean_adoption_plan(plan)
