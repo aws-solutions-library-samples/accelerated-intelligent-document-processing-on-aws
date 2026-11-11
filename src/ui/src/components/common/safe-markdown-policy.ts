@@ -164,17 +164,27 @@ const REGION = '[a-z]{2}(?:-[a-z]+)+-\\d+';
  * both the commercial and GovCloud partitions.
  */
 const S3_ENDPOINT_HOST = new RegExp(`^s3(?:-fips)?(?:\\.dualstack)?(?:[.-]${REGION})?\\.amazonaws\\.com(?:\\.cn)?$`);
-/** An S3 interface-endpoint host, without the bucket: `vpce-<id>.s3.<region>.vpce.amazonaws.com`. */
-const S3_VPCE_HOST = new RegExp(`^vpce-[a-z0-9-]+\\.s3\\.${REGION}\\.vpce\\.amazonaws\\.com(?:\\.cn)?$`);
+/**
+ * An S3 interface-endpoint host, without the bucket:
+ * `bucket.vpce-<id>.s3.<region>.vpce.amazonaws.com`. The leading `bucket.` label is
+ * literal: it is how the endpoint's DNS name is written, and the presigners that use
+ * the endpoint put the bucket in front of it (virtual-hosted) or in the path.
+ */
+const S3_VPCE_HOST = new RegExp(`^bucket\\.vpce-[a-z0-9-]+\\.s3\\.${REGION}\\.vpce\\.amazonaws\\.com(?:\\.cn)?$`);
 
 /** The bucket an https URL addresses, if it is an S3 URL in either addressing style. */
 export const s3BucketOf = (url: URL): string | null => {
   if (url.protocol !== 'https:') return null;
   const host = url.hostname.toLowerCase();
-  if (S3_ENDPOINT_HOST.test(host)) {
+  if (S3_ENDPOINT_HOST.test(host) || S3_VPCE_HOST.test(host)) {
     // Path style: https://s3.<region>.amazonaws.com/<bucket>/<key>
     const first = url.pathname.split('/')[1];
-    return first ? decodeURIComponent(first) : null;
+    if (!first) return null;
+    try {
+      return decodeURIComponent(first);
+    } catch {
+      return null; // a malformed escape names no bucket
+    }
   }
   // Virtual-hosted style: https://<bucket>.s3.<region>.amazonaws.com/<key>
   // A bucket name may itself contain dots, so try every split point.

@@ -92,7 +92,7 @@ const ownImage = (src: string): boolean => {
   return [OWN_BUCKET, SETTINGS.InputBucket].some(
     (b) =>
       new RegExp(`^${b}\\.s3(?:\\.${label})?\\.amazonaws\\.com$`).test(host) ||
-      new RegExp(`^${b}\\.vpce-${label}\\.s3\\.${label}\\.vpce\\.amazonaws\\.com$`).test(host) ||
+      new RegExp(`^${b}\\.bucket\\.vpce-${label}\\.s3\\.${label}\\.vpce\\.amazonaws\\.com$`).test(host) ||
       (new RegExp(`^s3(?:\\.${label})?\\.amazonaws\\.com$`).test(host) && url.pathname.startsWith(`/${b}/`)),
   );
 };
@@ -186,6 +186,7 @@ const CORPUS: Array<[string, string]> = [
   ['own bucket name on an access point host', `![x](https://${OWN_BUCKET}.s3-accesspoint.us-east-1.amazonaws.com/u.png)`],
   ['own bucket name on an object lambda host', `![x](https://${OWN_BUCKET}.s3-object-lambda.us-east-1.amazonaws.com/v.png)`],
   ['shared public bucket from settings', `![x](https://shared-public-artifacts.s3.us-west-2.amazonaws.com/w.png)`],
+  ['malformed escape in a path-style bucket', `![x](https://s3.amazonaws.com/%E0/x.png)`],
   ['blob of another origin', `<img src="blob:${REMOTE}/2f1e">`],
   ['non-image data URL', `<img src="data:text/html;base64,PGI+">`],
   ['javascript URL image', `<img src="javascript:alert(1)">`],
@@ -238,6 +239,13 @@ describe('SafeMarkdown loads nothing from another origin', () => {
     expect(container.textContent).toContain('After');
   });
 
+  it('still renders the rest of the text when an image URL carries a malformed escape', () => {
+    const container = renderMarkdown(`before ![x](https://s3.amazonaws.com/%E0/x.png) after`);
+    expect(container.textContent).toContain('before');
+    expect(container.textContent).toContain('after');
+    expect(container.querySelector('img')).toBeNull();
+  });
+
   it('allows no S3 image when no deployment settings are available', () => {
     const container = renderMarkdown(`![x](https://${OWN_BUCKET}.s3.us-west-2.amazonaws.com/p.png)`, false);
     expect(container.querySelector('img')).toBeNull();
@@ -252,7 +260,8 @@ describe('SafeMarkdown still renders what the app relies on', () => {
     ['virtual-hosted global', `https://${OWN_BUCKET}.s3.amazonaws.com/pages/1.jpg?X-Amz-Signature=abc`],
     ['GovCloud regional', `https://${OWN_BUCKET}.s3.us-gov-west-1.amazonaws.com/pages/1.jpg?X-Amz-Signature=abc`],
     ['path style', `https://s3.us-east-1.amazonaws.com/${OWN_BUCKET}/pages/1.jpg?X-Amz-Signature=abc`],
-    ['interface endpoint', `https://${OWN_BUCKET}.vpce-0abc123-def.s3.us-west-2.vpce.amazonaws.com/pages/1.jpg`],
+    // The shape botocore presigns with endpoint_url=https://bucket.<vpce DNS name> and virtual addressing.
+    ['interface endpoint', `https://${OWN_BUCKET}.bucket.vpce-0abc123-def.s3.us-west-2.vpce.amazonaws.com/pages/1.jpg`],
     ['input bucket', `https://${SETTINGS.InputBucket}.s3.us-west-2.amazonaws.com/doc.png`],
   ])('a presigned S3 image for this deployment (%s)', (_name, url) => {
     expect(srcOf(`![page](${url})`)).toBe(url);
@@ -366,7 +375,10 @@ describe('safe-markdown-policy', () => {
     ['https://s3.us-west-2.amazonaws.com/b/k', 'b'],
     ['https://s3-us-west-2.amazonaws.com/b/k', 'b'],
     ['https://b.s3.dualstack.us-east-1.amazonaws.com/k', 'b'],
-    ['https://b.vpce-01-ab.s3.us-west-2.vpce.amazonaws.com/k', 'b'],
+    ['https://b.bucket.vpce-01-ab.s3.us-west-2.vpce.amazonaws.com/k', 'b'],
+    ['https://bucket.vpce-01-ab.s3.us-west-2.vpce.amazonaws.com/b/k', 'b'],
+    ['https://b.vpce-01-ab.s3.us-west-2.vpce.amazonaws.com/k', null],
+    ['https://s3.amazonaws.com/%E0/k', null],
     ['https://b.s3.cn-north-1.amazonaws.com.cn/k', 'b'],
     ['https://b.s3-fips.us-gov-west-1.amazonaws.com/k', 'b'],
     ['https://own.s3-other.s3.amazonaws.com/k', 'own.s3-other'],
