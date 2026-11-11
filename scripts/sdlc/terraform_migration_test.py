@@ -626,6 +626,7 @@ class Settings:
     min_role_headroom: int = 400
     document_timeout: int = 2400
     accept_changes: Tuple[str, ...] = ()
+    teardown_only: bool = False
     expected_account: Optional[str] = None
 
 
@@ -1997,6 +1998,14 @@ class Run:
         except Exception:  # noqa: BLE001 - recorded by run_phase; keep tearing down
             pass
 
+    def teardown_only(self) -> int:
+        """Destroy what this work directory's run created and sweep, without any
+        forward phase: for a run whose own teardown did not finish."""
+        self.emergency_teardown()
+        left = self.ctx.get("leftovers")
+        self.write_result(failed=bool(left) or left is None, stopped=False)
+        return 0 if left == [] else 1
+
     def execute(self) -> int:
         self.ctx.update(
             oldName=self.s.old_name,
@@ -2366,6 +2375,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         metavar="ADDRESS:RULE",
         help="also accept this refused change in `apply` (beyond the guide's own)",
     )
+    p.add_argument(
+        "--teardown-only",
+        action="store_true",
+        help="with --resume: only destroy what the run created and sweep",
+    )
     p.add_argument("--keep", action="store_true", help="never tear down")
     p.add_argument(
         "--resume", action="store_true", help="continue from <work-dir>/context.json"
@@ -2401,11 +2415,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         min_role_headroom=a.min_role_headroom,
         expected_account=a.expected_account,
         accept_changes=tuple(a.accept_change),
+        teardown_only=a.teardown_only,
     )
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    return Run(parse_args(argv)).execute()
+    settings = parse_args(argv)
+    run = Run(settings)
+    return run.teardown_only() if settings.teardown_only else run.execute()
 
 
 if __name__ == "__main__":
