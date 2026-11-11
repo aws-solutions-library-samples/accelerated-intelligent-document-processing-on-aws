@@ -3331,7 +3331,7 @@
       "ratchet": "count-pinned",
       "ratchetEvidence": "scripts/tests/test_check_worktree_reach.py",
       "turnsOff": "nothing in a gate. It is ALLOWED_FETCH_HOSTS plus the host of the worktree's own `origin` remote, read with git at run time.",
-      "reason": "The repository's own GitLab host is where its merge requests and pipelines live, and is read from `git remote get-url origin` rather than written down, because it is not a public name and differs per clone. Its only addition beyond the pinned set is that one host and its `ssh.`-less web name, asserted by test_the_repository_s_own_origin_host_is_allowed."
+      "reason": "The repository's own git host is where its merge requests and pipelines live, and is read from `git remote get-url origin` rather than written down, because it is not a public name and differs per clone. The run-time additions to the pinned ALLOWED_FETCH_HOSTS are pinned as well: test_only_the_origin_host_is_added_to_the_pinned_set asserts they are exactly the origin host and its `ssh.`-less web name for each origin spelling, and nothing for an origin that is not a host. An agent that rewrites its own origin remote widens the set; the hook's header lists that among the routes it does not cover."
     }
   }
 }
