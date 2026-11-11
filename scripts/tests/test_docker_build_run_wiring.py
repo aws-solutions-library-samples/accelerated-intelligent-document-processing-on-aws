@@ -1,0 +1,339 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+"""Both container-image build resources are served by the shared, polling handler.
+
+Issue #1824. The unified pattern's ``DockerBuildRun`` and the
+multi-document-discovery stack's ``DockerBuildRun`` run the same job -- start a
+CodeBuild build of the stack's images and answer CloudFormation when they are in
+ECR -- and they used to be served by different handlers. The multi-document one
+waited inside a single 900-second invocation, so a build that queued for longer
+than about 14 minutes failed the stack operation, and its rollback rebuilt the
+previous version from scratch and failed the same way.
+
+Both are now served by ``src/lambda/start_codebuild``, which polls for
+CloudFormation's full hour and lets a rollback reuse images that are still in
+ECR. The behaviour is tested beside that handler; this file pins the template
+half, which no handler test can see:
+
+* each resource's service-token function is built from that handler;
+* each resource names the repository, image version and image set a rollback
+  checks, and the version and set compose to the tags the functions pull;
+* each handler's role can read its own stack's status and describe its
+  repository's images, and no more widely than that.
+
+The templates are read through the repository's CloudFormation-tolerant YAML
+loader, loaded by path for the reasons
+``patterns/unified/tests/test_expected_images_match_the_buildspec.py`` gives.
+"""
+
+from __future__ import annotations
+
+import functools
+import importlib.util
+import json
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_CFN_YAML = _REPO_ROOT / "lib" / "idp_sdk" / "idp_sdk" / "_core" / "cfn_yaml.py"
+_HANDLER_DIR = _REPO_ROOT / "src" / "lambda" / "start_codebuild"
+
+#: The stacks served by the host's shared handler.
+TEMPLATES = {
+    "unified": _REPO_ROOT / "patterns" / "unified" / "template.yaml",
+    "multi-doc-discovery": _REPO_ROOT
+    / "nested"
+    / "multi-doc-discovery"
+    / "template.yaml",
+}
+
+_FEATURE_DIR = _REPO_ROOT / "feature-platform" / "idp-data-generator"
+
+#: Every stack with a DockerBuildRun, including the feature that keeps its own
+#: handler (see the section at the end of this file).
+ALL_TEMPLATES = {**TEMPLATES, "idp-data-generator": _FEATURE_DIR / "template.yaml"}
+
+
+@functools.lru_cache(maxsize=None)
+def _cfn_yaml() -> Any:
+    spec = importlib.util.spec_from_file_location("_cfn_yaml_for_wiring", _CFN_YAML)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@functools.lru_cache(maxsize=None)
+def _resources(name: str) -> dict:
+    text = ALL_TEMPLATES[name].read_text(encoding="utf-8")
+    return (_cfn_yaml().load_cfn_yaml(text) or {})["Resources"]
+
+
+def _build_run(name: str) -> dict:
+    resource = _resources(name)["DockerBuildRun"]
+    assert resource["Type"] in ("Custom::CodeBuildRun", "Custom::DockerBuild")
+    return resource
+
+
+def _service_token_function(name: str) -> tuple[str, dict]:
+    token = _build_run(name)["Properties"]["ServiceToken"]
+    logical_id = token["!GetAtt"].split(".")[0]
+    return logical_id, _resources(name)[logical_id]
+
+
+def _role_statements(name: str) -> list[dict]:
+    _, function = _service_token_function(name)
+    role_id = function["Properties"]["Role"]["!GetAtt"].split(".")[0]
+    role = _resources(name)[role_id]
+    statements = []
+    for policy in role["Properties"]["Policies"]:
+        statements.extend(policy["PolicyDocument"]["Statement"])
+    return statements
+
+
+def _grants(statements: list[dict], action: str) -> list[Any]:
+    found = []
+    for statement in statements:
+        actions = statement.get("Action")
+        actions = [actions] if isinstance(actions, str) else actions or []
+        if statement.get("Effect") == "Allow" and action in actions:
+            found.append(statement["Resource"])
+    return found
+
+
+@pytest.mark.parametrize("name", sorted(TEMPLATES))
+def test_the_build_resource_is_served_by_the_shared_polling_handler(name):
+    _, function = _service_token_function(name)
+    code_uri = function["Properties"]["CodeUri"]
+    resolved = (TEMPLATES[name].parent / code_uri).resolve()
+
+    assert resolved == _HANDLER_DIR.resolve(), (
+        f"{name}: DockerBuildRun's handler is built from {code_uri}, not from "
+        f"src/lambda/start_codebuild, so it does not have that handler's hour-long "
+        f"wait or its rollback image reuse (#1824)"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(TEMPLATES))
+def test_the_build_resource_names_what_a_rollback_checks(name):
+    properties = _build_run(name)["Properties"]
+
+    assert properties["RepositoryName"] == {"!Ref": "ECRRepository"}
+    assert properties["ImageVersion"]
+    assert properties["ExpectedImages"]
+    assert properties["BuildProjectName"] == {"!Ref": "DockerBuildProject"}
+
+
+@pytest.mark.parametrize("name", sorted(TEMPLATES))
+def test_the_handler_can_read_only_its_own_stack_status(name):
+    grants = _grants(_role_statements(name), "cloudformation:DescribeStacks")
+
+    assert grants == [{"!Ref": "AWS::StackId"}]
+
+
+@pytest.mark.parametrize("name", sorted(TEMPLATES))
+def test_the_handler_can_describe_its_repositorys_images(name):
+    grants = _grants(_role_statements(name), "ecr:DescribeImages")
+    resources = [
+        g for grant in grants for g in (grant if isinstance(grant, list) else [grant])
+    ]
+
+    assert {"!GetAtt": "ECRRepository.Arn"} in resources
+
+
+def test_the_multi_doc_handler_can_schedule_its_own_polls():
+    statements = _role_statements("multi-doc-discovery")
+
+    assert _grants(statements, "events:PutRule")
+    assert _grants(statements, "lambda:AddPermission")
+
+
+def test_the_multi_doc_functions_pull_the_tag_the_build_pushes_and_verifies():
+    """One content-addressed tag, spelled three ways, which must agree.
+
+    The buildspec pushes ``$IMAGE_TAG``, the handler verifies
+    ``<ExpectedImages[0]>-<ImageVersion>``, and the functions pull their
+    ``ImageUri``. With a fixed ``latest`` tag a rollback could not tell the
+    previous version's image from the new one, and an upgrade left every
+    function's ``ImageUri`` unchanged.
+    """
+    resources = _resources("multi-doc-discovery")
+    properties = _build_run("multi-doc-discovery")["Properties"]
+    assert properties["ImageVersion"] == {"!Ref": "BuildHash"}
+    verified = f"{properties['ExpectedImages'][0]}-${{BuildHash}}"
+
+    env = {
+        v["Name"]: v["Value"]
+        for v in resources["DockerBuildProject"]["Properties"]["Environment"][
+            "EnvironmentVariables"
+        ]
+    }
+    assert env["IMAGE_TAG"] == {"!Sub": verified}
+    assert env["IMAGE_VERSION"] == {"!Ref": "BuildHash"}
+
+    image_uris = [
+        r["Properties"]["ImageUri"]
+        for r in resources.values()
+        if r.get("Properties", {}).get("PackageType") == "Image"
+    ]
+    assert image_uris, "no container-image function found"
+    assert set(map(str, image_uris)) == {
+        str({"!Sub": "${ECRRepository.RepositoryUri}:" + verified})
+    }
+
+
+# --------------------------------------------------------------------------- #
+# The data generator feature (feature-platform/idp-data-generator)
+#
+# It runs the same build-and-wait job, but as an independent feature stack it
+# keeps its own handler inside its own directory: a feature is versioned and
+# published as its own artifact, so a handler taken from the host's src/ would
+# change the feature's code without a feature version bump. That handler polls
+# through crhelper like the host's. It has no rollback shortcut, because its
+# image is tagged `latest` and the AgentCore runtime re-pulls `latest` on every
+# update, so rebuilding on rollback is what restores the previous image.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_feature_handler_lives_inside_the_feature():
+    _, function = _service_token_function("idp-data-generator")
+    resolved = (_FEATURE_DIR / function["Properties"]["CodeUri"]).resolve()
+
+    assert resolved == (_FEATURE_DIR / "docker_build_lambda").resolve()
+    assert resolved.is_relative_to(_FEATURE_DIR.resolve())
+
+
+def test_the_feature_handler_polls_through_crhelper():
+    _, function = _service_token_function("idp-data-generator")
+    handler_dir = _FEATURE_DIR / function["Properties"]["CodeUri"]
+    requirements = (handler_dir / "requirements.txt").read_text(encoding="utf-8")
+    source = (handler_dir / "index.py").read_text(encoding="utf-8")
+
+    assert any(line.startswith("crhelper") for line in requirements.splitlines())
+    assert "@HELPER.poll_create" in source and "@HELPER.poll_update" in source
+
+
+def test_the_feature_handler_can_schedule_its_own_polls():
+    statements = _role_statements("idp-data-generator")
+
+    assert _grants(statements, "events:PutRule") == [
+        {
+            "!Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}"
+            ":rule/DockerBuildRun*"
+        }
+    ]
+    assert _grants(statements, "lambda:AddPermission")
+
+
+# --------------------------------------------------------------------------- #
+# The multi-doc-discovery buildspec's retry loops, run for real
+#
+# The whole-build retry the removed handler did is replaced by loops inside the
+# inline buildspec. `make validate-buildspec` does not open an inline buildspec,
+# so the loops are extracted from the template and run under bash with stub
+# `docker` and `sleep` commands, which is the only thing that shows the
+# fall-through to `exit 1` and the retry actually happen.
+# --------------------------------------------------------------------------- #
+
+
+def _buildspec_loop(containing: str) -> str:
+    resources = _resources("multi-doc-discovery")
+    spec_text = resources["DockerBuildProject"]["Properties"]["Source"]["BuildSpec"]
+    spec = _cfn_yaml().load_cfn_yaml(spec_text)
+    commands = [
+        command
+        for phase in spec["phases"].values()
+        for command in phase.get("commands", [])
+        if isinstance(command, str) and containing in command
+    ]
+    assert len(commands) == 1, f"expected one loop running {containing!r}"
+    return commands[0]
+
+
+def _run_loop(tmp_path: Path, loop: str, docker_failures: int) -> tuple[int, int]:
+    """Run ``loop`` with a docker that fails its first N calls; return
+    (exit status, docker calls)."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    counter = tmp_path / "calls"
+    counter.write_text("0")
+    (bin_dir / "docker").write_text(
+        "#!/bin/bash\n"
+        f'n=$(( $(cat "{counter}") + 1 )); echo $n > "{counter}"\n'
+        f"[ $n -gt {docker_failures} ]\n"
+    )
+    (bin_dir / "sleep").write_text("#!/bin/bash\nexit 0\n")
+    for stub in bin_dir.iterdir():
+        stub.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", loop],
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "ECR_REPO_URI": "repo",
+            "IMAGE_TAG": "t",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode, int(counter.read_text())
+
+
+@pytest.mark.parametrize(
+    ("step", "attempts"), [("docker build", 2), ("docker push", 3)]
+)
+def test_a_transient_failure_is_retried_and_succeeds(tmp_path, step, attempts):
+    status, calls = _run_loop(tmp_path, _buildspec_loop(step), attempts - 1)
+
+    assert (status, calls) == (0, attempts)
+
+
+@pytest.mark.parametrize(
+    ("step", "attempts"), [("docker build", 2), ("docker push", 3)]
+)
+def test_a_persistent_failure_fails_the_build_after_its_attempts(
+    tmp_path, step, attempts
+):
+    status, calls = _run_loop(tmp_path, _buildspec_loop(step), attempts + 5)
+
+    assert status != 0
+    assert calls == attempts
+
+
+def test_the_unified_repository_keeps_two_complete_versions():
+    """A rollback reuses the previous version only while all its images remain.
+
+    The lifecycle rule expires images beyond a count, so the count has to hold
+    the version being rolled back from and the one being rolled back to.
+    """
+    resources = _resources("unified")
+    images = _build_run("unified")["Properties"]["ExpectedImages"]
+    policy = json.loads(
+        resources["ECRRepository"]["Properties"]["LifecyclePolicy"][
+            "LifecyclePolicyText"
+        ]
+    )
+    kept = [
+        rule["selection"]["countNumber"]
+        for rule in policy["rules"]
+        if rule["selection"].get("countType") == "imageCountMoreThan"
+    ]
+
+    assert kept and min(kept) >= 2 * len(images)
+
+
+def test_the_feature_can_only_grant_eventbridge_invoke():
+    statements = [
+        s
+        for s in _role_statements("idp-data-generator")
+        if "lambda:AddPermission" in (s.get("Action") or [])
+    ]
+
+    assert len(statements) == 1
+    assert statements[0]["Condition"] == {
+        "StringEquals": {"lambda:Principal": {"!Sub": "events.${AWS::URLSuffix}"}}
+    }

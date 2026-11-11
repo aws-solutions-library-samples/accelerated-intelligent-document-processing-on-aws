@@ -580,6 +580,27 @@ Resources:
                 Action:
                   - sts:AssumeRole
                 Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*-failure-agent'
+              # A Terraform integration run (IDP_IAC=terraform) creates its
+              # resources as a per-run role, not as this one: Terraform has no
+              # equivalent of passing CloudFormation a service role, and this role
+              # lacks most of what the deployment creates (Cloud Control among
+              # it). The role is a sibling of the CloudFormation service role in
+              # the run's `-iam` pre-stack, with that role's boundary-scoped
+              # permissions, trusting only this role (terraform_deploy_role_template
+              # in scripts/sdlc/codebuild_deployment.py).
+              #
+              # This contains nothing. This role already holds iam:* on
+              # role/idp-* (LimitedIAMAccess above), so it could already edit any
+              # such role's trust and assume it; MR-button runs execute the MR's
+              # code under it either way. What the grant changes is the path: an
+              # assume of the one role a run needs, instead of an
+              # UpdateAssumeRolePolicy first. Removing that iam:* is the change
+              # that would contain anything, and it is not made here.
+              - Sid: AssumePerRunTerraformDeployRole
+                Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/idp-*-TFDeployRole'
         - PolicyName: CloudWatchLogsAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -866,11 +887,14 @@ Resources:
     Properties:
       Name: app-sdlc
       ServiceRole: !If [CreateCodeBuildRole, !GetAtt CodeBuildRole.Arn, !Ref CodeBuildRoleArn]
-      # 180, not 120: the weekly variant-probe run joins the probes after the
-      # primary suite, and PROBE_JOIN_DEADLINE_SECONDS in codebuild_deployment.py
-      # (150 min) sits 30 minutes below this so its final summary is written. The
-      # nightly finishes well inside either value; this is a backstop, not a budget.
-      TimeoutInMinutes: 180
+      # 240: the weekly Terraform-migration run needs it
+      # (TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES in codebuild_deployment.py, which
+      # refuses a shorter build before publish): two deployments, two one-hour
+      # DynamoDB time-to-live waits and both teardowns. The weekly variant-probe run
+      # needs at least 180, with PROBE_JOIN_DEADLINE_SECONDS (150 min) 30 minutes
+      # below it. Every other run finishes well inside it; for those it is a
+      # backstop, not a budget.
+      TimeoutInMinutes: 240
       VpcConfig:
         !If
           - DeployInVPC

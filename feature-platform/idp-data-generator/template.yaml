@@ -270,6 +270,45 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DockerBuildRunFunctionLogGroup}"
                   - !GetAtt DockerBuildRunFunctionLogGroup.Arn
+        # crhelper waits for the build by re-invoking this function from an
+        # EventBridge rule every two minutes, rather than inside one invocation,
+        # so the build has CloudFormation's full hour instead of Lambda's 15
+        # minutes (#1824). crhelper 2.0.12 (_put_rule) names the rule after the
+        # resource's logical id plus eight random characters, hence
+        # rule/DockerBuildRun*.
+        #
+        # lambda:AddPermission/RemovePermission are on function:* in this
+        # account and Region, as in the host's unified pattern: crhelper adds the
+        # permission to this function itself, and this function has a generated
+        # name. Naming it explicitly would bound the host stack name's length,
+        # since the name is built from it, and referencing the function's ARN
+        # here is a circular reference (the role is an input to the function).
+        # The grant crhelper adds is lambda:InvokeFunction for EventBridge from
+        # that one rule, and the condition below holds AddPermission to it.
+        - PolicyName: CustomResourcePoller
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                Resource: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/DockerBuildRun*"
+              # Granting is limited to EventBridge as the invoking principal,
+              # which is the only grant crhelper makes.
+              - Effect: Allow
+                Action:
+                  - lambda:AddPermission
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+                Condition:
+                  StringEquals:
+                    lambda:Principal: !Sub "events.${AWS::URLSuffix}"
+              - Effect: Allow
+                Action:
+                  - lambda:RemovePermission
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
 
   DockerBuildRunFunction:
     Type: AWS::Serverless::Function
@@ -282,7 +321,9 @@ Resources:
       CodeUri: docker_build_lambda/
       Description: Custom resource handler - triggers CodeBuild for the generator image
       MemorySize: 128
-      Timeout: 900
+      # Each invocation only starts or checks the build; the wait is spread over
+      # polls (see CustomResourcePoller above).
+      Timeout: 60
       Role: !GetAtt DockerBuildRunFunctionRole.Arn
       LoggingConfig:
         LogGroup: !Ref DockerBuildRunFunctionLogGroup

@@ -4,15 +4,15 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.2 |
-| **Last Updated** | 2026-09-17 |
+| **Document Version** | 3.3 |
+| **Last Updated** | 2026-11-09 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
 
 ## 1. Overview
 
 This guide details the security controls implemented in the GenAI IDP Accelerator
-to mitigate the 104 identified threats. Controls are organized by security domain
+to mitigate the 109 identified threats. Controls are organized by security domain
 and mapped to the specific threats they address.
 
 > **A control listed here is a control that exists in the shipped templates and
@@ -225,11 +225,12 @@ bound to it.
 
 ### 4.3 Data Isolation
 
-**Threats mitigated**: AGT.T05, CHAT.T02, AUTH.T06
+**Threats mitigated**: AGT.T05, CHAT.T02, AUTH.T06, TEN.T01–T05
 
 | Mechanism | Implementation |
 |-----------|---------------|
-| **Single-tenant** | One CloudFormation stack per environment |
+| **Single-tenant** | One CloudFormation stack per environment or tenant |
+| **Shared stack (v0.6.14)** | Tenant declarations (prefixes plus a profile pattern) enforced when mappings, tenants and scopes are written; `TenantIsolationMode=Strict` denies unscoped non-Admins, refuses cross-tenant documents at ingest, closes the agent, Knowledge Base, MCP and chat-stream surfaces, and delegates the Input and Output buckets to per-tenant S3 Access Points; `TenantGrantSource` selects who grants tenants. Enforced by the application, not by IAM; Admins are cross-tenant. See [`tenant-isolation.md`](../feature-threats/tenant-isolation.md) |
 | **User-scoped queries** | `ChatSessionsTable` is keyed `PK=userId`; `ChatMessagesTable` is keyed `PK=sessionId` and relies on **explicit resolver ownership checks** (`_verify_session_ownership` / `ownerSub`), not the key alone |
 | **Session isolation** | UUID-based conversation session IDs |
 | **Stack isolation** | Separate Cognito pools, S3 buckets, DynamoDB tables per stack |
@@ -395,6 +396,7 @@ For deployments requiring network-level isolation:
 - [ ] Review Lambda hook security requirements, and make hooks before the review point idempotent if review queues are used — they run in both executions of a reviewed document
 - [ ] Decide `MalwareScanning` (and `AllowUnscannableDocuments`) for any deployment that accepts documents from outside the organisation (PM.T09)
 - [ ] Plan VPC configuration if network isolation is required
+- [ ] For a stack shared by several tenants: declare tenants, run `idp-cli tenancy audit`, restrict `s3:CreateAccessPoint` and `s3:PutAccessPointPolicy` to the access point deployer, then update with `TenantIsolationMode=Strict` and run `idp-cli tenancy verify` (TEN.T01, TEN.T02); choose `TenantGrantSource` and `RefreshTokenValidityHours` together if tenants are granted from outside the stack (TEN.T03)
 
 ### Post-Deployment
 

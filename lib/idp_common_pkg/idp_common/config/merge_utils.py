@@ -24,6 +24,7 @@ from idp_common.bedrock.model_utils import (
     resolve_model_id_from_arn,
 )
 from idp_common.config.retired_models import retirement_of
+from idp_common.prompt_comments import strip_prompt_comments_in_config
 
 # Use importlib.resources for Python 3.9+
 if sys.version_info >= (3, 9):
@@ -713,6 +714,10 @@ def _strip_prompts(data: Any) -> Any:
     if isinstance(data, dict):
         result = {}
         for key, value in data.items():
+            # Deliberately narrower than prompt_comments.is_prompt_key: this
+            # decides which keys a generated template may OMIT to inherit the
+            # default, and only these three have a shipped default to fall back
+            # to. is_prompt_key decides which values comments are stripped from.
             if key in ("system_prompt", "task_prompt", "user_prompt"):
                 # Omit long prompts so the system default applies
                 if not (value and len(str(value)) > 50):
@@ -847,11 +852,15 @@ def validate_config(
     # Enhanced validation checks
     _validate_model_ids(merged, result)
     _validate_max_tokens(merged, result)
-    _validate_task_prompt_placeholders(merged, result)
+    # The prompt checks judge what is sent: prompt comments ({# ... #}) are removed
+    # before a prompt reaches a model, so a placeholder or <<CACHEPOINT>> written
+    # only inside a comment must not count. The stored text is not changed.
+    sent_prompts = strip_prompt_comments_in_config(merged)
+    _validate_task_prompt_placeholders(sent_prompts, result)
     _validate_schema_fields(config.get("classes", []), result)
     _validate_agentic_openai(merged, result)
     _validate_simple_integrated_lists(merged, result)
-    _validate_prompt_cache_prefix(merged, result)
+    _validate_prompt_cache_prefix(sent_prompts, result)
     _validate_discovery_openai(merged, result)
     _validate_multi_doc_discovery_forced_tool(merged, result)
     _validate_pipeline_hook_reachability(merged, result)
