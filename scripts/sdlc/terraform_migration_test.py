@@ -1891,7 +1891,7 @@ class Run:
             set(names.get("bda_projects", [])) | set(self.ctx.get("bdaProjects") or [])
         )
         sweeper = Sweeper(self, names)
-        deleted, errors = sweeper.run()
+        deleted, errors = sweeper.sweep()
         self.ctx["swept"] = deleted
         if errors:
             raise PhaseFailed(
@@ -2076,7 +2076,7 @@ class Sweeper:
     """
 
     def __init__(self, run: Run, recorded: Dict[str, List[str]]):
-        self.run = run
+        self.owner = run
         self.recorded = recorded
         self.old, self.new = run.s.old_name, run.s.new_name
 
@@ -2085,18 +2085,18 @@ class Sweeper:
 
     def _buckets(self) -> List[str]:
         names = {
-            b["Name"] for b in self.run.boto("s3").list_buckets().get("Buckets", [])
+            b["Name"] for b in self.owner.boto("s3").list_buckets().get("Buckets", [])
         }
         return sorted(n for n in names if self.owned(n, "buckets"))
 
     def _tables(self) -> List[str]:
         out = []
-        for page in self.run.boto("dynamodb").get_paginator("list_tables").paginate():
+        for page in self.owner.boto("dynamodb").get_paginator("list_tables").paginate():
             out += [t for t in page["TableNames"] if self.owned(t, "tables")]
         return out
 
     def _log_groups(self) -> List[str]:
-        logs = self.run.boto("logs")
+        logs = self.owner.boto("logs")
         prefixes = {
             f"/aws/lambda/{self.old}-",
             f"/aws/vendedlogs/states/{self.old}-",
@@ -2125,14 +2125,14 @@ class Sweeper:
     def _pools(self) -> List[Tuple[str, str]]:
         return [
             (p["Id"], p["Name"])
-            for p in self.run._user_pools()
+            for p in self.owner._user_pools()
             if p["Id"] in self.recorded.get("user_pools", [])
             or self.owned(p["Name"], "user_pools")
         ]
 
     def _roles(self) -> List[str]:
         out = []
-        for page in self.run.boto("iam").get_paginator("list_roles").paginate():
+        for page in self.owner.boto("iam").get_paginator("list_roles").paginate():
             out += [
                 r["RoleName"]
                 for r in page["Roles"]
@@ -2142,7 +2142,7 @@ class Sweeper:
         return out
 
     def _keys(self) -> List[str]:
-        kms = self.run.boto("kms")
+        kms = self.owner.boto("kms")
         out = []
         for key in self.recorded.get("kms_keys", []):
             try:
@@ -2154,7 +2154,7 @@ class Sweeper:
         return out
 
     def _bda(self) -> List[str]:
-        bda = self.run.boto("bedrock-data-automation")
+        bda = self.owner.boto("bedrock-data-automation")
         out = []
         for arn in self.recorded.get("bda_projects", []):
             try:
@@ -2165,7 +2165,7 @@ class Sweeper:
         return out
 
     def _stacks(self) -> List[str]:
-        cf = self.run.boto("cloudformation")
+        cf = self.owner.boto("cloudformation")
         out = []
         for name in (self.new, f"{self.new}-iam"):
             try:
@@ -2188,7 +2188,7 @@ class Sweeper:
             + [f"bda project {a}" for a in self._bda()]
         )
 
-    def run(self) -> Tuple[List[str], List[str]]:
+    def sweep(self) -> Tuple[List[str], List[str]]:
         deleted: List[str] = []
         errors: List[str] = []
 
@@ -2199,12 +2199,12 @@ class Sweeper:
             except Exception as e:  # noqa: BLE001 - collected and reported
                 errors.append(f"{label}: {e}")
 
-        s3 = self.run.boto("s3")
-        ddb = self.run.boto("dynamodb")
-        logs = self.run.boto("logs")
-        cognito = self.run.boto("cognito-idp")
-        kms = self.run.boto("kms")
-        bda = self.run.boto("bedrock-data-automation")
+        s3 = self.owner.boto("s3")
+        ddb = self.owner.boto("dynamodb")
+        logs = self.owner.boto("logs")
+        cognito = self.owner.boto("cognito-idp")
+        kms = self.owner.boto("kms")
+        bda = self.owner.boto("bedrock-data-automation")
         for name in self._tables():
 
             def drop_table(n=name):
@@ -2247,7 +2247,9 @@ class Sweeper:
                 lambda k=key: kms.schedule_key_deletion(KeyId=k, PendingWindowInDays=7),
             )
         for role in self._roles():
-            attempt(f"role {role}", lambda r=role: delete_role(self.run.boto("iam"), r))
+            attempt(
+                f"role {role}", lambda r=role: delete_role(self.owner.boto("iam"), r)
+            )
         return deleted, errors
 
 

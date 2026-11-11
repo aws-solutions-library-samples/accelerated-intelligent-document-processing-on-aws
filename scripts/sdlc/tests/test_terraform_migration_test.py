@@ -678,3 +678,53 @@ def test_any_other_ttl_error_is_raised(tmp_path, monkeypatch):
     monkeypatch.setattr(tmt.time, "sleep", lambda s: None)
     with pytest.raises(ClientError):
         tmt.Run(_settings(tmp_path))._disable_ttl(FakeDdb(), "t", "expiresAfter")
+
+
+class _Pages:
+    def __init__(self, key, items):
+        self.key, self.items = key, items
+
+    def paginate(self, **kwargs):
+        return [{self.key: self.items}]
+
+
+class _FakeClients:
+    """Just enough of each AWS client for a sweep that finds one owned bucket."""
+
+    def __init__(self):
+        self.deleted = []
+
+    def __call__(self, service):
+        return self
+
+    # s3
+    def list_buckets(self):
+        return {"Buckets": [{"Name": "gitf2-input-x"}, {"Name": "someone-else"}]}
+
+    def get_paginator(self, name):
+        return {
+            "list_tables": _Pages("TableNames", []),
+            "describe_log_groups": _Pages("logGroups", []),
+            "list_user_pools": _Pages("UserPools", []),
+            "list_roles": _Pages("Roles", []),
+            "list_object_versions": _Pages("Versions", []),
+        }[name]
+
+    def describe_log_groups(self, **kwargs):
+        return {"logGroups": []}
+
+    def delete_bucket(self, Bucket):
+        self.deleted.append(Bucket)
+
+    def describe_stacks(self, StackName):
+        raise RuntimeError("no such stack")
+
+
+def test_a_sweep_runs_and_deletes_only_what_the_run_owns(tmp_path, monkeypatch):
+    run = tmt.Run(_settings(tmp_path))
+    fake = _FakeClients()
+    monkeypatch.setattr(run, "boto", fake)
+    deleted, errors = tmt.Sweeper(run, {}).sweep()
+    assert errors == []
+    assert fake.deleted == ["gitf2-input-x"]
+    assert deleted == ["bucket gitf2-input-x"]
