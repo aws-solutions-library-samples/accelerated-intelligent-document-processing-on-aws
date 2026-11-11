@@ -887,11 +887,14 @@ Resources:
     Properties:
       Name: app-sdlc
       ServiceRole: !If [CreateCodeBuildRole, !GetAtt CodeBuildRole.Arn, !Ref CodeBuildRoleArn]
-      # 180, not 120: the weekly variant-probe run joins the probes after the
-      # primary suite, and PROBE_JOIN_DEADLINE_SECONDS in codebuild_deployment.py
-      # (150 min) sits 30 minutes below this so its final summary is written. The
-      # nightly finishes well inside either value; this is a backstop, not a budget.
-      TimeoutInMinutes: 180
+      # 240: the weekly Terraform-migration run needs it
+      # (TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES in codebuild_deployment.py, which
+      # refuses a shorter build before publish): two deployments, two one-hour
+      # DynamoDB time-to-live waits and both teardowns. The weekly variant-probe run
+      # needs at least 180, with PROBE_JOIN_DEADLINE_SECONDS (150 min) 30 minutes
+      # below it. Every other run finishes well inside it; for those it is a
+      # backstop, not a budget.
+      TimeoutInMinutes: 240
       VpcConfig:
         !If
           - DeployInVPC

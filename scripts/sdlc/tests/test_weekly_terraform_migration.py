@@ -135,12 +135,108 @@ def test_a_name_that_is_not_a_run_name_is_refused():
         cbd.terraform_migration_names("my-stack")
 
 
-def test_the_budget_leaves_the_teardown_inside_the_build_limit():
-    deadline, timeout = cbd.terraform_migration_budget(20 * 60)
-    limit = cbd.TERRAFORM_MIGRATION_BUILD_LIMIT_SECONDS
+@pytest.mark.parametrize("limit_minutes", [None, 240, 300])
+def test_the_budget_leaves_the_teardown_inside_the_build_limit(limit_minutes):
+    deadline, timeout = cbd.terraform_migration_budget(20 * 60, limit_minutes)
+    limit = (limit_minutes or cbd.TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES) * 60
     assert deadline + cbd.TERRAFORM_MIGRATION_RESERVE_SECONDS == limit - 20 * 60
     assert deadline < timeout < limit - 20 * 60
-    assert cbd.terraform_migration_budget(limit + 60) == (0, 0)
+    assert cbd.terraform_migration_budget(limit + 60, limit_minutes) == (0, 0)
+
+
+def test_the_deadline_moves_with_the_builds_own_timeout():
+    """The deadline is derived from the limit it is given, so raising the project's
+    timeout moves it without a second edit beside it."""
+    short, _ = cbd.terraform_migration_budget(0, 240)
+    long, _ = cbd.terraform_migration_budget(0, 300)
+    assert long - short == 60 * 60
+
+
+class _FakeCodeBuild:
+    def __init__(self, minutes=None, error=None):
+        self.minutes, self.error = minutes, error
+
+    def batch_get_builds(self, ids):
+        if self.error:
+            raise self.error
+        return {"builds": [{"timeoutInMinutes": self.minutes}]}
+
+
+def test_a_build_too_short_for_a_migration_run_is_refused(monkeypatch):
+    monkeypatch.setenv("CODEBUILD_BUILD_ID", "app-sdlc:abc")
+    minutes = cbd.TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES - 60
+    reason = cbd.terraform_migration_timeout_shortfall(_FakeCodeBuild(minutes))
+    assert reason and f"{minutes} min" in reason and "codepipeline" in reason
+    assert (
+        cbd.terraform_migration_timeout_shortfall(
+            _FakeCodeBuild(cbd.TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES)
+        )
+        is None
+    )
+
+
+def test_an_unreadable_timeout_does_not_refuse_a_migration_run(monkeypatch):
+    monkeypatch.setenv("CODEBUILD_BUILD_ID", "app-sdlc:abc")
+    fake = _FakeCodeBuild(error=RuntimeError("AccessDenied"))
+    assert cbd.terraform_migration_timeout_shortfall(fake) is None
+    monkeypatch.delenv("CODEBUILD_BUILD_ID")
+    assert cbd.terraform_migration_timeout_shortfall(_FakeCodeBuild(1)) is None
+
+
+def test_main_refuses_a_short_build_before_publish():
+    """The shortfall is checked beside the other refusals, which raise before the
+    publish step, not inside run_terraform_migration after it."""
+    source = (REPO_ROOT / "scripts" / "sdlc" / "codebuild_deployment.py").read_text()
+    main = source.split("\ndef main():", 1)[1]
+    check = main.index("terraform_migration_timeout_shortfall()")
+    assert check < main.index("terraform_migration_unsupported_reason()") + 200
+    assert check < main.index("run_terraform_migration(")
+    assert check < main.index("publish_success = True")
+
+
+def test_the_template_timeout_meets_what_a_migration_run_needs():
+    template = REPO_ROOT / "scripts" / "sdlc" / "cfn" / "codepipeline-s3.yml"
+    (minutes,) = re.findall(
+        r"^\s*TimeoutInMinutes:\s*(\d+)\s*$", template.read_text(), re.MULTILINE
+    )
+    assert int(minutes) >= cbd.TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES
+
+
+def test_the_monitor_and_the_job_outlast_the_build(itd, config):
+    """CodeBuild timeout < monitor handoff < monitor max wait < GitLab job timeout,
+    each with an allowance for what runs between their starts."""
+    build = cbd.TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES * 60
+    handoff = itd.MIGRATION_RUN_MONITOR_HANDOFF_SECONDS
+    max_wait = itd.MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS
+    assert handoff - build >= 5 * 60
+    assert max_wait > handoff
+    hours, minutes = re.fullmatch(
+        r"(\d+)h(\d+)m", config["integration_tests"]["timeout"]
+    ).groups()
+    job = (int(hours) * 60 + int(minutes)) * 60
+    assert job - max_wait >= 10 * 60
+
+
+def test_main_watches_the_migration_run_for_longest(itd, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    for name in ("IDP_RUN_PROBES", "IDP_TEST_REGION", "IDP_IAC"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CI_PIPELINE_SOURCE", "schedule")
+    monkeypatch.setenv(VAR, "true")
+    seen: list[dict] = []
+    # write_ci_run_options runs for real, into tmp_path: a migration run refuses
+    # to go on without the file.
+    monkeypatch.setattr(itd, "create_deployment_package", lambda *a, **k: None)
+    monkeypatch.setattr(itd, "upload_to_s3", lambda *a, **k: "v1")
+    monkeypatch.setattr(itd, "monitor_pipeline", lambda *a, **k: seen.append(k) or True)
+    with pytest.raises(SystemExit):
+        itd.main()
+    assert seen == [
+        {
+            "max_wait": itd.MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS,
+            "handoff_after": itd.MIGRATION_RUN_MONITOR_HANDOFF_SECONDS,
+        }
+    ]
 
 
 def test_the_profile_assumes_the_role_from_the_container():
