@@ -15284,6 +15284,12 @@ Resources:
           CONFIGURATION_BUCKET: !Ref ConfigurationBucket
           APPSYNC_API_URL: ""
           BLUEPRINT_OPTIMIZATION_FUNCTION_NAME: !Ref BlueprintOptimizationFunction
+          GUARDRAIL_ID_AND_VERSION:
+            !If [
+              HasGuardrailConfig,
+              !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}",
+              "",
+            ]
       LoggingConfig:
         LogGroup: !Ref DiscoveryProcessorFunctionLogGroup
       Events:
@@ -15369,6 +15375,12 @@ Resources:
               Action:
                 - lambda:InvokeFunction
               Resource: !GetAtt BlueprintOptimizationFunction.Arn
+            - !If
+              - HasGuardrailConfig
+              - Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${BedrockGuardrailId}"
+              - !Ref AWS::NoValue
 
   DiscoveryProcessorFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -15466,6 +15478,8 @@ Resources:
         BedrockHubRoleArn: !Ref BedrockHubRoleArn
         BedrockHubRoleExternalId: !Ref BedrockHubRoleExternalId
         BedrockHubRoleSessionName: !Ref BedrockHubRoleSessionName
+        BedrockGuardrailId: !Ref BedrockGuardrailId
+        BedrockGuardrailVersion: !Ref BedrockGuardrailVersion
         VpcId: !If [DeployInVPC, !Ref VpcId, ""]
         PrivateSubnetIds: !If [DeployInVPC, !Join [",", !Ref PrivateSubnetIds], ""]
         LambdaSecurityGroupId: !If [DeployInVPC, !Ref LambdaSecurityGroupId, ""]

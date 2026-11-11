@@ -1645,6 +1645,12 @@ Resources:
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           MULTI_DOC_DISCOVERY_STATE_MACHINE_ARN: !Ref MultiDocDiscoveryStateMachineArn
           S3_ENDPOINT_URL: !If [HasS3EndpointUrl, !Ref S3EndpointUrl, !Ref AWS::NoValue]
+          GUARDRAIL_ID_AND_VERSION:
+            !If [
+              HasGuardrail,
+              !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}",
+              "",
+            ]
       LoggingConfig:
         LogGroup: !Ref DiscoveryUploadResolverFunctionLogGroup
       Policies:
@@ -1703,6 +1709,12 @@ Resources:
                 - states:StartExecution
               Resource:
                 - !Ref MultiDocDiscoveryStateMachineArn
+            - !If
+              - HasGuardrail
+              - Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${BedrockGuardrailId}"
+              - !Ref AWS::NoValue
   GetAgentChatMessagesFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:

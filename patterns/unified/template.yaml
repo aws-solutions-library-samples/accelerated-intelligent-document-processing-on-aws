@@ -5831,7 +5831,12 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           DOCUMENT_TRACKING_MODE: dynamodb
           WORKING_BUCKET: !Ref WorkingBucket
-          # Guardrails break classification
+          # Guardrails break classification. GUARDRAIL_ID_AND_VERSION is left unset
+          # here on purpose: when the guardrail was introduced, applying it to the
+          # classification call broke classification, and it was disabled for this
+          # function alone. The failure mode was not recorded and has not been
+          # re-measured since. The exclusion is registered, with this reason, as
+          # GUARDRAIL_ENV_EXEMPT in scripts/tests/test_model_call_guardrail.py.
           # GUARDRAIL_ID_AND_VERSION: !If [HasGuardrailConfig, !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}", ""]
           BEDROCK_ASSUME_ROLE_ARN:
             !If [HasBedrockHubRole, !Ref BedrockHubRoleArn, !Ref AWS::NoValue]
