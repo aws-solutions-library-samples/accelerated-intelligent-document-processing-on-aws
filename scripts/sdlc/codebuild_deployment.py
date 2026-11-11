@@ -10608,6 +10608,8 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
         and region_run(env) is None
         and str(options.get("iac") or "").strip().lower() != IAC_TERRAFORM
         and not terraform_run(env)
+        and options.get("terraform_migration") is not True
+        and not terraform_migration_mode(env)
     )
 
 
@@ -11045,8 +11047,11 @@ def label_terraform_run(summary_text: str, environ: dict | None = None) -> str:
 def label_ci_run(summary_text: str, environ: dict | None = None) -> str:
     """The summary with every label that applies: probe run, region run,
     Terraform run."""
-    return label_terraform_run(
-        label_region_run(label_variant_probe_run(summary_text, environ), environ),
+    return label_terraform_migration_run(
+        label_terraform_run(
+            label_region_run(label_variant_probe_run(summary_text, environ), environ),
+            environ,
+        ),
         environ,
     )
 
@@ -11061,6 +11066,9 @@ def failure_subject(stack_name: str, environ: dict | None = None) -> str:
         labels.append(f"{REGION_RUN_LABEL.lower()} · {region}")
     if terraform_run(environ):
         labels.append(TERRAFORM_RUN_LABEL.lower())
+    env = os.environ if environ is None else environ
+    if str(env.get(TERRAFORM_MIGRATION_VARIABLE, "")).strip().lower() == "true":
+        labels.append(TERRAFORM_MIGRATION_RUN_LABEL.lower())
     if not labels:
         return f"IDP CI failure: {stack_name}"
     return f"IDP CI failure ({'; '.join(labels)}): {stack_name}"
@@ -11268,6 +11276,228 @@ def send_failure_notification(subject, summary_text):
         print(f"⚠️ Failed to publish failure notification: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Weekly Terraform-migration run (IDP_RUN_TERRAFORM_MIGRATION=true)
+#
+# Instead of the primary suite, the build runs scripts/sdlc/terraform_migration_test.py:
+# it deploys a pinned awslabs/genai-idp-terraform release, migrates it in place onto
+# the module this build published, verifies, and destroys both. Every AWS call the
+# driver and its subprocesses make (upstream's Terraform and the `aws` commands its
+# provisioners run, `idp-cli`, boto3) goes through one AWS profile that assumes this
+# run's TFDeployRole, created by the same `-iam` pre-stack a Terraform nightly uses,
+# with credential_source=EcsContainer so the SDKs refresh it for the whole run.
+#
+# ⚠️ The upstream deploy cannot succeed under that role as the role stands: the
+# service-role template allows iam:CreateRole only for roles carrying the run's
+# permissions boundary and named with ManagedStackNamePrefix, and upstream puts no
+# boundary on any role and names many of them with fixed prefixes. The run is wired
+# end to end so that it reports that refusal as its finding; see the
+# terraform-migration section of scripts/sdlc/docs/CI_TEST_COVERAGE.md.
+# ---------------------------------------------------------------------------
+
+TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
+#: Heads the summary and marks the failure email on a migration run, so its result
+#: is never read as a nightly's.
+TERRAFORM_MIGRATION_RUN_LABEL = "WEEKLY TERRAFORM MIGRATION RUN"
+#: The CodeBuild project's limit (`TimeoutInMinutes: 180` in
+#: scripts/sdlc/cfn/codepipeline-s3.yml). The driver gets what is left of it, less
+#: TERRAFORM_MIGRATION_RESERVE_SECONDS, as a deadline after which it starts no
+#: forward phase and tears down, so a build that runs out of time still leaves
+#: nothing behind. Measured, a full run took 166 minutes (76 waiting on DynamoDB's
+#: time-to-live intervals), so within 180 minutes with publish in front it reaches
+#: that deadline; see CI_TEST_COVERAGE.md.
+TERRAFORM_MIGRATION_BUILD_LIMIT_SECONDS = 180 * 60
+#: What the driver's failure teardown needs (measured: 18 for the new deployment's
+#: delete and 8 for the old one's, plus the sweep), and the `-iam` cleanup after it.
+TERRAFORM_MIGRATION_RESERVE_SECONDS = 45 * 60
+TERRAFORM_MIGRATION_PROFILE = "idp-terraform-migration"
+
+
+def terraform_migration_mode(
+    environ: dict | None = None, options: dict | None = None
+) -> bool:
+    """Whether this build runs the migration test: IDP_RUN_TERRAFORM_MIGRATION in
+    the environment (a run started by hand), else the schedule's choice in
+    ci_run_options.json. main() writes the answer back to the environment."""
+    env = os.environ if environ is None else environ
+    value = str(env.get(TERRAFORM_MIGRATION_VARIABLE, "")).strip().lower()
+    if not value and isinstance(options, dict):
+        value = "true" if options.get("terraform_migration") is True else ""
+    return value == "true"
+
+
+def terraform_migration_unsupported_reason(environ: dict | None = None) -> str | None:
+    """Why this build cannot be a migration run, or None. The run replaces the
+    primary suite, so it combines with nothing that changes the primary suite."""
+    env = os.environ if environ is None else environ
+    if terraform_run(env):
+        return (
+            f"{TERRAFORM_MIGRATION_VARIABLE}=true cannot be combined with "
+            f"{IAC_VARIABLE}=terraform: the migration run replaces the primary suite"
+        )
+    if variant_probe_run(env):
+        return (
+            f"{TERRAFORM_MIGRATION_VARIABLE}=true cannot be combined with "
+            "IDP_RUN_PROBES=true; give each its own schedule"
+        )
+    region = region_run(env)
+    if region is not None:
+        return (
+            f"{TERRAFORM_MIGRATION_VARIABLE}=true runs in {PRIMARY_CI_REGION} only; "
+            f"this build is in {region}"
+        )
+    return None
+
+
+def label_terraform_migration_run(
+    summary_text: str, environ: dict | None = None
+) -> str:
+    env = os.environ if environ is None else environ
+    if str(env.get(TERRAFORM_MIGRATION_VARIABLE, "")).strip().lower() != "true":
+        return summary_text
+    return (
+        f"🔀 {TERRAFORM_MIGRATION_RUN_LABEL} — a genai-idp-terraform deployment was "
+        "migrated in place onto this build's Terraform module. This is not the "
+        "nightly result.\n\n" + summary_text
+    )
+
+
+def terraform_migration_names(stack_name: str) -> tuple[str, str]:
+    """(old, new) deployment names for a run, from its ``idp-MMDD-HHMMSS`` name.
+
+    The new deployment is the run's own stack name, so it matches
+    _IDP_RUN_PREFIX_RE and the startup sweeps reap what a dead build left of it.
+    The old one cannot: upstream builds IAM role names from its prefix, the
+    longest is the prefix plus 51 characters (measured), and IAM caps role names
+    at 64, so the prefix can be at most 13 characters, while a run-prefix name is
+    15. It is ``idpo`` plus the run's MMDDHHMM (12 characters): it starts with
+    MANAGED_STACK_NAME_PREFIX, which the deploy role requires, and neither name
+    contains the other, which the driver's sweep requires. What a dead build left
+    of the old deployment is therefore reached by no startup sweep; see
+    CI_TEST_COVERAGE.md.
+    """
+    match = _IDP_RUN_PREFIX_RE.match(stack_name)
+    if not match:
+        raise ValueError(f"{stack_name!r} is not an idp-MMDD-HHMMSS run name")
+    run = match.group(1)
+    digits = run[4:8] + run[9:13]
+    return f"{MANAGED_STACK_NAME_PREFIX}o{digits}", run
+
+
+def render_migration_aws_config(role_arn: str, region: str) -> str:
+    """An AWS config file whose one profile assumes ``role_arn`` from the
+    container's credentials, refreshed by every SDK and the CLI as they expire."""
+    return (
+        f"[profile {TERRAFORM_MIGRATION_PROFILE}]\n"
+        f"role_arn = {role_arn}\n"
+        "credential_source = EcsContainer\n"
+        "role_session_name = idp-terraform-migration\n"
+        f"region = {region}\n"
+    )
+
+
+def terraform_migration_driver_command(
+    old_name, new_name, module_url, role_arn, terraform_bin, work_dir, region, account
+):
+    return [
+        sys.executable,
+        "scripts/sdlc/terraform_migration_test.py",
+        "--old-name",
+        old_name,
+        "--new-name",
+        new_name,
+        "--region",
+        region,
+        "--work-dir",
+        work_dir,
+        "--terraform-bin",
+        terraform_bin,
+        "--terraform-module-url",
+        module_url,
+        "--terraform-assume-role-arn",
+        role_arn,
+        "--expected-account",
+        account,
+    ]
+
+
+def terraform_migration_budget(elapsed_seconds: float) -> tuple[int, int]:
+    """(driver deadline, driver timeout) in seconds, given how long the build has
+    already run. The deadline leaves TERRAFORM_MIGRATION_RESERVE_SECONDS of the
+    build's limit for the driver's teardown and the `-iam` cleanup; the timeout is
+    the hard stop, five minutes short of the limit."""
+    left = TERRAFORM_MIGRATION_BUILD_LIMIT_SECONDS - int(elapsed_seconds)
+    return max(left - TERRAFORM_MIGRATION_RESERVE_SECONDS, 0), max(left - 300, 0)
+
+
+def run_terraform_migration(stack_name, module_url, terraform_bin, started=None):
+    """Run the migration driver under this run's TFDeployRole. Returns
+    ``(success, summary_text)``; never raises. ``started`` is the build's
+    ``time.monotonic()`` at start, for the time budget."""
+    old_name, new_name = terraform_migration_names(stack_name)
+    region = ci_region()
+    work_dir = terraform_work_directory(f"migration-{new_name}")
+    os.makedirs(work_dir, exist_ok=True)
+    summary = ""
+    success = False
+    try:
+        role_arn, _boundary = create_iam_resources(
+            new_name, terraform_deployer_arn=_caller_principal_arn()
+        )
+        if not role_arn or not _wait_until_assumable(role_arn):
+            return False, f"❌ the run's TFDeployRole for {new_name} was not usable"
+        config_path = os.path.join(work_dir, "aws-config")
+        with open(config_path, "w") as f:
+            f.write(render_migration_aws_config(role_arn, region))
+        env = dict(os.environ)
+        for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+            env.pop(name, None)
+        env.update(
+            AWS_CONFIG_FILE=config_path,
+            AWS_PROFILE=TERRAFORM_MIGRATION_PROFILE,
+            AWS_SDK_LOAD_CONFIG="1",
+        )
+        account = boto3.client("sts").get_caller_identity()["Account"]
+        cmd = terraform_migration_driver_command(
+            old_name,
+            new_name,
+            module_url,
+            role_arn,
+            terraform_bin,
+            work_dir,
+            region,
+            account,
+        )
+        deadline, timeout = terraform_migration_budget(
+            time.monotonic() - started if started is not None else 0
+        )
+        cmd += ["--deadline-seconds", str(deadline)]
+        print(
+            f"🔀 Terraform migration run: {old_name} -> {new_name} "
+            f"(deadline {deadline // 60} min, hard stop {timeout // 60} min)"
+        )
+        try:
+            proc = subprocess.run(cmd, env=env, timeout=timeout, check=False)
+            success = proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            summary = (
+                f"❌ the migration driver ran past {timeout // 60} minutes and was "
+                "stopped; its teardown may not have finished\n\n"
+            )
+        summary_path = os.path.join(work_dir, "summary.txt")
+        if os.path.isfile(summary_path):
+            with open(summary_path) as f:
+                summary += f.read()
+        else:
+            summary += "❌ the migration driver wrote no summary"
+    except Exception as e:  # noqa: BLE001 - reported as the run's result
+        summary += f"❌ the migration run failed before the driver finished: {e}"
+    finally:
+        for finding in cleanup_iam_resources(new_name):
+            summary += f"\n⚠️ IAM cleanup: {finding}"
+    return success, summary
+
+
 def main():
     """Main execution function"""
     # Before anything else prints: everything after this line is also written to
@@ -11310,9 +11540,18 @@ def main():
     # before a sweep or a deploy.
     run_options = read_ci_run_options()
     terraform = None
+    migration = False
     try:
         iac = iac_mode(options=run_options)
         os.environ[IAC_VARIABLE] = iac
+        migration = terraform_migration_mode(options=run_options)
+        os.environ[TERRAFORM_MIGRATION_VARIABLE] = "true" if migration else ""
+        if migration:
+            refusal = terraform_migration_unsupported_reason()
+            if refusal:
+                raise ValueError(refusal)
+            print("🔀 Weekly Terraform-migration run: the primary suite does not run")
+            terraform_bin = ensure_terraform_binary()
         if iac == IAC_TERRAFORM:
             refusal = terraform_unsupported_reason()
             if refusal:
@@ -11407,7 +11646,7 @@ def main():
 
     # Step 1: Publish templates to S3
     try:
-        artifacts = publish_artifacts(iac)
+        artifacts = publish_artifacts(IAC_TERRAFORM if migration else iac)
         template_url = artifacts["template_url"]
         print(f"Publish script ran successfully template url {template_url}")
         if iac == IAC_TERRAFORM:
@@ -11422,6 +11661,31 @@ def main():
         print(f"❌ Publish failed: {e}")
         failure_reason = f"publish/build failed: {e}"
         ai_summary = generate_publish_failure_summary(str(e))
+
+    # A weekly Terraform-migration run ends here: the driver replaces the primary
+    # suite, the headless check and the probes, and its own summary is the result.
+    if migration:
+        if publish_success:
+            ok, migration_summary = run_terraform_migration(
+                stack_name,
+                artifacts["terraform_module_url"],
+                terraform_bin,
+                started=main_started,
+            )
+        else:
+            ok, migration_summary = False, f"❌ publish failed: {failure_reason}"
+        text = label_ci_run(
+            ("✅ PASSED\n\n" if ok else "❌ FAILED\n\n") + migration_summary
+        )
+        print(text)
+        publish_summary_to_s3(text)
+        if not ok:
+            send_failure_notification(
+                failure_subject(stack_name), f"Stack: {stack_name}\n\n{text}"
+            )
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0 if ok else 1)
 
     # Step 1a: Validate the --headless template variant against real
     # CloudFormation, reusing the packaged template publish just built. Failure

@@ -170,6 +170,11 @@ class SpecMapper:
     #: CloudFormation property paths the provider replaces the resource for,
     #: beyond the registry's createOnlyProperties (see idp_tf.create_only).
     force_new: tuple[str, ...] = ()
+    #: Provider arguments emitted with ``ignore_changes``, and why. Only for an
+    #: argument the service cannot change after creation, where a difference
+    #: could only ever replace the resource and lose what it holds.
+    ignore_changes: tuple[str, ...] = ()
+    ignore_reason: str = ""
 
     def getatt(self, attr: str) -> Any:
         if attr not in self.attrs:
@@ -187,6 +192,14 @@ class SpecMapper:
             if cfn_prop not in props:
                 lines.insert(0, f"{tf_attr} = {default_name(plan.logical_id, limit)}")
         head, tail = tr.meta_lines(plan, res)
+        if self.ignore_changes:
+            tail = tail + [
+                f"# {self.ignore_reason}",
+                hcl.block(
+                    "lifecycle",
+                    [f"ignore_changes = [{', '.join(self.ignore_changes)}]"],
+                ).rstrip(),
+            ]
         out = hcl.block(f'resource "{self.tf_type}" "{plan.name}"', head + lines + tail)
         return out
 
@@ -1012,6 +1025,16 @@ COGNITO_USER_POOL = SpecMapper(
     # The registry marks none of these create-only; the provider documents each
     # as forcing a new resource, because Cognito's UpdateUserPool takes none.
     force_new=("UserPoolName", "AliasAttributes", "UsernameAttributes"),
+    # Cognito fixes UsernameConfiguration when the pool is created and
+    # UpdateUserPool cannot change it, so a difference can only replace the
+    # pool, deleting every user and password in it. A pool adopted with
+    # `import` from another deployment keeps its own value (a pool created
+    # without the setting is case sensitive) instead of being replaced.
+    ignore_changes=("username_configuration",),
+    ignore_reason=(
+        "username_configuration is fixed at pool creation; a difference "
+        "would replace the pool and delete its users"
+    ),
     attrs={
         "Arn": "arn",
         "UserPoolId": "id",
