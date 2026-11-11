@@ -1917,6 +1917,47 @@ CONFIG_PREFIX = "Config#"
 REVISION_INDEX_PREFIX = "ConfigRevIndex#"
 
 
+def item_to_json(value: Any) -> Any:
+    """A low-level DynamoDB item (or attribute value) in the AWS CLI's JSON form:
+    binary (``B``, ``BS``) as base64 text. boto3 returns binary as ``bytes``, which
+    ``json`` cannot write, and upstream stores every configuration body compressed
+    in a ``B`` attribute (``_compressed_config``)."""
+    import base64
+
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            if k == "B" and isinstance(v, (bytes, bytearray)):
+                out[k] = base64.b64encode(bytes(v)).decode()
+            elif k == "BS" and isinstance(v, list):
+                out[k] = [base64.b64encode(bytes(b)).decode() for b in v]
+            else:
+                out[k] = item_to_json(v)
+        return out
+    if isinstance(value, list):
+        return [item_to_json(v) for v in value]
+    return value
+
+
+def item_from_json(value: Any) -> Any:
+    """The inverse of :func:`item_to_json`, for ``PutItem``."""
+    import base64
+
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            if k == "B" and isinstance(v, str):
+                out[k] = base64.b64decode(v)
+            elif k == "BS" and isinstance(v, list):
+                out[k] = [base64.b64decode(b) for b in v]
+            else:
+                out[k] = item_from_json(v)
+        return out
+    if isinstance(value, list):
+        return [item_from_json(v) for v in value]
+    return value
+
+
 def scan_all(ddb, table_name: str) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     kwargs: Dict[str, Any] = {"TableName": table_name}

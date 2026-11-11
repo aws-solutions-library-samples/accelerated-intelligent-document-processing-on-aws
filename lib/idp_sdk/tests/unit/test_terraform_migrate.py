@@ -1055,7 +1055,11 @@ class TestFixConfig:
             self.ddb = boto3.client("dynamodb", region_name=REGION)
             tracking_and_config_tables(self.ddb)
             for item in (
-                config_row("Config#default", LatestRevision=3, PublishedRevision=3),
+                dict(
+                    config_row("Config#default", LatestRevision=3, PublishedRevision=3),
+                    # Upstream stores each configuration body compressed, as binary.
+                    _compressed_config={"B": b"\x1f\x8b\x08\x00compressed"},
+                ),
                 config_row("Config#bda", LatestRevision=1),
                 config_row("Config#plain"),
                 config_row("Schema"),
@@ -1100,6 +1104,9 @@ class TestFixConfig:
         backup = migration().fix_config(str(planned_dir), apply=True).backup_path
         migration().fix_config(str(planned_dir), apply=True, restore=backup)
         assert self.row("Config#default")["LatestRevision"] == {"N": "3"}
+        assert self.row("Config#default")["_compressed_config"] == {
+            "B": b"\x1f\x8b\x08\x00compressed"
+        }
 
     def test_restore_refuses_a_backup_of_another_table(
         self, planned_dir, aws_credentials, tmp_path

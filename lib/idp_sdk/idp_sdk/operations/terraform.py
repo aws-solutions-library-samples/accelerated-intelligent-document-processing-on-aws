@@ -476,7 +476,7 @@ class GenaiIdpTerraformMigration:
             changes = [f"put back {i['Configuration']['S']}" for i in items]
             if apply:
                 for item in items:
-                    ddb.put_item(TableName=table, Item=item)
+                    ddb.put_item(TableName=table, Item=tm.item_from_json(item))
             return TerraformMigrationStepResult(
                 phase="fix-config", applied=apply, ok=True, changes=changes
             )
@@ -495,7 +495,10 @@ class GenaiIdpTerraformMigration:
                 i for i in items if i["Configuration"]["S"].startswith(tm.CONFIG_PREFIX)
             ]
             tf.write_private(
-                path, json.dumps({"TableName": table, "Items": rows}, indent=1)
+                path,
+                json.dumps(
+                    {"TableName": table, "Items": tm.item_to_json(rows)}, indent=1
+                ),
             )
             backup = str(path)
             for key in targets:
