@@ -87,7 +87,8 @@ Three properties it is built around
    the flags every one of those is refused as outside the working directory, the
    symlink because its target is, and a file inside the worktree is still served.
 
-   The same probe measures instruction loading. Without the flags, ``CLAUDE.md``
+   The same probe measures instruction loading (``--restricted`` alone produces
+   the result on 2.1.281; see :data:`SESSION_SCOPE_FLAGS`). Without the flags, ``CLAUDE.md``
    at the root, in ``.claude/`` and in a subdirectory, ``CLAUDE.local.md``,
    ``.claude/rules/**``, ``.claude/skills/<name>/SKILL.md`` and
    ``.claude/commands/`` all reached the model, and a ``.claude/settings.json``
@@ -364,12 +365,14 @@ POSTING_CREDENTIAL_ENV_KEYS = SECRET_ENV_KEYS + (
 #:
 #: ``--restricted`` confines Read, Grep and Glob to the working directory, judged
 #: on the path a symlink resolves to, and ignores the user, project and local
-#: settings files. ``--safe-mode`` stops CLAUDE.md, CLAUDE.local.md,
-#: ``.claude/rules``, skills, commands, agents, output styles and hooks from
-#: loading. Both are on the pinned CLI (``CLAUDE_CODE_VERSION`` in both CI
-#: configurations); what each one does under the exact argv is measured by
-#: ``scripts/tests/test_ai_mr_review_session_scope.py``, and the figures are in
-#: this module's docstring.
+#: settings files. On the pinned CLI (``CLAUDE_CODE_VERSION`` in both CI
+#: configurations) it is also what stops the worktree's CLAUDE.md, rules, skills,
+#: commands and hooks from loading: the probe in
+#: ``scripts/tests/test_ai_mr_review_session_scope.py`` passes with it alone and
+#: fails without it. ``--safe-mode`` is documented to stop the same files loading
+#: and is kept as a second layer for a release in which ``--restricted`` stops
+#: doing so; on 2.1.281 its separate effect cannot be observed, because
+#: ``--restricted`` already produces the result.
 SESSION_SCOPE_FLAGS = ("--restricted", "--safe-mode")
 
 
@@ -1458,18 +1461,18 @@ _AWS_SECRET_SHAPE = re.compile(
 )
 
 #: Markup that makes a reader's browser fetch something when the comment is shown:
-#: a Markdown image (inline ``![a](u)`` or full reference ``![a][r]``) and the HTML
-#: elements that load a resource. Matched anywhere, code fences included, because
-#: whether a renderer honours a fence is not something to depend on.
+#: any unescaped ``![`` (CommonMark accepts an image's alt text across lines, with
+#: nested or escaped brackets, and with its reference definition inside a quote or
+#: a list, so no narrower pattern holds every spelling) and the HTML elements that
+#: load a resource. Matched anywhere, code fences included, because whether a
+#: renderer honours a fence is not something to depend on. The cost is a refused
+#: review that quotes ``!['a']`` from code; measured over 496 earlier reviews on
+#: this repository, 8 contained ``![`` at all.
 _IMAGE_MARKUP = re.compile(
-    r"!\[[^\]\n]*\]\s*[(\[]"
+    r"(?<!\\)!\["
     r"|<\s*(?:img|image|picture|source|svg|video|audio|iframe|object|embed|input)\b",
     re.IGNORECASE,
 )
-#: A shortcut-reference image, ``![a]``, renders only when a matching
-#: ``[a]: url`` definition exists, so it is refused when the text has one.
-_SHORTCUT_IMAGE = re.compile(r"!\[[^\]\n]+\]")
-_REFERENCE_DEFINITION = re.compile(r"^[ ]{0,3}\[[^\]\n]+\]:\s*\S", re.MULTILINE)
 
 #: The redactor's placeholders that stand for a credential. ``[account]`` and
 #: ``[email]`` are left out: an account id or an address is scrubbed and the
@@ -1522,15 +1525,16 @@ def posting_refusals(
         reasons.append("an AWS secret key shape")
 
     own_hosts = {forge_host.casefold(), f"ssh.{forge_host}".casefold()} - {"", "ssh."}
-    for finding in check_commit_text.findings(text):
+    # Host names are case-insensitive; check_commit_text's patterns are not.
+    for finding in check_commit_text.findings(text) + check_commit_text.findings(
+        text.casefold()
+    ):
         kind, _, value = finding.partition(": ")
         if kind == "internal hostname" and value.casefold() in own_hosts:
             continue
         reasons.append(kind)
 
-    if _IMAGE_MARKUP.search(text) or (
-        _SHORTCUT_IMAGE.search(text) and _REFERENCE_DEFINITION.search(text)
-    ):
+    if _IMAGE_MARKUP.search(text):
         reasons.append("image or embedded-resource markup")
     return list(dict.fromkeys(reasons))
 

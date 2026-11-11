@@ -323,10 +323,10 @@ def test_the_session_reads_only_the_worktree(cli: str, tmp_path: Path) -> None:
         return CANARY in text or "root:x:0" in text or bool(listed)
 
     assert served(0), f"the control read was refused: {results.get('toolu_0000')!r}"
-    leaked = [
+    outside = [
         label for index, (label, _, _) in enumerate(cases) if index and served(index)
     ]
-    assert not leaked, f"served outside the worktree: {leaked}"
+    assert not outside, f"served outside the worktree: {outside}"
     assert len(results) == len(cases), (
         f"{len(cases) - len(results)} call(s) got no tool result at all"
     )
@@ -336,7 +336,13 @@ def test_the_session_reads_only_the_worktree(cli: str, tmp_path: Path) -> None:
 def test_the_worktree_s_agent_configuration_does_not_load(
     cli: str, tmp_path: Path
 ) -> None:
-    """Planted with no removal step, so this measures the flags alone."""
+    """Planted with no removal step, so this measures the flags alone.
+
+    Only locations that reach the model with no flags at all are planted, so
+    each one can fail. ``AGENTS.md``, ``.claude/agents`` and
+    ``.claude/output-styles`` did not reach it unflagged on 2.1.281 (agents need
+    the Task tool, which is denied), so they are covered by the removal step and
+    ``test_every_documented_location_is_pinned_or_removed`` instead."""
     _, worktree, home = _layout(tmp_path)
     subprocess.run(["git", "init", "-q", str(worktree)], check=True)  # noqa: S603, S607
     planted = {
@@ -344,13 +350,10 @@ def test_the_worktree_s_agent_configuration_does_not_load(
         ".claude/CLAUDE.md": "plain",
         "CLAUDE.local.md": "plain",
         "sub/CLAUDE.md": "plain",
-        "AGENTS.md": "plain",
         ".claude/rules/r.md": "plain",
         ".claude/rules/deep/r.md": "plain",
         ".claude/skills/s/SKILL.md": "frontmatter",
         ".claude/commands/c.md": "frontmatter",
-        ".claude/agents/a.md": "frontmatter",
-        ".claude/output-styles/o.md": "frontmatter",
     }
     tokens = {}
     for index, (relative, shape) in enumerate(planted.items()):

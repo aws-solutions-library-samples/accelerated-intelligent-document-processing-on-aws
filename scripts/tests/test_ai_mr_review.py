@@ -534,10 +534,11 @@ def test_every_documented_location_is_pinned_or_removed(
 ) -> None:
     """Each documented location ends the setup either removed or pinned.
 
-    Planted with head-only content, run through the same two steps
-    ``review_one`` runs, and then either absent or holding the target branch's
-    copy. A location matching neither ``remove`` nor ``pin`` in
-    ``AGENT_CONFIG_LOCATIONS`` keeps the head's text and fails here.
+    Planted with head-only content. A location at a ``pin`` glob gets the target
+    copy written over it, standing in for the pin step (which needs git refs and
+    is exercised by the symlink test below); then the real removal step runs. A
+    location matching neither ``remove`` nor ``pin`` in ``AGENT_CONFIG_LOCATIONS``
+    keeps the head's text and fails here.
     """
     worktree = tmp_path / "head"
     planted = worktree / relative
@@ -3229,6 +3230,22 @@ _PLAIN = "## PR/MR Review: a title\n\nLooks fine. See `scripts/x.py:12`.\n"
         ('<img src="https://remote.example/p">', "image or embedded-resource markup"),
         ("<IMG/SRC=x>", "image or embedded-resource markup"),
         ("<picture><source srcset=x></picture>", "image or embedded-resource markup"),
+        ("![a\nb](https://remote.example/p)", "image or embedded-resource markup"),
+        ("![a [b] c](https://remote.example/p)", "image or embedded-resource markup"),
+        ("![x\\]y](https://remote.example/p)", "image or embedded-resource markup"),
+        (
+            "![x] text\n\n> [x]: https://remote.example/p",
+            "image or embedded-resource markup",
+        ),
+        (
+            "![x] text\n\n- [x]: https://remote.example/p",
+            "image or embedded-resource markup",
+        ),
+        (
+            "[![a\nb](https://remote.example/p)](https://remote.example/l)",
+            "image or embedded-resource markup",
+        ),
+        ("see https://BUILD.CORP." + "AMAZON.COM/x", "internal hostname"),
         (
             "```\n![a](https://remote.example/p)\n```",
             "image or embedded-resource markup",
@@ -3259,7 +3276,7 @@ def test_a_job_credential_value_is_refused_whatever_its_shape(mod) -> None:
         "fixture key " + _EXAMPLE_KEY + " in conftest",
         "head " + "0123456789abcdef" * 2 + "01234567",  # a 40-hex git SHA
         "path lib/idp_common_pkg/idp_common/extraction/Service2Main.py",
-        "js `if (!['a'].includes(x))` reads fine",
+        "an escaped \\![x](https://remote.example/p) is text, not an image",
         "the comment is posted to gitlab.aws.dev via ssh.gitlab.aws.dev",
         "link [text](https://remote.example/page) is not an image",
     ],
@@ -3289,7 +3306,7 @@ def test_a_refused_review_is_replaced_whole_and_names_only_kinds(mod) -> None:
         head_sha="a" * 40,
         draft=False,
     )
-    review = f"{_PLAIN}leaked {_GITHUB_TOKEN}"
+    review = f"{_PLAIN}quoted {_GITHUB_TOKEN}"
     note = mod.compose_note(merge_request, review, (1, 1, 1), False, "m")
     assert _GITHUB_TOKEN not in note and "Looks fine" not in note
     assert "was not posted" in note and "a GitHub token" in note
