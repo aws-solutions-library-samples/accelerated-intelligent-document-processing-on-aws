@@ -711,3 +711,18 @@ def test_a_pool_user_is_never_rewritten_after_creation(schema):
         in user
     )
     assert completeness.check(tr)[0] == []
+
+
+def test_the_mappers_that_ignore_changes_are_pinned():
+    """A hand mapper's ``ignore_changes`` stops Terraform acting on a property,
+    so each one is a deliberate difference from CloudFormation and is registered
+    in ``scripts/tests/gate_exemptions.json``. The set is pinned here: adding one
+    fails this test until it is audited and the pinned set updated with it."""
+    from idp_tf.aws_mappers import MAPPERS, SpecMapper
+
+    found = {
+        cfn_type: mapper.ignore_changes
+        for cfn_type, mapper in MAPPERS.items()
+        if isinstance(mapper, SpecMapper) and mapper.ignore_changes
+    }
+    assert found == {"AWS::Cognito::UserPool": ("username_configuration",)}
