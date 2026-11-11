@@ -509,3 +509,76 @@ def test_require_profile_in_scope(scope, profile, allowed):
     else:
         with pytest.raises(PermissionError):
             ma.require_profile_in_scope(caller(scope=scope), profile)
+
+
+# --- guards on malformed input --------------------------------------------------
+
+
+class _Secrets:
+    def __init__(self, value):
+        self.value = value
+
+    def get_secret_value(self, SecretId):
+        return {"SecretString": self.value}
+
+
+def test_the_signing_key_is_the_secret_bytes():
+    assert ma.load_signing_key(_Secrets("abc"), "arn:secret") == b"abc"
+
+
+@pytest.mark.parametrize(
+    "secret_id,value,message",
+    [("", "abc", "not configured"), ("arn:secret", "", "empty")],
+)
+def test_a_missing_or_empty_signing_key_raises(secret_id, value, message):
+    with pytest.raises(RuntimeError, match=message):
+        ma.load_signing_key(_Secrets(value), secret_id)
+
+
+@pytest.mark.parametrize(
+    "key,request_id,message",
+    [(b"", "req", "signing key"), (b"k", "", "request id")],
+)
+def test_signing_needs_a_key_and_a_request_id(key, request_id, message):
+    with pytest.raises(ValueError, match=message):
+        ma.sign_caller(caller(), key=key, request_id=request_id)
+
+
+def test_a_block_of_another_version_is_refused():
+    key = b"k" * 32
+    block = ma.sign_caller(caller(), key=key, request_id="req")
+    block["v"] = 999
+    payload = {k: v for k, v in block.items() if k != "sig"}
+    block["sig"] = ma._signature(key, payload)
+    with pytest.raises(ma.McpAccessRefused):
+        ma.verify_caller(block, key=key, request_id="req")
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["a.!!!.c", "a." + base64.urlsafe_b64encode(b"[1, 2]").decode().rstrip("=") + ".c"],
+    ids=["undecodable", "not-an-object"],
+)
+def test_an_unreadable_token_body_is_refused(token):
+    with pytest.raises(ma.McpAccessRefused, match="could not be read"):
+        ma.token_claims(f"Bearer {token}")
+
+
+@pytest.mark.parametrize("claims", [{"sub": "s"}, {"username": "u"}])
+def test_a_token_naming_no_user_is_refused(claims):
+    with pytest.raises(ma.McpAccessRefused, match="does not identify a user"):
+        ma.resolve_user_caller(
+            claims,
+            cognito=None,
+            user_pool_id="p",
+            users_table_name="t",
+            dynamodb=None,
+        )
+
+
+def test_an_unscoped_caller_may_act_on_any_document():
+    ma.require_document_keys_in_scope(
+        caller(scope=None),
+        ["anything/at/all.pdf"],
+        config_version_of=lambda _k: pytest.fail("no lookup for an unscoped caller"),
+    )
