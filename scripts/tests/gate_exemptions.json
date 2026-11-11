@@ -3310,6 +3310,17 @@
       "ratchet": "staleness",
       "ratchetEvidence": "terraform/tools/parity.py",
       "reason": "Each entry is a property one deployment stores and the other does not because of how the writer behaves (the hashicorp/aws provider writing CodeBuild's service defaults explicitly), with the measurement it came from. Why JUDGEMENT: whether a stored default is the same configuration as an absent value is a reading of the service's behaviour. The tier is live and manual, so the ratchet runs when it does: an entry that explained no difference in a run is reported stale and fails that run."
+    },
+    "scripts/tests/test_session_keyed_storage.py::SESSION_KEYED_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "the 'no DynamoDB key built from a chat session id without a user term' check for the pinned number of sites in one file. Each entry names the file holding the ownership check those sites rely on.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Chat history is stored under PK=sessionId and the owner registry is keyed by sessionId by design, so these sites cannot carry a user term; what makes them the caller's own is claim_chat_session deciding whose the id is before they run. Whether that call precedes each site on every path is read from the handler, not computed, so it is a judgement per file, written beside the entry. What IS computed per member: the named guard file must define or call claim_chat_session (test_each_entry_names_a_guard_that_decides_ownership), and the site count is pinned at the number audited when the entry was written.",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_session_keyed_storage.py"
     }
   }
 }
