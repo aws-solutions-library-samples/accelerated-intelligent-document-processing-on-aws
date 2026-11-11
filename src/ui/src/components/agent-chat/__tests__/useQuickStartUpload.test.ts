@@ -101,4 +101,10 @@ describe('useQuickStartUpload', () => {
     expect(init.body).toBeInstanceOf(FormData);
     expect((init.body as FormData).get('key')).toBe(SINGLE_KEY);
   });
+
+  it('names the status when a single-document upload is refused with no status text', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 403, statusText: '' });
+    const onError = await upload([pdf('paystub.pdf')]);
+    expect(onError).toHaveBeenCalledWith('Upload failed: HTTP 403');
+  });
 });

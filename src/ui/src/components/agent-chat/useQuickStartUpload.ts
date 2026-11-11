@@ -67,7 +67,7 @@ const postFileToPresignedUrl = async (file: File, presignedUrl: string): Promise
   formData.append('file', file);
   const postResult = await fetch(presignedPost.url, { method: 'POST', body: formData });
   if (!postResult.ok) {
-    throw new Error(`Upload failed: ${postResult.statusText}`);
+    throw new Error(`Upload failed: HTTP ${postResult.status}${postResult.statusText ? ` ${postResult.statusText}` : ''}`);
   }
 };
 
