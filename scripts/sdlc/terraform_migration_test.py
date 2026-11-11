@@ -518,6 +518,59 @@ def owned_name(
     return bool(token.search(name))
 
 
+#: Phases whose recorded result must be PASS before any later phase runs: a
+#: resumed run never continues past a verification that failed, however the
+#: context file came to list it as completed.
+GATING_PHASES = ("verify",)
+
+
+def resume_refusal(phase: str, ctx: Dict[str, Any]) -> Optional[str]:
+    """Why ``phase`` must not run in this context, or None."""
+    records = {p["phase"]: p for p in ctx.get("phases", [])}
+    for gate in GATING_PHASES:
+        if PHASES.index(phase) <= PHASES.index(gate):
+            continue
+        if phase in TEARDOWN_PHASES:
+            continue  # tearing down is always allowed
+        status = (records.get(gate) or {}).get("status")
+        if status != "PASS":
+            return (
+                f"{gate} has not passed (recorded {status!r}); refusing to run {phase}"
+            )
+    return None
+
+
+#: Resource types the test itself treats as kept, and the attribute naming each.
+KEPT_DELETION_TYPES = {
+    "aws_s3_bucket": ("bucket", "buckets"),
+    "aws_dynamodb_table": ("name", "tables"),
+    "aws_cognito_user_pool": ("id", "pools"),
+}
+
+
+def kept_deletions(
+    destroy_plan: Dict[str, Any], targets: Dict[str, List[str]], old: Dict[str, Any]
+) -> List[str]:
+    """Each deletion in a destroy plan of a resource the test requires kept, matched
+    by kind (a table named like a kept bucket is not a match)."""
+    kept = {
+        "buckets": set(targets.get("buckets", [])),
+        "tables": set(targets.get("tables", [])),
+        "pools": {old.get("user_pool_id")} - {None},
+    }
+    out = []
+    for rc in destroy_plan.get("resource_changes", []):
+        if "delete" not in (rc.get("change") or {}).get("actions", []):
+            continue
+        kind = KEPT_DELETION_TYPES.get(rc.get("type", ""))
+        if not kind:
+            continue
+        name = ((rc["change"].get("before") or {}).get(kind[0])) or ""
+        if name in kept[kind[1]]:
+            out.append(f"{rc['address']} deletes {name}")
+    return out
+
+
 def summarise(result: Dict[str, Any]) -> str:
     """The human summary: one line per phase, then the findings."""
     lines = [
@@ -1717,7 +1770,19 @@ class Run:
             "--destroy-plan",
             str(self.work / "destroy-plan.json"),
         )
-        return f"{out.get('details', {}).get('deletions', '?')} deletions, none of them kept resources"
+        # The test's own check, independent of the command's classification: no
+        # deletion in the plan is a kept bucket, table, key or pool of its kind.
+        destroy = json.loads((self.work / "destroy-plan.json").read_text())
+        own = kept_deletions(destroy, self.snapshot_targets(), self.ctx["old"])
+        if own:
+            raise PhaseFailed(
+                "check-destroy passed, but the destroy plan deletes kept resources: "
+                + "; ".join(own)
+            )
+        return (
+            f"{out.get('details', {}).get('deletions', '?')} deletions, none of them "
+            "kept resources (the command's check and the test's own agree)"
+        )
 
     def phase_old_destroy(self) -> str:
         self.ctx["oldNames"] = merge_names(
@@ -1928,6 +1993,9 @@ class Run:
             for name in PHASES:
                 if name in self.ctx["completed"] and name != "preflight":
                     continue
+                refusal = resume_refusal(name, self.ctx)
+                if refusal:
+                    raise PhaseFailed(refusal)
                 self.run_phase(name)
                 if self.s.stop_after == name:
                     stopped = True

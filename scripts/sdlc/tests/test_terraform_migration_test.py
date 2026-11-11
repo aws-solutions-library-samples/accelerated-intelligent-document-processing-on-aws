@@ -596,3 +596,40 @@ def test_binary_attributes_compare_equal_after_a_round_trip_through_the_file():
     once = json.loads(json.dumps(item, default=tmt._json_default))
     assert json.loads(json.dumps(once)) == once
     assert once["_compressed_config"]["B"] != str(b"\x1f\x8b binary")
+
+
+def test_a_resume_never_continues_past_a_failed_verify(tmp_path):
+    ctx = {"phases": [{"phase": "verify", "status": "FAIL"}], "completed": ["verify"]}
+    assert "verify has not passed" in tmt.resume_refusal("migrate-detach", ctx)
+    # Tearing down is still allowed, and so is anything before the gate.
+    assert tmt.resume_refusal("new-destroy", ctx) is None
+    assert tmt.resume_refusal("migrate-apply", ctx) is None
+    ctx["phases"][0]["status"] = "PASS"
+    assert tmt.resume_refusal("migrate-detach", ctx) is None
+
+
+def test_the_test_finds_a_kept_resource_in_a_destroy_plan_by_kind():
+    targets = {"buckets": ["gitf2-x-api-test-sets"], "tables": ["idp-tracking-x"]}
+    old = {"user_pool_id": "us-west-2_P"}
+
+    def delete(tf_type, **before):
+        return {
+            "address": f"{tf_type}.x",
+            "type": tf_type,
+            "change": {"actions": ["delete"], "before": before},
+        }
+
+    plan = {
+        "resource_changes": [
+            # upstream's test-sets TABLE shares the kept bucket's name: not kept
+            delete("aws_dynamodb_table", name="gitf2-x-api-test-sets"),
+            delete("aws_cognito_user_pool_client", user_pool_id="us-west-2_P"),
+        ]
+    }
+    assert tmt.kept_deletions(plan, targets, old) == []
+    plan["resource_changes"] += [
+        delete("aws_s3_bucket", bucket="gitf2-x-api-test-sets"),
+        delete("aws_dynamodb_table", name="idp-tracking-x"),
+        delete("aws_cognito_user_pool", id="us-west-2_P"),
+    ]
+    assert len(tmt.kept_deletions(plan, targets, old)) == 3
