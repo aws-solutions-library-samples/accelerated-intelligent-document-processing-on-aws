@@ -8,6 +8,7 @@ failing for another reason into a pass). Each phrase is produced here by the rea
 functions, so a rewording fails this offline test rather than a live run.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -81,3 +82,10 @@ def test_the_scope_refusal_is_recognised():
 
 def test_an_ordinary_failure_is_not_a_role_refusal():
     assert not api_rbac_mcp.role_refused("Failed to retrieve results: Batch not found")
+
+
+def test_a_served_result_is_read_through_the_nested_body():
+    """Measured shape: the Lambda response is text, and its body is JSON text."""
+    text = json.dumps({"statusCode": 200, "body": json.dumps({"success": True})})
+    assert api_rbac_mcp.tool_body(text) == {"success": True}
+    assert api_rbac_mcp.tool_body("not json") == {}

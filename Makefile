@@ -991,6 +991,11 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# (#1731). The toolkit is stubbed in sys.modules; the logs client is a real
 	@# botocore client behind a Stubber with an explicit region.
 	cd src/lambda/agentcore_gateway_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# MCP caller interceptor (token -> role and scope, signed caller block, listing
+	@# filters) and the custom resource that attaches it to the gateway. moto for
+	@# Cognito, DynamoDB and Secrets Manager; the gateway is a model-validated fake.
+	cd src/lambda/mcp_identity_interceptor && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/mcp_interceptor_attach && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/test_file_copier && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/update_configuration && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/user_management && $(PYTEST_HERMETIC) -q -p no:cacheprovider

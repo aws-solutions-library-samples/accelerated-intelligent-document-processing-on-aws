@@ -195,6 +195,23 @@ def call_text(mcp, token, tool, args):
     return status, "\n".join(parts)
 
 
+def tool_body(text):
+    """The tool's own JSON from a result's text: the gateway returns the Lambda's
+    response (``{"statusCode", "body"}``) as text, and ``body`` is the tool's JSON
+    as a string. ``{}`` when the text is not that shape."""
+    try:
+        outer = json.loads(text)
+    except (TypeError, ValueError):
+        return {}
+    if isinstance(outer, dict) and isinstance(outer.get("body"), str):
+        try:
+            inner = json.loads(outer["body"])
+        except ValueError:
+            return {}
+        return inner if isinstance(inner, dict) else {}
+    return outer if isinstance(outer, dict) else {}
+
+
 def role_refused(text):
     return any(phrase in text for phrase in ROLE_REFUSALS)
 
@@ -333,7 +350,7 @@ def run_mcp_suite(
             message=text[:300],
         )
         status, text = call_text(mcp, tokens["Admin"], "get_results", args)
-        served = '"success": true' in text.replace("'", '"') or '"success":true' in text
+        served = tool_body(text).get("success") is True
         record(
             results,
             "mcp:get_results-scope",
