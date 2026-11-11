@@ -544,10 +544,21 @@ not from a CI run. The role comes from
 Clearing either needs a CI role whose IAM grant does not require the boundary or the
 prefix — a widening of the CI's IAM, which this change deliberately does not make.
 Everything else the run needs is in place, so with such a role the schedule runs as
-written. Two further limits to check when it first runs: the CodeBuild project's
-`TimeoutInMinutes: 180` (`scripts/sdlc/cfn/codepipeline-s3.yml`) against a driver
-budget of `TERRAFORM_MIGRATION_TIMEOUT_SECONDS` plus publish, and the IAM role count,
-since the two deployments hold several hundred roles between them during the run.
+written, apart from the time limit below.
+
+⚠️ **The run does not fit the CodeBuild project's time limit either.** Measured on a
+live run, the driver takes about 170 minutes end to end: about 20 to deploy and seed
+the upstream deployment, 77 waiting on DynamoDB (it refuses to turn the agent-jobs
+table's time-to-live off until about an hour after upstream enabled it at creation,
+and refuses the module's new time-to-live setting until about an hour after that),
+32 for the adoption apply, and about 30 to destroy both deployments. With publish
+and the `-iam` pre-stack in front of it, that is more than the project's
+`TimeoutInMinutes: 180` (`scripts/sdlc/cfn/codepipeline-s3.yml`), and the GitLab
+job's `3h30m` leaves little margin. `TERRAFORM_MIGRATION_TIMEOUT_SECONDS` is set to
+what the driver needs, so the build, not the driver, is what times out. Running it
+in CI therefore also needs a CodeBuild timeout of about four hours for this run,
+which is a change to the pipeline stack and is not made here. Check the IAM role
+count too: the two deployments hold several hundred roles between them.
 
 **What a dead build leaves.** The driver tears down in a `finally`, but a build that
 dies (timeout, lost container) runs no `finally`. The next run's startup sweeps
