@@ -26,13 +26,15 @@
  *
  * It also flags `DOMParser.parseFromString`, `Object.defineProperty`/`Reflect.set` on
  * `innerHTML`/`outerHTML`, computed keys spelled as string literals, and any string
- * or template text naming `text/html` (a `data:text/html` frame, an HTML `Blob`).
+ * or template text naming `text/html` (a `data:` frame, an HTML `Blob`), `setAttributeNS` of `srcdoc`, and `execCommand('insertHTML')`.
  *
  * What it does not see: a renderer reached without an import the parser can read
  * (a global, a computed `import()` specifier, `eval`), a renderer package outside
  * `RENDERER_PACKAGES` whose name does not contain "markdown", a property name or
  * MIME type assembled at run time, or a `data:`/`blob:` frame whose MIME type is a
- * variable. Those are not spellings anyone writes by accident.
+ * variable, or an `image/svg+xml` document put in a frame (SVG data URLs are used
+ * as `<img>` sources, where they cannot run script, so the MIME type alone is not
+ * flagged). Those are not spellings anyone writes by accident.
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -169,6 +171,11 @@ const findSites = (fileName: string, source: string): Site[] => {
       if (method && REFLECTIVE_WRITERS.has(method) && HTML_WRITE_PROPERTIES.has(nameOf(node.arguments[1]) ?? '')) {
         add('html-write', node, `${method} ${nameOf(node.arguments[1])}`);
       }
+      if (method === 'setAttributeNS' && HTML_WRITE_ATTRIBUTES.has(nameOf(node.arguments[1]) ?? '')) {
+        add('html-write', node, `sets ${nameOf(node.arguments[1])}`);
+      }
+      if (method === 'execCommand' && /^insertHTML$/i.test(nameOf(node.arguments[0]) ?? ''))
+        add('html-write', node, 'execCommand insertHTML');
       if (method === 'setAttribute' && HTML_WRITE_ATTRIBUTES.has(nameOf(node.arguments[0]) ?? '')) {
         add('html-write', node, `sets ${nameOf(node.arguments[0])}`);
       }
@@ -311,6 +318,8 @@ describe('the scanner recognises every form it claims to', () => {
     ['DOMParser', `const d = new DOMParser().parseFromString(x, mime);`, 'html-write'],
     ['data:text/html frame', 'const f = <iframe src={`data:text/html,${x}`} />;', 'html-write'],
     ['HTML Blob', `const b = new Blob([x], { type: 'text/html' });`, 'html-write'],
+    ['setAttributeNS srcdoc', `frame.setAttributeNS(null, 'srcdoc', x);`, 'html-write'],
+    ['execCommand insertHTML', `document.execCommand('insertHTML', false, x);`, 'html-write'],
     ['computed dangerouslySetInnerHTML key', `const p = { ['dangerouslySetInnerHTML']: { __html: x } };`, 'html-write'],
     ['defineProperty innerHTML', `Object.defineProperty(el, 'innerHTML', { value: x });`, 'html-write'],
     ['Reflect.set innerHTML', `Reflect.set(el, 'innerHTML', x);`, 'html-write'],

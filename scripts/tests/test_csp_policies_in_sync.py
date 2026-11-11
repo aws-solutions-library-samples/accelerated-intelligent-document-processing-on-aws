@@ -98,8 +98,11 @@ def _directive_list(policy: str) -> list[tuple[str, str]]:
         chunk = chunk.strip()
         if not chunk:
             continue
-        name, _, sources = chunk.partition(" ")
-        parsed.append((name, re.sub(r"\s+", " ", sources).strip()))
+        # Directive names are case-insensitive and end at any ASCII whitespace,
+        # which is how browsers read them.
+        name, *rest = chunk.split(None, 1)
+        sources = rest[0] if rest else ""
+        parsed.append((name.lower(), re.sub(r"\s+", " ", sources).strip()))
     return parsed
 
 
@@ -433,6 +436,9 @@ def test_the_fetch_source_rule_rejects_what_it_claims_to():
     assert _fetch_directives_in(
         {"style-src-elem": "https:", "script-src-attr": "*", "base-uri": "'none'"}
     ) == ["style-src-elem", "script-src-attr"]
+    parsed = _directives("default-src 'self'; STYLE-SRC-ELEM https:; img-src\thttps:")
+    assert _fetch_directives_in(parsed) == ["default-src", "style-src-elem", "img-src"]
+    assert parsed["img-src"] == "https:"
     for source in (
         "'self'",
         "data:",
