@@ -125,16 +125,17 @@ deletes classes the user curated.
 ### Discovered text is kept to plain text
 
 `discovered_text` cleans what a model wrote before it is saved or shown:
-`clean_schema_text` (every `description` and `examples` value in a schema, at any
-depth), `clean_rule_classes` (rule-class and rule descriptions) and `clean_report`
-(the reflection report, line breaks kept). URLs, markdown images and HTML are
-removed, a markdown link keeps its text, and lengths are capped
-(`MAX_DESCRIPTION_CHARS`, `MAX_EXAMPLE_CHARS`, `MAX_EXAMPLES`, `MAX_REPORT_CHARS`).
-Structural keys (`$schema`, `$id`, `type`, `pattern`, ...) are left alone. It is
-called on `_merge_and_save_class` (both class discovery flows), on
-`DiscoveryAgent.analyze_cluster` and `reflect`, and on the rules path
-(`discovery_rules_from_document` and `to_policy_class`). Existing, authored classes
-in the target profile are not cleaned.
+`clean_schema_text` (every string in a schema, at any depth, except the syntax keys
+`SYNTAX_KEYS` and `-regex` keys; property names are never changed),
+`clean_rule_classes` (rule-class and rule text) and `clean_report` (the reflection
+report, line breaks kept). Text is normalised first (HTML entities decoded, NFKC,
+format characters such as zero-width spaces removed); then URLs, markdown images and
+HTML (including an unclosed tag) are removed, a markdown link keeps its text, and
+lengths are capped (`MAX_DESCRIPTION_CHARS`, `MAX_PROMPT_CHARS`, `MAX_EXAMPLE_CHARS`,
+`MAX_EXAMPLES`, `MAX_REPORT_CHARS`). It is called on `_merge_and_save_class` (both
+class discovery flows), on `DiscoveryAgent.analyze_cluster` and `reflect`, and on the
+rules path (`discovery_rules_from_document` and `to_policy_class`). Existing, authored
+classes in the target profile are not cleaned.
 
 ### The multi-document agent's tools are bounded
 

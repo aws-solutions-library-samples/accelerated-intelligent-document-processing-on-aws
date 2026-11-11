@@ -833,15 +833,18 @@ does: the picker lists only the profiles in your scope, and the server refuses a
 other. A discovery job must name the profile it saves into; it is never saved into
 whichever profile happens to be active. See [RBAC](rbac.md#scope-enforcement-points).
 
-**What discovery saves.** Descriptions, `examples` values, rule text and the
-multi-document reflection report are model-written, so they are kept to plain text
-before they are saved or shown: URLs, markdown images and HTML are removed (a
-markdown link keeps its text), and lengths are capped — 1,000 characters for a
-description, 200 for an example value and 10 example values per field. `$schema`,
-`$id`, types, patterns and every other structural key are saved as discovered.
-Classes you wrote yourself are not changed. Multi-document discovery's agent views
-only documents in the cluster it is analysing, and at most the configured
-`max_sample_size` of them.
+**What discovery saves.** Everything a model writes into a discovered class or rule
+— descriptions, titles, `examples`, `enum` and `default` values, prompts, and any
+other text — and the multi-document reflection report are kept to plain text before
+they are saved or shown: URLs, markdown images and HTML are removed (a markdown link
+keeps its text), and lengths are capped — 1,000 characters for a description, 4,000
+for a prompt, 200 for other values and 10 example values per field. `$schema`, `$id`,
+`$ref`, `type`, `format`, `pattern` and `-regex` keys are machine syntax and are saved
+as discovered. Classes you wrote yourself are not changed. Multi-document
+discovery's agent views only documents in the cluster it is analysing, and at most
+the configured `max_sample_size` of them, and for a user with a configuration-profile
+scope it reads only the discovery bucket or an Input-bucket prefix that a
+configuration prefix mapping places inside that scope.
 
 **Monitoring Progress:**
 - Progress messages refreshed by 10-second polling (e.g., "Analyzing document structure with AI...", "Saving to configuration..."); GraphQL subscriptions are not used

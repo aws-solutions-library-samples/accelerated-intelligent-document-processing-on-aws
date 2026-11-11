@@ -448,4 +448,113 @@ def test_the_module_has_no_dependency_beyond_the_standard_library():
         if isinstance(n, (ast.Import, ast.ImportFrom))
         for a in (n.names if isinstance(n, ast.Import) else [None])
     }
-    assert imported <= {"__future__", "re", "typing"}
+    assert imported <= {"__future__", "html", "re", "typing", "unicodedata"}
+
+
+class TestSpellingsThatHideAUrl:
+    """Spellings an adversarial review found getting past the first patterns."""
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            f"Total _www.{REMOTE}/a.png in the header",
+            "Total _http://intranet/a.png in the header",
+            f"Total 9https:\\\\{REMOTE}\\a.png in the header",
+            f"Total _https:\\\\{REMOTE}/a.png in the header",
+            f"Total https:/{REMOTE}/a.png in the header",
+            f"Total ftp:{REMOTE} in the header",
+            f"Total https\u200b://{REMOTE}/a in the header",
+            f"Total h\u200bttps://{REMOTE}/a in the header",
+            f"Total \uff48\uff54\uff54\uff50\uff53://{REMOTE}/a in the header",
+            f"Total &lt;img src=https://{REMOTE}/a&gt; in the header",
+            f"Total &amp;lt;img src=//{REMOTE}/a&amp;gt; in the header",
+            f"Total ![a] (https://{REMOTE}/a.png) in the header",
+            "Total ![a] (/relative/a.png) in the header",
+        ],
+    )
+    def test_removed(self, raw):
+        cleaned = clean_text(raw)
+        assert REMOTE not in cleaned and "intranet" not in cleaned
+        assert "/a" not in cleaned
+        assert "img" not in cleaned and "&" not in cleaned
+        assert cleaned.startswith("Total ") and cleaned.endswith(" in the header")
+
+    def test_an_unclosed_tag_is_removed_to_the_end(self):
+        assert clean_text("Total <img src=x onerror=alert(1)") == "Total"
+
+    @pytest.mark.parametrize(
+        "plain",
+        ["Data: the reported amount, metadata:none", "Ratio 3:1 at 10:30 am"],
+    )
+    def test_plain_text_with_colons_is_unchanged(self, plain):
+        assert clean_text(plain) == plain
+
+
+class TestEveryTextKeyIsCleaned:
+    def test_every_string_but_syntax_is_cleaned(self):
+        payload = (
+            f"see ![x](https://{REMOTE}/a.png) <img src=//{REMOTE}/b> https://{REMOTE}"
+        )
+        schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "Invoice",
+            "title": payload,
+            "x-aws-idp-extraction-task-prompt": payload,
+            "x-aws-idp-prompt-override": payload,
+            "x-aws-idp-document-name-regex": "^https?://.*invoice$",
+            "x-aws-idp-examples": [
+                {
+                    "x-aws-idp-class-prompt": payload,
+                    "x-aws-idp-attributes-prompt": payload,
+                    "x-aws-idp-image-path": f"https://{REMOTE}/a.png",
+                }
+            ],
+            "properties": {
+                "https_link": {
+                    "type": "string",
+                    "format": "uri",
+                    "pattern": "^https://.*$",
+                    "default": payload,
+                    "const": payload,
+                    "enum": [payload, "Paid"],
+                    "x-aws-idp-list-item-description": payload,
+                }
+            },
+            "x-aws-idp-new-key-a-model-invented": {"nested": [payload]},
+        }
+        clean_schema_text(schema)
+        syntax = (
+            schema.pop("$schema"),
+            schema.pop("$id"),
+            schema.pop("x-aws-idp-document-name-regex"),
+            schema["properties"]["https_link"].pop("type"),
+            schema["properties"]["https_link"].pop("format"),
+            schema["properties"]["https_link"].pop("pattern"),
+        )
+        assert syntax == (
+            "https://json-schema.org/draft/2020-12/schema",
+            "Invoice",
+            "^https?://.*invoice$",
+            "string",
+            "uri",
+            "^https://.*$",
+        )
+        assert REMOTE not in repr(schema)
+        assert "<" not in repr(schema)
+        assert list(schema["properties"]) == ["https_link"]  # a name, not text
+        assert schema["properties"]["https_link"]["enum"] == ["see", "Paid"]
+        assert schema["x-aws-idp-examples"][0]["x-aws-idp-image-path"] == ""
+
+
+def test_a_field_named_like_a_syntax_key_is_still_text():
+    """`pattern`, `type` and `format` are syntax at schema level, but under
+    `properties` they are field names whose definitions hold text."""
+    schema = {
+        "properties": {
+            "pattern": {"type": "string", "description": f"Line https://{REMOTE}"},
+            "type": {"type": "string", "description": f"Kind www.{REMOTE}"},
+        }
+    }
+    clean_schema_text(schema)
+    assert schema["properties"]["pattern"]["description"] == "Line"
+    assert schema["properties"]["type"]["description"] == "Kind"
