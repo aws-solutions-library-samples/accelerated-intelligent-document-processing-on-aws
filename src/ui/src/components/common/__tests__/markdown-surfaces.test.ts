@@ -24,10 +24,15 @@
  * `feature-platform/`, read from the filesystem (so an uncommitted file is read too),
  * skipping `node_modules`, build output and test files, which do not ship.
  *
+ * It also flags `DOMParser.parseFromString`, `Object.defineProperty`/`Reflect.set` on
+ * `innerHTML`/`outerHTML`, computed keys spelled as string literals, and any string
+ * or template text naming `text/html` (a `data:text/html` frame, an HTML `Blob`).
+ *
  * What it does not see: a renderer reached without an import the parser can read
- * (a global, a computed `import()` specifier, `eval`), or an HTML write through
- * reflection (`Reflect.set(el, 'innerHTML', ...)`, a computed property name). Those
- * are not spellings anyone writes by accident.
+ * (a global, a computed `import()` specifier, `eval`), a renderer package outside
+ * `RENDERER_PACKAGES` whose name does not contain "markdown", a property name or
+ * MIME type assembled at run time, or a `data:`/`blob:` frame whose MIME type is a
+ * variable. Those are not spellings anyone writes by accident.
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -74,7 +79,17 @@ const RENDERER_PACKAGES = [
 ];
 
 const HTML_WRITE_PROPERTIES = new Set(['innerHTML', 'outerHTML']);
-const HTML_WRITE_METHODS = new Set(['insertAdjacentHTML', 'createContextualFragment', 'setHTMLUnsafe', 'parseHTMLUnsafe']);
+const HTML_WRITE_METHODS = new Set([
+  'insertAdjacentHTML',
+  'createContextualFragment',
+  'setHTMLUnsafe',
+  'parseHTMLUnsafe',
+  // DOMParser: its document is inert, but the only reason to parse HTML in the UI is
+  // to move the result into the page.
+  'parseFromString',
+]);
+/** Reflective writes: `Object.defineProperty(el, 'innerHTML', ...)`, `Reflect.set(el, 'innerHTML', x)`. */
+const REFLECTIVE_WRITERS = new Set(['defineProperty', 'set']);
 const DOCUMENT_WRITE_METHODS = new Set(['write', 'writeln']);
 const HTML_WRITE_ATTRIBUTES = new Set(['dangerouslySetInnerHTML', 'srcdoc', 'srcDoc']);
 
@@ -86,12 +101,23 @@ interface Site {
 }
 
 const isRendererSpecifier = (specifier: string): boolean =>
-  RENDERER_PACKAGES.some((pkg) => specifier === pkg || specifier.startsWith(`${pkg}/`));
+  RENDERER_PACKAGES.some((pkg) => specifier === pkg || specifier.startsWith(`${pkg}/`)) ||
+  // Any package with "markdown" in its name (`@uiw/react-markdown-preview`, ...), so
+  // the list above is a floor, not the whole rule.
+  /markdown/i.test(
+    specifier
+      .split('/')
+      .slice(0, specifier.startsWith('@') ? 2 : 1)
+      .join('/'),
+  ) ||
+  specifier === 'html-to-react' ||
+  specifier.startsWith('html-to-react/');
 
 const nameOf = (node: ts.Node | undefined): string | undefined => {
   if (!node) return undefined;
   if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) return node.text;
   if (ts.isStringLiteralLike(node)) return node.text;
+  if (ts.isComputedPropertyName(node)) return nameOf(node.expression);
   if (ts.isJsxNamespacedName(node)) return node.name.text;
   return undefined;
 };
@@ -140,6 +166,9 @@ const findSites = (fileName: string, source: string): Site[] => {
       // Any object's write/writeln: a document is easily aliased (`const d = w.document`),
       // and no other write() call exists in UI code to make this noisy.
       if (method && DOCUMENT_WRITE_METHODS.has(method)) add('html-write', node, `calls ${method}`);
+      if (method && REFLECTIVE_WRITERS.has(method) && HTML_WRITE_PROPERTIES.has(nameOf(node.arguments[1]) ?? '')) {
+        add('html-write', node, `${method} ${nameOf(node.arguments[1])}`);
+      }
       if (method === 'setAttribute' && HTML_WRITE_ATTRIBUTES.has(nameOf(node.arguments[0]) ?? '')) {
         add('html-write', node, `sets ${nameOf(node.arguments[0])}`);
       }
@@ -158,6 +187,14 @@ const findSites = (fileName: string, source: string): Site[] => {
     } else if (ts.isJsxAttribute(node)) {
       const attr = nameOf(node.name);
       if (attr && HTML_WRITE_ATTRIBUTES.has(attr)) add('html-write', node, `JSX ${attr}`);
+    } else if (
+      (ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) &&
+      /text\/html/i.test(node.text)
+    ) {
+      // An HTML document built from a string: a `data:text/html,...` frame or a
+      // `Blob` of type text/html. FileViewer builds its type from a variable, so
+      // its data: URL is covered by its DOMPurify import instead.
+      add('html-write', node, 'builds text/html content');
     } else if (ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) {
       const key = nameOf(node.name);
       if (key && (HTML_WRITE_ATTRIBUTES.has(key) || HTML_WRITE_PROPERTIES.has(key))) add('html-write', node, `object key ${key}`);
@@ -259,7 +296,8 @@ describe('the scanner recognises every form it claims to', () => {
     ['type-only import', `import type { Components } from 'react-markdown';`, null],
     ['inline type-only names', `import { type Components } from 'react-markdown';`, null],
     ['mixed type and value', `import Md, { type Components } from 'react-markdown';`, 'renderer'],
-    ['look-alike package', `import x from 'react-markdown-editor';`, null],
+    ['markdown-named look-alike', `import x from 'react-markdown-editor';`, 'renderer'],
+    ['unrelated package', `import x from 'react-mark-highlight';`, null],
     ['comment mention', `// import ReactMarkdown from 'react-markdown'`, null],
     ['JSX dangerouslySetInnerHTML', `const a = <div dangerouslySetInnerHTML={{ __html: x }} />;`, 'html-write'],
     ['spread object key', `const p = { dangerouslySetInnerHTML: { __html: x } };`, 'html-write'],
@@ -270,6 +308,14 @@ describe('the scanner recognises every form it claims to', () => {
     ['outerHTML', `el.outerHTML = x;`, 'html-write'],
     ['Object.assign innerHTML', `Object.assign(el, { innerHTML: x });`, 'html-write'],
     ['setHTMLUnsafe', `el.setHTMLUnsafe(x);`, 'html-write'],
+    ['DOMParser', `const d = new DOMParser().parseFromString(x, mime);`, 'html-write'],
+    ['data:text/html frame', 'const f = <iframe src={`data:text/html,${x}`} />;', 'html-write'],
+    ['HTML Blob', `const b = new Blob([x], { type: 'text/html' });`, 'html-write'],
+    ['computed dangerouslySetInnerHTML key', `const p = { ['dangerouslySetInnerHTML']: { __html: x } };`, 'html-write'],
+    ['defineProperty innerHTML', `Object.defineProperty(el, 'innerHTML', { value: x });`, 'html-write'],
+    ['Reflect.set innerHTML', `Reflect.set(el, 'innerHTML', x);`, 'html-write'],
+    ['markdown-named package', `import Preview from '@uiw/react-markdown-preview';`, 'renderer'],
+    ['html-to-react', `import { Parser } from 'html-to-react';`, 'renderer'],
     ['sanitizer import', `import DOMPurify from 'dompurify';`, 'renderer'],
     ['innerHTML read', `const h = el.innerHTML;`, null],
     ['insertAdjacentHTML', `el.insertAdjacentHTML('beforeend', x);`, 'html-write'],

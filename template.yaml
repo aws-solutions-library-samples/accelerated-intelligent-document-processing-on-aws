@@ -15671,7 +15671,7 @@ Resources:
             #     before default-src, and script-src is set.
             #   - style-src: 'self' plus the one cross-origin stylesheet the app
             #     loads, Monaco's editor.main.css, which the AMD loader fetched
-            #     from cdn.jsdelivr.net/npm/ above injects as a <link>.
+            #     from cdn.jsdelivr.net/npm/ above adds as a <link>.
             #   - font-src 'self' data:: Cloudscape's and Monaco's fonts are
             #     data: URLs inside their CSS; nothing loads a font file from
             #     another origin.

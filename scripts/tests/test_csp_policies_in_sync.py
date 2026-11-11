@@ -287,7 +287,10 @@ def test_the_guard_can_actually_see_both_policies():
 
 
 #: Fetch directives: the ones that decide where the page may load a resource from.
-#: ``default-src`` is the fallback for every fetch directive the policy omits.
+#: ``default-src`` is the fallback for every fetch directive the policy omits. The
+#: listed ones must be checked even when absent from a policy; beyond them, every
+#: directive whose name ends in ``-src``, ``-src-elem`` or ``-src-attr`` is checked
+#: too (``style-src-elem`` overrides ``style-src``, so a fixed list could miss it).
 FETCH_DIRECTIVES = (
     "default-src",
     "script-src",
@@ -302,6 +305,17 @@ FETCH_DIRECTIVES = (
     "worker-src",
     "manifest-src",
 )
+_FETCH_DIRECTIVE_NAME = re.compile(r"-src(?:-elem|-attr)?$")
+
+
+def _fetch_directives_in(directives: dict[str, str]) -> list[str]:
+    return [
+        d
+        for d in directives
+        if d in FETCH_DIRECTIVES or _FETCH_DIRECTIVE_NAME.search(d)
+    ]
+
+
 #: Keywords a fetch directive may use. Nonces and hashes are absent for the reason
 #: given at ``_SCRIPT_SRC_KEYWORDS``.
 _FETCH_KEYWORDS = _SCRIPT_SRC_KEYWORDS
@@ -326,13 +340,18 @@ def _bad_fetch_sources(directive: str, sources: list[str]) -> list[str]:
         s
         for s in sources
         if s not in _FETCH_KEYWORDS
-        and not (s in _LOCAL_SCHEMES and directive != "script-src")
+        and not (s in _LOCAL_SCHEMES and not directive.startswith("script-src"))
         and not _NETWORK_SOURCE.match(s)
     ]
 
 
 def test_every_fetch_directive_names_specific_sources():
     """No bare network scheme (``https:``, ``http:``, ``wss:``) and no ``*``.
+
+    What is checked is the shape of each source: a host is named, with at most a
+    leftmost wildcard over two or more labels. That does not make a source narrow
+    -- ``https://*.amazonaws.com`` passes and covers every S3 bucket -- so a
+    wildcard over a shared hosting domain is still a reviewer's call.
 
     A bare scheme or ``*`` lets the page load that kind of resource from any host,
     which is what ``img-src https:`` and ``style-src https:`` did. Written as an
@@ -344,7 +363,7 @@ def test_every_fetch_directive_names_specific_sources():
         ("APIGateway", _api_gateway_policy()),
     ):
         directives = _directives(policy)
-        present = [d for d in FETCH_DIRECTIVES if d in directives]
+        present = _fetch_directives_in(directives)
         assert len(present) >= 8, (
             f"{mode}: expected the fetch directives, got {present}"
         )
@@ -410,6 +429,10 @@ def test_the_fetch_source_rule_rejects_what_it_claims_to():
     ):
         assert _bad_fetch_sources("img-src", [source]) == [source], source
     assert _bad_fetch_sources("script-src", ["data:"]) == ["data:"]
+    assert _bad_fetch_sources("script-src-elem", ["blob:"]) == ["blob:"]
+    assert _fetch_directives_in(
+        {"style-src-elem": "https:", "script-src-attr": "*", "base-uri": "'none'"}
+    ) == ["style-src-elem", "script-src-attr"]
     for source in (
         "'self'",
         "data:",
