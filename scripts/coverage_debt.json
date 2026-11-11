@@ -364,6 +364,7 @@
         "scripts/sdlc/generate_api_rbac_manifest.py": 31.87,
         "scripts/sdlc/integration_test_deployment.py": 30.22,
         "scripts/sdlc/run_stacktest.py": 86.08,
+        "scripts/sdlc/sandbox_network_probe.py": 97.78,
         "scripts/sdlc/scan_api_rbac.py": 88.55,
         "scripts/sdlc/transform_deploy_test.py": 70.31,
         "scripts/sdlc/typecheck_pr_changes.py": 70.55,
