@@ -19,6 +19,50 @@ database with the right columns filled.
 A file that always holds exactly one document still gets a type, so the pipeline uses the
 right fields for it.
 
+The example below is a seven-page loan package. Section detection finds the four documents
+in it, including two pay stubs that sit back to back. Classification then gives each document
+its type.
+
+```mermaid
+flowchart LR
+    F["Loan package<br/>one file, 7 pages"] -- "section<br/>detection" --> S1 & S2 & S3 & S4
+    subgraph S1["Section 1"]
+        direction LR
+        P1["Page 1"] ~~~ P2["Page 2"] -. classification .-> T1(["Loan application"])
+    end
+    subgraph S2["Section 2"]
+        direction LR
+        P3["Page 3"] -. classification .-> T2(["Pay stub"])
+    end
+    subgraph S3["Section 3"]
+        direction LR
+        P4["Page 4"] -. classification .-> T3(["Pay stub"])
+    end
+    subgraph S4["Section 4"]
+        direction LR
+        P5["Page 5"] ~~~ P6["Page 6"] ~~~ P7["Page 7"] -. classification .-> T4(["Bank statement"])
+    end
+
+    classDef file fill:#f1f5f9,stroke:#475569,color:#0f172a,stroke-width:2px
+    classDef app fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:2px
+    classDef stubA fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
+    classDef stubB fill:#ecfccb,stroke:#65a30d,color:#365314,stroke-width:2px
+    classDef bank fill:#ffedd5,stroke:#ea580c,color:#7c2d12,stroke-width:2px
+    class F file
+    class P1,P2,T1 app
+    class P3,T2 stubA
+    class P4,T3 stubB
+    class P5,P6,P7,T4 bank
+    style S1 fill:#eff6ff,stroke:#2563eb,color:#1e3a8a
+    style S2 fill:#f0fdf4,stroke:#16a34a,color:#14532d
+    style S3 fill:#f7fee7,stroke:#65a30d,color:#365314
+    style S4 fill:#fff7ed,stroke:#ea580c,color:#7c2d12
+```
+
+Each typed section then goes to extraction with its own type's fields: the application's
+fields from pages 1–2, one pay stub's fields from page 3, and so on.
+
+
 ## Getting it right
 
 **Describe each type by what sets it apart** from its closest neighbor. "A quote shows a
