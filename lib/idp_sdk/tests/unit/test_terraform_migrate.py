@@ -2431,3 +2431,56 @@ def test_the_backup_names_its_profiles():
         ]
     }
     assert tm.backed_up_profiles(backup) == ["bda", "default"]
+
+
+def test_a_recreated_table_named_like_a_kept_bucket_may_be_destroyed():
+    """Measured live: upstream names its test-sets TABLE exactly like the kept
+    test-set BUCKET, and check-destroy refused the table's (correct) deletion."""
+    plan = build()
+    bucket = next(r for r in plan.resources if r.kind == "test_set_bucket")
+    table = next(r for r in plan.resources if r.kind == "test_sets_table")
+    destroy = {
+        "format_version": "1.2",
+        "resource_changes": [
+            {
+                "address": table.old_address,
+                "type": "aws_dynamodb_table",
+                "mode": "managed",
+                "change": {
+                    "actions": ["delete"],
+                    "before": {
+                        "name": bucket.physical_id,
+                        "id": bucket.physical_id,
+                        "arn": "arn:aws:dynamodb:us-west-2:123456789012:table/"
+                        + bucket.physical_id,
+                    },
+                },
+            }
+        ],
+    }
+    findings = tm.check_destroy_plan(destroy, plan)
+    findings = findings[0] if isinstance(findings, tuple) else findings
+    assert not [f for f in findings if "touches kept" in f], findings
+
+
+def test_a_kept_bucket_in_the_destroy_plan_is_still_refused():
+    plan = build()
+    bucket = next(r for r in plan.resources if r.kind == "test_set_bucket")
+    other = next(r for r in plan.resources if r.kind == "test_sets_table")
+    destroy = {
+        "format_version": "1.2",
+        "resource_changes": [
+            {
+                "address": other.old_address,
+                "type": "aws_s3_bucket",
+                "mode": "managed",
+                "change": {
+                    "actions": ["delete"],
+                    "before": {"bucket": bucket.physical_id, "id": bucket.physical_id},
+                },
+            }
+        ],
+    }
+    findings = tm.check_destroy_plan(destroy, plan)
+    findings = findings[0] if isinstance(findings, tuple) else findings
+    assert any("touches kept" in f for f in findings)

@@ -2770,6 +2770,15 @@ _IDENTITY_ATTRS = ("bucket", "table_name", "key_id", "user_pool_id")
 _PRIMARY_ATTRS = ("id", "name", "arn")
 
 
+def _family(tf_type: str) -> str:
+    """The service a resource type belongs to (``aws_s3_bucket_policy`` -> ``s3``,
+    ``awscc_kms_key`` -> ``kms``). A kept identifier matches a deletion through a
+    primary attribute only within one family: upstream names its test-sets table
+    exactly like the kept test-set bucket, and destroying the table is correct."""
+    parts = tf_type.split("_")
+    return parts[1] if len(parts) > 1 else tf_type
+
+
 def check_destroy_plan(
     destroy_json: Dict[str, Any], plan: MigrationPlan
 ) -> Tuple[List[str], Dict[str, Any]]:
@@ -2835,13 +2844,13 @@ def check_destroy_plan(
             "plan (or the plan was built from another state)"
         ], {"deletions": len(deletes)}
 
-    kept = {
-        str(r.physical_id)
-        for r in plan.resources
-        if r.detach and r.physical_id and r.verdict != SETTING
-    }
+    kept_family: Dict[str, set] = {}
+    for r in plan.resources:
+        if r.detach and r.physical_id and r.verdict != SETTING:
+            kept_family.setdefault(str(r.physical_id), set()).add(_family(r.old_type))
     if plan.pool_id:
-        kept.add(plan.pool_id)
+        kept_family.setdefault(plan.pool_id, set()).add("cognito")
+    kept = set(kept_family)
     unrecorded: List[str] = []
     for rc in deletes:
         address = rc.get("address")
@@ -2858,13 +2867,24 @@ def check_destroy_plan(
         attrs = list(_IDENTITY_ATTRS)
         if rc.get("type") in _POOL_REFERENCE_OK:
             attrs.remove("user_pool_id")
-        if rc.get("type") in STATEFUL_TYPES:
-            attrs += list(_PRIMARY_ATTRS)
         hits = sorted({str(before.get(a)) for a in attrs if str(before.get(a)) in kept})
+        if rc.get("type") in STATEFUL_TYPES:
+            family = _family(str(rc.get("type")))
+            hits = sorted(
+                set(hits)
+                | {
+                    str(before.get(a))
+                    for a in _PRIMARY_ATTRS
+                    if family in kept_family.get(str(before.get(a)), ())
+                }
+            )
         if not hits and rc.get("type") in STATEFUL_TYPES:
             # A key or user is identified by an ARN that ends in the kept id.
             hits = sorted(
-                k for k in kept if str(before.get("arn", "")).endswith("/" + k)
+                k
+                for k in kept
+                if str(before.get("arn", "")).endswith("/" + k)
+                and _family(str(rc.get("type"))) in kept_family[k]
             )
         if hits:
             findings.append(
