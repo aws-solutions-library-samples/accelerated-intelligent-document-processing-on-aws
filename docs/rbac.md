@@ -1187,12 +1187,15 @@ the earlier `conversation#<sessionId>` key is no longer read.
 The owner row's expiry moves forward on every turn and is kept an hour past the
 retention period, so it outlives the messages written under it.
 `scripts/tests/test_session_keyed_storage.py` reports DynamoDB keys built from a
-session or conversation id with no user component, in every shape its module
-docstring lists: keys passed to any DynamoDB data-plane call however the dict was
-built, key conditions and PartiQL parameters, and `#`-joined key strings. A file that
+session or conversation id with no user component: keys passed to any DynamoDB
+data-plane call in the dict shapes its module docstring lists (literals, `dict(...)`,
+names assigned in the same or an enclosing scope, dicts filled in by subscript,
+`update` or `setdefault`, merges, comprehensions, splats and `self` attributes), key
+conditions and PartiQL parameters, and `#`-joined key strings. A file that
 legitimately keys on the session id alone is listed there with its pinned site count
-and the ownership check it relies on. What the scan cannot see (a key handed between
-functions, or a session id not named as one) is listed in the same docstring.
+and the ownership check it relies on. What the scan cannot see — among others a key
+handed between functions, a session id not named as one, a dict built by another
+function call, and an indirect call — is listed in the same docstring.
 
 ### Layer 3: UI Adaptation (UX Convenience)
 

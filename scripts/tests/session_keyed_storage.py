@@ -13,11 +13,15 @@ is a finding when one of its key components is derived from a session or
 conversation identifier and none is derived from a user identifier.
 
 **Key constructions.** Every DynamoDB data-plane call (:data:`DYNAMODB_CALLS`,
-which includes the batch, transaction and PartiQL calls) is examined. Every dict
-reachable from its arguments is a candidate, however it was built: a literal, a
-``dict(...)`` call, a name assigned (plainly or with an annotation) from either,
-a dict filled in by ``name["PK"] = value``, a ``**`` splat, a ``self`` attribute
-assigned anywhere in the module, or a dict nested inside any of these. Its
+which includes the batch, transaction and PartiQL calls) is examined. A dict
+reachable from its arguments is a candidate when it is: a literal; a
+``dict(...)`` call with keyword or dict arguments; a name assigned (plainly or
+with an annotation) from one of these, in its own scope or an enclosing one; a
+dict filled in by ``name["PK"] = value``, ``name.update(...)``,
+``name.setdefault("PK", value)`` or ``name |= ...``; a ``|`` merge; the element
+of a list, set or generator comprehension; a dict comprehension over constant
+keys; a ``**`` splat; a ``self`` attribute assigned anywhere in the module; or a
+dict nested inside any of these. Its
 entries named after a key attribute of some table in this repository's templates
 (every ``KeySchema`` and index ``KeySchema``, not a list written here) are its
 key components. A ``KeyConditionExpression`` with its
@@ -27,9 +31,13 @@ key components. A ``KeyConditionExpression`` with its
 its own: an f-string, ``+``, ``%``, ``.format`` or ``"#".join``.
 
 **Derived.** A value is session-derived when it names a session or conversation
-id, or is a local name bound from one: by assignment, annotated or augmented
-assignment, ``:=``, a ``for`` loop or comprehension over one, or ``with ... as``.
-It is user-derived when it names a user identity: ``sub``, ``username``, a
+id, or is a name bound from one: by assignment, annotated or augmented
+assignment, ``:=``, a ``for`` loop or comprehension over one, or ``with ... as``,
+in its own scope or (for a closure) an enclosing one, or a ``self`` attribute
+assigned from one anywhere in the module. A name is user-derived when it names a
+user identity, and so is a field read by that name (``claims["sub"]``,
+``identity.get("username")``); a string literal never is, since ``"userId#"`` or
+``"sub"`` names no particular user. A user identity is: ``sub``, ``username``, a
 ``user`` beside ``id`` or ``name``, or ``owner``/``caller`` alone or beside
 ``sub``, ``id`` or ``key``. Of ``a or b`` and ``a if c else b``, the result is
 user-derived only when every branch is, since either may be the one used.
@@ -37,8 +45,11 @@ user-derived only when every branch is, since either may be the one used.
 **What it still cannot see,** stated so a clean run is not over-read: a key
 assembled in one function and handed to another as an argument; a session id
 named with no ``session`` or ``conversation`` in it; a user term that is only a
-user-sounding name for something else (``owner_sub = session_id`` reads as a
-user term); and a call made through a wrapper that is not itself a DynamoDB call.
+user-sounding name for something else (``owner_sub = session_id``, or a sort key
+named ``username_ts``, reads as a user term); a dict built by
+``dict.fromkeys(...)``, ``dict(zip(...))`` or any other function call; and a call
+made indirectly (``getattr(table, "get_item")(...)``, ``functools.partial``, or a
+wrapper that is not itself a DynamoDB call).
 A finding is evidence, and a clean run is evidence that none of the recognised
 shapes occur, not a proof.
 """
@@ -159,9 +170,16 @@ def _bindings(scope: ast.AST) -> list[tuple[list[str], ast.AST]]:
 class _Taint:
     """Which local names hold a session-derived or user-derived value."""
 
-    def __init__(self, scope: ast.AST, outer: "_Taint | None" = None):
+    def __init__(
+        self,
+        scope: ast.AST,
+        outer: "_Taint | None" = None,
+        self_attrs: "dict[str, tuple[bool, bool]] | None" = None,
+    ):
         self.session: set[str] = set(outer.session) if outer else set()
         self.user: set[str] = set(outer.user) if outer else set()
+        # ``self.<attr>`` -> (session_derived, user_derived), module-wide.
+        self.self_attrs = self_attrs if self_attrs is not None else {}
         bindings = _bindings(scope)
         changed = True
         while changed:
@@ -192,10 +210,24 @@ class _Taint:
             label = expr.id
         elif isinstance(expr, ast.Attribute):
             label = expr.attr
+            if isinstance(expr.value, ast.Name) and expr.value.id == "self":
+                session, user = self.self_attrs.get(expr.attr, (False, False))
+        elif isinstance(expr, ast.Subscript) and isinstance(expr.slice, ast.Constant):
+            # claims["sub"], event["sessionId"]: the key names the field read.
+            label = str(expr.slice.value)
+        elif (
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Attribute)
+            and expr.func.attr == "get"
+            and expr.args
+            and isinstance(expr.args[0], ast.Constant)
+        ):
+            label = str(expr.args[0].value)
         elif isinstance(expr, ast.Constant) and isinstance(expr.value, str):
-            # event["sessionId"], arguments.get("sessionId"), claims["sub"],
-            # and a condition string such as "PK = :session_id".
-            label = expr.value
+            # A literal is never a user value: "userId#..." or "sub" names no
+            # particular user. It can still say a session is involved, as a
+            # condition string such as "PK = :session_id" does.
+            return names_a_session(expr.value), False
         if label is not None:
             session = session or names_a_session(label)
             user = user or names_a_user(label)
@@ -302,15 +334,15 @@ class _Module:
 
     def __init__(self, tree: ast.Module):
         self.tree = tree
-        self.scope_of: dict[int, ast.AST] = {}
-        self.taint: dict[int, _Taint] = {}
-        module_taint = _Taint(tree)
+        # The scope each function is defined in, so a closure sees its parent's
+        # locals.
+        self.parent: dict[int, ast.AST] = {}
         for scope in _scopes(tree):
-            self.taint[id(scope)] = (
-                module_taint if scope is tree else _Taint(scope, module_taint)
-            )
             for node in _own_nodes(scope):
-                self.scope_of[id(node)] = scope
+                if isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+                ):
+                    self.parent[id(node)] = scope
         # self.<attr> = <value>, anywhere in the module.
         self.self_attrs: dict[str, list[tuple[ast.AST, ast.AST]]] = {}
         for scope in _scopes(tree):
@@ -329,13 +361,60 @@ class _Module:
                         self.self_attrs.setdefault(t.attr, []).append(
                             (node.value, scope)
                         )
+        # Taint per scope, outermost first, twice: the second pass lets a
+        # ``self`` attribute assigned in one method taint a read in another.
+        attr_taint: dict[str, tuple[bool, bool]] = {}
+        for _ in range(2):
+            self.taint: dict[int, _Taint] = {}
+            for scope in _scopes(tree):
+                outer = None
+                if id(scope) in self.parent:
+                    outer = self.taint.get(id(self.parent[id(scope)]))
+                self.taint[id(scope)] = _Taint(scope, outer, attr_taint)
+            for attr, defs in self.self_attrs.items():
+                s = u = False
+                for value, where in defs:
+                    vs, vu = self.taint[id(where)].classify(value)
+                    s, u = s or vs, u or vu
+                attr_taint[attr] = (s, u)
+
+    def _enclosing(self, scope: ast.AST):
+        while True:
+            yield scope
+            if id(scope) not in self.parent:
+                return
+            scope = self.parent[id(scope)]
 
     def definitions(self, name: str, scope: ast.AST):
-        """Values ``name`` is bound from in ``scope`` (then the module), and the
-        ``name[key] = value`` entries written into it."""
-        for candidate in (scope, self.tree):
+        """Values ``name`` is bound from in ``scope`` or the nearest enclosing
+        scope that binds it, and the entries written into it there:
+        ``name[key] = value``, ``name.update(...)``, ``name.setdefault(key,
+        value)`` and ``name |= ...``."""
+        for candidate in self._enclosing(scope):
             values, entries = [], []
             for node in _own_nodes(candidate):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == name
+                ):
+                    if node.func.attr == "update":
+                        values.extend(node.args)
+                        entries.extend((k.arg, k.value) for k in node.keywords if k.arg)
+                    elif (
+                        node.func.attr == "setdefault"
+                        and len(node.args) == 2
+                        and isinstance(node.args[0], ast.Constant)
+                    ):
+                        entries.append((node.args[0].value, node.args[1]))
+                elif (
+                    isinstance(node, ast.AugAssign)
+                    and isinstance(node.op, ast.BitOr)
+                    and isinstance(node.target, ast.Name)
+                    and node.target.id == name
+                ):
+                    values.append(node.value)
                 if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value:
                     targets = (
                         node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -352,8 +431,6 @@ class _Module:
                             entries.append((t.slice.value, node.value))
             if values or entries:
                 return values, entries, candidate
-            if candidate is self.tree:
-                break
         return [], [], scope
 
 
@@ -399,6 +476,24 @@ def _key_groups(mod: _Module, expr: ast.AST, scope: ast.AST, seen: set[int]):
     elif isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
         for e in expr.elts:
             yield from _key_groups(mod, e, scope, seen)
+    elif isinstance(expr, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+        # [{"PK": s} for s in session_ids]: the element is the key dict, and the
+        # comprehension's variables are bound in the enclosing scope's taint.
+        yield from _key_groups(mod, expr.elt, scope, seen)
+    elif isinstance(expr, ast.DictComp):
+        # {k: session_id for k in ["PK"]}: the keys are the constants the
+        # iterables hold.
+        keys = [
+            n.value
+            for gen in expr.generators
+            for n in ast.walk(gen.iter)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        ]
+        yield [(k, expr.value) for k in keys], scope
+        yield from _key_groups(mod, expr.value, scope, seen)
+    elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.BitOr):
+        yield from _key_groups(mod, expr.left, scope, seen)
+        yield from _key_groups(mod, expr.right, scope, seen)
     elif isinstance(expr, ast.Starred):
         yield from _key_groups(mod, expr.value, scope, seen)
 
@@ -438,7 +533,6 @@ def scan_source(path: str, text: str, key_attributes: frozenset[str]) -> list[Fi
                         session, user = _judge(
                             mod.taint[id(where)], [v for _, v in keyed]
                         )
-                        user |= any(names_a_user(k) for k, _ in keyed)
                         if session and not user:
                             findings.append(Finding(path, node.lineno, f"{callee} key"))
                 for condition, values in (

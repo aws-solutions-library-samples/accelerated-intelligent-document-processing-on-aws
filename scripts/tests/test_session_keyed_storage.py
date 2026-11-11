@@ -338,6 +338,69 @@ FLAGGED = {
         "    def read(self, t):\n"
         "        t.get_item(Key=self.key)\n"
     ),
+    "comprehension-of-keys": (
+        "def f(c, session_ids):\n"
+        '    c.batch_get_item(RequestItems={"T": {"Keys": [{"PK": s} for s in session_ids]}})\n'
+    ),
+    "comprehension-over-anything": (
+        "def f(c, session_id):\n"
+        '    c.batch_get_item(RequestItems={"T": {"Keys": [{"PK": session_id} for _ in range(1)]}})\n'
+    ),
+    "comprehension-through-a-name": (
+        "def f(c, session_ids):\n"
+        '    keys = [{"PK": s} for s in session_ids]\n'
+        '    c.batch_get_item(RequestItems={"T": {"Keys": keys}})\n'
+    ),
+    "dict-comprehension": (
+        'def f(t, session_id):\n    t.get_item(Key={k: session_id for k in ["PK"]})\n'
+    ),
+    "update-keywords": (
+        "def f(t, session_id):\n"
+        "    key = {}\n"
+        "    key.update(PK=session_id)\n"
+        "    t.get_item(Key=key)\n"
+    ),
+    "update-dict": (
+        "def f(t, session_id):\n"
+        "    key = {}\n"
+        '    key.update({"PK": session_id})\n'
+        "    t.get_item(Key=key)\n"
+    ),
+    "setdefault": (
+        "def f(t, session_id):\n"
+        "    key = {}\n"
+        '    key.setdefault("PK", session_id)\n'
+        "    t.get_item(Key=key)\n"
+    ),
+    "merge": (
+        'def f(t, session_id):\n    t.get_item(Key={"SK": "x"} | {"PK": session_id})\n'
+    ),
+    "merge-in-place": (
+        "def f(t, session_id):\n"
+        '    key = {"SK": "x"}\n'
+        '    key |= {"PK": session_id}\n'
+        "    t.get_item(Key=key)\n"
+    ),
+    "a-user-word-in-a-literal-prefix": (
+        'def f(t, session_id):\n    t.get_item(Key={"PK": f"userId#{session_id}"})\n'
+    ),
+    "a-user-word-as-a-literal-sort-key": (
+        'def f(t, session_id):\n    t.get_item(Key={"PK": session_id, "SK": "sub"})\n'
+    ),
+    "closure-over-a-local": (
+        "def f(t, event):\n"
+        '    sid = event["sessionId"]\n'
+        "    def read():\n"
+        '        return t.get_item(Key={"PK": sid})\n'
+        "    return read()\n"
+    ),
+    "self-attribute-holding-the-id": (
+        "class C:\n"
+        "    def __init__(self, session_id):\n"
+        "        self.sid = session_id\n"
+        "    def read(self, t):\n"
+        '        t.get_item(Key={"PK": self.sid})\n'
+    ),
     "a-user-message-timestamp-is-not-a-user": (
         "def f(t, session_id, user_ts):\n"
         '    t.put_item(Item={"PK": session_id, "SK": user_ts})\n'
@@ -365,6 +428,10 @@ CLEAN = {
         "def f(c, user_id, session_id):\n"
         '    c.execute_statement(Statement="SELECT * FROM T WHERE userId=? AND sessionId=?", '
         'Parameters=[{"S": user_id}, {"S": session_id}])\n'
+    ),
+    "a-field-read-by-a-user-name": (
+        "def f(t, claims, session_id):\n"
+        '    t.get_item(Key={"PK": f"{claims[\'sub\']}#{session_id}"})\n'
     ),
     "arithmetic": "def f(session_id, n):\n    return n + 1\n",
     "a-log-line": 'def f(session_id):\n    print(f"session {session_id}")\n',
