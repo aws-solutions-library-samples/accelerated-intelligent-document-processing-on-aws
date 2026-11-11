@@ -1746,9 +1746,9 @@ Resources:
                       method:
                         type: string
                         title: Section classification method
-                        description: "How each section gets its class. 'llm' makes one call per section with the class list and examples. Embeddings and external classifier endpoints are planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)). An exported configuration may show 'embeddings', 'decision_model' and 'low_confidence' blocks with defaults: they belong to those planned methods and are ignored today."
-                        enum: ["llm"]
-                        enumLabels: { "llm": "LLM" }
+                        description: "How each section gets its class. 'LLM' makes one call per section with the class list and examples. 'Decision model' asks a decision model one choice question per section and reads a probability for every class ([Decision models](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/decision-models.md)). Embeddings are planned ([GitHub issue #1329](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1329)); an exported configuration may show an 'embeddings' block with defaults, which is ignored today."
+                        enum: ["llm", "decision_model"]
+                        enumLabels: { "llm": "LLM", "decision_model": "Decision model" }
                         default: "llm"
                         order: 0
                       pages:
@@ -2041,6 +2041,83 @@ Resources:
                                 description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block."
                                 order: 3
                                 dependsOn: { field: "mode", value: "verbalized" }
+                      decision_model:
+                        type: object
+                        sectionLabel: Decision model
+                        collapsible: false
+                        description: "One choice question per section, answered by a decision model: the options are the classes, each described by its description, and the answer is a probability for every class. See [Decision models](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/decision-models.md)."
+                        order: 4
+                        showWhen: [{ field: "method", value: "decision_model" }]
+                        properties:
+                          endpoint:
+                            type: string
+                            title: Function ARN
+                            description: "The decision model's Lambda function ARN (System One API). The function name must start with GENAIIDP-. Required when the method is Decision model."
+                            order: 0
+                          input:
+                            type: string
+                            title: Input
+                            description: "What the decision model reads. 'Page images' (default) measured best for classification; text alone loses the visual cues that tell forms, letters and memos apart."
+                            enum: ["images", "text", "both"]
+                            enumLabels: { images: "Page images (default)", text: "OCR text", both: "Page images and OCR text" }
+                            default: "images"
+                            order: 1
+                          max_pages:
+                            type: integer
+                            title: Maximum pages per section
+                            description: "The most pages of a section the decision model reads, after 'Pages per section' selects them. 1 to 4: a request carries at most 4 images. One page measured best; more did not raise accuracy and weakened the confidence."
+                            minimum: 1
+                            maximum: 4
+                            default: 1
+                            order: 2
+                          instructions:
+                            type: string
+                            title: Question
+                            format: textarea
+                            description: "The choice question's instructions. The options are always the configured classes, each described by its description, so the class descriptions are what the model compares a section against."
+                            default: "Which type of document is this?"
+                            order: 3
+                          timeout_ms:
+                            type: integer
+                            title: Timeout (ms)
+                            description: "How long to wait for one answer. Without SnapStart the first request to a new execution environment waits for the model to load, about 3 minutes for the first after a deploy, so keep this at 300000 unless SnapStart is on."
+                            minimum: 1000
+                            maximum: 840000
+                            default: 300000
+                            order: 4
+                          max_concurrency:
+                            type: integer
+                            title: Maximum concurrent calls
+                            description: "The most calls in flight from one classification run. Each call occupies one 10 GB execution environment."
+                            minimum: 1
+                            maximum: 64
+                            default: 4
+                            order: 5
+                      low_confidence:
+                        type: object
+                        sectionLabel: Low-confidence answers
+                        collapsible: true
+                        defaultExpanded: false
+                        description: "What happens to a decision-model answer whose probability is below the minimum. Applies to answers only: a call that fails fails its section and is never sent to the LLM."
+                        order: 5
+                        showWhen: [{ field: "method", value: "decision_model" }]
+                        properties:
+                          min_confidence:
+                            type: number
+                            title: Minimum probability
+                            description: "Answers below this go to the action below. 0 (default) keeps every answer."
+                            minimum: 0
+                            maximum: 1
+                            default: 0
+                            order: 0
+                          on_low_confidence:
+                            type: string
+                            title: Action
+                            description: "'Fallback class': the section gets classification.fallback_class. 'LLM': the section is classified again by the LLM settings above."
+                            enum: ["fallback_class", "llm"]
+                            enumLabels: { fallback_class: "Fallback class", llm: "LLM" }
+                            default: "fallback_class"
+                            order: 1
               document_shape:
                 type: object
                 sectionLabel: Advanced — known document shape
@@ -2692,6 +2769,75 @@ Resources:
                     default: 25
                     order: 2
                     dependsOn: { field: "extraction.confidence.mode", value: "separate" }
+                  method:
+                    type: string
+                    title: Confidence method
+                    description: "Who scores each extracted value in a separate pass. 'LLM' (default): the confidence model and prompts below. 'Decision model': one yes/no question per value to a decision model, per page, and the value's confidence is its highest probability across pages ([Decision models](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/decision-models.md)). Needs mode 'separate'."
+                    enum: ["llm", "decision_model"]
+                    enumLabels: { "llm": "LLM (default)", "decision_model": "Decision model" }
+                    default: "llm"
+                    order: 1
+                    dependsOn: { field: "extraction.confidence.mode", value: "separate" }
+                  decision_model:
+                    type: object
+                    sectionLabel: Decision model
+                    collapsible: false
+                    description: "One yes/no question per extracted value, asked against each page of the section in one request per page."
+                    order: 1.5
+                    showWhen: [{ field: "method", value: "decision_model" }]
+                    properties:
+                      endpoint:
+                        type: string
+                        title: Function ARN
+                        description: "The decision model's Lambda function ARN (System One API). The function name must start with GENAIIDP-. Required when the method is Decision model."
+                        order: 0
+                      input:
+                        type: string
+                        title: Input
+                        description: "What each request reads. 'Page images' (default): one page image per request, which measured best. 'OCR text': one request with the section's text. 'Both': each page image plus the section's text, which can exceed the model's window on long sections."
+                        enum: ["images", "text", "both"]
+                        enumLabels: { images: "Page images (default)", text: "OCR text", both: "Page images and OCR text" }
+                        default: "images"
+                        order: 1
+                      max_pages:
+                        type: integer
+                        title: Maximum pages per section
+                        description: "The most pages of a section read, one request each. A value that appears only on a later page scores low and is sent to review."
+                        minimum: 1
+                        maximum: 50
+                        default: 20
+                        order: 2
+                      instructions:
+                        type: string
+                        title: Question
+                        format: textarea
+                        description: "Each value's yes/no question. {FIELD} is the field's path (for example LineItems[2].Amount), {DESCRIPTION} its schema description, {VALUE} the extracted value. Empty uses this default."
+                        default: 'The system says the field "{FIELD}" ({DESCRIPTION}) is "{VALUE}". Is that the correct value?'
+                        order: 3
+                      max_questions_per_request:
+                        type: integer
+                        title: Maximum questions per request
+                        description: "A page with more extracted values is asked in several requests, which keeps each inside the model's request limit."
+                        minimum: 1
+                        maximum: 250
+                        default: 100
+                        order: 4
+                      timeout_ms:
+                        type: integer
+                        title: Timeout (ms)
+                        description: "How long to wait for one answer. Without SnapStart the first request to a new execution environment waits for the model to load, about 3 minutes for the first after a deploy."
+                        minimum: 1000
+                        maximum: 840000
+                        default: 300000
+                        order: 5
+                      max_concurrency:
+                        type: integer
+                        title: Maximum concurrent calls
+                        description: "The most calls in flight for one section. Each call occupies one 10 GB execution environment."
+                        minimum: 1
+                        maximum: 64
+                        default: 4
+                        order: 6
                   model:
                     type: string
                     title: Confidence model
@@ -6257,6 +6403,16 @@ Resources:
                 Action: sts:AssumeRole
                 Resource: !Ref BedrockHubRoleArn
               - !Ref AWS::NoValue
+            # Lambda invoke for LambdaHook custom inference and decision models,
+            # the same grant the other pipeline functions carry: Advanced
+            # extraction runs both its model calls and its confidence pass here.
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource:
+                - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:GENAIIDP-*"
+              Condition:
+                StringLike:
+                  "lambda:FunctionName": "GENAIIDP-*"
             - Effect: Allow
               Action:
                 - aws-marketplace:Subscribe

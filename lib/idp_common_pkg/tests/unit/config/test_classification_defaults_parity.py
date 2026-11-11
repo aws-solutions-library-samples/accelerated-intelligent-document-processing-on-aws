@@ -96,18 +96,6 @@ DEFAULTS_OMISSION_EXEMPT_SUBTREES: Dict[str, str] = {
         "implemented: section_classification.method refuses 'embeddings'. Computed "
         "by test_the_method_reaching_an_omitted_block_is_refused."
     ),
-    "classification.split_then_classify.section_classification.decision_model": (
-        "Declared for an external classifier endpoint (#1329) and not implemented: "
-        "section_classification.method refuses 'decision_model'. Computed by "
-        "test_the_method_reaching_an_omitted_block_is_refused."
-    ),
-    "classification.split_then_classify.section_classification.low_confidence": (
-        "Applies only when section_classification.method is NOT 'llm' — it decides "
-        "what happens when a non-LLM classifier is unsure — and no such method is "
-        "accepted, so no document can reach it. Its witness is any non-llm value "
-        "('embeddings'), which is why it shares the computation above rather than "
-        "being its own kind of claim."
-    ),
 }
 
 #: Individual fields the defaults omit. One exact path per entry: a field is the
@@ -147,21 +135,13 @@ for _key in sorted(SECTION_CLASSIFICATION_UNREAD_CONFIDENCE_KEYS):
 del _key
 
 #: The non-llm `method` value whose acceptance would make each omitted sub-block
-#: reachable. The premise for those four entries, as a per-member table.
+#: reachable. The premise for those entries, as a per-member table.
 _METHOD_REACHING_OMITTED_BLOCK: Dict[str, Tuple[str, str]] = {
     "classification.split_then_classify.splitting.boundary_model": (
         "classification.split_then_classify.splitting.method",
         "boundary_model",
     ),
     "classification.split_then_classify.section_classification.embeddings": (
-        "classification.split_then_classify.section_classification.method",
-        "embeddings",
-    ),
-    "classification.split_then_classify.section_classification.decision_model": (
-        "classification.split_then_classify.section_classification.method",
-        "decision_model",
-    ),
-    "classification.split_then_classify.section_classification.low_confidence": (
         "classification.split_then_classify.section_classification.method",
         "embeddings",
     ),

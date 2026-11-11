@@ -37,6 +37,9 @@ from idp_common.classification.class_confidence import (
     resolve_class_and_confidence,
     resolve_top_k,
 )
+from idp_common.classification.decision_model_labeler import (
+    DecisionModelSectionLabeler,
+)
 from idp_common.classification.models import (
     ClassificationResult,
     DocumentClassification,
@@ -6156,15 +6159,22 @@ class ClassificationService:
         config = self._get_classification_config(self.STAGE_SECTION_CLASSIFICATION)
         _, send_images = self._resolve_modality(stage=self.STAGE_SECTION_CLASSIFICATION)
         pages_content, _ = self._format_pages_with_coverage(document)
+        section_cfg = (
+            self.config.classification.split_then_classify.section_classification
+        )
+        decision_labeler = (
+            DecisionModelSectionLabeler(self, section_cfg)
+            if section_cfg.method == "decision_model"
+            else None
+        )
 
         metering: Dict[str, Any] = {}
         errors: List[str] = []
         issues: Dict[int, Dict[str, str]] = {}
         lock = threading.Lock()
 
-        def label(index: int) -> None:
+        def llm_label(index: int, page_ids: List[str]):
             segment = segments[index]
-            page_ids = self._section_classification_pages(segment)
             paged_text = self._format_paged_text(pages_content, page_ids)
             page_images = (
                 self._load_packet_page_images(
@@ -6176,14 +6186,29 @@ class ClassificationService:
             content = self._build_packet_content(
                 config["task_prompt"], paged_text, page_images, stage=config["stage"]
             )
-
-            doc_type, confidence, candidates, reason, call_metering, invalid = (
-                self._invoke_with_class_validation(
-                    content=content,
-                    config=config,
-                    label=f"segment {index + 1} (pages {segment.start_page}-{segment.end_page})",
-                )
+            return self._invoke_with_class_validation(
+                content=content,
+                config=config,
+                label=f"segment {index + 1} (pages {segment.start_page}-{segment.end_page})",
             )
+
+        def label(index: int) -> None:
+            segment = segments[index]
+            page_ids = self._section_classification_pages(segment)
+            if decision_labeler is not None:
+                doc_type, confidence, candidates, reason, call_metering, invalid = (
+                    decision_labeler.label(
+                        document,
+                        pages_content,
+                        page_ids,
+                        label=f"segment {index + 1} (pages {segment.start_page}-{segment.end_page})",
+                        llm_label=lambda: llm_label(index, page_ids),
+                    )
+                )
+            else:
+                doc_type, confidence, candidates, reason, call_metering, invalid = (
+                    llm_label(index, page_ids)
+                )
 
             with lock:
                 segment.doc_class = doc_type

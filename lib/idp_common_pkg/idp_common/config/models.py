@@ -974,6 +974,158 @@ class MalwareScanningConfig(BaseModel):
         return normalised
 
 
+class ExternalModelConfig(BaseModel):
+    """An external model behind a stable contract.
+
+    Shared by the boundary model (splitting) and the decision models (section
+    classification, extraction confidence), so each method lands without a
+    configuration migration. ``backend: lambda`` is implemented, by
+    ``idp_common.decision_model``, which speaks the System One API; ``sagemaker``
+    and ``bedrock_custom`` are declared and refused until they are.
+    """
+
+    backend: str = Field(
+        default="",
+        description="lambda (empty means lambda) | sagemaker | bedrock_custom",
+    )
+    endpoint: str = Field(
+        default="",
+        description=("Endpoint name, model ARN, or function ARN (GENAIIDP- prefix)."),
+    )
+    input: str = Field(default="images", description="images | text | both")
+    timeout_ms: int = Field(default=30000, ge=0)
+    max_concurrency: int = Field(default=4, ge=1)
+    price_per_request: float = Field(
+        default=0.0, ge=0.0, description="Per-request price, for metering."
+    )
+    function_memory_mb: int = Field(
+        default=10240,
+        ge=128,
+        le=10240,
+        description=(
+            "The memory the Lambda backend's function runs at, for metering "
+            "GB-seconds. The Strands Decider's Lambda deployment uses 10240."
+        ),
+    )
+
+
+#: The most pages of a section the decision-model confidence pass reads. Each page
+#: is a request, so this bounds how many one section fans out to.
+DECISION_MODEL_MAX_CONFIDENCE_PAGES = 50
+
+
+class ConfidenceDecisionModelConfig(ExternalModelConfig):
+    """Extraction confidence by a decision model: one ``noul`` question per field.
+
+    Each page of the section is one request, with that page as the state and one
+    question per extracted value; a value's confidence is its highest P(yes) over
+    the pages. See ``idp_common.assessment.decision_model_confidence``.
+    """
+
+    backend: str = Field(
+        default="lambda", description="lambda (the only backend today)"
+    )
+    endpoint: Optional[str] = Field(
+        default=None,
+        description=(
+            "Function ARN; the function name must start with GENAIIDP-. Required "
+            "when the sibling method is 'decision_model'."
+        ),
+    )
+    timeout_ms: int = Field(
+        default=300000,
+        ge=1000,
+        le=840000,
+        description=(
+            "How long to wait for one answer. Without SnapStart, the first request "
+            "to a new execution environment waits for the model to load: measured "
+            "at about 3 minutes for the first after a deploy, with vision on."
+        ),
+    )
+    instructions: str = Field(
+        default=(
+            'The system says the field "{FIELD}" ({DESCRIPTION}) is "{VALUE}". '
+            "Is that the correct value?"
+        ),
+        description=(
+            "Each field's yes/no question. {FIELD} is the field's path, "
+            "{DESCRIPTION} its schema description, {VALUE} the extracted value."
+        ),
+    )
+    max_pages: int = Field(
+        default=20,
+        ge=1,
+        le=DECISION_MODEL_MAX_CONFIDENCE_PAGES,
+        description=(
+            "The most pages of a section read, one request each (1 to "
+            f"{DECISION_MODEL_MAX_CONFIDENCE_PAGES}). A value that appears only on a "
+            "page past the limit scores low and is sent to review."
+        ),
+    )
+    max_questions_per_request: int = Field(
+        default=100,
+        ge=1,
+        le=250,
+        description=(
+            "The most field questions in one request. A page with more fields is "
+            "asked in several requests, which keeps each inside the model's "
+            "request limit."
+        ),
+    )
+
+    @field_validator("instructions", mode="before")
+    @classmethod
+    def empty_instructions_is_the_default(cls, v: Any, info: ValidationInfo) -> str:
+        """An empty question is the shipped one, never an empty question sent."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return cls.model_fields[info.field_name].default
+        return str(v)
+
+    @field_validator("price_per_request", mode="before")
+    @classmethod
+    def price_per_request_is_not_read(cls, v: Any) -> float:
+        """Refused rather than ignored: cost comes from ``pricing.yaml``."""
+        value = float(v or 0)
+        if value:
+            raise ValueError(
+                "decision_model.price_per_request is not read: the decision model's "
+                "cost comes from the decision_model/<function> entry in "
+                "config_library/pricing.yaml, by request and GB-second. Leave it 0."
+            )
+        return 0.0
+
+    @field_validator("endpoint", mode="before")
+    @classmethod
+    def empty_endpoint_is_unset(cls, v: Any) -> Optional[str]:
+        """An empty endpoint is an unset one.
+
+        Shipped as '' to keep the block the same shape on disk as section
+        classification's, whose field a release before decision models types as a
+        string. Required when this block's method is selected.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return str(v).strip()
+
+    @field_validator("input", mode="before")
+    @classmethod
+    def validate_input(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "images"
+        v_str = str(v).strip().lower()
+        if v_str not in DECISION_MODEL_INPUTS:
+            raise ValueError(
+                "extraction.confidence.decision_model.input must be one of "
+                f"{', '.join(DECISION_MODEL_INPUTS)}, got {v!r}"
+            )
+        return v_str
+
+    @field_validator("max_pages", "max_questions_per_request", mode="before")
+    @classmethod
+    def parse_ints(cls, v: Any, info: ValidationInfo) -> int:
+        return _parse_required_int(v, info, cls)
+
+
 class ConfidenceConfig(BaseModel):
     """Per-field confidence configuration (v0.6).
 
@@ -1102,6 +1254,30 @@ class ConfidenceConfig(BaseModel):
         ),
     )
     image: ImageConfig = Field(default_factory=ImageConfig)
+    method: str = Field(
+        default="llm",
+        description=(
+            "Who scores each extracted value: 'llm' (the model and prompts above) "
+            "or 'decision_model' (one yes/no question per value to a decision "
+            "model, see `decision_model`). Applies to mode 'separate'."
+        ),
+    )
+    decision_model: ConfidenceDecisionModelConfig = Field(
+        default_factory=ConfidenceDecisionModelConfig
+    )
+
+    @field_validator("method", mode="before")
+    @classmethod
+    def validate_method(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "llm"
+        v_str = str(v).strip().lower()
+        if v_str not in ("llm", "decision_model"):
+            raise ValueError(
+                "extraction.confidence.method must be 'llm' or 'decision_model', "
+                f"got {v!r}"
+            )
+        return v_str
 
     @field_validator("temperature", "top_p", "top_k", mode="before")
     @classmethod
@@ -1148,6 +1324,22 @@ class ConfidenceConfig(BaseModel):
         if self.enabled is False and self.mode != "off":
             # Legacy disable-via-enabled: respect it.
             self.mode = "off"
+        if self.method == "decision_model" and self.mode == "integrated":
+            raise ValueError(
+                "extraction.confidence.method 'decision_model' needs mode "
+                "'separate': in 'integrated' mode the extraction call scores its own "
+                "values and no confidence pass runs"
+            )
+        if (
+            self.method == "decision_model"
+            and self.mode != "off"
+            and not self.decision_model.endpoint
+        ):
+            raise ValueError(
+                "extraction.confidence.method is 'decision_model' but "
+                "extraction.confidence.decision_model.endpoint is empty: set it to the "
+                "decision model's Lambda function ARN"
+            )
         self.enabled = self.mode != "off"
         return self
 
@@ -1561,6 +1753,27 @@ class ExtractionConfig(BaseModel):
             self.agentic.enabled = self.mode == "advanced"
         else:
             self.mode = "advanced" if self.agentic.enabled else "simple"
+        return self
+
+    @model_validator(mode="after")
+    def decision_model_confidence_has_no_llm_boxes(self) -> Self:
+        """Refuse decision-model confidence with geometry from the confidence call.
+
+        In geometry modes 'llm' and 'llm_grounded' the boxes come from the
+        confidence-bearing prompt. A decision model answers yes or no and returns
+        no boxes, so the combination would drop field highlighting without a word.
+        """
+        if (
+            self.confidence.method == "decision_model"
+            and self.confidence.mode != "off"
+            and self.geometry.mode in ("llm", "llm_grounded")
+        ):
+            raise ValueError(
+                "extraction.confidence.method 'decision_model' returns no bounding "
+                f"boxes, so extraction.geometry.mode {self.geometry.mode!r} would "
+                "lose field highlighting: use geometry mode 'ocr_only' (the default), "
+                "which locates values from OCR"
+            )
         return self
 
     @model_validator(mode="after")
@@ -1998,6 +2211,34 @@ def _single_value_method(v: Any, path: str, planned: str) -> str:
     return v_str
 
 
+def _implemented_method(
+    v: Any, path: str, implemented: tuple[str, ...], planned: str
+) -> str:
+    """A ``method`` enum some of whose declared values are implemented.
+
+    Empty means ``llm``. A declared value that is not implemented yet is refused
+    with the same pointer :func:`_single_value_method` gives.
+    """
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return "llm"
+    v_str = str(v).strip().lower()
+    if v_str not in implemented:
+        raise ValueError(
+            f"{path} must be one of {', '.join(repr(m) for m in implemented)}, got "
+            f"{v!r}. {planned} is declared but not yet implemented; see GitHub "
+            "issue #1329."
+        )
+    return v_str
+
+
+#: The decision-model input modes (``ExternalModelConfig.input``).
+DECISION_MODEL_INPUTS = ("images", "text", "both")
+
+#: The most pages section classification sends a decision model: the System One
+#: API reads at most 4 images per request (idp_common.decision_model).
+DECISION_MODEL_MAX_SECTION_PAGES = 4
+
+
 class ClassificationModelSettings(BaseModel):
     """The settings of one LLM call. Reused by every classification call.
 
@@ -2247,26 +2488,6 @@ class SplittingLLMConfig(ClassificationModelSettings):
         return v_str
 
 
-class ExternalModelConfig(BaseModel):
-    """An external model behind a stable contract. **Declared, not yet implemented.**
-
-    Shared by the boundary model (splitting) and the decision model (section
-    classification), so both methods land without a configuration migration.
-    """
-
-    backend: str = Field(default="", description="sagemaker | bedrock_custom | lambda")
-    endpoint: str = Field(
-        default="",
-        description="Endpoint name, model ARN, or function ARN (GENAIIDP- prefix).",
-    )
-    input: str = Field(default="images", description="images | text | both")
-    timeout_ms: int = Field(default=30000, ge=0)
-    max_concurrency: int = Field(default=4, ge=1)
-    price_per_request: float = Field(
-        default=0.0, ge=0.0, description="Per-request price, for metering."
-    )
-
-
 class SplittingConfig(BaseModel):
     """Split-then-classify's splitting call: where each section starts and ends."""
 
@@ -2306,15 +2527,128 @@ class EmbeddingsConfig(BaseModel):
 
 
 class DecisionModelConfig(ExternalModelConfig):
-    """Section classification by an external model. **Declared, not implemented.**"""
+    """Section classification by a decision model: one ``choice`` question per section.
 
+    The options are the configured classes and each class's ``description`` is its
+    criterion, so a class's description is what the model compares the section
+    against. See ``idp_common.decision_model`` and docs/decision-models.md.
+    """
+
+    backend: str = Field(
+        default="lambda", description="lambda (the only backend today)"
+    )
+    endpoint: Optional[str] = Field(
+        default=None,
+        description=(
+            "Function ARN; the function name must start with GENAIIDP-. Required "
+            "when the sibling method is 'decision_model'."
+        ),
+    )
+    timeout_ms: int = Field(
+        default=300000,
+        ge=1000,
+        le=840000,
+        description=(
+            "How long to wait for one answer. Without SnapStart, the first request "
+            "to a new execution environment waits for the model to load: measured "
+            "at about 3 minutes for the first after a deploy, with vision on."
+        ),
+    )
+    instructions: str = Field(
+        default="Which type of document is this?",
+        description=(
+            "The choice question's instructions. The options are the configured "
+            "classes, each described by its description."
+        ),
+    )
+    max_pages: int = Field(
+        default=1,
+        ge=1,
+        le=DECISION_MODEL_MAX_SECTION_PAGES,
+        description=(
+            "The most pages of a section sent, after `pages` selects them (1 to "
+            f"{DECISION_MODEL_MAX_SECTION_PAGES}, the API's image limit). One page "
+            "measured best: more images did not raise accuracy and weakened the "
+            "confidence."
+        ),
+    )
     label_map: Dict[str, str] = Field(
         default_factory=dict,
         description="Model label → configured class (or 'unclassified').",
     )
     score_calibration: str = Field(
-        default="none", description="none | softmax | per_class_thresholds"
+        default="none",
+        description=(
+            "'none' (the only value today: the probabilities are used as "
+            "returned). 'softmax' and 'per_class_thresholds' are declared."
+        ),
     )
+
+    @field_validator("instructions", mode="before")
+    @classmethod
+    def empty_instructions_is_the_default(cls, v: Any, info: ValidationInfo) -> str:
+        """An empty question is the shipped one, never an empty question sent."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return cls.model_fields[info.field_name].default
+        return str(v)
+
+    @field_validator("price_per_request", mode="before")
+    @classmethod
+    def price_per_request_is_not_read(cls, v: Any) -> float:
+        """Refused rather than ignored: cost comes from ``pricing.yaml``."""
+        value = float(v or 0)
+        if value:
+            raise ValueError(
+                "decision_model.price_per_request is not read: the decision model's "
+                "cost comes from the decision_model/<function> entry in "
+                "config_library/pricing.yaml, by request and GB-second. Leave it 0."
+            )
+        return 0.0
+
+    @field_validator("endpoint", mode="before")
+    @classmethod
+    def empty_endpoint_is_unset(cls, v: Any) -> Optional[str]:
+        """An empty endpoint is an unset one.
+
+        Shipped as '' rather than null: a release before decision models types
+        this field as a string, and rejects a null in a configuration written now.
+        Required when section classification's method is 'decision_model'.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return str(v).strip()
+
+    @field_validator("input", mode="before")
+    @classmethod
+    def validate_input(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "images"
+        v_str = str(v).strip().lower()
+        if v_str not in DECISION_MODEL_INPUTS:
+            raise ValueError(
+                "decision_model.input must be one of "
+                f"{', '.join(DECISION_MODEL_INPUTS)}, got {v!r}"
+            )
+        return v_str
+
+    @field_validator("max_pages", mode="before")
+    @classmethod
+    def parse_max_pages(cls, v: Any) -> int:
+        return _parse_int_param(v, 1) or 1
+
+    @field_validator("score_calibration", mode="before")
+    @classmethod
+    def validate_score_calibration(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "none"
+        v_str = str(v).strip().lower()
+        if v_str != "none":
+            raise ValueError(
+                "decision_model.score_calibration must be 'none', got "
+                f"{v!r}; 'softmax' and 'per_class_thresholds' are declared but "
+                "not yet implemented"
+            )
+        return v_str
 
 
 class LowConfidenceConfig(BaseModel):
@@ -2331,13 +2665,29 @@ class LowConfidenceConfig(BaseModel):
         default="fallback_class", description="'llm' | 'fallback_class'"
     )
 
+    @field_validator("on_low_confidence", mode="before")
+    @classmethod
+    def validate_on_low_confidence(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "fallback_class"
+        v_str = str(v).strip().lower()
+        if v_str not in ("llm", "fallback_class"):
+            raise ValueError(
+                "section_classification.low_confidence.on_low_confidence must be "
+                f"'llm' or 'fallback_class', got {v!r}"
+            )
+        return v_str
+
 
 class SectionClassificationConfig(BaseModel):
     """Split-then-classify's section classification: one class per section."""
 
     method: str = Field(
         default="llm",
-        description="'llm' (the only value today). 'embeddings' and 'decision_model' are declared.",
+        description=(
+            "'llm' (one LLM call per section) or 'decision_model' (one choice "
+            "question per section, see `decision_model`). 'embeddings' is declared."
+        ),
     )
     pages: str = Field(
         default="first_k",
@@ -2359,11 +2709,22 @@ class SectionClassificationConfig(BaseModel):
     @field_validator("method", mode="before")
     @classmethod
     def validate_method(cls, v: Any) -> str:
-        return _single_value_method(
+        return _implemented_method(
             v,
             "classification.split_then_classify.section_classification.method",
-            "'embeddings' / 'decision_model'",
+            ("llm", "decision_model"),
+            "'embeddings'",
         )
+
+    @model_validator(mode="after")
+    def decision_model_needs_an_endpoint(self) -> Self:
+        if self.method == "decision_model" and not self.decision_model.endpoint:
+            raise ValueError(
+                "classification.split_then_classify.section_classification.method is "
+                "'decision_model' but its decision_model.endpoint is empty: set it to "
+                "the decision model's Lambda function ARN"
+            )
+        return self
 
     @field_validator("pages", mode="before")
     @classmethod

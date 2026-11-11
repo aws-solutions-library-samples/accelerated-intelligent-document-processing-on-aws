@@ -116,15 +116,7 @@ EXEMPT_SUBTREES: dict[str, str] = {
     ),
     "classification.split_then_classify.section_classification.embeddings": (
         "Declared for embeddings classification (#1329), not implemented: "
-        "section_classification.method offers only 'llm'."
-    ),
-    "classification.split_then_classify.section_classification.decision_model": (
-        "Declared for an external classifier endpoint (#1329), not implemented: "
-        "section_classification.method offers only 'llm'."
-    ),
-    "classification.split_then_classify.section_classification.low_confidence": (
-        "Applies only to a non-LLM section classification method, none of which "
-        "is implemented yet (#1329)."
+        "section_classification.method does not offer 'embeddings'."
     ),
     "rule_validation.z3_value_extraction": (
         "Notebook/standalone only — the deployed pipeline uses "
@@ -134,6 +126,38 @@ EXEMPT_SUBTREES: dict[str, str] = {
 
 #: Individual fields that should never have a control.
 NOT_USER_SETTABLE: dict[str, str] = {
+    # --- section classification by a decision model (#1656) -------------
+    "extraction.confidence.decision_model.backend": (
+        "One accepted value, 'lambda'; a control would offer a single choice."
+    ),
+    "extraction.confidence.decision_model.price_per_request": (
+        "Not read: decision-model cost comes from the decision_model/<function> "
+        "entry in pricing.yaml, priced by GB-second like any Lambda."
+    ),
+    "extraction.confidence.decision_model.function_memory_mb": (
+        "Metering input that must equal the deployed function's memory; it is a "
+        "property of the deployment, not a tuning choice, so it is YAML-only."
+    ),
+    "classification.split_then_classify.section_classification.decision_model.backend": (
+        "One accepted value, 'lambda'; a control would offer a single choice."
+    ),
+    "classification.split_then_classify.section_classification.decision_model.score_calibration": (
+        "One accepted value, 'none'; 'softmax' and 'per_class_thresholds' are "
+        "declared and refused until implemented."
+    ),
+    "classification.split_then_classify.section_classification.decision_model.label_map": (
+        "A map of model label to class, for a model trained on its own label set. "
+        "The configuration editor has no map control, and the decider is asked "
+        "with the configured class names, so it needs none; YAML-only."
+    ),
+    "classification.split_then_classify.section_classification.decision_model.price_per_request": (
+        "Not read: decision-model cost comes from the decision_model/<function> "
+        "entry in pricing.yaml, priced by GB-second like any Lambda."
+    ),
+    "classification.split_then_classify.section_classification.decision_model.function_memory_mb": (
+        "Metering input that must equal the deployed function's memory; it is a "
+        "property of the deployment, not a tuning choice, so it is YAML-only."
+    ),
     # --- record plumbing / metadata -------------------------------------
     "config_type": "Record discriminator written by the config layer, not a setting.",
     "config_format_version": (

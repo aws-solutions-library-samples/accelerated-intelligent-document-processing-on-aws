@@ -236,6 +236,10 @@ export default defineConfig({
               label: "Lambda Hook Inference",
               slug: "lambda-hook-inference",
             },
+            {
+              label: "Decision Models",
+              slug: "decision-models",
+            },
             { label: "Nova Fine-Tuning", slug: "nova-finetuning" },
             { label: "Custom Model Fine-Tuning", slug: "custom-model-finetuning" },
             { label: "Service Tiers", slug: "service-tiers" },

@@ -53,6 +53,24 @@ extraction:
     image:
       target_height: ""
       target_width: ""
+    # llm (the model and prompts here) | decision_model (one yes/no question per
+    # extracted value, per page; docs/decision-models.md). Needs mode: separate.
+    method: llm
+    decision_model:
+      backend: lambda
+      # Function ARN (GENAIIDP- prefix). Required when method is decision_model.
+      endpoint: ''
+      # images | text | both. Page images measured best.
+      input: images
+      # Pages read per section, one request each: 1 to 50.
+      max_pages: 20
+      instructions: 'The system says the field "{FIELD}" ({DESCRIPTION}) is "{VALUE}". Is that the correct value?'
+      max_questions_per_request: 100
+      timeout_ms: 300000
+      max_concurrency: 4
+      # For metering GB-seconds; the Strands Decider's Lambda runs at 10240.
+      function_memory_mb: 10240
+      price_per_request: 0.0
     system_prompt: >-
       You are a document analysis assessment expert. Your role is to evaluate the confidence and accuracy of data extraction results by analyzing them against source documents.
       Provide accurate confidence scores for each assessment.
