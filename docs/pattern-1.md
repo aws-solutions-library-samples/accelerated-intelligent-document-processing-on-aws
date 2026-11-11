@@ -291,6 +291,6 @@ This is useful for:
    - Implement proper error handling for BDA job failures
 
 6. **HITL Management**:
-   - Configure confidence thresholds through the Web UI Portal Configuration tab based on business requirements
+   - Configure confidence thresholds on the Web UI's Configuration page (**Processing Settings** tab) based on business requirements
    - Regularly check the Review Portal for pending tasks to avoid processing delays
    - Establish consistent correction guidelines if multiple reviewers are involved

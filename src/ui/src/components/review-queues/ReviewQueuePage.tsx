@@ -10,7 +10,18 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
-import { Alert, Box, Button, Container, ContentLayout, Header, KeyValuePairs, SpaceBetween } from '@cloudscape-design/components';
+import {
+  Alert,
+  Box,
+  Button,
+  ButtonDropdown,
+  Container,
+  ContentLayout,
+  Header,
+  KeyValuePairs,
+  SpaceBetween,
+} from '@cloudscape-design/components';
+import type { ButtonDropdownProps } from '@cloudscape-design/components';
 
 import type { ReviewItem, ReviewQueueDefinition, ReviewQueueHealth, ReviewQueueSummary } from '../../graphql/generated/operation-types';
 import useAppContext from '../../contexts/app';
@@ -243,18 +254,47 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
   const counted = (label: string, n: number) => (n > 0 ? `${label} (${n})` : label);
   // Skip All Reviews: an Admin any OPEN or CLAIMED item; a Reviewer an OPEN item or their own claim.
   const skippable = selectedItems.filter((i) => isSkippableQueueItem(i, !!isAdmin));
-  const skipButtons = (
-    <>
-      <span title={skippable.length === 0 ? NO_SKIPPABLE_SELECTION_REASON : undefined}>
-        <Button
-          disabled={skippable.length === 0}
-          onClick={() => setBulkSkip({ mode: 'SELECTED', keys: skippable.map((i) => i.objectKey) })}
-        >
-          {counted('Skip All Reviews', skippable.length)}
-        </Button>
-      </span>
-      <Button onClick={() => setBulkSkip({ mode: 'PROFILE', keys: [] })}>Skip All Reviews by profile…</Button>
-    </>
+  // The Skip All Reviews group of the table's More actions menu.
+  const skipGroup: ButtonDropdownProps.ItemGroup = {
+    text: 'Skip reviews',
+    items: [
+      {
+        id: 'skip-selected',
+        text: counted('Skip All Reviews', skippable.length),
+        disabled: skippable.length === 0,
+        disabledReason: NO_SKIPPABLE_SELECTION_REASON,
+      },
+      { id: 'skip-by-profile', text: 'Skip All Reviews by profile…' },
+    ],
+  };
+  // The Admin's queue group: move the selection to another queue, or take it out of the queues.
+  const queueGroup: ButtonDropdownProps.ItemGroup = {
+    text: 'Queue',
+    items: [
+      {
+        id: 'move',
+        text: counted('Move…', selectedItems.length),
+        disabled: selectedItems.length === 0 || otherQueues.length === 0,
+        disabledReason: otherQueues.length === 0 ? 'There is no other queue' : 'Select items to move',
+      },
+      {
+        id: 'remove',
+        text: counted('Remove from queue…', removable.length),
+        disabled: removable.length === 0,
+        disabledReason: 'Select items waiting for review or assigned',
+      },
+    ],
+  };
+  const onMoreAction = (id: string) => {
+    if (id === 'skip-selected') setBulkSkip({ mode: 'SELECTED', keys: skippable.map((i) => i.objectKey) });
+    else if (id === 'skip-by-profile') setBulkSkip({ mode: 'PROFILE', keys: [] });
+    else if (id === 'move') supervisor.open('move', selectedItems);
+    else if (id === 'remove') supervisor.open('remove', removable);
+  };
+  const moreActions = (groups: ButtonDropdownProps.ItemGroup[]) => (
+    <ButtonDropdown items={groups} onItemClick={({ detail }) => onMoreAction(detail.id)}>
+      More actions
+    </ButtonDropdown>
   );
   const afterBulkSkip = async () => {
     reviewWork?.beginMutation();
@@ -402,21 +442,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
                     {counted('Unassign', unassignable.length)}
                   </Button>
                 </span>
-                <span title={selectedItems.length === 0 ? 'Select items to move' : undefined}>
-                  <Button
-                    disabled={selectedItems.length === 0 || otherQueues.length === 0}
-                    disabledReason={otherQueues.length === 0 ? 'There is no other queue' : undefined}
-                    onClick={() => supervisor.open('move', selectedItems)}
-                  >
-                    {counted('Move…', selectedItems.length)}
-                  </Button>
-                </span>
-                <span title={removable.length === 0 ? 'Select items waiting for review or assigned' : undefined}>
-                  <Button disabled={removable.length === 0} onClick={() => supervisor.open('remove', removable)}>
-                    {counted('Remove from queue…', removable.length)}
-                  </Button>
-                </span>
-                {skipButtons}
+                {moreActions([queueGroup, skipGroup])}
               </SpaceBetween>
             ) : (
               <SpaceBetween direction="horizontal" size="xs">
@@ -437,13 +463,13 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
                 >
                   Next item
                 </Button>
-                {canReview && skipButtons}
+                {canReview && moreActions([skipGroup])}
               </SpaceBetween>
             )
           }
           description={
             isAdmin
-              ? 'Select items to assign them to an Annotator, unassign them or move them to another queue. Edit opens an item without changing its assignment.'
+              ? 'Select items to assign them to an Annotator or unassign them. More actions moves them to another queue, removes them from the queues or skips their reviews. Edit opens an item without changing its assignment.'
               : 'Open any item to view it. Claim an item waiting for review to work it in Home › Tasks, or choose Next item to claim the next one.'
           }
           footer={

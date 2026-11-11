@@ -1379,7 +1379,7 @@ same setting would give different answers for different documents in one run.
 
 ## Prompt Preview
 
-The Configuration page includes a **Prompt Preview** tab that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `combined` it offers one classification step, and under `split_then_classify` it offers a splitting step and a section classification step instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
+The Configuration page's **Preview prompts** button opens a prompt preview that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `combined` it offers one classification step, and under `split_then_classify` it offers a splitting step and a section classification step instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
 
 ## A `%` in a prompt is literal text
 

@@ -208,6 +208,7 @@ flows:
       - src/ui/src/components/document-list/DocumentList.tsx
       - src/ui/src/components/document-list/documents-table-config.tsx
       - src/ui/src/components/review-queues/ReviewQueuePage.tsx
+      - src/ui/src/components/edit-screen/direct-edit-model.tsx
     setup:
       - A configuration profile with a few documents pending review (legacy or
         in the Default queue), and one document that has finished review.
@@ -218,7 +219,10 @@ flows:
         confirm.
       - Open Review › Skip All Reviews by profile…, choose the profile and a
         date range, and read the count.
+      - Open a production queue's page, select an item waiting for review and
+        choose More actions › Skip All Reviews (1).
       - Open Home › Jobs and the job the run created.
+      - Open a skipped document and its Reports › History › Review Activity.
     expect:
       - The count in the menu leaves out the finished document, and the dry run
         reports it as Already finished.
@@ -227,6 +231,10 @@ flows:
         items) without reloading the list.
       - The run is listed under Home › Jobs with its status, counts and a
         working results table.
+      - The queue page shows only Assign to… and Unassign as buttons; Move,
+        Remove from queue and both Skip All Reviews actions are in More actions.
+      - Review Activity lists the skip as Skipped (Skip All Reviews), with its
+        reason and who skipped it, for a legacy document as well as a queue item.
     ux_watch:
       - Is it clear before confirming what will happen to each kind of
         document, and that a skip is recorded with the reason?

@@ -58,24 +58,42 @@ export const REGROUP_ROLE_REASON = 'Edit Page Grouping needs the Admin or Review
 /** The tracking row says in review, but the review item is missing or has finished (the mirror lags). */
 export const MIRROR_LAG_REASON = "This document's review is being updated. Reload in a moment.";
 
-/** The document's HITL review events, in the shape History's Review Activity lists. */
+/** The legacy record of a whole-document skip; any other legacy record is one section's review. */
+const SKIP_ALL_SECTION = 'ALL_SKIPPED';
+const text = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+
+/**
+ * The document's HITL review events, in the shape History's Review Activity lists. The
+ * legacy review writes `reviewedAt` and `reviewedBy`/`reviewedByEmail` (a finished section
+ * has no `action`; Skip All Reviews is `skip_all`); `timestamp`, `user` and `action` are
+ * read as well, for records in that shape.
+ */
 export const documentReviewHistory = (
   events: DirectEditDocument['hitlReviewHistory'],
 ): { at: string; event: string; actor: string | null; details: string | null }[] =>
-  (events ?? [])
-    .filter((e) => !!e.timestamp && !!e.action)
-    .map((e) => {
-      const reason = typeof e.reason === 'string' ? e.reason : undefined;
-      const note = [typeof e.note === 'string' ? e.note : undefined, e.sectionId ? `Section ${e.sectionId}` : undefined]
-        .filter(Boolean)
-        .join(' · ');
-      return {
-        at: e.timestamp as string,
-        event: e.action as string,
-        actor: e.user ?? null,
+  (events ?? []).flatMap((e) => {
+    const at = text(e.timestamp) ?? text(e.reviewedAt);
+    const sectionId = text(e.sectionId);
+    const event = text(e.action) ?? (sectionId ? 'section_reviewed' : undefined);
+    if (!at || !event) return [];
+    const reason = text(e.reason);
+    const note = [
+      text(e.note),
+      sectionId && sectionId !== SKIP_ALL_SECTION ? `Section ${sectionId}` : undefined,
+      e.resubmitted === false ? 'Not resubmitted for downstream processing' : undefined,
+      text(e.jobId) ? `Job ${e.jobId as string}` : undefined,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    return [
+      {
+        at,
+        event,
+        actor: text(e.user) ?? text(e.reviewedByEmail) ?? text(e.reviewedBy) ?? null,
         details: reason || note ? JSON.stringify({ reason, note: note || undefined }) : null,
-      };
-    });
+      },
+    ];
+  });
 
 export interface DirectEditOptions {
   objectKey: string;

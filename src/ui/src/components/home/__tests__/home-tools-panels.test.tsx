@@ -31,3 +31,13 @@ describe('Home info panels', () => {
     for (const link of screen.getAllByRole('link')) expect(link).toHaveAttribute('target', '_blank');
   });
 });
+
+describe('the Inbox info panel', () => {
+  it('says the Inbox is planned as the general notification channel', () => {
+    render(<InboxToolsPanel />);
+    expect(screen.getByRole('heading', { name: 'Looking ahead' })).toBeInTheDocument();
+    expect(screen.getByText(/general notification channel/).textContent).toMatch(
+      /background jobs, the outcome of asynchronous requests, and reminders when a task is due/,
+    );
+  });
+});

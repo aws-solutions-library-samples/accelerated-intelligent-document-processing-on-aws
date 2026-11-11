@@ -316,7 +316,10 @@ documents each is assigned. The **Documents** table shows each item's **Document
 **Priority**, **State** and **Annotator** (who it is assigned to; sortable), with its
 actions in the row menu. The info icon opens a panel describing the page.
 
-To work a queue, open its page, select items, and choose one of:
+To work a queue, open its page, select items, and choose **Assign to…** or **Unassign**
+above the **Documents** table, or one of the actions in its **More actions** menu, grouped
+as **Queue** (**Move…**, **Remove from queue…**) and **Skip reviews** (**Skip All Reviews
+(N)**, **Skip All Reviews by profile…**):
 
 - **Assign to…** picks one of the queue's Annotators. The item appears in their Tasks and
   they get an Inbox message. Assigning an item that already has an assignee

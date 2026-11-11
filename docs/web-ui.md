@@ -517,7 +517,7 @@ For the schema format itself and how to author it by hand, see the [JSON Schema 
 
 ## Prompt Preview
 
-The **Prompt Preview** tab in the Configuration page allows you to see exactly what prompts are sent to the LLM for each processing step, with configuration-derived placeholders filled in using your actual class definitions and schemas.
+The **Preview prompts** button on the Configuration page (beside **Refresh**) opens the prompt preview, which lets you see exactly what prompts are sent to the LLM for each processing step, with configuration-derived placeholders filled in using your actual class definitions and schemas.
 
 ![Prompt Preview for the classification step, with configuration-derived values highlighted in the task prompt](../images/webui-prompt-preview.png)
 
@@ -536,7 +536,7 @@ The **Prompt Preview** tab in the Configuration page allows you to see exactly w
 ### How to Use
 
 1. Navigate to the Configuration page
-2. Click the **Prompt Preview** tab (alongside Configuration, Document Schema, Rule Schema)
+2. Choose **Preview prompts** in the editor's header, beside **Refresh**. It previews the values in the editor, saved or not, and opens over the **Processing Settings**, **Document Schema** and **Policy Schema** tabs
 3. Select a **Processing Step** from the dropdown: the classification step or steps your configured strategy makes (see above), Extraction, Confidence Assessment, or Summarization
 4. For Extraction or Confidence Assessment, select a **Document Class** to preview its schema in the prompt
 5. View the rendered prompts in the Task Prompt and System Prompt sub-tabs
@@ -687,7 +687,7 @@ The "Chat with Document" feature is available at the bottom of the Document Deta
 
 ### Model selection
 
-Chat has its own dedicated configuration section (**Configuration tab → "Chat-with-Document Configuration"**) — it is **independent from summarization**. This is important because chat sends the entire document text to the model in a single prompt, so a large-context model (such as `us.anthropic.claude-opus-4-8:1m` — the default — or `us.anthropic.claude-sonnet-4-6:1m`) is usually the best choice, even if you've configured a smaller, cheaper model for summarization.
+Chat has its own dedicated configuration section (**Processing Settings tab → "Chat-with-Document Configuration"**) — it is **independent from summarization**. This is important because chat sends the entire document text to the model in a single prompt, so a large-context model (such as `us.anthropic.claude-opus-4-8:1m` — the default — or `us.anthropic.claude-sonnet-4-6:1m`) is usually the best choice, even if you've configured a smaller, cheaper model for summarization.
 
 The Chat panel includes a **Model** selector that defaults to the `chat.model` in the current configuration of the profile that processed the document (its current revision, which may be newer than the one the document ran under). You can override the model for the current chat session via the dropdown. The list of selectable models comes from the `chat.model` enum in the configuration schema.
 

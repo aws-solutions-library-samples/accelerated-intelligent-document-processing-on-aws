@@ -13,6 +13,10 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
+- **Configuration page: the Configuration tab is now Processing Settings, and Prompt Preview is a Preview prompts button.** The button, beside Refresh, opens the prompt preview in a dialog; a link to the former tab opens the dialog. See [Prompt Preview](docs/web-ui.md#prompt-preview).
+
+- **Production queue page: fewer buttons above Documents.** Assign to… and Unassign stay as buttons; Move, Remove from queue and both Skip All Reviews actions are grouped under More actions. See [Review Queues](docs/review-queues.md).
+
 - **Every Home page has an info panel.** The info icon on **Inbox**, **Tasks**, **Queues**, **Jobs** and a job's page opens a panel explaining what the page is for, who uses it, and where to read more.
 
 - **Skip All Reviews has a Resubmit for downstream processing option** (on by default). Untick it to mark a review skipped without re-running Summarization, Evaluation and the post-processing hook.
@@ -20,6 +24,8 @@ SPDX-License-Identifier: MIT-0
 - **Reviewers can skip review-queue items in bulk.** Waiting items and their own claims, as an Admin can with **Remove from queue**; see [Review Queues](docs/review-queues.md). **Start Review** and **Release Review** in the Document List moved into its new **Review** menu.
 
 ### Fixed
+
+- **History › Review Activity lists the legacy review's events.** Section completions and Skip All Reviews for a document reviewed outside the queues were recorded but not shown; they now appear with who, when, the reason and note. See [Review History](docs/human-review.md#review-history).
 
 - **The RBAC page documents the Annotator role as the API enforces it.** The [Permission Matrix](docs/rbac.md#permission-matrix) has an Annotator column and review-queue rows, with notes where an Annotator is limited to the work given to it or where its console offers less than the API admits. The page no longer says an Annotator without assigned test sets can do nothing, or that it has no access to the document list: it works the Production queues that list it, and its document reads are answered within its configuration-profile scope, as for every role. It also records that every signed-in user can list fine-tuning jobs, and that agent chat streamed through the chat Function URL does not apply the Agent Chat group restriction (GAP-07).
 

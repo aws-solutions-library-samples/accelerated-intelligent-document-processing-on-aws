@@ -26,6 +26,9 @@ const EVENT_LABELS: Record<string, string> = {
   rejected: 'Rejected',
   removed: 'Removed from review',
   skipped: 'Skipped (Skip All Reviews)',
+  // The legacy review's records (the document's HITLReviewHistory).
+  skip_all: 'Skipped (Skip All Reviews)',
+  section_reviewed: 'Section review completed',
   finalize_send_failed: 'Finalize pending retry',
   sent_to_review: 'Sent to review',
   moved: 'Moved',

@@ -476,6 +476,12 @@ reason and note) and completed it, with timestamps. It is shown in the edit page
 **Reports › History › Review Activity**, and the document records **Review Owner** and
 **Review Completed By**.
 
+For a document reviewed outside the queues, Review Activity lists each section a
+Reviewer completed (**Section review completed**, with the section) and each **Skip All
+Reviews** (**Skipped (Skip All Reviews)**), with who did it, when, the reason and note,
+the bulk job it ran in, and whether the document was resubmitted for downstream
+processing.
+
 ## Skip All Reviews for many documents
 
 **Skip All Reviews** finishes a review without anyone checking it. Besides the one
@@ -488,9 +494,9 @@ Two ways to choose the documents:
 
 - **Selected documents.** In the Document List, select rows and choose **Review ›
   Skip All Reviews (N selected)**; on a production queue's page, select items and
-  choose **Skip All Reviews (N)**.
+  choose **More actions › Skip All Reviews (N)**.
 - **By configuration profile.** Choose **Skip All Reviews by profile…** (Document List
-  Review menu, or a queue's page), then a profile and a submitted-date range in UTC of
+  Review menu, or a queue's **More actions** menu), then a profile and a submitted-date range in UTC of
   at most 365 days. A Reviewer can choose only a profile in their scope.
 
 What is skipped, for every role:

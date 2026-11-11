@@ -43,8 +43,15 @@ export const InboxToolsPanel = (): React.JSX.Element => (
       </ul>
       <h3>Good to know</h3>
       <ul>
-        <li>Messages are kept for a limited time and up to a per-user cap (Configuration › HITL › Inbox messages).</li>
+        <li>
+          Messages are kept for a limited time and up to a per-user cap (Configuration › Processing Settings › HITL › Inbox messages).
+        </li>
       </ul>
+      <h3>Looking ahead</h3>
+      <p>
+        The Inbox is planned to become the general notification channel for the platform. As new capabilities are added, it will also carry
+        updates from background jobs, the outcome of asynchronous requests, and reminders when a task is due.
+      </p>
     </div>
   </HelpPanel>
 );
