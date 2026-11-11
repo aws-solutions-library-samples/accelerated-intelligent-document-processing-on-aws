@@ -22,8 +22,8 @@ assertions here are on the zip's exact member list, on the exact S3 key and
 bytes read back out of ``moto``, and on whether a mutation to a given file does
 or does not move the artifact name.
 
-Three tests pin behaviour that is currently wrong; each says so in its own
-docstring, and none of them is a request to change production code here.
+Tests that pin behaviour that is currently wrong carry ``DEFECT pinned`` in their
+docstring; none of them is a request to change production code here.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from idp_sdk._core.publish import IDPPublisher
+from idp_sdk._core.publish import MULTI_DOC_DISCOVERY_IMAGE_INPUTS_DEP, IDPPublisher
 
 _BUCKET = "idp-publish-artifacts"
 _PREFIX_AND_VERSION = "idp/0.6.9"
@@ -723,11 +723,12 @@ def test_unified_source_zip_includes_a_virtualenv_and_egg_info(
 ):
     """DEFECT pinned: the exclusions fixed for multi-doc discovery are missing here.
 
-    ``package_multi_doc_discovery_source`` excludes ``.venv``/``venv``/``.tox``
-    and tests ``d.endswith(".egg-info")``, with a comment recording that a
-    developer's virtualenv made that archive 224 MB of host-architecture wheels
-    and that the ``"*.egg-info"`` glob in a set-membership test never matched
-    anything. ``package_unified_source`` (publish.py:1237-1248) still carries the
+    The multi-doc discovery zip excludes ``.venv``/``venv``/``.tox`` (the
+    ``MULTI_DOC_DISCOVERY_LIB_EXCLUDED_DIRS`` constant) and tests
+    ``d.endswith(".egg-info")``, because a developer's virtualenv once made that
+    archive 224 MB of host-architecture wheels and a ``"*.egg-info"`` glob in a
+    set-membership test never matched anything. ``package_unified_source``'s own
+    ``os.walk`` over ``lib/idp_common_pkg`` still carries the
     unfixed version of both: its exclusion set is ``{"__pycache__",
     ".pytest_cache", "dist", "build", "*.egg-info"}`` with no suffix test and no
     virtualenv names.
@@ -1019,6 +1020,58 @@ def test_mdd_build_hash_hashes_the_same_members_the_zip_writes(tmp_path, monkeyp
         "src/lambda/multi_doc_discovery/helpers/split.py",
         "src/lambda/multi_doc_discovery/index.py",
     ]
+
+
+def test_mdd_build_hash_is_carved_from_the_packaged_zip_name():
+    pub = _publisher()
+    name = "multi-doc-discovery-source-0123456789abcdef.zip"
+    assert pub.multi_doc_discovery_build_hash_from_zipfile(name) == "0123456789abcdef"
+    for bad in (
+        "multi-doc-discovery-source.zip",
+        "multi-doc-discovery-source-0123.zip",
+        "unified-source-0123456789abcdef.zip",
+    ):
+        with pytest.raises(ValueError):
+            pub.multi_doc_discovery_build_hash_from_zipfile(bad)
+
+
+@pytest.mark.parametrize(
+    "relpath",
+    [
+        # Neither is read by the smart-rebuild source checksum (an extension it
+        # does not list, and a tests/ directory it skips), but both are zip
+        # members, so both move BuildHash and must regenerate the main template.
+        "lib/idp_common_pkg/idp_common/prompts/extract.j2",
+        "lib/idp_common_pkg/tests/test_x.py",
+    ],
+)
+def test_mdd_component_checksum_moves_whenever_build_hash_does(
+    tmp_path, monkeypatch, relpath
+):
+    _mdd_tree(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    pub = _publisher()
+    deps = pub.get_component_dependencies()["nested/multi-doc-discovery"]
+    before = pub._component_dependency_checksums("nested/multi-doc-discovery", deps)
+    _write(tmp_path / relpath, "new content")
+    pub = _publisher()  # the source checksum is cached per instance
+    after = pub._component_dependency_checksums("nested/multi-doc-discovery", deps)
+    assert before != after
+    assert after[MULTI_DOC_DISCOVERY_IMAGE_INPUTS_DEP] == (
+        pub.multi_doc_discovery_build_hash()
+    )
+
+
+def test_only_the_multi_doc_component_records_the_image_inputs(tmp_path, monkeypatch):
+    _mdd_tree(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    pub = _publisher()
+    deps = pub.get_component_dependencies()
+    assert MULTI_DOC_DISCOVERY_IMAGE_INPUTS_DEP not in (
+        pub._component_dependency_checksums(
+            "patterns/unified", deps["patterns/unified"]
+        )
+    )
 
 
 @mock_aws

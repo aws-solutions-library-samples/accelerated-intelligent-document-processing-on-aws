@@ -1632,6 +1632,42 @@ def test_build_main_template_substitutes_every_token_and_uploads_both_keys(
 
 
 @mock_aws
+def test_build_main_template_names_the_multi_doc_zip_the_packager_uploaded(
+    monkeypatch, tmp_path, aws_credentials
+):
+    """BuildHash and the source key come from the packaged name, not a re-hash.
+
+    The packager has already written and uploaded a zip under its name. Deriving
+    the template's values from the tree again could name a key that was never
+    uploaded if the tree changed in between, so the passed name wins.
+    """
+    monkeypatch.chdir(tmp_path)
+    _main_template_tree(tmp_path)
+    s3 = boto3.client("s3", region_name=_REGION)
+    s3.create_bucket(Bucket=_BUCKET)
+    pub = _publisher(s3)
+    pub.skip_validation = True
+    pub._layer_arns = {
+        name: {"zip_name": f"idp-common-{name}-aaaa1111.zip"} for name in _LAYER_NAMES
+    }
+    run, _calls = _sam_stub(tmp_path)
+    monkeypatch.setattr(pub, "run_subprocess_with_logging", run)
+    packaged = "multi-doc-discovery-source-fedcba9876543210.zip"
+    assert packaged != pub.multi_doc_discovery_source_zipfile_name()
+
+    pub.build_main_template(
+        "webui.zip",
+        "unified-source-beef0002.zip",
+        [{"component": "main"}],
+        multi_doc_discovery_source_zipfile=packaged,
+    )
+
+    built = (tmp_path / ".aws-sam" / "build" / "idp-main.yaml").read_text()
+    assert "BuildHash: fedcba9876543210\n" in built
+    assert f"SourceZipfile: {_PREFIX}/{_VERSION}/{packaged}" in built
+
+
+@mock_aws
 def test_the_container_flag_is_appended_to_the_sam_build_only_when_set(
     monkeypatch, tmp_path, aws_credentials
 ):

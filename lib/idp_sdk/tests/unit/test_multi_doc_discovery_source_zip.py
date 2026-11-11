@@ -172,7 +172,7 @@ class TestRebuildTriggers:
             )
 
 
-def test_the_template_takes_build_hash_and_zip_name_from_the_member_list():
+def test_the_template_takes_build_hash_and_zip_name_from_the_packaged_zip():
     """Both template tokens come from the one member listing (#1856).
 
     The behaviour is asserted in test_publish_ui_and_source_packaging.py against
@@ -183,7 +183,12 @@ def test_the_template_takes_build_hash_and_zip_name_from_the_member_list():
         _REPO_ROOT / "lib" / "idp_sdk" / "idp_sdk" / "_core" / "publish.py"
     ).read_text()
     assert '"<MULTI_DOC_DISCOVERY_BUILD_HASH_TOKEN>": multi_doc_build_hash' in source
-    assert "multi_doc_members = self.multi_doc_discovery_source_members()" in source
+    # run() hands the packaged zip's name to build_main_template, which is what
+    # makes the template name the object that was uploaded.
+    assert (
+        "multi_doc_discovery_source_zipfile=multi_doc_discovery_source_zipfile"
+        in source
+    )
     assert '"<MULTI_DOC_DISCOVERY_SOURCE_ZIPFILE_TOKEN>"' in source
     template = (_REPO_ROOT / "template.yaml").read_text()
     assert (

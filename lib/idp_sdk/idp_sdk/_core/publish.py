@@ -67,9 +67,21 @@ MULTI_DOC_DISCOVERY_LIB_EXCLUDED_DIRS = frozenset(
         ".ruff_cache",
         "dist",
         "build",
+        # Local tool output, never part of the package.
+        ".aws-sam",
+        "node_modules",
+        "test-reports",
+        "htmlcov",
     }
 )
 MULTI_DOC_DISCOVERY_HANDLER_EXCLUDED_DIRS = frozenset({"__pycache__", ".pytest_cache"})
+MULTI_DOC_DISCOVERY_ZIP_PREFIX = "multi-doc-discovery-source-"
+# The key under which a component checksum records the multi-doc image inputs.
+# The smart-rebuild checksum reads source-extension files only and skips tests,
+# while BuildHash covers every file the image is built from; recording the
+# BuildHash as a dependency makes any change that moves it regenerate the main
+# template, which is where BuildHash and the source zip's key are written.
+MULTI_DOC_DISCOVERY_IMAGE_INPUTS_DEP = "multi-doc discovery image inputs (BuildHash)"
 
 
 class IDPPublisher:
@@ -1320,7 +1332,7 @@ STDERR:
 
         return zipfile_name
 
-    def multi_doc_discovery_source_members(self):
+    def multi_doc_discovery_source_members(self, require_build_inputs=True):
         """Every (path, arcname) pair the multi-doc discovery source zip holds.
 
         The single definition of the zip's contents: `package_multi_doc_discovery_source`
@@ -1363,6 +1375,10 @@ STDERR:
         # nested/multi-doc-discovery/requirements.txt, so both must be present.
         for build_input in MULTI_DOC_DISCOVERY_BUILD_INPUTS:
             if not os.path.isfile(build_input):
+                if not require_build_inputs:
+                    # Change detection only: a missing input is itself a change,
+                    # and the packaging step is what refuses it.
+                    continue
                 self.console.print(
                     f"[red]❌ Missing multi-doc discovery build input: "
                     f"{build_input}[/red]"
@@ -1387,9 +1403,24 @@ STDERR:
             digest.update(self.get_file_checksum(file_path).encode("ascii") + b"\0")
         return digest.hexdigest()[:16]
 
+    def multi_doc_discovery_build_hash_from_zipfile(self, zipfile_name):
+        """The BuildHash a content-addressed source zip name carries."""
+        prefix, suffix = MULTI_DOC_DISCOVERY_ZIP_PREFIX, ".zip"
+        build_hash = zipfile_name[len(prefix) : -len(suffix)]
+        if (
+            not zipfile_name.startswith(prefix)
+            or not zipfile_name.endswith(suffix)
+            or len(build_hash) != 16
+        ):
+            raise ValueError(
+                f"not a content-addressed multi-doc discovery source zip: {zipfile_name}"
+            )
+        return build_hash
+
     def multi_doc_discovery_source_zipfile_name(self, members=None):
         """The content-addressed name of the multi-doc discovery source zip."""
-        return f"multi-doc-discovery-source-{self.multi_doc_discovery_build_hash(members)}.zip"
+        build_hash = self.multi_doc_discovery_build_hash(members)
+        return f"{MULTI_DOC_DISCOVERY_ZIP_PREFIX}{build_hash}.zip"
 
     def package_multi_doc_discovery_source(self):
         """Package multi-doc discovery source code for CodeBuild to build Docker image.
@@ -2556,8 +2587,15 @@ STDERR:
         components_needing_rebuild,
         sample_features_hash="",
         sample_features_list=None,
+        multi_doc_discovery_source_zipfile=None,
     ):
         """Build and package main template with smart detection.
+
+        ``multi_doc_discovery_source_zipfile`` is the name
+        :meth:`package_multi_doc_discovery_source` returned. The template's
+        BuildHash and source-zip key are both taken from it, so the template
+        names the object that was uploaded; it is derived afresh only for a
+        caller that packaged nothing.
 
         ``sample_features_hash`` / ``sample_features_list`` carry the result of
         :meth:`build_and_upload_sample_features` so the main template's
@@ -2675,11 +2713,14 @@ STDERR:
                     else ""
                 )
 
-                # The multi-doc discovery image's inputs, hashed once so its
-                # BuildHash and its source zip's name come from one listing.
-                multi_doc_members = self.multi_doc_discovery_source_members()
-                multi_doc_build_hash = self.multi_doc_discovery_build_hash(
-                    multi_doc_members
+                # The multi-doc discovery image's BuildHash and its source zip's
+                # key both come from the zip the packager uploaded.
+                if multi_doc_discovery_source_zipfile is None:
+                    multi_doc_discovery_source_zipfile = (
+                        self.multi_doc_discovery_source_zipfile_name()
+                    )
+                multi_doc_build_hash = self.multi_doc_discovery_build_hash_from_zipfile(
+                    multi_doc_discovery_source_zipfile
                 )
 
                 # Replace tokens in template
@@ -2775,7 +2816,7 @@ STDERR:
                     # in-place upgrade (a fresh create always builds).
                     "<MULTI_DOC_DISCOVERY_BUILD_HASH_TOKEN>": multi_doc_build_hash,
                     "<MULTI_DOC_DISCOVERY_SOURCE_ZIPFILE_TOKEN>": (
-                        self.multi_doc_discovery_source_zipfile_name(multi_doc_members)
+                        multi_doc_discovery_source_zipfile
                     ),
                     "<SAMPLE_FEATURES_HASH_TOKEN>": sample_features_hash,
                     "<SAMPLE_FEATURES_LIST_TOKEN>": json.dumps(
@@ -3131,6 +3172,28 @@ STDERR:
         }
         return dependencies
 
+    def _component_dependency_checksums(self, component, deps, record_missing=True):
+        """Per-dependency checksums a component's rebuild decision compares.
+
+        ``record_missing`` keeps an absent dependency as an empty checksum, as the
+        change-detection path always has; the forced-rebuild path leaves it out.
+        """
+        checksums = {}
+        for dep in deps:
+            if os.path.isfile(dep):
+                checksums[dep] = self.get_file_checksum(dep)
+            elif os.path.isdir(dep):
+                checksums[dep] = self.get_source_files_checksum(dep)
+            elif record_missing:
+                checksums[dep] = ""
+        if component == "nested/multi-doc-discovery":
+            checksums[MULTI_DOC_DISCOVERY_IMAGE_INPUTS_DEP] = (
+                self.multi_doc_discovery_build_hash(
+                    self.multi_doc_discovery_source_members(require_build_inputs=False)
+                )
+            )
+        return checksums
+
     def get_components_needing_rebuild(self):
         """Determine which components need rebuilding based on dependency changes"""
         dependencies = self.get_component_dependencies()
@@ -3148,14 +3211,9 @@ STDERR:
                 checksum_file = f"{component}/.checksum"
 
             # Calculate individual checksums for each dependency
-            current_dep_checksums = {}
-            for dep in deps:
-                if os.path.isfile(dep):
-                    current_dep_checksums[dep] = self.get_file_checksum(dep)
-                elif os.path.isdir(dep):
-                    current_dep_checksums[dep] = self.get_source_files_checksum(dep)
-                else:
-                    current_dep_checksums[dep] = ""
+            current_dep_checksums = self._component_dependency_checksums(
+                component, deps
+            )
 
             # Combine checksums for overall comparison (include deployment context)
             combined_checksum = hashlib.sha256(
@@ -3659,12 +3717,9 @@ STDERR:
 
                 # Get component's dependencies for rebuild info
                 deps = dependencies.get(component, [])
-                current_dep_checksums = {}
-                for dep in deps:
-                    if os.path.isfile(dep):
-                        current_dep_checksums[dep] = self.get_file_checksum(dep)
-                    elif os.path.isdir(dep):
-                        current_dep_checksums[dep] = self.get_source_files_checksum(dep)
+                current_dep_checksums = self._component_dependency_checksums(
+                    component, deps, record_missing=False
+                )
 
                 combined_checksum = hashlib.sha256(
                     (
@@ -4394,7 +4449,9 @@ STDERR:
 
             # Package multi-doc discovery source for CodeBuild Docker builds
             step_start = time.time()
-            self.package_multi_doc_discovery_source()
+            multi_doc_discovery_source_zipfile = (
+                self.package_multi_doc_discovery_source()
+            )
             timing_breakdown["Package multi-doc discovery source"] = (
                 time.time() - step_start
             )
@@ -4462,6 +4519,7 @@ STDERR:
                 components_needing_rebuild,
                 sample_features_hash=sample_features_hash,
                 sample_features_list=sample_features_list,
+                multi_doc_discovery_source_zipfile=multi_doc_discovery_source_zipfile,
             )
             timing_breakdown["Build & upload main template"] = time.time() - step_start
 
