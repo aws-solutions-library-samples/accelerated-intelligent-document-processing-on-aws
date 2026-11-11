@@ -412,8 +412,10 @@ reason. `STABLE_CUSTOM_OUTPUTS` and `PASS_THROUGH_ATTRS` are described under
   no longer has is reported, and `tests/test_upgrade_safety.py` fails on it, so an
   override cannot outlive what it described.
 - **A hand mapper's `ignore_changes`** (`SpecMapper.ignore_changes` in
-  `aws_mappers.py`, or a lifecycle block a mapper emits itself), for a property the
-  service cannot change after creation. Today: a Cognito user pool's
+  `aws_mappers.py`, which the pool user's mapper in `aws_mappers_storage.py` also
+  subclasses), for a property the service cannot change after creation.
+  `tests/test_upgrade_safety.py` pins the set and scans the generated HCL of the
+  standard template, so an `ignore_changes` that no declaration accounts for fails. Today: a Cognito user pool's
   `username_configuration`, which Cognito fixes at creation and CloudFormation never
   updates, and a pool user's attributes, delivery mediums and message action, which are
   create-only. The second differs from CloudFormation in one case: CloudFormation
