@@ -8,8 +8,9 @@ SPDX-License-Identifier: MIT-0
 
 # Quick Start
 
-**Quick Start** helps a first-time user go from a plain-language description of
-their document type to a working, active IDP configuration — entirely through
+**Quick Start** sets the application up for a new kind of document. It helps a
+first-time user go from a plain-language description of their document type to a
+working, active IDP configuration — entirely through
 conversation, with no manual schema editing. It solves the "cold-start" problem:
 a fresh deployment has no configuration tuned to *your* documents, and writing
 one by hand means learning the [JSON-Schema document-class format](json-schema-migration.md)
@@ -33,15 +34,17 @@ the *real* documents instead of a prompt-only draft.
 
 Quick Start is available two ways:
 
-- **Web UI** — a floating Quick Start chat widget and a Welcome page (gated by the
-  `EnableQuickStartWidget` parameter, default `true`).
+- **Web UI** — a Quick Start chat you open from the side navigation, the Welcome
+  page or the end of the guided tour (gated by the `EnableQuickStartWidget`
+  parameter, default `true`).
 - **CLI** — `idp-cli bootstrap`, for scripted or headless cold-start.
 
 > **Related:** Quick Start handles *setup* (schema + config). For questions about
 > your processed documents, analytics, errors, or the codebase, use the
 > [Agent Companion Chat](agent-companion-chat.md). To infer a config directly from
 > real documents, see [Discovery](discovery.md). To improve an existing config's
-> accuracy/cost, see the AutoTune extension on the Extensions page.
+> accuracy/cost, see the [Auto Optimizer](extensions/auto-optimizer.md) extension on
+> the Extensions page.
 
 
 
@@ -54,16 +57,20 @@ https://github.com/user-attachments/assets/7096c812-08be-4716-ad37-7ae4f3797fa7
 
 ## Web UI
 
-When `EnableQuickStartWidget=true` (the default), the web UI surfaces Quick Start
-in two places:
+When `EnableQuickStartWidget=true` (the default), you can open Quick Start from:
 
-- **Welcome page** — new users land on a Welcome screen with a **Quick Start**
+- **The side navigation** — the **Quick Start** button at the top, on every page.
+- **The Welcome page** — new users land on a Welcome screen with a **Quick Start**
   button (alongside *Take the tour* and *Enter IDP Console*). It explains the
   three common starting points: no config yet → Quick Start; already have a config
   → Configuration › View/Edit Configuration; want to test a document → Upload
-  Document.
-- **Floating Quick Start widget** — a chat launcher available from the Documents
-  view, so you can open Quick Start at any time.
+  Documents.
+- **The guided tour** — its last step points at the Quick Start button, and
+  **Finish** opens it.
+
+Quick Start opens as a floating panel over the page you are on. **Minimize** keeps
+the conversation and leaves a round launcher in the corner to reopen it; **Close**
+ends the conversation.
 
 ![Quick Start panel with suggested starting prompts and a message box that accepts example documents](../images/quick-start-panel.png)
 
@@ -80,13 +87,15 @@ in two places:
    [sample document](web-ui.md#upload-documents) of the same type exists, the
    agent links it inline so you can open the real document as a reference.
 4. **(Optional) Attach an example document.** Use the upload control in the chat to
-   attach your own document(s). They run through multi-document Discovery in the
-   background, and the agent summarizes the discovered document types when they're
-   ready. A schema inferred from a real document is higher-fidelity than a
-   prompt-only draft.
+   attach your own document(s): PDF, PNG, JPEG, TIFF or WebP files, or a zip of
+   them. One document runs through single-document Discovery and several, or a
+   zip, through multi-document Discovery, in the background; the agent
+   summarizes the discovered document types when they're ready. A schema inferred
+   from a real document is higher-fidelity than a prompt-only draft.
 5. **Activate.** When you approve, the agent creates a configuration profile and
    **activates** it, then confirms it's ready. Upload a document from **Upload
-   Document** and it's processed with your new configuration.
+   Documents** in the side navigation and it's processed with your new
+   configuration.
 
 You can review or switch configurations at any time from
 **Configuration › View/Edit Configuration** (see
@@ -94,9 +103,11 @@ You can review or switch configurations at any time from
 
 ### Disabling the widget
 
-Set `EnableQuickStartWidget=false` at deploy time to hide the Welcome-page button
-and the floating widget (for example, on a mature deployment where every user
-already has a tuned configuration).
+Set `EnableQuickStartWidget=false` at deploy time to hide Quick Start from the web
+UI: the side navigation button, the Welcome page's button and its mention, the
+guided tour's last step, and the floating panel (for example, on a mature
+deployment where every user already has a tuned configuration). It changes only
+the web UI; `idp-cli bootstrap` still works.
 
 ---
 
