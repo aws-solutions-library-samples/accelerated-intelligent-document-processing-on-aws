@@ -197,6 +197,28 @@ REFUSED = [
         "b = io.BytesIO()\nwith thing() as b:\n    df.to_csv(b)",
         id="buffer-rebound-by-with",
     ),
+    pytest.param(
+        "import pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "def write(b):\n    df.to_csv(b)",
+        id="writer-target-is-a-parameter",
+    ),
+    pytest.param(
+        "import io\nimport pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "b = io.BytesIO()\ndef b():\n    pass\ndf.to_csv(b)",
+        id="buffer-name-also-a-function",
+    ),
+    pytest.param(
+        "import io\nimport pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "b = io.BytesIO()\nclass b:\n    pass\ndf.to_csv(b)",
+        id="buffer-name-also-a-class",
+    ),
+    pytest.param("from .pandas import x", id="relative-import-of-allowed-name"),
+    pytest.param("from random import _os", id="import-private-name"),
+    pytest.param("v = vars()", id="vars"),
+    pytest.param("b = __builtins__", id="builtins-name"),
+    pytest.param("import pandas as pd\nx = pd.io.common.os", id="os-attribute"),
+    pytest.param("import json\nx = json.os", id="os-attribute-direct"),
+    pytest.param("import random\nx = random.platform", id="platform-attribute"),
     pytest.param("!curl remote.example", id="shell-line"),
     pytest.param("%pip install requests", id="notebook-magic"),
     pytest.param("", id="empty"),
