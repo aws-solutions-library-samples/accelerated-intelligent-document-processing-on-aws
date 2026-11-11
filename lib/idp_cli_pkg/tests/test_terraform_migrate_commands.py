@@ -195,3 +195,79 @@ def test_check_destroy_reads_the_plan_file(runner, migration, tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert migration.check_destroy.call_args.args[0] == str(plan)
+
+
+def test_apply_passes_accepted_changes_and_ignored_documents(runner, migration):
+    migration.apply.return_value = step("apply")
+    result = runner.invoke(
+        cli_module.cli,
+        [
+            *GROUP,
+            "apply",
+            *COMMON,
+            "--accept-change",
+            "module.idp.aws_dynamodb_table.agent_table:ttl-changed",
+            "--ignore-document",
+            "stuck.pdf",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    kwargs = migration.apply.call_args.kwargs
+    assert kwargs["accept_changes"] == (
+        "module.idp.aws_dynamodb_table.agent_table:ttl-changed",
+    )
+    assert kwargs["ignore_documents"] == ("stuck.pdf",)
+
+
+def test_freeze_passes_ignored_documents(runner, migration):
+    migration.freeze.return_value = step("freeze")
+    runner.invoke(
+        cli_module.cli,
+        [
+            *GROUP,
+            "freeze",
+            *COMMON,
+            "--ignore-document",
+            "a.pdf",
+            "--ignore-document",
+            "b.pdf",
+        ],
+    )
+    assert migration.freeze.call_args.kwargs["ignore_documents"] == ("a.pdf", "b.pdf")
+
+
+def test_apply_prints_the_changes_to_review(runner, migration):
+    result_model = step("apply")
+    result_model.details["review"] = [
+        "module.idp.aws_dynamodb_table.tracking_table: changes billing_mode"
+    ]
+    migration.apply.return_value = result_model
+    result = runner.invoke(cli_module.cli, [*GROUP, "apply", *COMMON])
+    assert "In-place changes to review:" in result.output
+    assert "tracking_table: changes billing_mode" in result.output
+
+
+def test_check_retention_shows_noncurrent_and_unevaluable_rows(
+    runner, migration, monkeypatch
+):
+    monkeypatch.setattr(tf_cli.err_console, "width", 220)
+    result_model = step("check-retention", ok=False, changes=(), findings=["x"])
+    result_model.details["buckets"] = [
+        {
+            "kind": "output_bucket",
+            "bucket": "b",
+            "expiryDays": None,
+            "oldestObjectAgeDays": 3,
+            "noncurrentExpiryDays": 7,
+            "oldestNoncurrentAgeDays": 9,
+            "versioning": "Enabled",
+            "unresolved": ["rule: `local.x`"],
+            "ok": False,
+        }
+    ]
+    result_model.notes = ["Not checked: rule filters"]
+    migration.check_retention.return_value = result_model
+    result = runner.invoke(cli_module.cli, [*GROUP, "check-retention", *COMMON])
+    assert result.exit_code == 1
+    assert "cannot evaluate" in result.output
+    assert "Not checked: rule filters" in result.output
