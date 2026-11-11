@@ -35,7 +35,14 @@ variable indirection, an encoded path, another language's HTTP client, or a
 them where this hook looks; so do ``cd ~`` followed by a relative path,
 ``env`` or ``printenv`` (which read the environment without the ``/proc``
 file), and an agent rewriting its own ``origin`` remote, since the origin host
-is read from git. The control that would actually work is not having
+is read from git. Credentials also come out of tools that name no file
+(``gh auth token``, ``aws configure get``, ``git credential fill``) and out of
+stores this hook does not list (``~/.git-credentials``, ``~/.docker``,
+``~/.pypirc``, ``~/.npmrc``); ``/dev/tcp`` redirection, ``git``, ``pip``,
+``npm`` or ``uv`` pointed at another host, ``-L`` redirects and an allowed host
+used as the receiving end are outside it too. In the other direction a command
+that merely mentions a credential path in a comment or a search pattern
+(``grep -rn '~/.aws' docs/``) is refused; prefix it with the override. The control that would actually work is not having
 readable long-lived credentials on the host, which is outside this repository.
 What this buys is the plain case, and a line in the transcript when it fires.
 
@@ -65,9 +72,15 @@ import sys
 import urllib.parse
 from pathlib import Path
 
+# The sibling hook's shell reader: newline is a separator, `#` mid-word is not a
+# comment, and heredoc bodies are dropped as data. Imported rather than copied,
+# so a fix to how one hook reads a command line reaches both. Hooks run as
+# scripts, so their own directory is on the import path.
+from check_shared_branch import SHELL_KEYWORDS
+from check_shared_branch import segments as shell_segments
+
 OVERRIDE = "ALLOW_WORKTREE_REACH"
 AFFIRMATIVE = {"1", "true", "yes", "y", "on"}
-SEGMENT_SEPARATORS = {"&&", "||", "|", ";", "&", "\n", "(", ")"}
 
 #: Credential stores under the home directory, relative to it.
 HOME_CREDENTIAL_PATHS = (".aws", ".config/gh", ".netrc")
@@ -103,10 +116,14 @@ ALLOWED_FETCH_HOSTS = frozenset(
 #: costs nothing: a value such as ``5`` or ``file=@x.pdf`` is not a host.
 FILE_OPTIONS = {
     "-o", "--output", "-O", "--output-document", "-D", "--dump-header",
-    "-T", "--upload-file", "-K", "--config", "-b", "--cookie", "-c",
+    "-T", "--upload-file", "-b", "--cookie", "-c",
     "--cookie-jar", "--cacert", "--capath", "--cert", "--key", "-E",
     "-P", "--directory-prefix", "-a", "--append-output", "--trace",
     "--trace-ascii", "--stderr", "--netrc-file",
+    # Values that are data, not a destination, however they are spelled.
+    "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+    "-e", "--referer", "-A", "--user-agent", "-u", "--user", "-F", "--form",
+    "--json", "-w", "--write-out", "-X", "--request", "-H", "--header",
 }  # fmt: skip
 
 #: Options that send the connection somewhere other than the URL a reader sees,
@@ -115,12 +132,34 @@ DESTINATION_OPTIONS = {"-x", "--proxy", "--preproxy", "--url"}
 
 #: Options that redirect the connection in a form this hook does not read
 #: (``--connect-to a:443:b:443``, ``--resolve a:443:ip``), or read the URLs from a
-#: file (``wget -i list``). A fetch carrying one is refused as unreadable.
-UNREADABLE_OPTIONS = {"--connect-to", "--resolve", "-i", "--input-file"}
+#: file (``wget -i list``, a curl ``-K`` config file, which can hold ``url =``
+#: lines). A fetch carrying one is refused as unreadable.
+UNREADABLE_OPTIONS = {
+    "--connect-to", "--resolve", "-i", "--input-file", "-K", "--config",
+}  # fmt: skip
 
-#: Commands that run the next word as the command, so ``sudo curl`` and
-#: ``xargs curl`` run curl. Their own options are skipped.
-WRAPPERS = {"sudo", "env", "nice", "nohup", "timeout", "xargs", "stdbuf", "time"}
+#: Commands that run a later word as the command, so ``sudo curl`` and
+#: ``xargs curl`` run curl, with the options of each that take a separate value.
+#: Shell keywords (``if``, ``then``, ``{``, ``!`` ...) are skipped the same way.
+WRAPPERS: dict[str, frozenset[str]] = {
+    "sudo": frozenset({"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"}),
+    "env": frozenset({"-u", "--unset", "-C", "--chdir"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "nohup": frozenset(),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "xargs": frozenset({"-n", "-I", "-L", "-P", "-d", "-a", "-s", "-E", "-l"}),
+    "stdbuf": frozenset({"-i", "-o", "-e"}),
+    "time": frozenset({"-f", "-o"}),
+    "command": frozenset(),
+    "exec": frozenset({"-a"}),
+    "builtin": frozenset(),
+    "watch": frozenset({"-n", "--interval", "-d"}),
+    "strace": frozenset({"-e", "-o", "-p", "-s", "-u", "-E"}),
+    "busybox": frozenset(),
+}
+
+#: Proxy variables an assignment in front of the command can set.
+PROXY_VARIABLE = re.compile(r"^(?:https?|all|ftp)_proxy$", re.IGNORECASE)
 
 #: The loopback interface carries nothing off the host, and local test servers
 #: (``sam local``, a probe on ``127.0.0.1``) live there.
@@ -135,22 +174,6 @@ HOSTLIKE = re.compile(
 
 def _affirmative(value: str | None) -> bool:
     return value is not None and value.strip().lower() in AFFIRMATIVE
-
-
-def _segments(command: str) -> list[list[str]]:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return []
-    segments: list[list[str]] = [[]]
-    for token in tokens:
-        if token in SEGMENT_SEPARATORS:
-            segments.append([])
-        else:
-            segments[-1].append(token)
-    return [segment for segment in segments if segment]
 
 
 def _inline_override(segments: list[list[str]]) -> bool:
@@ -186,6 +209,10 @@ def _credential_paths(command: str, home: str) -> list[str]:
     command = command.replace('"', "").replace("'", "")
     command = re.sub(r"/(?:\./)+", "/", re.sub(r"/{2,}", "/", command))
     command = re.sub(r"~[A-Za-z0-9._-]+(?=/)", "~", command)
+    previous = None
+    while previous != command:  # a/b/../c is a/c
+        previous = command
+        command = re.sub(r"/(?!\.\.(?:/|$))[^/\s]+/\.\.(?=/|$)", "", command)
     homes = [
         re.escape(spelling) for spelling in ("~", "$HOME", "${HOME}", home) if spelling
     ]
@@ -241,27 +268,66 @@ def _host(token: str) -> str | None:
 def _command_word(tokens: list[str]) -> tuple[str, list[str]] | None:
     """The fetcher a segment runs and its arguments, or ``None``.
 
-    The command word is the first token after leading assignments, and after
-    wrappers that run the next word (``sudo``, ``xargs`` ...) with their options.
-    A fetcher's name anywhere else (``grep -rn curl``, ``which curl``) is an
-    argument, not a fetch.
+    The command word is the first token after leading assignments, shell
+    keywords, and wrappers that run a later word (``sudo -u x``, ``timeout -s
+    KILL 5``) with their options. A fetcher's name anywhere else (``grep -rn
+    curl``, ``which curl``, ``echo curl ...``) is an argument, not a fetch. A
+    proxy variable assigned in front of the command is returned as a ``-x``
+    argument, so it is checked as a destination; ``env -S '<command>'`` is read as
+    the command it spells.
     """
+    proxies: list[str] = []
+    via_xargs = False
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        name = token.rsplit("/", 1)[-1]
-        if "=" in token and token.split("=", 1)[0].replace("_", "").isalnum():
+        name = token.rsplit("/", 1)[-1].lstrip("\\")
+        assigned = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", token)
+        if assigned:
+            if PROXY_VARIABLE.match(assigned.group(1)):
+                proxies += ["-x", assigned.group(2)]
+            index += 1
+        elif token in SHELL_KEYWORDS:
             index += 1
         elif name in WRAPPERS:
+            via_xargs = via_xargs or name == "xargs"
+            takes_value = WRAPPERS[name]
             index += 1
-            while index < len(tokens) and (
-                tokens[index].startswith("-")
-                or re.fullmatch(r"\d+[smhd]?", tokens[index])
-                or ("=" in tokens[index] and name == "env")
-            ):
-                index += 1
+            while index < len(tokens):
+                current = tokens[index]
+                if name == "env" and current in ("-S", "--split-string"):
+                    try:
+                        inner = shlex.split(tokens[index + 1])
+                    except (IndexError, ValueError):
+                        return name, ["$"]  # a command this cannot read
+                    return _command_word(inner + tokens[index + 2 :])
+                if current in takes_value:
+                    index += 2
+                elif current.startswith("-") or re.fullmatch(
+                    r"\d+(?:\.\d+)?[smhd]?", current
+                ):
+                    index += 1
+                else:
+                    break
         else:
-            return (name, tokens[index + 1 :]) if name in FETCHERS else None
+            if name in FETCHERS:
+                # xargs appends arguments read from stdin, which may be URLs.
+                return name, proxies + tokens[index + 1 :] + (
+                    ["$"] if via_xargs else []
+                )
+            return None
+    return None
+
+
+def _short_cluster(token: str) -> tuple[str, str] | None:
+    """For a short-option cluster such as ``-sSLx`` or ``-xhttp://p``, the first
+    option in it that takes a value, and the value attached after it."""
+    if not re.match(r"^-[A-Za-z]", token):
+        return None
+    for position, letter in enumerate(token[1:], start=1):
+        option = f"-{letter}"
+        if option in DESTINATION_OPTIONS | UNREADABLE_OPTIONS | FILE_OPTIONS:
+            return option, token[position + 1 :]
     return None
 
 
@@ -293,6 +359,12 @@ def _fetch_hosts(tokens: list[str]) -> tuple[str, list[str]] | None:
         option, _, inline = (
             token.partition("=") if token.startswith("--") else (token, "", "")
         )
+        cluster = None if token.startswith("--") else _short_cluster(token)
+        if cluster and cluster[0] != token:
+            option, inline = cluster
+            if not inline:  # the value is the next token
+                previous = option
+                continue
         if option in UNREADABLE_OPTIONS:
             hosts.append("?")
         elif previous in UNREADABLE_OPTIONS:
@@ -314,13 +386,8 @@ def _fetch_hosts(tokens: list[str]) -> tuple[str, list[str]] | None:
             host = _host(token)
             if host is not None:
                 hosts.append(host)
-        previous = token if token.startswith("-") and not inline else ""
+        previous = option if token.startswith("-") and not inline else ""
     return name, hosts
-
-
-#: A fetcher word and a URL on the same line, for the text a shell lexer could
-#: not read (an unbalanced quote in a heredoc), so the fetch check still runs.
-_RAW_FETCH = re.compile(r"\b(curl|wget|nc|ncat|netcat)\b[^\n]*?(\w+://\S+)")
 
 
 def decide(payload: dict) -> tuple[str | None, list[str]]:
@@ -333,17 +400,12 @@ def decide(payload: dict) -> tuple[str | None, list[str]]:
     if not isinstance(command, str) or _worktree_root(cwd) is None:
         return None, []
 
-    segments = _segments(command)
+    segments = shell_segments(command)
     problems = [
         f"names {path}"
         for path in _credential_paths(command, os.environ.get("HOME", ""))
     ]
     fetches = [fetch for tokens in segments if (fetch := _fetch_hosts(tokens))]
-    if not segments:
-        fetches = [
-            (match.group(1), [_host(match.group(2)) or "?"])
-            for match in _RAW_FETCH.finditer(command)
-        ]
     if fetches:
         allowed = allowed_fetch_hosts(str(cwd))
         for name, hosts in fetches:

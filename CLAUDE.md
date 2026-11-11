@@ -1384,7 +1384,7 @@ looks. It stops the accident that happened and leaves an audit trail.
 scoped the same way as the filing hook. From an agent worktree it refuses a command
 that names `~/.aws`, `~/.config/gh`, `~/.netrc` or `/proc/*/environ`, or runs
 `curl`, `wget` or `nc` against a host other than GitHub's, the repository's GitLab
-origin host, PyPI's or npm's. The override is `ALLOW_WORKTREE_REACH=1`, and an
+origin host, PyPI's, npm's or the loopback interface. The override is `ALLOW_WORKTREE_REACH=1`, and an
 honoured one prints a line to stderr. ⚠️ It matches command text and is not a
 capability boundary; its header lists the routes around it.
 

