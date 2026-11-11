@@ -109,6 +109,19 @@ def checkov_binary(version: str, cache: Path) -> Path:
     return exe
 
 
+def checkov_command(exe: Path) -> list[str]:
+    """The argv prefix that runs ``exe``: the venv's interpreter, then the script.
+
+    checkov ships ``bin/checkov`` as a ``#!python`` script, and pip rewrites that
+    line to the venv interpreter's absolute path with no fallback for a long one.
+    Under GitLab's ``/builds/<group>/<subgroup>/<project>/.cache/...`` the line is
+    130 bytes, past the 127 a kernel with a 128-byte ``BINPRM_BUF_SIZE`` reads, so
+    executing the script directly fails with ``Exec format error`` on every run.
+    Passing the script to its interpreter never reads the shebang.
+    """
+    return [str(exe.parent / "python"), str(exe)]
+
+
 def run_checkov(exe: Path, args: list[str], cwd: Path) -> list[dict]:
     env = {
         **os.environ,
@@ -116,7 +129,7 @@ def run_checkov(exe: Path, args: list[str], cwd: Path) -> list[dict]:
         "CHECKOV_RUN_SCA_PACKAGE_SCAN_V2": "",
     }
     proc = subprocess.run(  # nosec B603 - fixed argv
-        [str(exe), *args, "-o", "json", "--compact", "--skip-download"],
+        [*checkov_command(exe), *args, "-o", "json", "--compact", "--skip-download"],
         cwd=cwd,
         env=env,
         capture_output=True,
@@ -135,7 +148,7 @@ def run_checkov(exe: Path, args: list[str], cwd: Path) -> list[dict]:
 
 def check_ids(exe: Path, framework: str) -> set[str]:
     out = subprocess.run(  # nosec B603 - fixed argv
-        [str(exe), "--list", "--framework", framework],
+        [*checkov_command(exe), "--list", "--framework", framework],
         capture_output=True,
         text=True,
         check=True,
