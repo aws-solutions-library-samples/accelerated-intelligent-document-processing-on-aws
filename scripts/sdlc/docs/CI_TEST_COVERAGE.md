@@ -474,6 +474,88 @@ directory sweep does not delete (queues, log groups, Cognito pools, KMS keys and
 on), named in the finding but not removed. A dead run's destroy needs its `-iam`
 pre-stack's role, which the stack sweep keeps only while the state prefix exists.
 
+### Weekly Terraform-migration run: genai-idp-terraform onto the built-in module
+
+A weekly schedule carrying `IDP_RUN_TERRAFORM_MIGRATION=true` runs
+`scripts/sdlc/terraform_migration_test.py` (`make stacktest-terraform-migration`)
+**instead of** the primary suite. The driver deploys the separate
+[`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform)
+implementation at the tag and commit it pins, seeds it, migrates it in place onto the
+Terraform module the build just published with every phase of `idp-cli terraform
+migrate-from-genai-idp-terraform`, verifies, and destroys both deployments. What it
+proves is in [docs/testing.md](../../../docs/testing.md) (the live-stack tiers) and in
+tier J of `.claude/skills/release-validation.md`.
+
+| Pipeline | `IDP_RUN_TERRAFORM_MIGRATION` | Runs |
+|---|---|---|
+| Every other pipeline, buttons included | not set, or ignored off a schedule | as before |
+| Weekly Terraform-migration schedule | `true` | the migration driver only: no primary suite, no headless check, no probes; labelled `WEEKLY TERRAFORM MIGRATION RUN` in the summary, the failure email and both Slack posts; leaves the UX review stack and the nightly story jobs alone |
+
+How it is kept apart, the same way as the other schedules:
+
+- **Inactive until created.** Nothing in `.gitlab-ci.yml` turns it on. It runs only
+  once a pipeline schedule on `develop` carrying the variable exists and is active in
+  the GitLab project.
+- **Schedule-only.** `terraform_migration_requested` in
+  `scripts/sdlc/integration_test_deployment.py` honours the variable on a scheduled
+  pipeline only, and refuses it beside `IDP_RUN_PROBES`, `IDP_TEST_REGION` or
+  `IDP_IAC=terraform`, because the run replaces the primary suite. The choice reaches
+  the build as `terraform_migration` in `ci_run_options.json`, and
+  `terraform_migration_mode` in `codebuild_deployment.py` reads it.
+- **Not a merge gate.** It is a scheduled run of `integration_tests`, which is a gate
+  on nothing (footnote ¹ below), and no shared gate names it
+  (`scripts/tests/test_ci_gate_parity.py`'s `SHARED_GATES`). Its job is
+  `integration_tests` itself, so it holds the `integration_deploy` resource group and
+  serialises with the nightly runs.
+- **Labelled.** `label_terraform_migration_run` heads the summary, `failure_subject`
+  names it, and both Slack posts prefix `🔀 WEEKLY TERRAFORM MIGRATION RUN`.
+
+**Credentials.** The run uses the per-run model of a Terraform nightly: the build
+creates the run's `-iam` pre-stack with `create_iam_resources(...,
+terraform_deployer_arn=<the build's role>)`, whose `TFDeployRole` trusts only this
+build, and deletes it afterwards with `cleanup_iam_resources`. The driver and every
+process it starts (upstream's Terraform, the `aws` commands upstream's provisioners
+run, `idp-cli`) use one AWS profile that assumes that role with
+`credential_source = EcsContainer`, so the SDKs refresh it for the whole run; the new
+deployment's providers also receive it as `--terraform-assume-role-arn`. The names
+are derived from the build's stack name (`terraform_migration_names`): the old
+deployment `idpo<digits>`, the new one `idp-m<digits>`, so both start with the
+`ManagedStackNamePrefix` the role requires, and the new one's pre-stack role matches
+the CodeBuild role's grant on `role/idp-*-TFDeployRole`.
+
+⚠️ **The upstream deploy is refused under that role, so the run cannot pass until
+the CI's IAM changes.** This is measured from the upstream state at the pinned tag,
+not from a CI run. The role comes from
+`iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml`, and:
+
+1. `CreateOrChangeRolesOnlyWithBoundary` allows `iam:CreateRole`,
+   `iam:PutRolePolicy` and `iam:AttachRolePolicy` only when the role carries the
+   run's permissions boundary (`iam:PermissionsBoundary` equal to
+   `CreatedRolePermissionsBoundaryArn`). Upstream has no permissions-boundary
+   variable and sets a boundary on none of its IAM roles, so its first
+   `aws_iam_role` is refused.
+2. The same statement, `RoleLifecycleWithinNamePrefix` and
+   `ManagedPoliciesWithinNamePrefix` allow only names starting with
+   `ManagedStackNamePrefix` (`idp`). Upstream names many roles and policies from
+   fixed strings (`ConfigurationResolverRole…`, `UploadResolverS3Policy…`) or from
+   its module names (`agent-…`, `chat-…`, `discovery-…`, `processing-…`) rather than
+   from its `prefix`, so even a boundary would not clear them.
+
+Clearing either needs a CI role whose IAM grant does not require the boundary or the
+prefix — a widening of the CI's IAM, which this change deliberately does not make.
+Everything else the run needs is in place, so with such a role the schedule runs as
+written. Two further limits to check when it first runs: the CodeBuild project's
+`TimeoutInMinutes: 180` (`scripts/sdlc/cfn/codepipeline-s3.yml`) against a driver
+budget of `TERRAFORM_MIGRATION_TIMEOUT_SECONDS` plus publish, and the IAM role count,
+since the two deployments hold several hundred roles between them during the run.
+
+**What a dead build leaves.** The driver tears down in a `finally`, but a build that
+dies (timeout, lost container) runs no `finally`. The next run's startup sweeps
+remove the new deployment's `idp-` stacks and roles by name and age; the old
+deployment's resources (upstream's names) are reached by none of them and stand until
+removed by hand, by running the driver with `--resume` from its work directory, or by
+`terraform destroy` in it.
+
 ### Why fast_checks is eight jobs
 
 It was one `static_checks` job that ran lint, typecheck and every pytest suite in
@@ -643,6 +725,7 @@ GitHub's own Merge button runs no code from this tree.
 | **Weekly variant-probe schedule** | ✅ | — | ✅ auto | ✅ auto¹, plus the probes | — | — | — |
 | **Weekly region schedule** (eu-central-1, ca-central-1) | ✅ | — | ✅ auto | ✅ auto¹, in that region | — | — | — |
 | **Nightly Terraform schedule** (`IDP_IAC=terraform`) | ✅ | — | ✅ auto | ✅ auto¹, against a Terraform deployment | — | — | — |
+| **Weekly Terraform-migration schedule** (`IDP_RUN_TERRAFORM_MIGRATION=true`) | ✅ | — | ✅ auto | ✅ auto¹, the migration driver instead of the primary suite | — | — | — |
 
 ¹ ⚠️ **THE DEPLOY IS NO LONGER A MERGE GATE.** This is the central trade in the
 current pipeline shape and it has to be read before a green MR pipeline is relied
