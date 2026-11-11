@@ -212,3 +212,30 @@ def test_a_turn_with_no_user_records_nothing(chat):
     gate = chat.factory.calls[-1]["session_gate"]
     assert not gate.allows(CI)
     assert _owner(chat, "s-x") is None
+
+
+def test_a_flag_set_by_a_concurrent_turn_closes_opt_in_agents(chat):
+    """Another turn records a data result after this turn read the flag.
+
+    The flag is written while the orchestrator is being built, which is where a
+    concurrent turn's result would land before this turn loads memory.
+    """
+    _run_analytics(chat, "s1")  # owns s1; flag set
+    chat.owners.update_item(
+        Key={"sessionId": "s1"}, UpdateExpression="REMOVE dataResultsAt"
+    )
+    original = chat.factory.create_conversational_orchestrator
+
+    def build_while_another_turn_records(**kwargs):
+        chat.owners.update_item(
+            Key={"sessionId": "s1"},
+            UpdateExpression="SET dataResultsAt = :t",
+            ExpressionAttributeValues={":t": 1},
+        )
+        return original(**kwargs)
+
+    chat.factory.create_conversational_orchestrator = build_while_another_turn_records
+    chat.processor.handler(_event(A, "s1", enableCodeIntelligence=True), None)
+    call = chat.factory.calls[-1]
+    assert CI in call["agent_ids"]  # built before the flag was seen
+    assert not call["session_gate"].allows(CI)

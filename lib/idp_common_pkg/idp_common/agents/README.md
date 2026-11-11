@@ -188,7 +188,8 @@ Stores conversation history for agent memory.
   `conversation#{session_id}` key is not read.
 - **SK**: `timestamp` (ISO-8601 format)
 - **Attributes**: conversation_history (JSON), message_count, last_updated,
-  conversation_version
+  conversation_version, ExpiresAfter (the retention period after the item's last
+  write, when `DATA_RETENTION_DAYS` is set)
 
 Appending a message rewrites the whole newest item, so `conversation_version`
 guards it: the write is conditional on the value that was read and advances it in
@@ -418,9 +419,16 @@ session:
   is flagged, which the web UI uses to start a new session when an opt-in is turned
   on.
 
-The flag lives as long as the owner row, whose expiry moves forward on every turn;
-memory items carry no expiry, so a session idle for longer than the retention
-period and then resumed under the same id starts again without the flag.
+An opt-in agent's tool also re-reads the flag (`SessionAgentGate(recheck=...)`, a
+failed read counting as set) before it runs, which covers a second turn on the same
+session recording a data result after this turn's first read and before it loaded
+memory: the flag is always written before the result reaches memory.
+
+The flag lives as long as the owner row, whose expiry is the retention period plus
+an hour after the last turn. Memory items carry `ExpiresAfter` set to the
+retention period (`DATA_RETENTION_DAYS`) after their last write
+(`DynamoDBMemoryHookProvider(expires_after_seconds=...)`), so memory expires
+before the flag that describes it.
 
 ### A system prompt names only tools its agent registers
 

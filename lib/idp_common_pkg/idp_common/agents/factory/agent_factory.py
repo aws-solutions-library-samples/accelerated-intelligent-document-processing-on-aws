@@ -10,6 +10,23 @@ from typing import Any, Callable, Dict, List, Optional
 from ..common.idp_agent import IDPAgent
 
 
+def _memory_expiry_seconds() -> Optional[int]:
+    """How long conversation memory is kept after its last write, or ``None``.
+
+    ``DATA_RETENTION_DAYS``, the period the chat history and the session owner
+    record are kept for, so memory never outlives the owner record that says
+    whether the session holds Analytics or Error Analyzer results. ``None``
+    (no expiry) where the variable is unset.
+    """
+    import os
+
+    days = os.environ.get("DATA_RETENTION_DAYS", "")
+    try:
+        return int(days) * 24 * 60 * 60 if int(days) > 0 else None
+    except ValueError:
+        return None
+
+
 class IDPAgentFactory:
     """Factory for creating and managing IDP agents."""
 
@@ -218,6 +235,7 @@ class IDPAgentFactory:
                     max_history_turns=int(
                         os.environ.get("MAX_CONVERSATION_TURNS", "20")
                     ),
+                    expires_after_seconds=_memory_expiry_seconds(),
                 )
             )
             logger.info(f"Created memory provider for session {session_id}")
@@ -327,6 +345,7 @@ class IDPAgentFactory:
                 region_name=os.environ.get("BEDROCK_REGION", "us-east-1"),
                 max_message_size_kb=float(os.environ.get("MAX_MESSAGE_SIZE_KB", "8.5")),
                 max_history_turns=int(os.environ.get("MAX_CONVERSATION_TURNS", "20")),
+                expires_after_seconds=_memory_expiry_seconds(),
             )
             hooks.append(memory_provider)
             logger.info(f"Created memory provider for session {session_id}")

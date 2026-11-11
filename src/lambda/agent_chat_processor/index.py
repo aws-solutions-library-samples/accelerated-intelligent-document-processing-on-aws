@@ -204,8 +204,9 @@ def _session_holds_data_results(session_id, owner_sub):
 
     Read from the session's owner row (``idp_common.chat_session_owner``). False
     for a turn with no signed-in user: such a turn is built without memory, so no
-    earlier result reaches it. A read that fails answers True, which only leaves
-    the opt-in agents out of this turn.
+    earlier result reaches it. A read that fails answers True, which leaves
+    the opt-in agents out of this turn, or moves an opt-in turn to a new
+    session where the processor persists the turn itself.
     """
     if not owner_sub or not session_id:
         return False
@@ -1359,6 +1360,14 @@ def handler(event, context):
                 agent["agent_id"] for agent in all_agents if opt_in_of(agent)
             ],
             record=_data_results_recorder(session_id, owner_sub),
+            # Another turn on this session may record a data result after the
+            # read above; the gate reads the flag again before an opt-in agent
+            # runs.
+            recheck=(
+                (lambda: _session_holds_data_results(session_id, owner_sub))
+                if owner_sub
+                else None
+            ),
         )
 
         if use_direct_quick_start:

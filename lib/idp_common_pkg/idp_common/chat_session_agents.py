@@ -135,6 +135,13 @@ class SessionAgentGate:
             turn began.
         opt_in_agent_ids: ids of the opt-in agents (any kind) known to the
             registry.
+        recheck: called when an opt-in agent is about to run and the gate is
+            still open; True if the session has been flagged since the turn
+            began. This closes the gap where another turn on the same session
+            records a data result after this turn read the flag but before it
+            loaded memory: the flag is always written before the result reaches
+            memory, so a flag still unset at this point means memory held no
+            data result when it was loaded. ``None`` re-checks nothing.
         record: called once, the first time a data agent returns a result in a
             session that was not yet flagged. It persists the flag; if it
             raises, :meth:`note_data_result` raises too and the result is not
@@ -148,10 +155,12 @@ class SessionAgentGate:
         holds_data_results: bool,
         opt_in_agent_ids: Iterable[str],
         record: Optional[Callable[[], None]] = None,
+        recheck: Optional[Callable[[], bool]] = None,
     ):
         self._holds = bool(holds_data_results)
         self._opt_in = frozenset(opt_in_agent_ids)
         self._record = record
+        self._recheck = recheck
         self._lock = threading.Lock()
 
     @property
@@ -160,7 +169,18 @@ class SessionAgentGate:
 
     def allows(self, agent_id: str) -> bool:
         """False for an opt-in agent once the session holds data results."""
-        return not (self._holds and agent_id in self._opt_in)
+        if agent_id not in self._opt_in:
+            return True
+        if not self._holds and self._recheck is not None:
+            try:
+                flagged = bool(self._recheck())
+            except Exception as e:
+                logger.warning(f"Could not re-read the session flag: {e}")
+                flagged = True
+            if flagged:
+                with self._lock:
+                    self._holds = True
+        return not self._holds
 
     def note_data_result(self, agent_id: str) -> None:
         """Flag the session when a data agent returns its first result."""

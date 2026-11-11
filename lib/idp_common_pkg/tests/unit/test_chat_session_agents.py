@@ -178,3 +178,37 @@ class TestFlag:
         record_data_results(owners, "s1", "sub-a", 10)
         _own(owners, "s1", "sub-a")
         assert holds_data_results(owners, "s1")
+
+
+@pytest.mark.unit
+class TestRecheck:
+    def test_a_flag_seen_on_recheck_closes_opt_in_agents(self):
+        flagged = [False]
+        gate = sa.SessionAgentGate(
+            holds_data_results=False,
+            opt_in_agent_ids=OPT_IN,
+            recheck=lambda: flagged[0],
+        )
+        assert gate.allows("Code-Intelligence-Agent")
+        flagged[0] = True
+        assert not gate.allows("remote-tools")
+        assert gate.holds_data_results
+
+    def test_a_failed_recheck_closes_them(self):
+        def broken():
+            raise RuntimeError("unavailable")
+
+        gate = sa.SessionAgentGate(
+            holds_data_results=False, opt_in_agent_ids=OPT_IN, recheck=broken
+        )
+        assert not gate.allows("Code-Intelligence-Agent")
+
+    def test_other_agents_are_not_rechecked(self):
+        calls = []
+        gate = sa.SessionAgentGate(
+            holds_data_results=False,
+            opt_in_agent_ids=OPT_IN,
+            recheck=lambda: calls.append(1) or True,
+        )
+        assert gate.allows("Analytics-Agent")
+        assert calls == []

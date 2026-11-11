@@ -49,9 +49,8 @@ same user and session. ``idp_common.chat_session_agents`` decides what the flag
 changes.
 
 The flag lasts as long as the owner row: its expiry moves forward on every turn,
-to the retention period plus the margin below. Conversation memory items carry no
-expiry, so a session left idle for longer than that and then resumed under the
-same id is registered afresh, without the flag, while its memory is still there.
+to the retention period plus the margin below. Conversation memory items expire
+the retention period after their last write, so they are gone before the flag is.
 
 Vendored verbatim into the resolver Lambdas that ship without the ``idp_common``
 layer (``nested/api-resolvers/src/lambda/*/chat_session_owner.py``), so it imports
