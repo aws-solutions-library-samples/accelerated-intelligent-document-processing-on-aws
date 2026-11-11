@@ -11299,14 +11299,14 @@ TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
 #: Heads the summary and marks the failure email on a migration run, so its result
 #: is never read as a nightly's.
 TERRAFORM_MIGRATION_RUN_LABEL = "WEEKLY TERRAFORM MIGRATION RUN"
-#: The CodeBuild project's limit (`TimeoutInMinutes: 180` in
-#: scripts/sdlc/cfn/codepipeline-s3.yml). The driver gets what is left of it, less
-#: TERRAFORM_MIGRATION_RESERVE_SECONDS, as a deadline after which it starts no
-#: forward phase and tears down, so a build that runs out of time still leaves
-#: nothing behind. Measured, a full run took 166 minutes (76 waiting on DynamoDB's
-#: time-to-live intervals), so within 180 minutes with publish in front it reaches
-#: that deadline; see CI_TEST_COVERAGE.md.
-TERRAFORM_MIGRATION_BUILD_LIMIT_SECONDS = 180 * 60
+#: The CodeBuild project timeout a migration run needs (`TimeoutInMinutes` in
+#: scripts/sdlc/cfn/codepipeline-s3.yml). Measured, the driver took 166 minutes end
+#: to end (76 of them waiting on DynamoDB's time-to-live intervals), and publish and
+#: the `-iam` pre-stack come in front of it. A build whose own timeout is lower is
+#: refused before publish (terraform_migration_timeout_shortfall) rather than run
+#: into its deadline. The driver's deadline is derived from the build's own
+#: timeout, read from CodeBuild; this value stands in only when that cannot be read.
+TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES = 240
 #: What the driver's failure teardown needs (measured: 18 for the new deployment's
 #: delete and 8 for the old one's, plus the sweep), and the `-iam` cleanup after it.
 TERRAFORM_MIGRATION_RESERVE_SECONDS = 45 * 60
@@ -11421,12 +11421,49 @@ def terraform_migration_driver_command(
     ]
 
 
-def terraform_migration_budget(elapsed_seconds: float) -> tuple[int, int]:
+def build_timeout_minutes(codebuild=None) -> int | None:
+    """This build's own timeout in minutes, read from CodeBuild, or None when it
+    cannot be read (no build id, no permission)."""
+    build_id = os.environ.get("CODEBUILD_BUILD_ID", "")
+    if not build_id:
+        return None
+    try:
+        client = codebuild or boto3.client("codebuild")
+        return int(
+            client.batch_get_builds(ids=[build_id])["builds"][0]["timeoutInMinutes"]
+        )
+    except Exception as error:  # noqa: BLE001
+        print(f"⚠️ Could not read this build's timeout ({error})")
+        return None
+
+
+def terraform_migration_timeout_shortfall(codebuild=None) -> str | None:
+    """Why this build is too short for a migration run, or None. Checked before
+    publish, so a project that has not been given the longer timeout fails in
+    minutes and says what to change, instead of reaching the driver's deadline
+    hours in. An unreadable timeout is not refused."""
+    minutes = build_timeout_minutes(codebuild)
+    if minutes is None or minutes >= TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES:
+        return None
+    return (
+        f"this build's timeout is {minutes} min, and a Terraform-migration run needs "
+        f"at least {TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES}; update the CI account's "
+        "codepipeline stack (scripts/sdlc/cfn/codepipeline-s3.yml) first"
+    )
+
+
+def terraform_migration_budget(
+    elapsed_seconds: float, limit_minutes: int | None = None
+) -> tuple[int, int]:
     """(driver deadline, driver timeout) in seconds, given how long the build has
-    already run. The deadline leaves TERRAFORM_MIGRATION_RESERVE_SECONDS of the
-    build's limit for the driver's teardown and the `-iam` cleanup; the timeout is
-    the hard stop, five minutes short of the limit."""
-    left = TERRAFORM_MIGRATION_BUILD_LIMIT_SECONDS - int(elapsed_seconds)
+    already run and its timeout (``limit_minutes``; None falls back to
+    TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES). The deadline leaves
+    TERRAFORM_MIGRATION_RESERVE_SECONDS of the build's limit for the driver's
+    teardown and the `-iam` cleanup; the timeout is the hard stop, five minutes
+    short of the limit. Derived from the build's own limit, so the deadline moves
+    with the project's timeout rather than with a constant beside it."""
+    limit = (limit_minutes or TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES) * 60
+    left = limit - int(elapsed_seconds)
     return max(left - TERRAFORM_MIGRATION_RESERVE_SECONDS, 0), max(left - 300, 0)
 
 
@@ -11469,7 +11506,8 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
             account,
         )
         deadline, timeout = terraform_migration_budget(
-            time.monotonic() - started if started is not None else 0
+            time.monotonic() - started if started is not None else 0,
+            build_timeout_minutes(),
         )
         cmd += ["--deadline-seconds", str(deadline)]
         print(
@@ -11547,7 +11585,10 @@ def main():
         migration = terraform_migration_mode(options=run_options)
         os.environ[TERRAFORM_MIGRATION_VARIABLE] = "true" if migration else ""
         if migration:
-            refusal = terraform_migration_unsupported_reason()
+            refusal = (
+                terraform_migration_unsupported_reason()
+                or terraform_migration_timeout_shortfall()
+            )
             if refusal:
                 raise ValueError(refusal)
             print("🔀 Weekly Terraform-migration run: the primary suite does not run")

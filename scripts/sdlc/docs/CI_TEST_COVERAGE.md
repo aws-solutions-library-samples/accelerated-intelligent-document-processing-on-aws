@@ -548,25 +548,35 @@ not from a CI run. The role comes from
 Clearing either needs a CI role whose IAM grant does not require the boundary or the
 prefix — a widening of the CI's IAM, which this change deliberately does not make.
 Everything else the run needs is in place, so with such a role the schedule runs as
-written, apart from the time limit below.
+written, within the time limit below.
 
-⚠️ **The run does not fit the CodeBuild project's time limit either.** Measured on a
-live run (the passing one), the driver took 166 minutes end to end: about 20 to deploy
-and seed the upstream deployment, 76 waiting on DynamoDB (it refuses to turn the agent-jobs
-table's time-to-live off until about an hour after upstream enabled it at creation,
-and refuses the module's new time-to-live setting until about an hour after that),
-33 for the adoption apply, and 27 to destroy both deployments and sweep. With publish
-and the `-iam` pre-stack in front of it, that is more than the project's
-`TimeoutInMinutes: 180` (`scripts/sdlc/cfn/codepipeline-s3.yml`), and the GitLab
-job's `3h30m` leaves little margin. So that running out of time still leaves nothing
-behind, the build gives the driver a deadline (`terraform_migration_budget`): what is
-left of the 180 minutes less `TERRAFORM_MIGRATION_RESERVE_SECONDS` (45, the measured
+**The time limit.** Measured on a live run (the passing one), the driver took 166
+minutes end to end: about 20 to deploy and seed the upstream deployment, 76 waiting on
+DynamoDB (it refuses to turn the agent-jobs table's time-to-live off until about an
+hour after upstream enabled it at creation, and refuses the module's new
+time-to-live setting until about an hour after that), 33 for the adoption apply, and
+27 to destroy both deployments and sweep. With publish and the `-iam` pre-stack in
+front of it, the run needs the CodeBuild project's `TimeoutInMinutes: 240`
+(`scripts/sdlc/cfn/codepipeline-s3.yml`, `TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES`
+in `codebuild_deployment.py`). The value is the project's, so it applies to every
+run; for the others it is a backstop they finish well inside. The pipeline monitor
+watches a migration run longer than any other (`MIGRATION_RUN_MONITOR_*` in
+`integration_test_deployment.py`), and the GitLab job's `4h30m` sits above that.
+
+So that running out of time still leaves nothing behind, the build gives the driver a
+deadline (`terraform_migration_budget`): what is left of the build's own timeout, read
+from CodeBuild, less `TERRAFORM_MIGRATION_RESERVE_SECONDS` (45 minutes, the measured
 teardown plus the `-iam` cleanup). After it the driver starts no forward phase,
 refuses a TTL wait that would run past it, and tears down; the hard stop is five
-minutes short of the limit. With the measured durations the run therefore reaches its
-deadline and reports a failure before it finishes. Passing in CI needs a CodeBuild
-timeout of about four hours for this run, a change to the pipeline stack that is not
-made here. Check the IAM role
+minutes short of the limit. Because the deadline is read from the build rather than
+from a constant, changing the project's timeout moves it too.
+
+⚠️ **Order: update the `genaiic-sdlc-codepipeline` stack, then run the schedule.** A
+build whose timeout is below 240 minutes is refused before publish
+(`terraform_migration_timeout_shortfall`), naming the stack to update, rather than
+running into its deadline hours later.
+
+Check the IAM role
 count too: the two deployments hold several hundred roles between them.
 
 **What a dead build leaves.** The driver tears down in a `finally` and within its
