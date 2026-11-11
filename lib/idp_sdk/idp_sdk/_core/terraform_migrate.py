@@ -2236,6 +2236,70 @@ def _ttl(value: Any) -> Tuple[bool, str]:
     return enabled, (block.get("attribute_name") or "") if enabled else ""
 
 
+def ttl_switches(plan_json: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Each DynamoDB table the plan moves from one enabled time-to-live attribute to
+    another: ``{address, table, from, to}``.
+
+    DynamoDB cannot do that in one call: ``UpdateTimeToLive`` refuses a new
+    attribute while TTL is enabled on another one ("TimeToLive is active on a
+    different AttributeName"), so the apply fails part way. TTL has to be disabled
+    first, and disabling takes up to an hour, during which no TTL change is accepted.
+    """
+    out = []
+    for rc in plan_json.get("resource_changes", []):
+        if rc.get("type") != "aws_dynamodb_table":
+            continue
+        change = rc.get("change") or {}
+        before, after = change.get("before") or {}, change.get("after") or {}
+        old_on, old_attr = _ttl(before.get("ttl"))
+        new_on, new_attr = _ttl(after.get("ttl"))
+        if old_on and new_on and old_attr != new_attr:
+            out.append(
+                {
+                    "address": rc["address"],
+                    "table": before.get("name") or after.get("name") or "",
+                    "from": old_attr,
+                    "to": new_attr,
+                }
+            )
+    return out
+
+
+def ttl_switch_findings(
+    switches: Sequence[Dict[str, str]],
+    live: Callable[[str], Dict[str, Any]],
+    region: str,
+) -> List[str]:
+    """A finding for each switch whose table still has TTL on, or turning off.
+
+    ``live(table)`` is ``DescribeTimeToLive``'s ``TimeToLiveDescription``. Once a
+    table's TTL status is ``DISABLED`` the apply enables the new attribute without
+    trouble, so there is nothing to find. Accepting ``ttl-changed`` does not clear
+    this: accepting says the change is intended, this says it cannot be applied yet.
+    """
+    findings = []
+    for s in switches:
+        status = (live(s["table"]) or {}).get("TimeToLiveStatus", "")
+        if status == "DISABLED":
+            continue
+        if status == "DISABLING":
+            findings.append(
+                f"{s['table']}: time-to-live is still turning off (DynamoDB can take up "
+                f"to an hour); run `apply` again once `aws dynamodb describe-time-to-live "
+                f"--table-name {s['table']} --region {region}` reports DISABLED"
+            )
+            continue
+        findings.append(
+            f"{s['address']} moves time-to-live from {s['from']!r} to {s['to']!r}, which "
+            "DynamoDB cannot do while TTL is on: the apply would fail part way. Turn it "
+            f"off first: `aws dynamodb update-time-to-live --table-name {s['table']} "
+            f"--time-to-live-specification Enabled=false,AttributeName={s['from']} "
+            f"--region {region}`, wait until `describe-time-to-live` reports DISABLED "
+            "(up to an hour), then run `apply` again"
+        )
+    return findings
+
+
 def _lambda_triggers(value: Any) -> Dict[str, Any]:
     block = (value or [{}])[0] if isinstance(value, list) else {}
     return {k: v for k, v in (block or {}).items() if v not in (None, "", [], {})}

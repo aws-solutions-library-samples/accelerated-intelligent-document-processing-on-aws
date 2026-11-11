@@ -687,10 +687,20 @@ class GenaiIdpTerraformMigration:
         applied = False
         try:
             runner.plan(MIGRATION_PLAN_FILE)
+            plan_json = runner.show_plan(MIGRATION_PLAN_FILE)
             counts, plan_findings, review = tm.check_adoption_plan(
-                runner.show_plan(MIGRATION_PLAN_FILE), plan, accept_changes
+                plan_json, plan, accept_changes
             )
             findings += plan_findings
+            switches = tm.ttl_switches(plan_json)
+            if switches:
+                findings += tm.ttl_switch_findings(
+                    switches,
+                    lambda table: ddb.describe_time_to_live(TableName=table).get(
+                        "TimeToLiveDescription", {}
+                    ),
+                    self._region(),
+                )
             if apply and not findings:
                 runner.apply_plan(MIGRATION_PLAN_FILE)
                 applied = True
