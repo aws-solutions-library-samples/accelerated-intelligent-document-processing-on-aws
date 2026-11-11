@@ -2294,8 +2294,10 @@ def ttl_switch_findings(
             "DynamoDB cannot do while TTL is on: the apply would fail part way. Turn it "
             f"off first: `aws dynamodb update-time-to-live --table-name {s['table']} "
             f"--time-to-live-specification Enabled=false,AttributeName={s['from']} "
-            f"--region {region}`, wait until `describe-time-to-live` reports DISABLED "
-            "(up to an hour), then run `apply` again"
+            f"--region {region}`, then run `apply` again once `describe-time-to-live` "
+            "reports DISABLED and at least an hour has passed since the disable: "
+            "DynamoDB refuses a second time-to-live change on a table within about an "
+            "hour of the first, even after the status reads DISABLED"
         )
     return findings
 
