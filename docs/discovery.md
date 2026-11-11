@@ -811,7 +811,10 @@ discovery:
      selected profile first, then saves only the newly discovered ones. For
      multi-section discovery, the schema is cleared once before the batch runs,
      so all sections in the run are rebuilt into a clean schema. A confirmation
-     warning is shown while Replace is selected.
+     warning is shown while Replace is selected. Replace is refused on the
+     **active** profile, because documents arriving during the run would be
+     classified against an empty class list; use Add, or discover into another
+     profile and activate it afterwards.
 5. Upload a document file (PDF, PNG, JPG, TIFF)
 6. For PDFs, choose a **Discovery Mode**:
    - **Single Section Document** — discovers one class from the whole document; optionally upload a ground truth JSON file
@@ -823,6 +826,26 @@ discovery:
 > Multiple Documents (multi-doc clustering), and Policy Discovery alike. In
 > Replace mode, class discovery clears the profile's `classes` list while Policy
 > Discovery clears its `policy_classes` list.
+
+**Which profiles you can use.** Discovery holds the profile you choose to your
+configuration-profile scope (`allowedConfigVersions`), as the Configuration page
+does: the picker lists only the profiles in your scope, and the server refuses any
+other. A discovery job must name the profile it saves into; it is never saved into
+whichever profile happens to be active. See [RBAC](rbac.md#scope-enforcement-points).
+
+**What discovery saves.** Everything a model writes into a discovered class or rule
+— descriptions, titles, `examples`, `enum` and `default` values, prompts, and any
+other text — and the multi-document reflection report are kept to plain text before
+they are saved or shown: URLs, markdown images and HTML are removed (a markdown link
+keeps its text), and lengths are capped — 1,000 characters for a description, 4,000
+for a prompt, 200 for other values and 10 example values per field. String values of `$schema`,
+`$id`, `$ref`, `type`, `format`, `pattern` and `-regex` keys are machine syntax, and
+the field names in `required` must keep matching the properties, so those are saved
+as discovered. Classes you wrote yourself are not changed. Multi-document
+discovery's agent views only documents in the cluster it is analysing, and at most
+the configured `max_sample_size` of them, and for a user with a configuration-profile
+scope it reads only the discovery bucket or an Input-bucket prefix that a
+configuration prefix mapping places inside that scope.
 
 **Monitoring Progress:**
 - Progress messages refreshed by 10-second polling (e.g., "Analyzing document structure with AI...", "Saving to configuration..."); GraphQL subscriptions are not used

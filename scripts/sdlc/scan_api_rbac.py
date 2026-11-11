@@ -75,6 +75,16 @@ CHECKS
       `transport_enforces:`, which produces a finding naming the divergence
       (WARN, FAIL under --strict) and requires a gap id — so aligning the
       declared policy cannot make the real divergence disappear from the report.
+  S10 Scope-keyed arguments — an operation whose arguments name a configuration
+      profile, a stored object or a session (decided by the words of each
+      argument's name, `SCOPE_KEYED_WORDS`, over schema.graphql including input
+      types and the entry's `args:`) must declare how that object is scoped:
+      `scope_checked`/`scope_filtered` (verified by S4), `document_scope_checked`
+      (the code it reaches checks the object's own profile), `testset_checked`
+      (the code it reaches calls the test-set scope check) or `ownership`
+      (verified as S3 verifies it, whatever the op's groups). An operation only Admins or IAM principals can call satisfies it by
+      its policy, since neither carries a configuration scope. S4 alone could not
+      see an undeclared operation: it checks only the operations that opt in.
 
 EXIT CODES
 ----------
@@ -1465,6 +1475,219 @@ def op_per_item_scope_filter(
 # --- checks ------------------------------------------------------------------
 
 
+# --- S10: an operation keyed on a scoped object declares how it is scoped -----
+#
+# S4 checks the operations that DECLARE a scope check, which is how the discovery
+# operations went unchecked: they took a `configVersion` and declared nothing. S10
+# closes that from the other side. Its universe is derived, not listed: every
+# operation whose arguments (schema.graphql, following input types, plus the
+# entry's own `args:`) include one of these names, compared case-insensitively.
+#
+#: The kind of object an argument names is decided by a RULE over the words of its
+#: name, not by a list of spellings: a list of seven names missed `objectKeys`,
+#: `s3Uri`, `s3Prefix`, `profileName` and `configProfile`, which name the same
+#: things. A name is split into words at case changes, digits and underscores
+#: (`s3Prefix` -> s, 3, prefix) and is of a kind when any word is in that kind's set.
+#: Profile wins over object, and object over session, when a name has words of two.
+SCOPE_KEYED_WORDS: dict[str, frozenset[str]] = {
+    # a configuration profile, or a revision or version of one (but see
+    # SCOPE_VERSION_OF_OTHER_THING_WORDS)
+    "profile": frozenset({"profile", "profiles", "version", "versions", "revision"}),
+    # a stored object: an S3 key, URI, prefix, path or bucket
+    "object": frozenset(
+        {"key", "keys", "uri", "uris", "prefix", "prefixes", "path", "bucket"}
+    ),
+    # a chat or agent session
+    "session": frozenset({"session", "sessions"}),
+}
+#: A version or revision word names a configuration profile's version unless the
+#: name also says whose version it is: `versionId` (an S3 object version),
+#: `baseRevision` (the revision an edit was based on), `testSetVersion`,
+#: `installedVersion` (a feature's). The rule is "a version qualified by another
+#: noun is that noun's version"; these are the qualifying nouns the API uses. A
+#: name with the word `profile` or `config` is a profile whatever else it says.
+SCOPE_VERSION_OF_OTHER_THING_WORDS = frozenset({"id", "base", "test", "installed"})
+_NAME_WORDS = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
+_VERSION_WORDS = frozenset({"version", "versions", "revision"})
+
+
+def scope_keyed_kind(name: str) -> str | None:
+    """The kind of object argument ``name`` names, or None (see SCOPE_KEYED_WORDS)."""
+    words = {w.lower() for w in _NAME_WORDS.findall(name)}
+    if words & {"profile", "profiles", "config"} and words & (
+        SCOPE_KEYED_WORDS["profile"]
+    ):
+        return "profile"
+    if words & {"profile", "profiles"}:
+        return "profile"
+    if words & _VERSION_WORDS and not words & SCOPE_VERSION_OF_OTHER_THING_WORDS:
+        return "profile"
+    for kind in ("object", "session"):
+        if words & SCOPE_KEYED_WORDS[kind]:
+            return kind
+    return None
+
+
+#: Which entry flags answer for each kind of argument. A profile argument needs the
+#: profile scope; a document key may instead be governed by the test-set scope (a
+#: test-set document) or by ownership; a session needs ownership or profile scope.
+SCOPE_KEYED_DECLARATIONS: dict[str, tuple[str, ...]] = {
+    "profile": ("scope_checked", "scope_filtered"),
+    "object": (
+        "scope_checked",
+        "scope_filtered",
+        "document_scope_checked",
+        "testset_checked",
+        "ownership",
+    ),
+    "session": ("ownership", "scope_checked"),
+}
+#: What `testset_checked` must be backed by in the code the operation reaches: the
+#: shared per-set rule (`idp_common.testset_scope.assert_can_access_test_set`) or the
+#: test-set resolver's one-line wrapper over it.
+TESTSET_SCOPE_PATTERNS = ("assert_can_access_test_set", "_assert_set_access")
+#: What `document_scope_checked` must be backed by: a call that checks the OBJECT an
+#: operation names (a document, key, or source/destination prefix) against the
+#: caller's profile scope, through the profile the object is recorded or mapped
+#: under. It is the declaration an operation needs when it names a profile AND an
+#: object, because `scope_checked` is then read as the profile check. Entry points,
+#: as SCOPE_PATTERNS lists them; each must be reached by at least one declaring
+#: operation (test_scan_api_rbac_scope_keyed_arguments.py).
+DOCUMENT_SCOPE_PATTERNS = (
+    # reprocess_document_resolver: each document's recorded profile
+    "_enforce_document_scope",
+    # discovery_upload_resolver: a multi-document source prefix's mapped profile
+    "_assert_source_in_scope",
+    # upload_resolver: the destination's mapped (or named) profile, through
+    # prefix_mappings.resolve_config_assignment's scope argument
+    "allowed_profiles=",
+)
+#: (operation, argument kind) pairs S10 does not require a declaration for, each with
+#: the reason for that one pair. Registered in scripts/tests/gate_exemptions.json.
+#: An entry that no longer shields a finding (the op is gone, takes no argument of
+#: that kind, or now declares one) is itself a FAIL, so it cannot outlive its reason
+#: and pre-exempt the next operation of that name.
+SCOPE_KEYED_ARGUMENT_EXEMPT: dict[tuple[str, str], str] = {
+    ("autoDetectSections", "object"): (
+        "documentKey names an upload in the discovery bucket, which IAM bounds this "
+        "function to and which is a shared Admin/Author workspace: an upload is not "
+        "stamped with a profile or an uploader, so there is no per-object scope to "
+        "check it against. The profile the operation reads is scope-checked. "
+        "Follow-up: stamp discovery uploads so the key can be checked."
+    ),
+    ("uploadDiscoveryDocument", "object"): (
+        "bucket and prefix are the destination of a new upload, not a stored object "
+        "being read: the presigned POST is limited to the deployment's bucket "
+        "allow-list and the write-once key rule (s3_targets), and IAM gives this "
+        "function write on the discovery bucket only, the shared Admin/Author "
+        "workspace, where nothing is stamped with a profile."
+    ),
+    ("getSampleDocumentUrl", "object"): (
+        "s3Key must lie under the bundled samples/ prefix (the resolver refuses any "
+        "other key, '..' and a leading '/'): those are the sample documents shipped "
+        "with the solution, which belong to no profile."
+    ),
+    ("generateDraftLabels", "object"): (
+        "objectKeys select documents inside the named test set, read under that "
+        "set's own prefix; Admins and Authors are not test-set scoped by design "
+        "(docs/rbac.md), and a document enters a test set only through operations "
+        "that check its profile. The profile this operation runs is scope-checked."
+    ),
+    ("startTestRun", "object"): (
+        "objectKeys select documents inside the named test set, read under that "
+        "set's own prefix; Admins and Authors are not test-set scoped by design "
+        "(docs/rbac.md), and a document enters a test set only through operations "
+        "that check its profile. The run's profile is scope-checked."
+    ),
+}
+
+
+def _scalar_and_input_arguments(schema_text: str) -> dict[str, set[str]]:
+    """``{input type name: every field name it holds, nested inputs included}``."""
+    direct: dict[str, list[tuple[str, str]]] = {}
+    for m in re.finditer(r"\binput\s+(\w+)[^{]*\{([^}]*)\}", schema_text):
+        direct[m.group(1)] = re.findall(
+            r"^\s*(\w+)\s*:\s*\[?\s*(\w+)", m.group(2), re.MULTILINE
+        )
+
+    def expand(name: str, seen: frozenset) -> set[str]:
+        out: set[str] = set()
+        for field, type_name in direct.get(name, ()):
+            out.add(field)
+            if type_name in direct and type_name not in seen:
+                out |= expand(type_name, seen | {type_name})
+        return out
+
+    return {name: expand(name, frozenset({name})) for name in direct}
+
+
+def schema_field_arguments(schema_text: str) -> dict[str, set[str]]:
+    """Map each Query/Mutation field -> the names of every argument it takes.
+
+    An argument typed as an ``input`` contributes that input's field names too,
+    recursively, because ``updateTestSetDocumentSections(input: ...)`` carries its
+    ``objectKey`` one level down and a reader of top-level names alone misses it.
+    """
+    inputs = _scalar_and_input_arguments(schema_text)
+    result: dict[str, set[str]] = {}
+    for type_name in ("Query", "Mutation"):
+        body = _extract_type_body(schema_text, type_name)
+        if body is None:
+            continue
+        for field, defn in _iter_fields(body):
+            m = re.match(r"\s*\w+\s*\((.*?)\)\s*:", defn, re.S)
+            names: set[str] = set()
+            if m:
+                for arg, arg_type in re.findall(r"(\w+)\s*:\s*\[?\s*(\w+)", m.group(1)):
+                    names.add(arg)
+                    names |= inputs.get(arg_type, set())
+            result[field] = names
+    return result
+
+
+def scope_keyed_kinds(argument_names) -> dict[str, list[str]]:
+    """``{kind: [argument names of that kind]}`` for the scope-keyed arguments."""
+    kinds: dict[str, list[str]] = {}
+    for name in sorted(argument_names):
+        kind = scope_keyed_kind(name)
+        if kind:
+            kinds.setdefault(kind, []).append(name)
+    return kinds
+
+
+def ownership_problem(text: str, enforced_in: str) -> str | None:
+    """Why an ``ownership: true`` declaration is not backed by ``text``, or None.
+
+    The S3 rule, as a function, so S10 applies the same test to an ownership
+    declaration on an operation with a group list (S3 reads ownership only on
+    ``ANY``/``ANY_GROUP`` operations).
+    """
+    if not any(p in text for p in OWNERSHIP_PATTERNS):
+        return f"ownership scoping expected but no owner/user check in {enforced_in}"
+    if any(p in text for p in OWNERSHIP_REFUSAL_PATTERNS):
+        return None
+    unscoped = unscoped_key_accesses(text)
+    if not unscoped:
+        return None
+    return (
+        f"ownership scoping declared and the caller is resolved in {enforced_in}, "
+        f"but nothing there refuses a caller who is not the owner, and "
+        f"{len(unscoped)} data access(es) are not keyed by the caller: "
+        f"{'; '.join(unscoped[:2])}"
+    )
+
+
+def _unscoped_policy(groups: object) -> bool:
+    """Whether every caller this policy admits is outside configuration scope.
+
+    An Admin is never restricted by ``allowedConfigVersions`` (``docs/rbac.md``,
+    and every resolver skips the lookup for one), and an IAM principal carries no
+    Cognito identity to look up. An operation only they can call has no scoped
+    caller, so S10 has nothing to require of it.
+    """
+    return groups == POLICY_IAM_ONLY or groups == ["Admin"]
+
+
 def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     """Run every check against ``repo`` (the real repository by default).
 
@@ -1653,33 +1876,12 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             # `scope_checked` requirements below and in S4 are unchanged for
             # ANY_GROUP ops.
             if o.get("ownership"):
-                if not any(p in text for p in OWNERSHIP_PATTERNS):
-                    gap_or_fail(
-                        op, "S3",
-                        f"ownership scoping expected but no owner/user check in "
-                        f"{o['enforced_in']}",
-                    )
-                elif not any(p in text for p in OWNERSHIP_REFUSAL_PATTERNS):
-                    # Names the subject, never refuses. See the comment on
-                    # OWNERSHIP_REFUSAL_PATTERNS: this is the direction the
-                    # subject-only match cannot see, and it is the one that
-                    # reaches production, because a resolver that refuses on the
-                    # wrong branch still fails the live matrix.
-                    #
-                    # Unless every access is aimed at the caller's own partition,
-                    # in which case there is nothing to refuse — computed per
-                    # access, so a file holding one caller-keyed access beside
-                    # one that is not still reports.
-                    unscoped = unscoped_key_accesses(text)
-                    if unscoped:
-                        gap_or_fail(
-                            op, "S3",
-                            f"ownership scoping declared and the caller is "
-                            f"resolved in {o['enforced_in']}, but nothing there "
-                            f"refuses a caller who is not the owner, and "
-                            f"{len(unscoped)} data access(es) are not keyed by "
-                            f"the caller: {'; '.join(unscoped[:2])}",
-                        )
+                # Names the subject, never refuses: see OWNERSHIP_REFUSAL_PATTERNS
+                # and `ownership_problem`. Judged per access, so a file holding one
+                # caller-keyed access beside one that is not still reports.
+                problem = ownership_problem(text, o["enforced_in"])
+                if problem:
+                    gap_or_fail(op, "S3", problem)
             elif not o.get("known_gap"):
                 # ANY with no ownership and no gap is fine (intentionally open),
                 # but flag if it's a mutation with no enforcement at all so a
@@ -1748,6 +1950,96 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 "iteration over the results, or to one of "
                 f"{sorted(SCOPE_LIST_FILTERS)}",
             )
+
+    # --- S10: scope-keyed arguments -----------------------------------------
+    # Derived universe: every op whose arguments name a profile, document or
+    # session. Each must say how that object is scoped, and the saying is checked:
+    # scope flags by S4 above, `testset_checked` and `ownership` here.
+    field_arguments = schema_field_arguments(schema_text)
+    s10_shielded: set[tuple[str, str]] = set()
+    for op in sorted(ops):
+        o = ops[op]
+        arguments = set(field_arguments.get(op, set())) | set(
+            (o.get("args") or {}).keys()
+        )
+        kinds = scope_keyed_kinds(arguments)
+        if not kinds or _unscoped_policy(o["groups"]):
+            continue
+        for kind, names in sorted(kinds.items()):
+            answering = SCOPE_KEYED_DECLARATIONS[kind]
+            if kind == "object" and "profile" in kinds:
+                # One `scope_checked` cannot answer for two arguments: on an op that
+                # also names a profile it is read as the profile check, so the
+                # document key needs a declaration of its own.
+                answering = tuple(f for f in answering if f != "scope_checked")
+            if not any(o.get(flag) for flag in answering):
+                if (op, kind) in SCOPE_KEYED_ARGUMENT_EXEMPT:
+                    s10_shielded.add((op, kind))
+                    continue
+                gap_or_fail(
+                    op,
+                    "S10",
+                    f"takes {kind} argument(s) {names} but declares none of "
+                    f"{list(answering)}: say how the caller is confined to the "
+                    f"{kind} it names (and make the resolver do it), or record a "
+                    "known_gap if it is not",
+                )
+        src = repo / o["enforced_in"]
+        if not src.exists():
+            continue  # reported by S3
+        text = src.read_text()
+        if o.get("testset_checked"):
+            error, reachable = op_scope_source(
+                text,
+                op,
+                declared_entry=o.get("scope_enforced_in"),
+                sole_op=ops_per_file[o["enforced_in"]] == 1,
+            )
+            if error:
+                gap_or_fail(op, "S10", f"{error} ({o['enforced_in']})")
+            elif not any(p in reachable for p in TESTSET_SCOPE_PATTERNS):
+                gap_or_fail(
+                    op,
+                    "S10",
+                    "declared testset_checked, but nothing this operation can reach "
+                    f"in {o['enforced_in']} calls one of {list(TESTSET_SCOPE_PATTERNS)}",
+                )
+        if o.get("document_scope_checked"):
+            error, reachable = op_scope_source(
+                text,
+                op,
+                declared_entry=o.get("scope_enforced_in"),
+                sole_op=ops_per_file[o["enforced_in"]] == 1,
+            )
+            if error:
+                gap_or_fail(op, "S10", f"{error} ({o['enforced_in']})")
+            elif not any(p in reachable for p in DOCUMENT_SCOPE_PATTERNS):
+                gap_or_fail(
+                    op, "S10",
+                    "declared document_scope_checked, but nothing this operation can "
+                    f"reach in {o['enforced_in']} calls one of "
+                    f"{list(DOCUMENT_SCOPE_PATTERNS)}",
+                )
+        if o.get("ownership") and isinstance(o["groups"], list):
+            # S3 verified ownership for ANY/ANY_GROUP ops only.
+            problem = ownership_problem(text, o["enforced_in"])
+            if problem:
+                gap_or_fail(op, "S10", problem)
+
+    for op, kind in sorted(set(SCOPE_KEYED_ARGUMENT_EXEMPT) - s10_shielded):
+        # Stale: it shields nothing today, so it would only pre-exempt whatever next
+        # takes this name. Not routed through gap_or_fail: a known_gap must not
+        # downgrade a dead exemption.
+        findings.append(
+            Finding(
+                "S10",
+                "FAIL",
+                f"SCOPE_KEYED_ARGUMENT_EXEMPT entry ({op!r}, {kind!r}) shields no "
+                "finding (the operation is gone, takes no such argument, or now "
+                "declares a scope) — delete the entry",
+                op,
+            )
+        )
 
     # --- S5: template method auth ------------------------------------------
     for logical, auth in template_methods(template_text):

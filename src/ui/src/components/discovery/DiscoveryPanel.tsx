@@ -37,6 +37,7 @@ import { uploadDiscoveryDocument, listDiscoveryJobs, deleteDiscoveryJob, autoDet
 import { parseMultiInstanceHint } from './multiInstanceHint';
 import useSettingsContext from '../../contexts/settings';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import { isReplaceOnActive, REPLACE_ON_ACTIVE_MESSAGE } from './replaceGuard';
 import { getJsonValidationError } from '../common/utilities';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
@@ -127,6 +128,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
   // Save mode: 'augment' (default) adds to the profile's existing schema;
   // 'replace' clears it first so discovery rebuilds the schema from scratch.
   const [saveMode, setSaveMode] = useState<'augment' | 'replace'>('augment');
+  const replaceOnActive = isReplaceOnActive(saveMode, selectedVersion?.value, versions);
   const [showCreateVersionModal, setShowCreateVersionModal] = useState(false);
   const [, setTick] = useState(0); // Force re-render for elapsed time
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -393,6 +395,10 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
     }
     if (selectedVersion?.value === 'default') {
       setError('The "default" configuration profile is read-only. Create a new profile to save the discovered schema.');
+      return;
+    }
+    if (replaceOnActive) {
+      setError(REPLACE_ON_ACTIVE_MESSAGE);
       return;
     }
 
@@ -836,7 +842,8 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
             />
           </FormField>
 
-          {saveMode === 'replace' && selectedVersion && (
+          {replaceOnActive && <Alert type="error">{REPLACE_ON_ACTIVE_MESSAGE}</Alert>}
+          {saveMode === 'replace' && selectedVersion && !replaceOnActive && (
             <Alert type="warning">
               Replace mode removes all existing document classes in profile <strong>{selectedVersion.value}</strong>{' '}
               <strong>immediately, before discovery runs</strong>, then saves the newly discovered schema. If discovery fails, the profile is
@@ -1001,7 +1008,12 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
               onClick={uploadFiles}
               loading={isUploading}
               disabled={
-                !documentFile || !selectedVersion || selectedVersion.value === 'default' || isUploading || isValidatingJson
+                !documentFile ||
+                !selectedVersion ||
+                selectedVersion.value === 'default' ||
+                replaceOnActive ||
+                isUploading ||
+                isValidatingJson
               }
             >
               {pageRanges.length > 0
