@@ -142,13 +142,17 @@ GATE_SECTION_PREFIXES = (
 )
 
 #: The one section this module excludes *wholesale*, and the only one where a single
-#: justification really is a property of every member: every target in "Stack tests"
-#: needs live AWS credentials, which no pull-request gate has. Most deploy or talk to a
-#: live IDP stack, as the section heading says; ``live-auth-checks`` and
-#: ``stacktest-sandbox-network`` need no stack but create throwaway AWS resources of
-#: their own, so the premise the exclusion relies on holds for them too. They are
-#: mapped in ``docs/testing.md``, and that each one appears there is enforced by
-#: ``scripts/tests/test_testing_doc.py``.
+#: justification really is a property of every member: no target in "Stack tests" is a
+#: gate a pull-request run could hold. Members fall into three kinds:
+#:
+#: * most deploy or talk to a live IDP stack, as the section heading says;
+#: * ``live-auth-checks`` and ``stacktest-sandbox-network`` need no stack, but they
+#:   need live AWS credentials and create throwaway AWS resources of their own;
+#: * ``stacktest-list``, ``transform-deploy-test-list``, ``stacktest-upgrade`` and
+#:   ``ux-record-deps`` assert nothing: they list, print or check for local tools.
+#:
+#: They are mapped in ``docs/testing.md``, and that each one appears there is enforced
+#: by ``scripts/tests/test_testing_doc.py``.
 #:
 #: Count-pinned by :func:`test_the_live_stack_section_exclusion_is_count_pinned`, so a
 #: target added inside this excluded section is a deliberate edit here rather than a

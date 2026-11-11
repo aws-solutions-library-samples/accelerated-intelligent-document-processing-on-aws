@@ -121,8 +121,11 @@ def dns(host):
     return run
 
 def https_get():
-    with urllib.request.urlopen("https://example.com/", timeout=10) as r:
-        return 200 <= r.status < 400, f"HTTP {r.status}"
+    try:
+        with urllib.request.urlopen("https://example.com/", timeout=10) as r:
+            return True, f"HTTP {r.status}"
+    except urllib.error.HTTPError as e:
+        return True, f"HTTP {e.code}"
 
 def s3_put():
     req = urllib.request.Request(
@@ -151,10 +154,7 @@ def imds_token():
     with urllib.request.urlopen(req, timeout=3) as r:
         return bool(r.read()), f"HTTP {r.status}, token issued"
 
-ENV_NAMES = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-             "AWS_PROFILE", "AWS_WEB_IDENTITY_TOKEN_FILE",
-             "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-             "AWS_CONTAINER_CREDENTIALS_FULL_URI")
+ENV_NAMES = __ENV_NAMES__
 
 def creds_env():
     present = [n for n in ENV_NAMES if os.environ.get(n)]
@@ -163,6 +163,8 @@ def creds_env():
 def creds_files():
     paths = [os.path.expanduser("~/.aws/credentials"),
              os.path.expanduser("~/.aws/config")]
+    paths += [os.environ[n] for n in ("AWS_SHARED_CREDENTIALS_FILE",
+                                      "AWS_CONFIG_FILE") if os.environ.get(n)]
     present = [p for p in paths if os.path.exists(p)]
     return bool(present), f"{len(present)} file(s) present"
 
@@ -195,8 +197,12 @@ def creds_container():
         "http://169.254.170.2" + rel if rel else None)
     if not url:
         return False, "no container credential URI in environment"
-    with urllib.request.urlopen(url, timeout=3) as r:
-        body = json.loads(r.read().decode() or "{}")
+    # The URI can carry a credential path, so an error reports its type only.
+    try:
+        with urllib.request.urlopen(url, timeout=3) as r:
+            body = json.loads(r.read().decode() or "{}")
+    except Exception as e:
+        return False, f"URI set; request failed: {type(e).__name__}"
     return "AccessKeyId" in body, "credential document returned"
 
 check("dns_example_com", dns("example.com"))
@@ -220,6 +226,24 @@ def other_region(region: str) -> str:
     return "us-east-1" if region != "us-east-1" else "us-west-2"
 
 
+# The environment variables botocore's credential chain reads (EnvProvider,
+# ContainerProvider, web identity, profile and file selection). The session
+# reports which of them are set, never their values.
+CREDENTIAL_ENV_NAMES = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_PROFILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_CONFIG_FILE",
+)
+
+
 def build_session_program(put_url: str, region: str) -> str:
     """Return the fixed in-session program with the per-run values filled in."""
     return (
@@ -231,6 +255,7 @@ def build_session_program(put_url: str, region: str) -> str:
         )
         .replace("__STS_HOST__", json.dumps(f"sts.{region}.amazonaws.com"))
         .replace("__PUT_BODY__", json.dumps(PROBE_BODY))
+        .replace("__ENV_NAMES__", json.dumps(list(CREDENTIAL_ENV_NAMES)))
         .replace("__MARKER__", RESULT_MARKER)
     )
 
@@ -256,7 +281,7 @@ def collect_stdout(events: list[dict[str, Any]]) -> str:
         for item in result.get("content") or []:
             if item.get("type") == "text" and item.get("text"):
                 content_parts.append(item["text"])
-    return "".join(stdout_parts) if stdout_parts else "\n".join(content_parts)
+    return "".join(stdout_parts) if stdout_parts else "".join(content_parts)
 
 
 def parse_session_output(stdout: str) -> dict[str, dict[str, Any]]:
