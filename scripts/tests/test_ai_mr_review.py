@@ -3246,6 +3246,15 @@ _PLAIN = "## PR/MR Review: a title\n\nLooks fine. See `scripts/x.py:12`.\n"
             "image or embedded-resource markup",
         ),
         ("see https://BUILD.CORP." + "AMAZON.COM/x", "internal hostname"),
+        ("D \\\\![z](https://remote.example/p)", "image or embedded-resource markup"),
+        (
+            "!123456789012(https://remote.example/p)",
+            "image or embedded-resource markup",
+        ),
+        (
+            "!someone@example.org(https://remote.example/p)",
+            "image or embedded-resource markup",
+        ),
         (
             "```\n![a](https://remote.example/p)\n```",
             "image or embedded-resource markup",
@@ -3253,7 +3262,10 @@ _PLAIN = "## PR/MR Review: a title\n\nLooks fine. See `scripts/x.py:12`.\n"
     ],
 )
 def test_the_posting_check_refuses_each_kind(mod, text: str, kind: str) -> None:
-    assert kind in mod.posting_refusals(_PLAIN + text, environ={})
+    """Through ``publishable_review``, which checks the text as written and again
+    as it would be posted, after redaction and escaping."""
+    _, reasons = mod.publishable_review(_PLAIN + text, environ={})
+    assert kind in reasons
 
 
 @pytest.mark.unit
@@ -3277,6 +3289,8 @@ def test_a_job_credential_value_is_refused_whatever_its_shape(mod) -> None:
         "head " + "0123456789abcdef" * 2 + "01234567",  # a 40-hex git SHA
         "path lib/idp_common_pkg/idp_common/extraction/Service2Main.py",
         "an escaped \\![x](https://remote.example/p) is text, not an image",
+        "three backslashes \\\\\\![x](https://remote.example/p) are text too",
+        "mixed case SSH.GitLab.aws.dev is the forge's own host",
         "the comment is posted to gitlab.aws.dev via ssh.gitlab.aws.dev",
         "link [text](https://remote.example/page) is not an image",
     ],
@@ -3469,3 +3483,27 @@ def test_each_ci_job_requires_its_review_role(
         else next(s for s in gh_job["steps"] if s.get("name") == "Review")["env"]
     )
     assert variables["REVIEW_ROLE_NAME"] == role
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("config", ["gitlab", "github"])
+def test_an_older_target_reviewer_is_refused_with_a_message(
+    ci_config: dict, gh_job: dict, config: str
+) -> None:
+    """Until the target branch carries the staged, role-checked reviewer, the job
+    stops with a message instead of an argument error from the old script."""
+    script = (
+        "\n".join(ci_config["ai_mr_review"]["script"])
+        if config == "gitlab"
+        else "\n".join(str(s.get("run", "")) for s in gh_job["steps"])
+    )
+    found = re.search(
+        r'^[ \t]*if ! grep -q -- "--require-aws-role" '
+        r'"[^"\n]+/scripts/sdlc/ai_mr_review\.py"; then\n'
+        r"(?P<body>(?:.*\n)*?)[ \t]*fi\n",
+        script,
+        re.MULTILINE,
+    )
+    assert found, "the check is not one plain `if ! grep ...; then` condition"
+    assert re.search(r"^\s*exit 1\s*$", found.group("body"), re.M)
+    assert found.start() < script.index("REVIEW=")

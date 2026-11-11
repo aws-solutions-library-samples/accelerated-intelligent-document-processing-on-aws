@@ -1364,7 +1364,14 @@ ai_mr_review:
         echo "   make the reviewer the MR's own copy of the reviewer."
         exit 1
       fi
+    # A target branch whose reviewer predates --checkout and --require-aws-role
+    # cannot run this way; say so instead of failing on an argument error.
     - |
+      if ! grep -q -- "--require-aws-role" "$REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py"; then
+        echo "❌ The target branch's reviewer predates the staged, role-checked run, so"
+        echo "   it cannot review this MR. Reviews resume once the target carries it."
+        exit 1
+      fi
       REVIEW="python3 -I $REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py --checkout $CI_PROJECT_DIR --require-aws-role $REVIEW_ROLE_NAME"
       if [ -n "$CI_MERGE_REQUEST_IID" ]; then
         $REVIEW --mr "$CI_MERGE_REQUEST_IID"

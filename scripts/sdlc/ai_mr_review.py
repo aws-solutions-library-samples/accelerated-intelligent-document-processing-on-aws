@@ -87,8 +87,8 @@ Three properties it is built around
    the flags every one of those is refused as outside the working directory, the
    symlink because its target is, and a file inside the worktree is still served.
 
-   The same probe measures instruction loading (``--restricted`` alone produces
-   the result on 2.1.281; see :data:`SESSION_SCOPE_FLAGS`). Without the flags, ``CLAUDE.md``
+   The same probe measures instruction loading (each flag alone produces that
+   result on 2.1.281; see :data:`SESSION_SCOPE_FLAGS`). Without the flags, ``CLAUDE.md``
    at the root, in ``.claude/`` and in a subdirectory, ``CLAUDE.local.md``,
    ``.claude/rules/**``, ``.claude/skills/<name>/SKILL.md`` and
    ``.claude/commands/`` all reached the model, and a ``.claude/settings.json``
@@ -365,14 +365,14 @@ POSTING_CREDENTIAL_ENV_KEYS = SECRET_ENV_KEYS + (
 #:
 #: ``--restricted`` confines Read, Grep and Glob to the working directory, judged
 #: on the path a symlink resolves to, and ignores the user, project and local
-#: settings files. On the pinned CLI (``CLAUDE_CODE_VERSION`` in both CI
-#: configurations) it is also what stops the worktree's CLAUDE.md, rules, skills,
-#: commands and hooks from loading: the probe in
-#: ``scripts/tests/test_ai_mr_review_session_scope.py`` passes with it alone and
-#: fails without it. ``--safe-mode`` is documented to stop the same files loading
-#: and is kept as a second layer for a release in which ``--restricted`` stops
-#: doing so; on 2.1.281 its separate effect cannot be observed, because
-#: ``--restricted`` already produces the result.
+#: settings files. ``--safe-mode`` stops CLAUDE.md, rules, skills, commands,
+#: agents, output styles and hooks from loading. On the pinned CLI
+#: (``CLAUDE_CODE_VERSION`` in both CI configurations), measured by
+#: ``scripts/tests/test_ai_mr_review_session_scope.py``: only ``--restricted``
+#: confines reads (the read test fails without it), and EACH flag alone stops the
+#: worktree's instructions from loading, so the loading test stays green if either
+#: one is removed and only fails with both gone. The two together are what is
+#: claimed; ``test_the_argv_carries_the_session_scope_flags`` pins both.
 SESSION_SCOPE_FLAGS = ("--restricted", "--safe-mode")
 
 
@@ -1465,11 +1465,14 @@ _AWS_SECRET_SHAPE = re.compile(
 #: nested or escaped brackets, and with its reference definition inside a quote or
 #: a list, so no narrower pattern holds every spelling) and the HTML elements that
 #: load a resource. Matched anywhere, code fences included, because whether a
-#: renderer honours a fence is not something to depend on. The cost is a refused
-#: review that quotes ``!['a']`` from code; measured over 496 earlier reviews on
-#: this repository, 8 contained ``![`` at all.
+#: renderer honours a fence is not something to depend on. A ``!`` counts as
+#: escaped only behind an odd run of backslashes, since ``\\\\`` is a literal
+#: backslash and ``\\\\![a](u)`` renders an image. The cost is a refused review
+#: that quotes ``![`` from a documentation diff or from code (``!['a']``, a regular
+#: expression's ``(?![...])``); measured over 501 earlier reviews on this
+#: repository, 8 were refused for it.
 _IMAGE_MARKUP = re.compile(
-    r"(?<!\\)!\["
+    r"(?<!\\)(?:\\\\)*!\["
     r"|<\s*(?:img|image|picture|source|svg|video|audio|iframe|object|embed|input)\b",
     re.IGNORECASE,
 )
@@ -1560,9 +1563,15 @@ def publishable_review(
     :func:`defuse_quick_actions` in :func:`compose_note`.
     """
     reasons = posting_refusals(review, forge_host, environ)
-    if reasons:
-        return WITHHELD_NOTICE.format(kinds=", ".join(reasons)), reasons
-    return redact.Redactor(_job_credential_values(environ))(review), []
+    if not reasons:
+        # Checked again after redaction and escaping, on exactly what is posted:
+        # a placeholder can complete markup (``!`` before an account id becomes
+        # ``![account]`` followed by whatever came next).
+        redacted = redact.Redactor(_job_credential_values(environ))(review)
+        reasons = posting_refusals(defuse_quick_actions(redacted), forge_host, environ)
+        if not reasons:
+            return redacted, []
+    return WITHHELD_NOTICE.format(kinds=", ".join(reasons)), reasons
 
 
 def compose_note(

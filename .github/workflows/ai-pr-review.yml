@@ -241,6 +241,13 @@ jobs:
           # role it holds and refuses to review on any other.
           REVIEW_ROLE_NAME: idp-sdlc-GitHubReview
         run: |
+          # A target branch whose reviewer predates --checkout and --require-aws-role
+          # cannot run this way; say so instead of failing on an argument error.
+          if ! grep -q -- "--require-aws-role" "$RUNNER_TEMP/review-harness/scripts/sdlc/ai_mr_review.py"; then
+            echo "❌ The target branch's reviewer predates the staged, role-checked run,"
+            echo "   so it cannot review this PR. Reviews resume once the target carries it."
+            exit 1
+          fi
           REVIEW="python3 -I $RUNNER_TEMP/review-harness/scripts/sdlc/ai_mr_review.py --checkout $GITHUB_WORKSPACE --require-aws-role $REVIEW_ROLE_NAME"
           if [ -n "$PR_NUMBER" ]; then
             $REVIEW \
