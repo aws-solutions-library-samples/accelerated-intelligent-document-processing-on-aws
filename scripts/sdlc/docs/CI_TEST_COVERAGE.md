@@ -518,10 +518,14 @@ process it starts (upstream's Terraform, the `aws` commands upstream's provision
 run, `idp-cli`) use one AWS profile that assumes that role with
 `credential_source = EcsContainer`, so the SDKs refresh it for the whole run; the new
 deployment's providers also receive it as `--terraform-assume-role-arn`. The names
-are derived from the build's stack name (`terraform_migration_names`): the old
-deployment `idpo<digits>`, the new one `idp-m<digits>`, so both start with the
-`ManagedStackNamePrefix` the role requires, and the new one's pre-stack role matches
-the CodeBuild role's grant on `role/idp-*-TFDeployRole`.
+are derived from the build's stack name (`terraform_migration_names`). The new
+deployment *is* the run's stack name (`idp-MMDD-HHMMSS`), so its pre-stack role
+matches the CodeBuild role's grant on `role/idp-*-TFDeployRole` and the startup
+sweeps recognise its leftovers. The old one is `idpo<MMDDHHMM>`: it starts with the
+`ManagedStackNamePrefix` the role requires, but it cannot also be a run-prefix name,
+because upstream's longest IAM role name is its prefix plus 51 characters and IAM
+allows 64, so the prefix can be at most 13 characters. The driver's own sweep never
+touches the `<new>-iam` pre-stack or its roles; `cleanup_iam_resources` does.
 
 ⚠️ **The upstream deploy is refused under that role, so the run cannot pass until
 the CI's IAM changes.** This is measured from the upstream state at the pinned tag,
@@ -554,18 +558,24 @@ and refuses the module's new time-to-live setting until about an hour after that
 33 for the adoption apply, and 27 to destroy both deployments and sweep. With publish
 and the `-iam` pre-stack in front of it, that is more than the project's
 `TimeoutInMinutes: 180` (`scripts/sdlc/cfn/codepipeline-s3.yml`), and the GitLab
-job's `3h30m` leaves little margin. `TERRAFORM_MIGRATION_TIMEOUT_SECONDS` is set to
-what the driver needs, so the build, not the driver, is what times out. Running it
-in CI therefore also needs a CodeBuild timeout of about four hours for this run,
-which is a change to the pipeline stack and is not made here. Check the IAM role
+job's `3h30m` leaves little margin. So that running out of time still leaves nothing
+behind, the build gives the driver a deadline (`terraform_migration_budget`): what is
+left of the 180 minutes less `TERRAFORM_MIGRATION_RESERVE_SECONDS` (45, the measured
+teardown plus the `-iam` cleanup). After it the driver starts no forward phase,
+refuses a TTL wait that would run past it, and tears down; the hard stop is five
+minutes short of the limit. With the measured durations the run therefore reaches its
+deadline and reports a failure before it finishes. Passing in CI needs a CodeBuild
+timeout of about four hours for this run, a change to the pipeline stack that is not
+made here. Check the IAM role
 count too: the two deployments hold several hundred roles between them.
 
-**What a dead build leaves.** The driver tears down in a `finally`, but a build that
-dies (timeout, lost container) runs no `finally`. The next run's startup sweeps
-remove the new deployment's `idp-` stacks and roles by name and age; the old
-deployment's resources (upstream's names) are reached by none of them and stand until
-removed by hand, by running the driver with `--resume` from its work directory, or by
-`terraform destroy` in it.
+**What a dead build leaves.** The driver tears down in a `finally` and within its
+deadline, but a build that dies outright (a lost container) runs no `finally`, and
+its work directory, holding both Terraform states, goes with the container. The next
+run's startup sweeps remove what carries the new deployment's run-prefix name (its
+label stack, buckets, roles and policies) by name and age once no stack of that run
+remains. The old deployment's resources (upstream's names, `idpo…` or none) are
+reached by none of them and stand until removed by hand.
 
 ### Why fast_checks is eight jobs
 

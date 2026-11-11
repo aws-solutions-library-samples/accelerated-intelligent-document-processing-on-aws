@@ -119,11 +119,28 @@ def test_a_migration_run_leaves_the_review_stack_alone(monkeypatch):
 
 
 @pytest.mark.parametrize("stack", ["idp-1111-235959", "idp-0101-000000"])
-def test_the_derived_names_satisfy_the_role_and_the_driver(stack):
+def test_the_derived_names_satisfy_the_role_the_reapers_and_the_driver(stack):
     old, new = cbd.terraform_migration_names(stack)
+    # The new deployment is the run itself, so the startup sweeps reap a dead
+    # build's leftovers of it.
+    assert new == stack and cbd._IDP_RUN_PREFIX_RE.match(new)
     assert old.startswith(cbd.MANAGED_STACK_NAME_PREFIX)
-    assert new.startswith(f"{cbd.MANAGED_STACK_NAME_PREFIX}-")
+    # upstream's IAM role names are its prefix plus 51 characters; IAM allows 64
+    assert len(old) <= 13
     assert tmt.validate_names(old, new) == []
+
+
+def test_a_name_that_is_not_a_run_name_is_refused():
+    with pytest.raises(ValueError):
+        cbd.terraform_migration_names("my-stack")
+
+
+def test_the_budget_leaves_the_teardown_inside_the_build_limit():
+    deadline, timeout = cbd.terraform_migration_budget(20 * 60)
+    limit = cbd.TERRAFORM_MIGRATION_BUILD_LIMIT_SECONDS
+    assert deadline + cbd.TERRAFORM_MIGRATION_RESERVE_SECONDS == limit - 20 * 60
+    assert deadline < timeout < limit - 20 * 60
+    assert cbd.terraform_migration_budget(limit + 60) == (0, 0)
 
 
 def test_the_profile_assumes_the_role_from_the_container():

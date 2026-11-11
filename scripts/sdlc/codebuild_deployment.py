@@ -11299,12 +11299,17 @@ TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
 #: Heads the summary and marks the failure email on a migration run, so its result
 #: is never read as a nightly's.
 TERRAFORM_MIGRATION_RUN_LABEL = "WEEKLY TERRAFORM MIGRATION RUN"
-#: The driver's own budget inside the build: publish and the pre-stack come first,
-#: and the `-iam` teardown after it. Measured, a full run took 166 minutes
-#: (76 of them waiting on DynamoDB's time-to-live intervals), so the CodeBuild
-#: project's 180-minute timeout is too short for publish plus this; see
-#: CI_TEST_COVERAGE.md.
-TERRAFORM_MIGRATION_TIMEOUT_SECONDS = 200 * 60
+#: The CodeBuild project's limit (`TimeoutInMinutes: 180` in
+#: scripts/sdlc/cfn/codepipeline-s3.yml). The driver gets what is left of it, less
+#: TERRAFORM_MIGRATION_RESERVE_SECONDS, as a deadline after which it starts no
+#: forward phase and tears down, so a build that runs out of time still leaves
+#: nothing behind. Measured, a full run took 166 minutes (76 waiting on DynamoDB's
+#: time-to-live intervals), so within 180 minutes with publish in front it reaches
+#: that deadline; see CI_TEST_COVERAGE.md.
+TERRAFORM_MIGRATION_BUILD_LIMIT_SECONDS = 180 * 60
+#: What the driver's failure teardown needs (measured: 18 for the new deployment's
+#: delete and 8 for the old one's, plus the sweep), and the `-iam` cleanup after it.
+TERRAFORM_MIGRATION_RESERVE_SECONDS = 45 * 60
 TERRAFORM_MIGRATION_PROFILE = "idp-terraform-migration"
 
 
@@ -11360,17 +11365,23 @@ def label_terraform_migration_run(
 def terraform_migration_names(stack_name: str) -> tuple[str, str]:
     """(old, new) deployment names for a run, from its ``idp-MMDD-HHMMSS`` name.
 
-    Both start with MANAGED_STACK_NAME_PREFIX, which the deploy role requires of
-    every name it creates, and the new one keeps the ``idp-`` form the CodeBuild
-    role's grant on ``role/idp-*-TFDeployRole`` needs of its `-iam` pre-stack.
-    Neither contains the other, which the driver's sweep requires, and the old one
-    fits upstream's prefix limit.
+    The new deployment is the run's own stack name, so it matches
+    _IDP_RUN_PREFIX_RE and the startup sweeps reap what a dead build left of it.
+    The old one cannot: upstream builds IAM role names from its prefix, the
+    longest is the prefix plus 51 characters (measured), and IAM caps role names
+    at 64, so the prefix can be at most 13 characters, while a run-prefix name is
+    15. It is ``idpo`` plus the run's MMDDHHMM (12 characters): it starts with
+    MANAGED_STACK_NAME_PREFIX, which the deploy role requires, and neither name
+    contains the other, which the driver's sweep requires. What a dead build left
+    of the old deployment is therefore reached by no startup sweep; see
+    CI_TEST_COVERAGE.md.
     """
-    digits = re.sub(r"[^0-9]", "", stack_name)[-10:]
-    return (
-        f"{MANAGED_STACK_NAME_PREFIX}o{digits[:8]}",
-        f"{MANAGED_STACK_NAME_PREFIX}-m{digits}",
-    )
+    match = _IDP_RUN_PREFIX_RE.match(stack_name)
+    if not match:
+        raise ValueError(f"{stack_name!r} is not an idp-MMDD-HHMMSS run name")
+    run = match.group(1)
+    digits = run[4:8] + run[9:13]
+    return f"{MANAGED_STACK_NAME_PREFIX}o{digits}", run
 
 
 def render_migration_aws_config(role_arn: str, region: str) -> str:
@@ -11410,9 +11421,19 @@ def terraform_migration_driver_command(
     ]
 
 
-def run_terraform_migration(stack_name, module_url, terraform_bin):
+def terraform_migration_budget(elapsed_seconds: float) -> tuple[int, int]:
+    """(driver deadline, driver timeout) in seconds, given how long the build has
+    already run. The deadline leaves TERRAFORM_MIGRATION_RESERVE_SECONDS of the
+    build's limit for the driver's teardown and the `-iam` cleanup; the timeout is
+    the hard stop, five minutes short of the limit."""
+    left = TERRAFORM_MIGRATION_BUILD_LIMIT_SECONDS - int(elapsed_seconds)
+    return max(left - TERRAFORM_MIGRATION_RESERVE_SECONDS, 0), max(left - 300, 0)
+
+
+def run_terraform_migration(stack_name, module_url, terraform_bin, started=None):
     """Run the migration driver under this run's TFDeployRole. Returns
-    ``(success, summary_text)``; never raises."""
+    ``(success, summary_text)``; never raises. ``started`` is the build's
+    ``time.monotonic()`` at start, for the time budget."""
     old_name, new_name = terraform_migration_names(stack_name)
     region = ci_region()
     work_dir = terraform_work_directory(f"migration-{new_name}")
@@ -11447,16 +11468,21 @@ def run_terraform_migration(stack_name, module_url, terraform_bin):
             region,
             account,
         )
-        print(f"🔀 Terraform migration run: {old_name} -> {new_name}")
+        deadline, timeout = terraform_migration_budget(
+            time.monotonic() - started if started is not None else 0
+        )
+        cmd += ["--deadline-seconds", str(deadline)]
+        print(
+            f"🔀 Terraform migration run: {old_name} -> {new_name} "
+            f"(deadline {deadline // 60} min, hard stop {timeout // 60} min)"
+        )
         try:
-            proc = subprocess.run(
-                cmd, env=env, timeout=TERRAFORM_MIGRATION_TIMEOUT_SECONDS, check=False
-            )
+            proc = subprocess.run(cmd, env=env, timeout=timeout, check=False)
             success = proc.returncode == 0
         except subprocess.TimeoutExpired:
             summary = (
-                f"❌ the migration driver ran past {TERRAFORM_MIGRATION_TIMEOUT_SECONDS // 60} "
-                "minutes and was stopped; its teardown may not have run\n\n"
+                f"❌ the migration driver ran past {timeout // 60} minutes and was "
+                "stopped; its teardown may not have finished\n\n"
             )
         summary_path = os.path.join(work_dir, "summary.txt")
         if os.path.isfile(summary_path):
@@ -11641,7 +11667,10 @@ def main():
     if migration:
         if publish_success:
             ok, migration_summary = run_terraform_migration(
-                stack_name, artifacts["terraform_module_url"], terraform_bin
+                stack_name,
+                artifacts["terraform_module_url"],
+                terraform_bin,
+                started=main_started,
             )
         else:
             ok, migration_summary = False, f"❌ publish failed: {failure_reason}"
