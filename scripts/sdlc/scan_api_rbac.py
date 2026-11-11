@@ -335,6 +335,9 @@ FUNCTION_URL_OPEN_ROUTES = {
 # Ways the handler can name the identity the TRANSPORT verified, as opposed to
 # one the client asserted in the request body.
 VERIFIED_IDENTITY_TOKENS = (
+    # The chat streaming endpoint verifies the caller's Cognito ID token
+    # (src/lambda/chat_stream_processor/app.py).
+    "_verified_caller(",
     "resolve_caller_sub(",
     "_caller_sub(",
     "caller_sub_from_request_context",
@@ -729,6 +732,7 @@ def _first_index(text: str, tokens) -> int:
 # Callee names that resolve a transport-verified caller identity. Mirrors
 # VERIFIED_IDENTITY_TOKENS above, as callee names rather than substrings.
 VERIFIED_IDENTITY_CALLEES = (
+    "_verified_caller",
     "_resolve_caller_sub",
     "resolve_caller_sub",
     "_caller_sub",

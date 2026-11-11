@@ -459,22 +459,22 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 356 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 357 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more
 resources in the parent.
 
-**Durable state.** All thirteen S3 buckets have versioning enabled. Twelve of the fourteen
+**Durable state.** All thirteen S3 buckets have versioning enabled. Thirteen of the fifteen
 DynamoDB tables a default deployment creates have point-in-time recovery enabled. Those
-fourteen are twelve in `template.yaml`, one in `patterns/unified/template.yaml` and one in
+fifteen are thirteen in `template.yaml`, one in `patterns/unified/template.yaml` and one in
 `nested/api-resolvers/template.yaml`. Both exceptions are deliberate and both hold
 ephemeral state: `ConcurrencyTable` holds a single admission counter that is reconciled
 from the true running-execution count rather than restored, and
-`ChatDocumentSessionsTable` holds per-session chat-ownership records under a short TTL, so
-losing it only forces users to start a new chat session. Counting the optional
-`feature-platform/` extensions raises the total to twenty-one tables; all seven extension
-tables have point-in-time recovery enabled.
+`ChatDocumentSessionsTable` holds the document-chat ownership records written before
+`ChatSessionOwnersTable` existed, under a short TTL, and is no longer written. Counting the
+optional `feature-platform/` extensions raises the total to twenty-two tables; all seven
+extension tables have point-in-time recovery enabled.
 
 ### Review checklist
 
@@ -496,7 +496,7 @@ constitute one, because nothing in the stack replicates data across regions.
 
 - **Durable, versioned storage**: all S3 buckets have versioning enabled, so objects
   survive accidental overwrite or deletion and prior versions can be recovered.
-- **Point-in-Time Recovery**: twelve of the fourteen DynamoDB tables a default deployment
+- **Point-in-Time Recovery**: thirteen of the fifteen DynamoDB tables a default deployment
   creates can be restored to any second within the retention window. The two without it are
   `ConcurrencyTable`, whose admission counter is reconciled from the true
   running-execution count rather than restored, and `ChatDocumentSessionsTable`, whose

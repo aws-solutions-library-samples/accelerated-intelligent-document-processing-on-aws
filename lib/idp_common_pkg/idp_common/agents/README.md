@@ -63,7 +63,10 @@ the complete answer rather than token-by-token output.
 - **Purpose**: Processes messages and generates responses
 - **Location**: `src/lambda/agent_chat_processor/`
 - **Responsibilities**:
-  - Creates conversational orchestrator with all agents
+  - Refuses a turn on a session id another user owns, before any memory loads
+    (`idp_common.chat_session_owner`; the entry paths check first)
+  - Creates conversational orchestrator with all agents, keyed on the verified
+    caller's Cognito `sub` from the event's `identity`, never on a request-body value
   - Loads conversation history from memory
   - Streams responses in real-time
   - Stores responses in memory
@@ -79,12 +82,15 @@ create_conversational_orchestrator(
     agent_ids: List[str],
     session_id: str,
     config: Dict[str, Any],
-    session: Any
+    session: Any,
+    user_id: str = "",
 ) -> Agent
 ```
 
 Creates an orchestrator with:
-- Memory hooks for conversation history
+- Memory hooks for conversation history, keyed on `user_id` and `session_id`. With
+  no `user_id` the orchestrator is built without memory: it neither loads nor stores
+  an earlier turn. `create_conversational_agent` takes the same argument.
 - Conversation manager for context optimization
 - All specified agents as tools
 
@@ -92,6 +98,9 @@ Creates an orchestrator with:
 Manages conversation history persistence in DynamoDB.
 
 **Features**:
+- Stores each conversation under the user and the session it belongs to, so two
+  users who send the same session id never see each other's history. `user_id` is
+  required and must not contain `#`.
 - Stores messages in JSON arrays within DynamoDB items
 - Automatically loads recent conversation history
 - Groups messages into turns for efficient context
@@ -105,6 +114,7 @@ from idp_common.agents.utils.memory_provider import DynamoDBMemoryHookProvider
 memory_provider = DynamoDBMemoryHookProvider(
     table_name="IdpHelperChatMemoryTable",
     session_id="user-session-123",
+    user_id="<cognito sub of the signed-in user>",
     region_name="us-east-2",
     max_history_turns=20
 )
@@ -147,11 +157,33 @@ Stores all chat messages for display and retrieval.
 - **SK**: `timestamp` (ISO-8601 format)
 - **Attributes**: role, content, isProcessing, ExpiresAfter
 
+The key carries no user, so every read and delete of it is preceded by an ownership
+check against `ChatSessionOwnersTable` below.
+
+#### ChatSessionOwnersTable (DynamoDB)
+Records which signed-in user each chat session id belongs to. Written and read by
+`idp_common.chat_session_owner` (vendored verbatim into the chat resolvers, which
+ship without the layer).
+
+**Schema**:
+- **PK**: `sessionId`
+- **Attributes**: `ownerSub` (the owner's Cognito `sub`), `ExpiresAfter`
+
+The first user to use an id registers it with a conditional write; a second user can
+neither register it nor read its history. A path that writes a turn registers an
+unused id; `getChatMessages` and `deleteChatSession` never do. An id that already has
+stored messages and no owner predates the table, and is registered only to the caller
+holding the earlier record of using it (their `ChatSessionsTable` row, or the
+Chat-with-Document ownership row). The expiry moves forward on every turn, so the row
+outlives the messages written under it.
+
 #### IdHelperChatMemoryTable (DynamoDB)
 Stores conversation history for agent memory.
 
 **Schema**:
-- **PK**: `conversation#{session_id}`
+- **PK**: `conversation#{user_id}#{session_id}`, where `user_id` is the caller's
+  Cognito `sub` from verified claims. Memory written under the earlier
+  `conversation#{session_id}` key is not read.
 - **SK**: `timestamp` (ISO-8601 format)
 - **Attributes**: conversation_history (JSON), message_count, last_updated,
   conversation_version

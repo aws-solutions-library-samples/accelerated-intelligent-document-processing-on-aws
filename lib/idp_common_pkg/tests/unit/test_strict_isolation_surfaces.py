@@ -47,7 +47,10 @@ def _load(module_name, rel_path):
 
 
 def _identity(*groups):
-    return {"claims": {"cognito:groups": list(groups), "email": "u@example.com"}}
+    return {
+        "claims": {"cognito:groups": list(groups), "email": "u@example.com"},
+        "sub": "sub-u",
+    }
 
 
 @pytest.fixture(params=["Off", "Strict", "IdpClaim", "Api"])
@@ -74,9 +77,15 @@ def mode(request, monkeypatch):
 def agent_chat_resolver(monkeypatch):
     monkeypatch.setenv("CHAT_MESSAGES_TABLE", "m")
     monkeypatch.setenv("CHAT_SESSIONS_TABLE", "s")
+    # Every message first registers the session id to the caller.
+    monkeypatch.setenv("CHAT_SESSION_OWNERS_TABLE", "o")
     monkeypatch.setenv("AGENT_CHAT_PROCESSOR_FUNCTION", "")
     with patch("boto3.resource") as resource, patch("boto3.client"):
-        resource.return_value.Table.return_value = MagicMock()
+        table = MagicMock()
+        # An unused session id: no owner recorded, no stored messages.
+        table.get_item.return_value = {}
+        table.query.return_value = {"Items": []}
+        resource.return_value.Table.return_value = table
         module = _load(
             "strict_agent_chat_resolver",
             "nested/api-resolvers/src/lambda/agent_chat_resolver/index.py",
