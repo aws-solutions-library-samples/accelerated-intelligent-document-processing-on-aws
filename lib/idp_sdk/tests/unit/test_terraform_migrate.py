@@ -2261,3 +2261,32 @@ class TestTerraformCredentials:
             )
         assert len(seen) == 1 and "assumed-role/idp-terraform-deployer/" in seen[0]
         assert tm.terraform_role_arn(tmp_path / "new" / "main.tf") == ROLE_ARN
+
+
+def _fake_terraform(tmp_path, stderr, code):
+    script = tmp_path / "terraform"
+    script.write_text(f"#!/bin/sh\necho '{stderr}' >&2\nexit {code}\n")
+    script.chmod(0o755)
+    return str(script)
+
+
+def test_state_list_of_a_directory_with_no_state_yet_is_empty(tmp_path):
+    """Measured live: adopt-user-pool's first `state list`, in a directory `plan`
+    had only initialised, exited 1 with this message and failed the phase."""
+    from idp_sdk._core import terraform_deploy as tf
+
+    binary = _fake_terraform(
+        tmp_path,
+        "No state file was found!\nState management commands require a state file.",
+        1,
+    )
+    assert tf.TerraformRunner(binary, tmp_path).state_list() == []
+
+
+def test_state_list_still_raises_any_other_failure(tmp_path):
+    from idp_sdk._core import terraform_deploy as tf
+    from idp_sdk.exceptions import IDPStackError
+
+    binary = _fake_terraform(tmp_path, "Error: Backend initialization required", 1)
+    with pytest.raises(IDPStackError, match="Backend initialization required"):
+        tf.TerraformRunner(binary, tmp_path).state_list()
