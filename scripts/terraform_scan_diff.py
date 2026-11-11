@@ -59,6 +59,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -78,6 +79,21 @@ class GateError(Exception):
 
 
 # ------------------------------------------------------------------ checkov
+def checkov_venv(version: str, cache: Path) -> Path:
+    """The virtualenv ``checkov`` at ``version`` lives in, for this platform.
+
+    Keyed by operating system, CPU architecture and Python version: CI runners of
+    both architectures share one cache entry, and a virtualenv holds
+    interpreter-specific binaries, so one built on another runner fails to start
+    (``Exec format error``).
+    """
+    tag = (
+        f"{platform.system().lower()}-{platform.machine().lower()}"
+        f"-py{sys.version_info.major}{sys.version_info.minor}"
+    )
+    return cache.resolve() / f"checkov-{version}-{tag}"
+
+
 def checkov_binary(version: str, cache: Path) -> Path:
     """``checkov`` at exactly ``version``, installed once into ``cache``.
 
@@ -85,7 +101,7 @@ def checkov_binary(version: str, cache: Path) -> Path:
     (``.cache/idp-terraform-check`` on GitHub), and checkov is then run from
     other working directories, where a relative executable path names nothing.
     """
-    venv = cache.resolve() / f"checkov-{version}"
+    venv = checkov_venv(version, cache)
     exe = venv / "bin" / "checkov"
     marker = venv / ".installed"
     if exe.is_file() and marker.is_file() and marker.read_text() == version:
@@ -110,14 +126,12 @@ def checkov_binary(version: str, cache: Path) -> Path:
 
 
 def checkov_command(exe: Path) -> list[str]:
-    """The argv prefix that runs ``exe``: the venv's interpreter, then the script.
+    """How to start ``checkov``: the virtualenv's Python running its launcher.
 
-    checkov ships ``bin/checkov`` as a ``#!python`` script, and pip rewrites that
-    line to the venv interpreter's absolute path with no fallback for a long one.
-    Under GitLab's ``/builds/<group>/<subgroup>/<project>/.cache/...`` the line is
-    130 bytes, past the 127 a kernel with a 128-byte ``BINPRM_BUF_SIZE`` reads, so
-    executing the script directly fails with ``Exec format error`` on every run.
-    Passing the script to its interpreter never reads the shebang.
+    pip writes the launcher's ``#!`` line as the virtualenv's interpreter path,
+    which under a CI checkout is longer than the 127 bytes older Linux kernels
+    accept, so executing the launcher itself fails with ``Exec format error``.
+    Executing the interpreter reads no ``#!`` line.
     """
     return [str(exe.parent / "python"), str(exe)]
 
