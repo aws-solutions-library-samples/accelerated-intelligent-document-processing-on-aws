@@ -739,8 +739,10 @@ be without one.
 
 ### How Guardrail Integration Works
 
-The variable is parsed in one place, `idp_common.bedrock.guardrail`, and each
-model-call path attaches the result in the shape its API takes:
+Within `idp_common` and the Lambdas built on it, the variable is parsed in one
+place, `idp_common.bedrock.guardrail`, and each model-call path attaches the result
+in the shape its API takes. (The knowledge base resolver's
+`retrieve_and_generate` call parses the variable with its own code.)
 
 | Path | API | What is attached | Helper |
 |---|---|---|---|
@@ -756,7 +758,8 @@ Code that builds its own request rather than going through `BedrockClient` or th
 factory must attach the guardrail with one of these helpers.
 `scripts/tests/test_model_call_guardrail.py` enforces that. It finds every
 `BedrockModel(`, `converse(`, `converse_stream(`, `invoke_model(` and
-`invoke_model_with_response_stream(` in `lib/` and `src/lambda/` by AST. Each call
+`invoke_model_with_response_stream(` in `lib/`, `src/lambda/`, `nested/*/src/` and
+`patterns/*/src/` by AST. Each call
 must go through one of the paths above, attach the guardrail itself, or be listed
 with its own reason.
 

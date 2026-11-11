@@ -43,7 +43,16 @@ What this does not establish, so a green run is not over-read:
   ``BedrockModel`` inside Strands, which this AST cannot see. Every ``Agent`` in
   the tree today is handed a model built by the factory or by agentic extraction.
 * ``feature-platform/``, ``scripts/``, ``benchmarks/`` and ``samples/`` are not
-  part of the deployed stack's Lambda code and are not read.
+  part of the main stack's Lambda code and are not read; the template half reads
+  the parent template and the nested stacks it deploys, not separately deployed
+  feature stacks.
+* Other Bedrock APIs (``retrieve_and_generate``, ``invoke_agent``,
+  ``start_async_invoke``), a ``getattr`` whose name is a variable,
+  ``_make_api_call`` and ``operator.methodcaller`` are not read. The knowledge
+  base resolver's ``retrieve_and_generate`` applies the guardrail with its own
+  parser.
+* A guardrail key stored before the call and then removed (``kw.pop(...)``), or
+  stored in a branch that never runs, is still read as attached.
 * Route calls are recognised by their arguments. A third-party method that takes
   ``model_id=`` and calls Bedrock would be read as a ``BedrockClient`` call; only
   defs in this tree are checked to be routes (:func:`test_callee_named_defs_are_routes`).
@@ -85,7 +94,14 @@ RUNTIME_OPERATIONS = {
     "invoke_model_with_response_stream": "InvokeModelWithResponseStream",
 }
 
-UNIVERSE_PATHSPECS = ("lib/*.py", "src/lambda/*.py")
+#: Every tree holding deployed Lambda or library code, not only ``lib/`` and
+#: ``src/lambda/``: nested stacks and the pattern keep their own Lambda sources.
+UNIVERSE_PATHSPECS = (
+    "lib/*.py",
+    "src/lambda/*.py",
+    "nested/*/src/*.py",
+    "patterns/*/src/*.py",
+)
 
 CLIENT_MODULE = "lib/idp_common_pkg/idp_common/bedrock/client.py"
 FACTORY_MODULE = "lib/idp_common_pkg/idp_common/agents/common/strands_bedrock_model.py"
@@ -286,6 +302,8 @@ class Site:
     function: ast.AST | None
     #: The receiver is a name an import bound to idp_common.bedrock.
     via_route_module: bool = False
+    #: Splat helpers this file imports from their real module.
+    helpers: frozenset[str] = frozenset()
 
     @property
     def key(self) -> str:
@@ -356,6 +374,38 @@ def _route_module_aliases(tree: ast.AST) -> set[str]:
     return names - rebound
 
 
+#: The modules a splat helper must be imported from to count. A local def with
+#: the same name proves nothing about what it returns.
+HELPER_MODULES = frozenset(
+    {
+        "idp_common.bedrock.guardrail",
+        "idp_common.bedrock.client",
+        "idp_common.agents.common.strands_bedrock_model",
+    }
+)
+
+
+def _imported_helpers(tree: ast.AST) -> set[str]:
+    """Splat-helper names an import binds from HELPER_MODULES and nothing rebinds."""
+    wanted = set(GUARDRAIL_SPLAT_HELPERS.values())
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in HELPER_MODULES:
+            for alias in node.names:
+                if alias.name in wanted and alias.asname in (None, alias.name):
+                    names.add(alias.name)
+    rebound = {
+        n.name
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    } | {
+        n.id
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del))
+    }
+    return names - rebound
+
+
 def _annotation_nodes(tree: ast.AST) -> set[int]:
     roots: list[ast.AST] = []
     for node in ast.walk(tree):
@@ -383,6 +433,7 @@ class _Collector(ast.NodeVisitor):
         self.sites: list[Site] = []
         self.aliases = _bedrock_model_aliases(tree)
         self.route_modules = _route_module_aliases(tree)
+        self.helpers = frozenset(_imported_helpers(tree))
         self.annotations = _annotation_nodes(tree)
         self.call_funcs: set[int] = set()
 
@@ -407,6 +458,7 @@ class _Collector(ast.NodeVisitor):
                 node,
                 self.functions[-1] if self.functions else None,
                 via_route_module,
+                self.helpers,
             )
         )
 
@@ -512,11 +564,16 @@ def _splat_names(call: ast.Call) -> set[str]:
     }
 
 
-def _function_stores_key(function: ast.AST | None, name: str, key: str) -> bool:
-    """Whether ``function`` sets ``name[key]`` or binds ``name`` to a dict with ``key``."""
+def _function_stores_key(
+    function: ast.AST | None, name: str, key: str, before_line: int
+) -> bool:
+    """Whether ``function`` sets ``name[key]``, or binds ``name`` to a dict with
+    ``key``, on a line before the call (a store after it cannot reach it)."""
     if function is None:
         return False
     for node in ast.walk(function):
+        if getattr(node, "lineno", before_line) >= before_line:
+            continue
         targets: list[ast.expr] = []
         value = None
         if isinstance(node, ast.Assign):
@@ -553,7 +610,9 @@ def is_route_call(site: Site) -> bool:
     if site.shape != "call" or site.callee not in RUNTIME_CALLEES:
         return False
     assert isinstance(call, ast.Call)
-    if call.args:
+    # A positional argument proves a non-boto3 callee; ``*args`` does not, since
+    # ``client.converse(*args, **kwargs)`` with empty ``args`` is a working raw call.
+    if any(not isinstance(a, ast.Starred) for a in call.args):
         return True
     return any(kw.arg in route_only_keywords() for kw in call.keywords)
 
@@ -571,9 +630,15 @@ def passes_guardrail(site: Site) -> bool:
         return False
     call = site.node
     assert isinstance(call, ast.Call)
-    keywords = {kw.arg for kw in call.keywords if kw.arg}
+    # ``guardrailConfig=None`` names the guardrail and sends none.
+    keywords = {
+        kw.arg
+        for kw in call.keywords
+        if kw.arg
+        and not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
+    }
     helper = GUARDRAIL_SPLAT_HELPERS.get(site.callee)
-    if helper and helper in _splat_helper_calls(call):
+    if helper and helper in site.helpers and helper in _splat_helper_calls(call):
         return True
     if site.callee == "BedrockModel":
         return STRANDS_GUARDRAIL_KEYWORD in keywords
@@ -581,7 +646,8 @@ def passes_guardrail(site: Site) -> bool:
     if key in keywords:
         return True
     return any(
-        _function_stores_key(site.function, name, key) for name in _splat_names(call)
+        _function_stores_key(site.function, name, key, site.lineno)
+        for name in _splat_names(call)
     )
 
 
@@ -781,14 +847,44 @@ _PROBES = {
         "unaccounted",
     ),
     "invoke_model helper splat": (
+        "from idp_common.bedrock.guardrail import guardrail_invoke_model_params\n"
         "c.invoke_model(modelId='m', **guardrail_invoke_model_params())",
         "passes-guardrail",
     ),
+    "helper of the same name defined locally": (
+        "def guardrail_invoke_model_params():\n    return {}\n"
+        "c.invoke_model(modelId='m', **guardrail_invoke_model_params())",
+        "unaccounted",
+    ),
+    "helper splat not imported": (
+        "c.invoke_model(modelId='m', **guardrail_invoke_model_params())",
+        "unaccounted",
+    ),
+    "starred pass-through": (
+        "def f(c, *a, **k):\n    return c.converse(*a, **k)",
+        "unaccounted",
+    ),
+    "guardrail keyword set to None": (
+        "c.converse(modelId='m', guardrailConfig=None)",
+        "unaccounted",
+    ),
+    "strands keyword set to None": (
+        "BedrockModel(model_id='m', guardrail_id=None)",
+        "unaccounted",
+    ),
+    "guardrail stored after the call": (
+        "def f(c, g):\n    kw = {'modelId': 'm'}\n    c.converse_stream(**kw)\n"
+        "    kw['guardrailConfig'] = g",
+        "unaccounted",
+    ),
     "wrong helper for the API": (
+        "from idp_common.bedrock.guardrail import guardrail_invoke_model_params\n"
         "c.converse(modelId='m', **guardrail_invoke_model_params())",
         "unaccounted",
     ),
     "strands helper splat": (
+        "from idp_common.agents.common.strands_bedrock_model import "
+        "strands_guardrail_kwargs\n"
         "BedrockModel(model_id='m', **strands_guardrail_kwargs())",
         "passes-guardrail",
     ),
@@ -906,7 +1002,14 @@ def _role_policy_trees(resources: dict, function: dict) -> list:
         elif isinstance(ref, list) and ref:
             role_id = ref[0]
     if role_id and role_id in resources:
-        trees.append((resources[role_id].get("Properties") or {}).get("Policies"))
+        role_props = resources[role_id].get("Properties") or {}
+        trees.append(role_props.get("Policies"))
+        for arn in role_props.get("ManagedPolicyArns") or []:
+            ref = arn.get("Fn::Ref") if isinstance(arn, dict) else None
+            if isinstance(ref, str) and ref in resources:
+                trees.append(
+                    (resources[ref].get("Properties") or {}).get("PolicyDocument")
+                )
         for body in resources.values():
             if not isinstance(body, dict) or body.get("Type") not in (
                 "AWS::IAM::Policy",

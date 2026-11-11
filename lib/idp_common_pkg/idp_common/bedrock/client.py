@@ -967,7 +967,6 @@ for _model_id in CACHEPOINT_SUPPORTED_MODELS:
 _inference_profile_cachepoint_cache: Dict[str, bool] = {}
 
 
-
 class BedrockClient:
     """Client for interacting with Amazon Bedrock models and custom Lambda hooks."""
 

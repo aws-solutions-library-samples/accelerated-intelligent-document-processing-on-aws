@@ -284,8 +284,10 @@ The solution supports optional Amazon Bedrock Guardrails integration:
   process logs a warning saying so.
 - Which model calls apply the guardrail is enforced by
   `scripts/tests/test_model_call_guardrail.py`. It finds every Bedrock model call in
-  the Lambda and library code, and every deployed Lambda that may invoke a model.
-  Each one must apply the guardrail or be listed with its own reason.
+  the main stack's Lambda and library code, and every Lambda in the main stack and
+  its nested stacks that may invoke a model. Each one must apply the guardrail or be
+  listed with its own reason. Separately deployed extensions, such as the feature
+  platform's, are outside that check.
 
 ### Malware Scanning on Ingest
 
