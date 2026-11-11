@@ -201,7 +201,9 @@ in place, keeping its buckets, tables, KMS key and Cognito user pool. It is what
 `idp-cli terraform migrate-from-genai-idp-terraform` calls; the procedure is in
 [Migrating from genai-idp-terraform](./terraform-migration.md). The client's
 `stack_name` is the **new** deployment's name, and each method takes `terraform_dir`
-(default `./idp-terraform/<stack_name>`).
+(default `./idp-terraform/<stack_name>`). The methods' own AWS calls assume the role
+the new deployment's providers assume (`assume_role_arn` of `plan`, read back from
+`main.tf` by the later methods), or use the ambient credentials when there is none.
 
 ```python
 client = IDPClient(stack_name="my-idp", region="us-west-2")
@@ -225,11 +227,11 @@ migration.check_destroy("destroy-plan.json")
 | Method | Returns | Notes |
 |---|---|---|
 | `plan(old_state_path, admin_email, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` | `TerraformMigrationPlanResult` | Writes the root configuration, runs `terraform init`, writes `adopt.tf` and the migration plan. Raises `IDPConfigurationError` on an old stateful resource with no verdict. |
-| `check_retention(terraform_dir=None, accept_expiry=())` | `TerraformMigrationStepResult` | Reads only. |
-| `freeze(terraform_dir=None, *, apply=False, wait=False, timeout_seconds=1800, poll_seconds=30)` | `TerraformMigrationStepResult` | |
+| `check_retention(terraform_dir=None, accept_expiry=())` | `TerraformMigrationStepResult` | Reads only. `notes` says what was not checked. |
+| `freeze(terraform_dir=None, *, apply=False, wait=False, timeout_seconds=1800, poll_seconds=30, ignore_documents=())` | `TerraformMigrationStepResult` | `details` separates documents in flight from documents awaiting review. |
 | `fix_config(terraform_dir=None, *, apply=False, restore=None)` | `TerraformMigrationStepResult` | `backup_path` names the backup. |
 | `adopt_user_pool(terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
-| `apply(terraform_dir=None, terraform_bin="terraform", *, apply=False, accept_expiry=())` | `TerraformMigrationStepResult` | `details["counts"]` has the plan's import, add, change and destroy counts. |
+| `apply(terraform_dir=None, terraform_bin="terraform", *, apply=False, accept_expiry=(), accept_changes=(), ignore_documents=())` | `TerraformMigrationStepResult` | `details["counts"]` has the plan's import, add, change and destroy counts; `details["review"]` lists the allowed in-place changes to adopted resources. `accept_changes` takes `"<address>:<rule>"` as a finding names it. |
 | `detach(old_terraform_dir, terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
 | `check_destroy(destroy_plan_path, terraform_dir=None)` | `TerraformMigrationStepResult` | Reads only. |
 
