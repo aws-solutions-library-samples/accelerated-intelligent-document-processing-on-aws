@@ -728,3 +728,42 @@ def test_a_sweep_runs_and_deletes_only_what_the_run_owns(tmp_path, monkeypatch):
     assert errors == []
     assert fake.deleted == ["gitf2-input-x"]
     assert deleted == ["bucket gitf2-input-x"]
+
+
+def _run_row(**extra):
+    row = {
+        "PK": {"S": "doc#seed/a.pdf"},
+        "SK": {"S": "run#1"},
+        "RecordType": {"S": "run"},
+    }
+    row.update(extra)
+    return row
+
+
+def test_the_gsi_backfill_adding_its_attributes_is_allowed():
+    """Measured live: the module's backfill added ItemType and ConfidenceAlertCount
+    to upstream's run# rows after the adoption."""
+    before = {"k": _run_row()}
+    after = {
+        "k": _run_row(ItemType={"S": "document"}, ConfidenceAlertCount={"N": "23"})
+    }
+    cmp = tmt.compare_items("tracking_table", before, after)
+    assert cmp["changed"] == [] and cmp["allowedChanges"] == 1
+
+
+def test_a_changed_or_removed_tracking_attribute_is_still_reported():
+    before = {"k": _run_row(CompletionTime={"S": "01:45"})}
+    changed = {"k": _run_row(CompletionTime={"S": "01:47"}, ItemType={"S": "document"})}
+    assert tmt.compare_items("tracking_table", before, changed)["changed"]
+    removed = {"k": _run_row()}
+    assert tmt.compare_items("tracking_table", before, removed)["changed"]
+    # An existing backfill attribute overwritten is a change, not an addition.
+    before = {"k": _run_row(ConfidenceAlertCount={"N": "2"})}
+    after = {"k": _run_row(ConfidenceAlertCount={"N": "0"})}
+    assert tmt.compare_items("tracking_table", before, after)["changed"]
+
+
+def test_an_unknown_attribute_added_is_reported():
+    before = {"k": _run_row()}
+    after = {"k": _run_row(Surprise={"S": "x"})}
+    assert tmt.compare_items("tracking_table", before, after)["changed"]

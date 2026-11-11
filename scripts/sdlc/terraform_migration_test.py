@@ -416,6 +416,29 @@ def compare_objects(
 DEPLOYMENT_OWNED_CONFIG_ROWS = ("Schema", "DefaultPricing", "DefaultModelConfigLimits")
 
 
+#: Attributes the module's ``backfill_gsi_attributes`` function
+#: (src/lambda/backfill_gsi_attributes) adds to existing tracking-table rows so
+#: that its indexes cover them: ``ItemType`` from the key prefix, the HITL index
+#: flag, a test run's ``InitialEventTime``, and ``ConfidenceAlertCount`` computed
+#: from the row's sections. Measured: upstream's ``run#`` rows carry neither
+#: ``ItemType`` nor ``ConfidenceAlertCount``, and gained both after the adoption.
+GSI_BACKFILL_ATTRIBUTES = (
+    "ItemType",
+    "ConfidenceAlertCount",
+    "HITLPendingReview",
+    "InitialEventTime",
+)
+
+
+def only_backfilled(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
+    """True when ``after`` is ``before`` plus GSI_BACKFILL_ATTRIBUTES it did not
+    have: an attribute added, never one changed or removed."""
+    if any(after.get(k) != v for k, v in before.items()):
+        return False
+    added = set(after) - set(before)
+    return bool(added) and added <= set(GSI_BACKFILL_ATTRIBUTES)
+
+
 def allowed_item_change(
     table_kind: str,
     before: Dict[str, Any],
@@ -433,6 +456,8 @@ def allowed_item_change(
       the row itself is not compared;
     * DEPLOYMENT_OWNED_CONFIG_ROWS are rewritten by every deploy.
     """
+    if table_kind == "tracking_table":
+        return only_backfilled(before, after)
     if table_kind != "configuration":
         return False
     config = (before.get("Configuration") or {}).get("S", "")
