@@ -80,6 +80,11 @@ def _emit_json(model: Any) -> None:
 
 def _print_step(result, apply_flag: bool) -> None:
     """Human output for a phase result, on stderr."""
+    review = result.details.get("review") or []
+    if review:
+        err_console.print("[bold]In-place changes to review:[/bold]")
+        for line in review:
+            err_console.print(f"  {escape(line)}")
     if result.changes:
         head = (
             "Changed"
@@ -146,8 +151,17 @@ accept_option = click.option(
     "--accept-expiry",
     multiple=True,
     metavar="KIND",
-    help="Adopt a bucket even though the module's expiry rule would delete objects "
-    "already in it (KIND is the bucket kind, e.g. logging_bucket). Repeatable.",
+    help="Adopt a bucket even though the module's expiry rules would delete objects "
+    "or noncurrent versions already in it, or have a period this command cannot "
+    "evaluate (KIND is the bucket kind, e.g. logging_bucket). Repeatable.",
+)
+ignore_document_option = click.option(
+    "--ignore-document",
+    "ignore_documents",
+    multiple=True,
+    metavar="KEY",
+    help="A document (its object key) that has not finished and that you have "
+    "decided to abandon, so it does not block. Repeatable.",
 )
 
 
@@ -315,20 +329,37 @@ def check_retention_cmd(
             "Bucket",
             "Expires after (days)",
             "Oldest object (days)",
+            "Noncurrent expire after (days)",
+            "Oldest noncurrent (days)",
             "",
         ):
             table.add_column(col)
+
+        def cell(value, none: str) -> str:
+            return str(value if value is not None else none)
+
         for row in result.details.get("buckets", []):
             table.add_row(
                 escape(row["kind"]),
                 escape(row["bucket"]),
-                str(row["expiryDays"] if row["expiryDays"] is not None else "never"),
-                str(
-                    row["oldestObjectAgeDays"]
-                    if row["oldestObjectAgeDays"] is not None
-                    else "empty"
+                cell(row["expiryDays"], "never"),
+                cell(row["oldestObjectAgeDays"], "empty"),
+                cell(row.get("noncurrentExpiryDays"), "never"),
+                escape(
+                    cell(
+                        row.get("oldestNoncurrentAgeDays"),
+                        "none"
+                        if row.get("versioning") != "never enabled"
+                        else "unversioned",
+                    )
                 ),
-                "[green]ok[/green]" if row["ok"] else "[red]would expire[/red]",
+                "[green]ok[/green]"
+                if row["ok"]
+                else (
+                    "[red]cannot evaluate[/red]"
+                    if row.get("unresolved")
+                    else "[red]would expire[/red]"
+                ),
             )
         err_console.print(table)
     _finish(result, as_json)
@@ -341,6 +372,7 @@ def check_retention_cmd(
 @apply_option
 @click.option("--wait", is_flag=True, help="Wait until no document is in flight")
 @click.option("--timeout", default=1800, show_default=True, help="Seconds to wait")
+@ignore_document_option
 @json_option
 def freeze_cmd(
     stack_name: str,
@@ -349,6 +381,7 @@ def freeze_cmd(
     apply_: bool,
     wait: bool,
     timeout: int,
+    ignore_documents: Tuple[str, ...],
     as_json: bool,
 ):
     """Disable the old deployment's upload rule; report documents in flight."""
@@ -356,7 +389,11 @@ def freeze_cmd(
 
     try:
         result = _migration(stack_name, region).freeze(
-            terraform_dir, apply=apply_, wait=wait, timeout_seconds=timeout
+            terraform_dir,
+            apply=apply_,
+            wait=wait,
+            timeout_seconds=timeout,
+            ignore_documents=ignore_documents,
         )
     except IDPError as e:
         _fail(str(e))
@@ -428,6 +465,16 @@ def adopt_user_pool_cmd(
 @bin_option
 @apply_option
 @accept_option
+@click.option(
+    "--accept-change",
+    "accept_changes",
+    multiple=True,
+    metavar="ADDRESS:RULE",
+    help="Allow one refused change the check found, exactly as the finding names "
+    "it (for example module.idp.aws_dynamodb_table.agent_table:ttl-changed). "
+    "Repeatable.",
+)
+@ignore_document_option
 @json_option
 def apply_cmd(
     stack_name: str,
@@ -436,6 +483,8 @@ def apply_cmd(
     terraform_bin: str,
     apply_: bool,
     accept_expiry: Tuple[str, ...],
+    accept_changes: Tuple[str, ...],
+    ignore_documents: Tuple[str, ...],
     as_json: bool,
 ):
     """Plan the adoption, check it imports in place and destroys nothing, then apply."""
@@ -443,7 +492,12 @@ def apply_cmd(
 
     try:
         result = _migration(stack_name, region).apply(
-            terraform_dir, terraform_bin, apply=apply_, accept_expiry=accept_expiry
+            terraform_dir,
+            terraform_bin,
+            apply=apply_,
+            accept_expiry=accept_expiry,
+            accept_changes=accept_changes,
+            ignore_documents=ignore_documents,
         )
     except IDPError as e:
         _fail(str(e))

@@ -53,7 +53,7 @@ PLAN_FILE = "migration-plan.json"
 DETACH_FILE = "detach-addresses.txt"
 ADOPT_FILE = "adopt.tf"
 ADOPT_MARKER = "# Written by `idp-cli terraform migrate-from-genai-idp-terraform plan`."
-PLAN_FORMAT = 1
+PLAN_FORMAT = 2
 
 # Verdicts, one per resource kind.
 ADOPT = "adopt"  # imported into the module with an `import {}` block
@@ -88,8 +88,13 @@ STATEFUL_TYPES = frozenset(
         "awscc_s3_bucket",
         "aws_dynamodb_table",
         "awscc_dynamodb_table",
+        "aws_dynamodb_table_replica",
+        "aws_dynamodb_global_table",
         "aws_kms_key",
         "awscc_kms_key",
+        "aws_kms_replica_key",
+        "aws_kms_external_key",
+        "aws_kms_replica_external_key",
         "aws_cognito_user_pool",
         "aws_cognito_user",
         "aws_cognito_user_group",
@@ -105,8 +110,99 @@ STATEFUL_TYPES = frozenset(
         "aws_s3vectors_vector_bucket",
         "aws_s3vectors_index",
         "aws_glue_catalog_database",
+        "aws_backup_vault",
+        "aws_backup_plan",
+        "aws_backup_selection",
     }
 )
+
+# Old-state types known to be safe to destroy with the old deployment: they hold no
+# data the new deployment needs, and destroying one runs nothing against a kept
+# resource. Derived from every resource type upstream tag v0.6.9-tf.0 declares
+# (its `resource` blocks, all modules), less the stateful ones above and the ones
+# that need a decision this command cannot make (a VPC and its parts, which the new
+# deployment may have been pointed at; an `aws_cloudformation_stack`, whose custom
+# resources run on delete). A type in neither this set nor STATEFUL_TYPES, and not
+# handled as a setting below, is refused by `plan`, naming it.
+#
+# `null_resource` and `terraform_data` are here because upstream's only destroy-time
+# provisioner (`lambda-layer-codebuild-idp`'s `cleanup_on_destroy`) deletes local
+# temporary files and nothing in AWS; a destroy-time provisioner a fork added is not
+# visible in state.
+RECREATE_SAFE_TYPES = frozenset(
+    {
+        "aws_api_gateway_account",
+        "aws_api_gateway_authorizer",
+        "aws_api_gateway_deployment",
+        "aws_api_gateway_gateway_response",
+        "aws_api_gateway_integration",
+        "aws_api_gateway_integration_response",
+        "aws_api_gateway_method",
+        "aws_api_gateway_method_response",
+        "aws_api_gateway_method_settings",
+        "aws_api_gateway_resource",
+        "aws_api_gateway_rest_api",
+        "aws_api_gateway_stage",
+        "aws_appautoscaling_policy",
+        "aws_appautoscaling_target",
+        "aws_cloudfront_distribution",
+        "aws_cloudfront_origin_access_control",
+        "aws_cloudfront_response_headers_policy",
+        "aws_cloudwatch_event_rule",
+        "aws_cloudwatch_event_target",
+        "aws_cloudwatch_log_group",
+        "aws_codebuild_project",
+        "aws_cognito_identity_pool",
+        "aws_cognito_identity_pool_roles_attachment",
+        "aws_cognito_user_pool_client",
+        "aws_ecr_repository",
+        "aws_glue_catalog_table",
+        "aws_glue_crawler",
+        "aws_glue_security_configuration",
+        "aws_iam_policy",
+        "aws_iam_role",
+        "aws_iam_role_policy",
+        "aws_iam_role_policy_attachment",
+        "aws_lambda_event_source_mapping",
+        "aws_lambda_function",
+        "aws_lambda_function_url",
+        "aws_lambda_layer_version",
+        "aws_lambda_permission",
+        "aws_opensearchserverless_access_policy",
+        "aws_opensearchserverless_security_policy",
+        "aws_sagemaker_endpoint",
+        "aws_sagemaker_endpoint_configuration",
+        "aws_sagemaker_model",
+        "aws_sfn_state_machine",
+        "aws_sqs_queue",
+        "aws_sqs_queue_policy",
+        "aws_ssm_parameter",
+        "aws_wafv2_ip_set",
+        "aws_wafv2_web_acl",
+        "aws_wafv2_web_acl_association",
+        "docker_image",
+        "docker_registry_image",
+        "local_file",
+        "null_resource",
+        "random_id",
+        "random_string",
+        "terraform_data",
+        "time_sleep",
+    }
+)
+
+# Settings of a user pool that are separate resources. Destroying one strips it from
+# the pool, so on the adopted pool each is detached (kept, managed by neither).
+POOL_SETTING_TYPES = frozenset(
+    {
+        "aws_cognito_user_pool_ui_customization",
+        "aws_cognito_resource_server",
+        "aws_cognito_risk_configuration",
+        "aws_cognito_managed_login_branding",
+    }
+)
+# Kept with the BDA project, which names them.
+BDA_MEMBER_TYPES = frozenset({"awscc_bedrock_blueprint"})
 
 # Settings that are separate Terraform resources but live on a bucket, a table or
 # a user pool. Destroying one strips that setting from its parent, so on an adopted
@@ -550,6 +646,12 @@ def load_old_state(data: Dict[str, Any]) -> List[OldInstance]:
             "not a Terraform state file (expected a version 4 state with a "
             "`resources` list, as `terraform state pull` prints)"
         )
+    if not data.get("lineage"):
+        raise IDPConfigurationError(
+            "this state has no lineage, which `terraform state pull` always "
+            "prints; the later phases use it to recognise the old deployment's "
+            "state, so pass the state itself"
+        )
     out: List[OldInstance] = []
     for res in data["resources"]:
         if res.get("mode") != "managed":
@@ -598,27 +700,65 @@ def _match_kind(inst: OldInstance) -> Optional[ResourceKind]:
 
 
 @dataclass
+class LifecycleRules:
+    """One ``aws_s3_bucket_lifecycle_configuration`` in the module, as read.
+
+    ``target`` is the root-module ``aws_s3_bucket`` resource name the rule's
+    ``bucket`` resolves to, or ``bucket_name`` the literal bucket name it resolves
+    to through a variable; both are None when the expression could not be
+    resolved, and then ``bucket_expr`` says what it was.
+    """
+
+    resource: str  # display address, module-relative
+    scope: str
+    bucket_expr: str
+    target: Optional[str] = None
+    bucket_name: Optional[str] = None
+    expiry: List[str] = field(default_factory=list)
+    noncurrent: List[str] = field(default_factory=list)
+    unreadable: List[str] = field(default_factory=list)
+
+
+_LIFECYCLE = re.compile(
+    r'^resource "aws_s3_bucket_lifecycle_configuration" "([^"]+)" \{\n(.*?)^\}\n',
+    re.S | re.M,
+)
+_BUCKET_REF = re.compile(r"aws_s3_bucket\.([A-Za-z0-9_-]+)(?:\[0\])?\.(?:id|bucket)")
+_EXPIRATION = re.compile(r"(?<![A-Za-z_])expiration \{(.*?)\}", re.S)
+_NONCURRENT = re.compile(r"noncurrent_version_expiration \{(.*?)\}", re.S)
+
+
+@dataclass
 class ModuleSource:
     """What the migration reads from the installed module's ``.tf`` files."""
 
     root: Path
     texts: Dict[str, str] = field(
         default_factory=dict
-    )  # module path ("" = root) -> text
-    sources: Dict[str, str] = field(default_factory=dict)  # call name -> directory
+    )  # module path ("" = root, "a.b" = module.a.module.b) -> text
+    sources: Dict[str, str] = field(default_factory=dict)  # module path -> directory
+    unread: List[str] = field(default_factory=list)  # calls whose source is not local
 
     @classmethod
     def read(cls, root: Path) -> "ModuleSource":
         src = cls(root=Path(root))
-        src.texts[""] = _read_tf(src.root)
+        src._read_scope("", src.root)
+        return src
+
+    def _read_scope(self, scope: str, directory: Path) -> None:
+        if scope and not directory.is_dir():
+            self.unread.append(scope)
+        self.texts[scope] = _read_tf(directory)
         for m in re.finditer(
-            r'^module "([^"]+)" \{\n(.*?)^\}\n', src.texts[""], re.S | re.M
+            r'^module "([^"]+)" \{\n(.*?)^\}\n', self.texts[scope], re.S | re.M
         ):
+            child = f"{scope}.{m.group(1)}" if scope else m.group(1)
             s = re.search(r'^\s*source\s*=\s*"\./([^"]+)"', m.group(2), re.M)
             if s:
-                src.sources[m.group(1)] = s.group(1)
-                src.texts[m.group(1)] = _read_tf(src.root / s.group(1))
-        return src
+                self.sources[child] = str(directory / s.group(1))
+                self._read_scope(child, directory / s.group(1))
+            else:
+                self.unread.append(child)
 
     def _block(
         self, text: str, kind: str, a: str, b: Optional[str] = None
@@ -644,7 +784,7 @@ class ModuleSource:
                     f"the module declares no module call {call!r}"
                 )
             out.append(f"module.{call}" + ("[0]" if _counted(body) else ""))
-            scope = call
+            scope = f"{scope}.{call}" if scope else call
             parts = parts[2:]
         tf_type, name = parts
         body = self._block(self.texts.get(scope, ""), "resource", tf_type, name)
@@ -656,30 +796,117 @@ class ModuleSource:
         out.append(f"{tf_type}.{name}" + ("[0]" if _counted(body) else ""))
         return ".".join(out)
 
-    def expiry_rules(self, bucket_resource: str) -> List[str]:
-        """The ``expiration { days = ... }`` expressions of every lifecycle rule
-        the module puts on ``aws_s3_bucket.<bucket_resource>`` (root module)."""
-        text = self.texts.get("", "")
-        exprs: List[str] = []
-        pat = re.compile(
-            r'^resource "aws_s3_bucket_lifecycle_configuration" "[^"]+" \{\n(.*?)^\}\n',
-            re.S | re.M,
-        )
-        ref = re.compile(
-            rf"bucket\s*=\s*aws_s3_bucket\.{re.escape(bucket_resource)}(\[0\])?\.id"
-        )
-        for m in pat.finditer(text):
-            body = m.group(1)
-            if not ref.search(body):
-                continue
-            exprs.extend(
-                e.strip()
-                for e in re.findall(r"expiration \{\s*days\s*=\s*([^\n]+)", body)
-            )
-        return exprs
+    def _call_argument(self, scope: str, variable: str) -> Optional[Tuple[str, str]]:
+        """(expression, parent scope) the call of ``scope`` passes ``variable``."""
+        if not scope:
+            return None
+        parent, _, call = scope.rpartition(".")
+        body = self._block(self.texts.get(parent, ""), "module", call)
+        if body is None:
+            return None
+        m = re.search(rf"^\s*{re.escape(variable)}\s*=\s*(.+?)\s*$", body, re.M)
+        return (m.group(1), parent) if m else None
 
-    def variable_default(self, name: str) -> Any:
-        body = self._block(self.texts.get("", ""), "variable", name)
+    def resolve(
+        self, expr: str, scope: str, values: Dict[str, Any], depth: int = 0
+    ) -> Any:
+        """The value of a simple expression: a literal, or ``var.X`` followed to
+        the root variable (and ``values``, then its default) through each module
+        call. ``_UNRESOLVED`` for anything else."""
+        expr = expr.strip()
+        if depth > 10:
+            return _UNRESOLVED
+        if re.fullmatch(r"\d+", expr):
+            return int(expr)
+        if re.fullmatch(r'"(?:[^"\\$%]|\\.)*"', expr):
+            return json.loads(expr)
+        m = re.fullmatch(r"var\.([A-Za-z0-9_]+)", expr)
+        if not m:
+            return _UNRESOLVED
+        name = m.group(1)
+        if not scope:
+            if name in values:
+                return values[name]
+            default = self.variable_default(name, "")
+            return _UNRESOLVED if default is None else default
+        arg = self._call_argument(scope, name)
+        if arg is not None:
+            return self.resolve(arg[0], arg[1], values, depth + 1)
+        default = self.variable_default(name, scope)
+        return _UNRESOLVED if default is None else default
+
+    def lifecycle_rules(self, values: Dict[str, Any]) -> List[LifecycleRules]:
+        """Every lifecycle configuration in the module, at any depth, with the
+        bucket each one targets resolved where the expression allows."""
+        out: List[LifecycleRules] = []
+        for scope, text in self.texts.items():
+            for m in _LIFECYCLE.finditer(text):
+                body = m.group(2)
+                prefix = "".join(f"module.{c}." for c in scope.split(".") if c)
+                b = re.search(r"^\s*bucket\s*=\s*(.+?)\s*$", body, re.M)
+                rule = LifecycleRules(
+                    resource=f"{prefix}aws_s3_bucket_lifecycle_configuration.{m.group(1)}",
+                    scope=scope,
+                    bucket_expr=b.group(1) if b else "(none)",
+                )
+                ref = _BUCKET_REF.fullmatch(rule.bucket_expr) if b else None
+                if ref and not scope:
+                    rule.target = ref.group(1)
+                elif ref:
+                    # A bucket of the submodule's own; adopted buckets are all
+                    # root-module resources.
+                    rule.target = f"{scope}:{ref.group(1)}"
+                elif b:
+                    value = self.resolve(rule.bucket_expr, scope, values)
+                    if isinstance(value, str):
+                        rule.bucket_name = value
+                    elif scope and rule.bucket_expr.startswith("var."):
+                        arg = self._call_argument(scope, rule.bucket_expr[4:])
+                        root_ref = (
+                            _BUCKET_REF.fullmatch(arg[0])
+                            if arg is not None and arg[1] == ""
+                            else None
+                        )
+                        if root_ref:
+                            rule.target = root_ref.group(1)
+                if re.search(r'^\s*dynamic "', body, re.M):
+                    rule.unreadable.append("a `dynamic` block")
+                for e in _EXPIRATION.finditer(body):
+                    d = re.search(r"^\s*days\s*=\s*(.+?)\s*$", e.group(1), re.M)
+                    if d:
+                        rule.expiry.append(d.group(1))
+                    else:
+                        rule.unreadable.append(
+                            "an `expiration` block with no `days` (a `date`, or "
+                            "`expired_object_delete_marker`)"
+                        )
+                for e in _NONCURRENT.finditer(body):
+                    d = re.search(
+                        r"^\s*noncurrent_days\s*=\s*(.+?)\s*$", e.group(1), re.M
+                    )
+                    if d:
+                        rule.noncurrent.append(d.group(1))
+                    else:
+                        rule.unreadable.append(
+                            "a `noncurrent_version_expiration` block with no "
+                            "`noncurrent_days`"
+                        )
+                out.append(rule)
+        return out
+
+    def inline_lifecycle(self, bucket_resource: str) -> bool:
+        """Whether the root ``aws_s3_bucket.<bucket_resource>`` declares a
+        deprecated inline ``lifecycle_rule``."""
+        body = self._block(
+            self.texts.get("", ""), "resource", "aws_s3_bucket", bucket_resource
+        )
+        return (
+            body is not None
+            and re.search(r"^\s*lifecycle_rule\s", body, re.M) is not None
+        )
+
+    def variable_default(self, name: str, scope: str = "") -> Any:
+        body = self._block(self.texts.get(scope, ""), "variable", name)
         if body is None:
             return None
         m = re.search(r"^\s*default\s*=\s*(.+)$", body, re.M)
@@ -692,6 +919,14 @@ class ModuleSource:
             return raw
 
 
+class _Unresolved:
+    def __repr__(self) -> str:
+        return "<unresolved>"
+
+
+_UNRESOLVED: Any = _Unresolved()
+
+
 def _read_tf(directory: Path) -> str:
     if not directory.is_dir():
         return ""
@@ -700,6 +935,44 @@ def _read_tf(directory: Path) -> str:
 
 def _counted(body: str) -> bool:
     return re.search(r"^  (count|for_each)\s*=", body, re.M) is not None
+
+
+_PROVIDER_BLOCK = r'^provider "{name}" \{{\n(.*?)^\}}\n'
+_ROLE_ARN_LINE = re.compile(r'^\s*role_arn\s*=\s*("(?:[^"\\]|\\.)*")\s*$', re.M)
+
+
+def terraform_role_arn(main_tf: Path) -> Optional[str]:
+    """The role the new deployment's ``aws`` and ``awscc`` providers assume, read
+    from its ``main.tf``; None when they assume none.
+
+    The migration's own AWS calls use the same identity, so they read and change
+    the account Terraform deploys to. Refuses when it cannot tell: no
+    ``main.tf``, a provider block missing, or the two providers assuming
+    different roles.
+    """
+    path = Path(main_tf)
+    if not path.is_file():
+        raise IDPConfigurationError(
+            f"{path} does not exist, so this command cannot tell which credentials "
+            "Terraform uses; run the `plan` phase first"
+        )
+    text = path.read_text()
+    roles: Dict[str, Optional[str]] = {}
+    for name in ("aws", "awscc"):
+        m = re.search(_PROVIDER_BLOCK.format(name=name), text, re.S | re.M)
+        if not m:
+            raise IDPConfigurationError(
+                f'{path} has no provider "{name}" block, so this command cannot '
+                "tell which credentials Terraform uses"
+            )
+        arn = _ROLE_ARN_LINE.search(m.group(1))
+        roles[name] = json.loads(arn.group(1)) if arn else None
+    if roles["aws"] != roles["awscc"]:
+        raise IDPConfigurationError(
+            f"the aws and awscc providers in {path} assume different roles "
+            f"({roles['aws']!r} and {roles['awscc']!r}); make them agree"
+        )
+    return roles["aws"]
 
 
 def module_dir_from_root(directory: Path) -> Path:
@@ -754,6 +1027,10 @@ class MigrationPlan:
     configuration_table: Optional[str]
     upload_rules: List[Dict[str, str]]
     adopted_buckets: List[Dict[str, str]]  # {kind, bucket, resource}
+    # The old state the plan was built from: `detach` refuses a state of another
+    # lineage, and `check-destroy` a destroy plan of another deployment.
+    old_lineage: Optional[str] = None
+    old_serial: Optional[int] = None
 
     @property
     def imports(self) -> List[PlannedResource]:
@@ -775,6 +1052,8 @@ class MigrationPlan:
             "configurationTable": self.configuration_table,
             "uploadRules": self.upload_rules,
             "adoptedBuckets": self.adopted_buckets,
+            "oldLineage": self.old_lineage,
+            "oldSerial": self.old_serial,
         }
 
     @classmethod
@@ -794,6 +1073,8 @@ class MigrationPlan:
             configuration_table=data.get("configurationTable"),
             upload_rules=data.get("uploadRules") or [],
             adopted_buckets=data.get("adoptedBuckets") or [],
+            old_lineage=data.get("oldLineage"),
+            old_serial=data.get("oldSerial"),
         )
 
 
@@ -962,8 +1243,20 @@ def build_plan(
             physical_id=_physical_id(inst),
         )
         parent: Optional[str] = None
+
+        def unseen(what: str, inst: OldInstance = inst) -> str:
+            return (
+                f"{inst.address} ({inst.type}): the state does not record which "
+                f"{what} it belongs to, so this command cannot tell whether "
+                "destroying it strips a setting from a kept resource. Nothing was "
+                "written."
+            )
+
         if _is_bucket_setting(inst.type):
             parent = a.get(BUCKET_SETTING_ATTR)
+            if not parent:
+                refusals.append(unseen("bucket"))
+                continue
             if parent in kept_buckets:
                 pr.verdict, pr.detach = SETTING, True
                 pr.note = (
@@ -972,16 +1265,31 @@ def build_plan(
                 )
         elif inst.type in TABLE_SETTING_TYPES:
             parent = str(a.get(TABLE_SETTING_TYPES[inst.type]) or "").split("/")[-1]
+            if not parent:
+                refusals.append(unseen("table"))
+                continue
             if parent in kept_tables:
                 pr.verdict, pr.detach = SETTING, True
                 pr.note = f"Belongs to kept table {parent}; detached, not destroyed."
         elif inst.type in KEY_SETTING_TYPES:
-            if (
-                str(a.get(KEY_SETTING_TYPES[inst.type]) or "").split("/")[-1]
-                in kept_keys
-            ):
+            parent = str(a.get(KEY_SETTING_TYPES[inst.type]) or "").split("/")[-1]
+            if not parent:
+                refusals.append(unseen("KMS key"))
+                continue
+            if parent in kept_keys:
                 pr.verdict, pr.detach = SETTING, True
                 pr.note = "Belongs to the adopted key; detached, not destroyed."
+        elif inst.type == "aws_kms_alias":
+            parent = str(a.get("target_key_id") or "").split("/")[-1]
+            if not parent:
+                refusals.append(unseen("KMS key"))
+                continue
+            if parent in kept_keys:
+                pr.verdict, pr.detach = KEEP_UNMANAGED, True
+                pr.note = (
+                    f"An alias of the adopted key; detached, so it keeps pointing at "
+                    f"the key ({a.get('name')}), managed by neither deployment."
+                )
         elif (
             inst.type in POOL_MEMBER_TYPES
             and adopted_pool
@@ -992,10 +1300,53 @@ def build_plan(
                 "A user, group or group membership in the adopted pool; kept there, "
                 "managed by neither deployment."
             )
+        elif inst.type in POOL_SETTING_TYPES:
+            parent = a.get("user_pool_id")
+            if not parent:
+                refusals.append(unseen("user pool"))
+                continue
+            if adopted_pool and parent == adopted_pool:
+                pr.verdict, pr.detach = SETTING, True
+                pr.note = (
+                    "A setting of the adopted user pool; detached so destroying the "
+                    "old deployment does not strip it from the pool."
+                )
+        elif inst.type in BDA_MEMBER_TYPES:
+            pr.verdict, pr.detach = KEEP_UNMANAGED, True
+            pr.note = (
+                "Kept with the BDA project, which may name it; managed by neither "
+                "deployment."
+            )
+        elif inst.type == "aws_lambda_invocation":
+            if a.get("lifecycle_scope") == "CREATE_ONLY":
+                pr.note = (
+                    "Invoked once, on create; destroying it runs nothing (its "
+                    "lifecycle_scope is CREATE_ONLY)."
+                )
+            else:
+                scope = a.get("lifecycle_scope")
+                pr.verdict, pr.detach = KEEP_UNMANAGED, True
+                pr.note = (
+                    f"Detached, so destroying the old deployment does not invoke "
+                    f"{a.get('function_name')} with a delete action (its lifecycle_scope "
+                    f"is {scope!r}"
+                    + ("" if scope else ", not recorded in the state")
+                    + "). Whatever that invocation manages stays in the account."
+                )
         elif inst.type in STATEFUL_TYPES:
             refusals.append(
                 f"{inst.address} ({inst.type} {pr.physical_id}): a resource that holds "
                 "data and that this command has no verdict for. Nothing was written."
+            )
+            continue
+        elif inst.type not in RECREATE_SAFE_TYPES:
+            refusals.append(
+                f"{inst.address}: resource type {inst.type} is not one this command "
+                "knows is safe to destroy with the old deployment, nor one it knows "
+                "how to keep. Nothing was written. Decide yourself: if it must survive, "
+                f"remove it from the old state (`terraform state rm {inst.address}`) "
+                "and save the state again; otherwise report the type so it can be "
+                "classified."
             )
             continue
         elif inst.type == "aws_sqs_queue":
@@ -1131,6 +1482,8 @@ def build_plan(
         configuration_table=config,
         upload_rules=upload_rules,
         adopted_buckets=adopted_buckets,
+        old_lineage=old_state.get("lineage"),
+        old_serial=old_state.get("serial"),
     )
 
 
@@ -1160,13 +1513,30 @@ def render_adopt_tf(plan: MigrationPlan) -> str:
     return "\n".join(lines)
 
 
-def detach_commands(addresses: Sequence[str], binary: str = "terraform") -> List[str]:
-    """Shell lines that back up the old state and remove ``addresses`` from it."""
+def _shell_quote(text: str) -> str:
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
+def detach_commands(
+    addresses: Sequence[str],
+    binary: str = "terraform",
+    backup_dir: Optional[Path] = None,
+) -> List[str]:
+    """Shell lines, run in the old deployment's directory, that back up the old
+    state and remove ``addresses`` from it.
+
+    The backup holds every secret the old state does, so it is written readable
+    by its owner only (``umask 077`` in a subshell) into ``backup_dir`` -- the
+    migration directory -- rather than wherever the operator happens to be.
+    """
     if not addresses:
         return []
-    quoted = " ".join("'" + a.replace("'", "'\\''") + "'" for a in addresses)
+    quoted = " ".join(_shell_quote(a) for a in addresses)
+    target = "old-state-backup-before-detach.tfstate"
+    if backup_dir is not None:
+        target = str(Path(backup_dir) / target)
     return [
-        f"{binary} state pull > old-state-backup-before-detach.tfstate",
+        f"(umask 077 && {binary} state pull > {_shell_quote(target)})",
         f"{binary} state rm {quoted}",
     ]
 
@@ -1177,18 +1547,30 @@ def detach_commands(addresses: Sequence[str], binary: str = "terraform") -> List
 
 
 def resolve_days(
-    expr: str, values: Dict[str, Any], module: ModuleSource
+    expr: str, values: Dict[str, Any], module: ModuleSource, scope: str = ""
 ) -> Optional[int]:
-    expr = expr.strip()
-    if re.fullmatch(r"\d+", expr):
-        return int(expr)
-    m = re.fullmatch(r"var\.([A-Za-z0-9_]+)", expr)
-    if m:
-        v = values.get(m.group(1), module.variable_default(m.group(1)))
-        try:
-            return int(v)
-        except (TypeError, ValueError):
+    value = module.resolve(expr, scope, values)
+    if value is _UNRESOLVED or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _root_variable(module: ModuleSource, expr: str, scope: str) -> Optional[str]:
+    """The root-module variable ``expr`` comes from, when it is a plain
+    ``var.X`` passed down unchanged through each module call."""
+    for _ in range(10):
+        m = re.fullmatch(r"var\.([A-Za-z0-9_]+)", expr.strip())
+        if not m:
             return None
+        if not scope:
+            return m.group(1)
+        arg = module._call_argument(scope, m.group(1))
+        if arg is None:
+            return None
+        expr, scope = arg
     return None
 
 
@@ -1202,6 +1584,54 @@ def oldest_object(s3, bucket: str) -> Optional[datetime]:
     return oldest
 
 
+def oldest_noncurrent(s3, bucket: str) -> Optional[datetime]:
+    """When the longest-noncurrent object version in ``bucket`` became noncurrent.
+
+    S3 counts ``noncurrent_days`` from the moment a version stops being current,
+    which is the ``LastModified`` of the version or delete marker that superseded
+    it, so each key's versions are ordered newest first and each noncurrent
+    version is dated by its successor. Reads every version (ListObjectVersions).
+    """
+    # (LastModified, IsLatest, is a version rather than a delete marker)
+    by_key: Dict[str, List[Tuple[datetime, bool, bool]]] = {}
+    for page in s3.get_paginator("list_object_versions").paginate(Bucket=bucket):
+        for v in page.get("Versions", []) or []:
+            by_key.setdefault(v["Key"], []).append(
+                (v["LastModified"], bool(v.get("IsLatest")), True)
+            )
+        for d in page.get("DeleteMarkers", []) or []:
+            by_key.setdefault(d["Key"], []).append(
+                (d["LastModified"], bool(d.get("IsLatest")), False)
+            )
+    oldest: Optional[datetime] = None
+    for entries in by_key.values():
+        # Newest first; LastModified has one-second resolution, so on a tie the
+        # current entry goes first.
+        entries.sort(key=lambda e: (e[0], e[1]), reverse=True)
+        for newer, older in zip(entries, entries[1:]):
+            if older[2] and (oldest is None or newer[0] < oldest):
+                oldest = newer[0]
+    return oldest
+
+
+#: Said in every check-retention result, so a pass is not read as more than it is.
+RETENTION_LIMITS = (
+    "Rule filters (prefix, tags, object size) are not read: every rule is treated "
+    "as covering the whole bucket, so a finding may be stricter than the rule.",
+    "`newer_noncurrent_versions` is not read: noncurrent versions are treated as "
+    "expiring after `noncurrent_days` however many newer ones there are.",
+    "Storage-class transitions and `abort_incomplete_multipart_upload` are not "
+    "checked: they move objects or remove uploads that never completed, and delete "
+    "no stored object.",
+    "The lifecycle configuration each bucket has now is not read; the module's "
+    "replaces it on the first apply.",
+)
+
+
+def _age_days(now: datetime, then: Optional[datetime]) -> Optional[int]:
+    return None if then is None else math.ceil((now - then).total_seconds() / 86400)
+
+
 def check_retention(
     plan: MigrationPlan,
     module: ModuleSource,
@@ -1210,75 +1640,182 @@ def check_retention(
     *,
     accept_expiry: Iterable[str] = (),
     now: Optional[datetime] = None,
-) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """(one row per adopted bucket, findings). A finding is a bucket holding an
-    object older than the shortest expiry rule the module would put on it."""
+) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
+    """(one row per kept bucket, findings, notes).
+
+    A finding is a kept bucket holding an object, or a noncurrent object version,
+    older than the shortest expiry the module's lifecycle rules would put on it;
+    a rule whose period this command cannot evaluate; a lifecycle configuration
+    in the module whose bucket it cannot resolve, or a module directory it cannot
+    read (either could target a kept bucket). ``accept_expiry`` (bucket kinds)
+    turns the first two into notes for that bucket. The notes say what was and
+    was not checked.
+    """
     now = now or datetime.now(timezone.utc)
     accepted = set(accept_expiry)
     rows: List[Dict[str, Any]] = []
     findings: List[str] = []
-    for b in plan.adopted_buckets:
-        exprs = module.expiry_rules(b["resource"])
-        days = [
-            d for d in (resolve_days(e, values, module) for e in exprs) if d is not None
-        ]
-        expiry = min(days) if days else None
-        oldest = oldest_object(s3, b["bucket"])
-        age = (
-            None
-            if oldest is None
-            else math.ceil((now - oldest).total_seconds() / 86400)
+    notes: List[str] = [f"Not checked: {line}" for line in RETENTION_LIMITS]
+
+    for call in module.unread:
+        findings.append(
+            f"module call {call} has no local source this command can read, so a "
+            "lifecycle rule inside it could target a kept bucket unseen"
         )
+    rules = module.lifecycle_rules(values)
+    for rule in rules:
+        if rule.target is None and rule.bucket_name is None:
+            findings.append(
+                f"{rule.resource}: its bucket is `{rule.bucket_expr}`, which this "
+                "command cannot resolve to a bucket, so it may put an expiry rule on "
+                "a kept one; nothing about it was checked"
+            )
+
+    buckets = list(plan.adopted_buckets) + [
+        {"kind": r.kind, "bucket": str(r.physical_id), "resource": ""}
+        for r in plan.resources
+        if r.verdict == ADOPT_BY_PARAMETER
+        and r.old_type in ("aws_s3_bucket", "awscc_s3_bucket")
+    ]
+    for b in buckets:
+        kind = b["kind"]
+        mine = [
+            r
+            for r in rules
+            if (b["resource"] and r.target == b["resource"])
+            or r.bucket_name == b["bucket"]
+        ]
+        expiry_exprs = [(e, r) for r in mine for e in r.expiry]
+        noncurrent_exprs = [(e, r) for r in mine for e in r.noncurrent]
+        unresolved: List[str] = []
+        for r in mine:
+            unresolved += [f"{r.resource}: {u}" for u in r.unreadable]
+        if b["resource"] and module.inline_lifecycle(b["resource"]):
+            unresolved.append(
+                f"aws_s3_bucket.{b['resource']}: an inline `lifecycle_rule`"
+            )
+
+        def days(exprs: List[Tuple[str, LifecycleRules]]) -> List[int]:
+            out = []
+            for e, r in exprs:
+                d = resolve_days(e, values, module, r.scope)
+                if d is None:
+                    unresolved.append(f"{r.resource}: `{e}`")
+                else:
+                    out.append(d)
+            return out
+
+        expiry_days = days(expiry_exprs)
+        noncurrent_days = days(noncurrent_exprs)
+        expiry = min(expiry_days) if expiry_days else None
+        noncurrent = min(noncurrent_days) if noncurrent_days else None
         variables = sorted(
             {
-                m.group(1)
-                for e in exprs
-                for m in [re.fullmatch(r"var\.(\w+)", e.strip())]
-                if m
+                v
+                for e, r in expiry_exprs + noncurrent_exprs
+                for v in [_root_variable(module, e, r.scope)]
+                if v
             }
         )
-        row = {
-            "kind": b["kind"],
+        checked: List[str] = []
+        age = _age_days(now, oldest_object(s3, b["bucket"]))
+        checked.append(
+            "current objects (ListObjectsV2): "
+            + ("none" if age is None else f"oldest is {age} days old")
+        )
+        status = s3.get_bucket_versioning(Bucket=b["bucket"]).get("Status")
+        noncurrent_age: Optional[int] = None
+        if status in ("Enabled", "Suspended"):
+            noncurrent_age = _age_days(now, oldest_noncurrent(s3, b["bucket"]))
+            checked.append(
+                f"noncurrent versions (versioning {status}, ListObjectVersions): "
+                + (
+                    "none"
+                    if noncurrent_age is None
+                    else f"the oldest became noncurrent {noncurrent_age} days ago"
+                )
+            )
+        else:
+            checked.append(
+                "noncurrent versions: none, the bucket has never been versioned"
+            )
+
+        problems: List[str] = []
+        how = (
+            "raise " + " or ".join(variables) + " (as its CloudFormation parameter "
+            "in --parameters, then run `plan` again) to at least {age}"
+            if variables
+            else "the rule's period is fixed in the module, so copy the objects you "
+            "need elsewhere first"
+        )
+        if expiry is not None and age is not None and age > expiry:
+            problems.append(
+                f"{kind} {b['bucket']}: its oldest object is {age} days old and the "
+                f"module expires objects after {expiry} days, so the first apply would "
+                f"start deleting it. To keep them, {how.format(age=age)}; or pass "
+                f"--accept-expiry {kind}."
+            )
+        if (
+            noncurrent is not None
+            and noncurrent_age is not None
+            and (noncurrent_age > noncurrent)
+        ):
+            problems.append(
+                f"{kind} {b['bucket']}: a noncurrent object version has been "
+                f"noncurrent for {noncurrent_age} days and the module expires "
+                f"noncurrent versions after {noncurrent} days, so the first apply "
+                f"would start deleting old versions. To keep them, "
+                f"{how.format(age=noncurrent_age)}; or pass --accept-expiry {kind}."
+            )
+        if unresolved:
+            problems.append(
+                f"{kind} {b['bucket']}: the module's lifecycle rules include "
+                + "; ".join(unresolved)
+                + ", which this command cannot evaluate, so it cannot tell whether "
+                "the first apply deletes objects already in the bucket. Find the "
+                f"period yourself, then pass --accept-expiry {kind} to adopt it anyway."
+            )
+        row: Dict[str, Any] = {
+            "kind": kind,
             "bucket": b["bucket"],
             "expiryDays": expiry,
             "oldestObjectAgeDays": age,
+            "noncurrentExpiryDays": noncurrent,
+            "versioning": status or "never enabled",
+            "oldestNoncurrentAgeDays": noncurrent_age,
+            "unresolved": unresolved,
             "variables": variables,
-            "ok": expiry is None
-            or age is None
-            or age <= expiry
-            or b["kind"] in accepted,
+            "checked": checked,
+            "ok": not problems or kind in accepted,
         }
-        if expiry is not None and age is not None and age > expiry:
-            how = (
-                "raise " + " or ".join(variables) + " (as its CloudFormation parameter "
-                "in --parameters) to at least " + str(age)
-                if variables
-                else "the rule's period is fixed in the module, so copy the objects you "
-                "need elsewhere first"
-            )
-            note = (
-                f"accepted with --accept-expiry {b['kind']}"
-                if b["kind"] in accepted
-                else ""
-            )
-            msg = (
-                f"{b['kind']} {b['bucket']}: its oldest object is {age} days old and the "
-                f"module expires objects after {expiry} days, so the first apply would "
-                f"start deleting it. To keep them, {how}; or pass --accept-expiry "
-                f"{b['kind']}."
-            )
-            if not note:
-                findings.append(msg)
-            row["note"] = note or msg
+        if problems and kind in accepted:
+            row["note"] = f"accepted with --accept-expiry {kind}: " + " ".join(problems)
+        elif problems:
+            row["note"] = " ".join(problems)
+            findings.extend(problems)
         rows.append(row)
-    return rows, findings
+    return rows, findings, notes
 
 
 # ---------------------------------------------------------------------------
 # Phase: freeze
 # ---------------------------------------------------------------------------
 
-TERMINAL_STATUSES = frozenset({"COMPLETED", "FAILED", "ABORTED"})
+# Statuses a document ends on (idp_common.models.Status). A workflow can also end
+# on HITL_IN_PROGRESS, but that document is waiting for a reviewer, so it is
+# reported on its own rather than treated as finished.
+TERMINAL_STATUSES = frozenset(
+    {
+        "COMPLETED",
+        "FAILED",
+        "ABORTED",
+        "REJECTED",
+        "REDACTED_SUPERSEDED",
+        "QUARANTINED",
+        "MALWARE_SCAN_FAILED",
+    }
+)
+REVIEW_STATUSES = frozenset({"HITL_IN_PROGRESS"})
 
 
 def upload_rule_states(plan: MigrationPlan, events) -> List[Dict[str, str]]:
@@ -1291,35 +1828,71 @@ def upload_rule_states(plan: MigrationPlan, events) -> List[Dict[str, str]]:
     return out
 
 
-def in_flight_documents(
-    table_name: str, ddb, limit: int = 1000
-) -> List[Dict[str, str]]:
-    """Documents whose ``ObjectStatus`` is not terminal, from a tracking table scan."""
-    found: List[Dict[str, str]] = []
+NO_UPLOAD_RULE = (
+    "the old state has no EventBridge rule on the input bucket, so this command "
+    "cannot stop the old deployment's uploads; find what starts its workflows "
+    "before going on"
+)
+
+
+@dataclass
+class DocumentScan:
+    """The tracking table's documents that are not finished, from a full scan."""
+
+    in_flight: List[Dict[str, str]] = field(default_factory=list)
+    in_review: List[Dict[str, str]] = field(default_factory=list)
+    ignored: List[Dict[str, str]] = field(default_factory=list)
+    scanned: int = 0
+
+    def findings(self) -> List[str]:
+        out = []
+        if self.in_flight:
+            out.append(
+                f"{len(self.in_flight)} document(s) are still being processed by the "
+                "old deployment ("
+                + ", ".join(sorted({d["status"] for d in self.in_flight}))
+                + "); wait for them (freeze --wait), or name each one you have "
+                "decided to abandon with --ignore-document"
+            )
+        if self.in_review:
+            out.append(
+                f"{len(self.in_review)} document(s) are waiting for human review "
+                "(HITL_IN_PROGRESS). Whether the new deployment can complete a "
+                "review the old one started has not been verified; finish or reject "
+                "the reviews in the old web UI first, or name each document with "
+                "--ignore-document"
+            )
+        return out
+
+
+def scan_documents(table_name: str, ddb, ignore: Iterable[str] = ()) -> DocumentScan:
+    """Every ``doc#`` row of a tracking table whose ``ObjectStatus`` is not
+    terminal, split into in flight and awaiting review. Paginates the whole
+    table; ``ignore`` (object keys) moves a document to ``ignored``."""
+    skip = set(ignore)
+    scan = DocumentScan()
     kwargs: Dict[str, Any] = {
         "TableName": table_name,
-        "FilterExpression": "begins_with(PK, :doc) AND NOT (ObjectStatus IN (:c, :f, :a))",
-        "ExpressionAttributeValues": {
-            ":doc": {"S": "doc#"},
-            ":c": {"S": "COMPLETED"},
-            ":f": {"S": "FAILED"},
-            ":a": {"S": "ABORTED"},
-        },
+        "FilterExpression": "begins_with(PK, :doc)",
+        "ExpressionAttributeValues": {":doc": {"S": "doc#"}},
         "ProjectionExpression": "PK, ObjectStatus",
     }
     while True:
         resp = ddb.scan(**kwargs)
         for item in resp.get("Items", []):
-            found.append(
-                {
-                    "key": item["PK"]["S"][len("doc#") :],
-                    "status": (item.get("ObjectStatus") or {}).get("S", ""),
-                }
-            )
-            if len(found) >= limit:
-                return found
+            scan.scanned += 1
+            status = (item.get("ObjectStatus") or {}).get("S", "")
+            if status in TERMINAL_STATUSES:
+                continue
+            row = {"key": item["PK"]["S"][len("doc#") :], "status": status}
+            if row["key"] in skip:
+                scan.ignored.append(row)
+            elif status in REVIEW_STATUSES:
+                scan.in_review.append(row)
+            else:
+                scan.in_flight.append(row)
         if "LastEvaluatedKey" not in resp:
-            return found
+            return scan
         kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
 
 
@@ -1375,6 +1948,28 @@ def config_fix_targets(items: List[Dict[str, Any]]) -> Tuple[List[str], List[str
 
 SCHEMA_CORE = ("attribute_data_type", "mutable", "required")
 
+# The bounds Cognito reports for an attribute created without them. Measured for
+# `email` in the live run (min_length "0", max_length "2048"); the same defaults
+# for a custom string attribute are Cognito's documented behaviour, not measured.
+# Number attributes have no default bounds.
+CONSTRAINT_DEFAULTS = {
+    "string_attribute_constraints": {"min_length": "0", "max_length": "2048"},
+    "number_attribute_constraints": {"min_value": "", "max_value": ""},
+}
+
+
+def _effective_bounds(item: Dict[str, Any], key: str) -> Dict[str, str]:
+    """An item's bounds with null, empty and absent all read as Cognito's
+    default, so only a real difference in a bound remains."""
+    blocks = item.get(key) or []
+    block = blocks[0] if blocks else {}
+    out = {}
+    for bound, default in CONSTRAINT_DEFAULTS[key].items():
+        value = block.get(bound)
+        value = "" if value is None else str(value)
+        out[bound] = value or default
+    return out
+
 
 def _module_created_form(item: Dict[str, Any]) -> Dict[str, Any]:
     """A schema item as the provider records it for a pool it created.
@@ -1408,6 +2003,11 @@ def normalise_pool_schema(
 
     A conflict is a difference Cognito cannot apply (data type, mutability,
     required) -- rewriting state would only hide it, so it is refused instead.
+    So is a real difference in a string or number bound: the rewrite may turn a
+    null, empty or absent bound into the form the module writes, or a bound equal
+    to Cognito's default into the module's "none", and nothing else, because
+    rewriting a bound the pool enforces would record in state a limit the pool
+    does not have.
     """
     desired = {d["name"]: _module_created_form(d) for d in desired_schema}
     out: List[Dict[str, Any]] = []
@@ -1433,6 +2033,25 @@ def normalise_pool_schema(
                 + ". Cognito cannot change this; set the module parameter that controls "
                 "it to the pool's value"
                 + (" (ExternalIdPEmailMutable for email)" if name == "email" else "")
+            )
+            continue
+        bounds = [
+            f"{key} {bound} is {have[bound]!r} in the pool and {wanted[bound]!r} "
+            "in the module"
+            for key in CONSTRAINT_DEFAULTS
+            for have, wanted in [
+                (_effective_bounds(item, key), _effective_bounds(want, key))
+            ]
+            for bound in CONSTRAINT_DEFAULTS[key]
+            if have[bound] != wanted[bound]
+        ]
+        if bounds:
+            conflicts.append(
+                f"schema attribute {name!r}: "
+                + ", ".join(bounds)
+                + " (an empty bound read as Cognito's default). Cognito cannot "
+                "change an attribute's bounds, so the state is not rewritten; the "
+                "module would have to declare the pool's bounds"
             )
             continue
         if item != want:
@@ -1508,16 +2127,298 @@ def _split_module(address: str) -> Tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
+_MISSING: Any = object()
+
+
+def _get(obj: Any, path: Sequence[str]) -> Any:
+    for part in path:
+        if isinstance(obj, list):
+            if not part.isdigit() or int(part) >= len(obj):
+                return _MISSING
+            obj = obj[int(part)]
+        elif isinstance(obj, dict):
+            if part not in obj:
+                return _MISSING
+            obj = obj[part]
+        else:
+            return _MISSING
+    return obj
+
+
+def _unknown(tree: Any, path: Sequence[str]) -> bool:
+    """Whether ``after_unknown`` marks ``path`` (or a parent of it) unknown."""
+    for part in path:
+        if tree is True:
+            return True
+        tree = _get(tree, [part])
+        if tree is _MISSING:
+            return False
+    return tree is True or (isinstance(tree, (dict, list)) and _any_true(tree))
+
+
+def _any_true(tree: Any) -> bool:
+    if tree is True:
+        return True
+    if isinstance(tree, dict):
+        return any(_any_true(v) for v in tree.values())
+    if isinstance(tree, list):
+        return any(_any_true(v) for v in tree)
+    return False
+
+
+def _on(value: Any) -> bool:
+    return value is True
+
+
+def _names(items: Any) -> set:
+    return {i.get("name") for i in items or [] if isinstance(i, dict)}
+
+
+_MFA_RANK = {"OFF": 0, "OPTIONAL": 1, "ON": 2}
+
+
+def _ttl(value: Any) -> Tuple[bool, str]:
+    block = (value or [{}])[0] if isinstance(value, list) else {}
+    enabled = block.get("enabled") is True
+    return enabled, (block.get("attribute_name") or "") if enabled else ""
+
+
+def _lambda_triggers(value: Any) -> Dict[str, Any]:
+    block = (value or [{}])[0] if isinstance(value, list) else {}
+    return {k: v for k, v in (block or {}).items() if v not in (None, "", [], {})}
+
+
+def _kms_keys(rules: Any) -> List[Tuple[str, str]]:
+    out = []
+    for rule in rules or []:
+        for d in (rule or {}).get("apply_server_side_encryption_by_default") or []:
+            out.append((d.get("sse_algorithm") or "", d.get("kms_master_key_id") or ""))
+    return out
+
+
+@dataclass(frozen=True)
+class RefusedChange:
+    """One transition of one attribute that the adoption plan must not make.
+
+    ``refuse(before, after, creating, after_unknown)`` gets the attribute's value
+    before and after (``None`` before when the resource is being created, which
+    happens only for a setting resource on a kept bucket) and whether the plan
+    marks the after value unknown.
+    """
+
+    rule: str
+    types: Tuple[str, ...]
+    attribute: str
+    refuse: Callable[[Any, Any, bool, bool], bool]
+    reason: str
+
+
+_S3_PAB = "aws_s3_bucket_public_access_block"
+
+REFUSED_CHANGES: Tuple[RefusedChange, ...] = (
+    RefusedChange(
+        "pitr-off",
+        ("aws_dynamodb_table",),
+        "point_in_time_recovery",
+        lambda b, a, c, u: (
+            _on(_get(b, ["0", "enabled"])) and not _on(_get(a, ["0", "enabled"]))
+        ),
+        "turns point-in-time recovery off",
+    ),
+    RefusedChange(
+        "table-deletion-protection-off",
+        ("aws_dynamodb_table",),
+        "deletion_protection_enabled",
+        lambda b, a, c, u: _on(b) and not _on(a),
+        "turns deletion protection off",
+    ),
+    RefusedChange(
+        "gsi-removed",
+        ("aws_dynamodb_table",),
+        "global_secondary_index",
+        lambda b, a, c, u: not u and bool(_names(b) - _names(a)),
+        "removes a global secondary index",
+    ),
+    RefusedChange(
+        "lsi-removed",
+        ("aws_dynamodb_table",),
+        "local_secondary_index",
+        lambda b, a, c, u: not u and bool(_names(b) - _names(a)),
+        "removes a local secondary index (which replaces the table)",
+    ),
+    RefusedChange(
+        "stream-off",
+        ("aws_dynamodb_table",),
+        "stream_enabled",
+        lambda b, a, c, u: _on(b) and not _on(a),
+        "turns the table's stream off",
+    ),
+    RefusedChange(
+        "ttl-changed",
+        ("aws_dynamodb_table",),
+        "ttl",
+        lambda b, a, c, u: _ttl(b) != _ttl(a),
+        "changes the time-to-live setting (items carrying the new attribute start "
+        "expiring; items carrying the old one stop)",
+    ),
+    RefusedChange(
+        "table-encryption-removed",
+        ("aws_dynamodb_table",),
+        "server_side_encryption",
+        lambda b, a, c, u: (
+            _on(_get(b, ["0", "enabled"])) and not _on(_get(a, ["0", "enabled"]))
+        ),
+        "removes the table's customer-managed encryption",
+    ),
+    RefusedChange(
+        "versioning-suspended",
+        ("aws_s3_bucket_versioning",),
+        "versioning_configuration",
+        lambda b, a, c, u: (
+            _get(a, ["0", "status"]) in ("Suspended", "Disabled")
+            and (c or _get(b, ["0", "status"]) == "Enabled")
+        ),
+        "suspends versioning",
+    ),
+    RefusedChange(
+        "bucket-encryption-key-removed",
+        ("aws_s3_bucket_server_side_encryption_configuration",),
+        "rule",
+        lambda b, a, c, u: (
+            not u
+            and not any(alg.startswith("aws:kms") and key for alg, key in _kms_keys(a))
+            and (c or any(key for _, key in _kms_keys(b)))
+        ),
+        "leaves the bucket with no customer-managed KMS key",
+    ),
+    *(
+        RefusedChange(
+            f"public-access-{attr.replace('_', '-')}-off",
+            (_S3_PAB,),
+            attr,
+            lambda b, a, c, u: not _on(a) and (c or _on(b)),
+            f"turns {attr} off",
+        )
+        for attr in (
+            "block_public_acls",
+            "block_public_policy",
+            "ignore_public_acls",
+            "restrict_public_buckets",
+        )
+    ),
+    RefusedChange(
+        "bucket-force-destroy-on",
+        ("aws_s3_bucket",),
+        "force_destroy",
+        lambda b, a, c, u: _on(a) and not _on(b),
+        "sets force_destroy, so destroying the new deployment would delete every "
+        "object in the bucket",
+    ),
+    RefusedChange(
+        "pool-deletion-protection-off",
+        ("aws_cognito_user_pool",),
+        "deletion_protection",
+        lambda b, a, c, u: b == "ACTIVE" and a != "ACTIVE",
+        "turns the user pool's deletion protection off",
+    ),
+    RefusedChange(
+        "pool-mfa-relaxed",
+        ("aws_cognito_user_pool",),
+        "mfa_configuration",
+        lambda b, a, c, u: (
+            not u and _MFA_RANK.get(str(a), -1) < _MFA_RANK.get(str(b), -1)
+        ),
+        "relaxes multi-factor authentication",
+    ),
+    RefusedChange(
+        "pool-trigger-removed",
+        ("aws_cognito_user_pool",),
+        "lambda_config",
+        lambda b, a, c, u: (
+            not u and bool(set(_lambda_triggers(b)) - set(_lambda_triggers(a)))
+        ),
+        "removes a Lambda trigger (a pre-token trigger maps users to their groups)",
+    ),
+    RefusedChange(
+        "pool-schema-item-removed",
+        ("aws_cognito_user_pool",),
+        "schema",
+        lambda b, a, c, u: not u and bool(_names(b) - _names(a)),
+        "removes a schema attribute, which Cognito refuses",
+    ),
+    RefusedChange(
+        "key-rotation-off",
+        ("awscc_kms_key",),
+        "enable_key_rotation",
+        lambda b, a, c, u: _on(b) and not _on(a),
+        "turns key rotation off",
+    ),
+    RefusedChange(
+        "key-disabled",
+        ("awscc_kms_key",),
+        "enabled",
+        lambda b, a, c, u: _on(b) and a is False,
+        "disables the key, so nothing encrypted with it can be read",
+    ),
+    RefusedChange(
+        "key-deletion-window-shortened",
+        ("awscc_kms_key",),
+        "pending_window_in_days",
+        lambda b, a, c, u: isinstance(b, int) and isinstance(a, int) and a < b,
+        "shortens the key's deletion window",
+    ),
+    RefusedChange(
+        "user-disabled",
+        ("aws_cognito_user",),
+        "enabled",
+        lambda b, a, c, u: _on(b) and a is False,
+        "disables the user",
+    ),
+)
+
+#: Setting resources the table covers on a kept bucket, created or updated.
+_BUCKET_SETTING_CHECKED = frozenset(
+    t for row in REFUSED_CHANGES for t in row.types if t.startswith("aws_s3_bucket_")
+)
+
+
+def _changed_attributes(change: Dict[str, Any]) -> List[str]:
+    before = change.get("before") or {}
+    after = change.get("after") or {}
+    unknown = change.get("after_unknown") or {}
+    return sorted(
+        k
+        for k in set(before) | set(after) | set(unknown)
+        if before.get(k) != after.get(k) or _any_true(unknown.get(k))
+    )
+
+
 def check_adoption_plan(
-    plan_json: Dict[str, Any], plan: MigrationPlan
-) -> Tuple[Dict[str, int], List[str]]:
-    """(counts, findings) for the new deployment's saved plan.
+    plan_json: Dict[str, Any],
+    plan: MigrationPlan,
+    accept_changes: Iterable[str] = (),
+) -> Tuple[Dict[str, int], List[str], List[str]]:
+    """(counts, findings, changes to review) for the new deployment's saved plan.
 
     A good plan imports every resource adopt.tf names (no-op or in-place update,
     never create, replace or delete), finds the user pool already in state with
-    no schema item removed, and destroys nothing at all.
+    no schema item removed, forgets nothing and destroys nothing at all.
+
+    Every adopted resource, and every setting resource the plan creates or
+    updates on a kept bucket, is also read attribute by attribute against
+    :data:`REFUSED_CHANGES`. A refused transition is a finding unless
+    ``accept_changes`` holds ``<address>:<rule>``. An attribute a row checks that
+    the plan does not record at all is a finding too, because the check cannot
+    see it. Every other in-place change to those resources is allowed and
+    returned in the third list for the operator to read.
+
+    A setting resource is recognised by its ``bucket``; an imported bucket's name
+    is known at plan time, so a setting whose ``bucket`` is unknown belongs to a
+    bucket the apply creates.
     """
+    accepted = set(accept_changes)
     findings: List[str] = []
+    review: List[str] = []
     by_address = {rc["address"]: rc for rc in plan_json.get("resource_changes", [])}
     counts = {"import": 0, "add": 0, "change": 0, "destroy": 0}
     for rc in by_address.values():
@@ -1535,6 +2436,79 @@ def check_adoption_plan(
                 + ("replaced" if "create" in actions else "destroyed")
                 + "; an adoption destroys nothing, so stop and find out why"
             )
+        if "forget" in actions:
+            findings.append(
+                f"{rc['address']} would be forgotten (removed from state without "
+                "being destroyed); an adoption forgets nothing, so stop and find out "
+                "why"
+            )
+
+    kept_buckets = {b["bucket"] for b in plan.adopted_buckets} | {
+        str(r.physical_id)
+        for r in plan.resources
+        if r.verdict == ADOPT_BY_PARAMETER
+        and r.old_type in ("aws_s3_bucket", "awscc_s3_bucket")
+    }
+    subjects: List[Tuple[Dict[str, Any], bool]] = []
+    for r in plan.imports:
+        rc = by_address.get(r.new_address or "")
+        if rc is not None:
+            subjects.append((rc, False))
+    for rc in by_address.values():
+        if rc.get("type") not in _BUCKET_SETTING_CHECKED:
+            continue
+        actions = rc["change"]["actions"]
+        if not {"create", "update"} & set(actions):
+            continue
+        after = rc["change"].get("after") or {}
+        before = rc["change"].get("before") or {}
+        if (after.get("bucket") or before.get("bucket")) in kept_buckets:
+            subjects.append((rc, "create" in actions))
+
+    for rc, creating in subjects:
+        change = rc["change"]
+        rows = [row for row in REFUSED_CHANGES if rc.get("type") in row.types]
+        if not rows:
+            continue
+        before = {} if creating else (change.get("before") or {})
+        after = change.get("after") or {}
+        unknown = change.get("after_unknown") or {}
+        for row in rows:
+            attr = row.attribute
+            is_unknown = _unknown(unknown, [attr])
+            if (not creating and attr not in before) or (
+                attr not in after and not is_unknown
+            ):
+                findings.append(
+                    f"{rc['address']}: the plan does not record `{attr}`, so this "
+                    f"command cannot see whether the apply {row.reason}"
+                )
+                continue
+            b = None if creating else before.get(attr)
+            if row.refuse(b, after.get(attr), creating, is_unknown):
+                key = f"{rc['address']}:{row.rule}"
+                if key in accepted:
+                    review.append(f"{rc['address']}: {row.reason} (accepted)")
+                else:
+                    findings.append(
+                        f"{rc['address']}: the apply {row.reason}"
+                        + (
+                            ""
+                            if creating
+                            else f" ({attr}: {b!r} -> {after.get(attr)!r})"
+                        )
+                        + ". Find out why before applying; if it is intended, pass "
+                        f"--accept-change {key}"
+                    )
+        if creating:
+            review.append(
+                f"{rc['address']}: created on kept bucket {after.get('bucket')}"
+            )
+        elif "update" in change["actions"]:
+            attrs = _changed_attributes(change)
+            if attrs:
+                review.append(f"{rc['address']}: changes {', '.join(attrs)}")
+
     for r in plan.imports:
         rc = by_address.get(r.new_address or "")
         if rc is None:
@@ -1546,15 +2520,7 @@ def check_adoption_plan(
                 findings.append(
                     f"{r.new_address} is not in state yet; run `adopt-user-pool` first"
                 )
-            before = {
-                i.get("name")
-                for i in (rc["change"].get("before") or {}).get("schema") or []
-            }
-            after = {
-                i.get("name")
-                for i in (rc["change"].get("after") or {}).get("schema") or []
-            }
-            if before - after or ("update" in actions and _schema_items_change(rc)):
+            if "update" in actions and _schema_items_change(rc):
                 findings.append(
                     f"{r.new_address} would modify or remove existing schema items, "
                     "which Cognito refuses; run `adopt-user-pool --apply` to normalise "
@@ -1572,7 +2538,7 @@ def check_adoption_plan(
             findings.append(
                 f"{r.new_address} plans {actions}, expected an import in place"
             )
-    return counts, findings
+    return counts, findings, review
 
 
 def _schema_items_change(rc: Dict[str, Any]) -> bool:
@@ -1607,8 +2573,71 @@ _IDENTITY_ATTRS = ("bucket", "table_name", "key_id", "user_pool_id")
 _PRIMARY_ATTRS = ("id", "name", "arn")
 
 
-def check_destroy_plan(destroy_json: Dict[str, Any], plan: MigrationPlan) -> List[str]:
-    """Deletions in the old deployment's destroy plan that touch something kept."""
+def check_destroy_plan(
+    destroy_json: Dict[str, Any], plan: MigrationPlan
+) -> Tuple[List[str], Dict[str, Any]]:
+    """(findings, details) for the old deployment's destroy plan.
+
+    Refuses, before reading a single change, anything that is not a destroy plan
+    of the old deployment: JSON without ``format_version`` and a non-empty
+    ``resource_changes`` list (a state file, ``{}``, a plan with no changes), a
+    plan Terraform marked ``errored``, a change that is not a delete (or a no-op),
+    and a plan none of whose deletions is an address the migration plan recorded
+    for the old deployment. Then a finding for each deletion of an address the
+    migration detached (the detach did not happen), of an address the migration
+    plan never saw (the old deployment changed since), and of anything that names
+    a kept bucket, table, key, pool or user.
+    """
+    if not isinstance(destroy_json, dict):
+        return ["this is not a Terraform plan (expected a JSON object)"], {}
+    if "resources" in destroy_json and "version" in destroy_json:
+        return [
+            "this is a Terraform state file, not a plan; pass `terraform show -json` "
+            "of `terraform plan -destroy -out=<file>` in the old deployment's "
+            "directory"
+        ], {}
+    changes = destroy_json.get("resource_changes")
+    if not destroy_json.get("format_version") or not isinstance(changes, list):
+        return [
+            "this is not `terraform show -json` output of a saved plan (no "
+            "`format_version` and `resource_changes`)"
+        ], {}
+    if destroy_json.get("errored"):
+        return [
+            "Terraform marked this plan as errored, so it may not list everything "
+            "the destroy would delete; fix the error and plan again"
+        ], {}
+    managed = [rc for rc in changes if rc.get("mode", "managed") == "managed"]
+    if not managed:
+        return [
+            "the plan has no resource changes, so it shows nothing about what the "
+            "destroy deletes; is this the destroy plan of the old deployment?"
+        ], {}
+
+    recorded = {r.old_address: r for r in plan.resources if r.old_address}
+    findings: List[str] = []
+    deletes: List[Dict[str, Any]] = []
+    for rc in managed:
+        actions = rc.get("change", {}).get("actions") or []
+        if actions == ["no-op"]:
+            continue
+        if actions != ["delete"]:
+            findings.append(
+                f"{rc.get('address')} plans {actions}; a destroy plan only deletes, "
+                "so this is not a destroy plan (was it saved with `-destroy`?)"
+            )
+            continue
+        deletes.append(rc)
+    if findings:
+        return findings, {"deletions": len(deletes)}
+    covered = [rc for rc in deletes if rc.get("address") in recorded]
+    if not covered:
+        return [
+            "none of this plan's deletions is an address the migration plan recorded "
+            "for the old deployment, so this is not the old deployment's destroy "
+            "plan (or the plan was built from another state)"
+        ], {"deletions": len(deletes)}
+
     kept = {
         str(r.physical_id)
         for r in plan.resources
@@ -1616,28 +2645,53 @@ def check_destroy_plan(destroy_json: Dict[str, Any], plan: MigrationPlan) -> Lis
     }
     if plan.pool_id:
         kept.add(plan.pool_id)
-    findings = []
-    for rc in destroy_json.get("resource_changes", []):
-        if "delete" not in rc["change"]["actions"]:
+    unrecorded: List[str] = []
+    for rc in deletes:
+        address = rc.get("address")
+        planned = recorded.get(address)
+        if planned is not None and planned.detach:
+            findings.append(
+                f"{address} is in the destroy plan, but the migration detached it "
+                "from the old state; run `detach --apply` first"
+            )
             continue
+        if planned is None:
+            unrecorded.append(address)
         before = rc["change"].get("before") or {}
         attrs = list(_IDENTITY_ATTRS)
-        if rc["type"] in _POOL_REFERENCE_OK:
+        if rc.get("type") in _POOL_REFERENCE_OK:
             attrs.remove("user_pool_id")
-        if rc["type"] in STATEFUL_TYPES:
+        if rc.get("type") in STATEFUL_TYPES:
             attrs += list(_PRIMARY_ATTRS)
         hits = sorted({str(before.get(a)) for a in attrs if str(before.get(a)) in kept})
-        if not hits and rc["type"] in STATEFUL_TYPES:
+        if not hits and rc.get("type") in STATEFUL_TYPES:
             # A key or user is identified by an ARN that ends in the kept id.
             hits = sorted(
                 k for k in kept if str(before.get("arn", "")).endswith("/" + k)
             )
         if hits:
             findings.append(
-                f"{rc['address']} ({rc['type']}) is in the destroy plan and touches "
+                f"{address} ({rc.get('type')}) is in the destroy plan and touches "
                 f"kept {', '.join(hits)}"
             )
-    return findings
+    for address in unrecorded:
+        findings.append(
+            f"{address} is in the destroy plan but not in the migration plan, so "
+            "nothing decided whether it may be destroyed; the old deployment has "
+            "changed since `plan` ran, so run `plan` again from its current state"
+        )
+    not_in_destroy = sorted(
+        a
+        for a, r in recorded.items()
+        if not r.detach
+        and a not in {rc.get("address") for rc in deletes}
+        and not a.startswith("(")
+    )
+    return findings, {
+        "deletions": len(deletes),
+        "recordedDeletions": len(covered),
+        "recordedNotInDestroyPlan": not_in_destroy,
+    }
 
 
 def timestamp() -> str:

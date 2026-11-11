@@ -56,12 +56,16 @@ You need:
 - Terraform 1.7 or later (or OpenTofu), and `idp-cli` from this repository (see
   [IDP CLI](./idp-cli.md#installation)).
 - Credentials that can read and change both deployments' resources in the account,
-  and access to the old deployment's Terraform directory and state.
+  and access to the old deployment's Terraform directory and state. If Terraform
+  should assume a role (`--terraform-assume-role-arn` on `plan`), the command's own
+  AWS calls in every phase assume the same role, read back from the providers in the
+  new deployment's `main.tf`, so they act in the account Terraform deploys to.
 - A release of the module that adopts an existing user pool without replacing it.
   Cognito fixes a pool's username case-sensitivity when the pool is created, and an
   older module plans to replace a pool whose setting differs from its own, which
   would delete every user. The change that prevents this is in [pull request
-  #1848](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/1848).
+  #1848](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/1848),
+  which ships in the first release after 0.6.14; no published release has it yet.
   With an older module the `apply` phase finds the replacement and refuses.
 - A name for the new deployment that no CloudFormation stack uses (at most 25
   characters), and the old deployment's admin username.
@@ -105,7 +109,8 @@ recreated, or kept but managed by neither deployment. It writes the new deployme
 - `genai-idp-terraform-migration/migration-plan.json`, which the later phases read;
 - `genai-idp-terraform-migration/detach-addresses.txt`, the old-state addresses to
   remove from the old state at the end, and prints the exact `terraform state`
-  commands for it.
+  commands for it (the state backup they write goes into
+  `genai-idp-terraform-migration/`, readable by you only).
 
 It changes nothing in AWS. It reads the old user pool, to find out whether a user
 named exactly `--admin-email` exists there: if one does, it is adopted as the new
@@ -121,10 +126,23 @@ other parameters you want with `--parameters`, as for `idp-cli deploy`; the phas
 refuses a value that contradicts one it derived.
 
 `plan` **refuses**, and writes no adoption files, when the old state holds a resource
-that holds data and has no verdict, or a resource the command does not handle yet (a
+that holds data and has no verdict, a resource the command does not handle yet (a
 fine-tuning data bucket, or a Cognito hosted-UI domain, which would block the
-module's own domain on the adopted pool). It names each one. Nothing is skipped
-silently.
+module's own domain on the adopted pool), or a resource of a type it does not know to
+be safe to destroy with the old deployment. The types it knows are every type the
+upstream repository declares at tag `v0.6.9-tf.0`, except a VPC and its parts (the
+new deployment may have been pointed at them) and `aws_cloudformation_stack` (its
+custom resources run on delete). It also refuses a setting resource whose state does
+not record which bucket, table, key or pool it belongs to. It names each one. Nothing
+is skipped silently.
+
+Some resources are kept rather than destroyed, so that destroying the old deployment
+does not take something the new one uses: the KMS key's alias, settings of the
+adopted user pool (UI customisation, resource servers, risk configuration), BDA
+blueprints, and any `aws_lambda_invocation` whose `lifecycle_scope` is not
+`CREATE_ONLY`, because destroying one of those invokes its function with a delete
+action (upstream's BDA OCR project manager does exactly that). Each is detached from
+the old state and left in the account, managed by neither deployment.
 
 Read the printed table before going on. Each adopted resource shows its old and new
 address and whether the live run measured it.
@@ -145,15 +163,36 @@ input, output, test-set and discovery buckets expire objects after 365 days
 the access-log bucket after a fixed 180 days. The old deployment may have had no
 such rule.
 
-This phase lists every object in each adopted bucket, finds the oldest, and fails
-for each bucket that holds an object older than the rule. For a rule set by a
-parameter, raise the parameter: run `plan` again with, for example,
-`--parameters DataRetentionInDays=1000`. For a fixed rule, copy the objects you need
-elsewhere first, then pass `--accept-expiry <kind>` here and to `apply`. Versioned
-buckets also expire noncurrent versions on the same schedule; those are not checked.
+This phase reads every lifecycle configuration in the installed module, at any
+module depth, and works out which bucket each one targets and the period of each
+rule. Then, for each bucket the migration keeps (adopted, or named in
+`ReportingBucketName`), it lists every object and finds the oldest, and for a
+versioned bucket it lists every object version and finds the one that has been
+noncurrent longest (dated by the version or delete marker that superseded it). It
+fails for each bucket that holds an object, or a noncurrent version, older than the
+shortest rule the module would put on it. For a rule set by a parameter, raise the
+parameter: run `plan` again with, for example, `--parameters
+DataRetentionInDays=1000`. For a fixed rule, copy the objects you need elsewhere
+first, then pass `--accept-expiry <kind>` here and to `apply`.
+
+It also fails when it cannot see what it is checking:
+
+- a rule whose period is not a number or a variable it can follow (for example
+  `local.x`, an `expiration` with a `date`, or a `dynamic` block), or an inline
+  `lifecycle_rule` on a kept bucket. Find the period yourself, then pass
+  `--accept-expiry <kind>` for that bucket;
+- a lifecycle configuration whose `bucket` it cannot resolve to a bucket, or a module
+  call whose source is not a local directory it can read. Either could put a rule on
+  a kept bucket, and there is no override, because nothing names the bucket to accept.
+
+The result says what it did not check: rule filters (each rule is treated as covering
+the whole bucket, so a finding may be stricter than the rule),
+`newer_noncurrent_versions`, storage-class transitions and incomplete multipart
+uploads, and the bucket's current lifecycle configuration, which the module's
+replaces.
 
 It reads only. Listing a large bucket takes time and costs one request per 1,000
-objects.
+objects, or per 1,000 versions for a versioned bucket.
 
 ### 3. Freeze the old deployment
 
@@ -164,10 +203,21 @@ idp-cli terraform migrate-from-genai-idp-terraform freeze \
 
 Once the new deployment adopts the input bucket, both deployments would receive its
 upload events and process every document twice. `freeze --apply` disables the old
-deployment's EventBridge rule on the input bucket. `--wait` then polls the tracking
-table until no document is in a non-final status (anything other than COMPLETED,
-FAILED or ABORTED), for up to `--timeout` seconds (default 1800). Without `--apply`
-the phase only reports the rule and the documents in flight.
+deployment's EventBridge rule on the input bucket. It then scans the whole tracking
+table. A document is finished when its status is COMPLETED, FAILED, ABORTED,
+REJECTED, REDACTED_SUPERSEDED, QUARANTINED or MALWARE_SCAN_FAILED; a document in
+HITL_IN_PROGRESS is waiting for a reviewer and is reported separately, because
+whether the new deployment can complete a review the old one started has not been
+verified, so finish or reject those reviews in the old web UI first. Every other
+document is in flight. `--wait` polls until none is in flight or awaiting review, for
+up to `--timeout` seconds (default 1800). A document you have decided to abandon can
+be named with `--ignore-document <object key>` (repeatable, here and on `apply`); it
+is listed but does not block. Without `--apply` the phase only reports the rule and
+the documents.
+
+When the old state has no EventBridge rule on the input bucket, `freeze` (and later
+`apply`) fails, because the command then cannot tell what starts the old
+deployment's workflows.
 
 **From this step on, never run `terraform apply` in the old deployment's directory.**
 Its state still records the rule as enabled, and an apply would turn it back on and
@@ -252,11 +302,12 @@ idp-cli terraform migrate-from-genai-idp-terraform apply \
     --stack-name my-idp --region us-west-2 --apply
 ```
 
-`apply` first checks the earlier phases again: no adopted bucket would expire objects
-(unless accepted with `--accept-expiry`), the old upload rule is disabled, nothing is
-in flight, and the configuration counters are gone. It then saves a plan in the new
-deployment's directory, checks it, and with `--apply` applies exactly that saved plan.
-The plan file is deleted afterwards, because it holds the variable values.
+`apply` first checks the earlier phases again: no kept bucket would expire objects
+(unless accepted with `--accept-expiry`), the old upload rule exists and is disabled,
+nothing is in flight or awaiting review (but the documents named with
+`--ignore-document`), and the configuration counters are gone. It then saves a plan
+in the new deployment's directory, checks it, and with `--apply` applies exactly that
+saved plan. The plan file is deleted afterwards, because it holds the variable values.
 
 A good plan has these properties, and the phase refuses any plan without them:
 
@@ -267,7 +318,21 @@ A good plan has these properties, and the phase refuses any plan without them:
   the module's encryption, logging, lifecycle and notification settings.
 - The user pool is already in state, and its update removes or modifies no existing
   schema item.
-- **Nothing is destroyed or replaced**: `0 to destroy`. An adoption has no reason to
+- No adopted resource, and no setting resource the plan creates or updates on a kept
+  bucket, loses a protection. The phase compares each one's `before` and `after` and
+  refuses, among others: point-in-time recovery or deletion protection turned off, a
+  secondary index removed, a stream turned off or the time-to-live setting changed on
+  a table; versioning suspended, the KMS key removed, a public-access block relaxed or
+  `force_destroy` set on a bucket; deletion protection off, multi-factor
+  authentication relaxed, a Lambda trigger or a schema attribute removed on the user
+  pool; key rotation off, the key disabled or its deletion window shortened. The full
+  list is `REFUSED_CHANGES` in `lib/idp_sdk/idp_sdk/_core/terraform_migrate.py`. An
+  attribute one of these checks reads that the plan does not record is refused too.
+  Each finding names the flag that accepts it, `--accept-change <address>:<rule>`, for
+  a change you have reviewed and intend. Every other in-place change to those
+  resources is allowed and printed under "In-place changes to review"; read it.
+- **Nothing is destroyed, replaced or forgotten**: `0 to destroy`, and no resource
+  removed from state by a `removed` block. An adoption has no reason to
   delete anything. Any replace or destroy, of an adopted resource above all, means the
   new deployment would delete data the old deployment owns, so stop and find out why
   rather than working around it. The usual causes are a module that predates the
@@ -281,8 +346,10 @@ The apply is not rolled back if it fails part way, as for any Terraform apply. F
 the cause and run `apply` again; it re-plans from what was created.
 
 After a successful apply, delete `adopt.tf` (keep a copy if you like). Later updates
-of the new deployment use `idp-cli deploy --terraform` from the same directory, as for
-any Terraform deployment.
+of the new deployment are meant to use `idp-cli deploy --terraform` from the same
+directory, as for any Terraform deployment. **This is unverified**: whether the first
+such deploy after the schema rewrite in step 5 plans cleanly against the adopted user
+pool has not been measured yet. Run it without applying first and read the plan.
 
 ### 7. Verify the new deployment
 
@@ -317,7 +384,10 @@ resources kept but unmanaged (such as the BDA project), and the settings resourc
 each kept bucket and table (public-access blocks, encryption, CORS, notifications,
 lifecycle rules, bucket policies), because destroying one of those strips that setting
 from the bucket even though the bucket stays. It refuses until the new deployment's
-state holds every adopted resource. With `--apply` it saves the old state to
+state holds every adopted resource, and refuses an old directory whose state is not
+the one `plan` read (its lineage differs) or holds none of the addresses to detach
+(either the detach already ran, or it is the wrong directory). With `--apply` it saves
+the old state to
 `genai-idp-terraform-migration/old-state-backup-before-detach-<time>.tfstate` first,
 then runs `terraform state rm` in the old directory.
 
@@ -336,11 +406,18 @@ idp-cli terraform migrate-from-genai-idp-terraform check-destroy \
     --stack-name my-idp --region us-west-2 --destroy-plan destroy-plan.json
 ```
 
-`check-destroy` fails if the plan deletes anything the migration kept: an adopted or
-kept bucket, table, key, user pool, or BDA project, a setting on one of those, or a
-user or group membership in the adopted pool. The old deployment's own app client,
-identity pool and WAF association are expected in the plan. When it passes, apply the
-saved destroy plan in the old directory (`terraform apply destroy.tfplan`).
+`check-destroy` first refuses anything that is not the old deployment's destroy plan:
+a file without `format_version` and a non-empty `resource_changes` (a state file, an
+empty object), a plan Terraform marked as errored, a plan with any change other than
+a delete, and a plan none of whose deletions is an address `plan` recorded for the old
+deployment. It then fails if the plan deletes anything the migration kept: an address
+that was to be detached (the detach did not run), an adopted or kept bucket, table,
+key, user pool, or BDA project, a setting on one of those, or a user or group
+membership in the adopted pool. It also fails on a deletion of an address `plan`
+never saw, because nothing decided whether that may be destroyed; run `plan` again.
+The old deployment's own app client, identity pool and WAF association are expected
+in the plan. When it passes, apply the saved destroy plan in the old directory
+(`terraform apply destroy.tfplan`).
 
 The upstream repository documents how its resources are deleted, including deletion
 protection on its Cognito resources. The adopted pool is no longer in the old state,
@@ -363,6 +440,7 @@ unmanaged** means it stays in the account, managed by neither.
 | Access-log bucket | Adopt (fixed 180-day expiry) | `aws_s3_bucket.logging_bucket` | inferred |
 | Reporting bucket | Kept by naming it in `ReportingBucketName` | none (not imported) | inferred |
 | KMS key | Adopt; the module's key policy replaces the old one | `awscc_kms_key.customer_managed_encryption_key` | measured |
+| KMS key alias | Keep unmanaged, still pointing at the adopted key | none | inferred |
 | Tracking table | Adopt; the module's second index builds on adoption | `aws_dynamodb_table.tracking_table` | measured |
 | Configuration table | Adopt after `fix-config` | `aws_dynamodb_table.configuration_table` | measured |
 | Users table | Adopt | `aws_dynamodb_table.users_table` | measured |
@@ -405,7 +483,9 @@ one.
   rewrite settings on resources the new deployment now owns.
 - **Agent jobs keep their old time-to-live attribute.** The old agent jobs table
   expires rows on `expiresAfter`; the module sets `ExpiresAfter`, so rows written
-  before the migration no longer expire.
+  before the migration no longer expire. `apply` refuses that time-to-live change
+  until you accept it with `--accept-change
+  module.idp.aws_dynamodb_table.agent_table:ttl-changed`.
 - **Some history does not carry over**: discovery jobs, test-set definitions,
   installed features, and the old knowledge base's index (re-sync it).
 

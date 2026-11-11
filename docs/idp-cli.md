@@ -917,11 +917,11 @@ changes something only lists the changes unless given `--apply`, and every phase
 | Phase | Changes | Options |
 |---|---|---|
 | `plan` | Local files only: `main.tf`, `terraform.tfvars`, `adopt.tf` and `genai-idp-terraform-migration/`; runs `terraform init` | `--old-state` (the old `terraform.tfstate` or `terraform state pull` output), `--admin-email` (an existing user of exactly this name in the old pool is adopted), `--parameters`, `--terraform-module-url` (default: the region's latest module), `--terraform-bin`, `--terraform-assume-role-arn` |
-| `check-retention` | Nothing (lists every object in each adopted bucket) | `--accept-expiry KIND` (repeatable) |
-| `freeze` | Disables the old deployment's EventBridge upload rule | `--apply`, `--wait`, `--timeout` (seconds, default 1800) |
+| `check-retention` | Nothing (lists every object, and every object version of a versioned bucket, in each kept bucket) | `--accept-expiry KIND` (repeatable) |
+| `freeze` | Disables the old deployment's EventBridge upload rule | `--apply`, `--wait`, `--timeout` (seconds, default 1800), `--ignore-document KEY` (repeatable) |
 | `fix-config` | Backs up, then removes `LatestRevision` and `PublishedRevision` from the old `Config#` rows | `--apply`, `--restore <backup>` |
 | `adopt-user-pool` | `terraform import` of the user pool, then a backed-up rewrite of its `schema` in the new state | `--apply`, `--terraform-bin` |
-| `apply` | Applies the checked adoption plan | `--apply`, `--accept-expiry KIND`, `--terraform-bin` |
+| `apply` | Applies the checked adoption plan | `--apply`, `--accept-expiry KIND`, `--accept-change ADDRESS:RULE`, `--ignore-document KEY` (all repeatable), `--terraform-bin` |
 | `detach` | Backs up the old state, then removes the adopted and kept resources from it | `--old-terraform-dir` (required), `--apply`, `--terraform-bin` |
 | `check-destroy` | Nothing | `--destroy-plan` (`terraform show -json` of the old deployment's `terraform plan -destroy -out=<file>`) |
 
@@ -940,10 +940,18 @@ idp-cli terraform migrate-from-genai-idp-terraform check-destroy --stack-name my
 ```
 
 `plan` refuses, writing no adoption files, when the old state holds a resource that
-holds data and has no verdict, and names each one. `apply` re-checks the earlier
-phases, then refuses a plan in which any adopted resource is not imported in place,
-the user pool is not yet in state or would lose a schema item, or anything at all is
-replaced or destroyed.
+holds data and has no verdict, or a resource of a type it does not know is safe to
+destroy, and names each one. `apply` re-checks the earlier phases, then refuses a plan
+in which any adopted resource is not imported in place, the user pool is not yet in
+state or would lose a schema item, anything at all is replaced, destroyed or
+forgotten, or an adopted resource (or a setting on a kept bucket) would lose a
+protection such as point-in-time recovery, versioning or its KMS key. It lists every
+other in-place change to those resources for you to read. `check-destroy` refuses
+anything but the old deployment's destroy plan.
+
+When `plan` was given `--terraform-assume-role-arn`, every later phase's own AWS calls
+assume the same role (read back from the providers in `main.tf`), so they act in the
+account Terraform deploys to.
 
 ---
 
