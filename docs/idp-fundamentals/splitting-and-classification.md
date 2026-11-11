@@ -81,7 +81,7 @@ or two, and whether the model reads the page text, the page images, or both.
 The accelerator then groups consecutive pages into sections, starting a new section where the
 document class changes or where the page shows that a new document begins, such as a new
 letterhead or "Page 1 of 2". The model can also be shown the neighboring pages as context,
-at extra cost.
+which multiplies the tokens each call reads.
 
 ```mermaid
 flowchart LR
@@ -108,8 +108,8 @@ and 4 both receive *Pay stub*, so they become two sections only if page 4 shows 
 pay stub starts there, such as a new pay period.
 
 **All at once (holistic).** The model reads the whole file in one call and returns the
-sections and their document classes together. Because it sees every page, it can tell where
-one document ends and the next begins even when the two look alike. By default one call
+sections and their document classes together. Because it sees every page, it can compare
+them to decide where one document ends and the next begins. By default one call
 covers up to 20 pages. For a longer file, the accelerator reads it in overlapping 20-page
 windows and merges the results.
 
@@ -159,7 +159,7 @@ both. In the editor these are **Send page text** and **Send page images**.
 | Holistic, one call, with images | *packet* | *Split and classify together* | Text and images |
 | Page by page, one call per page (default) | *page* | *Split and classify together* | Text and images |
 | Detect sections first, then classify | *page* or *packet* | *Split first, then classify each section* | Text and images |
-| Holistic, text only (lowest cost) | *packet* | *Split and classify together* | Text |
+| Holistic, text only (fewest tokens) | *packet* | *Split and classify together* | Text |
 
 For every setting, see
 [How the classification settings are organized](../classification.md#how-the-classification-settings-are-organised).
@@ -171,7 +171,7 @@ page images.** The model sees the whole file at once, which is what it needs to 
 boundaries, and the images give it the visual cues. We have seen strong results with this
 configuration, and in our benchmark it found document boundaries more
 accurately than page-by-page classification (see
-[the benchmark results](#benchmark-results-section-accuracy-and-cost-by-configuration)).
+[the benchmark results](#benchmark-results-accuracy-and-tokens-by-configuration)).
 
 **For complex packets, especially files over about 30 pages, test the alternatives on your
 own files.** Past the 20-page window, a holistic call no longer sees the whole file at once.
@@ -182,58 +182,77 @@ page-by-page classification, using a test set of your own files.
 to *One section*. The accelerator keeps all of a file's pages in one section and gives it the
 document class that most of its pages receive.
 
-## What classification costs, and how page images change the cost
+## How many tokens classification uses, and what drives the count
 
-Classification runs on every page of every file, so at high volume it can become one of the
-largest costs in the pipeline. Four things decide it:
+Classification runs on every page of every file, so at high volume it is one of the largest
+consumers of tokens in the pipeline. On real invoices processed with the default
+configuration, classification used about 15% of all the tokens spent on each document.
+Four things decide how many tokens it uses:
 
-- **Page images.** An image is usually the largest input on a page, about 1,100–4,800 tokens
-  depending on the model and the image size, against a few hundred tokens of text.
-- **Page by page or holistic.** A page-by-page call repeats the instructions and the list of
-  document classes for every page. A holistic call sends them once per file.
+- **Page by page or holistic.** A page-by-page call repeats the instructions, the list of
+  document classes and their descriptions for every page, and the model writes its reasoning
+  for every page. A holistic call sends the instructions once per file and returns one
+  answer.
+- **Page images.** Each image adds input tokens. How many depends on the classification
+  model and the image size: about 240 tokens per page with the default model at the default
+  size in our benchmark, and up to several thousand with other models or larger images.
 - **Neighboring pages as context.** Showing the model one neighbor on each side of a page
-  triples the text and images it reads per call.
-- **The classification model.** A larger model costs many times more per page.
+  triples the text and images each call reads; two neighbors on each side multiply it by
+  five.
+- **The classification model.** Models count tokens differently, especially for images, and
+  larger models charge more for each token.
 
-Measured classification cost per page, on 20 public packets (release 0.6.14, November 2026):
+Measured classification tokens per page, on 20 public packets with the default classification
+model, Amazon Nova 2 Lite (release 0.6.14, November 2026):
 
-| Configuration | Cost per page | Cost per 1,000 pages |
+| Configuration | Input tokens per page | Output tokens per page |
 |---|---|---|
-| Holistic, text only, Amazon Nova 2 Lite | $0.00036 | $0.36 |
-| Holistic, text and images, Amazon Nova 2 Lite | $0.00057 | $0.57 |
-| Page by page, text and images, Amazon Nova 2 Lite (default) | $0.00097 | $0.97 |
-| Page by page, text and images, Claude Sonnet 5 | about $0.017¹ | about $17 |
+| Page by page, text and images (default) | 2,633 | 217 |
+| Page by page, text only | 2,394 | 234 |
+| Holistic, text and images | 1,080 | 40 |
+| Holistic, text only | 844 | 41 |
 
-¹ Measured on single-document statements (`coresynth__classification-model-sonnet5`) and
-corrected for a known pricing error that overstates Claude Sonnet 5 by 1.5×
-([#1830](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1830)).
+Input tokens include the instructions the accelerator serves from the prompt cache, which
+Amazon Bedrock bills at a reduced rate. Source:
+`benchmarks/results/v0.6.14/clsvariants/summary.json`.
 
-With the default classification model, classification was about 3% of the total cost of
-processing a real invoice. The cost grows quickly with a larger model, neighboring-page
-context, or a very high volume of pages. At that scale, compare holistic classification with
-text only against the same configuration with images, and keep images only if your test set
-shows they improve section accuracy for your files. See
-[What each setting costs](../classification.md#what-each-setting-costs).
+What this shows:
+
+- **Holistic classification used about 60% fewer input tokens and 80% fewer output tokens
+  per page** than page-by-page classification, because it sends the instructions once per
+  file and answers once.
+- **Page images added about 240 input tokens per page** with the default model, in either
+  mode.
+
+At very high volume, compare holistic classification with text only against the same
+configuration with images, and keep images if your test set shows they improve boundary
+accuracy for your files. See [What each setting costs](../classification.md#what-each-setting-costs).
 
 ## How to measure section detection and classification on your own files
 
 Ground truth for this step is the page range and document class of every section in each
-file. Three numbers show how well section detection and classification are working:
+file. Four numbers show how well section detection and classification are working:
 
 | Number | Question it answers |
 |---|---|
-| **Page accuracy** | What share of pages received the right document class? |
-| **Section accuracy** | What share of sections came back with exactly the right pages **and** the right document class? Extraction depends on this number. |
-| **Over-splits and merges** | When a section is wrong, was one document cut into several sections, or were several documents joined into one? |
+| **Page accuracy** | What share of pages received the right document class, whatever section they landed in? |
+| **Boundary accuracy** | What share of the true sections came back with exactly the right page range? The document class is not checked. |
+| **Label accuracy** | Of the sections with the right page range, what share also received the right document class? |
+| **Over-splits and merges** | When a page range is wrong, was one document cut into several sections, or were several documents joined into one? |
 
-Stickler reports page accuracy as *page-level accuracy* and section accuracy as *split
-accuracy*, with and without page order. See
-[Document split classification metrics](../evaluation.md#document-split-classification-metrics).
+Boundary accuracy measures section detection and label accuracy measures classification, so
+together they show which of the two jobs needs work. Extraction needs both: a section with the
+right pages and the right document class. Page accuracy alone can look high while boundaries
+are wrong, because a page can carry the right document class inside the wrong section.
+
+Stickler reports page accuracy as *page-level accuracy*, and reports *split accuracy*, which
+counts a section as correct only when its page range and its document class are both right.
+See [Document split classification metrics](../evaluation.md#document-split-classification-metrics).
 To build the ground truth, see [Measure with ground truth](index.md#4-measure-with-ground-truth).
 
 ## Over-splits and merges: which configuration makes which mistake
 
-Once you measure section accuracy, look at how the wrong sections are wrong. Page-by-page and
+Once you measure boundary accuracy, look at how the wrong page ranges are wrong. Page-by-page and
 holistic classification tend to make opposite mistakes:
 
 | Configuration | Typical mistake | Example |
@@ -246,7 +265,7 @@ splitting to *One section* when each file holds one document. If it shows mostly
 same-class documents, such as a run of pay stubs, try page-by-page classification. See
 [Page versus packet granularity](../classification.md#page-versus-packet-granularity-opposite-failure-modes).
 
-## Benchmark results: section accuracy and cost by configuration
+## Benchmark results: accuracy and tokens by configuration
 
 ### Files that hold many documents
 
@@ -255,28 +274,32 @@ same-class documents, such as a run of pay stubs, try page-by-page classificatio
 call). **Run:** release 0.6.14, November 2026, classification model Amazon Nova 2 Lite (the
 default), one run per configuration.
 
-| Configuration | Page accuracy | Section accuracy | Cost per page |
-|---|---|---|---|
-| Page by page, text and images (default) | 0.818 | 0.553 | $0.00097 |
-| Page by page, text only | 0.797 | 0.518 | $0.00095 |
-| **Holistic, text and images** | 0.720 | **0.659** | $0.00057 |
-| Holistic, text only | 0.735 | 0.644 | $0.00036 |
-| Holistic, images only | 0.836 | 0.578 | $0.00028 |
-| Detect sections first (page by page), then classify | 0.797 | **0.694** | $0.00097 |
-| Detect sections first (holistic), then classify | 0.732 | 0.656 | $0.00070 |
+| Configuration | Page accuracy | Boundary accuracy | Label accuracy | Input tokens per page |
+|---|---|---|---|---|
+| Page by page, text and images (default) | 0.818 | 0.553 | 0.915 | 2,633 |
+| Page by page, text only | 0.797 | 0.518 | 0.864 | 2,394 |
+| **Holistic, text and images** | 0.720 | **0.659** | 0.893 | 1,080 |
+| Holistic, text only | 0.735 | 0.644 | 0.845 | 844 |
+| Holistic, images only | 0.836 | 0.578 | 0.846 | 368 |
+| Detect sections first (page by page), then classify | 0.797 | **0.694** | **0.949** | 2,647 |
+| Detect sections first (holistic), then classify | 0.732 | 0.656 | 0.848 | 1,717 |
 
 Source: `benchmarks/results/v0.6.14/clsvariants/summary.json`.
 
 What this shows:
 
-- **Holistic classification found more of the document boundaries, at lower cost.** Against
-  the default, holistic classification with text and images raised section accuracy by
-  0.20 (SE 0.09, 19 files) and cost 40% less per page. The previous release measured +0.35
-  for the same comparison.
-- **It gave fewer individual pages the right document class** (−0.07, SE 0.07). Extraction
-  depends on whole sections being right, so section accuracy is the number to follow.
-- **Detecting sections first, then classifying, scored highest on section accuracy** in this
-  run. It is the main alternative to test on complex packets.
+- **Section detection is the harder job.** Every configuration gave most correctly bounded
+  sections the right document class (label accuracy 0.85–0.95), while boundary accuracy
+  ranged from 0.52 to 0.69. Improving boundaries is where the gains are.
+- **Holistic classification found more boundaries, with fewer tokens.** Against the default,
+  holistic classification with text and images raised boundary accuracy by 0.20 (SE 0.09,
+  19 files) and used 59% fewer input tokens per page. The previous release measured +0.35 for
+  the same comparison.
+- **It gave fewer individual pages the right document class** (page accuracy −0.07, SE 0.07).
+  Extraction depends on whole sections, so boundary and label accuracy are the numbers to
+  follow.
+- **Detecting sections first, then classifying, scored highest on both boundary and label
+  accuracy** in this run. It is the main alternative to test on complex packets.
 
 ### Files that hold one or two documents
 
@@ -359,7 +382,7 @@ python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite boundary
 Recompute a row from the committed results:
 
 ```bash
-jq '."nova2lite-packet-both" | {boundary_accuracy, class_accuracy, classification_cost_per_page}' \
+jq '."nova2lite-packet-both" | {class_accuracy, boundary_accuracy, label_accuracy, classification_input_tokens_per_page}' \
   benchmarks/results/v0.6.14/clsvariants/summary.json
 ```
 
