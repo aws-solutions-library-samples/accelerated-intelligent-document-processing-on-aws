@@ -134,12 +134,6 @@ flowchart LR
 
 In the configuration editor this choice is **granularity**: *page* or *packet*.
 
-The two ways of reading make opposite mistakes. Page by page, a long document that repeats
-its header on every page can be cut into several sections, because each page looks like a
-new start. Holistically, two documents of the same class on consecutive pages, such as two
-statements filed back to back, can be joined into one section. See
-[Page versus packet granularity](../classification.md#page-versus-packet-granularity-opposite-failure-modes).
-
 ### Choice 2: detect and classify in one call, or in two
 
 **One call.** The same model call that finds the sections also assigns their document
@@ -181,8 +175,7 @@ accurately than page-by-page classification (see
 
 **For complex packets, especially files over about 30 pages, test the alternatives on your
 own files.** Past the 20-page window, a holistic call no longer sees the whole file at once.
-Test page-by-page classification too if your files often hold several documents of the same
-class back to back, such as a run of pay stubs. Compare holistic classification with *Split first, then classify each section* and with
+Compare holistic classification with *Split first, then classify each section* and with
 page-by-page classification, using a test set of your own files.
 
 **If every file holds exactly one document, skip section detection.** Set section splitting
@@ -237,6 +230,21 @@ Stickler reports page accuracy as *page-level accuracy* and section accuracy as 
 accuracy*, with and without page order. See
 [Document split classification metrics](../evaluation.md#document-split-classification-metrics).
 To build the ground truth, see [Measure with ground truth](index.md#4-measure-with-ground-truth).
+
+## Over-splits and merges: which configuration makes which mistake
+
+Once you measure section accuracy, look at how the wrong sections are wrong. Page-by-page and
+holistic classification tend to make opposite mistakes:
+
+| Configuration | Typical mistake | Example |
+|---|---|---|
+| **Page by page** | **Over-split:** one document cut into several sections | A long statement that repeats its header on every page, where each page looks like a new start |
+| **Holistic** | **Merge:** several documents joined into one section | Two statements of the same class filed back to back |
+
+If your test set shows mostly over-splits, try holistic classification, or set section
+splitting to *One section* when each file holds one document. If it shows mostly merges of
+same-class documents, such as a run of pay stubs, try page-by-page classification. See
+[Page versus packet granularity](../classification.md#page-versus-packet-granularity-opposite-failure-modes).
 
 ## Benchmark results: section accuracy and cost by configuration
 
