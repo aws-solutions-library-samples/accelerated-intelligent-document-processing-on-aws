@@ -137,6 +137,10 @@ KEPT_VERDICTS = ("adopt", "adopt-after-fix")
 #: Changes ``apply`` refuses by design that docs/terraform-migration.md tells every
 #: migration to accept (its Hazards section). The test accepts these and nothing
 #: else, so a refusal the guide does not document fails the run.
+#: The pre-migration snapshot is retaken every SETTLE_SECONDS until two agree.
+SETTLE_SECONDS = 180
+SETTLE_ATTEMPTS = 8
+
 #: How long after turning the old TTL off the adoption apply waits (the guide: at
 #: least an hour), with a margin.
 TTL_SETTLE_SECONDS = 65 * 60
@@ -153,15 +157,16 @@ PHASES = (
     "upstream-deploy",
     "seed",
     "old-ttl-off",
-    "snapshot-before",
     "migrate-plan",
     "migrate-check-retention",
     "migrate-freeze",
+    "snapshot-before",
     "migrate-fix-config",
     "migrate-adopt-user-pool",
     "ttl-settle",
     "migrate-apply-dry-run",
     "migrate-apply",
+    "migrate-restore-config",
     "verify",
     "migrate-detach",
     "old-destroy-plan",
@@ -366,6 +371,18 @@ def kept_resources(plan: Dict[str, Any]) -> Dict[str, List[str]]:
     return {"buckets": sorted(buckets), "tables": sorted(tables)}
 
 
+def _json_default(value: Any) -> Any:
+    import base64
+
+    if isinstance(value, (bytes, bytearray)):
+        return {"base64": base64.b64encode(bytes(value)).decode()}
+    return str(value)
+
+
+def _comparable(snap: Dict[str, Any]) -> str:
+    return json.dumps(snap, sort_keys=True, default=str)
+
+
 def item_key(item: Dict[str, Any], key_names: Sequence[str]) -> str:
     return json.dumps([item.get(k) for k in key_names], sort_keys=True)
 
@@ -394,22 +411,37 @@ def compare_objects(
     }
 
 
+#: Configuration-table rows every deploy of the module rewrites (the schema, the
+#: pricing and the model limits it ships). Not user data, so a change is expected.
+DEPLOYMENT_OWNED_CONFIG_ROWS = ("Schema", "DefaultPricing", "DefaultModelConfigLimits")
+
+
 def allowed_item_change(
-    table_kind: str, before: Dict[str, Any], after: Dict[str, Any]
+    table_kind: str,
+    before: Dict[str, Any],
+    after: Dict[str, Any],
+    restored: Iterable[str] = (),
 ) -> bool:
     """Whether a kept item's change is one the migration is meant to make.
 
-    Exactly one is: ``fix-config`` removes CONFIG_COUNTERS from ``Config#`` rows of
-    the configuration table, and nothing else about the row may differ. A row the
-    new deployment rewrites afterwards (its first deploy seeds a revision history
-    from the row's content) is reported, because its content is checked separately
-    through the API rather than byte for byte.
+    In the configuration table only:
+
+    * ``fix-config`` removes CONFIG_COUNTERS from ``Config#`` rows, and nothing else
+      about the row may differ;
+    * a profile ``restore-config`` restored (``restored`` names them) has new
+      content and counters by design; its content is checked through the API, so
+      the row itself is not compared;
+    * DEPLOYMENT_OWNED_CONFIG_ROWS are rewritten by every deploy.
     """
     if table_kind != "configuration":
         return False
     config = (before.get("Configuration") or {}).get("S", "")
+    if config in DEPLOYMENT_OWNED_CONFIG_ROWS:
+        return True
     if not config.startswith("Config#"):
         return False
+    if config[len("Config#") :] in set(restored):
+        return True
     stripped = {k: v for k, v in before.items() if k not in CONFIG_COUNTERS}
     return stripped == after
 
@@ -418,6 +450,7 @@ def compare_items(
     table_kind: str,
     before: Dict[str, Dict[str, Any]],
     after: Dict[str, Dict[str, Any]],
+    restored: Iterable[str] = (),
 ) -> Dict[str, Any]:
     """Items present before must be present after, unchanged except as
     :func:`allowed_item_change` allows. Items added since are counted."""
@@ -426,7 +459,7 @@ def compare_items(
     for k, item in before.items():
         if k not in after or after[k] == item:
             continue
-        if allowed_item_change(table_kind, item, after[k]):
+        if allowed_item_change(table_kind, item, after[k], restored):
             allowed.append(k)
         else:
             changed.append(
@@ -1153,7 +1186,7 @@ class Run:
     def snapshot(self, label: str) -> Dict[str, Any]:
         """Objects, items, users and groups of every bucket and table the old
         state holds that REQUIRED_KEPT or the plan keeps."""
-        names = self.ctx["snapshotTargets"]
+        names = self.snapshot_targets()
         s3, ddb, cognito = (
             self.boto("s3"),
             self.boto("dynamodb"),
@@ -1197,22 +1230,45 @@ class Run:
             ):
                 members += [u["Username"] for u in page["Users"]]
             snap["groups"][group] = sorted(members)
-        (self.work / f"snapshot-{label}.json").write_text(json.dumps(snap, default=str))
+        # Binary attributes as base64, so a snapshot read back from its file
+        # compares equal to one taken in memory.
+        snap = json.loads(json.dumps(snap, default=_json_default))
+        (self.work / f"snapshot-{label}.json").write_text(json.dumps(snap))
         return snap
 
+    def snapshot_targets(self) -> Dict[str, List[str]]:
+        if "snapshotTargets" not in self.ctx:
+            state = self.old_state()
+            (self.work / "old-before.tfstate").write_text(json.dumps(state))
+            targets: Dict[str, set] = {"buckets": set(), "tables": set()}
+            for inst in state_instances(state):
+                key = (inst["type"], inst["name"])
+                if key in REQUIRED_KEPT and inst["type"] == "aws_s3_bucket":
+                    targets["buckets"].add(inst["attributes"]["bucket"])
+                if key in REQUIRED_KEPT and inst["type"] == "aws_dynamodb_table":
+                    targets["tables"].add(inst["attributes"]["name"])
+            self.ctx["snapshotTargets"] = {k: sorted(v) for k, v in targets.items()}
+            self.ctx["oldNames"] = physical_names(state)
+        return self.ctx["snapshotTargets"]
+
     def phase_snapshot_before(self) -> str:
-        state = self.old_state()
-        (self.work / "old-before.tfstate").write_text(json.dumps(state))
-        targets = {"buckets": set(), "tables": set()}
-        for inst in state_instances(state):
-            key = (inst["type"], inst["name"])
-            if key in REQUIRED_KEPT and inst["type"] == "aws_s3_bucket":
-                targets["buckets"].add(inst["attributes"]["bucket"])
-            if key in REQUIRED_KEPT and inst["type"] == "aws_dynamodb_table":
-                targets["tables"].add(inst["attributes"]["name"])
-        self.ctx["snapshotTargets"] = {k: sorted(v) for k, v in targets.items()}
-        self.ctx["oldNames"] = physical_names(state)
-        snap = self.snapshot("before")
+        """Taken after ``freeze``, and only once the old deployment is quiet: it
+        keeps writing to a COMPLETED document's rows and manifest for minutes
+        (measured: evaluation after the baseline copy), and a snapshot taken during
+        that reads those writes as changes the migration made."""
+        self.snapshot_targets()
+        previous = None
+        for _attempt in range(SETTLE_ATTEMPTS):
+            snap = self.snapshot("before")
+            if previous is not None and _comparable(snap) == _comparable(previous):
+                break
+            previous = snap
+            time.sleep(SETTLE_SECONDS)
+        else:
+            raise PhaseFailed(
+                f"the old deployment's data kept changing for "
+                f"{SETTLE_ATTEMPTS * SETTLE_SECONDS // 60} minutes after the freeze"
+            )
         objects = sum(len(v) for v in snap["buckets"].values())
         items = sum(len(v) for v in snap["tables"].values())
         return f"{len(snap['buckets'])} buckets ({objects} objects), {len(snap['tables'])} tables ({items} items), {len(snap['users'])} users"
@@ -1252,10 +1308,10 @@ class Run:
         kept = kept_resources(plan)
         extra = {
             "buckets": sorted(
-                set(kept["buckets"]) - set(self.ctx["snapshotTargets"]["buckets"])
+                set(kept["buckets"]) - set(self.snapshot_targets()["buckets"])
             ),
             "tables": sorted(
-                set(kept["tables"]) - set(self.ctx["snapshotTargets"]["tables"])
+                set(kept["tables"]) - set(self.snapshot_targets()["tables"])
             ),
         }
         self.ctx["keptByPlan"] = kept
@@ -1415,6 +1471,16 @@ class Run:
         (self.new_dir / "adopt.tf").replace(self.work / "adopt.tf.applied")
         return "; ".join(out.get("changes") or [])
 
+    def phase_migrate_restore_config(self) -> str:
+        out = self.migrate(
+            "restore-config", "--terraform-dir", str(self.new_dir), "--apply"
+        )
+        restored = [
+            c.split(" of ", 1)[1].split(" ", 1)[0] for c in out.get("changes") or []
+        ]
+        self.ctx["restoredProfiles"] = restored
+        return f"restored {restored or 'nothing'}"
+
     # Verification --------------------------------------------------------------------------
 
     def new_handles(self) -> Dict[str, str]:
@@ -1497,7 +1563,10 @@ class Run:
                 )
         for table, items in before["tables"].items():
             cmp = compare_items(
-                table_kind(table, plan), items, after["tables"].get(table, {})
+                table_kind(table, plan),
+                items,
+                after["tables"].get(table, {}),
+                self.ctx.get("restoredProfiles") or (),
             )
             report["tables"][table] = cmp
             if cmp["missing"] or cmp["changed"]:

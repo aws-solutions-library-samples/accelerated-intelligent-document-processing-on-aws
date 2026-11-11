@@ -344,7 +344,7 @@ def test_counter_removal_outside_the_configuration_table_is_reported():
 
 
 def test_counter_removal_on_a_non_config_row_is_reported():
-    row = _config_row(Configuration={"S": "Schema"})
+    row = _config_row(Configuration={"S": "TerraformSeed#default"})
     after = {k: v for k, v in row.items() if k not in tmt.CONFIG_COUNTERS}
     assert tmt.compare_items("configuration", {"k": row}, {"k": after})["changed"]
 
@@ -546,3 +546,53 @@ def test_api_helpers_unwrap_the_dispatcher_payload():
     ) == {"notes": "x"}
     assert tmt._success({"updateConfiguration": {"success": True}})
     assert not tmt._success({"updateConfiguration": {"success": False}})
+
+
+def test_deployment_owned_config_rows_may_change():
+    row = {"Configuration": {"S": "Schema"}, "Schema": {"S": "old"}}
+    after = {"Configuration": {"S": "Schema"}, "Schema": {"S": "new"}}
+    assert tmt.compare_items("configuration", {"k": row}, {"k": after})["changed"] == []
+
+
+def test_a_restored_profile_row_may_change_and_no_other_profile_may():
+    before = {"k": _config_row()}
+    after = {"k": _config_row(_compressed_config={"B": "restored"})}
+    assert (
+        tmt.compare_items("configuration", before, after, ["default"])["changed"] == []
+    )
+    assert tmt.compare_items("configuration", before, after, ["bda"])["changed"]
+
+
+def test_the_snapshot_waits_for_the_old_deployment_to_be_quiet(tmp_path, monkeypatch):
+    run = tmt.Run(_settings(tmp_path))
+    run.ctx["snapshotTargets"] = {"buckets": [], "tables": []}
+
+    def snap(n):
+        return {
+            "buckets": {"b": {"k": {"etag": str(n), "size": 1}}},
+            "tables": {},
+            "users": {},
+        }
+
+    taken = iter([snap(1), snap(2), snap(2), snap(3)])
+    monkeypatch.setattr(run, "snapshot", lambda label: next(taken))
+    monkeypatch.setattr(tmt.time, "sleep", lambda s: None)
+    assert "1 objects" in run.phase_snapshot_before()
+    assert next(taken) == snap(3)  # stopped at the first two that agreed
+
+
+def test_a_snapshot_that_never_settles_fails(tmp_path, monkeypatch):
+    run = tmt.Run(_settings(tmp_path))
+    run.ctx["snapshotTargets"] = {"buckets": [], "tables": []}
+    counter = iter(range(100))
+    monkeypatch.setattr(run, "snapshot", lambda label: {"n": next(counter)})
+    monkeypatch.setattr(tmt.time, "sleep", lambda s: None)
+    with pytest.raises(tmt.PhaseFailed, match="kept changing"):
+        run.phase_snapshot_before()
+
+
+def test_binary_attributes_compare_equal_after_a_round_trip_through_the_file():
+    item = {"_compressed_config": {"B": b"\x1f\x8b binary"}}
+    once = json.loads(json.dumps(item, default=tmt._json_default))
+    assert json.loads(json.dumps(once)) == once
+    assert once["_compressed_config"]["B"] != str(b"\x1f\x8b binary")
