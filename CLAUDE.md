@@ -483,10 +483,13 @@ approves nothing and blocks nothing.
 Three things about the GitHub arm are not guessable from the GitLab one:
 
 - **The credential mechanism is different, not merely configured differently.**
-  GitLab's job assumes `idp-sdlc-GitLab` in the CI account from the central
-  runner-fleet role `gitlab-runners-prod` (named in full in that template), gated on
-  the `GitLab:Group`/`GitLab:Project` session tags the fleet sets — defined in
-  `scripts/sdlc/cfn/credential-vendor.yml`. GitHub has no equivalent shared role,
+  GitLab's job holds the Bedrock-only `idp-sdlc-GitLabReview` in the CI account,
+  vended by the central runner-fleet role `gitlab-runners-prod` (named in full in
+  that template) and gated on the `GitLab:Group`/`GitLab:Project` session tags the
+  fleet sets — defined in `scripts/sdlc/cfn/credential-vendor.yml`, and named by the
+  job from the `AI_REVIEW_GITLAB_ROLE_ARN` project variable. Both jobs check the
+  role through STS with `--require-aws-role` and refuse to review on any other.
+  GitHub has no equivalent shared role,
   so it uses real web-identity federation: an OIDC provider for
   `token.actions.githubusercontent.com` plus a **Bedrock-only** role, in
   `scripts/sdlc/cfn/github-oidc-review-role.yml`. The role ARN lives in the

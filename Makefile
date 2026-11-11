@@ -517,8 +517,9 @@ validate-buildspec: ## Validate AWS CodeBuild buildspec files (all of them, disc
 # the commercial account?" — yes) confirmed it while it shielded 49 fixable
 # findings. Naming the lines makes the mismatch impossible to write down.
 #
-#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — two statements
-#     trust a named role in the commercial CI account that owns this pipeline.
+#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — three statements
+#     (two on GitLabRole, one on GitLabReviewRole) trust a named role in the
+#     commercial CI account that owns this pipeline.
 #     Cross-partition IAM trust does not exist, so `arn:${AWS::Partition}:` here
 #     would render an ARN naming a GovCloud account that is not the one meant.
 #

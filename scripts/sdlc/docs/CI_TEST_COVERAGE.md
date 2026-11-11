@@ -744,7 +744,7 @@ Three differences are worth reading before relying on either side:
 
 | | GitLab | GitHub |
 |---|---|---|
-| AWS credential | the integration-test role `idp-sdlc-GitLab`, assumed by the runner fleet's `gitlab-runners-prod` role and gated on `GitLab:Group`/`GitLab:Project` session tags (`scripts/sdlc/cfn/credential-vendor.yml`) | a **Bedrock-only** role assumed via GitHub OIDC (`scripts/sdlc/cfn/github-oidc-review-role.yml`); ARN in the `AI_REVIEW_ROLE_ARN` repository variable |
+| AWS credential | a **Bedrock-only** role, `idp-sdlc-GitLabReview` (`GitLabReviewRole` in `scripts/sdlc/cfn/credential-vendor.yml`), vended by the runner fleet's `gitlab-runners-prod` role and gated on the `GitLab:Group`/`GitLab:Project` session tags; the job names it as `AWS_CREDS_TARGET_ROLE` from the masked `AI_REVIEW_GITLAB_ROLE_ARN` project variable | a **Bedrock-only** role, `idp-sdlc-GitHubReview`, assumed via GitHub OIDC (`scripts/sdlc/cfn/github-oidc-review-role.yml`); ARN in the `AI_REVIEW_ROLE_ARN` repository variable |
 | Posting token | `GITLAB_REVIEW_TOKEN`, a project access token that has to be provisioned — `CI_JOB_TOKEN` cannot create notes | the built-in `GITHUB_TOKEN` with `pull-requests: write`; nothing to provision |
 | Fork contributions | not reviewed — masked variables are absent from a fork pipeline | reviewed by the **hourly `schedule`**, which is triggered by the repository rather than by the contribution and so holds the credentials regardless of origin |
 
@@ -775,7 +775,40 @@ Pinned by `test_the_automatic_trigger_keeps_its_cost_bounds` and
 `test_the_github_trigger_keeps_its_cost_bounds`.
 
 Automatic also means no human is in the loop before a model reads
-author-controlled text, which is why the sandbox note below matters.
+author-controlled text, which is why the notes below matter.
+
+**Both jobs confirm their role before reviewing.** Each passes
+`--require-aws-role`, and the script asks STS which role the job's credentials
+belong to and exits 1 on any other. On GitLab that is what turns a misconfiguration
+into a red advisory job rather than a review on the integration-test role: an unset
+`AI_REVIEW_GITLAB_ROLE_ARN`, or a **project-level** `AWS_CREDS_TARGET_ROLE`, which
+GitLab ranks above the job-level variable of the same name. The UX test jobs keep
+the integration-test role and its own Bedrock grant.
+
+**Neither job runs the checkout's copy of the reviewer.** Each extracts
+`REVIEW_HARNESS_PATHS` (in `ai_mr_review.py`) from the target branch with
+`git archive` into a directory outside the checkout, refuses to run if that fails,
+and runs it as `python3 -I`, so nothing the MR adds beside those files can be
+imported. A change to the reviewer takes effect once merged.
+
+**The session reads only the worktree and loads none of the worktree's agent
+configuration.** The argv carries `--restricted` and `--safe-mode`;
+`scripts/tests/test_ai_mr_review_session_scope.py` measures both properties on the
+pinned CLI against a scripted model on loopback (no Bedrock call), and skips where
+no CLI at the pinned version is installed, which includes both CIs. The measured
+cases, with and without the flags, are in the script's docstring. The worktree also
+has its `.claude/` directory (apart from the pinned skills), `CLAUDE.local.md`,
+`AGENTS.md` and `.mcp.json` removed, from the one list `AGENT_CONFIG_LOCATIONS`.
+
+**A review is checked before it is posted.** `posting_refusals` withholds a review
+whose text contains a value of one of the job's credential variables, a credential
+shape the redactor in `scripts/ux_runner/redact.py` knows, a GitHub token, an AWS
+secret-key shape, an internal hostname or identifier as
+`scripts/hooks/check_commit_text.py` defines them (apart from the forge's own
+host), or image and embedded-resource markup. A withheld review is replaced by a
+short notice naming the kinds, which carries the usual marker so the head is not
+reviewed again; the artifact holds the same notice. An accepted review still goes
+through the redactor, which scrubs an account id or an address.
 
 ⚠️ **The tool sandbox is enforced by `--permission-mode manual` in the argv, not
 by a settings file.** `--allowedTools` is *additive*, so a machine whose
@@ -867,8 +900,7 @@ treats that file as diagnostics only.
   directory rather than checked out in place, because an in-place checkout leaves
   MR-added files beside the pinned ones and Python resolves imports from the
   script's own directory first. It fails closed, so the MR that adds the UX test
-  cannot exercise it: the trade `ai_mr_review` makes, except that this job refuses
-  where that one warns. The fetch names `refs/heads/<target>`, so a tag called like
+  cannot exercise it: the same trade `ai_mr_review` makes. The fetch names `refs/heads/<target>`, so a tag called like
   the branch cannot stand in for it.
 - Modes are set, never inherited. A GitLab Docker executor runs a job at umask
   0000 by default, and Chrome runs as `uxbrowser` with `--no-sandbox`, so a renderer
