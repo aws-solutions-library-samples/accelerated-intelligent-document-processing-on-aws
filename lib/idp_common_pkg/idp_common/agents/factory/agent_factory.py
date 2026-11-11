@@ -51,7 +51,7 @@ class IDPAgentFactory:
             "opt_in": opt_in,
         }
 
-    def list_available_agents(self) -> List[Dict[str, str]]:
+    def list_available_agents(self) -> List[Dict[str, Any]]:
         """
         List all available agents with their metadata.
 
