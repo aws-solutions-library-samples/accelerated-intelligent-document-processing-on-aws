@@ -312,7 +312,9 @@ def _string_key_parts(node: ast.AST) -> tuple[str, list[ast.AST]] | None:
         and isinstance(node.left.value, str)
     ):
         right = node.right
-        operands = list(right.elts) if isinstance(right, ast.Tuple) else [right]
+        operands: list[ast.AST] = (
+            list(right.elts) if isinstance(right, ast.Tuple) else [right]
+        )
         return node.left.value, operands
     if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)):
         return None
