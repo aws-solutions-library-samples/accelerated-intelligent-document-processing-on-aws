@@ -780,3 +780,21 @@ def test_a_state_still_listing_resources_counts_as_leftovers_but_data_sources_do
         "aws_lambda_function.x",
         "module.m.aws_iam_role.r",
     ]
+
+
+def test_the_accepted_changes_are_exactly_the_ones_the_guide_prescribes():
+    """The ratchet on GUIDE_ACCEPTED_CHANGES (registered in
+    scripts/tests/gate_exemptions.json): a stale entry the guide no longer names
+    fails, and so does a change the guide tells every migration to accept that the
+    test does not pass, which would leave the test unable to follow the guide."""
+    import re
+    from pathlib import Path
+
+    guide = (Path(tmt.REPO_ROOT) / "docs" / "terraform-migration.md").read_text()
+    prescribed = set(
+        re.findall(r"--accept-change\s+`?\n?\s*([\w.\[\]\"-]+:[\w-]+)", guide)
+    )
+    assert set(tmt.GUIDE_ACCEPTED_CHANGES) == prescribed, (
+        f"stale in the driver: {set(tmt.GUIDE_ACCEPTED_CHANGES) - prescribed}; "
+        f"prescribed by the guide but not passed: {prescribed - set(tmt.GUIDE_ACCEPTED_CHANGES)}"
+    )
