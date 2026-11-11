@@ -153,11 +153,6 @@ UNCOVERED_LAMBDA_TREES: dict[str, tuple[str, int]] = {
         "only during a stack operation and their events are stack metadata",
         3,
     ),
-    "nested/multi-doc-discovery": (
-        "a container-image build helper (docker_build_lambda), not a handler that "
-        "receives an API or pipeline event",
-        0,
-    ),
     "feature-platform/confbench-testset": ("an optional feature extension package", 0),
     "feature-platform/feature-template": (
         "the scaffold a new feature is copied from",
@@ -216,10 +211,6 @@ TREE_INDEPENDENCE: dict[str, dict[str, bool]] = {
         "notBuiltWithMainStack": False,
     },
     "nested/bedrockkb/src": {
-        "notDeployedByParent": False,
-        "notBuiltWithMainStack": False,
-    },
-    "nested/multi-doc-discovery": {
         "notDeployedByParent": False,
         "notBuiltWithMainStack": False,
     },

@@ -1,0 +1,1733 @@
+{
+  "meta": {
+    "stack": "IDPUpg0613to0614",
+    "stack_version": "0.6.14",
+    "suite": "enforcecost",
+    "class": "bank_statement",
+    "overrides": [],
+    "docs_named": [
+      "valuenoise_100"
+    ],
+    "docs_run": [
+      "valuenoise_100"
+    ],
+    "docs_reference": [],
+    "docs_unlaunchable": [],
+    "docs_other_class": [],
+    "config_upload_failed_versions": [],
+    "cells_skipped_config_upload": [],
+    "docs_missing_truth": [],
+    "commit": "ada0a9bc5",
+    "pricing_sha256": "44a79aa06c159951eea885ed69d4fa9a304e07191668702511429cfeaea10bb6",
+    "scored_at": "2026-11-10T01:30:55.654913Z",
+    "region": "us-west-2"
+  },
+  "rows": [
+    {
+      "cell": "enforce-warn",
+      "doc": "valuenoise_100.pdf",
+      "sub_doc": null,
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "default",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default",
+        "lazy_images": "on"
+      },
+      "run_id": "bench-valuenoise_100-20261110-001642",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 64.941098,
+      "cost": 0.1456,
+      "cost_unread": null,
+      "cost_unpriced": null,
+      "cost_by_phase": {
+        "OCR": 0.0452,
+        "Classification": 0.00294,
+        "Extraction": 0.09185,
+        "Assessment": 0.00561,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/requests": 0.0,
+        "lambda/duration": 0.00391,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00256,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.08989,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00424
+      },
+      "tokens": {
+        "inputTokens": 28522,
+        "outputTokens": 11026,
+        "cacheReadInputTokens": 111872,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3202,
+          "outputTokens": 511,
+          "cacheReadInputTokens": 4349,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 8004,
+          "outputTokens": 3818,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 17316,
+          "outputTokens": 6697,
+          "cacheReadInputTokens": 106083,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "scored_against": "exact_truth",
+      "exact_truth_unavailable": null,
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "processing_issues": 1,
+      "processing_issues_malformed": null,
+      "processing_issues_malformed_why": null,
+      "processing_issues_by_severity": {
+        "info": 1
+      },
+      "processing_issues_by_code": {
+        "assessment_geometry_incomplete": 1
+      },
+      "processing_issues_by_stage": {
+        "assessment": 1
+      },
+      "processing_issue_detail": [
+        {"stage": "assessment", "severity": "info", "code": "assessment_geometry_incomplete", "message": "15 scored leaf/leaves have no bounding box under geometry.mode 'ocr_only'.", "root_cause": "value could not be matched to OCR lines", "section_id": "1", "details": {"missing_geometry_leaves": 15, "missing_geometry_rows": 15, "row_leaves_wanting_geometry": 300, "missing_geometry_scalars": 0, "scalar_leaves_wanting_geometry": 7, "nothing_located": false}}
+      ],
+      "processing_issue_severities": "info=1",
+      "processing_issue_codes": "assessment_geometry_incomplete=1",
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "rows_tagged": 100,
+      "rows_id_repaired": 0,
+      "rows_id_unresolved": 0,
+      "unverified_row_shortfall": null,
+      "scalar_accuracy": 1.0,
+      "typed_truth_unavailable": "no typed scalar truth: this document's truth file declares no `fields_typed`, so typed_accuracy / typed_fields do not apply to this row and are absent, not zero. Only a document whose generator emits typed scalar expectations carries them (`kv_form`); for a transaction-list document the per-value instrument is cell_accuracy, with cells_compared as its denominator, and scalar_accuracy compares the text the document renders.",
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "cell_truth_unavailable": null,
+      "mean_confidence": 0.9989,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307,
+      "conf_rows_expected": 100,
+      "conf_rows_scored": 100,
+      "conf_rows_unscored": 0,
+      "conf_coverage": 1.0,
+      "conf_unscored_by_field": null,
+      "conf_rows_expected_by_field": {
+        "Transactions": 100
+      },
+      "calibration_observations": 200,
+      "calibration_correct": 200,
+      "calibration_ece": 0.05,
+      "calibration_ece_mean_conf": 0.0008,
+      "calibration_auroc": null,
+      "calibration_auroc_unbinned": null,
+      "calibration_brier": 0.0,
+      "calibration_bin_coverage": 1,
+      "calibration_reliable": false,
+      "calibration_curve": {"correct": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "total": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "testSetId": null, "configVersion": null, "confidenceFingerprint": null, "reviewObservations": 0, "scoringObservations": 200, "brierSse": 0.002187000000000004, "confSum": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 199.849], "valueTally": {"1.0": [186, 186], "0.99": [9, 9], "0.97": [1, 1], "0.983": [1, 1], "0.991": [1, 1], "0.996": [1, 1], "0.999": [1, 1]}}
+    },
+    {
+      "cell": "enforce-warn",
+      "doc": "valuenoise_100.pdf",
+      "sub_doc": null,
+      "repeat": 1,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "default",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default",
+        "lazy_images": "on"
+      },
+      "run_id": "bench-valuenoise_100-20261110-001653",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 55.85611,
+      "cost": 0.1451,
+      "cost_unread": null,
+      "cost_unpriced": null,
+      "cost_by_phase": {
+        "OCR": 0.0452,
+        "Classification": 0.00285,
+        "Extraction": 0.09149,
+        "Assessment": 0.0056,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/requests": 0.0,
+        "lambda/duration": 0.00343,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.0026,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.08989,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00423
+      },
+      "tokens": {
+        "inputTokens": 28617,
+        "outputTokens": 10992,
+        "cacheReadInputTokens": 111826,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3202,
+          "outputTokens": 525,
+          "cacheReadInputTokens": 4349,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 8004,
+          "outputTokens": 3818,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 17411,
+          "outputTokens": 6649,
+          "cacheReadInputTokens": 106037,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "scored_against": "exact_truth",
+      "exact_truth_unavailable": null,
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "processing_issues": 1,
+      "processing_issues_malformed": null,
+      "processing_issues_malformed_why": null,
+      "processing_issues_by_severity": {
+        "info": 1
+      },
+      "processing_issues_by_code": {
+        "assessment_geometry_incomplete": 1
+      },
+      "processing_issues_by_stage": {
+        "assessment": 1
+      },
+      "processing_issue_detail": [
+        {"stage": "assessment", "severity": "info", "code": "assessment_geometry_incomplete", "message": "15 scored leaf/leaves have no bounding box under geometry.mode 'ocr_only'.", "root_cause": "value could not be matched to OCR lines", "section_id": "1", "details": {"missing_geometry_leaves": 15, "missing_geometry_rows": 15, "row_leaves_wanting_geometry": 300, "missing_geometry_scalars": 0, "scalar_leaves_wanting_geometry": 7, "nothing_located": false}}
+      ],
+      "processing_issue_severities": "info=1",
+      "processing_issue_codes": "assessment_geometry_incomplete=1",
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "rows_tagged": 100,
+      "rows_id_repaired": 0,
+      "rows_id_unresolved": 0,
+      "unverified_row_shortfall": null,
+      "scalar_accuracy": 1.0,
+      "typed_truth_unavailable": "no typed scalar truth: this document's truth file declares no `fields_typed`, so typed_accuracy / typed_fields do not apply to this row and are absent, not zero. Only a document whose generator emits typed scalar expectations carries them (`kv_form`); for a transaction-list document the per-value instrument is cell_accuracy, with cells_compared as its denominator, and scalar_accuracy compares the text the document renders.",
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "cell_truth_unavailable": null,
+      "mean_confidence": 0.9989,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307,
+      "conf_rows_expected": 100,
+      "conf_rows_scored": 100,
+      "conf_rows_unscored": 0,
+      "conf_coverage": 1.0,
+      "conf_unscored_by_field": null,
+      "conf_rows_expected_by_field": {
+        "Transactions": 100
+      },
+      "calibration_observations": 200,
+      "calibration_correct": 200,
+      "calibration_ece": 0.05,
+      "calibration_ece_mean_conf": 0.0004,
+      "calibration_auroc": null,
+      "calibration_auroc_unbinned": null,
+      "calibration_brier": 0.0,
+      "calibration_bin_coverage": 1,
+      "calibration_reliable": false,
+      "calibration_curve": {"correct": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "total": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "testSetId": null, "configVersion": null, "confidenceFingerprint": null, "reviewObservations": 0, "scoringObservations": 200, "brierSse": 0.0018000000000000032, "confSum": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 199.92000000000002], "valueTally": {"1.0": [196, 196], "0.99": [1, 1], "0.97": [1, 1], "0.98": [2, 2]}}
+    },
+    {
+      "cell": "enforce-warn",
+      "doc": "valuenoise_100.pdf",
+      "sub_doc": null,
+      "repeat": 2,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "default",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default",
+        "lazy_images": "on"
+      },
+      "run_id": "bench-valuenoise_100-20261110-001703",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 60.17092,
+      "cost": 0.1453,
+      "cost_unread": null,
+      "cost_unpriced": null,
+      "cost_by_phase": {
+        "OCR": 0.0452,
+        "Classification": 0.00278,
+        "Extraction": 0.09162,
+        "Assessment": 0.0057,
+        "Summarization": 2e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/requests": 0.0,
+        "lambda/duration": 0.00366,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00253,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.08989,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00423
+      },
+      "tokens": {
+        "inputTokens": 28614,
+        "outputTokens": 10968,
+        "cacheReadInputTokens": 111828,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3202,
+          "outputTokens": 496,
+          "cacheReadInputTokens": 4349,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 8004,
+          "outputTokens": 3818,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 17408,
+          "outputTokens": 6654,
+          "cacheReadInputTokens": 106039,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "scored_against": "exact_truth",
+      "exact_truth_unavailable": null,
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "processing_issues": 1,
+      "processing_issues_malformed": null,
+      "processing_issues_malformed_why": null,
+      "processing_issues_by_severity": {
+        "info": 1
+      },
+      "processing_issues_by_code": {
+        "assessment_geometry_incomplete": 1
+      },
+      "processing_issues_by_stage": {
+        "assessment": 1
+      },
+      "processing_issue_detail": [
+        {"stage": "assessment", "severity": "info", "code": "assessment_geometry_incomplete", "message": "15 scored leaf/leaves have no bounding box under geometry.mode 'ocr_only'.", "root_cause": "value could not be matched to OCR lines", "section_id": "1", "details": {"missing_geometry_leaves": 15, "missing_geometry_rows": 15, "row_leaves_wanting_geometry": 300, "missing_geometry_scalars": 0, "scalar_leaves_wanting_geometry": 7, "nothing_located": false}}
+      ],
+      "processing_issue_severities": "info=1",
+      "processing_issue_codes": "assessment_geometry_incomplete=1",
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "rows_tagged": 100,
+      "rows_id_repaired": 0,
+      "rows_id_unresolved": 0,
+      "unverified_row_shortfall": null,
+      "scalar_accuracy": 1.0,
+      "typed_truth_unavailable": "no typed scalar truth: this document's truth file declares no `fields_typed`, so typed_accuracy / typed_fields do not apply to this row and are absent, not zero. Only a document whose generator emits typed scalar expectations carries them (`kv_form`); for a transaction-list document the per-value instrument is cell_accuracy, with cells_compared as its denominator, and scalar_accuracy compares the text the document renders.",
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "cell_truth_unavailable": null,
+      "mean_confidence": 0.9996,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307,
+      "conf_rows_expected": 100,
+      "conf_rows_scored": 100,
+      "conf_rows_unscored": 0,
+      "conf_coverage": 1.0,
+      "conf_unscored_by_field": null,
+      "conf_rows_expected_by_field": {
+        "Transactions": 100
+      },
+      "calibration_observations": 200,
+      "calibration_correct": 200,
+      "calibration_ece": 0.05,
+      "calibration_ece_mean_conf": 0.0,
+      "calibration_auroc": null,
+      "calibration_auroc_unbinned": null,
+      "calibration_brier": 0.0,
+      "calibration_bin_coverage": 1,
+      "calibration_reliable": false,
+      "calibration_curve": {"correct": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "total": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "testSetId": null, "configVersion": null, "confidenceFingerprint": null, "reviewObservations": 0, "scoringObservations": 200, "brierSse": 0.0, "confSum": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "valueTally": {"1.0": [200, 200]}}
+    },
+    {
+      "cell": "enforce-warn",
+      "doc": "valuenoise_100.pdf",
+      "sub_doc": null,
+      "repeat": 3,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "default",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default",
+        "lazy_images": "on"
+      },
+      "run_id": "bench-valuenoise_100-20261110-001714",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 57.044401,
+      "cost": 0.1451,
+      "cost_unread": null,
+      "cost_unpriced": null,
+      "cost_by_phase": {
+        "OCR": 0.04522,
+        "Classification": 0.00279,
+        "Extraction": 0.09146,
+        "Assessment": 0.0056,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/requests": 0.0,
+        "lambda/duration": 0.00348,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00247,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.08989,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00423
+      },
+      "tokens": {
+        "inputTokens": 28522,
+        "outputTokens": 10978,
+        "cacheReadInputTokens": 111872,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3202,
+          "outputTokens": 474,
+          "cacheReadInputTokens": 4349,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 8004,
+          "outputTokens": 3818,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 17316,
+          "outputTokens": 6686,
+          "cacheReadInputTokens": 106083,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "scored_against": "exact_truth",
+      "exact_truth_unavailable": null,
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "processing_issues": 1,
+      "processing_issues_malformed": null,
+      "processing_issues_malformed_why": null,
+      "processing_issues_by_severity": {
+        "info": 1
+      },
+      "processing_issues_by_code": {
+        "assessment_geometry_incomplete": 1
+      },
+      "processing_issues_by_stage": {
+        "assessment": 1
+      },
+      "processing_issue_detail": [
+        {"stage": "assessment", "severity": "info", "code": "assessment_geometry_incomplete", "message": "15 scored leaf/leaves have no bounding box under geometry.mode 'ocr_only'.", "root_cause": "value could not be matched to OCR lines", "section_id": "1", "details": {"missing_geometry_leaves": 15, "missing_geometry_rows": 15, "row_leaves_wanting_geometry": 300, "missing_geometry_scalars": 0, "scalar_leaves_wanting_geometry": 7, "nothing_located": false}}
+      ],
+      "processing_issue_severities": "info=1",
+      "processing_issue_codes": "assessment_geometry_incomplete=1",
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "rows_tagged": 100,
+      "rows_id_repaired": 0,
+      "rows_id_unresolved": 0,
+      "unverified_row_shortfall": null,
+      "scalar_accuracy": 1.0,
+      "typed_truth_unavailable": "no typed scalar truth: this document's truth file declares no `fields_typed`, so typed_accuracy / typed_fields do not apply to this row and are absent, not zero. Only a document whose generator emits typed scalar expectations carries them (`kv_form`); for a transaction-list document the per-value instrument is cell_accuracy, with cells_compared as its denominator, and scalar_accuracy compares the text the document renders.",
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "cell_truth_unavailable": null,
+      "mean_confidence": 0.9987,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307,
+      "conf_rows_expected": 100,
+      "conf_rows_scored": 100,
+      "conf_rows_unscored": 0,
+      "conf_coverage": 1.0,
+      "conf_unscored_by_field": null,
+      "conf_rows_expected_by_field": {
+        "Transactions": 100
+      },
+      "calibration_observations": 200,
+      "calibration_correct": 200,
+      "calibration_ece": 0.05,
+      "calibration_ece_mean_conf": 0.0009,
+      "calibration_auroc": null,
+      "calibration_auroc_unbinned": null,
+      "calibration_brier": 0.0,
+      "calibration_bin_coverage": 1,
+      "calibration_reliable": false,
+      "calibration_curve": {"correct": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "total": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "testSetId": null, "configVersion": null, "confidenceFingerprint": null, "reviewObservations": 0, "scoringObservations": 200, "brierSse": 0.002400000000000004, "confSum": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 199.82000000000002], "valueTally": {"1.0": [184, 184], "0.99": [15, 15], "0.97": [1, 1]}}
+    },
+    {
+      "cell": "enforce-warn",
+      "doc": "valuenoise_100.pdf",
+      "sub_doc": null,
+      "repeat": 4,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "default",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default",
+        "lazy_images": "on"
+      },
+      "run_id": "bench-valuenoise_100-20261110-001804",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 63.631876,
+      "cost": 0.1455,
+      "cost_unread": null,
+      "cost_unpriced": null,
+      "cost_by_phase": {
+        "OCR": 0.0452,
+        "Classification": 0.00276,
+        "Extraction": 0.09197,
+        "Assessment": 0.00558,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/requests": 0.0,
+        "lambda/duration": 0.00393,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00246,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.08989,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00423
+      },
+      "tokens": {
+        "inputTokens": 28522,
+        "outputTokens": 10971,
+        "cacheReadInputTokens": 111872,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3202,
+          "outputTokens": 471,
+          "cacheReadInputTokens": 4349,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 8004,
+          "outputTokens": 3818,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 17316,
+          "outputTokens": 6682,
+          "cacheReadInputTokens": 106083,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "scored_against": "exact_truth",
+      "exact_truth_unavailable": null,
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "processing_issues": 1,
+      "processing_issues_malformed": null,
+      "processing_issues_malformed_why": null,
+      "processing_issues_by_severity": {
+        "info": 1
+      },
+      "processing_issues_by_code": {
+        "assessment_geometry_incomplete": 1
+      },
+      "processing_issues_by_stage": {
+        "assessment": 1
+      },
+      "processing_issue_detail": [
+        {"stage": "assessment", "severity": "info", "code": "assessment_geometry_incomplete", "message": "15 scored leaf/leaves have no bounding box under geometry.mode 'ocr_only'.", "root_cause": "value could not be matched to OCR lines", "section_id": "1", "details": {"missing_geometry_leaves": 15, "missing_geometry_rows": 15, "row_leaves_wanting_geometry": 300, "missing_geometry_scalars": 0, "scalar_leaves_wanting_geometry": 7, "nothing_located": false}}
+      ],
+      "processing_issue_severities": "info=1",
+      "processing_issue_codes": "assessment_geometry_incomplete=1",
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "rows_tagged": 100,
+      "rows_id_repaired": 0,
+      "rows_id_unresolved": 0,
+      "unverified_row_shortfall": null,
+      "scalar_accuracy": 1.0,
+      "typed_truth_unavailable": "no typed scalar truth: this document's truth file declares no `fields_typed`, so typed_accuracy / typed_fields do not apply to this row and are absent, not zero. Only a document whose generator emits typed scalar expectations carries them (`kv_form`); for a transaction-list document the per-value instrument is cell_accuracy, with cells_compared as its denominator, and scalar_accuracy compares the text the document renders.",
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "cell_truth_unavailable": null,
+      "mean_confidence": 0.9988,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307,
+      "conf_rows_expected": 100,
+      "conf_rows_scored": 100,
+      "conf_rows_unscored": 0,
+      "conf_coverage": 1.0,
+      "conf_unscored_by_field": null,
+      "conf_rows_expected_by_field": {
+        "Transactions": 100
+      },
+      "calibration_observations": 200,
+      "calibration_correct": 200,
+      "calibration_ece": 0.05,
+      "calibration_ece_mean_conf": 0.0006,
+      "calibration_auroc": null,
+      "calibration_auroc_unbinned": null,
+      "calibration_brier": 0.0,
+      "calibration_bin_coverage": 1,
+      "calibration_reliable": false,
+      "calibration_curve": {"correct": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "total": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "testSetId": null, "configVersion": null, "confidenceFingerprint": null, "reviewObservations": 0, "scoringObservations": 200, "brierSse": 0.0012000000000000023, "confSum": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 199.88000000000002], "valueTally": {"1.0": [188, 188], "0.99": [12, 12]}}
+    },
+    {
+      "cell": "enforce-escalate",
+      "doc": "valuenoise_100.pdf",
+      "sub_doc": null,
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "escalate",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "default",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default",
+        "lazy_images": "on"
+      },
+      "run_id": "bench-valuenoise_100-20261110-001814",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 65.683498,
+      "cost": 0.1457,
+      "cost_unread": null,
+      "cost_unpriced": null,
+      "cost_by_phase": {
+        "OCR": 0.04519,
+        "Classification": 0.00286,
+        "Extraction": 0.09192,
+        "Assessment": 0.00572,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/requests": 0.0,
+        "lambda/duration": 0.00403,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00255,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.08989,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00423
+      },
+      "tokens": {
+        "inputTokens": 28612,
+        "outputTokens": 10970,
+        "cacheReadInputTokens": 111829,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3202,
+          "outputTokens": 506,
+          "cacheReadInputTokens": 4349,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 8004,
+          "outputTokens": 3818,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 17406,
+          "outputTokens": 6646,
+          "cacheReadInputTokens": 106040,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "scored_against": "exact_truth",
+      "exact_truth_unavailable": null,
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "processing_issues": 1,
+      "processing_issues_malformed": null,
+      "processing_issues_malformed_why": null,
+      "processing_issues_by_severity": {
+        "info": 1
+      },
+      "processing_issues_by_code": {
+        "assessment_geometry_incomplete": 1
+      },
+      "processing_issues_by_stage": {
+        "assessment": 1
+      },
+      "processing_issue_detail": [
+        {"stage": "assessment", "severity": "info", "code": "assessment_geometry_incomplete", "message": "15 scored leaf/leaves have no bounding box under geometry.mode 'ocr_only'.", "root_cause": "value could not be matched to OCR lines", "section_id": "1", "details": {"missing_geometry_leaves": 15, "missing_geometry_rows": 15, "row_leaves_wanting_geometry": 300, "missing_geometry_scalars": 0, "scalar_leaves_wanting_geometry": 7, "nothing_located": false}}
+      ],
+      "processing_issue_severities": "info=1",
+      "processing_issue_codes": "assessment_geometry_incomplete=1",
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "rows_tagged": 100,
+      "rows_id_repaired": 0,
+      "rows_id_unresolved": 0,
+      "unverified_row_shortfall": null,
+      "scalar_accuracy": 1.0,
+      "typed_truth_unavailable": "no typed scalar truth: this document's truth file declares no `fields_typed`, so typed_accuracy / typed_fields do not apply to this row and are absent, not zero. Only a document whose generator emits typed scalar expectations carries them (`kv_form`); for a transaction-list document the per-value instrument is cell_accuracy, with cells_compared as its denominator, and scalar_accuracy compares the text the document renders.",
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "cell_truth_unavailable": null,
+      "mean_confidence": 0.9991,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307,
+      "conf_rows_expected": 100,
+      "conf_rows_scored": 100,
+      "conf_rows_unscored": 0,
+      "conf_coverage": 1.0,
+      "conf_unscored_by_field": null,
+      "conf_rows_expected_by_field": {
+        "Transactions": 100
+      },
+      "calibration_observations": 200,
+      "calibration_correct": 200,
+      "calibration_ece": 0.05,
+      "calibration_ece_mean_conf": 0.0006,
+      "calibration_auroc": null,
+      "calibration_auroc_unbinned": null,
+      "calibration_brier": 0.0,
+      "calibration_bin_coverage": 1,
+      "calibration_reliable": false,
+      "calibration_curve": {"correct": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "total": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "testSetId": null, "configVersion": null, "confidenceFingerprint": null, "reviewObservations": 0, "scoringObservations": 200, "brierSse": 0.0017000000000000032, "confSum": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 199.89], "valueTally": {"1.0": [191, 191], "0.99": [8, 8], "0.97": [1, 1]}}
+    },
+    {
+      "cell": "enforce-escalate",
+      "doc": "valuenoise_100.pdf",
+      "sub_doc": null,
+      "repeat": 1,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "escalate",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "default",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default",
+        "lazy_images": "on"
+      },
+      "run_id": "bench-valuenoise_100-20261110-001827",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 55.524552,
+      "cost": 0.145,
+      "cost_unread": null,
+      "cost_unpriced": null,
+      "cost_by_phase": {
+        "OCR": 0.0452,
+        "Classification": 0.00278,
+        "Extraction": 0.09148,
+        "Assessment": 0.00554,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/requests": 0.0,
+        "lambda/duration": 0.0034,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.0025,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.08989,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00422
+      },
+      "tokens": {
+        "inputTokens": 28427,
+        "outputTokens": 10968,
+        "cacheReadInputTokens": 111918,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3202,
+          "outputTokens": 485,
+          "cacheReadInputTokens": 4349,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 8004,
+          "outputTokens": 3818,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 17221,
+          "outputTokens": 6665,
+          "cacheReadInputTokens": 106129,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "scored_against": "exact_truth",
+      "exact_truth_unavailable": null,
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "processing_issues": 1,
+      "processing_issues_malformed": null,
+      "processing_issues_malformed_why": null,
+      "processing_issues_by_severity": {
+        "info": 1
+      },
+      "processing_issues_by_code": {
+        "assessment_geometry_incomplete": 1
+      },
+      "processing_issues_by_stage": {
+        "assessment": 1
+      },
+      "processing_issue_detail": [
+        {"stage": "assessment", "severity": "info", "code": "assessment_geometry_incomplete", "message": "15 scored leaf/leaves have no bounding box under geometry.mode 'ocr_only'.", "root_cause": "value could not be matched to OCR lines", "section_id": "1", "details": {"missing_geometry_leaves": 15, "missing_geometry_rows": 15, "row_leaves_wanting_geometry": 300, "missing_geometry_scalars": 0, "scalar_leaves_wanting_geometry": 7, "nothing_located": false}}
+      ],
+      "processing_issue_severities": "info=1",
+      "processing_issue_codes": "assessment_geometry_incomplete=1",
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "rows_tagged": 100,
+      "rows_id_repaired": 0,
+      "rows_id_unresolved": 0,
+      "unverified_row_shortfall": null,
+      "scalar_accuracy": 1.0,
+      "typed_truth_unavailable": "no typed scalar truth: this document's truth file declares no `fields_typed`, so typed_accuracy / typed_fields do not apply to this row and are absent, not zero. Only a document whose generator emits typed scalar expectations carries them (`kv_form`); for a transaction-list document the per-value instrument is cell_accuracy, with cells_compared as its denominator, and scalar_accuracy compares the text the document renders.",
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "cell_truth_unavailable": null,
+      "mean_confidence": 0.9985,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307,
+      "conf_rows_expected": 100,
+      "conf_rows_scored": 100,
+      "conf_rows_unscored": 0,
+      "conf_coverage": 1.0,
+      "conf_unscored_by_field": null,
+      "conf_rows_expected_by_field": {
+        "Transactions": 100
+      },
+      "calibration_observations": 200,
+      "calibration_correct": 200,
+      "calibration_ece": 0.05,
+      "calibration_ece_mean_conf": 0.0005,
+      "calibration_auroc": null,
+      "calibration_auroc_unbinned": null,
+      "calibration_brier": 0.0,
+      "calibration_bin_coverage": 1,
+      "calibration_reliable": false,
+      "calibration_curve": {"correct": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "total": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "testSetId": null, "configVersion": null, "confidenceFingerprint": null, "reviewObservations": 0, "scoringObservations": 200, "brierSse": 0.001100000000000002, "confSum": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 199.91], "valueTally": {"1.0": [192, 192], "0.99": [7, 7], "0.98": [1, 1]}}
+    },
+    {
+      "cell": "enforce-escalate",
+      "doc": "valuenoise_100.pdf",
+      "sub_doc": null,
+      "repeat": 2,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "escalate",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "default",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default",
+        "lazy_images": "on"
+      },
+      "run_id": "bench-valuenoise_100-20261110-001838",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 62.500657,
+      "cost": 0.1455,
+      "cost_unread": null,
+      "cost_unpriced": null,
+      "cost_by_phase": {
+        "OCR": 0.04521,
+        "Classification": 0.00279,
+        "Extraction": 0.09198,
+        "Assessment": 0.00557,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/requests": 0.0,
+        "lambda/duration": 0.00388,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00254,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.08989,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00424
+      },
+      "tokens": {
+        "inputTokens": 28522,
+        "outputTokens": 11021,
+        "cacheReadInputTokens": 111872,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3202,
+          "outputTokens": 502,
+          "cacheReadInputTokens": 4349,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 8004,
+          "outputTokens": 3818,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 17316,
+          "outputTokens": 6701,
+          "cacheReadInputTokens": 106083,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "scored_against": "exact_truth",
+      "exact_truth_unavailable": null,
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "processing_issues": 1,
+      "processing_issues_malformed": null,
+      "processing_issues_malformed_why": null,
+      "processing_issues_by_severity": {
+        "info": 1
+      },
+      "processing_issues_by_code": {
+        "assessment_geometry_incomplete": 1
+      },
+      "processing_issues_by_stage": {
+        "assessment": 1
+      },
+      "processing_issue_detail": [
+        {"stage": "assessment", "severity": "info", "code": "assessment_geometry_incomplete", "message": "15 scored leaf/leaves have no bounding box under geometry.mode 'ocr_only'.", "root_cause": "value could not be matched to OCR lines", "section_id": "1", "details": {"missing_geometry_leaves": 15, "missing_geometry_rows": 15, "row_leaves_wanting_geometry": 300, "missing_geometry_scalars": 0, "scalar_leaves_wanting_geometry": 7, "nothing_located": false}}
+      ],
+      "processing_issue_severities": "info=1",
+      "processing_issue_codes": "assessment_geometry_incomplete=1",
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "rows_tagged": 100,
+      "rows_id_repaired": 0,
+      "rows_id_unresolved": 0,
+      "unverified_row_shortfall": null,
+      "scalar_accuracy": 1.0,
+      "typed_truth_unavailable": "no typed scalar truth: this document's truth file declares no `fields_typed`, so typed_accuracy / typed_fields do not apply to this row and are absent, not zero. Only a document whose generator emits typed scalar expectations carries them (`kv_form`); for a transaction-list document the per-value instrument is cell_accuracy, with cells_compared as its denominator, and scalar_accuracy compares the text the document renders.",
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "cell_truth_unavailable": null,
+      "mean_confidence": 0.9981,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307,
+      "conf_rows_expected": 100,
+      "conf_rows_scored": 100,
+      "conf_rows_unscored": 0,
+      "conf_coverage": 1.0,
+      "conf_unscored_by_field": null,
+      "conf_rows_expected_by_field": {
+        "Transactions": 100
+      },
+      "calibration_observations": 200,
+      "calibration_correct": 200,
+      "calibration_ece": 0.05,
+      "calibration_ece_mean_conf": 0.0012,
+      "calibration_auroc": null,
+      "calibration_auroc_unbinned": null,
+      "calibration_brier": 0.0,
+      "calibration_bin_coverage": 1,
+      "calibration_reliable": false,
+      "calibration_curve": {"correct": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "total": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "testSetId": null, "configVersion": null, "confidenceFingerprint": null, "reviewObservations": 0, "scoringObservations": 200, "brierSse": 0.0036000000000000064, "confSum": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 199.76000000000002], "valueTally": {"1.0": [181, 181], "0.99": [15, 15], "0.97": [1, 1], "0.98": [3, 3]}}
+    },
+    {
+      "cell": "enforce-escalate",
+      "doc": "valuenoise_100.pdf",
+      "sub_doc": null,
+      "repeat": 3,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "escalate",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "default",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default",
+        "lazy_images": "on"
+      },
+      "run_id": "bench-valuenoise_100-20261110-001928",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 61.859586,
+      "cost": 0.1455,
+      "cost_unread": null,
+      "cost_unpriced": null,
+      "cost_by_phase": {
+        "OCR": 0.0452,
+        "Classification": 0.00282,
+        "Extraction": 0.09191,
+        "Assessment": 0.00554,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/requests": 0.0,
+        "lambda/duration": 0.00382,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00253,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.08989,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00424
+      },
+      "tokens": {
+        "inputTokens": 28614,
+        "outputTokens": 10990,
+        "cacheReadInputTokens": 111828,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3202,
+          "outputTokens": 498,
+          "cacheReadInputTokens": 4349,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 8004,
+          "outputTokens": 3818,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 17408,
+          "outputTokens": 6674,
+          "cacheReadInputTokens": 106039,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "scored_against": "exact_truth",
+      "exact_truth_unavailable": null,
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "processing_issues": 1,
+      "processing_issues_malformed": null,
+      "processing_issues_malformed_why": null,
+      "processing_issues_by_severity": {
+        "info": 1
+      },
+      "processing_issues_by_code": {
+        "assessment_geometry_incomplete": 1
+      },
+      "processing_issues_by_stage": {
+        "assessment": 1
+      },
+      "processing_issue_detail": [
+        {"stage": "assessment", "severity": "info", "code": "assessment_geometry_incomplete", "message": "15 scored leaf/leaves have no bounding box under geometry.mode 'ocr_only'.", "root_cause": "value could not be matched to OCR lines", "section_id": "1", "details": {"missing_geometry_leaves": 15, "missing_geometry_rows": 15, "row_leaves_wanting_geometry": 300, "missing_geometry_scalars": 0, "scalar_leaves_wanting_geometry": 7, "nothing_located": false}}
+      ],
+      "processing_issue_severities": "info=1",
+      "processing_issue_codes": "assessment_geometry_incomplete=1",
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "rows_tagged": 100,
+      "rows_id_repaired": 0,
+      "rows_id_unresolved": 0,
+      "unverified_row_shortfall": null,
+      "scalar_accuracy": 1.0,
+      "typed_truth_unavailable": "no typed scalar truth: this document's truth file declares no `fields_typed`, so typed_accuracy / typed_fields do not apply to this row and are absent, not zero. Only a document whose generator emits typed scalar expectations carries them (`kv_form`); for a transaction-list document the per-value instrument is cell_accuracy, with cells_compared as its denominator, and scalar_accuracy compares the text the document renders.",
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "cell_truth_unavailable": null,
+      "mean_confidence": 0.9989,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307,
+      "conf_rows_expected": 100,
+      "conf_rows_scored": 100,
+      "conf_rows_unscored": 0,
+      "conf_coverage": 1.0,
+      "conf_unscored_by_field": null,
+      "conf_rows_expected_by_field": {
+        "Transactions": 100
+      },
+      "calibration_observations": 200,
+      "calibration_correct": 200,
+      "calibration_ece": 0.05,
+      "calibration_ece_mean_conf": 0.0005,
+      "calibration_auroc": null,
+      "calibration_auroc_unbinned": null,
+      "calibration_brier": 0.0,
+      "calibration_bin_coverage": 1,
+      "calibration_reliable": false,
+      "calibration_curve": {"correct": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "total": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "testSetId": null, "configVersion": null, "confidenceFingerprint": null, "reviewObservations": 0, "scoringObservations": 200, "brierSse": 0.001600000000000003, "confSum": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 199.9], "valueTally": {"1.0": [192, 192], "0.99": [7, 7], "0.97": [1, 1]}}
+    },
+    {
+      "cell": "enforce-escalate",
+      "doc": "valuenoise_100.pdf",
+      "sub_doc": null,
+      "repeat": 4,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "escalate",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "default",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default",
+        "lazy_images": "on"
+      },
+      "run_id": "bench-valuenoise_100-20261110-001941",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 56.699165,
+      "cost": 0.1451,
+      "cost_unread": null,
+      "cost_unpriced": null,
+      "cost_by_phase": {
+        "OCR": 0.0452,
+        "Classification": 0.00278,
+        "Extraction": 0.09152,
+        "Assessment": 0.00563,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/requests": 0.0,
+        "lambda/duration": 0.00348,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00253,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.08989,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00424
+      },
+      "tokens": {
+        "inputTokens": 28522,
+        "outputTokens": 11006,
+        "cacheReadInputTokens": 111872,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3202,
+          "outputTokens": 499,
+          "cacheReadInputTokens": 4349,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 8004,
+          "outputTokens": 3818,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 17316,
+          "outputTokens": 6689,
+          "cacheReadInputTokens": 106083,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "scored_against": "exact_truth",
+      "exact_truth_unavailable": null,
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "processing_issues": 1,
+      "processing_issues_malformed": null,
+      "processing_issues_malformed_why": null,
+      "processing_issues_by_severity": {
+        "info": 1
+      },
+      "processing_issues_by_code": {
+        "assessment_geometry_incomplete": 1
+      },
+      "processing_issues_by_stage": {
+        "assessment": 1
+      },
+      "processing_issue_detail": [
+        {"stage": "assessment", "severity": "info", "code": "assessment_geometry_incomplete", "message": "15 scored leaf/leaves have no bounding box under geometry.mode 'ocr_only'.", "root_cause": "value could not be matched to OCR lines", "section_id": "1", "details": {"missing_geometry_leaves": 15, "missing_geometry_rows": 15, "row_leaves_wanting_geometry": 300, "missing_geometry_scalars": 0, "scalar_leaves_wanting_geometry": 7, "nothing_located": false}}
+      ],
+      "processing_issue_severities": "info=1",
+      "processing_issue_codes": "assessment_geometry_incomplete=1",
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "rows_tagged": 100,
+      "rows_id_repaired": 0,
+      "rows_id_unresolved": 0,
+      "unverified_row_shortfall": null,
+      "scalar_accuracy": 1.0,
+      "typed_truth_unavailable": "no typed scalar truth: this document's truth file declares no `fields_typed`, so typed_accuracy / typed_fields do not apply to this row and are absent, not zero. Only a document whose generator emits typed scalar expectations carries them (`kv_form`); for a transaction-list document the per-value instrument is cell_accuracy, with cells_compared as its denominator, and scalar_accuracy compares the text the document renders.",
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "cell_truth_unavailable": null,
+      "mean_confidence": 0.9984,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307,
+      "conf_rows_expected": 100,
+      "conf_rows_scored": 100,
+      "conf_rows_unscored": 0,
+      "conf_coverage": 1.0,
+      "conf_unscored_by_field": null,
+      "conf_rows_expected_by_field": {
+        "Transactions": 100
+      },
+      "calibration_observations": 200,
+      "calibration_correct": 200,
+      "calibration_ece": 0.05,
+      "calibration_ece_mean_conf": 0.0009,
+      "calibration_auroc": null,
+      "calibration_auroc_unbinned": null,
+      "calibration_brier": 0.0,
+      "calibration_bin_coverage": 1,
+      "calibration_reliable": false,
+      "calibration_curve": {"correct": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "total": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 200.0], "testSetId": null, "configVersion": null, "confidenceFingerprint": null, "reviewObservations": 0, "scoringObservations": 200, "brierSse": 0.002387000000000004, "confSum": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 199.829], "valueTally": {"1.0": [184, 184], "0.99": [11, 11], "0.97": [1, 1], "0.983": [1, 1], "0.991": [1, 1], "0.996": [1, 1], "0.999": [1, 1]}}
+    }
+  ],
+  "cell_stats": {
+    "enforce-warn": {
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "default",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default",
+        "lazy_images": "on"
+      },
+      "n_runs": 5,
+      "n_success": 5,
+      "n_fail": 0,
+      "n_cost_unread": 0,
+      "n_cost_unpriced": 0,
+      "n_sections_unread": 0,
+      "n_unverified_row_shortfall": 0,
+      "n_rows_id_repaired": 0,
+      "max_repeat": 5,
+      "n_scored_exact_truth": 5,
+      "n_scored_stack_evaluation": 0,
+      "cost": {
+        "n": 5,
+        "mean": 0.14532,
+        "stdev": 0.00023,
+        "cv": 0.0016,
+        "min": 0.1451,
+        "max": 0.1456
+      },
+      "completeness_recall": {
+        "n": 5,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "scalar_accuracy": {
+        "n": 5,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "typed_accuracy": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "cell_accuracy": {
+        "n": 5,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "sections_correct": {
+        "n": 5,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "weighted_accuracy": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "forced_tool_honored_rate": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "coercions": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "validation_valid_rate": {
+        "n": 5,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "wall_s": {
+        "n": 5,
+        "mean": 60.32888,
+        "stdev": 3.96865,
+        "cv": 0.0658,
+        "min": 55.85611,
+        "max": 64.9411
+      },
+      "conf_coverage": {"n": 5, "mean": 1.0, "stdev": 0.0, "cv": 0.0, "min": 1.0, "max": 1.0},
+      "calibration": {"observations": 1000, "correct": 1000, "accuracy": 1.0, "accuracy_low": 0.9962, "accuracy_high": 1.0, "ece": 0.05, "ece_mean_conf": 0.0005, "auroc": null, "auroc_unbinned": null, "brier": 0.0, "bin_coverage": 1, "degenerate": true, "overconfident": false, "undiscriminating": false, "reliable": false, "estimate_confidence": "unreliable", "bins": [{"binStart": 0.0, "binEnd": 0.1, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.1, "binEnd": 0.2, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.2, "binEnd": 0.3, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.3, "binEnd": 0.4, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.4, "binEnd": 0.5, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.5, "binEnd": 0.6, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.6, "binEnd": 0.7, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.7, "binEnd": 0.8, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.8, "binEnd": 0.9, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.9, "binEnd": 1.0, "observations": 1000, "observedAccuracy": 1.0, "observedAccuracyLow": 0.996173241514445, "observedAccuracyHigh": 1.0, "meanConfidence": 0.999469}]},
+      "processing_issues": {"n_runs": 5, "n_runs_scored": 5, "n_runs_with_issues": 5, "n_issues": 5, "by_severity": {"info": 5}, "by_code": {"assessment_geometry_incomplete": 5}, "by_stage": {"assessment": 5}}
+    },
+    "enforce-escalate": {
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "escalate",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "default",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default",
+        "lazy_images": "on"
+      },
+      "n_runs": 5,
+      "n_success": 5,
+      "n_fail": 0,
+      "n_cost_unread": 0,
+      "n_cost_unpriced": 0,
+      "n_sections_unread": 0,
+      "n_unverified_row_shortfall": 0,
+      "n_rows_id_repaired": 0,
+      "max_repeat": 5,
+      "n_scored_exact_truth": 5,
+      "n_scored_stack_evaluation": 0,
+      "cost": {
+        "n": 5,
+        "mean": 0.14536,
+        "stdev": 0.0003,
+        "cv": 0.002,
+        "min": 0.145,
+        "max": 0.1457
+      },
+      "completeness_recall": {
+        "n": 5,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "scalar_accuracy": {
+        "n": 5,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "typed_accuracy": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "cell_accuracy": {
+        "n": 5,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "sections_correct": {
+        "n": 5,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "weighted_accuracy": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "forced_tool_honored_rate": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "coercions": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "validation_valid_rate": {
+        "n": 5,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "wall_s": {
+        "n": 5,
+        "mean": 60.45349,
+        "stdev": 4.24,
+        "cv": 0.0701,
+        "min": 55.52455,
+        "max": 65.6835
+      },
+      "conf_coverage": {"n": 5, "mean": 1.0, "stdev": 0.0, "cv": 0.0, "min": 1.0, "max": 1.0},
+      "calibration": {"observations": 1000, "correct": 1000, "accuracy": 1.0, "accuracy_low": 0.9962, "accuracy_high": 1.0, "ece": 0.05, "ece_mean_conf": 0.0007, "auroc": null, "auroc_unbinned": null, "brier": 0.0, "bin_coverage": 1, "degenerate": true, "overconfident": false, "undiscriminating": false, "reliable": false, "estimate_confidence": "unreliable", "bins": [{"binStart": 0.0, "binEnd": 0.1, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.1, "binEnd": 0.2, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.2, "binEnd": 0.3, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.3, "binEnd": 0.4, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.4, "binEnd": 0.5, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.5, "binEnd": 0.6, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.6, "binEnd": 0.7, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.7, "binEnd": 0.8, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.8, "binEnd": 0.9, "observations": 0, "observedAccuracy": null, "observedAccuracyLow": null, "observedAccuracyHigh": null, "meanConfidence": null}, {"binStart": 0.9, "binEnd": 1.0, "observations": 1000, "observedAccuracy": 1.0, "observedAccuracyLow": 0.996173241514445, "observedAccuracyHigh": 1.0, "meanConfidence": 0.999289}]},
+      "processing_issues": {"n_runs": 5, "n_runs_scored": 5, "n_runs_with_issues": 5, "n_issues": 5, "by_severity": {"info": 5}, "by_code": {"assessment_geometry_incomplete": 5}, "by_stage": {"assessment": 5}}
+    }
+  }
+}

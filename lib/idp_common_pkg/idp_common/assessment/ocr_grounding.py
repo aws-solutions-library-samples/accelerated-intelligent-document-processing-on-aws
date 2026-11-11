@@ -628,6 +628,135 @@ def _line_box(line: Dict[str, Any]) -> Optional[Dict[str, float]]:
     }
 
 
+def _normalized_words(texts: List[str]) -> Tuple[str, List[int]]:
+    """Words joined with single spaces and normalized like a line, with the index
+    of the word each character came from (-1 for a joining space).
+
+    This re-applies :func:`_normalize`'s rules per character, so that a position
+    in the result can be mapped back to a word: casefold, a run of ``,``/``;``
+    followed by whitespace dropped (the whitespace stays), every whitespace run
+    collapsed to one space. ``_normalize``'s last step, stripping leading and
+    trailing punctuation, is deliberately not applied: the result is only
+    searched for a value as a substring. Should the two ever drift apart, the
+    search misses and the caller keeps the line box, so the failure is benign;
+    ``TestWordSpanNormalizationMatchesTheLine`` pins them together.
+    """
+    chars: List[str] = []
+    owner: List[int] = []
+    for k, text in enumerate(texts):
+        if chars:
+            chars.append(" ")
+            owner.append(-1)
+        for ch in text.casefold():
+            chars.append(ch)
+            owner.append(k)
+    norm: List[str] = []
+    norm_owner: List[int] = []
+    n = len(chars)
+    i = 0
+    while i < n:
+        ch = chars[i]
+        if ch in ",;":
+            j = i
+            while j < n and chars[j] in ",;":
+                j += 1
+            if j < n and chars[j].isspace():
+                i = j
+                continue
+        if ch.isspace():
+            if norm and norm[-1] != " ":
+                norm.append(" ")
+                norm_owner.append(-1)
+            i += 1
+            continue
+        norm.append(ch)
+        norm_owner.append(owner[i])
+        i += 1
+    return "".join(norm), norm_owner
+
+
+#: Private key under which a line caches its normalized words (see
+#: :func:`_word_span_index`). Like the page-level ``__*_cache__`` keys, it lives
+#: only on the in-memory page data grounding reads, which is never written back.
+_WORD_SPAN_CACHE_KEY = "__word_span_cache__"
+
+
+def _word_span_index(
+    line: Dict[str, Any],
+) -> Optional[Tuple[str, List[int], List[Optional[Dict[str, float]]]]]:
+    """``(joined, owner per character, box per word)`` for a line, or None.
+
+    Computed once per line and cached on it. It depends only on the line's
+    words, but a value that recurs down a table (a currency code, a unit, a
+    repeated amount) substring-matches every row, and without the cache each
+    candidate build re-normalized its line character by character. Measured on a
+    300-row table where every value matches every row (900 values): 0.43 s with
+    line boxes, 1.64 s narrowing uncached, 0.68 s with this cache. None (also
+    cached) when the line has fewer than two words or no word carries a box -
+    a blocks-based backend whose WORD children carry no Geometry, for instance - so such
+    lines skip the normalization entirely.
+    """
+    cached = line.get(_WORD_SPAN_CACHE_KEY)
+    if cached is not None:
+        return cached or None
+    words = line.get("words")
+    result: Optional[Tuple[str, List[int], List[Optional[Dict[str, float]]]]] = None
+    if isinstance(words, list) and len(words) >= 2:
+        boxes: List[Optional[Dict[str, float]]] = []
+        for w in words:
+            geom = w.get("geometry") if isinstance(w, dict) else None
+            bb = geom.get("boundingBox") if isinstance(geom, dict) else None
+            valid = isinstance(bb, dict) and all(
+                key in bb for key in ("left", "top", "width", "height")
+            )
+            boxes.append(bb if valid else None)
+        if any(bb is not None for bb in boxes):
+            joined, owners = _normalized_words(
+                [str(w.get("text") or "") if isinstance(w, dict) else "" for w in words]
+            )
+            result = (joined, owners, boxes)
+    line[_WORD_SPAN_CACHE_KEY] = result if result is not None else False
+    return result
+
+
+def _word_span_box(line: Dict[str, Any], norm_value: str) -> Optional[Dict[str, float]]:
+    """Box of the words inside ``line`` that spell ``norm_value``, or None.
+
+    A value found as a SUBSTRING of a longer OCR line (``"14.05.2024"`` in
+    ``"Issue Date 14.05.2024"``) would otherwise get the whole line's box, which
+    highlights the label and any other value on the line with it. Textract (and
+    the BDA OCR backend, which adapts to the Textract shape) returns a box per
+    WORD, and :meth:`OcrService._build_page_data` keeps them as
+    ``line["words"]``, so the box can be narrowed to exactly the words the value
+    covers.
+
+    The words are joined with single spaces in the order the line lists them - the
+    order of the line's own text, which the value just matched - and normalized the
+    way :func:`_normalize` normalizes a line (casefold, ``", "``/``"; "`` to a space,
+    whitespace collapsed), keeping track of which word each character came from. So
+    ``"mr. omar"`` is found in the words ``"To:" "Mr." "Omar"`` exactly as it was
+    found in the line text.
+
+    Returns None, and the caller keeps the line box, whenever narrowing is not
+    certain: fewer than two words, the value not found in the joined words (for
+    instance words listed in another order than the line text), found there more
+    than once, or covering a word that has no box. Lines without word geometry
+    (plain LLM OCR, paragraph-level Mistral boxes) are therefore unchanged.
+    """
+    prepared = _word_span_index(line)
+    if prepared is None:
+        return None
+    joined, norm_owner, boxes = prepared
+    start = joined.find(norm_value)
+    if start < 0 or joined.find(norm_value, start + 1) >= 0:
+        return None
+    covered = sorted({k for k in norm_owner[start : start + len(norm_value)] if k >= 0})
+    covered_boxes = [boxes[k] for k in covered]
+    if not covered_boxes or any(bb is None for bb in covered_boxes):
+        return None
+    return _union_box([bb for bb in covered_boxes if bb is not None])
+
+
 # Match precision tiers (lower = more precise). The caller keeps only the best tier
 # that matched, then disambiguates ties spatially. Ordering rationale:
 #   EXACT     - line text equals the value
@@ -843,6 +972,7 @@ def _collect_candidates_in_page(
         if not norm_text:
             continue
         best_tier = None
+        best_nv = norm_value
         is_variant_only = True
         for i, nv in enumerate(norm_variant_list):
             if norm_text == nv:
@@ -872,12 +1002,20 @@ def _collect_candidates_in_page(
                 continue
             if best_tier is None or tier < best_tier:
                 best_tier = tier
+                best_nv = nv
                 # primary value (i==0) keeps real "ocr" provenance; a non-primary
                 # variant hit is a format-normalized match.
                 is_variant_only = i != 0
         if best_tier is not None:
             src = _SOURCE_NORMALIZED if is_variant_only else None
-            match = _build_match(line, page_num, best_tier, src)
+            # A value inside a longer line is boxed to its own words, not the
+            # whole line (see _word_span_box).
+            narrow_to = (
+                best_nv
+                if best_tier in (_TIER_SUBSTRING, _TIER_SUBSTRING_EMBEDDED)
+                else None
+            )
+            match = _build_match(line, page_num, best_tier, src, narrow_to)
             if match is not None:
                 candidates.append(match)
             continue
@@ -1011,11 +1149,16 @@ def _collect_span_candidates(
     return results
 
 
+#: Private key carrying a narrowed candidate's LINE box, for row ordering only.
+_ORDER_BOX_KEY = "__order_box__"
+
+
 def _build_match(
     line: Dict[str, Any],
     page_num: int,
     tier: int,
     source_override: Optional[str] = None,
+    narrow_to: Optional[str] = None,
 ) -> Optional[Tuple[int, Dict[str, Any], str, Optional[float]]]:
     """Build a candidate tuple from a single OCR line, or None if it lacks geometry.
 
@@ -1030,6 +1173,9 @@ def _build_match(
     box = _line_box(line)
     if box is None:
         return None
+    line_box = box
+    if narrow_to:
+        box = _word_span_box(line, narrow_to) or box
     if tier == _TIER_WEAK_PARTIAL:
         source = _SOURCE_WEAK
     elif source_override is not None:
@@ -1038,7 +1184,12 @@ def _build_match(
         source = "ocr-paragraph" if line.get("geometrySource") == "paragraph" else "ocr"
     conf = line.get("confidence")
     ocr_conf = conf / 100.0 if isinstance(conf, (int, float)) else None
-    return (tier, {"boundingBox": box, "page": page_num}, source, ocr_conf)
+    geometry: Dict[str, Any] = {"boundingBox": box, "page": page_num}
+    if box is not line_box:
+        # Row order is decided by the line, not by where the value's words sit in
+        # it (see _reading_order_key); removed before the geometry is returned.
+        geometry[_ORDER_BOX_KEY] = line_box
+    return (tier, geometry, source, ocr_conf)
 
 
 def _box_center(geometry: Dict[str, Any]) -> Optional[Tuple[float, float]]:
@@ -1069,13 +1220,31 @@ def _ref_from_llm_geometry(
     return (page_val, center[0], center[1])
 
 
+def _public_geometry(geometry: Dict[str, Any]) -> Dict[str, Any]:
+    """``geometry`` without the private ordering key, as returned to callers."""
+    if _ORDER_BOX_KEY not in geometry:
+        return geometry
+    return {k: v for k, v in geometry.items() if k != _ORDER_BOX_KEY}
+
+
 def _reading_order_key(
     candidate: Tuple[int, Dict[str, Any], str, Optional[float]],
 ) -> Tuple[int, float, float]:
-    """Sort key placing candidates in document reading order: page, top, left."""
+    """Sort key placing candidates in document reading order: page, top, left.
+
+    A narrowed candidate is ordered by its LINE box, so word-span narrowing never
+    changes which occurrence a row-mapped list item is given: two candidates on
+    one visual row (a unit-price and a total column printing the same amount) keep
+    the left-to-right order of their lines rather than being decided by
+    sub-line differences in where the value's words sit.
+    """
     geometry = candidate[1]
     page = geometry.get("page", 0)
-    bb = geometry.get("boundingBox") if isinstance(geometry, dict) else None
+    bb = (
+        geometry.get(_ORDER_BOX_KEY) or geometry.get("boundingBox")
+        if isinstance(geometry, dict)
+        else None
+    )
     if isinstance(bb, dict):
         return (page, bb.get("top", 0.0), bb.get("left", 0.0))
     return (page, 0.0, 0.0)
@@ -1228,7 +1397,7 @@ def match_value_to_geometry(
 
     if len(best) == 1:
         _, geometry, source, ocr_conf = best[0]
-        return (geometry, source, ocr_conf)
+        return (_public_geometry(geometry), source, ocr_conf)
 
     # Ambiguous: multiple equally-good text matches (e.g. a value repeated across
     # table rows).
@@ -1242,7 +1411,7 @@ def match_value_to_geometry(
         if idx < 0:
             idx = 0
         _, geometry, source, ocr_conf = ordered[idx]
-        return (geometry, source, ocr_conf)
+        return (_public_geometry(geometry), source, ocr_conf)
 
     # Spatial disambiguation (llm_grounded mode): proximity to the
     # LLM-estimated box, which sits at a roughly-correct distinct position per
@@ -1261,7 +1430,7 @@ def match_value_to_geometry(
         nearest = min(pool, key=_distance)
         if _distance(nearest) != float("inf"):
             _, geometry, source, ocr_conf = nearest
-            return (geometry, source, ocr_conf)
+            return (_public_geometry(geometry), source, ocr_conf)
 
     # A usable LLM reference was supplied (llm_grounded mode) but
     # couldn't disambiguate -> stay ambiguous and KEEP the LLM box (return None),
@@ -1282,7 +1451,7 @@ def match_value_to_geometry(
     # (List items never reach here: they always pass an occurrence_index.)
     first = sorted(best, key=_reading_order_key)[0]
     _, geometry, source, ocr_conf = first
-    return (geometry, source, ocr_conf)
+    return (_public_geometry(geometry), source, ocr_conf)
 
 
 def _field_schema_for(schema_node: Any, key: str) -> Optional[Dict[str, Any]]:

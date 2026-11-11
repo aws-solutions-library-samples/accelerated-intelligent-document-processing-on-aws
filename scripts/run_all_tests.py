@@ -123,6 +123,7 @@ RUN_ROOTS = [
     "feature-platform/confbench-testset/tests",
     "feature-platform/feature-template/feature-api/tests",
     "feature-platform/idp-data-generator/feature-api/tests",
+    "feature-platform/idp-data-generator/docker_build_lambda/tests",
     "feature-platform/pii-anonymizer/feature-api/tests",
     "feature-platform/pii-anonymizer/hook/tests",
     "feature-platform/pii-anonymizer/ui-deployer/tests",
@@ -141,7 +142,9 @@ RUN_ROOTS = [
     # becomes a wrong published number rather than a visible failure — which is
     # exactly what happened at v0.6.5. Pure dict/YAML logic, no AWS.
     "benchmarks/tests",
-    "nested/multi-doc-discovery/docker_build_lambda/tests",
+    # CloudFormation -> Terraform translator and its custom-resource bridge.
+    "terraform/translator/tests",
+    "terraform/bridge/tests",
     # S3 Vectors custom resource. The directory root, not its `tests` subdirectory:
     # `test_handler.py` sits beside `handler.py` and the nested suite is reached by
     # nesting under this entry. `conftest.py` here stubs `cfnresponse` and supplies
