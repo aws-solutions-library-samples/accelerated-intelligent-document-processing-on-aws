@@ -12,8 +12,8 @@ the PRs, and report back in the shape under **Reporting**. Do not ask which tier
 run — the tier list is the deliverable. Ask only for the two things you genuinely
 cannot infer (see **Inputs**), and only if they are not already in the request.
 
-**The eight tiers, and what each is the only source of.** A release is validated when
-all eight have a row in the record — including any that could not run, with the reason.
+**The tiers, and what each is the only source of.** A release is validated when
+every tier has a row in the record — including any that could not run, with the reason.
 
 | | Tier | The only thing it proves |
 |---|---|---|
@@ -26,6 +26,7 @@ all eight have a row in the record — including any that could not run, with th
 | G | Browser UX review | whether a person can complete the web-UI flows |
 | H | Library integration tests | `idp_common` against real AWS rather than `moto` |
 | I | Terraform property parity | a Terraform deployment of the release stores what a CloudFormation deployment of it stores |
+| J | Migration from `genai-idp-terraform` | a deployment of the separate upstream Terraform implementation moves onto this release's module in place, keeping its data, users and passwords |
 
 > **What "validated" means here.** `docs/release-validation/README.md` defines the
 > tier list and the record format; `docs/release-validation/v0.6.6.md` is the worked
@@ -237,6 +238,10 @@ cannot prove otherwise once the bucket is gone.
 
 Skill: `test-upgrade.md` (including rollback-deadlock recovery).
 
+Tier J below is the same question for a Terraform customer coming from the separate
+`awslabs/genai-idp-terraform` implementation, and unlike this tier it is scripted end
+to end.
+
 ### F. Benchmarks — the release A/B **and** the full documentation refresh
 
 Tier F has two halves and both are mandatory. F1 answers "did this release regress?"
@@ -397,6 +402,44 @@ count, the explained and unexplained counts, and the types Cloud Control could n
 read (listed, not compared). Tear both deployments down afterwards
 (`idp-cli delete --terraform` for the Terraform one). It is read-only; the deploys
 are what cost money.
+
+### J. Migration from `genai-idp-terraform` (in place, onto the release module)
+
+The Terraform counterpart of tier E, for customers of the separate
+[`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform)
+implementation: `docs/terraform-migration.md`, run by a script rather than by hand.
+It needs the release's module zip URL, which `idp-cli publish --terraform` prints
+(for a published release, the versioned `idp-terraform-<VERSION>.zip` the release's
+`idp-terraform-latest.json` pointer names), and two unused names:
+
+```bash
+make stacktest-terraform-migration OLD_NAME=gitfN NEW_NAME=gitfnewN \
+    TERRAFORM_MODULE_URL=<module zip url> REGION=<region> \
+    WORK_DIR=<a directory outside /tmp> TERRAFORM_BIN=<terraform 1.7+>
+```
+
+The driver (`scripts/sdlc/terraform_migration_test.py`) clones upstream at the tag
+and commit it pins, deploys `examples/unified-processor` as `OLD_NAME`, seeds it
+(`lending_package.pdf` and a W-2 processed, an Admin and a scoped Author with random
+passwords and `@example.com` emails, one configuration edit through the API, a
+baseline and a test set), snapshots every kept bucket and table, and runs each phase
+of `idp-cli terraform migrate-from-genai-idp-terraform` in the guide's order with
+`--apply`. It then verifies, destroys the old deployment through its own Terraform
+after `check-destroy` passes, checks the adopted resources survived that, and destroys
+the new deployment with `idp-cli delete --terraform`, sweeping what either retained by
+name. A failed phase still tears down (`KEEP=1` or `STOP_AFTER=<phase>` keep the
+deployments; `RESUME=1` continues from `WORK_DIR`).
+
+**Pass:** exit 0 and `result.json` status `PASS`, which means every phase passed, the
+snapshot compare found no lost or changed object or item beyond the two configuration
+counters `fix-config` removes, both users signed in to the new app client by SRP with
+their old passwords and kept their scope, the new document ran on the new state machine
+and not the old, and the leftover check found nothing. Record the per-phase table from
+`summary.txt` (status and minutes), the adoption plan's import / add / change / destroy
+counts from the `migrate-apply` row, and any finding. Check the IAM role count against
+the quota first: the two deployments hold several hundred roles between them for the
+length of the run. On GitLab it also runs on the weekly Terraform-migration schedule,
+while that schedule is active; see `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 
 ## Operating a multi-hour run — what actually goes wrong
 
