@@ -8411,6 +8411,13 @@ from .tenancy import tenancy as _tenancy_group  # noqa: E402
 
 cli.add_command(_tenancy_group)
 
+# `idp-cli terraform ...` (Terraform-only commands) likewise.
+from .terraform import configure as _configure_terraform  # noqa: E402
+from .terraform import terraform as _terraform_group  # noqa: E402
+
+_configure_terraform(TEMPLATE_URLS, _resolve_region)
+cli.add_command(_terraform_group)
+
 
 def main():
     """Main entry point for the CLI"""
