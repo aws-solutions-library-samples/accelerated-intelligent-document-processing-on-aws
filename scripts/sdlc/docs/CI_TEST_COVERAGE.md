@@ -527,28 +527,37 @@ because upstream's longest IAM role name is its prefix plus 51 characters and IA
 allows 64, so the prefix can be at most 13 characters. The driver's own sweep never
 touches the `<new>-iam` pre-stack or its roles; `cleanup_iam_resources` does.
 
-⚠️ **The upstream deploy is refused under that role, so the run cannot pass until
-the CI's IAM changes.** This is measured from the upstream state at the pinned tag,
-not from a CI run. The role comes from
-`iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml`, and:
+**Upstream's IAM under that role.** The role comes from
+`iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml`, which
+allows IAM writes only on roles whose ARN starts with `role/<ManagedStackNamePrefix>`
+(`idp`) and, for role creation and policy changes, only when the role carries the
+run's permissions boundary (`iam:PermissionsBoundary` equal to
+`CreatedRolePermissionsBoundaryArn`). Upstream meets neither as published: it has no
+permissions-boundary variable and sets a boundary on none of its roles, and it names
+many roles and policies from fixed strings (`ConfigurationResolverRole…`,
+`UploadResolverS3Policy…`) rather than from its `prefix`.
 
-1. `CreateOrChangeRolesOnlyWithBoundary` allows `iam:CreateRole`,
-   `iam:PutRolePolicy` and `iam:AttachRolePolicy` only when the role carries the
-   run's permissions boundary (`iam:PermissionsBoundary` equal to
-   `CreatedRolePermissionsBoundaryArn`). Upstream has no permissions-boundary
-   variable and sets a boundary on none of its IAM roles, so its first
-   `aws_iam_role` is refused.
-2. The same statement, `RoleLifecycleWithinNamePrefix` and
-   `ManagedPoliciesWithinNamePrefix` allow only names starting with
-   `ManagedStackNamePrefix` (`idp`). Upstream names many roles and policies from
-   fixed strings (`ConfigurationResolverRole…`, `UploadResolverS3Policy…`) or from
-   its module names (`agent-…`, `chat-…`, `discovery-…`, `processing-…`) rather than
-   from its `prefix`, so even a boundary would not clear them.
+So the driver adds two attributes to every `aws_iam_role` and `aws_iam_policy` the
+example loads, through Terraform override files (`upstream_iam_overrides`, written as
+`zz_idp_ci_iam_override.tf` beside each module's own files; upstream's files are not
+edited): the run's boundary on each role, and the IAM path `/<run>-upstream/`
+(`terraform_migration_upstream_iam_path`) on each role and policy. The path starts
+with the prefix, so `role/<path><name>` falls inside the role's existing grant
+whatever upstream calls the role. **No IAM permission is widened and no role is
+added**: the run uses the same per-run `TFDeployRole` as a Terraform nightly, and its
+boundary condition still confines it to roles carrying this run's boundary, so
+another deployment's roles — the same names without the path, or another run's
+boundary — stay out of reach. `scripts/sdlc/tests/test_weekly_terraform_migration.py`
+holds the derived role's statements to that, and the driver's own tests hold the
+override generation to every role and policy the example loads.
 
-Clearing either needs a CI role whose IAM grant does not require the boundary or the
-prefix — a widening of the CI's IAM, which this change deliberately does not make.
-Everything else the run needs is in place, so with such a role the schedule runs as
-written, within the time limit below.
+Neither attribute changes what is migrated. Upstream builds no role or policy ARN
+from a name, and the migration adopts no IAM resource: every IAM type is in
+`RECREATE_SAFE_TYPES` in `lib/idp_sdk/idp_sdk/_core/terraform_migrate.py`, so the old
+deployment's roles are destroyed with it and the new deployment creates its own. The
+boundary is the CI's `Allow *` boundary, which changes no role's effective
+permissions. A run without `--upstream-iam-path`, such as one started by hand with
+an administrator's credentials, deploys upstream as published.
 
 **The time limit.** Measured on a live run (the passing one), the driver took 166
 minutes end to end: about 20 to deploy and seed the upstream deployment, 76 waiting on

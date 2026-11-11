@@ -258,10 +258,128 @@ def test_the_driver_gets_the_role_for_the_new_deployment_too():
         "/w",
         "us-east-1",
         "123456789012",
+        "arn:aws:iam::123456789012:policy/idp-m1-PermissionsBoundary",
     )
     assert cmd[cmd.index("--terraform-assume-role-arn") + 1] == "arn:r"
     assert cmd[cmd.index("--expected-account") + 1] == "123456789012"
+    assert cmd[cmd.index("--upstream-iam-path") + 1] == "/idp-m1-upstream/"
+    assert cmd[cmd.index("--upstream-permissions-boundary-arn") + 1].endswith(
+        "policy/idp-m1-PermissionsBoundary"
+    )
     assert "scripts/sdlc/terraform_migration_test.py" in cmd
+
+
+SERVICE_ROLE_TEMPLATE = (
+    REPO_ROOT
+    / "iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml"
+)
+
+
+def _deploy_role_statements():
+    """The derived TFDeployRole's statements, keyed by Sid, with each ``Fn::Sub``
+    resource rendered for an ``idp`` prefix in account 123456789012."""
+    template = cbd.terraform_deploy_role_template(SERVICE_ROLE_TEMPLATE.read_text())
+    role = template["Resources"]["TerraformDeployRole"]
+    subs = {
+        "AWS::Partition": "aws",
+        "AWS::AccountId": "123456789012",
+        "ManagedStackNamePrefix": cbd.MANAGED_STACK_NAME_PREFIX,
+        "AWS::StackName": "idp-1111-235959-iam",
+    }
+
+    def render(value):
+        text = value["Fn::Sub"] if isinstance(value, dict) else value
+        return re.sub(r"\$\{([^}]+)\}", lambda m: subs[m.group(1)], text)
+
+    out = {}
+    for policy in role["Properties"]["Policies"]:
+        for statement in policy["PolicyDocument"]["Statement"]:
+            resources = statement.get("Resource", [])
+            resources = resources if isinstance(resources, list) else [resources]
+            out[statement.get("Sid")] = (
+                statement,
+                [
+                    render(r)
+                    for r in resources
+                    if isinstance(r, (str, dict))
+                    and (isinstance(r, str) or "Fn::Sub" in r)
+                ],
+            )
+    return out
+
+
+@pytest.mark.parametrize(
+    ("sid", "kind", "name"),
+    [
+        (
+            "CreateOrChangeRolesOnlyWithBoundary",
+            "role",
+            "ConfigurationResolverRole-ab12",
+        ),
+        ("RoleLifecycleWithinNamePrefix", "role", "WebUIProxyRole-ab12"),
+        ("PassStackRolesToStackServices", "role", "UploadResolverRole-ab12"),
+        ("ManagedPoliciesWithinNamePrefix", "policy", "UploadResolverS3Policy-ab12"),
+    ],
+)
+def test_upstream_iam_under_the_run_path_is_inside_the_existing_grant(sid, kind, name):
+    """Upstream names these from fixed strings, outside role/idp*. Under the run's
+    path the ARN is role/<path><name>, which the deploy role's existing statements
+    already cover: nothing is widened for the migration run, and without the path
+    the same name is outside every one of them."""
+    import fnmatch
+
+    path = cbd.terraform_migration_upstream_iam_path("idp-1111-235959")
+    assert path.startswith(f"/{cbd.MANAGED_STACK_NAME_PREFIX}")
+    statement, patterns = _deploy_role_statements()[sid]
+    assert statement["Effect"] == "Allow"
+    pathed = f"arn:aws:iam::123456789012:{kind}{path}{name}"
+    bare = f"arn:aws:iam::123456789012:{kind}/{name}"
+    assert any(fnmatch.fnmatchcase(pathed, p) for p in patterns), patterns
+    assert not any(fnmatch.fnmatchcase(bare, p) for p in patterns), patterns
+
+
+def test_role_creation_still_requires_the_runs_boundary():
+    statement, _ = _deploy_role_statements()["CreateOrChangeRolesOnlyWithBoundary"]
+    assert statement["Condition"]["StringEquals"]["iam:PermissionsBoundary"] == {
+        "Ref": "CreatedRolePermissionsBoundaryArn"
+    }
+
+
+def test_the_build_passes_the_boundary_it_created(monkeypatch, tmp_path):
+    """The boundary the driver attaches is the one create_iam_resources made for
+    this run: the role's condition compares the ARN, so any other is refused."""
+    seen = {}
+    monkeypatch.setattr(cbd, "ci_region", lambda: "us-east-1")
+    monkeypatch.setattr(cbd, "terraform_work_directory", lambda n: str(tmp_path / n))
+    monkeypatch.setattr(cbd, "_caller_principal_arn", lambda: "arn:cb")
+    monkeypatch.setattr(
+        cbd,
+        "create_iam_resources",
+        lambda name, **k: ("arn:role", f"arn:aws:iam::1:policy/{name}-B"),
+    )
+    monkeypatch.setattr(cbd, "_wait_until_assumable", lambda arn: True)
+    monkeypatch.setattr(cbd, "cleanup_iam_resources", lambda name: [])
+    monkeypatch.setattr(cbd, "build_timeout_minutes", lambda *a: None)
+
+    class _Sts:
+        def get_caller_identity(self):
+            return {"Account": "1"}
+
+    monkeypatch.setattr(cbd.boto3, "client", lambda service, **k: _Sts())
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+
+        class _P:
+            returncode = 0
+
+        return _P()
+
+    monkeypatch.setattr(cbd.subprocess, "run", fake_run)
+    cbd.run_terraform_migration("idp-1111-235959", "https://m.zip", "terraform")
+    cmd = seen["cmd"]
+    boundary = cmd[cmd.index("--upstream-permissions-boundary-arn") + 1]
+    assert boundary == "arn:aws:iam::1:policy/idp-1111-235959-B"
 
 
 # -- .gitlab-ci.yml -------------------------------------------------------------------

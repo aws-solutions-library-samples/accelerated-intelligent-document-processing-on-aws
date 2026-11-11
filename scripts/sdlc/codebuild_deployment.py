@@ -11287,12 +11287,13 @@ def send_failure_notification(subject, summary_text):
 # run's TFDeployRole, created by the same `-iam` pre-stack a Terraform nightly uses,
 # with credential_source=EcsContainer so the SDKs refresh it for the whole run.
 #
-# ⚠️ The upstream deploy cannot succeed under that role as the role stands: the
-# service-role template allows iam:CreateRole only for roles carrying the run's
-# permissions boundary and named with ManagedStackNamePrefix, and upstream puts no
-# boundary on any role and names many of them with fixed prefixes. The run is wired
-# end to end so that it reports that refusal as its finding; see the
-# terraform-migration section of scripts/sdlc/docs/CI_TEST_COVERAGE.md.
+# Upstream puts no permissions boundary on any role and names many roles and
+# policies from fixed strings, which that role refuses: it may create only roles
+# carrying the run's boundary, under role/<ManagedStackNamePrefix>*. The driver
+# therefore adds the run's boundary and an IAM path starting with the prefix
+# (terraform_migration_upstream_iam_path) to every upstream role and policy through
+# Terraform override files, which clears both conditions without widening the role;
+# see the terraform-migration section of scripts/sdlc/docs/CI_TEST_COVERAGE.md.
 # ---------------------------------------------------------------------------
 
 TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
@@ -11384,6 +11385,15 @@ def terraform_migration_names(stack_name: str) -> tuple[str, str]:
     return f"{MANAGED_STACK_NAME_PREFIX}o{digits}", run
 
 
+def terraform_migration_upstream_iam_path(new_name: str) -> str:
+    """The IAM path every upstream role and managed policy of the run is created
+    under: ``/<run>-upstream/``. It starts with MANAGED_STACK_NAME_PREFIX, so
+    ``role/<path><name>`` falls inside the deploy role's ``role/idp*`` grant
+    whatever upstream names the role, and it carries the run's name, so what a dead
+    build left is found by path."""
+    return f"/{new_name}-upstream/"
+
+
 def render_migration_aws_config(role_arn: str, region: str) -> str:
     """An AWS config file whose one profile assumes ``role_arn`` from the
     container's credentials, refreshed by every SDK and the CLI as they expire."""
@@ -11397,7 +11407,15 @@ def render_migration_aws_config(role_arn: str, region: str) -> str:
 
 
 def terraform_migration_driver_command(
-    old_name, new_name, module_url, role_arn, terraform_bin, work_dir, region, account
+    old_name,
+    new_name,
+    module_url,
+    role_arn,
+    terraform_bin,
+    work_dir,
+    region,
+    account,
+    boundary_arn,
 ):
     return [
         sys.executable,
@@ -11418,6 +11436,10 @@ def terraform_migration_driver_command(
         role_arn,
         "--expected-account",
         account,
+        "--upstream-iam-path",
+        terraform_migration_upstream_iam_path(new_name),
+        "--upstream-permissions-boundary-arn",
+        boundary_arn,
     ]
 
 
@@ -11478,10 +11500,10 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
     summary = ""
     success = False
     try:
-        role_arn, _boundary = create_iam_resources(
+        role_arn, boundary_arn = create_iam_resources(
             new_name, terraform_deployer_arn=_caller_principal_arn()
         )
-        if not role_arn or not _wait_until_assumable(role_arn):
+        if not role_arn or not boundary_arn or not _wait_until_assumable(role_arn):
             return False, f"❌ the run's TFDeployRole for {new_name} was not usable"
         config_path = os.path.join(work_dir, "aws-config")
         with open(config_path, "w") as f:
@@ -11504,6 +11526,7 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
             work_dir,
             region,
             account,
+            boundary_arn,
         )
         deadline, timeout = terraform_migration_budget(
             time.monotonic() - started if started is not None else 0,
