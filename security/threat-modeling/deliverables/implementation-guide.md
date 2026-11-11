@@ -267,7 +267,7 @@ bound to it.
 | Control | Implementation |
 |---------|---------------|
 | **Athena read-only** | IAM role with SELECT-only permissions on Glue catalog |
-| **AgentCore sandbox** | AWS-managed isolation (no network, no credentials, no persistent storage) |
+| **AgentCore sandbox** | AWS-managed isolation (no credentials, no persistent storage; no public internet access; reaches Amazon S3 in the session's region and the instance metadata service, which lists no role) |
 | **Tool-level auth** | Each agent tool validates caller permissions |
 | **Audit logging** | All tool invocations logged with parameters and results |
 
