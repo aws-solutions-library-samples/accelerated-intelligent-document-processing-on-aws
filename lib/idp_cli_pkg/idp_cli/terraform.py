@@ -504,6 +504,31 @@ def apply_cmd(
     _finish(result, as_json, apply_)
 
 
+@migrate.command(name="restore-config")
+@stack_option
+@region_option
+@dir_option
+@apply_option
+@json_option
+def restore_config_cmd(
+    stack_name: str,
+    region: Optional[str],
+    terraform_dir: Optional[str],
+    apply_: bool,
+    as_json: bool,
+):
+    """Put back each kept configuration profile the first deploy replaced with the preset."""
+    from idp_sdk import IDPError
+
+    try:
+        result = _migration(stack_name, region).restore_config(
+            terraform_dir, apply=apply_
+        )
+    except IDPError as e:
+        _fail(str(e))
+    _finish(result, as_json, apply_)
+
+
 @migrate.command(name="detach")
 @stack_option
 @region_option

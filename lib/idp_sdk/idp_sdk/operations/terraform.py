@@ -727,6 +727,68 @@ class GenaiIdpTerraformMigration:
             details={"counts": counts, "review": review},
         )
 
+    # -- configuration restore ------------------------------------------------------------
+
+    def restore_config(
+        self, terraform_dir: Optional[str] = None, *, apply: bool = False
+    ) -> TerraformMigrationStepResult:
+        """Put back each kept profile the new deployment's first deploy replaced.
+
+        That deploy saves the module's preset over every profile it ships (the
+        ``default`` profile, at least) as a new revision, after recording what the
+        profile held as the revision before it. This finds each profile in the
+        ``fix-config`` backup whose published revision is such a deploy revision,
+        and with ``apply`` restores the earlier one as a new revision (history is
+        never rewritten, so the preset stays inspectable).
+        """
+        from idp_sdk._core import terraform_migrate as tm
+
+        directory = self._directory(terraform_dir)
+        self._load(directory)
+        backups = sorted(
+            self._migration_dir(directory).glob("configuration-table-backup-*.json")
+        )
+        if not backups:
+            raise IDPConfigurationError(
+                "no configuration-table backup in the migration directory; run "
+                "`fix-config --apply` before the adoption"
+            )
+        profiles = tm.backed_up_profiles(json.loads(backups[-1].read_text()))
+        name = self._client._require_stack(None)
+        self._client.config._configure_config_env(name)
+        from idp_common.config.configuration_manager import ConfigurationManager
+
+        manager = ConfigurationManager(region=self._region())
+        if not manager.revisions.enabled:
+            return TerraformMigrationStepResult(
+                phase="restore-config",
+                applied=False,
+                ok=False,
+                findings=["the new deployment's revision history is not readable"],
+            )
+        changes: List[str] = []
+        notes: List[str] = []
+        for profile in profiles:
+            revision = tm.overwritten_revision(manager.list_revisions(profile))
+            if revision is None:
+                notes.append(f"{profile}: content kept; nothing to restore")
+                continue
+            changes.append(
+                f"restore revision {revision} of {profile} (its content before the "
+                "migration), replacing the module preset the first deploy published"
+            )
+            if apply:
+                manager.restore_revision(
+                    profile, revision, created_by="genai-idp-terraform-migration"
+                )
+        return TerraformMigrationStepResult(
+            phase="restore-config",
+            applied=apply and bool(changes),
+            ok=True,
+            changes=changes,
+            notes=notes,
+        )
+
     # -- detach -------------------------------------------------------------------------
 
     def detach(

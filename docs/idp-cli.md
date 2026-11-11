@@ -922,6 +922,7 @@ changes something only lists the changes unless given `--apply`, and every phase
 | `fix-config` | Backs up, then removes `LatestRevision` and `PublishedRevision` from the old `Config#` rows | `--apply`, `--restore <backup>` |
 | `adopt-user-pool` | `terraform import` of the user pool, then a backed-up rewrite of its `schema` in the new state | `--apply`, `--terraform-bin` |
 | `apply` | Applies the checked adoption plan | `--apply`, `--accept-expiry KIND`, `--accept-change ADDRESS:RULE`, `--ignore-document KEY` (all repeatable), `--terraform-bin` |
+| `restore-config` | Restores, as a new revision, each kept configuration profile the first deploy replaced with the module preset | `--apply` |
 | `detach` | Backs up the old state, then removes the adopted and kept resources from it | `--old-terraform-dir` (required), `--apply`, `--terraform-bin` |
 | `check-destroy` | Nothing | `--destroy-plan` (`terraform show -json` of the old deployment's `terraform plan -destroy -out=<file>`) |
 

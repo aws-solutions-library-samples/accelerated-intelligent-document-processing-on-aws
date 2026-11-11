@@ -1958,6 +1958,47 @@ def item_from_json(value: Any) -> Any:
     return value
 
 
+#: The notes ``ConfigurationManager`` gives the revision it records, on the first
+#: save after revision history is enabled, of what the profile held before.
+PRE_HISTORY_NOTES = "Configuration as it stood before revision history was enabled"
+STACK_DEPLOYMENT = "stack-deployment"
+
+
+def backed_up_profiles(backup: Dict[str, Any]) -> List[str]:
+    """The profiles a ``fix-config`` backup holds (``Config#<profile>`` rows,
+    without the ``Config#__active`` pointer)."""
+    out = []
+    for item in backup.get("Items", []):
+        key = item["Configuration"]["S"]
+        if key.startswith(CONFIG_PREFIX) and not key.startswith(CONFIG_PREFIX + "__"):
+            out.append(key[len(CONFIG_PREFIX) :])
+    return sorted(out)
+
+
+def overwritten_revision(revisions: Sequence[Dict[str, Any]]) -> Optional[int]:
+    """The revision to restore when the new deployment's first deploy replaced a
+    kept profile's content, else None.
+
+    The first deploy against an adopted configuration table records what the
+    profile held as one revision (PRE_HISTORY_NOTES), then saves the module's
+    preset for every profile it ships as the next one, created by
+    STACK_DEPLOYMENT, and publishes that. For such a profile the old content is
+    kept only as that earlier revision. A profile whose published revision was cut
+    by anyone else, or that has no pre-history revision, is left alone.
+    """
+    pre = [r for r in revisions if r.get("notes") == PRE_HISTORY_NOTES]
+    published = [r for r in revisions if r.get("published")]
+    if not pre or not published:
+        return None
+    head = published[0]
+    if (
+        head.get("createdBy") != STACK_DEPLOYMENT
+        or head["revision"] <= pre[0]["revision"]
+    ):
+        return None
+    return int(pre[0]["revision"])
+
+
 def scan_all(ddb, table_name: str) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     kwargs: Dict[str, Any] = {"TableName": table_name}
