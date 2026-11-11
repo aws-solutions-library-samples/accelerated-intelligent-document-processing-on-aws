@@ -987,6 +987,7 @@ export type Mutation = {
   assignTestSetDocuments?: Maybe<Array<TestSetDocumentAssignment>>;
   autoDetectSections?: Maybe<Scalars['String']['output']>;
   bulkSkipAllReviews?: Maybe<BulkSkipAllReviewsResult>;
+  cancelBulkReviewJob?: Maybe<BulkReviewJob>;
   claimNextReviewItem?: Maybe<ClaimNextResult>;
   claimReview?: Maybe<Document>;
   claimReviewItem?: Maybe<ReviewItem>;
@@ -1002,6 +1003,7 @@ export type Mutation = {
   createReviewQueue?: Maybe<ReviewQueueDefinition>;
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
+  deleteBulkReviewJob?: Maybe<Scalars['Boolean']['output']>;
   deleteChatSession?: Maybe<Scalars['Boolean']['output']>;
   deleteConfigPrefixMapping?: Maybe<ConfigPrefixMappingMutationResponse>;
   deleteConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
@@ -1206,6 +1208,11 @@ export type MutationBulkSkipAllReviewsArgs = {
 };
 
 
+export type MutationCancelBulkReviewJobArgs = {
+  jobId: Scalars['String']['input'];
+};
+
+
 export type MutationClaimNextReviewItemArgs = {
   queueName?: InputMaybe<Scalars['String']['input']>;
   queueProfile?: InputMaybe<Scalars['String']['input']>;
@@ -1286,6 +1293,11 @@ export type MutationCreateUserArgs = {
 
 export type MutationDeleteAgentJobArgs = {
   jobId: Scalars['ID']['input'];
+};
+
+
+export type MutationDeleteBulkReviewJobArgs = {
+  jobId: Scalars['String']['input'];
 };
 
 

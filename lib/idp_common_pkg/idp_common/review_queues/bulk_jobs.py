@@ -31,6 +31,7 @@ from typing import Any, Callable, Optional, Sequence, Tuple
 
 from . import keys
 from .bulk_models import (
+    ACTIVE_JOB_STATUSES,
     DEFER_SECONDS,
     DRY_RUN_BUDGET_SECONDS,
     FINAL_JOB_STATUSES,
@@ -336,6 +337,33 @@ class BulkJobStore:
             response.get("LastEvaluatedKey")
         )
 
+    def delete(self, meta: dict[str, Any]) -> bool:
+        """Delete a finished job's list entries and META; ``False`` when it is no
+        longer finished (or already gone). Its chunk and result rows are unreachable
+        without META and expire with it (``ExpiresAfter``), so a job of any size is
+        deleted in a bounded number of writes."""
+        job_id = str(meta["JobId"])
+        finals = sorted(s.value for s in FINAL_JOB_STATUSES)
+        values = {f":f{i}": v for i, v in enumerate(finals)}
+        try:
+            self.client.delete_item(
+                keys.bulk_job_key(job_id),
+                condition_expression="#s IN (" + ", ".join(values) + ")",
+                expression_attribute_names={"#s": "Status"},
+                expression_attribute_values=values,
+            )
+        except Exception as e:
+            if _condition_failed(e):
+                return False
+            raise
+        sk = keys.bulk_index_sk(str(meta["CreatedAt"]), job_id)
+        for pk in (
+            keys.bulk_user_index_pk(str(meta["RequesterKey"])),
+            keys.BULK_ALL_INDEX_PK,
+        ):
+            self.client.delete_item({"PK": pk, "SK": sk})
+        return True
+
     # ---- one-running-job lock
 
     def acquire_lock(self, job_id: str, now_ms: int) -> bool:
@@ -365,6 +393,17 @@ class BulkJobStore:
         except Exception as e:
             if not _condition_failed(e):
                 logger.warning("event=bulk_lock_release_failed", exc_info=True)
+
+
+def _while_active() -> dict[str, Any]:
+    """``BulkJobStore.update`` arguments that apply only while the job is active."""
+    active = sorted(s.value for s in ACTIVE_JOB_STATUSES)
+    values = {f":a{i}": v for i, v in enumerate(active)}
+    return {
+        "condition": "#s IN (" + ", ".join(values) + ")",
+        "names": {"#s": "Status"},
+        "values": values,
+    }
 
 
 # ------------------------------------------------------------------- views
@@ -753,11 +792,8 @@ class BulkSkipService:
     ) -> Optional[BulkJobResultsPage]:
         """The job and a page of results; ``None`` unless it is the caller's own
         (or the caller is an Admin), so another user's job reads as not found."""
-        meta = self.jobs.get(job_id)
+        meta = self._owned(caller, job_id, "read")
         if meta is None:
-            return None
-        if not caller.is_admin and meta.get("RequesterKey") != caller.reviewer_key:
-            logger.warning("Denied bulk job read: not the requester")
             return None
         if outcome is not None:
             BulkOutcome(outcome)  # validates
@@ -767,6 +803,68 @@ class BulkSkipService:
         return BulkJobResultsPage(
             job=job_view(meta, self.clock()), results=results, next_token=token
         )
+
+    def _owned(
+        self, caller: ReviewCaller, job_id: str, action: str
+    ) -> Optional[dict[str, Any]]:
+        """The job's META when the caller requested it (or is an Admin); ``None``
+        otherwise, so another user's job reads as not found."""
+        meta = self.jobs.get(job_id)
+        if meta is None:
+            return None
+        if not caller.is_admin and meta.get("RequesterKey") != caller.reviewer_key:
+            logger.warning("Denied bulk job %s: not the requester", action)
+            return None
+        return meta
+
+    def cancel_job(self, caller: ReviewCaller, job_id: str) -> Optional[BulkJobView]:
+        """Cancel a queued or running job; ``None`` when it isn't the caller's.
+
+        The job ends ``CANCELLED`` at once. The worker sees it before its next page
+        and stops, so at most the page in progress (``PAGE_SIZE`` documents) is
+        still skipped; documents already skipped stay skipped. The requester is
+        told, as for any finished job.
+        """
+        meta = self._owned(caller, job_id, "cancel")
+        if meta is None:
+            return None
+        active = sorted(s.value for s in ACTIVE_JOB_STATUSES)
+        values = {f":a{i}": v for i, v in enumerate(active)}
+        cancelled = self.jobs.update(
+            job_id,
+            {
+                "Status": JobStatus.CANCELLED.value,
+                "FinishedAt": utc_iso(self.clock()),
+                "CancelledBy": caller.email or caller.reviewer_key,
+            },
+            condition="#s IN (" + ", ".join(values) + ")",
+            names={"#s": "Status"},
+            values=values,
+        )
+        if not cancelled:
+            raise ReviewValidationError("JOB_FINISHED", "the job has already finished")
+        logger.info("event=bulk_job_cancelled")
+        self._notify(job_id)
+        meta = self.jobs.get(job_id) or meta
+        return job_view(meta, self.clock())
+
+    def delete_job(self, caller: ReviewCaller, job_id: str) -> bool:
+        """Delete a finished job; ``False`` when it isn't the caller's (not found)."""
+        meta = self._owned(caller, job_id, "delete")
+        if meta is None:
+            return False
+        if meta.get("Status") not in {s.value for s in FINAL_JOB_STATUSES}:
+            raise ReviewValidationError(
+                "JOB_ACTIVE", "cancel the job, or wait for it to finish, first"
+            )
+        if not self.jobs.delete(meta):
+            if self.jobs.get(job_id) is None:
+                return False
+            raise ReviewValidationError(
+                "JOB_ACTIVE", "cancel the job, or wait for it to finish, first"
+            )
+        logger.info("event=bulk_job_deleted")
+        return True
 
     def list_jobs(
         self, caller: ReviewCaller, *, limit: int = 25, next_token: Optional[str] = None
@@ -793,20 +891,22 @@ class BulkSkipService:
         if meta is None:
             return
         if meta.get("Status") not in {s.value for s in FINAL_JOB_STATUSES}:
-            self.jobs.update(
+            if self.jobs.update(
                 job_id,
                 {
                     "Status": JobStatus.FAILED.value,
                     "Error": error,
                     "FinishedAt": utc_iso(self.clock()),
                 },
-            )
-            logger.warning("event=bulk_job_failed error=%s", error)
-            self._notify(job_id)
+                **_while_active(),
+            ):
+                logger.warning("event=bulk_job_failed error=%s", error)
+                self._notify(job_id)
         self.jobs.release_lock(job_id)
 
     def _finish(self, job_id: str, *, limit_reached: bool = False) -> None:
-        self.jobs.update(
+        # Conditional, so a job cancelled during its last page stays CANCELLED.
+        finished = self.jobs.update(
             job_id,
             {
                 "Status": JobStatus.SUCCEEDED.value,
@@ -814,10 +914,12 @@ class BulkSkipService:
                 "LimitReached": limit_reached,
             },
             removes=("Cursor",),
+            **_while_active(),
         )
         self.jobs.release_lock(job_id)
-        logger.info("event=bulk_job_finished")
-        self._notify(job_id)
+        if finished:
+            logger.info("event=bulk_job_finished")
+            self._notify(job_id)
 
     def _notify(self, job_id: str) -> None:
         if self.notifier is None:
@@ -872,6 +974,10 @@ class BulkSkipService:
         if meta is None:
             return None
         if meta.get("Status") in {s.value for s in FINAL_JOB_STATUSES}:
+            if meta.get("Status") == JobStatus.CANCELLED.value:
+                # Cancelled between wake-ups: the lock this job held is freed now
+                # rather than at the end of its lease (release is per job id).
+                self.jobs.release_lock(job_id)
             return None
         if wake_token not in {meta.get("WakeToken"), meta.get("NextWakeToken")}:
             logger.info("event=bulk_job_stale_wakeup")
@@ -880,10 +986,16 @@ class BulkSkipService:
         if not self.jobs.acquire_lock(job_id, int(now.timestamp() * 1000)):
             return DEFER_SECONDS
         if meta.get("Status") == JobStatus.QUEUED.value:
-            self.jobs.update(
+            # Conditional, so a job cancelled while queued is not restarted.
+            if not self.jobs.update(
                 job_id,
                 {"Status": JobStatus.RUNNING.value, "StartedAt": utc_iso(now)},
-            )
+                condition="#s = :q",
+                names={"#s": "Status"},
+                values={":q": JobStatus.QUEUED.value},
+            ):
+                self.jobs.release_lock(job_id)
+                return None
         caller = self._caller_for(meta)
         if caller is None:
             self.fail_job(job_id, "scope_revoked")
@@ -895,6 +1007,10 @@ class BulkSkipService:
                 self._heartbeat(job_id)
                 return DEFER_SECONDS
             meta = self.jobs.get(job_id) or meta
+            if meta.get("Status") == JobStatus.CANCELLED.value:
+                logger.info("event=bulk_job_stopped_cancelled")
+                self.jobs.release_lock(job_id)
+                return None
             page = _int(meta.get("NextPage"))
             done = False
             limit_reached = False

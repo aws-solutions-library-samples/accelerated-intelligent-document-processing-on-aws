@@ -12,12 +12,14 @@ import { describeApiError, isAuthorizationError } from '../../hooks/utils/graphq
 import { formatDateTime } from '../../utils/date-time';
 import type { BulkDocumentOutcome, BulkReviewJob } from '../../graphql/generated/schema-types';
 import { getBulkJob } from './bulk-review-api';
-import { JOB_MODE_LABELS, JOB_TYPE_LABELS } from './bulk-outcomes';
+import { ACTIVE_JOB_STATUSES, JOB_MODE_LABELS, JOB_TYPE_LABELS } from './bulk-outcomes';
 import BulkResultsTable from './BulkResultsTable';
 import { JobStatus } from './JobsPage';
 import OutcomeCounts from './OutcomeCounts';
 
-const ACTIVE = new Set(['QUEUED', 'RUNNING']);
+/** A cancelled job ends like a failed one: stopped before it finished. */
+const progressStatus = (status: string): 'error' | 'success' | 'in-progress' =>
+  status === 'SUCCEEDED' ? 'success' : status === 'FAILED' || status === 'CANCELLED' ? 'error' : 'in-progress';
 
 const isNotFound = (e: unknown): boolean =>
   /NOT_FOUND|not found/i.test(String((e as { errors?: { message?: string }[] })?.errors?.[0]?.message ?? e));
@@ -45,7 +47,7 @@ const JobDetailPage = (): React.JSX.Element => {
   useEffect(() => {
     void load();
   }, [load]);
-  usePolling(() => void load(), { enabled: !!job && ACTIVE.has(job.status), intervalMs: 5_000 });
+  usePolling(() => void load(), { enabled: !!job && ACTIVE_JOB_STATUSES.has(job.status), intervalMs: 5_000 });
 
   const loadMore = async () => {
     if (!nextToken) return;
@@ -63,7 +65,7 @@ const JobDetailPage = (): React.JSX.Element => {
 
   if (error && !job) return <Alert type="error">{error}</Alert>;
   if (!job) return <Spinner size="large" />;
-  const pct = job.total > 0 ? Math.min(100, Math.round((job.processed / job.total) * 100)) : ACTIVE.has(job.status) ? 0 : 100;
+  const pct = job.total > 0 ? Math.min(100, Math.round((job.processed / job.total) * 100)) : ACTIVE_JOB_STATUSES.has(job.status) ? 0 : 100;
 
   return (
     <SpaceBetween size="l">
@@ -109,8 +111,8 @@ const JobDetailPage = (): React.JSX.Element => {
             value={pct}
             label="Progress"
             description={`${job.processed.toLocaleString()} of ${job.total.toLocaleString()} documents processed`}
-            status={job.status === 'FAILED' ? 'error' : job.status === 'SUCCEEDED' ? 'success' : 'in-progress'}
-            resultText={job.status === 'SUCCEEDED' ? 'Finished' : (job.error ?? 'Failed')}
+            status={progressStatus(job.status)}
+            resultText={job.status === 'SUCCEEDED' ? 'Finished' : job.status === 'CANCELLED' ? 'Cancelled' : (job.error ?? 'Failed')}
           />
           <OutcomeCounts counts={job.counts} />
         </SpaceBetween>

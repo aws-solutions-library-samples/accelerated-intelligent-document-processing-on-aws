@@ -669,7 +669,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 135 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 137 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 27 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -949,7 +949,7 @@ enforcement itself is Layer 2.
 | `processChanges` (a caller who is not an Admin must own the document's open review, the review must not be finished, the document must not be processing, and the document must be inside the caller's configuration-profile scope — the same checks as `saveSectionReviewEdits`, plus the document-status and scope checks) | Admin, Reviewer |
 | `skipAllSectionsReview` | Admin, Reviewer |
 | `bulkSkipAllReviews` (by-profile requests refused unless the profile is in the caller's scope; selected documents scoped one by one, see below), `sendToReview` (each document scoped by its own profile) | Admin, Reviewer |
-| `getBulkReviewJob`, `listBulkReviewJobs` (a Reviewer reads only the jobs they requested; another user's job reads as not found; an Admin reads every job) | Admin, Reviewer |
+| `getBulkReviewJob`, `listBulkReviewJobs`, `cancelBulkReviewJob`, `deleteBulkReviewJob` (a Reviewer reads, cancels and deletes only the jobs they requested; another user's job reads as not found; an Admin can act on every job) | Admin, Reviewer |
 | `completeSectionReview`, `claimReview`, `releaseReview` | Admin, Reviewer, Annotator (an Annotator only for a document of a test set in their `allowedTestSets`, and `completeSectionReview` only for one assigned to them; a Reviewer only for a production document) |
 | `saveTestSetDocumentSection`, `saveTestSetDocumentSectionDraft`, `skipTestSetDocument`, `updateTestSetDocumentSections` | Admin, Author, Annotator (an Annotator only for a document assigned to them; an Author drafts authored ground truth only) |
 | `saveSectionReviewEdits` (saves a section's corrections without completing the review; a Reviewer must be the document's review owner) | Admin, Reviewer |

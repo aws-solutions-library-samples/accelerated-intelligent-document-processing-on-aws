@@ -1,7 +1,8 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Bulk review resolver: bulk Skip All Reviews, its jobs, and Send to review.
+"""Bulk review resolver: bulk Skip All Reviews, its jobs (read, cancel, delete), and
+Send to review.
 
 A thin dispatcher over ``idp_common.review_queues`` (``bulk_jobs.BulkSkipService``
 and ``send_to_review.SendToReviewService``). The caller comes only from verified
@@ -55,6 +56,8 @@ _FIELD_GROUPS: dict[str, frozenset] = {
     "bulkSkipAllReviews": _REVIEWERS,
     "getBulkReviewJob": _REVIEWERS,
     "listBulkReviewJobs": _REVIEWERS,
+    "cancelBulkReviewJob": _REVIEWERS,
+    "deleteBulkReviewJob": _REVIEWERS,
     "sendToReview": _REVIEWERS,
 }
 
@@ -297,6 +300,26 @@ def _get_job(caller: ReviewCaller, args: dict) -> dict:
     }
 
 
+def _job_id(args: dict) -> str:
+    job_id = args.get("jobId")
+    if not isinstance(job_id, str) or not job_id:
+        raise ValueError("BAD_ARGUMENT: jobId is required")
+    return job_id
+
+
+def _cancel_job(caller: ReviewCaller, args: dict) -> dict:
+    view = _services().bulk.cancel_job(caller, _job_id(args))
+    if view is None:
+        raise ResourceNotFound("NOT_FOUND: no such job")
+    return _job_shape(view)
+
+
+def _delete_job(caller: ReviewCaller, args: dict) -> bool:
+    if not _services().bulk.delete_job(caller, _job_id(args)):
+        raise ResourceNotFound("NOT_FOUND: no such job")
+    return True
+
+
 def _list_jobs(caller: ReviewCaller, args: dict) -> dict:
     page = _services().bulk.list_jobs(
         caller, limit=_limit(args, 25, 100), next_token=args.get("nextToken")
@@ -319,6 +342,8 @@ _FIELDS: dict[str, Callable[[ReviewCaller, dict], Any]] = {
     "bulkSkipAllReviews": _bulk_skip,
     "getBulkReviewJob": _get_job,
     "listBulkReviewJobs": _list_jobs,
+    "cancelBulkReviewJob": _cancel_job,
+    "deleteBulkReviewJob": _delete_job,
     "sendToReview": _send_to_review,
 }
 

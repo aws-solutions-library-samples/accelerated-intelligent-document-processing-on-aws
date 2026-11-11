@@ -352,6 +352,8 @@ FIELD_ALIASES: Dict[str, str] = {
     # Bulk Skip All Reviews jobs and Send to review: BulkReviewResolverFunction.
     "getBulkReviewJob": "bulkSkipAllReviews",
     "listBulkReviewJobs": "bulkSkipAllReviews",
+    "cancelBulkReviewJob": "bulkSkipAllReviews",
+    "deleteBulkReviewJob": "bulkSkipAllReviews",
     "sendToReview": "bulkSkipAllReviews",
     "saveSectionReviewEdits": "claimReview",
     # createUser (UserManagementFunctionArn)

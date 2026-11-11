@@ -46,7 +46,11 @@ export const JOB_STATUSES: Record<string, OutcomeView> = {
   RUNNING: { label: 'Running', type: 'in-progress' },
   SUCCEEDED: { label: 'Succeeded', type: 'success' },
   FAILED: { label: 'Failed', type: 'error' },
+  CANCELLED: { label: 'Cancelled', type: 'stopped' },
 };
+
+/** A job that is still waiting or working, and so can be cancelled (and not deleted). */
+export const ACTIVE_JOB_STATUSES: ReadonlySet<string> = new Set(['QUEUED', 'RUNNING']);
 
 export const jobStatusView = (status: string): OutcomeView => JOB_STATUSES[status] ?? { label: status, type: 'info' };
 
