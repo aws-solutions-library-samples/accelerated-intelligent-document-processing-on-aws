@@ -86,7 +86,7 @@ behaviour.
 | Non-admin user with no scope | Sees every document | Sees **nothing** until an admin sets a scope |
 | Upload under tenant T processed under a profile of another tenant (via upload metadata, `submission-source`, or an ancestor mapping) | Processed | **Refused** at ingest, recorded as Failed with the reason |
 | Upload outside every tenant's prefixes | Processed under the active profile | **Refused** at ingest once at least one tenant is declared (internal producers excepted, below) |
-| Document chat | Streams through the chat Function URL | Uses the REST path, which carries the caller's verified identity and so can be scoped; the Function URL refuses |
+| Document chat | Streams through the chat Function URL | The web UI is not given the Function URL and uses the REST path. Both paths scope the turn from the caller's verified identity: the Function URL verifies the Cognito ID token the browser presents and refuses a request without one |
 | Agent Chat, agent queries and Knowledge Base queries, which read across documents | Available to their usual groups | **Admin only** |
 | MCP tools | Available | **Refused**: the gateway passes no user identity to scope by |
 
@@ -192,9 +192,10 @@ Under `IdpClaim` and `Api` four things change, whatever `TenantIsolationMode` sa
   entitlement push, is denied rather than served every tenant's documents.
 - **The surfaces that read across tenants are closed to non-Admins,** as in strict
   mode: Agent Chat, agent queries and Knowledge Base queries are Admin only, MCP tools
-  are refused, and document chat must use the REST path because the chat Function URL
-  carries no verified identity to scope by. Once users are confined to a tenant, any
-  of these would otherwise be a way around the confinement.
+  are refused, and the web UI sends document chat over the REST path. The chat
+  Function URL applies the same rules from the caller's verified ID token. Once users
+  are confined to a tenant, any of these would otherwise be a way around the
+  confinement.
 - **Admins cannot edit configuration-profile scopes** in User Management or through
   `createUser`/`updateUser`. The field is shown read-only with the tenant and where it
   came from, and the API refuses an edit, naming the grant source. Test-set scope
