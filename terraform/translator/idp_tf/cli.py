@@ -135,7 +135,11 @@ def write_module(
         "AWSCC_VERSION", tr.schema.version or "1.0.0"
     )
     if tr.custom_tokens:
-        files["bridge.tf"] = bridge_tf(tr.permissions_boundary_variable())
+        files["bridge.tf"] = bridge_tf(
+            tr.permissions_boundary_variable(),
+            kms_key=tr.bridge_kms_key(),
+            access_log_bucket=tr.bridge_access_log_bucket(),
+        )
     out.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
         (out / name).write_text(text)

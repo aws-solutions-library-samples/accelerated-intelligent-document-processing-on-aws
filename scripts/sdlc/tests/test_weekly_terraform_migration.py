@@ -15,6 +15,7 @@ Pinned here, offline:
 from __future__ import annotations
 
 import ast
+import json
 import re
 import textwrap
 from pathlib import Path
@@ -345,9 +346,8 @@ def test_role_creation_still_requires_the_runs_boundary():
     }
 
 
-def test_the_build_passes_the_boundary_it_created(monkeypatch, tmp_path):
-    """The boundary the driver attaches is the one create_iam_resources made for
-    this run: the role's condition compares the ARN, so any other is refused."""
+def _run_migration_with_fakes(monkeypatch, tmp_path):
+    """run_terraform_migration against fakes; returns what it called."""
     seen = {}
     monkeypatch.setattr(cbd, "ci_region", lambda: "us-east-1")
     monkeypatch.setattr(cbd, "terraform_work_directory", lambda n: str(tmp_path / n))
@@ -361,14 +361,22 @@ def test_the_build_passes_the_boundary_it_created(monkeypatch, tmp_path):
     monkeypatch.setattr(cbd, "cleanup_iam_resources", lambda name: [])
     monkeypatch.setattr(cbd, "build_timeout_minutes", lambda *a: None)
 
-    class _Sts:
+    events = []
+
+    class _Client:
         def get_caller_identity(self):
             return {"Account": "1"}
 
-    monkeypatch.setattr(cbd.boto3, "client", lambda service, **k: _Sts())
+        def put_object(self, **kwargs):
+            events.append(("put", kwargs["Key"], json.loads(kwargs["Body"])))
+
+    monkeypatch.setattr(cbd.boto3, "client", lambda service, **k: _Client())
+    monkeypatch.setattr(cbd, "_terraform_state_bucket", lambda: "ci-bucket")
+    seen["events"] = events
 
     def fake_run(cmd, **kwargs):
         seen["cmd"] = cmd
+        events.append(("driver",))
 
         class _P:
             returncode = 0
@@ -377,9 +385,37 @@ def test_the_build_passes_the_boundary_it_created(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cbd.subprocess, "run", fake_run)
     cbd.run_terraform_migration("idp-1111-235959", "https://m.zip", "terraform")
-    cmd = seen["cmd"]
+    return seen
+
+
+def test_the_build_passes_the_boundary_it_created(monkeypatch, tmp_path):
+    """The boundary the driver attaches is the one create_iam_resources made for
+    this run: the role's condition compares the ARN, so any other is refused."""
+    cmd = _run_migration_with_fakes(monkeypatch, tmp_path)["cmd"]
     boundary = cmd[cmd.index("--upstream-permissions-boundary-arn") + 1]
     assert boundary == "arn:aws:iam::1:policy/idp-1111-235959-B"
+
+
+def test_the_build_records_the_run_before_the_driver_and_passes_the_mirror(
+    monkeypatch, tmp_path
+):
+    """run.json is what lets a later build tear a dead run down, so it is in the
+    bucket before the driver creates anything, and the driver keeps its states
+    under the same prefix."""
+    seen = _run_migration_with_fakes(monkeypatch, tmp_path)
+    prefix = f"{cbd.TERRAFORM_MIGRATION_STATE_PREFIX}idp-1111-235959/"
+    kinds = [e[0] for e in seen["events"]]
+    assert kinds == ["put", "driver"]
+    _, key, record = seen["events"][0]
+    assert key == prefix + cbd.TERRAFORM_RUN_RECORD
+    assert record["new_name"] == "idp-1111-235959"
+    assert record["old_name"] == cbd.terraform_migration_names("idp-1111-235959")[0]
+    assert record["role_arn"] == "arn:role"
+    assert record["boundary_arn"] == "arn:aws:iam::1:policy/idp-1111-235959-B"
+    assert record["upstream_iam_path"] == "/idp-1111-235959-upstream/"
+    assert record["account"] == "1"
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("--state-mirror") + 1] == f"s3://ci-bucket/{prefix}"
 
 
 # -- .gitlab-ci.yml -------------------------------------------------------------------
@@ -436,3 +472,229 @@ def test_the_migration_job_is_no_shared_gate():
         "terraform_migration" not in shared
         and "stacktest-terraform-migration" not in shared
     )
+
+
+# -- the reaper for a dead migration run -----------------------------------------------
+
+DEAD = "idp-1111-235959"
+MPREFIX = f"{cbd.TERRAFORM_MIGRATION_STATE_PREFIX}{DEAD}/"
+RECORD = {
+    "old_name": "idpo11112359",
+    "new_name": DEAD,
+    "region": "us-east-1",
+    "role_arn": "arn:aws:iam::1:role/idp-1111-235959-iam-TFDeployRole",
+    "boundary_arn": "arn:aws:iam::1:policy/idp-1111-235959-PermissionsBoundary",
+    "upstream_iam_path": "/idp-1111-235959-upstream/",
+    "module_url": "https://m.zip",
+    "account": "1",
+}
+
+
+class _S3Listing:
+    """A fake S3 client; `pages` is what list_objects_v2 answers, Prefix ignored
+    on purpose, so a listing that trusts the API's prefix filter is caught."""
+
+    def __init__(self, objects):
+        self.objects = objects
+
+    def get_paginator(self, api):
+        objects = self.objects
+
+        class _P:
+            def paginate(self, Bucket, Prefix):  # noqa: N803
+                yield {"Contents": objects}
+
+        return _P()
+
+    def get_object(self, Bucket, Key):  # noqa: N803
+        body = json.dumps(RECORD).encode()
+
+        class _B:
+            def read(self):
+                return body
+
+        return {"Body": _B()}
+
+
+def test_the_nightly_listing_never_reads_a_migration_run():
+    from datetime import datetime, timezone
+
+    now = datetime.now(tz=timezone.utc)
+    client = _S3Listing(
+        [
+            {
+                "Key": f"{cbd.TERRAFORM_STATE_PREFIX}idp-0101-000000/main.tf",
+                "LastModified": now,
+            },
+            {"Key": MPREFIX + cbd.TERRAFORM_RUN_RECORD, "LastModified": now},
+        ]
+    )
+    assert set(cbd._terraform_state_listing("b", s3=client)) == {"idp-0101-000000"}
+    assert set(
+        cbd._terraform_state_listing(
+            "b", s3=client, prefix=cbd.TERRAFORM_MIGRATION_STATE_PREFIX
+        )
+    ) == {DEAD}
+
+
+def test_the_reaper_runs_the_drivers_teardown_with_the_recorded_run(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cbd, "ensure_terraform_binary", lambda: "/bin/terraform")
+    monkeypatch.setattr(
+        cbd, "cleanup_iam_resources", lambda name: seen.setdefault("iam", name) and []
+    )
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+
+    def fake_run(cmd, env, timeout, check):
+        seen.update(cmd=cmd, env=env, timeout=timeout)
+        seen["config"] = open(env["AWS_CONFIG_FILE"]).read()
+
+        class _P:
+            returncode = 0
+
+        return _P()
+
+    monkeypatch.setattr(cbd.subprocess, "run", fake_run)
+    outcome = cbd._reap_terraform_migration(
+        DEAD, "ci-bucket", [MPREFIX + cbd.TERRAFORM_RUN_RECORD], s3=_S3Listing([])
+    )
+    assert outcome == {"findings": [], "timed_out": False}
+    cmd = seen["cmd"]
+
+    def arg(flag):
+        return cmd[cmd.index(flag) + 1]
+
+    assert cmd[-2:] == ["--resume", "--teardown-only"]
+    assert (arg("--old-name"), arg("--new-name")) == ("idpo11112359", DEAD)
+    assert arg("--upstream-iam-path") == RECORD["upstream_iam_path"]
+    assert arg("--upstream-permissions-boundary-arn") == RECORD["boundary_arn"]
+    assert arg("--expected-account") == "1"
+    assert arg("--state-mirror") == f"s3://ci-bucket/{MPREFIX}"
+    assert f"role_arn = {RECORD['role_arn']}" in seen["config"]
+    assert seen["env"]["AWS_PROFILE"] == cbd.TERRAFORM_MIGRATION_PROFILE
+    assert "AWS_ACCESS_KEY_ID" not in seen["env"]
+    assert seen["timeout"] == cbd.TERRAFORM_MIGRATION_REAP_TIMEOUT_SECONDS
+    assert seen["iam"] == DEAD
+
+
+def test_a_failed_teardown_is_a_finding_and_leaves_iam(monkeypatch):
+    cleaned = []
+    monkeypatch.setattr(cbd, "ensure_terraform_binary", lambda: "/bin/terraform")
+    monkeypatch.setattr(cbd, "cleanup_iam_resources", lambda n: cleaned.append(n) or [])
+
+    class _P:
+        returncode = 1
+
+    monkeypatch.setattr(cbd.subprocess, "run", lambda *a, **k: _P())
+    outcome = cbd._reap_terraform_migration(
+        DEAD, "b", [MPREFIX + cbd.TERRAFORM_RUN_RECORD], s3=_S3Listing([])
+    )
+    assert outcome["findings"] and not outcome["timed_out"]
+    assert cleaned == []  # the role the next attempt runs as stays
+
+
+def test_a_run_with_no_record_is_reported_not_guessed(monkeypatch):
+    monkeypatch.setattr(
+        cbd.subprocess, "run", lambda *a, **k: pytest.fail("ran the driver")
+    )
+    outcome = cbd._reap_terraform_migration(
+        DEAD, "b", [MPREFIX + "context.json"], s3=_S3Listing([])
+    )
+    assert "run.json" in outcome["findings"][0]
+
+
+def _sweep(monkeypatch, age_seconds, reap_outcome=None, prior=0):
+    from datetime import datetime, timedelta, timezone
+
+    modified = datetime.now(tz=timezone.utc) - timedelta(seconds=age_seconds)
+    monkeypatch.setattr(cbd, "_terraform_state_bucket", lambda: "b")
+    monkeypatch.setattr(
+        cbd.boto3,
+        "client",
+        lambda *a, **k: _S3Listing(
+            [{"Key": MPREFIX + cbd.TERRAFORM_RUN_RECORD, "LastModified": modified}]
+        ),
+    )
+    reaped, recorded = [], []
+    monkeypatch.setattr(
+        cbd,
+        "_reap_terraform_migration",
+        lambda name, bucket, keys: reaped.append(name) or reap_outcome,
+    )
+    monkeypatch.setattr(cbd, "_reap_attempts", lambda *a: prior)
+    monkeypatch.setattr(
+        cbd, "_record_reap_failure", lambda c, b, p, n, f: recorded.append((p, n))
+    )
+    pending, abandoned = set(), []
+    findings = cbd.cleanup_stale_terraform_migrations(pending, abandoned)
+    return findings, pending, abandoned, reaped, recorded
+
+
+def test_a_young_migration_run_is_kept_and_not_reaped(monkeypatch):
+    findings, pending, _, reaped, _ = _sweep(monkeypatch, 60)
+    assert (findings, pending, reaped) == ([], {DEAD}, [])
+
+
+def test_a_dead_migration_run_is_reaped_and_released(monkeypatch):
+    findings, pending, _, reaped, _ = _sweep(
+        monkeypatch,
+        cbd.IDP_STACK_STALE_AGE_SECONDS + 60,
+        {"findings": [], "timed_out": False},
+    )
+    assert (findings, pending, reaped) == ([], set(), [DEAD])
+
+
+def test_a_failed_reap_is_counted_and_keeps_the_run(monkeypatch):
+    findings, pending, abandoned, _, recorded = _sweep(
+        monkeypatch,
+        cbd.IDP_STACK_STALE_AGE_SECONDS + 60,
+        {"findings": [f"{DEAD}: broke"], "timed_out": False},
+    )
+    assert findings and pending == {DEAD} and abandoned == []
+    assert recorded == [(MPREFIX, 1)]
+
+
+def test_a_run_past_its_attempts_is_abandoned_to_a_note(monkeypatch):
+    findings, pending, abandoned, reaped, _ = _sweep(
+        monkeypatch,
+        cbd.IDP_STACK_STALE_AGE_SECONDS + 60,
+        prior=cbd.TERRAFORM_REAP_MAX_ATTEMPTS,
+    )
+    assert findings == [] and reaped == [] and pending == {DEAD}
+    (note,) = abandoned
+    assert MPREFIX in note and "--teardown-only" in note
+
+
+def test_the_age_gate_outlasts_the_drivers_longest_phase():
+    """The driver mirrors its context at the end of every phase; its longest phase
+    is a DynamoDB time-to-live wait of about an hour. A gate inside that would
+    reap a run still in flight."""
+    assert cbd.IDP_STACK_STALE_AGE_SECONDS >= 2 * 3600
+
+
+def test_main_hands_the_migration_runs_to_the_stack_sweep(monkeypatch):
+    monkeypatch.setattr(cbd, "install_suite_transcript", lambda: None)
+    monkeypatch.setattr(cbd, "read_ci_run_options", lambda *a: {})
+    seen = {}
+    for sweep in cbd.STARTUP_SWEEPS:
+        monkeypatch.setattr(cbd, sweep.func, lambda *a, **k: [])
+
+    def migrations(pending, abandoned):
+        pending.add(DEAD)
+        return []
+
+    monkeypatch.setattr(cbd, "cleanup_stale_terraform_migrations", migrations)
+    monkeypatch.setattr(
+        cbd, "cleanup_stale_idp_stacks", lambda **k: seen.update(k) or []
+    )
+
+    class _Stop(BaseException):
+        pass
+
+    def _stop(*_a, **_k):
+        raise _Stop()
+
+    monkeypatch.setattr(cbd, "publish_artifacts", _stop)
+    with pytest.raises(_Stop):
+        cbd.main()
+    assert seen == {"terraform_runs": {DEAD}}

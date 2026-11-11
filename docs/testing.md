@@ -332,7 +332,9 @@ needs network access and about two gigabytes of cache. Each CI runs it as its ow
 4. It runs `make terraform-scan-diff`: a pinned `checkov` (`CHECKOV_VERSION` in the
    `Makefile`) over the CloudFormation templates and over the generated module,
    failing on a Terraform finding the CloudFormation side does not have unless
-   `scripts/terraform_scan_baseline.json` explains it.
+   `scripts/terraform_scan_baseline.json` explains it. Findings on checks with no
+   CloudFormation counterpart are pinned per check and resource type in
+   `scripts/terraform_scan_tf_only_baseline.json`, so a new one fails too.
 
 The gate proves that the generated HCL parses, that its references resolve, and that
 every resource and attribute type-checks against the pinned provider schemas, on the

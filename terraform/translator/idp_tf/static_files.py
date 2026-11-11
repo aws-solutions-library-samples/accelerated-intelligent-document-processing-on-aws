@@ -29,7 +29,11 @@ VERSIONS_TF = """terraform {
 """
 
 
-def bridge_tf(boundary_var: str | None = None) -> str:
+def bridge_tf(
+    boundary_var: str | None = None,
+    kms_key: str | None = None,
+    access_log_bucket: str | None = None,
+) -> str:
     """Bridge Lambda, its role and its response bucket.
 
     The bridge's own policy grants no ``lambda:InvokeFunction``: each handler
@@ -40,6 +44,15 @@ def bridge_tf(boundary_var: str | None = None) -> str:
     ``boundary_var`` (the module's ``PermissionsBoundaryArn`` variable, when it
     has one) is applied as its permissions boundary when set, as the template's
     ``HasPermissionsBoundary`` condition does for every other role.
+
+    ``kms_key`` and ``access_log_bucket`` are HCL expressions
+    (``Translator.bridge_kms_key`` and ``bridge_access_log_bucket``): the key the
+    template's own log groups are encrypted with and the bucket its own buckets
+    log to. With a key, the bridge's log group is encrypted with it, as the
+    template's are; the key policy must already let CloudWatch Logs use it,
+    which it does wherever the template's own log groups use the same key. With
+    a bucket, the bridge bucket's server access logs go to it under
+    ``cfn-bridge-logs/<stack_name>/``. None leaves that setting off.
     """
     role_lines = [f"name = {default_name('CfnBridge', 64, global_name=True)}"]
     if boundary_var:
@@ -50,6 +63,18 @@ def bridge_tf(boundary_var: str | None = None) -> str:
     role_head = "\n".join(f"  {line}" for line in role_lines)
     role_lifecycle = "\n".join(
         f"  {line}" for line in GENERATED_NAME_ROLE_LIFECYCLE.splitlines()
+    )
+    log_group_kms = f"\n  kms_key_id        = {kms_key}" if kms_key else ""
+    access_logging = (
+        f"""
+resource "aws_s3_bucket_logging" "cfn_bridge" {{
+  bucket        = aws_s3_bucket.cfn_bridge.id
+  target_bucket = {access_log_bucket}
+  target_prefix = "cfn-bridge-logs/${{var.{STACK_NAME_VAR}}}/"
+}}
+"""
+        if access_log_bucket
+        else ""
     )
     return f"""# Runs CloudFormation custom-resource handlers for Terraform. See
 # terraform/bridge/index.py in the source repository.
@@ -66,7 +91,7 @@ resource "aws_s3_bucket_public_access_block" "cfn_bridge" {{
   ignore_public_acls      = true
   restrict_public_buckets = true
 }}
-
+{access_logging}
 resource "aws_s3_bucket_server_side_encryption_configuration" "cfn_bridge" {{
   bucket = aws_s3_bucket.cfn_bridge.id
   rule {{
@@ -86,6 +111,14 @@ resource "aws_s3_bucket_lifecycle_configuration" "cfn_bridge" {{
     }}
     expiration {{
       days = 1
+    }}
+  }}
+  rule {{
+    id     = "abort-incomplete-uploads"
+    status = "Enabled"
+    filter {{}}
+    abort_incomplete_multipart_upload {{
+      days_after_initiation = 1
     }}
   }}
 }}
@@ -154,7 +187,7 @@ resource "time_sleep" "cfn_bridge_iam" {{
 
 resource "aws_cloudwatch_log_group" "cfn_bridge" {{
   name_prefix       = "/${{var.{STACK_NAME_VAR}}}/lambda/CfnBridge-"
-  retention_in_days = 30
+  retention_in_days = 30{log_group_kms}
 }}
 
 resource "aws_lambda_function" "cfn_bridge" {{
