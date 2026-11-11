@@ -633,3 +633,52 @@ def test_the_test_finds_a_kept_resource_in_a_destroy_plan_by_kind():
         delete("aws_cognito_user_pool", id="us-west-2_P"),
     ]
     assert len(tmt.kept_deletions(plan, targets, old)) == 3
+
+
+def test_the_ttl_disable_waits_out_dynamodbs_change_interval(tmp_path, monkeypatch):
+    """Measured live: on a table upstream had created (and enabled TTL on) minutes
+    before, the disable was refused as a second change within the interval."""
+    from botocore.exceptions import ClientError
+
+    class FakeDdb:
+        class exceptions:
+            ClientError = ClientError
+
+        def __init__(self):
+            self.calls = 0
+
+        def update_time_to_live(self, **kwargs):
+            self.calls += 1
+            if self.calls < 3:
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "ValidationException",
+                            "Message": "Time to live has been modified multiple times within a fixed interval",
+                        }
+                    },
+                    "UpdateTimeToLive",
+                )
+
+    monkeypatch.setattr(tmt.time, "sleep", lambda s: None)
+    ddb = FakeDdb()
+    tmt.Run(_settings(tmp_path))._disable_ttl(ddb, "t", "expiresAfter")
+    assert ddb.calls == 3
+
+
+def test_any_other_ttl_error_is_raised(tmp_path, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class FakeDdb:
+        class exceptions:
+            ClientError = ClientError
+
+        def update_time_to_live(self, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ResourceNotFoundException", "Message": "no"}},
+                "UpdateTimeToLive",
+            )
+
+    monkeypatch.setattr(tmt.time, "sleep", lambda s: None)
+    with pytest.raises(ClientError):
+        tmt.Run(_settings(tmp_path))._disable_ttl(FakeDdb(), "t", "expiresAfter")

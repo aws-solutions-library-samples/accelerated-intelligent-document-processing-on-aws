@@ -1435,17 +1435,35 @@ class Run:
         for table in tables:
             desc = ddb.describe_time_to_live(TableName=table)["TimeToLiveDescription"]
             if desc.get("TimeToLiveStatus") == "ENABLED":
+                self._disable_ttl(ddb, table, desc["AttributeName"])
                 self.ctx["ttlDisabledAt"] = time.time()
+        self.ctx["ttlTables"] = tables
+        self.ctx.setdefault("ttlDisabledAt", time.time())
+        return f"time-to-live turning off on {tables or 'no agent-jobs table'}"
+
+    def _disable_ttl(self, ddb, table: str, attribute: str) -> None:
+        """Turn TTL off, waiting out DynamoDB's change interval if it refuses.
+
+        A deployment the test has just created enabled TTL on the table minutes
+        ago, which counts as the first change of the interval, so the disable is
+        refused ("modified multiple times within a fixed interval") until about an
+        hour after the table was created. A customer's table is old enough never to
+        hit this; the test's always does."""
+        deadline = time.monotonic() + TTL_SETTLE_SECONDS + 300
+        while True:
+            try:
                 ddb.update_time_to_live(
                     TableName=table,
                     TimeToLiveSpecification={
                         "Enabled": False,
-                        "AttributeName": desc["AttributeName"],
+                        "AttributeName": attribute,
                     },
                 )
-        self.ctx["ttlTables"] = tables
-        self.ctx.setdefault("ttlDisabledAt", time.time())
-        return f"time-to-live turning off on {tables or 'no agent-jobs table'}"
+                return
+            except ddb.exceptions.ClientError as e:
+                if "multiple times" not in str(e) or time.monotonic() > deadline:
+                    raise
+                time.sleep(60)
 
     def phase_ttl_settle(self) -> str:
         """Wait until TTL reads DISABLED and DynamoDB's TTL change interval (about
