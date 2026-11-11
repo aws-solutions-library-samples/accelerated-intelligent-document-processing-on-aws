@@ -641,9 +641,6 @@ def test_the_ttl_disable_waits_out_dynamodbs_change_interval(tmp_path, monkeypat
     from botocore.exceptions import ClientError
 
     class FakeDdb:
-        class exceptions:
-            ClientError = ClientError
-
         def __init__(self):
             self.calls = 0
 
@@ -660,6 +657,7 @@ def test_the_ttl_disable_waits_out_dynamodbs_change_interval(tmp_path, monkeypat
                     "UpdateTimeToLive",
                 )
 
+    FakeDdb.exceptions = type("exceptions", (), {"ClientError": ClientError})
     monkeypatch.setattr(tmt.time, "sleep", lambda s: None)
     ddb = FakeDdb()
     tmt.Run(_settings(tmp_path))._disable_ttl(ddb, "t", "expiresAfter")
@@ -670,15 +668,13 @@ def test_any_other_ttl_error_is_raised(tmp_path, monkeypatch):
     from botocore.exceptions import ClientError
 
     class FakeDdb:
-        class exceptions:
-            ClientError = ClientError
-
         def update_time_to_live(self, **kwargs):
             raise ClientError(
                 {"Error": {"Code": "ResourceNotFoundException", "Message": "no"}},
                 "UpdateTimeToLive",
             )
 
+    FakeDdb.exceptions = type("exceptions", (), {"ClientError": ClientError})
     monkeypatch.setattr(tmt.time, "sleep", lambda s: None)
     with pytest.raises(ClientError):
         tmt.Run(_settings(tmp_path))._disable_ttl(FakeDdb(), "t", "expiresAfter")
