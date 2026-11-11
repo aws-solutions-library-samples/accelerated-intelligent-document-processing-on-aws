@@ -122,9 +122,9 @@ You now have a working pipeline.
 **Ongoing, at your own pace.**
 
 Process real documents and look at the results. Each record shows the extracted values next
-to the page they came from, and the accelerator flags results with low confidence or a
-failed rule for review. When a field keeps coming back wrong, make its description more precise, or try
-another model, and run the documents again.
+to the page they came from. The accelerator sends results with low confidence to review and
+reports every rule a document fails. When a field keeps coming back wrong, make its
+description more precise, or try another model, and run the documents again.
 
 You don't have to do the experimenting yourself. The
 [Auto Optimizer](extensions/auto-optimizer.md) is an agent that tries changes to prompts,

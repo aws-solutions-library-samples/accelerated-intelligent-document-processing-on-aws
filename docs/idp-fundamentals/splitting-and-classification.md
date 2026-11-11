@@ -398,7 +398,7 @@ See the [benchmark suite](../benchmarking/index.md) for setup and scoring.
   [Discovery](../discovery.md#multi-section-package-discovery).
 - **Score how sure the model is of each document class:**
   [classification confidence](../configuration.md#classification-confidence-classificationcombinedllmconfidence),
-  and [Confidence Assessment](confidence-assessment.md#document-class-confidence) for what we
+  and [Confidence Assessment](confidence-assessment.md#document-class-confidence-on-multi-document-packets) for what we
   measured.
 - **Fix a document's sections by hand:**
   [re-grouping pages](../web-ui.md#re-grouping-a-processed-documents-pages) in the Web UI.

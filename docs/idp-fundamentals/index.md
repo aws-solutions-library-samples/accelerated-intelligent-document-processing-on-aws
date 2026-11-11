@@ -37,8 +37,8 @@ flowchart LR
 | [Confidence assessment](confidence-assessment.md) | Which results can I trust without checking? | A confidence score for every result |
 | [Rule validation](rule-validation.md) | Does the document meet my business rules? | A verdict per rule, with its evidence |
 
-Results with low confidence, and results that fail a rule, go to a person for review before
-they reach the database.
+Results with low confidence go to a person for review before they reach the database, and
+the accelerator reports every rule each document fails.
 
 Each step works from the output of the step before it. When results are wrong, fix the
 earliest step that is wrong first. Better extraction cannot recover a misread page or a
@@ -68,8 +68,8 @@ With your document classes and fields saved, the pipeline is live: documents go 
 ### 2. Run your documents and look at the results
 
 Process a batch of real documents and open the results. Each record shows the extracted
-values next to the page they came from, so you can check them at a glance. The accelerator flags
-results with low confidence, and results that fail a rule, for review.
+values next to the page they came from, so you can check them at a glance. The accelerator sends
+results with low confidence to review and reports every rule a document fails.
 
 Most early fixes are wording fixes. If a field keeps coming back wrong, make its
 description more precise: say where the value appears, what it is not, and the format you
@@ -133,7 +133,7 @@ upgrade, and you will see a regression in your scores before you see it in your 
 the same comparison twice before you act on a difference of a few points, because model
 output varies slightly from run to run.
 
-## What we measured
+## What our benchmarks measure, and how to run them yourself
 
 Each problem-set page reports results from this repository's
 [benchmark suite](../benchmarking/index.md). The suite runs public and synthetic datasets
