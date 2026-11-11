@@ -65,8 +65,11 @@ USAGE
         --new-name gitfnew2 --terraform-module-url <zip url> \\
         --work-dir ~/scratch/gitf2 [--stop-after seed] [--resume] [--keep]
 
-The upstream deploy and the adoption apply are each 20-40 minutes; a full run is
-about two and a half hours.
+Measured: a full run is about 170 minutes. The upstream deploy is about 18 and the
+adoption apply about 32; 77 are spent waiting on DynamoDB, which refuses to turn the
+agent-jobs table's time-to-live off until about an hour after upstream enabled it,
+and the module's new setting until about an hour after that (docs/terraform-migration.md,
+Hazards); destroying both deployments is about 30.
 """
 
 from __future__ import annotations

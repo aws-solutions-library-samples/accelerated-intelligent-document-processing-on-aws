@@ -422,17 +422,23 @@ The driver (`scripts/sdlc/terraform_migration_test.py`) clones upstream at the t
 and commit it pins, deploys `examples/unified-processor` as `OLD_NAME`, seeds it
 (`lending_package.pdf` and a W-2 processed, an Admin and a scoped Author with random
 passwords and `@example.com` emails, one configuration edit through the API, a
-baseline and a test set), snapshots every kept bucket and table, and runs each phase
-of `idp-cli terraform migrate-from-genai-idp-terraform` in the guide's order with
-`--apply`. It then verifies, destroys the old deployment through its own Terraform
+baseline and a test set), turns the agent-jobs table's old time-to-live off (the
+guide's hazard; DynamoDB accepts that only about an hour after upstream enabled it,
+and the module's setting only about an hour after that, so a run takes about three
+hours), snapshots every kept bucket and table once the frozen old deployment has
+stopped writing, and runs each phase of `idp-cli terraform
+migrate-from-genai-idp-terraform` in the guide's order with `--apply`, including
+`restore-config`. It then verifies, destroys the old deployment through its own Terraform
 after `check-destroy` passes, checks the adopted resources survived that, and destroys
 the new deployment with `idp-cli delete --terraform`, sweeping what either retained by
 name. A failed phase still tears down (`KEEP=1` or `STOP_AFTER=<phase>` keep the
-deployments; `RESUME=1` continues from `WORK_DIR`).
+deployments; `RESUME=1` continues from `WORK_DIR`, never past a failed `verify`).
 
 **Pass:** exit 0 and `result.json` status `PASS`, which means every phase passed, the
-snapshot compare found no lost or changed object or item beyond the two configuration
-counters `fix-config` removes, both users signed in to the new app client by SRP with
+snapshot compare found no lost or changed object or item beyond the named changes the
+migration makes (the two configuration counters `fix-config` removes, the profiles
+`restore-config` restores, the configuration rows every deploy rewrites, and the
+attributes the module's index backfill adds to tracking rows), both users signed in to the new app client by SRP with
 their old passwords and kept their scope, the new document ran on the new state machine
 and not the old, and the leftover check found nothing. Record the per-phase table from
 `summary.txt` (status and minutes), the adoption plan's import / add / change / destroy
