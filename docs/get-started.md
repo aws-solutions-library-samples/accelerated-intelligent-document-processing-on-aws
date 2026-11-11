@@ -15,15 +15,13 @@ and how to tell that it worked, then links to the detailed page if you need more
 flowchart LR
     A["0. Is this<br/>for you?"] --> B["1. Deploy"]
     B --> C["2. Process a<br/>sample document"]
-    C --> D["3. Fit it to<br/>your documents"]
-    D --> E["4. Measure<br/>accuracy"]
-    E --> F["5. Tune"]
-    F --> E
-    F --> G["6. Go to<br/>production"]
+    C --> D["3. Define your<br/>types and fields"]
+    D --> E["4. Improve it"]
+    E --> F["5. Go to<br/>production"]
 ```
 
-Steps 4 and 5 form a loop: measure, change one setting, measure again. Most of the
-accuracy you will get comes from going round it a few times.
+After step 3 you have a working pipeline. Step 4 is optional and ongoing: improve the
+results at your own pace, by hand or with an agent.
 
 ## Step 0: Decide whether this is the right tool
 
@@ -40,7 +38,7 @@ documents.
 Before you deploy, skim [How Document Processing Works](idp-fundamentals/index.md). It
 describes the five problem sets every IDP system solves (digitization, splitting and
 classification, extraction, confidence assessment and rule validation) and shows which of
-them your kind of documents makes hardest. That tells you where to focus in steps 4 and 5.
+them your kind of documents makes hardest. That tells you where to focus in step 4.
 
 The accelerator processes documents in one of two modes. You choose per configuration,
 and you can change your mind later.
@@ -99,99 +97,74 @@ Other ways to deploy, once you know you need them: [from source with the IDP CLI
 **Done when** you can find a field value on the page image and see the same value in the
 extracted data. The [Web UI guide](web-ui.md#document-details) explains every panel.
 
-## Step 3: Fit it to your documents
+## Step 3: Define your document types and fields
 
 **An hour to a day, depending on how many document types you have.**
 
-A configuration tells the accelerator which **document classes** to expect and which
-**fields** to extract from each. You have three ways to build one, and you can combine
-them:
+Tell the pipeline what you receive and what you need from it: your **document types**, and
+the **fields** to extract from each. You have three ways to start, and you can combine them:
 
 | Start from | When | Guide |
 |---|---|---|
-| A conversation | You can describe your documents in words. An assistant drafts the classes and fields and activates them. | [Quick Start](quick-start.md) |
-| Your own sample documents | You have examples but no schema. Discovery reads them and proposes classes and fields. | [Discovery](discovery.md) |
+| A conversation | You can describe your documents in words. An assistant drafts the types and fields and activates them. | [Quick Start](quick-start.md) |
+| Your own sample documents | You have examples but no schema. Discovery reads them and drafts types and fields. | [Discovery](discovery.md) |
 | A shipped preset | One of the presets in `config_library/unified/` is close to your documents. | [Configuration](configuration.md) |
 
-Whichever you choose, review the result before relying on it: the field names, their
-types, and the descriptions. The field descriptions are the instructions the model reads,
-so a precise description is the cheapest accuracy improvement there is. Keep each version
-you try as a separate [configuration profile](configuration-profiles.md) so you can
-compare them in step 4.
+Review the draft before you rely on it, especially the field descriptions. A description is
+the instruction the model follows, so a precise one ("statement period: the date range the
+statement covers, YYYY-MM-DD to YYYY-MM-DD") is the quickest accuracy gain there is.
 
-**Done when** a few of your own documents process to `COMPLETED` with the classes and
-fields you expect.
+**Done when** your own documents come out as records with the types and fields you defined.
+You now have a working pipeline.
 
-## Step 4: Measure accuracy
+## Step 4: Improve it
 
-**A few hours, most of it preparing ground truth.**
+**Ongoing, at your own pace.**
 
-You cannot tune what you have not measured. Build a test set:
+Process real documents and look at the results. Each record shows the extracted values next
+to the page they came from, and the accelerator flags results with low confidence or a
+failed rule for review. When a field keeps coming back wrong, make its description more precise, or try
+another model, and run the documents again.
 
-1. Pick 20–50 documents that represent your real traffic, including the awkward ones:
-   poor scans, long documents, unusual layouts.
-2. Process them, then correct every extracted value by hand. The corrected result is the
-   **ground truth** (the "baseline") for that document. See
-   [Creating Custom Test Sets](creating-custom-test-sets.md).
-3. Decide how each field should be compared: exact for an ID, a tolerance for an amount,
-   fuzzy matching for a name. Evaluation uses [Stickler](https://github.com/awslabs/stickler),
-   so the comparison method, strictness and weight of every field are yours to set. See
-   [How to measure](idp-fundamentals/index.md#measure-it-on-your-documents).
-4. In **Test Studio**, create a test set from those documents and run it against your
-   configuration profile. The run scores every section and field against ground truth. See
-   [Test Studio](test-studio.md).
+You don't have to do the experimenting yourself. The
+[Auto Optimizer](extensions/auto-optimizer.md) is an agent that tries changes to prompts,
+models and settings within a cost budget you set, and keeps the ones that score better.
 
-Read the result field by field, not just the overall score. A field at 60% usually has
-one cause you can fix, such as a vague description, a date format, or a value that sits
-in a table. [Evaluation](evaluation.md) explains each metric and comparison method.
+**Ground truth makes improvement measurable.** It is optional, and the accelerator builds
+most of it for you. Upload a few dozen of your documents to Test Studio, and the accelerator
+drafts the correct answers, ranks them worst-first, tells you how many to check, and saves
+the checked answers as a test set. From then on it scores every change field by field, and
+you decide what counts as a match for each field. See
+[Measure with ground truth](idp-fundamentals/index.md#4-measure-with-ground-truth).
 
-**Done when** you have a baseline score per field for your current configuration.
+Where to look first depends on your documents:
 
-If you want a reference point before you have your own ground truth, Test Studio comes
-with public benchmark test sets already loaded.
-[Benchmark Datasets](idp-fundamentals/benchmark-datasets.md) says which problem set each one
-measures, and each problem-set page says what we measured on it.
-
-## Step 5: Tune
-
-**Repeat until the numbers stop improving.**
-
-Change one setting, run the same test set again, and compare. Work in pipeline order,
-because errors flow downstream:
-
-1. **Splitting and classification.** If your files hold several documents or many types,
-   check section accuracy before field accuracy: a section with the wrong pages or class
-   cannot be extracted correctly. See
-   [Splitting and Section Classification](idp-fundamentals/splitting-and-classification.md).
-2. **Digitization.** If values are wrong across the board, compare OCR readers before
-   tuning extraction. See [Digitization (OCR)](idp-fundamentals/digitization.md).
-3. **Extraction.** Improve field descriptions first, then try another model. For long lists,
-   check that every row comes back before checking values. See
-   [Key Information Extraction](idp-fundamentals/extraction.md).
-4. **Confidence assessment.** If you will route review by confidence, check that the scores
-   separate right from wrong per field. See
-   [Confidence Assessment](idp-fundamentals/confidence-assessment.md).
-5. **Rule validation.** Check the facts a rule needs before the verdict. See
-   [Rule Validation](idp-fundamentals/rule-validation.md).
+- **Several documents per file, or many types:** check that each document is found and
+  typed correctly. See
+  [Splitting and Section Classification](idp-fundamentals/splitting-and-classification.md).
+- **Values wrong across the board:** check the text the pipeline read. See
+  [Digitization (OCR)](idp-fundamentals/digitization.md).
+- **Specific fields wrong, or rows missing from long lists:** see
+  [Key Information Extraction](idp-fundamentals/extraction.md).
+- **Too much, or too little, sent to review:** see
+  [Confidence Assessment](idp-fundamentals/confidence-assessment.md).
+- **Business rules:** see [Rule Validation](idp-fundamentals/rule-validation.md).
 
 [Configuration guidance](benchmarking/config-guidance.md) has the measured trade-offs for
-each option, and [Configuration Best Practices](idp-configuration-best-practices.md)
-covers prompt and schema design.
+each option, and [Configuration Best Practices](idp-configuration-best-practices.md) covers
+prompt and schema design.
 
-**Done when** another change no longer moves the score, or the score meets the bar your
-business needs.
-
-## Step 6: Go to production
+## Step 5: Go to production
 
 Work through these before you send real traffic:
 
-- **Human review.** Decide which results a person checks and how they are routed:
+- **Human review.** Decide which results a person checks, and the accelerator routes them:
   [Human Review](human-review.md) and [Review Queues](review-queues.md). Measure how often
   your confidence scores flag a wrong value before you rely on them to route work.
 - **Monitoring.** Confirm the alerts subscription, and learn the dashboard:
   [Monitoring](monitoring.md).
 - **Capacity and cost.** Size concurrency and Bedrock quotas for your volume, and estimate
-  monthly cost from the cost per page you measured in step 4:
+  monthly cost from the cost per page of your own documents:
   [Capacity Planning](capacity-planning.md) and [Cost Calculator](cost-calculator.md).
 - **Access and security.** Give each user the narrowest role they need, and review the
   threat model: [RBAC](rbac.md), [Threat Model](threat-model.md) and
@@ -201,7 +174,8 @@ Work through these before you send real traffic:
   [post-processing Lambda hook](post-processing-lambda-hook.md), or the
   [MCP server](mcp-server.md).
 
-Keep the test set from step 4. Re-run it whenever you change the configuration or upgrade
-the stack, so a regression shows up in your numbers before it shows up in your data.
+If you built a test set in step 4, keep it. Re-run it whenever you change the configuration
+or upgrade the stack, so a regression shows up in your numbers before it shows up in your
+data.
 
 If something goes wrong, start with [Troubleshooting](troubleshooting.md).

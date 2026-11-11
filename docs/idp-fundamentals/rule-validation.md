@@ -7,92 +7,93 @@ SPDX-License-Identifier: MIT-0
 
 # Rule Validation
 
-> **Not yet measured.** We have no benchmark results for rule validation, so this page
-> gives reasoning and guidance only. Measure on your own documents before relying on any of
-> it. Planned measurements are tracked in
-> [issue #1842](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1842).
+## What it does
 
-## The problem
+Rule validation checks each document, or each set of documents, against your business rules
+and returns a verdict per rule with the evidence behind it. It answers the question your team
+asks once the data is out of the documents: does this prior-authorization request meet the medical
+necessity criteria, does this loan file meet underwriting policy, does this invoice match its
+purchase order? Cases that pass go straight through. Your reviewers see only the exceptions,
+with the reason already written down.
 
-Deciding whether a document, or a set of documents, meets a set of business rules, and
-saying why. Examples: does a prior-authorization request satisfy the insurer's
-medical-necessity criteria; does a loan file meet underwriting policy; does a contract
-contain the required clauses; does an invoice match its purchase order. The output is a
-verdict per rule, with the evidence it rests on.
+## Getting it right
 
-## What makes it hard
+**Separate the facts from the judgment.** First extract the facts each rule depends on, as
+ordinary fields, then evaluate the rules over those facts. You can check each half on its
+own, and a wrong verdict traces back to either a wrong fact or an unclear rule.
 
-- **Rules are written for people.** Policies use judgment words ("documented history",
-  "reasonable", "unless clinically indicated") that have to be turned into something
-  checkable.
-- **Evidence is scattered.** The facts a rule needs may be spread across several documents
-  in a packet and many pages of each.
-- **A verdict needs a reason.** A bare pass or fail cannot be audited or appealed.
-- **Errors have uneven costs.** Wrongly passing a non-compliant case usually costs more than
-  wrongly failing a compliant one, so the decision threshold is a business choice.
-- **The document can argue its own case.** Text such as "this request meets all criteria"
-  can sway a language model. Keep the facts separate from the verdict.
+**Decide exact rules exactly.** "The amount is under the limit" and "the date is within
+90 days" need no judgment. The accelerator can evaluate rules like these with a symbolic
+solver, which gives the same answer every time, and keep the language model for rules that
+need judgment, such as "the record documents a failed conservative treatment". You choose the
+engine per rule. See [Z3 rule validation](../rule-validation-z3.md).
 
-### How document characteristics affect it
+**Require evidence for every verdict.** Each verdict should cite the page and passage it
+relied on, so a reviewer can confirm it in seconds and an auditor can follow it later.
 
-- **Multi-document files:** a rule often needs facts from several sections, so splitting
-  and classification errors become rule errors.
-- **Long narrative text:** the evidence is in sentences across many pages, so citations
-  matter more than anywhere else.
-- **Fixed-field forms and identity documents:** many rules are formats, check digits and
-  date ranges, which need no model at all.
+**Write rules the way you would brief a new analyst:** one criterion per rule, in plain
+language, with the terms defined. See
+[Writing Effective Rules](../rule-validation.md#writing-effective-rules).
 
-## Approaches
+**Send exceptions to people.** Route failed rules, rules the system could not decide, and
+high-value cases to review.
+
+## Your documents
+
+- **Several documents per file,** such as a claim with its supporting records: a rule often
+  needs facts from more than one document, so accurate splitting matters here. See
+  [Splitting and Section Classification](splitting-and-classification.md).
+- **Long narrative records:** evidence is spread across many pages, so citations matter most.
+- **Forms and identity documents:** many rules are formats, limits and date ranges, which the
+  symbolic solver decides exactly.
+
+## How rule validation works
 
 ```mermaid
 flowchart LR
-    P[Policy text] --> R["Rules: checkable<br/>criteria"]
+    P[Your policy] --> R["Rules, one<br/>criterion each"]
     D[Documents] --> X["Extract the facts<br/>each rule needs"]
-    R --> E{"Rule type?"}
+    R --> E["Evaluate each rule<br/>and cite evidence"]
     X --> E
-    E -- deterministic --> C["Evaluate in code"]
-    E -- judgment --> M["Evaluate with a model,<br/>citing evidence"]
-    C --> F["Verdict, reason,<br/>evidence per rule"]
-    M --> F
-    F --> G{"All decided and<br/>low stakes?"}
-    G -- yes --> H[Decision]
-    G -- no --> I[Human review]
+    E --> F{"All rules pass?"}
+    F -- yes --> G[("Database")]
+    F -- no --> H[Human review]
+    H --> G
 ```
 
-- **Separate fact-finding from judgment.** Extract the facts the rules depend on as fields
-  you can check against ground truth, then evaluate the rules over those facts. Each half
-  can be measured and fixed on its own.
-- **Decide deterministic rules in code.** "Amount under the limit" or "date within 90 days"
-  needs no model.
-- **Require evidence.** Every verdict should cite the page and text it relied on. Send
-  verdicts without evidence to review.
-- **Route by stakes.** Send failures, rules the system could not decide, and high-value cases
-  to a person.
+The accelerator can draft the rules for you: [Policy Discovery](../policy-discovery.md) reads
+a policy document and proposes rules for you to review.
 
 ## How to measure it
 
-Build ground truth at two levels:
+Measure the two halves separately:
 
-1. **The facts.** Measure them as extraction, with Stickler, field by field. See
-   [Key Information Extraction](extraction.md#how-to-measure-it).
-2. **The verdicts.** Compare each rule's verdict with an expert's. Report precision and
-   recall for "fail" separately, because a false pass and a false fail cost different
+1. **The facts,** as extraction: field by field against ground truth. See
+   [Measure with ground truth](index.md#4-measure-with-ground-truth).
+2. **The verdicts:** compare each rule's verdict with an expert's verdict on the same case.
+   Count wrong passes and wrong fails separately, because they cost your business different
    amounts.
 
-Also check a sample of the cited evidence by hand. A right verdict for the wrong reason will
-not survive the next case.
+Also read a sample of the cited evidence. A right verdict needs the right reason behind it.
 
 ## What we measured
 
-Nothing yet. There is no rule-validation dataset in the benchmark suite, and we have not
-found a public dataset that pairs real documents with expert rule verdicts. The fact-finding half can
-be measured today, as extraction.
+We have not benchmarked rule validation yet. The benchmark suite has no rule-validation
+dataset, and we have not found a public dataset that pairs real documents with expert rule
+verdicts. You can measure the facts behind each rule today, as extraction. We track the
+planned measurements in
+[issue #1842](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1842).
 
 ## In the accelerator
 
-- Define rules and evaluate them per document: [Rule Validation](../rule-validation.md).
-- Draft rules from a policy document: [Policy Discovery](../policy-discovery.md).
-- A worked prior-authorization example is the `rule-validation` preset. The
-  [Health Insurance Review sample](../extensions/sample-health-insurance-review.md) packages
-  it as an installable extension.
-- Route undecided or failed rules to a person: [Human Review](../human-review.md).
+- **Turn it on and configure rules:** [Rule Validation](../rule-validation.md), including the
+  [Quick Start with Healthcare Example](../rule-validation.md#quick-start-with-healthcare-example).
+- **Draft rules from a policy:** [Policy Discovery](../policy-discovery.md).
+- **See a complete example:** the `rule-validation` preset, packaged with a claim-status UI as
+  the [Health Insurance Review sample](../extensions/sample-health-insurance-review.md).
+- **Read the results:** [Output Formats](../rule-validation.md#output-formats) and the Rule
+  Validation Summary on each document's [Document Details](../web-ui.md#document-details)
+  page.
+- **Route exceptions to people:**
+  [Human-in-the-Loop](../rule-validation.md#human-in-the-loop-hitl) and
+  [Review Queues](../review-queues.md).

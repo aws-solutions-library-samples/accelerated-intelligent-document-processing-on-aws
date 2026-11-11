@@ -9,65 +9,91 @@ SPDX-License-Identifier: MIT-0
 
 ## What it does
 
-Real stacks of documents don't arrive one document per file. A loan package holds an
-application, pay stubs, bank statements and an ID; a claim holds a claim form, invoices and
-medical records; a scanned batch holds whatever arrived that day. Splitting and section
-classification finds every document in a file, records its pages, and gives it a type. Each
-type has its own schema, so each document lands in the right table of your database with
-the right fields.
+Stacks of documents rarely arrive one document per file. A loan package holds an
+application, pay stubs, bank statements and an ID. A claim holds a claim form, invoices and
+medical records. A scanned batch holds whatever arrived that day. Splitting and section
+classification finds every document in a file, records which pages belong to it, and gives
+it a type. Each type has its own fields, so each document lands in the right table of your
+database with the right columns filled.
 
-Even a file that is always one document gets classified, so the right schema is used for it.
+A file that always holds exactly one document still gets a type, so the pipeline uses the
+right fields for it.
 
 ## Getting it right
 
-- **Describe each type by what sets it apart** from its closest neighbor: "a quote shows
-  'valid until' and no payment terms", not just "a quote".
-- **Add an "other" type,** so a document you didn't plan for is set aside rather than
-  filed under the nearest match.
-- **Use page images as well as text.** Letterheads, logos and layout changes are the
-  clearest signs that a new document has started.
-- **Give examples for look-alike types.** One or two labeled examples of each confusable
-  pair usually settles it.
-- **Tell the system what it can assume.** If every file is exactly one document, say so and
-  skip splitting. If a loan package always has one application, check for it.
-- **For your kind of documents:**
-  - *Several documents per file:* section accuracy is the number to watch.
-  - *Many document types:* make sure your test set includes the rare types.
-  - *Long statements with repeated headers:* check that they stay in one section.
-  - *Several documents of the same type in a row* (three pay stubs, two statements): rely
-    on page-level cues such as "Page 1 of 2" or a new statement date.
+**Describe each type by what sets it apart** from its closest neighbor. "A quote shows a
+'valid until' date and no payment terms" helps the model far more than "a quote". See
+[class descriptions](../classification.md#class-descriptions).
 
-## Approaches
+**Plan for documents you didn't define.** When a page fits none of your types, the
+accelerator marks it unclassified and reports it rather than forcing it into the nearest
+type. See [Pages Classification Could Not Classify](../classification.md#pages-classification-could-not-classify).
+
+**Send page images as well as text.** Letterheads, logos and layout changes are the clearest
+signs that a new document has started.
+
+**Give examples for look-alike types.** One or two labeled examples of each confusable pair
+usually settle it. See [Few-Shot Examples](../few-shot-examples.md).
+
+**Tell the accelerator what it can assume.** If every file holds exactly one document, set
+section splitting to one section and the accelerator skips splitting entirely. See
+[Section Splitting](../classification.md#section-splitting).
+
+**Skip the pages you don't need.** You can exclude instruction pages and legal boilerplate
+from extraction. See
+[Excluding Static Pages](../classification.md#excluding-static-pages-eg-instructions-legal-boilerplate).
+
+## Your documents
+
+- **Several documents per file:** section accuracy is the number that matters. Start from the
+  split-first strategy below.
+- **Many document types:** include the rarest types in your test set, and give examples for
+  the ones that look alike.
+- **Several documents of the same type in a row,** such as three pay stubs: page-level cues
+  like "Page 1 of 2" or a new statement date separate them. See
+  [Multiple W-2 Forms](../classification.md#real-world-example-multiple-w-2-forms).
+- **Long documents with a header repeated on every page:** if each file is one document, set
+  section splitting to one section.
+
+## How splitting works
+
+The accelerator offers three ways to find the documents in a file. You choose one in the
+classification settings.
 
 ```mermaid
 flowchart TD
-    A[Pages] --> B{"How to find sections"}
-    B --> C["Classify each page,<br/>then group runs of<br/>the same type"]
-    B --> D["Find where each new<br/>document starts, then<br/>classify each section"]
-    B --> E["Classify the whole<br/>file in one pass"]
-    C --> F["Sections:<br/>pages + type"]
+    A[Pages] --> B{"Strategy"}
+    B --> C["Type each page, then<br/>group runs of the same type"]
+    B --> D["Type the whole file<br/>in one pass"]
+    B --> E["Find where each document<br/>starts, then type each one"]
+    C --> F["Documents:<br/>pages + type"]
     D --> F
     E --> F
 ```
 
-| Approach | Best for | Keep in mind |
+| Strategy | Setting | Best for |
 |---|---|---|
-| **Classify each page, then group** | Files where neighboring documents differ in type | Two same-type neighbors need a boundary cue to stay apart |
-| **Find boundaries first, then classify** | Packets with many documents; gave the best sections in our tests | One more step per file |
-| **Classify the whole file at once** | Short files; lowest cost | Long files may exceed what one call can see |
+| **Type each page, then group** (default) | Split and classify together, `granularity: page` | Files where neighboring documents are of different types |
+| **Type the whole file in one pass** | Split and classify together, `granularity: packet` | Short files, at the lowest cost |
+| **Split first, then type each document** | `strategy: split_then_classify` | Packets with many documents; gave the best document boundaries in our tests |
+
+See [Choosing granularity, modality and strategy](../classification.md#choosing-granularity-modality-and-strategy)
+and [the split-then-classify strategy](../classification.md#the-split-then-classify-strategy).
 
 ## How to measure it
 
-Ground truth is the type and pages of every document in each file. Look at three numbers:
+Ground truth is the type and pages of every document in each file. Three numbers tell you how
+splitting is doing:
 
-| Metric | Tells you |
+| Number | Question it answers |
 |---|---|
-| **Page classification accuracy** | How often each page gets the right type |
-| **Section accuracy** | How often a whole document comes back with exactly the right pages **and** type. This is what extraction depends on |
-| **Over-splits and merges** | Whether errors cut documents apart or join them, which have different costs for you |
+| **Page accuracy** | Did each page get the right type? |
+| **Document accuracy** | Did each document come back with exactly the right pages **and** the right type? This is what extraction depends on. |
+| **Over-splits and merges** | Did errors cut documents apart, or join them together? |
 
-Stickler scores page classification and section grouping, with and without page order. See
+Stickler reports page accuracy and document accuracy, with and without page order. See
 [Document split classification metrics](../evaluation.md#document-split-classification-metrics).
+To build the ground truth, see [Measure with ground truth](index.md#4-measure-with-ground-truth).
 
 ## What we measured
 
@@ -75,42 +101,41 @@ Stickler scores page classification and section grouping, with and without page 
 
 **Dataset:** [DocSplit-Poly-Seq](benchmark-datasets.md#docsplit-poly-seq), 20 public packets
 (298 pages, 13 document types, 5–20 pages each). **Run:** release 0.6.14, November 2026,
-classifier Amazon Nova 2 Lite (the default), one run per method.
+classifier Amazon Nova 2 Lite (the default), one run per strategy.
 
-| Method | Page accuracy | Section accuracy (pages and type) | Classification cost per page |
+| Strategy | Page accuracy | Document accuracy | Classification cost per page |
 |---|---|---|---|
-| Classify each page, text and image (**default**) | 0.818 | 0.553 | $0.00097 |
-| Classify the whole packet, text and image | 0.720 | 0.659 | $0.00057 |
-| Classify the whole packet, images only | 0.836 | 0.578 | $0.00028 |
-| **Find boundaries first, then classify each section** | 0.797 | **0.694** | $0.00097 |
+| Type each page, text and images (**default**) | 0.818 | 0.553 | $0.00097 |
+| Type the whole file, text and images | 0.720 | 0.659 | $0.00057 |
+| Type the whole file, images only | 0.836 | 0.578 | $0.00028 |
+| **Split first, then type each document** | 0.797 | **0.694** | $0.00097 |
 
 Source: `benchmarks/results/v0.6.14/clsvariants/summary.json`.
 
 What this shows:
 
-- **Classification itself is cheap and accurate:** about 80% of pages typed correctly for
-  under a tenth of a cent per page, across 13 document types.
-- **Section accuracy is the number to improve, and the method choice moves it.** Finding
-  boundaries first raised it from 55% to 69% at no extra cost, which makes it the
-  configuration to start from for multi-document packets.
-- **Classifying the whole packet at once also found more boundaries,** for less money, while
-  typing fewer pages correctly (section accuracy +0.20, standard error 0.09; page accuracy
-  −0.07, standard error 0.07; 19 packets).
+- **Typing pages is fast, cheap and accurate:** about 80% of pages typed correctly across
+  13 document types, for under a tenth of a cent per page.
+- **For multi-document packets, start with split-first.** It raised document accuracy from 55%
+  to 69% at the same cost as the default.
+- **Typing the whole file in one pass also found more boundaries, for less money,** while
+  typing fewer pages correctly (document accuracy +0.20, SE 0.09; page accuracy −0.07,
+  SE 0.07; 19 packets).
 
 ### Files that hold one or two documents
 
 **Dataset:** synthetic bank statements with exact ground truth. **Run:** release 0.6.14,
 five runs per file, unless noted.
 
-| File | Default splitting |
+| File | Result with default splitting |
 |---|---|
-| Two statements in one file | **5 of 5** split into two documents |
-| One 3-page statement, with or without "Page k of n" | **5 of 5** kept as one document |
-| One 3-page statement with its header repeated on every page | Split into three in 5 of 5 runs (release 0.6.9). For documents like this, tell the system each file is one document |
+| Two statements in one file | **Split into two documents in 5 of 5 runs** |
+| One 3-page statement, with or without "Page k of n" | **Kept as one document in 5 of 5 runs** |
+| One 3-page statement with its header repeated on every page | Split into three in 5 of 5 runs (release 0.6.9). Setting section splitting to one section keeps it whole |
 
-Every classification model we compared typed these single statements into the right number
-of sections in at least 132 of 133 runs, so the default classifier is all you need here; a
-larger one cost about 18 times as much per page for no gain.¹
+On single statements, every classification model we compared produced the right number of
+documents in at least 132 of 133 runs. The default classifier is all you need there. Claude
+Sonnet 5 cost about 18 times as much per page for no gain.¹
 
 ¹ Corrected for a known pricing error that overstates Claude Sonnet 5 by 1.5×
 ([#1830](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1830)).
@@ -118,21 +143,20 @@ larger one cost about 18 times as much per page for no gain.¹
 Sources: `benchmarks/results/v0.6.14/boundary/`, `benchmarks/results/v0.6.9/boundaryab/` and
 `benchmarks/results/v0.6.14/coresynth__classification-model-*/`.
 
-**How far this carries:** 20 packets with one run per method, and differences between
-methods moved between releases, so confirm the best method on your own packets. The
-synthetic files hold at most two documents of the same type.
+**How far this carries:** 20 packets, one run per strategy, and the gap between strategies
+has varied between releases. Confirm the best strategy on your own packets.
 
 ## Reproduce it
 
-**On your own documents.** Build a test set of real files with the correct sections, run it
-in [Test Studio](../test-studio.md) once per method, and compare page and section accuracy.
-The DocSplit test set is deployed with every stack, so you can also run the comparison above
-on your own stack.
+**On your own documents.** Build a test set of real files with their correct documents, run
+it in [Test Studio](../test-studio.md) once per strategy, and compare page and document
+accuracy. Every stack includes the DocSplit test set, so you can repeat the comparison above
+in your own account.
 
 **The benchmark.**
 
 ```bash
-# DocSplit methods (the test set is deployed with the stack)
+# DocSplit strategies (the test set comes with the stack)
 python3 benchmarks/harness/run_classification_bench.py --stack <STACK> --testset docsplit \
   --n 20 --models nova2lite --mode topk \
   --variants page-both,packet-both,packet-images,split-then-classify-page
@@ -154,11 +178,15 @@ See the [benchmark suite](../benchmarking/index.md) for setup and scoring.
 
 ## In the accelerator
 
-- Splitting methods, granularity, page images and the boundary prompt:
-  [Classification](../classification.md).
-- Examples for look-alike types: [Few-Shot Examples](../few-shot-examples.md).
-- Draft types from sample documents: [Discovery](../discovery.md).
-- Fix a processed document's sections by hand:
-  [Web UI](../web-ui.md#re-grouping-a-processed-documents-pages).
-- Measured trade-offs for each option:
-  [Configuration guidance](../benchmarking/config-guidance.md).
+- **Configure splitting and typing:** [Classification](../classification.md), starting with
+  [how the settings are organized](../classification.md#how-the-classification-settings-are-organised).
+- **Draft your types from sample files,** including multi-document packages:
+  [Discovery](../discovery.md#multi-section-package-discovery).
+- **Score how sure the classifier is:**
+  [classification confidence](../configuration.md#classification-confidence-classificationcombinedllmconfidence),
+  and [Confidence Assessment](confidence-assessment.md#document-type-confidence) for what we
+  measured.
+- **Fix a document's sections by hand:**
+  [re-grouping pages](../web-ui.md#re-grouping-a-processed-documents-pages) in the Web UI.
+- **Use BDA mode instead:** [classification in BDA mode](../classification.md#bda-mode-use_bda-true).
+- **See every measured option:** [Configuration guidance](../benchmarking/config-guidance.md).
