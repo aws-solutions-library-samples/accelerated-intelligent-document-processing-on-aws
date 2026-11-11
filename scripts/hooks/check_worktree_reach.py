@@ -110,33 +110,123 @@ ALLOWED_FETCH_HOSTS = frozenset(
     }
 )
 
-#: Options whose value is a local file, so a value spelled like ``x.pdf`` or
-#: ``ca.pem`` is not read as a host. Any other token that is not a URL and not
-#: spelled like a host name is ignored, so an option this list does not name
-#: costs nothing: a value such as ``5`` or ``file=@x.pdf`` is not a host.
-FILE_OPTIONS = {
-    "-o", "--output", "-O", "--output-document", "-D", "--dump-header",
-    "-T", "--upload-file", "-b", "--cookie", "-c",
-    "--cookie-jar", "--cacert", "--capath", "--cert", "--key", "-E",
-    "-P", "--directory-prefix", "-a", "--append-output", "--trace",
-    "--trace-ascii", "--stderr", "--netrc-file",
-    # Values that are data, not a destination, however they are spelled.
-    "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
-    "-e", "--referer", "-A", "--user-agent", "-u", "--user", "-F", "--form",
-    "--json", "-w", "--write-out", "-X", "--request", "-H", "--header",
+#: The options of each fetcher that take a separate value, so the word after one
+#: is that value and not a URL. One table per tool, because the letters mean
+#: different things: ``-d`` takes a value in curl and none in wget or nc.
+#:
+#: curl's and wget's are taken from ``curl --help all`` (curl 8.21.0) and
+#: ``wget --help`` (GNU Wget 1.21.3); ``test_each_option_table_matches_the_tool``
+#: re-derives them wherever the tool is installed. ``nc`` is two different
+#: programs (OpenBSD netcat and Nmap's ncat, often installed as ``nc``), so its
+#: table is the options that take a value in BOTH, from their manual pages; an
+#: option that takes one in only one of them is read as a flag, which can only
+#: make the next word be checked as a host, never skipped.
+CURL_VALUE_OPTIONS = frozenset({
+    "-A", "-C", "-D", "-E", "-F", "-H", "-K", "-P", "-Q", "-T", "-U", "-X", "-Y",
+    "-b", "-c", "-d", "-e", "-h", "-m", "-o", "-r", "-t", "-u", "-w", "-x", "-y",
+    "-z", "--abstract-unix-socket", "--alt-svc", "--aws-sigv4", "--cacert",
+    "--capath", "--cert", "--cert-type", "--ciphers", "--config",
+    "--connect-timeout", "--connect-to", "--continue-at", "--cookie",
+    "--cookie-jar", "--create-file-mode", "--crlfile", "--curves", "--data",
+    "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode",
+    "--delegation", "--dns-interface", "--dns-ipv4-addr", "--dns-ipv6-addr",
+    "--dns-servers", "--doh-url", "--dump-header", "--ech", "--egd-file",
+    "--engine", "--etag-compare", "--etag-save", "--expect100-timeout", "--form",
+    "--form-string", "--ftp-account", "--ftp-alternative-to-user", "--ftp-method",
+    "--ftp-port", "--ftp-ssl-ccc-mode", "--happy-eyeballs-timeout-ms",
+    "--haproxy-clientip", "--header", "--help", "--hostpubmd5", "--hostpubsha256",
+    "--hsts", "--interface", "--ip-tos", "--ipfs-gateway", "--json",
+    "--keepalive-cnt", "--keepalive-time", "--key", "--key-type", "--knownhosts",
+    "--krb", "--libcurl", "--limit-rate", "--local-port", "--login-options",
+    "--mail-auth", "--mail-from", "--mail-rcpt", "--max-filesize", "--max-redirs",
+    "--max-time", "--netrc-file", "--noproxy", "--oauth2-bearer", "--output",
+    "--output-dir", "--parallel-max", "--parallel-max-host", "--pass",
+    "--pinnedpubkey", "--preproxy", "--proto", "--proto-default", "--proto-redir",
+    "--proxy", "--proxy-cacert", "--proxy-capath", "--proxy-cert",
+    "--proxy-cert-type", "--proxy-ciphers", "--proxy-crlfile", "--proxy-header",
+    "--proxy-key", "--proxy-key-type", "--proxy-pass", "--proxy-pinnedpubkey",
+    "--proxy-service-name", "--proxy-tls13-ciphers", "--proxy-tlsauthtype",
+    "--proxy-tlspassword", "--proxy-tlsuser", "--proxy-user", "--pubkey", "--quote",
+    "--random-file", "--range", "--rate", "--referer", "--request",
+    "--request-target", "--resolve", "--retry", "--retry-delay", "--retry-max-time",
+    "--sasl-authzid", "--service-name", "--sigalgs", "--socks4", "--socks4a",
+    "--socks5", "--socks5-gssapi-service", "--socks5-hostname", "--speed-limit",
+    "--speed-time", "--ssl-sessions", "--stderr", "--telnet-option",
+    "--tftp-blksize", "--time-cond", "--tls-max", "--tls13-ciphers",
+    "--tlsauthtype", "--tlspassword", "--tlsuser", "--trace", "--trace-ascii",
+    "--trace-config", "--unix-socket", "--upload-file", "--upload-flags", "--url",
+    "--url-query", "--user", "--user-agent", "--variable", "--vlan-priority",
+    "--write-out",
+})  # fmt: skip
+WGET_VALUE_OPTIONS = frozenset({
+    "-A", "-B", "-D", "-I", "-O", "-P", "-Q", "-R", "-T", "-U", "-X", "-a", "-e",
+    "-i", "-l", "-o", "-t", "-w", "--accept", "--accept-regex", "--append-output",
+    "--backups", "--base", "--bind-address", "--body-data", "--body-file",
+    "--ca-certificate", "--ca-directory", "--certificate", "--certificate-type",
+    "--ciphers", "--compression", "--config", "--connect-timeout", "--crl-file",
+    "--cut-dirs", "--default-page", "--directory-prefix", "--dns-timeout",
+    "--domains", "--exclude-directories", "--exclude-domains", "--execute",
+    "--follow-tags", "--ftp-password", "--ftp-user", "--header", "--http-password",
+    "--http-user", "--ignore-tags", "--include-directories", "--input-file",
+    "--input-metalink", "--level", "--limit-rate", "--load-cookies",
+    "--local-encoding", "--metalink-index", "--method", "--output-document",
+    "--output-file", "--password", "--pinnedpubkey", "--post-data", "--post-file",
+    "--prefer-family", "--private-key", "--private-key-type", "--progress",
+    "--proxy-password", "--proxy-user", "--quota", "--read-timeout", "--referer",
+    "--regex-type", "--reject", "--reject-regex", "--rejected-log",
+    "--remote-encoding", "--report-speed", "--restrict-file-names",
+    "--retry-on-http-error", "--save-cookies", "--secure-protocol", "--start-pos",
+    "--timeout", "--tries", "--use-askpass", "--user", "--user-agent", "--wait",
+    "--waitretry", "--warc-dedup", "--warc-file", "--warc-header",
+    "--warc-max-size", "--warc-tempdir",
+})  # fmt: skip
+NC_VALUE_OPTIONS = frozenset({"-i", "-p", "-s", "-w", "-x"})
+NCAT_VALUE_OPTIONS = frozenset({
+    "-c", "-e", "-g", "-G", "-m", "-d", "-o", "-x", "-i", "-p", "-s", "-w",
+    "--sh-exec", "--exec", "--lua-exec", "--max-conns", "--delay", "--output",
+    "--hex-dump", "--idle-timeout", "--source-port", "--source", "--wait",
+    "--proxy", "--proxy-type", "--proxy-auth", "--ssl-cert", "--ssl-key",
+    "--ssl-trustfile", "--ssl-ciphers", "--ssl-servername", "--ssl-alpn",
+    "--allow", "--allowfile", "--deny", "--denyfile",
+})  # fmt: skip
+
+VALUE_OPTIONS: dict[str, frozenset[str]] = {
+    "curl": CURL_VALUE_OPTIONS,
+    "wget": WGET_VALUE_OPTIONS,
+    "nc": NC_VALUE_OPTIONS,
+    "netcat": NC_VALUE_OPTIONS,
+    "ncat": NCAT_VALUE_OPTIONS,
+}
+
+#: Per tool, the options whose value is where the connection goes, checked like
+#: a URL: curl's proxies and ``--url``, OpenBSD nc's ``-x`` proxy, ncat's
+#: ``--proxy``. wget names its proxy through ``-e``, read in :func:`_wget_setting`.
+DESTINATION_OPTIONS: dict[str, frozenset[str]] = {
+    "curl": frozenset({
+        "-x", "--proxy", "--preproxy", "--url", "--socks4", "--socks4a",
+        "--socks5", "--socks5-hostname",
+    }),
+    "wget": frozenset(),
+    "nc": frozenset({"-x"}),
+    "netcat": frozenset({"-x"}),
+    "ncat": frozenset({"--proxy"}),
 }  # fmt: skip
 
-#: Options that send the connection somewhere other than the URL a reader sees,
-#: so their value is a destination and is checked like one.
-DESTINATION_OPTIONS = {"-x", "--proxy", "--preproxy", "--url"}
+#: Per tool, the options that redirect the connection in a form this hook does
+#: not read (curl's ``--connect-to a:443:b:443`` and ``--resolve a:443:ip``), or
+#: read the URLs from a file (curl's ``-K`` config, which can hold ``url =``
+#: lines; wget's ``-i`` list and ``--config``). A fetch carrying one is refused.
+UNREADABLE_OPTIONS: dict[str, frozenset[str]] = {
+    "curl": frozenset({"--connect-to", "--resolve", "-K", "--config"}),
+    "wget": frozenset({"-i", "--input-file", "--config"}),
+    "nc": frozenset(),
+    "netcat": frozenset(),
+    "ncat": frozenset(),
+}
 
-#: Options that redirect the connection in a form this hook does not read
-#: (``--connect-to a:443:b:443``, ``--resolve a:443:ip``), or read the URLs from a
-#: file (``wget -i list``, a curl ``-K`` config file, which can hold ``url =``
-#: lines). A fetch carrying one is refused as unreadable.
-UNREADABLE_OPTIONS = {
-    "--connect-to", "--resolve", "-i", "--input-file", "-K", "--config",
-}  # fmt: skip
+#: wget ``-e`` settings that name a proxy, and the one that turns on proxies taken
+#: from the environment, which this hook cannot see.
+WGET_PROXY_SETTINGS = frozenset({"http_proxy", "https_proxy", "ftp_proxy"})
 
 #: Commands that run a later word as the command, so ``sudo curl`` and
 #: ``xargs curl`` run curl, with the options of each that take a separate value.
@@ -319,15 +409,28 @@ def _command_word(tokens: list[str]) -> tuple[str, list[str]] | None:
     return None
 
 
-def _short_cluster(token: str) -> tuple[str, str] | None:
+def _short_cluster(token: str, takes_value: frozenset[str]) -> tuple[str, str] | None:
     """For a short-option cluster such as ``-sSLx`` or ``-xhttp://p``, the first
-    option in it that takes a value, and the value attached after it."""
-    if not re.match(r"^-[A-Za-z]", token):
+    option in it that takes a value for this tool, and the value attached after
+    it (empty when the value is the next word)."""
+    if not re.match(r"^-[A-Za-z]", token) or token.startswith("--"):
         return None
     for position, letter in enumerate(token[1:], start=1):
-        option = f"-{letter}"
-        if option in DESTINATION_OPTIONS | UNREADABLE_OPTIONS | FILE_OPTIONS:
-            return option, token[position + 1 :]
+        if f"-{letter}" in takes_value:
+            return f"-{letter}", token[position + 1 :]
+    return None
+
+
+def _wget_setting(value: str) -> str | None:
+    """The host a wget ``-e key=value`` setting sends traffic to, ``"?"`` for one
+    this hook cannot read, or ``None`` for a setting that changes neither."""
+    key, _, setting = value.partition("=")
+    key = key.strip().lower()
+    if key in WGET_PROXY_SETTINGS:
+        setting = setting.strip()
+        return _host(setting) or _host(f"http://{setting}") or "?"
+    if key == "use_proxy" and setting.strip().lower() in AFFIRMATIVE:
+        return "?"
     return None
 
 
@@ -348,45 +451,61 @@ def _fetch_hosts(tokens: list[str]) -> tuple[str, list[str]] | None:
     ``"?"`` stands for a destination this hook cannot read: a variable or a
     command substitution where a URL would be, or an option that redirects the
     connection. A fetch naming no host at all (``curl --version``) names none.
+    Options are read against the tool's own table, so a flag is never taken to
+    swallow the word after it.
     """
     found = _command_word(tokens)
     if found is None:
         return None
     name, arguments = found
+    takes_value = VALUE_OPTIONS[name]
+    destination = DESTINATION_OPTIONS[name]
+    unreadable = UNREADABLE_OPTIONS[name]
     hosts: list[str] = []
-    previous = ""
-    for token in arguments:
-        option, _, inline = (
-            token.partition("=") if token.startswith("--") else (token, "", "")
-        )
-        cluster = None if token.startswith("--") else _short_cluster(token)
-        if cluster and cluster[0] != token:
-            option, inline = cluster
-            if not inline:  # the value is the next token
-                previous = option
-                continue
-        if option in UNREADABLE_OPTIONS:
+
+    def option_value(option: str, value: str) -> None:
+        if option in unreadable:
             hosts.append("?")
-        elif previous in UNREADABLE_OPTIONS:
-            pass
-        elif (
-            previous in DESTINATION_OPTIONS or option in DESTINATION_OPTIONS and inline
-        ):
-            value = inline or token
+        elif option in destination:
             hosts.append(_host(value) or _host(f"http://{value}") or "?")
-        elif previous in ("-H", "--header") and token.lower().startswith("host:"):
-            hosts.append("?")
-        elif token.startswith("-") or previous in FILE_OPTIONS:
-            pass
+        elif name == "curl" and option in ("-H", "--header"):
+            if value.lower().startswith("host:"):
+                hosts.append("?")
+        elif name == "wget" and option in ("-e", "--execute"):
+            host = _wget_setting(value)
+            if host is not None:
+                hosts.append(host)
+
+    pending = ""
+    for token in arguments:
+        if pending:
+            option_value(pending, token)
+            pending = ""
+        elif token.startswith("--"):
+            option, equals, inline = token.partition("=")
+            if option in takes_value or option in unreadable or option in destination:
+                if equals:
+                    option_value(option, inline)
+                else:
+                    pending = option
+            elif option in unreadable:
+                hosts.append("?")
+        elif token.startswith("-") and token != "-":
+            cluster = _short_cluster(token, takes_value | unreadable | destination)
+            if cluster:
+                option, inline = cluster
+                if inline:
+                    option_value(option, inline)
+                else:
+                    pending = option
         elif "$" in token or "`" in token:
             hosts.append("?")
-        elif "://" not in token and ("=" in token or token.startswith("@")):
-            pass  # a form field or a data file (file=@x.pdf, @body.json)
         else:
             host = _host(token)
             if host is not None:
                 hosts.append(host)
-        previous = option if token.startswith("-") and not inline else ""
+    if pending:
+        option_value(pending, "")
     return name, hosts
 
 
