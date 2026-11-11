@@ -2684,6 +2684,26 @@ def _run_token_lifecycle(ctx, results):
 # ----------------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------------
+def _run_mcp_suite(ctx, tokens, results):
+    """The MCP cells (scripts/api_rbac_mcp.py), with this harness's role users."""
+    import api_rbac_mcp
+    import yaml
+
+    with EXPECTATIONS_PATH.open() as fh:
+        mcp_tools = yaml.safe_load(fh).get("mcp_tools") or {}
+    api_rbac_mcp.run_mcp_suite(
+        ctx,
+        _record,
+        results,
+        mcp_tools,
+        [*MATRIX_PRINCIPALS, SCOPED],
+        test_email,
+        TEST_PW,
+        live_object_key=resolve_document_object_key(ctx, tokens),
+        scoped_principal=SCOPED,
+    )
+
+
 def main():
     ap = argparse.ArgumentParser(description="Live RBAC/auth test for the IDP API.")
     ap.add_argument("--stack-name", required=True)
@@ -2743,6 +2763,7 @@ def main():
         run_scope_suite(ctx, tokens, results)
         run_document_bytes_scope_suite(ctx, tokens, results)
         run_token_negatives(ctx, tokens, results)
+        _run_mcp_suite(ctx, tokens, results)
 
         # --- Mandatory security-focused test cases (checklist 2.1-4) ---------
         # These run AFTER the RBAC matrix. The logout test globally signs out a

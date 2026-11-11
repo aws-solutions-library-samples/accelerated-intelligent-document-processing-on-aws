@@ -52,7 +52,7 @@ def caller(roles=("Viewer",), scope=None, write=True, kind="user"):
 #: (sendAgentChatMessage, getDocument, uploadDocument, reprocessDocument), NOT
 #: derived from MCP_TOOL_POLICY — a matrix read back from the table under test
 #: would agree with any table.
-EXPECTED_ALLOWED = {
+ROLE_TOOL_MATRIX = {
     "Admin": {"search", "status", "get_results", "process", "reprocess"},
     "Author": {"search", "status", "get_results", "process", "reprocess"},
     "Reviewer": {"status", "get_results"},
@@ -61,9 +61,9 @@ EXPECTED_ALLOWED = {
 }
 
 
-@pytest.mark.parametrize("role", sorted(EXPECTED_ALLOWED))
+@pytest.mark.parametrize("role", sorted(ROLE_TOOL_MATRIX))
 def test_each_role_may_call_exactly_its_tools(role):
-    assert set(ma.allowed_tool_names(caller(roles=[role]))) == EXPECTED_ALLOWED[role]
+    assert set(ma.allowed_tool_names(caller(roles=[role]))) == ROLE_TOOL_MATRIX[role]
 
 
 def test_the_policy_covers_exactly_the_five_tools():
