@@ -23,10 +23,18 @@ whose name says it is such a reference, requires one of:
 reformatted or passed anywhere before the validator sees it fails. A tool that never
 reads the parameter passes, since it cannot act on it.
 
+A variadic parameter (``*args``, ``**kwargs``) on a tool always needs a listed
+reason. A validator counts only when the tool's module imports it from the module
+:data:`VALIDATORS` registers, and a ``try`` around it counts as unconditional only
+when every handler returns or raises.
+
 What this does **not** establish: that a validator is *sufficient* for its argument
 (each validator's own tests say what it accepts), or anything about a value the tool
 derives from a parameter whose name does not look like a reference. The name
-vocabulary in :func:`_names_a_resource` is the reach, and it is a reach by spelling.
+vocabulary in :func:`_names_a_resource` is the reach, and it is a reach by spelling:
+a parameter called ``location`` or ``code``, or a ``dict`` parameter carrying a
+location, is outside it. Tools that are not Strands tools (the MCP handler's
+``IDPTool`` classes) are outside the universe.
 """
 
 from __future__ import annotations
@@ -111,10 +119,24 @@ def _names_a_resource(param: str) -> bool:
     return param == "function_name" or any(p in RESOURCE_NAME_PARTS for p in parts)
 
 
-def _is_tool_decorator(node: ast.expr) -> bool:
+def _tool_aliases(module: ast.Module) -> set:
+    """Names a module binds to the Strands ``tool`` decorator: ``tool`` itself and
+    any ``from strands... import tool as <alias>``."""
+    names = {"tool"}
+    for node in ast.walk(module):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+            "strands"
+        ):
+            for alias in node.names:
+                if alias.name == "tool" and alias.asname:
+                    names.add(alias.asname)
+    return names
+
+
+def _is_tool_decorator(node: ast.expr, aliases: set) -> bool:
     target = node.func if isinstance(node, ast.Call) else node
     if isinstance(target, ast.Name):
-        return target.id == "tool"
+        return target.id in aliases
     if isinstance(target, ast.Attribute):
         return target.attr == "tool"
     return False
@@ -125,6 +147,7 @@ class Tool:
     path: str
     name: str
     node: ast.FunctionDef | ast.AsyncFunctionDef
+    module: ast.Module
 
     def params(self) -> List[str]:
         args = self.node.args
@@ -164,11 +187,12 @@ def _universe() -> List[Tool]:
             tree = ast.parse((REPO_ROOT / rel).read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):
             continue
+        aliases = _tool_aliases(tree)
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
-                _is_tool_decorator(d) for d in node.decorator_list
+                _is_tool_decorator(d, aliases) for d in node.decorator_list
             ):
-                tools.append(Tool(rel, node.name, node))
+                tools.append(Tool(rel, node.name, node, tree))
     return tools
 
 
@@ -184,15 +208,41 @@ def universe() -> List[Tool]:
 
 def _unconditional_statements(fn: ast.AST) -> List[ast.stmt]:
     """Statements that run on every call up to the first exception: the function
-    body, and the body of any ``try`` among them, recursively."""
+    body, and the body of any ``try`` among them, recursively -- but only a ``try``
+    whose every handler ends in ``return`` or ``raise``. A handler that falls through
+    would let execution continue past a validator that raised."""
     out: List[ast.stmt] = []
     pending = list(getattr(fn, "body", []))
     while pending:
         stmt = pending.pop(0)
         out.append(stmt)
-        if isinstance(stmt, ast.Try):
+        if isinstance(stmt, ast.Try) and all(
+            h.body and isinstance(h.body[-1], (ast.Return, ast.Raise))
+            for h in stmt.handlers
+        ):
             pending[:0] = stmt.body
     return out
+
+
+def _imports_validator(tool: "Tool", name: str) -> bool:
+    """The tool's module imports ``name`` from the module :data:`VALIDATORS`
+    registers for it, and does not define a function of that name itself."""
+    stem = Path(VALIDATORS[name]).stem
+    imported = any(
+        isinstance(n, ast.ImportFrom)
+        and (n.module or "").split(".")[-1] == stem
+        and any(a.name == name and a.asname in (None, name) for a in n.names)
+        for n in ast.walk(tool.module)
+    )
+    redefined = any(
+        isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+        and getattr(n, "name", None) == name
+        for n in ast.walk(tool.module)
+    ) or any(
+        isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
+        for n in ast.walk(tool.module)
+    )
+    return imported and not redefined
 
 
 def _first_load(fn: ast.AST, param: str) -> Optional[ast.Name]:
@@ -228,6 +278,8 @@ def _callee_name(call: ast.Call) -> str:
 
 
 def _verdict(tool: Tool, param: str, depth: int = 0) -> Tuple[bool, str]:
+    if param == "*":
+        return False, "a variadic parameter cannot be checked by name"
     first = _first_load(tool.node, param)
     if first is None:
         return True, "never read"
@@ -237,6 +289,8 @@ def _verdict(tool: Tool, param: str, depth: int = 0) -> Tuple[bool, str]:
     call, position = taking
     callee = _callee_name(call)
     if callee in VALIDATORS:
+        if not _imports_validator(tool, callee):
+            return False, f"{callee} is not the one imported from {VALIDATORS[callee]}"
         top_level_calls = {
             id(s.value)
             for s in _unconditional_statements(tool.node)
@@ -261,12 +315,19 @@ def _verdict(tool: Tool, param: str, depth: int = 0) -> Tuple[bool, str]:
 
 
 def _cases() -> List[Tuple[str, Tool, str]]:
-    return [
+    cases = [
         (f"{t.path}::{t.name}::{p}", t, p)
         for t in universe()
         for p in t.params()
         if _names_a_resource(p) and t.annotation(p) not in SCALAR_ANNOTATIONS
     ]
+    # A variadic parameter can carry any argument under any name, so it is a case
+    # whatever it is called, and it can never be validated by name.
+    for t in universe():
+        for variadic in (t.node.args.vararg, t.node.args.kwarg):
+            if variadic is not None:
+                cases.append((f"{t.path}::{t.name}::*{variadic.arg}", t, "*"))
+    return cases
 
 
 @pytest.mark.unit
