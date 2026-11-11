@@ -270,6 +270,17 @@ idp-cli deploy --terraform \
     --parameters "MaxConcurrentWorkflows=50,LogLevel=INFO"
 ```
 
+To deploy from your own checkout instead of a published release, add `--from-code .`:
+it builds and publishes the templates and the Terraform module to your artifact bucket
+first, exactly as `idp-cli publish --source-dir . --terraform` does, then deploys that
+module.
+
+```bash
+idp-cli deploy --terraform --from-code . \
+    --stack-name idp-tf \
+    --admin-email admin@example.com
+```
+
 The command writes a directory, `./idp-terraform/<stack-name>` by default, containing
 a `main.tf` with the `aws` and `awscc` providers configured for the Region and a
 `module "idp"` block, plus a `terraform.tfvars` holding your settings and an
@@ -305,6 +316,7 @@ The options are:
 | `--admin-email` | the administrator's email address, which becomes `admin_email` |
 | `--parameters "K=V,K2=V2"` | settings by their CloudFormation parameter names, as on the CloudFormation path; an unknown name is an error |
 | `--terraform-module-url URL` | the module source URL; by default the CLI uses the latest published module for the Region, chosen the same way the CloudFormation deploy chooses its default template |
+| `--from-code DIR` | build the templates from a local checkout, publish them with the Terraform module (`idp-cli publish --terraform`), and deploy that module. The build options `--bucket-basename`, `--prefix`, `--public`, `--build-max-workers`, `--clean-build` and `--no-validate-template` apply as on the CloudFormation path. With `--headless` or `--govcloud` it builds and deploys that variant's module. It cannot be combined with `--terraform-module-url` |
 | `--headless` / `--govcloud` | use the latest headless or GovCloud module instead of the standard one; they cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless` |
 | `--terraform-dir DIR` | the directory to write, instead of `./idp-terraform/<stack-name>` |
 | `--terraform-bin` | `terraform` or `tofu` |

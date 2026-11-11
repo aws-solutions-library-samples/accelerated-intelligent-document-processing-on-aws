@@ -335,7 +335,7 @@ idp-cli deploy [OPTIONS]
 - `--admin-email`: Admin user email
 
 **Optional Parameters:**
-- `--from-code`: Deploy from local code by building and publishing artifacts (path to project root)
+- `--from-code`: Deploy from local code by building and publishing artifacts (path to project root). With `--terraform`, it also publishes the Terraform module from that checkout and deploys it
 - `--template-url`: URL to CloudFormation template in S3 (optional, auto-selected based on region)
 - `--template-file`: Local path to a pre-built CloudFormation template (from a previous `publish`)
 - `--custom-config`: Path to local config file or S3 URI
@@ -376,7 +376,7 @@ idp-cli deploy [OPTIONS]
 - `--clean-build`: Force full rebuild by deleting checksum files (used with `--from-code`)
 - `--no-validate-template`: Skip CloudFormation template validation
 - `--terraform` (experimental): Deploy with Terraform instead of CloudFormation. See [Terraform deployments](#terraform-deployments) below and the [Terraform Deployment](./terraform.md) guide.
-- `--terraform-module-url`: Terraform module source URL (used with `--terraform`; default: the latest published module for the region)
+- `--terraform-module-url`: Terraform module source URL (used with `--terraform`; default: the latest published module for the region; not with `--from-code`, which publishes its own)
 - `--terraform-dir`: Directory for the generated root configuration and local state (used with `--terraform`; default: `./idp-terraform/<stack-name>`)
 - `--terraform-bin`: `terraform` or `tofu` (used with `--terraform`)
 - `--terraform-assume-role-arn`: IAM role both Terraform providers assume (used with `--terraform`; refused without it)
@@ -882,7 +882,13 @@ Proceeding with stack deletion...
 idp-cli deploy --terraform --stack-name my-idp --admin-email user@example.com \
     --region us-west-2 --parameters "MaxConcurrentWorkflows=50"
 idp-cli delete --terraform --stack-name my-idp --region us-west-2 --force
+
+# Build and deploy with Terraform from a local checkout
+idp-cli deploy --terraform --from-code . --stack-name my-idp \
+    --admin-email user@example.com --region us-west-2
 ```
+
+With `--from-code`, `deploy --terraform` first builds and publishes the templates and the Terraform module from that checkout (as `publish --source-dir <dir> --terraform` does, honouring `--bucket-basename`, `--prefix`, `--public`, `--build-max-workers`, `--clean-build` and `--no-validate-template`), then deploys that module. With `--headless` or `--govcloud` it builds and deploys that variant's module. It cannot be combined with `--terraform-module-url`.
 
 `deploy --terraform` options: `--stack-name` (at most 25 characters; it names the deployment's CloudFormation label stack, so no CloudFormation stack may already use it), `--admin-email` (required on the first deploy), `--parameters` (CloudFormation parameter names, mapped to module variables through the module's `idp-terraform.json`; an unknown name is an error, `Number` values become numbers and list-typed values are split on commas), `--terraform-module-url` (default: the `moduleUrl` in `<prefix>/terraform/idp-terraform-latest.json` beside the region's default template), `--terraform-dir` (default `./idp-terraform/<stack-name>`), `--terraform-bin`, `--terraform-assume-role-arn` (an IAM role both the `aws` and `awscc` providers assume, written into each provider block of `main.tf` in that provider's own `assume_role` syntax; the resources are then created as that role, and you need `sts:AssumeRole` on it), `--terraform-allow-replace-stateful` (see below; `--terraform-allow-replace-retained` is the earlier name), `--headless` or `--govcloud` (deploy the latest module of that variant, from `idp-terraform-<variant>-latest.json`; the two cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless`, whose module has no Cognito), and `--region`. `--wait` is accepted and always implied. CloudFormation-only options (`--from-code`, `--template-url`, `--template-file`, `--tags`, `--custom-config` and the like) are refused with `--terraform`.
 
