@@ -43,6 +43,7 @@ STACK = "IDPLog1101"
 GATEWAY_NAME = f"{STACK}-analytics-gateway"
 GATEWAY_ID = f"{GATEWAY_NAME.lower()}-abcde12345"
 REGION = "us-west-2"
+INTERCEPTOR_ARN = "arn:aws:lambda:us-west-2:111122223333:function:interceptor"
 LOG_GROUP = f"/aws/vendedlogs/bedrock-agentcore/gateway/APPLICATION_LOGS/{GATEWAY_ID}"
 
 #: The five resources the toolkit creates for a gateway, in deletion order, each
@@ -165,13 +166,20 @@ def _props():
         "ClientId": "client",
         "ExecutionRoleArn": "arn:aws:iam::111122223333:role/r",
         "StackName": STACK,
+        "InterceptorArn": INTERCEPTOR_ARN,
     }
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("semantic_supported", [True, False])
-def test_create_does_not_enable_toolkit_observability(index, semantic_supported):
+def test_create_does_not_enable_toolkit_observability(
+    index, monkeypatch, semantic_supported
+):
     _RecordingGatewayClient.fail_semantic = not semantic_supported
+    attached = []
+    monkeypatch.setattr(
+        index, "ensure_interceptor", lambda _c, gid, arn: attached.append((gid, arn))
+    )
 
     index.create_gateway(_props(), GATEWAY_NAME, _RecordingGatewayClient(REGION))
 
@@ -181,6 +189,8 @@ def test_create_does_not_enable_toolkit_observability(index, semantic_supported)
         # `is False`, not falsy: omitting the argument takes the toolkit's
         # default, which is True.
         assert kwargs["enable_observability"] is False, kwargs
+    # And the caller interceptor is attached to the gateway it created.
+    assert attached == [(GATEWAY_ID, _props()["InterceptorArn"])]
 
 
 @pytest.mark.unit
@@ -287,3 +297,164 @@ def test_the_delete_event_still_succeeds_when_cleanup_fails(
     index.handler({"RequestType": "Delete", "ResourceProperties": _props()}, None)
 
     assert [status for status, _ in sent] == [index.cfnresponse.SUCCESS]
+
+
+# --- the caller interceptor -----------------------------------------------------
+
+#: A gateway as GetGateway describes one, with every field UpdateGateway takes.
+EXISTING = {
+    "gatewayId": GATEWAY_ID,
+    "gatewayArn": f"arn:aws:bedrock-agentcore:{REGION}:111122223333:gateway/{GATEWAY_ID}",
+    "gatewayUrl": "https://gateway.example/mcp",
+    "createdAt": "2026-01-01T00:00:00Z",
+    "updatedAt": "2026-01-01T00:00:00Z",
+    "status": "READY",
+    "name": GATEWAY_NAME,
+    "description": "d",
+    "roleArn": "arn:aws:iam::111122223333:role/r",
+    "protocolType": "MCP",
+    "protocolConfiguration": {"mcp": {"searchType": "SEMANTIC"}},
+    "authorizerType": "CUSTOM_JWT",
+    "authorizerConfiguration": {
+        "customJWTAuthorizer": {
+            "discoveryUrl": "https://cognito-idp.us-west-2.amazonaws.com/p/.well-known/openid-configuration",
+            "allowedClients": ["a", "b"],
+        }
+    },
+    "kmsKeyArn": "arn:aws:kms:us-west-2:111122223333:key/k",
+    "exceptionLevel": "DEBUG",
+}
+
+
+@pytest.fixture
+def control_stub():
+    client = boto3.client(
+        "bedrock-agentcore-control",
+        region_name=REGION,
+        aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
+        aws_secret_access_key="1234abcd" * 5,
+    )
+    with Stubber(client) as stubber:
+        yield client, stubber
+        stubber.assert_no_pending_responses()
+
+
+def _update_response(gateway):
+    keys = (
+        "gatewayArn",
+        "gatewayId",
+        "gatewayUrl",
+        "createdAt",
+        "updatedAt",
+        "status",
+        "name",
+        "roleArn",
+        "protocolType",
+        "authorizerType",
+    )
+    return {k: gateway[k] for k in keys}
+
+
+@pytest.mark.unit
+def test_attaching_the_interceptor_writes_back_every_other_field(index, control_stub):
+    """UpdateGateway replaces the configuration, so the request must carry every
+    field the gateway has. The Stubber checks each parameter against the service
+    model, so a field the API does not take fails here too."""
+    client, stubber = control_stub
+    get = {"gatewayIdentifier": GATEWAY_ID}
+    stubber.add_response("get_gateway", EXISTING, get)
+    stubber.add_response("get_gateway", EXISTING, get)
+    fields = index.gateway_update_fields(client)
+    expected = {k: v for k, v in EXISTING.items() if k in fields}
+    expected["gatewayIdentifier"] = GATEWAY_ID
+    expected["interceptorConfigurations"] = index.desired_interceptors(INTERCEPTOR_ARN)
+    stubber.add_response("update_gateway", _update_response(EXISTING), expected)
+    stubber.add_response("get_gateway", EXISTING, get)
+
+    assert index.ensure_interceptor(client, GATEWAY_ID, INTERCEPTOR_ARN) is True
+
+
+@pytest.mark.unit
+def test_the_full_update_keeps_semantic_search_and_the_authorizer(index):
+    fields = index.gateway_update_fields(
+        boto3.client("bedrock-agentcore-control", region_name=REGION)
+    )
+    request = index.full_update_request(EXISTING, fields, interceptorConfigurations=[])
+    assert request["protocolConfiguration"] == {"mcp": {"searchType": "SEMANTIC"}}
+    assert request["authorizerConfiguration"] == EXISTING["authorizerConfiguration"]
+    assert "status" not in request and "gatewayUrl" not in request
+
+
+@pytest.mark.unit
+def test_the_update_fields_come_from_the_service_model(index):
+    """Every UpdateGateway member except the identifier, including the ones this
+    stack depends on keeping."""
+    fields = set(
+        index.gateway_update_fields(
+            boto3.client("bedrock-agentcore-control", region_name=REGION)
+        )
+    )
+    assert {
+        "authorizerConfiguration",
+        "protocolConfiguration",
+        "interceptorConfigurations",
+        "roleArn",
+    } <= fields
+    assert "gatewayIdentifier" not in fields
+
+
+@pytest.mark.unit
+def test_an_already_attached_interceptor_is_left_alone(index, control_stub):
+    client, stubber = control_stub
+    current = dict(EXISTING)
+    current["interceptorConfigurations"] = index.desired_interceptors(INTERCEPTOR_ARN)
+    get = {"gatewayIdentifier": GATEWAY_ID}
+    stubber.add_response("get_gateway", current, get)
+    stubber.add_response("get_gateway", current, get)
+
+    assert index.ensure_interceptor(client, GATEWAY_ID, INTERCEPTOR_ARN) is False
+
+
+@pytest.mark.unit
+def test_no_interceptor_arn_is_an_error(index):
+    with pytest.raises(ValueError):
+        index.ensure_interceptor(MagicMock(), GATEWAY_ID, "")
+
+
+@pytest.mark.unit
+def test_a_stack_update_attaches_the_interceptor_to_the_existing_gateway(
+    index, monkeypatch
+):
+    control = _control_client([{"name": GATEWAY_NAME, "gatewayId": GATEWAY_ID}])
+    control.get_gateway.return_value = EXISTING
+    monkeypatch.setattr(index.boto3, "client", lambda *_a, **_k: control)
+    monkeypatch.setattr(index, "update_gateway_target_if_needed", lambda *_a: False)
+    attached = []
+    monkeypatch.setattr(
+        index, "ensure_interceptor", lambda _c, gid, arn: attached.append((gid, arn))
+    )
+
+    out = index.create_or_update_gateway(_props(), GATEWAY_NAME)
+
+    assert attached == [(GATEWAY_ID, INTERCEPTOR_ARN)]
+    assert out["gateway_id"] == GATEWAY_ID
+
+
+@pytest.mark.unit
+def test_a_failed_attachment_on_update_fails_the_operation(index, monkeypatch):
+    """Not reported as partial details, and never a fall-through to creating a
+    second gateway."""
+    control = _control_client([{"name": GATEWAY_NAME, "gatewayId": GATEWAY_ID}])
+    control.get_gateway.return_value = EXISTING
+    monkeypatch.setattr(index.boto3, "client", lambda *_a, **_k: control)
+    monkeypatch.setattr(index, "update_gateway_target_if_needed", lambda *_a: False)
+
+    def boom(*_a):
+        raise RuntimeError("UpdateGateway failed")
+
+    monkeypatch.setattr(index, "ensure_interceptor", boom)
+    monkeypatch.setattr(
+        index, "GatewayClient", lambda **_k: pytest.fail("must not create a gateway")
+    )
+    with pytest.raises(RuntimeError, match="UpdateGateway failed"):
+        index.create_or_update_gateway(_props(), GATEWAY_NAME)

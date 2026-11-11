@@ -115,8 +115,8 @@ Parameters:
       everything; a document is processed only if the tenant owning its Input-bucket
       key also owns the Configuration Profile it resolves to, so an upload outside
       every tenant's prefixes is refused; Agent Chat, agent queries and Knowledge
-      Base queries are Admin-only and MCP tools are refused, because none can be
-      scoped to a tenant; and the Input and Output bucket policies delegate to S3
+      Base queries are Admin-only, as is the MCP search tool, because none can be
+      scoped to a tenant (other MCP tools are scoped like the UI); and the Input and Output bucket policies delegate to S3
       Access Points in this account, so restrict s3:CreateAccessPoint and
       s3:PutAccessPointPolicy to the access point deployer first. Declare tenants
       before switching to Strict.
@@ -2533,7 +2533,7 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W11
-            reason: "bedrock-agentcore:InvokeAgentRuntime, aws-marketplace, and logs:DescribeLogGroups APIs do not support resource-level permissions"
+            reason: "aws-marketplace and logs:DescribeLogGroups APIs do not support resource-level permissions"
           - id: W89
             reason: "Function does not require VPC access as it only interacts with AWS services via APIs"
           - id: W92
@@ -2588,6 +2588,7 @@ Resources:
           CLOUDWATCH_LOG_GROUP_PREFIX: !Sub "/aws/lambda/${AWS::StackName}"
           SETTINGS_PARAMETER_NAME: !Ref SettingsParameter
           MCP_SERVER_BUCKET: !Ref MCPContentBucket
+          CALLER_SIGNING_SECRET_ARN: !Ref McpCallerSigningSecret
           BEDROCK_ASSUME_ROLE_ARN:
             !If [HasBedrockHubRole, !Ref BedrockHubRoleArn, !Ref AWS::NoValue]
           BEDROCK_ASSUME_ROLE_EXTERNAL_ID:
@@ -2597,10 +2598,6 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref AgentCoreMCPHandlerLogGroup
       Policies:
-        - Statement:
-            Effect: Allow
-            Action: bedrock-agentcore:InvokeAgentRuntime
-            Resource: "*"
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatMessagesTable
         - DynamoDBCrudPolicy:
@@ -2609,11 +2606,6 @@ Resources:
             TableName: !Ref IdHelperChatMemoryTable
         - DynamoDBReadPolicy:
             TableName: !Ref ConfigurationTable
-        - S3CrudPolicy:
-            BucketName: !If
-              - ShouldCreateReportingBucket
-              - !Ref ReportingBucket
-              - !Ref ReportingBucketName
         - Statement:
             - Effect: Allow
               Action:
@@ -2657,7 +2649,6 @@ Resources:
               Action:
                 - s3:GetObject
                 - s3:PutObject
-                - s3:DeleteObject
                 - s3:AbortMultipartUpload
                 - s3:ListMultipartUploadParts
               Resource:
@@ -2670,6 +2661,15 @@ Resources:
                 - !Sub "${InputBucket.Arn}/*"
                 - !Sub "${OutputBucket.Arn}/*"
                 - !Sub "${MCPContentBucket.Arn}/*"
+            # Reprocessing from classification deletes the document's earlier
+            # section results, which live in the Output bucket only. Nothing this
+            # function runs deletes from the Input, Reporting or MCP content
+            # buckets (the content bucket expires its objects by lifecycle rule).
+            - Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource:
+                - !Sub "${OutputBucket.Arn}/*"
             - Effect: Allow
               Action:
                 - glue:GetTable
@@ -2742,6 +2742,7 @@ Resources:
                 - secretsmanager:GetSecretValue  # pragma: allowlist secret - IAM action name, not a secret value
               Resource:
                 - !Ref ExternalMCPAgentsSecret
+                - !Ref McpCallerSigningSecret
             - Effect: Allow
               Action:
                 - logs:DescribeLogGroups
@@ -2922,7 +2923,9 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: lambda:InvokeFunction
-                Resource: !GetAtt AgentCoreMCPHandlerFunction.Arn
+                Resource:
+                  - !GetAtt AgentCoreMCPHandlerFunction.Arn
+                  - !GetAtt McpIdentityInterceptorFunction.Arn
       ManagedPolicyArns:
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/CloudWatchLogsFullAccess"
       Tags:
@@ -2942,12 +2945,97 @@ Resources:
       ClientSecret: !GetAtt ExternalAppClient.ClientSecret
       ConnectorClientId: !Ref MCPConnectorClient
       ExecutionRoleArn: !GetAtt AgentCoreGatewayExecutionRole.Arn
+      # The interceptor that identifies each caller. The manager attaches it on
+      # create and on every update that finds it missing.
+      InterceptorArn: !GetAtt McpIdentityInterceptorFunction.Arn
       # Bump when IDP_TOOLS_SCHEMA in the gateway manager Lambda changes.
       # Custom resources only re-run when a property changes; this forces the
       # manager to run on stack update and re-sync the gateway target's tool
       # schema (update_gateway_target_if_needed) onto existing deployments.
-      ToolSchemaVersion: "2026-07-26-get-results-document-id"
+      ToolSchemaVersion: "2026-11-11-mcp-caller-interceptor"
       SourceCodeHash: <LAMBDA_HASH_TOKEN>
+
+  # Key the MCP gateway interceptor signs each caller block with, and the MCP
+  # handler verifies it with. Generated by Secrets Manager; nothing else reads it.
+  McpCallerSigningSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: CreateAgentCoreLambda
+    Properties:
+      Name: !Sub "${AWS::StackName}/mcp/caller-signing-key"
+      Description: "Key the MCP gateway interceptor signs caller identities with; read only by the interceptor and the MCP handler"
+      KmsKeyId: !Ref CustomerManagedEncryptionKey
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  McpIdentityInterceptorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateAgentCoreLambda
+    Properties:
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      RetentionInDays: !Ref LogRetentionDays
+
+  # AgentCore Gateway request/response interceptor. Resolves the caller from the
+  # validated access token (a signed-in user's groups and configuration scope, or
+  # the stack-created client-credentials client), refuses tools the caller may not
+  # use, filters tool listings, and passes a signed caller block to the handler.
+  McpIdentityInterceptorFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateAgentCoreLambda
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with AWS services via APIs"
+          - id: W92
+            reason: "Function does not require reserved concurrency as it scales based on demand"
+    # checkov:skip=CKV_AWS_116: "Invoked synchronously by the AgentCore Gateway; a DLQ does not apply"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold resource names and ids only"
+    Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      CodeUri: src/lambda/mcp_identity_interceptor/
+      Handler: index.handler
+      Runtime: python3.12
+      MemorySize: 256
+      Timeout: 10
+      Layers:
+        - !Ref IDPCommonBaseLayer
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          USER_POOL_ID: !Ref UserPool
+          USERS_TABLE_NAME: !Ref UsersTable
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          MCP_USER_CLIENT_IDS: !Ref ExternalAppClient
+          MCP_STACK_SERVICE_CLIENT_IDS: !Ref MCPConnectorClient
+          CALLER_SIGNING_SECRET_ARN: !Ref McpCallerSigningSecret
+          URL_SUFFIX: !Ref AWS::URLSuffix
+      LoggingConfig:
+        LogGroup: !Ref McpIdentityInterceptorLogGroup
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:AdminGetUser
+              Resource: !GetAtt UserPool.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource:
+                - !GetAtt UsersTable.Arn
+                - !Sub "${UsersTable.Arn}/index/EmailIndex"
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue  # pragma: allowlist secret - IAM action name, not a secret value
+              Resource: !Ref McpCallerSigningSecret
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
 
   ##########################################################################
   # Read previous IDPPattern from SSM before PATTERNSTACK overwrites it

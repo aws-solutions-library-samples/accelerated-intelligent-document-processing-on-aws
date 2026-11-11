@@ -1150,6 +1150,47 @@ The UI adapts based on the user's role and scope:
 
 **This layer is NOT a security boundary** — it's purely for user experience. Authentication is enforced at Layer 1 and authorization at Layer 2.
 
+## MCP Tools
+
+The [MCP server](./mcp-server.md) is a third way into the deployment, beside the web
+UI's REST API and the chat streaming endpoint. Its callers are resolved and held to
+the same roles and configuration scope as UI users.
+
+- **Who the caller is.** The AgentCore Gateway validates the caller's Cognito access
+  token. An interceptor Lambda then resolves it: a token from the
+  user-authentication client (`MCPClientId`) is the signed-in user, with the groups
+  in their token and the `allowedConfigVersions` the UI would apply to them; a token
+  from the stack-created client-credentials client (`MCPConnectorClientId`) is an
+  Author with no configuration scope, refused under `TenantIsolationMode=Strict` or
+  an external `TenantGrantSource`. The interceptor passes the result to the MCP
+  handler in a block signed with a key only the two functions can read and bound to
+  one gateway request, and the handler refuses any call whose block it cannot
+  verify.
+- **Which tools a role may call.** Each tool admits the roles of the REST operation
+  it corresponds to, so MCP is never the more permissive way to do the same thing.
+  The interceptor also removes the tools a caller may not call from the tool list.
+
+| Tool | Admin | Author | Reviewer | Viewer | Corresponds to |
+|---|---|---|---|---|---|
+| `search` | ✅ | ✅ | ❌ | ✅ | Agent Chat (`sendAgentChatMessage`); refused to any caller with a configuration scope |
+| `status` | ✅ | ✅ | ✅ | ✅ | `getDocument`; counts only documents in scope |
+| `get_results` | ✅ | ✅ | ✅ | ✅ | `getDocument`; refuses or omits documents outside scope |
+| `process` | ✅ | ✅ | ❌ | ❌ | `uploadDocument`; refuses a destination profile outside scope |
+| `reprocess` | ✅ | ✅ | ❌ | ❌ | `reprocessDocument`; refuses if any named document is outside scope |
+
+Annotator is admitted by none of them: it reaches documents only through test-set
+labelling, whose per-object control has no MCP counterpart.
+
+- **Scope.** A caller with a configuration scope cannot process from an S3
+  location, because the copy is made with the MCP handler's own role, which reads
+  every profile's documents; they send the document as base64 content instead, and
+  may name the profile with the `profile` argument.
+- **Where it is declared.** The table is `MCP_TOOL_POLICY` in
+  `lib/idp_common_pkg/idp_common/mcp_access.py`, mirrored under `mcp_tools:` in
+  `scripts/api_rbac_expectations.yaml`; `make api-test-static` (checks M1 to M5)
+  fails when the two differ, when a tool is registered without a policy, or when a
+  client the gateway admits has no resolution rule.
+
 ## User Management
 
 Admins can create users with any of the five roles via the User Management page. Each user is:

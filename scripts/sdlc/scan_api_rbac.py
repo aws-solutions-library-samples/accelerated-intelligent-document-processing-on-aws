@@ -1587,7 +1587,11 @@ def mcp_registry_tools(text: str) -> set[str] | None:
     node = _module_assignments(tree).get("TOOLS")
     if not isinstance(node, ast.Dict):
         return None
-    keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
+    keys = {
+        k.value
+        for k in node.keys
+        if isinstance(k, ast.Constant) and isinstance(k.value, str)
+    }
     return keys if len(keys) == len(node.keys) else None
 
 

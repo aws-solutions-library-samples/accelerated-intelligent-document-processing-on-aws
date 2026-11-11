@@ -445,10 +445,18 @@ def test_a_refused_list_response_returns_no_tools(world):
 
 
 def test_no_token_or_secret_value_is_logged(world, caplog):
+    """Every record this function and idp_common emit, at DEBUG. botocore's own
+    wire log is excluded: it echoes API responses at DEBUG, which the function's
+    LOG_LEVEL never enables for it."""
     caplog.set_level("DEBUG")
     token = user_token(world, "open", "Viewer")
-    world.mod.handler(
-        _event(_call("IDPTools___status", {"batch_id": "b"}), token), _context()
+    event = _event(_call("IDPTools___status", {"batch_id": "b"}), token)
+    world.mod.handler(event, _context())
+    ours = "\n".join(
+        r.getMessage()
+        for r in caplog.records
+        if not r.name.startswith(("botocore", "boto3", "urllib3"))
     )
-    assert token.split(".")[1] not in caplog.text
-    assert "s" * 64 not in caplog.text
+    assert ours, "nothing was logged, so this test would pass vacuously"
+    assert token.split(".")[1] not in ours
+    assert "s" * 64 not in ours

@@ -276,6 +276,9 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "AgentCoreMCPHandlerLogGroup",
             "MCPConnectorClient",
             "MCPResourceServer",
+            "McpIdentityInterceptorFunction",
+            "McpIdentityInterceptorLogGroup",
+            "McpCallerSigningSecret",
         }
 
         self.hitl_resources: Set[str] = {
