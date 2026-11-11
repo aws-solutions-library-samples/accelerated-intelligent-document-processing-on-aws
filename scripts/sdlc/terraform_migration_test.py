@@ -134,6 +134,11 @@ REQUIRED_KEPT = (
 )
 KEPT_VERDICTS = ("adopt", "adopt-after-fix")
 
+#: Changes ``apply`` refuses by design that docs/terraform-migration.md tells every
+#: migration to accept (its Hazards section). The test accepts these and nothing
+#: else, so a refusal the guide does not document fails the run.
+GUIDE_ACCEPTED_CHANGES = ("module.idp.aws_dynamodb_table.agent_table:ttl-changed",)
+
 #: The only change the migration is allowed to make to an existing item in a kept
 #: table: ``fix-config`` removes these two counters from each ``Config#`` row.
 CONFIG_COUNTERS = ("LatestRevision", "PublishedRevision")
@@ -528,6 +533,7 @@ class Settings:
     stop_after: Optional[str] = None
     min_role_headroom: int = 400
     document_timeout: int = 2400
+    accept_changes: Tuple[str, ...] = ()
     expected_account: Optional[str] = None
 
 
@@ -698,7 +704,12 @@ class Run:
         return proc.returncode, parsed if parsed is not None else proc.stdout
 
     def migrate(
-        self, phase: str, *args: str, log: Optional[str] = None, timeout: int = 3 * 3600
+        self,
+        phase: str,
+        *args: str,
+        log: Optional[str] = None,
+        timeout: int = 3 * 3600,
+        label: Optional[str] = None,
     ) -> Dict[str, Any]:
         """One phase of the migrate command, as the guide spells it, with --json."""
         common = ["--stack-name", self.s.new_name, "--region", self.s.region]
@@ -709,11 +720,11 @@ class Run:
             *common,
             *args,
             "--json",
-            log=log or f"migrate-{phase}.log",
+            log=log or f"migrate-{label or phase}.log",
             timeout=timeout,
             check=False,
         )
-        (self.work / "phases" / f"{phase}.json").write_text(
+        (self.work / "phases" / f"{label or phase}.json").write_text(
             json.dumps(out, indent=1, default=str)
             if isinstance(out, dict)
             else str(out)
@@ -1293,6 +1304,14 @@ class Run:
         )
         return f"{len(out.get('changes') or [])} changes"
 
+    def acceptance_args(self) -> List[str]:
+        """``--accept-change`` for each change the guide documents as expected, and
+        for each one the operator passed; nothing else is accepted."""
+        args: List[str] = []
+        for change in (*GUIDE_ACCEPTED_CHANGES, *self.s.accept_changes):
+            args += ["--accept-change", change]
+        return args
+
     def phase_migrate_apply_dry_run(self) -> str:
         out = self.migrate(
             "apply",
@@ -1300,10 +1319,18 @@ class Run:
             str(self.new_dir),
             "--terraform-bin",
             self.s.terraform_bin,
+            *self.acceptance_args(),
+            label="apply-dry-run",
         )
         if out.get("applied"):
             raise PhaseFailed("the dry run reports it applied")
-        return "; ".join(out.get("changes") or [])
+        review = (out.get("details") or {}).get("review") or []
+        self.ctx["applyReview"] = review
+        (self.work / "apply-review.txt").write_text("".join(r + "\n" for r in review))
+        return (
+            "; ".join(out.get("changes") or [])
+            + f"; {len(review)} in-place changes to review"
+        )
 
     def phase_migrate_apply(self) -> str:
         self.ctx["newApplyStarted"] = True
@@ -1314,6 +1341,7 @@ class Run:
             str(self.new_dir),
             "--terraform-bin",
             self.s.terraform_bin,
+            *self.acceptance_args(),
             "--apply",
         )
         if not out.get("applied"):
@@ -2108,6 +2136,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
     p.add_argument("--upstream-commit", default=UPSTREAM_COMMIT)
     p.add_argument("--expected-account", help="refuse to run in any other account")
     p.add_argument("--min-role-headroom", type=int, default=400)
+    p.add_argument(
+        "--accept-change",
+        action="append",
+        default=[],
+        metavar="ADDRESS:RULE",
+        help="also accept this refused change in `apply` (beyond the guide's own)",
+    )
     p.add_argument("--keep", action="store_true", help="never tear down")
     p.add_argument(
         "--resume", action="store_true", help="continue from <work-dir>/context.json"
@@ -2142,6 +2177,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         stop_after=a.stop_after,
         min_role_headroom=a.min_role_headroom,
         expected_account=a.expected_account,
+        accept_changes=tuple(a.accept_change),
     )
 
 
