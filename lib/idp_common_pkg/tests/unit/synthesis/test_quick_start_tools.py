@@ -235,7 +235,7 @@ class TestListAvailableExtensions:
                 "featureApiEndpoint": "https://gen.example.com",
             },
             {
-                "featureId": "idp-autotune",
+                "featureId": "idp-auto-optimizer",
                 "displayName": "Auto Optimizer",
                 "installedVersion": "0.1.3",
                 "featureApiEndpoint": "https://tune.example.com",
@@ -247,7 +247,7 @@ class TestListAvailableExtensions:
         assert out["available"] is True
         # sorted by displayName: "Auto Optimizer" < "Test Set Generator"
         assert [e["featureId"] for e in out["extensions"]] == [
-            "idp-autotune",
+            "idp-auto-optimizer",
             "idp-data-generator",
         ]
 

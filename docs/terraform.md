@@ -546,7 +546,7 @@ reading it, so three independent checks look at different things:
 | Check | When it runs | What it shows |
 |---|---|---|
 | The translator's own checks and `terraform validate` on every pinned Terraform and OpenTofu release | every pull request | every type, property and value in the templates is translated and reaches the Terraform; no data-holding resource depends on a value Terraform cannot know at plan time without a declared reason; the module loads and type-checks |
-| A static security scan of both, compared resource by resource | every pull request | no Terraform resource fails a security rule that its CloudFormation source passes, beyond a short list of explained exceptions (all on the custom-resource bridge the module adds) |
+| A static security scan of both, compared resource by resource | every pull request | no Terraform resource fails a security rule that its CloudFormation source passes, beyond a short list of explained exceptions (mostly on the custom-resource bridge the module adds); findings on rules only the Terraform scanner has are pinned per rule, so a new one fails too. The repository's SRT scan does not cover the generated module, which is never committed; this scan is what covers it |
 | A property comparison of a Terraform deployment with a CloudFormation deployment of the same release and parameters, every resource of both read back from AWS | release validation | the two deployments store the same configuration, beyond explained differences |
 
 None of the three plans or applies on a pull request. The full stack has been

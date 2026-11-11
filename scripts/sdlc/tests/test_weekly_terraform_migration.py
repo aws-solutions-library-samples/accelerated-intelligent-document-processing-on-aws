@@ -15,6 +15,7 @@ Pinned here, offline:
 from __future__ import annotations
 
 import ast
+import json
 import re
 import textwrap
 from pathlib import Path
@@ -135,12 +136,108 @@ def test_a_name_that_is_not_a_run_name_is_refused():
         cbd.terraform_migration_names("my-stack")
 
 
-def test_the_budget_leaves_the_teardown_inside_the_build_limit():
-    deadline, timeout = cbd.terraform_migration_budget(20 * 60)
-    limit = cbd.TERRAFORM_MIGRATION_BUILD_LIMIT_SECONDS
+@pytest.mark.parametrize("limit_minutes", [None, 240, 300])
+def test_the_budget_leaves_the_teardown_inside_the_build_limit(limit_minutes):
+    deadline, timeout = cbd.terraform_migration_budget(20 * 60, limit_minutes)
+    limit = (limit_minutes or cbd.TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES) * 60
     assert deadline + cbd.TERRAFORM_MIGRATION_RESERVE_SECONDS == limit - 20 * 60
     assert deadline < timeout < limit - 20 * 60
-    assert cbd.terraform_migration_budget(limit + 60) == (0, 0)
+    assert cbd.terraform_migration_budget(limit + 60, limit_minutes) == (0, 0)
+
+
+def test_the_deadline_moves_with_the_builds_own_timeout():
+    """The deadline is derived from the limit it is given, so raising the project's
+    timeout moves it without a second edit beside it."""
+    short, _ = cbd.terraform_migration_budget(0, 240)
+    long, _ = cbd.terraform_migration_budget(0, 300)
+    assert long - short == 60 * 60
+
+
+class _FakeCodeBuild:
+    def __init__(self, minutes=None, error=None):
+        self.minutes, self.error = minutes, error
+
+    def batch_get_builds(self, ids):
+        if self.error:
+            raise self.error
+        return {"builds": [{"timeoutInMinutes": self.minutes}]}
+
+
+def test_a_build_too_short_for_a_migration_run_is_refused(monkeypatch):
+    monkeypatch.setenv("CODEBUILD_BUILD_ID", "app-sdlc:abc")
+    minutes = cbd.TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES - 60
+    reason = cbd.terraform_migration_timeout_shortfall(_FakeCodeBuild(minutes))
+    assert reason and f"{minutes} min" in reason and "codepipeline" in reason
+    assert (
+        cbd.terraform_migration_timeout_shortfall(
+            _FakeCodeBuild(cbd.TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES)
+        )
+        is None
+    )
+
+
+def test_an_unreadable_timeout_does_not_refuse_a_migration_run(monkeypatch):
+    monkeypatch.setenv("CODEBUILD_BUILD_ID", "app-sdlc:abc")
+    fake = _FakeCodeBuild(error=RuntimeError("AccessDenied"))
+    assert cbd.terraform_migration_timeout_shortfall(fake) is None
+    monkeypatch.delenv("CODEBUILD_BUILD_ID")
+    assert cbd.terraform_migration_timeout_shortfall(_FakeCodeBuild(1)) is None
+
+
+def test_main_refuses_a_short_build_before_publish():
+    """The shortfall is checked beside the other refusals, which raise before the
+    publish step, not inside run_terraform_migration after it."""
+    source = (REPO_ROOT / "scripts" / "sdlc" / "codebuild_deployment.py").read_text()
+    main = source.split("\ndef main():", 1)[1]
+    check = main.index("terraform_migration_timeout_shortfall()")
+    assert check < main.index("terraform_migration_unsupported_reason()") + 200
+    assert check < main.index("run_terraform_migration(")
+    assert check < main.index("publish_success = True")
+
+
+def test_the_template_timeout_meets_what_a_migration_run_needs():
+    template = REPO_ROOT / "scripts" / "sdlc" / "cfn" / "codepipeline-s3.yml"
+    (minutes,) = re.findall(
+        r"^\s*TimeoutInMinutes:\s*(\d+)\s*$", template.read_text(), re.MULTILINE
+    )
+    assert int(minutes) >= cbd.TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES
+
+
+def test_the_monitor_and_the_job_outlast_the_build(itd, config):
+    """CodeBuild timeout < monitor handoff < monitor max wait < GitLab job timeout,
+    each with an allowance for what runs between their starts."""
+    build = cbd.TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES * 60
+    handoff = itd.MIGRATION_RUN_MONITOR_HANDOFF_SECONDS
+    max_wait = itd.MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS
+    assert handoff - build >= 5 * 60
+    assert max_wait > handoff
+    hours, minutes = re.fullmatch(
+        r"(\d+)h(\d+)m", config["integration_tests"]["timeout"]
+    ).groups()
+    job = (int(hours) * 60 + int(minutes)) * 60
+    assert job - max_wait >= 10 * 60
+
+
+def test_main_watches_the_migration_run_for_longest(itd, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    for name in ("IDP_RUN_PROBES", "IDP_TEST_REGION", "IDP_IAC"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CI_PIPELINE_SOURCE", "schedule")
+    monkeypatch.setenv(VAR, "true")
+    seen: list[dict] = []
+    # write_ci_run_options runs for real, into tmp_path: a migration run refuses
+    # to go on without the file.
+    monkeypatch.setattr(itd, "create_deployment_package", lambda *a, **k: None)
+    monkeypatch.setattr(itd, "upload_to_s3", lambda *a, **k: "v1")
+    monkeypatch.setattr(itd, "monitor_pipeline", lambda *a, **k: seen.append(k) or True)
+    with pytest.raises(SystemExit):
+        itd.main()
+    assert seen == [
+        {
+            "max_wait": itd.MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS,
+            "handoff_after": itd.MIGRATION_RUN_MONITOR_HANDOFF_SECONDS,
+        }
+    ]
 
 
 def test_the_profile_assumes_the_role_from_the_container():
@@ -162,10 +259,163 @@ def test_the_driver_gets_the_role_for_the_new_deployment_too():
         "/w",
         "us-east-1",
         "123456789012",
+        "arn:aws:iam::123456789012:policy/idp-m1-PermissionsBoundary",
     )
     assert cmd[cmd.index("--terraform-assume-role-arn") + 1] == "arn:r"
     assert cmd[cmd.index("--expected-account") + 1] == "123456789012"
+    assert cmd[cmd.index("--upstream-iam-path") + 1] == "/idp-m1-upstream/"
+    assert cmd[cmd.index("--upstream-permissions-boundary-arn") + 1].endswith(
+        "policy/idp-m1-PermissionsBoundary"
+    )
     assert "scripts/sdlc/terraform_migration_test.py" in cmd
+
+
+SERVICE_ROLE_TEMPLATE = (
+    REPO_ROOT
+    / "iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml"
+)
+
+
+def _deploy_role_statements():
+    """The derived TFDeployRole's statements, keyed by Sid, with each ``Fn::Sub``
+    resource rendered for an ``idp`` prefix in account 123456789012."""
+    template = cbd.terraform_deploy_role_template(SERVICE_ROLE_TEMPLATE.read_text())
+    role = template["Resources"]["TerraformDeployRole"]
+    subs = {
+        "AWS::Partition": "aws",
+        "AWS::AccountId": "123456789012",
+        "ManagedStackNamePrefix": cbd.MANAGED_STACK_NAME_PREFIX,
+        "AWS::StackName": "idp-1111-235959-iam",
+    }
+
+    def render(value):
+        text = value["Fn::Sub"] if isinstance(value, dict) else value
+        return re.sub(r"\$\{([^}]+)\}", lambda m: subs[m.group(1)], text)
+
+    out = {}
+    for policy in role["Properties"]["Policies"]:
+        for statement in policy["PolicyDocument"]["Statement"]:
+            resources = statement.get("Resource", [])
+            resources = resources if isinstance(resources, list) else [resources]
+            out[statement.get("Sid")] = (
+                statement,
+                [
+                    render(r)
+                    for r in resources
+                    if isinstance(r, (str, dict))
+                    and (isinstance(r, str) or "Fn::Sub" in r)
+                ],
+            )
+    return out
+
+
+@pytest.mark.parametrize(
+    ("sid", "kind", "name"),
+    [
+        (
+            "CreateOrChangeRolesOnlyWithBoundary",
+            "role",
+            "ConfigurationResolverRole-ab12",
+        ),
+        ("RoleLifecycleWithinNamePrefix", "role", "WebUIProxyRole-ab12"),
+        ("PassStackRolesToStackServices", "role", "UploadResolverRole-ab12"),
+        ("ManagedPoliciesWithinNamePrefix", "policy", "UploadResolverS3Policy-ab12"),
+    ],
+)
+def test_upstream_iam_under_the_run_path_is_inside_the_existing_grant(sid, kind, name):
+    """Upstream names these from fixed strings, outside role/idp*. Under the run's
+    path the ARN is role/<path><name>, which the deploy role's existing statements
+    already cover: nothing is widened for the migration run, and without the path
+    the same name is outside every one of them."""
+    import fnmatch
+
+    path = cbd.terraform_migration_upstream_iam_path("idp-1111-235959")
+    assert path.startswith(f"/{cbd.MANAGED_STACK_NAME_PREFIX}")
+    statement, patterns = _deploy_role_statements()[sid]
+    assert statement["Effect"] == "Allow"
+    pathed = f"arn:aws:iam::123456789012:{kind}{path}{name}"
+    bare = f"arn:aws:iam::123456789012:{kind}/{name}"
+    assert any(fnmatch.fnmatchcase(pathed, p) for p in patterns), patterns
+    assert not any(fnmatch.fnmatchcase(bare, p) for p in patterns), patterns
+
+
+def test_role_creation_still_requires_the_runs_boundary():
+    statement, _ = _deploy_role_statements()["CreateOrChangeRolesOnlyWithBoundary"]
+    assert statement["Condition"]["StringEquals"]["iam:PermissionsBoundary"] == {
+        "Ref": "CreatedRolePermissionsBoundaryArn"
+    }
+
+
+def _run_migration_with_fakes(monkeypatch, tmp_path):
+    """run_terraform_migration against fakes; returns what it called."""
+    seen = {}
+    monkeypatch.setattr(cbd, "ci_region", lambda: "us-east-1")
+    monkeypatch.setattr(cbd, "terraform_work_directory", lambda n: str(tmp_path / n))
+    monkeypatch.setattr(cbd, "_caller_principal_arn", lambda: "arn:cb")
+    monkeypatch.setattr(
+        cbd,
+        "create_iam_resources",
+        lambda name, **k: ("arn:role", f"arn:aws:iam::1:policy/{name}-B"),
+    )
+    monkeypatch.setattr(cbd, "_wait_until_assumable", lambda arn: True)
+    monkeypatch.setattr(cbd, "cleanup_iam_resources", lambda name: [])
+    monkeypatch.setattr(cbd, "build_timeout_minutes", lambda *a: None)
+
+    events = []
+
+    class _Client:
+        def get_caller_identity(self):
+            return {"Account": "1"}
+
+        def put_object(self, **kwargs):
+            events.append(("put", kwargs["Key"], json.loads(kwargs["Body"])))
+
+    monkeypatch.setattr(cbd.boto3, "client", lambda service, **k: _Client())
+    monkeypatch.setattr(cbd, "_terraform_state_bucket", lambda: "ci-bucket")
+    seen["events"] = events
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        events.append(("driver",))
+
+        class _P:
+            returncode = 0
+
+        return _P()
+
+    monkeypatch.setattr(cbd.subprocess, "run", fake_run)
+    cbd.run_terraform_migration("idp-1111-235959", "https://m.zip", "terraform")
+    return seen
+
+
+def test_the_build_passes_the_boundary_it_created(monkeypatch, tmp_path):
+    """The boundary the driver attaches is the one create_iam_resources made for
+    this run: the role's condition compares the ARN, so any other is refused."""
+    cmd = _run_migration_with_fakes(monkeypatch, tmp_path)["cmd"]
+    boundary = cmd[cmd.index("--upstream-permissions-boundary-arn") + 1]
+    assert boundary == "arn:aws:iam::1:policy/idp-1111-235959-B"
+
+
+def test_the_build_records_the_run_before_the_driver_and_passes_the_mirror(
+    monkeypatch, tmp_path
+):
+    """run.json is what lets a later build tear a dead run down, so it is in the
+    bucket before the driver creates anything, and the driver keeps its states
+    under the same prefix."""
+    seen = _run_migration_with_fakes(monkeypatch, tmp_path)
+    prefix = f"{cbd.TERRAFORM_MIGRATION_STATE_PREFIX}idp-1111-235959/"
+    kinds = [e[0] for e in seen["events"]]
+    assert kinds == ["put", "driver"]
+    _, key, record = seen["events"][0]
+    assert key == prefix + cbd.TERRAFORM_RUN_RECORD
+    assert record["new_name"] == "idp-1111-235959"
+    assert record["old_name"] == cbd.terraform_migration_names("idp-1111-235959")[0]
+    assert record["role_arn"] == "arn:role"
+    assert record["boundary_arn"] == "arn:aws:iam::1:policy/idp-1111-235959-B"
+    assert record["upstream_iam_path"] == "/idp-1111-235959-upstream/"
+    assert record["account"] == "1"
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("--state-mirror") + 1] == f"s3://ci-bucket/{prefix}"
 
 
 # -- .gitlab-ci.yml -------------------------------------------------------------------
@@ -222,3 +472,229 @@ def test_the_migration_job_is_no_shared_gate():
         "terraform_migration" not in shared
         and "stacktest-terraform-migration" not in shared
     )
+
+
+# -- the reaper for a dead migration run -----------------------------------------------
+
+DEAD = "idp-1111-235959"
+MPREFIX = f"{cbd.TERRAFORM_MIGRATION_STATE_PREFIX}{DEAD}/"
+RECORD = {
+    "old_name": "idpo11112359",
+    "new_name": DEAD,
+    "region": "us-east-1",
+    "role_arn": "arn:aws:iam::1:role/idp-1111-235959-iam-TFDeployRole",
+    "boundary_arn": "arn:aws:iam::1:policy/idp-1111-235959-PermissionsBoundary",
+    "upstream_iam_path": "/idp-1111-235959-upstream/",
+    "module_url": "https://m.zip",
+    "account": "1",
+}
+
+
+class _S3Listing:
+    """A fake S3 client; `pages` is what list_objects_v2 answers, Prefix ignored
+    on purpose, so a listing that trusts the API's prefix filter is caught."""
+
+    def __init__(self, objects):
+        self.objects = objects
+
+    def get_paginator(self, api):
+        objects = self.objects
+
+        class _P:
+            def paginate(self, Bucket, Prefix):  # noqa: N803
+                yield {"Contents": objects}
+
+        return _P()
+
+    def get_object(self, Bucket, Key):  # noqa: N803
+        body = json.dumps(RECORD).encode()
+
+        class _B:
+            def read(self):
+                return body
+
+        return {"Body": _B()}
+
+
+def test_the_nightly_listing_never_reads_a_migration_run():
+    from datetime import datetime, timezone
+
+    now = datetime.now(tz=timezone.utc)
+    client = _S3Listing(
+        [
+            {
+                "Key": f"{cbd.TERRAFORM_STATE_PREFIX}idp-0101-000000/main.tf",
+                "LastModified": now,
+            },
+            {"Key": MPREFIX + cbd.TERRAFORM_RUN_RECORD, "LastModified": now},
+        ]
+    )
+    assert set(cbd._terraform_state_listing("b", s3=client)) == {"idp-0101-000000"}
+    assert set(
+        cbd._terraform_state_listing(
+            "b", s3=client, prefix=cbd.TERRAFORM_MIGRATION_STATE_PREFIX
+        )
+    ) == {DEAD}
+
+
+def test_the_reaper_runs_the_drivers_teardown_with_the_recorded_run(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cbd, "ensure_terraform_binary", lambda: "/bin/terraform")
+    monkeypatch.setattr(
+        cbd, "cleanup_iam_resources", lambda name: seen.setdefault("iam", name) and []
+    )
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+
+    def fake_run(cmd, env, timeout, check):
+        seen.update(cmd=cmd, env=env, timeout=timeout)
+        seen["config"] = open(env["AWS_CONFIG_FILE"]).read()
+
+        class _P:
+            returncode = 0
+
+        return _P()
+
+    monkeypatch.setattr(cbd.subprocess, "run", fake_run)
+    outcome = cbd._reap_terraform_migration(
+        DEAD, "ci-bucket", [MPREFIX + cbd.TERRAFORM_RUN_RECORD], s3=_S3Listing([])
+    )
+    assert outcome == {"findings": [], "timed_out": False}
+    cmd = seen["cmd"]
+
+    def arg(flag):
+        return cmd[cmd.index(flag) + 1]
+
+    assert cmd[-2:] == ["--resume", "--teardown-only"]
+    assert (arg("--old-name"), arg("--new-name")) == ("idpo11112359", DEAD)
+    assert arg("--upstream-iam-path") == RECORD["upstream_iam_path"]
+    assert arg("--upstream-permissions-boundary-arn") == RECORD["boundary_arn"]
+    assert arg("--expected-account") == "1"
+    assert arg("--state-mirror") == f"s3://ci-bucket/{MPREFIX}"
+    assert f"role_arn = {RECORD['role_arn']}" in seen["config"]
+    assert seen["env"]["AWS_PROFILE"] == cbd.TERRAFORM_MIGRATION_PROFILE
+    assert "AWS_ACCESS_KEY_ID" not in seen["env"]
+    assert seen["timeout"] == cbd.TERRAFORM_MIGRATION_REAP_TIMEOUT_SECONDS
+    assert seen["iam"] == DEAD
+
+
+def test_a_failed_teardown_is_a_finding_and_leaves_iam(monkeypatch):
+    cleaned = []
+    monkeypatch.setattr(cbd, "ensure_terraform_binary", lambda: "/bin/terraform")
+    monkeypatch.setattr(cbd, "cleanup_iam_resources", lambda n: cleaned.append(n) or [])
+
+    class _P:
+        returncode = 1
+
+    monkeypatch.setattr(cbd.subprocess, "run", lambda *a, **k: _P())
+    outcome = cbd._reap_terraform_migration(
+        DEAD, "b", [MPREFIX + cbd.TERRAFORM_RUN_RECORD], s3=_S3Listing([])
+    )
+    assert outcome["findings"] and not outcome["timed_out"]
+    assert cleaned == []  # the role the next attempt runs as stays
+
+
+def test_a_run_with_no_record_is_reported_not_guessed(monkeypatch):
+    monkeypatch.setattr(
+        cbd.subprocess, "run", lambda *a, **k: pytest.fail("ran the driver")
+    )
+    outcome = cbd._reap_terraform_migration(
+        DEAD, "b", [MPREFIX + "context.json"], s3=_S3Listing([])
+    )
+    assert "run.json" in outcome["findings"][0]
+
+
+def _sweep(monkeypatch, age_seconds, reap_outcome=None, prior=0):
+    from datetime import datetime, timedelta, timezone
+
+    modified = datetime.now(tz=timezone.utc) - timedelta(seconds=age_seconds)
+    monkeypatch.setattr(cbd, "_terraform_state_bucket", lambda: "b")
+    monkeypatch.setattr(
+        cbd.boto3,
+        "client",
+        lambda *a, **k: _S3Listing(
+            [{"Key": MPREFIX + cbd.TERRAFORM_RUN_RECORD, "LastModified": modified}]
+        ),
+    )
+    reaped, recorded = [], []
+    monkeypatch.setattr(
+        cbd,
+        "_reap_terraform_migration",
+        lambda name, bucket, keys: reaped.append(name) or reap_outcome,
+    )
+    monkeypatch.setattr(cbd, "_reap_attempts", lambda *a: prior)
+    monkeypatch.setattr(
+        cbd, "_record_reap_failure", lambda c, b, p, n, f: recorded.append((p, n))
+    )
+    pending, abandoned = set(), []
+    findings = cbd.cleanup_stale_terraform_migrations(pending, abandoned)
+    return findings, pending, abandoned, reaped, recorded
+
+
+def test_a_young_migration_run_is_kept_and_not_reaped(monkeypatch):
+    findings, pending, _, reaped, _ = _sweep(monkeypatch, 60)
+    assert (findings, pending, reaped) == ([], {DEAD}, [])
+
+
+def test_a_dead_migration_run_is_reaped_and_released(monkeypatch):
+    findings, pending, _, reaped, _ = _sweep(
+        monkeypatch,
+        cbd.IDP_STACK_STALE_AGE_SECONDS + 60,
+        {"findings": [], "timed_out": False},
+    )
+    assert (findings, pending, reaped) == ([], set(), [DEAD])
+
+
+def test_a_failed_reap_is_counted_and_keeps_the_run(monkeypatch):
+    findings, pending, abandoned, _, recorded = _sweep(
+        monkeypatch,
+        cbd.IDP_STACK_STALE_AGE_SECONDS + 60,
+        {"findings": [f"{DEAD}: broke"], "timed_out": False},
+    )
+    assert findings and pending == {DEAD} and abandoned == []
+    assert recorded == [(MPREFIX, 1)]
+
+
+def test_a_run_past_its_attempts_is_abandoned_to_a_note(monkeypatch):
+    findings, pending, abandoned, reaped, _ = _sweep(
+        monkeypatch,
+        cbd.IDP_STACK_STALE_AGE_SECONDS + 60,
+        prior=cbd.TERRAFORM_REAP_MAX_ATTEMPTS,
+    )
+    assert findings == [] and reaped == [] and pending == {DEAD}
+    (note,) = abandoned
+    assert MPREFIX in note and "--teardown-only" in note
+
+
+def test_the_age_gate_outlasts_the_drivers_longest_phase():
+    """The driver mirrors its context at the end of every phase; its longest phase
+    is a DynamoDB time-to-live wait of about an hour. A gate inside that would
+    reap a run still in flight."""
+    assert cbd.IDP_STACK_STALE_AGE_SECONDS >= 2 * 3600
+
+
+def test_main_hands_the_migration_runs_to_the_stack_sweep(monkeypatch):
+    monkeypatch.setattr(cbd, "install_suite_transcript", lambda: None)
+    monkeypatch.setattr(cbd, "read_ci_run_options", lambda *a: {})
+    seen = {}
+    for sweep in cbd.STARTUP_SWEEPS:
+        monkeypatch.setattr(cbd, sweep.func, lambda *a, **k: [])
+
+    def migrations(pending, abandoned):
+        pending.add(DEAD)
+        return []
+
+    monkeypatch.setattr(cbd, "cleanup_stale_terraform_migrations", migrations)
+    monkeypatch.setattr(
+        cbd, "cleanup_stale_idp_stacks", lambda **k: seen.update(k) or []
+    )
+
+    class _Stop(BaseException):
+        pass
+
+    def _stop(*_a, **_k):
+        raise _Stop()
+
+    monkeypatch.setattr(cbd, "publish_artifacts", _stop)
+    with pytest.raises(_Stop):
+        cbd.main()
+    assert seen == {"terraform_runs": {DEAD}}

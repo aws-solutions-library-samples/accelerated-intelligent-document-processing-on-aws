@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -414,3 +415,195 @@ def test_sam_expansion_needs_no_region_in_the_environment(monkeypatch, tmp_path)
         }
     )
     assert out["Resources"]["Fn"]["Type"] == "AWS::Lambda::Function"
+
+
+# ------------------------------------------------- the bridge's key and logs
+def _bridge_template(
+    key_waits_on: str | None = "Check", with_bucket: bool = True
+) -> dict:
+    """A root with a custom resource (so a bridge), a key its log group uses,
+    and, optionally, a bucket that logs to a logging bucket."""
+    fn = {
+        "Type": "AWS::Lambda::Function",
+        "Properties": {
+            "Role": "arn:x",
+            "Code": {"S3Bucket": "b", "S3Key": "k"},
+            "Handler": "index.handler",
+            "Runtime": "python3.12",
+        },
+    }
+    resources: dict = {
+        "CheckFunction": fn,
+        "Check": {
+            "Type": "Custom::StacknameCheck",
+            "Properties": {
+                "ServiceToken": {"Fn::GetAtt": ["CheckFunction", "Arn"]},
+                "InputString": {"Ref": "AWS::StackName"},
+                "MaxLength": 25,
+            },
+        },
+        "Other": {
+            "Type": "Custom::Thing",
+            "Properties": {"ServiceToken": {"Fn::GetAtt": ["CheckFunction", "Arn"]}},
+        },
+        "Key": {"Type": "AWS::KMS::Key", "Properties": {"Description": "k"}},
+        "Group": {
+            "Type": "AWS::Logs::LogGroup",
+            "Properties": {
+                "KmsKeyId": {"Fn::GetAtt": ["Key", "Arn"]},
+                "RetentionInDays": 30,
+            },
+        },
+    }
+    if key_waits_on:
+        resources["Key"]["DependsOn"] = key_waits_on
+    if with_bucket:
+        resources["Logs"] = {"Type": "AWS::S3::Bucket", "DependsOn": "Check"}
+        resources["Data"] = {
+            "Type": "AWS::S3::Bucket",
+            "Properties": {
+                "LoggingConfiguration": {"DestinationBucketName": {"Ref": "Logs"}}
+            },
+        }
+    return {"Resources": resources}
+
+
+@pytest.fixture
+def vendored() -> AwsccSchema:
+    from idp_tf.cli import VENDORED_SCHEMA
+
+    return AwsccSchema(VENDORED_SCHEMA)
+
+
+def _block(text: str, header: str) -> str:
+    start = text.index(header)
+    return text[start : text.index("\n}\n", start)]
+
+
+def test_the_bridge_mirrors_the_key_and_logging_bucket_of_the_template(vendored):
+    from idp_tf.static_files import bridge_tf
+
+    tr = Translator(_bridge_template(), vendored)
+    files = tr.render()
+    assert tr.bridge_kms_key() == "awscc_kms_key.key.arn"
+    assert tr.bridge_access_log_bucket() == "aws_s3_bucket.logs.id"
+    bridge = bridge_tf(
+        None,
+        kms_key=tr.bridge_kms_key(),
+        access_log_bucket=tr.bridge_access_log_bucket(),
+    )
+    group = _block(bridge, 'resource "aws_cloudwatch_log_group" "cfn_bridge"')
+    assert "kms_key_id        = awscc_kms_key.key.arn" in group
+    logging = _block(bridge, 'resource "aws_s3_bucket_logging" "cfn_bridge"')
+    assert "target_bucket = aws_s3_bucket.logs.id" in logging
+    assert 'target_prefix = "cfn-bridge-logs/${var.stack_name}/"' in logging
+    # The key waited on the stack-name check, which the bridge runs: that edge
+    # is left out (stack_name's validation enforces the check at plan), and
+    # nothing else loses its DependsOn.
+    key = _block(files["main.tf"], 'resource "awscc_kms_key" "key"')
+    assert "aws_lambda_invocation.check" not in key
+    logs = _block(files["main.tf"], 'resource "aws_s3_bucket" "logs"')
+    assert "aws_lambda_invocation.check" in logs
+    assert tr.bridge_dropped_deps == {("Key", "Check")}
+    tr.render()
+    assert [w for w in tr.report.warnings if "DependsOn Check left out" in w] == [
+        "Key: DependsOn Check left out, so the custom-resource bridge can use the "
+        "key; stack_name's validation enforces Check at plan"
+    ]
+
+
+def test_a_key_that_waits_on_another_custom_resource_is_not_used(vendored):
+    """The bridge runs every custom resource, so a key waiting on one the
+    root's validation does not stand in for would be a cycle: no key."""
+    tr = Translator(_bridge_template(key_waits_on="Other"), vendored)
+    files = tr.render()
+    assert tr.bridge_kms_key() is None
+    assert tr.bridge_dropped_deps == set()
+    key = _block(files["main.tf"], 'resource "awscc_kms_key" "key"')
+    assert "aws_lambda_invocation.other" in key
+
+
+def test_a_stack_name_check_looser_than_the_validation_is_not_dropped(vendored):
+    t = _bridge_template()
+    t["Resources"]["Check"]["Properties"]["MaxLength"] = 24
+    tr = Translator(t, vendored)
+    tr.render()
+    assert tr.bridge_kms_key() is None
+    assert tr.bridge_dropped_deps == set()
+
+
+def test_a_template_with_neither_gives_a_bridge_without_either(vendored):
+    from idp_tf.static_files import bridge_tf
+
+    t = _bridge_template(key_waits_on=None, with_bucket=False)
+    del t["Resources"]["Group"]["Properties"]["KmsKeyId"]
+    tr = Translator(t, vendored)
+    tr.render()
+    assert tr.bridge_kms_key() is None and tr.bridge_access_log_bucket() is None
+    bridge = bridge_tf(None)
+    assert "kms_key_id" not in bridge
+    assert "aws_s3_bucket_logging" not in bridge
+
+
+def test_nested_modules_inherit_the_bridge_key_and_logging_bucket(vendored):
+    child = {
+        "Parameters": {"KeyArn": {"Type": "String"}},
+        "Resources": {
+            "Thing": {
+                "Type": "Custom::Thing",
+                "Properties": {"ServiceToken": "arn:fn"},
+            }
+        },
+    }
+    t = _bridge_template()
+    t["Resources"]["Pattern"] = {
+        "Type": "AWS::CloudFormation::Stack",
+        "Properties": {
+            "TemplateURL": "./p/.aws-sam/packaged.yaml",
+            "Parameters": {"KeyArn": {"Fn::GetAtt": ["Key", "Arn"]}},
+        },
+    }
+    tr = Translator(t, vendored, nested_loader=lambda url: child)
+    files = tr.render()
+    module = _block(files["main.tf"], 'module "pattern"')
+    assert "cfn_bridge_kms_key_arn = awscc_kms_key.key.arn" in module
+    assert "cfn_bridge_access_log_bucket = aws_s3_bucket.logs.id" in module
+    sub = tr.children["pattern"]
+    sub_files = sub.render()
+    for name in ("cfn_bridge_kms_key_arn", "cfn_bridge_access_log_bucket"):
+        declared = _block(sub_files["variables.tf"], f'variable "{name}"')
+        assert not re.search(r"^\s*default\s*=", declared, re.M), declared
+    assert sub.bridge_kms_key() == "var.cfn_bridge_kms_key_arn"
+    assert sub.bridge_access_log_bucket() == "var.cfn_bridge_access_log_bucket"
+    # A root with neither passes null, and the child's bridge then has neither.
+    bare = _bridge_template(key_waits_on=None, with_bucket=False)
+    del bare["Resources"]["Group"]["Properties"]["KmsKeyId"]
+    bare["Resources"]["Pattern"] = t["Resources"]["Pattern"]
+    bare["Resources"]["Key2"] = {"Type": "AWS::KMS::Key", "Properties": {}}
+    bare["Resources"]["Pattern"]["Properties"]["Parameters"] = {
+        "KeyArn": {"Fn::GetAtt": ["Key2", "Arn"]}
+    }
+    tr2 = Translator(bare, vendored, nested_loader=lambda url: child)
+    module2 = _block(tr2.render()["main.tf"], 'module "pattern"')
+    assert "cfn_bridge_kms_key_arn = null" in module2
+    assert "cfn_bridge_access_log_bucket = null" in module2
+    assert tr2.children["pattern"].bridge_kms_key() is None
+    assert tr2.children["pattern"].bridge_access_log_bucket() is None
+
+
+def test_the_bridge_bucket_aborts_incomplete_uploads_bucket_wide():
+    from idp_tf.static_files import bridge_tf
+
+    lifecycle = _block(
+        bridge_tf(None), 'resource "aws_s3_bucket_lifecycle_configuration" "cfn_bridge"'
+    )
+    rule = lifecycle[lifecycle.index('id     = "abort-incomplete-uploads"') :]
+    assert "filter {}" in rule
+    assert "days_after_initiation = 1" in rule
+
+
+def test_a_parameter_named_like_a_bridge_variable_does_not_collide(schema):
+    t = queue(QueueName={"Ref": "CfnBridgeKmsKeyArn"})
+    t["Parameters"] = {"CfnBridgeKmsKeyArn": {"Type": "String"}}
+    files = render(t, schema)
+    assert "queue_name = var.param_cfn_bridge_kms_key_arn" in files["main.tf"]

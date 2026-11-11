@@ -3298,7 +3298,18 @@
       ],
       "ratchet": "staleness",
       "ratchetEvidence": "scripts/terraform_scan_diff.py",
-      "reason": "Each entry names one check on one resource of the custom-resource bridge the translator adds (the bridge has no CloudFormation counterpart, because CloudFormation runs custom resources inside the service) and says why that check does not apply to it or that it is a known gap, in which case the entry says what removes it. Why JUDGEMENT: whether a scanner rule applies to a generated resource is a reading of what the resource does. An entry matching no finding fails the gate as stale, and notEvaluatedCount is count-pinned: a change in the number of findings on conditional resources the CloudFormation scan skips fails the gate until it is re-read."
+      "reason": "Each entry names one check on one resource and says why the Terraform side fails a check the CloudFormation side does not: on the custom-resource bridge the translator adds (which has no CloudFormation counterpart, because CloudFormation runs custom resources inside the service), why the check does not apply to it; on a translated resource, why the two sides differ although the deployed setting is the same. Why JUDGEMENT: whether a scanner rule applies to a generated resource, or whether a difference is checkov's evaluation rather than the translation, is a reading of what the resource does. An entry matching no finding fails the gate as stale, and notEvaluatedCount is count-pinned: a change in the number of findings on conditional resources the CloudFormation scan skips fails the gate until it is re-read. Findings on checks with no CloudFormation counterpart are not here: scripts/terraform_scan_tf_only_baseline.json pins them."
+    },
+    "scripts/terraform_scan_tf_only_baseline.json::terraform_scan_tf_only_baseline.json": {
+      "kind": "exemption",
+      "memberKind": "a checkov check id with no CloudFormation counterpart, with one reason and a pinned count per Terraform resource type",
+      "turnsOff": "make terraform-scan-diff's failure on findings of that check on the generated Terraform, up to the pinned count for each resource type, and no further",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/terraform_scan_diff.py",
+      "reason": "Each entry is one checkov check that has no CloudFormation counterpart (no CloudFormation check with the same id or the same policy text), so nothing on the CloudFormation side can be compared with its findings; its reason says what is accepted and why, which CloudFormation-side setting covers it, or that it is a known gap and where the fix belongs. Why JUDGEMENT: whether a scanner rule's finding is acceptable for this solution is a reading of the resource and of the template it came from, not a property the tree can compute. The ratchet is the pinned count per (check id, resource type): tf_only_verdict fails on a check id with no entry, on a count above its pin (a new finding), and on a count below it or a pinned pair that no longer occurs (stale, with the number to lower the pin to), so a new Terraform-only finding fails the gate even though no CloudFormation result exists to compare it with."
     },
     "terraform/tools/parity_baseline.json::parity_baseline.json": {
       "kind": "exemption",

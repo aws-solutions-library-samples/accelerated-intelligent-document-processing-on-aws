@@ -15430,7 +15430,7 @@ Resources:
         BuildHash: <MULTI_DOC_DISCOVERY_BUILD_HASH_TOKEN>
         ArtifactBucket: "<ARTIFACT_BUCKET_TOKEN>"
         ArtifactsBucketKmsKeyArn: !Ref ArtifactsBucketKmsKeyArn
-        SourceZipfile: "<ARTIFACT_PREFIX_TOKEN>/multi-doc-discovery-source.zip"
+        SourceZipfile: "<ARTIFACT_PREFIX_TOKEN>/<MULTI_DOC_DISCOVERY_SOURCE_ZIPFILE_TOKEN>"
         # GraphQL API removed: discovery status updates write straight to the
         # DiscoveryTrackingTable; the UI polls listDiscoveryJobs. The old
         # ApiUrl/ApiArn params are no longer passed (the nested

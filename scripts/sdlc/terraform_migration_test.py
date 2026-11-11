@@ -126,6 +126,75 @@ UPSTREAM_EXAMPLE = "examples/unified-processor"
 #: resolved, copied into the example before `init` so every run uses the same
 #: provider builds (`init` verifies their hashes against it).
 UPSTREAM_LOCK_FILE = HERE / "terraform_migration_upstream.terraform.lock.hcl"
+#: Written beside every upstream ``aws_iam_role`` and ``aws_iam_policy`` the
+#: example loads, when the run is given an IAM path and a permissions boundary
+#: (CI always is). Terraform merges ``*_override.tf`` into the blocks it names, so
+#: upstream's files are not edited and the pinned commit is what is deployed,
+#: with two attributes added.
+IAM_OVERRIDE_FILE = "zz_idp_ci_iam_override.tf"
+_IAM_RESOURCE_RE = re.compile(
+    r'^\s*resource\s+"(aws_iam_role|aws_iam_policy)"\s+"([^"]+)"', re.MULTILINE
+)
+#: What IAM accepts as a path, with the leading and trailing slash it requires.
+_IAM_PATH_RE = re.compile(r"^/[A-Za-z0-9+=,.@_-]+/$")
+#: ``--state-mirror s3://<bucket>/<prefix>/``: where the run keeps both Terraform
+#: states (S3 backends), its context and the new root's configuration, so that a
+#: later build can tear the run down after this one's work directory is gone.
+_STATE_MIRROR_RE = re.compile(
+    r"^s3://([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])/((?:[A-Za-z0-9!_.*'()=-]+/)+)$"
+)
+#: The backend file in each root. The new root's is the name idp-cli keeps beside
+#: the main.tf it writes, as on a Terraform nightly; the old one is prefixed so it
+#: is plainly not one of upstream's files.
+OLD_BACKEND_FILE = "zz_idp_ci_backend.tf"
+NEW_BACKEND_FILE = "backend.tf"
+MIRROR_CONTEXT = "context.json"
+MIRROR_NEW_ROOT = "new-root/"
+
+
+def parse_state_mirror(url: str) -> Tuple[str, str]:
+    """``(bucket, prefix)`` of a ``s3://<bucket>/<prefix>/`` mirror URL."""
+    match = _STATE_MIRROR_RE.match(url)
+    if not match:
+        raise ValueError(f"{url!r} is not s3://<bucket>/<prefix>/")
+    return match.group(1), match.group(2)
+
+
+def render_backend(bucket: str, key: str, region: str) -> str:
+    """An S3 backend block, the shape codebuild_deployment.render_terraform_backend
+    writes for a Terraform nightly: encrypted, with S3-native locking."""
+    return "\n".join(
+        [
+            "# Written by scripts/sdlc/terraform_migration_test.py: this root's state,",
+            "# kept in the CI bucket so a later build can destroy the deployment.",
+            "terraform {",
+            '  backend "s3" {',
+            f"    bucket       = {json.dumps(bucket)}",
+            f"    key          = {json.dumps(key)}",
+            f"    region       = {json.dumps(region)}",
+            "    encrypt      = true",
+            "    use_lockfile = true",
+            "  }",
+            "}",
+            "",
+        ]
+    )
+
+
+def new_root_files(new_dir: Path) -> List[Path]:
+    """The new root's own configuration: what idp-cli and the migration command
+    wrote there, which is all a teardown needs beside the state. Never a state
+    file, a plan or anything under ``.terraform``."""
+    if not new_dir.is_dir():
+        return []
+    return sorted(
+        f
+        for f in new_dir.iterdir()
+        if f.is_file()
+        and (f.suffix in (".tf", ".tfvars") or f.name == ".terraform.lock.hcl")
+        and "tfstate" not in f.name
+    )
+
 
 SAMPLE_DOCUMENTS = (
     "samples/lending_package.pdf",
@@ -208,6 +277,65 @@ class PhaseFailed(Exception):
 # ---------------------------------------------------------------------------
 # Pure helpers (unit-tested offline in scripts/sdlc/tests)
 # ---------------------------------------------------------------------------
+
+
+def upstream_iam_overrides(
+    upstream_root: Path, iam_path: str, boundary_arn: str
+) -> Dict[Path, str]:
+    """``{override file: content}`` putting every IAM role and managed policy the
+    upstream example loads under ``iam_path``, and every role under
+    ``boundary_arn``.
+
+    Upstream sets no permissions boundary on any role and names many roles and
+    policies from fixed strings (``ConfigurationResolverRole-<random>``) rather
+    than from its prefix, so the CI deploy role, which may create only roles that
+    carry the run's boundary and whose ARN starts with ``role/idp``, refuses them.
+    With the boundary attached and an ``idp…`` path, ``role/<path><name>`` matches
+    the role's existing grant: no IAM permission is widened, and the run's
+    boundary still marks exactly the roles this run may write. Upstream builds no
+    role or policy ARN from a name and the migration adopts no IAM resource
+    (``RECREATE_SAFE_TYPES``), so neither attribute changes what is tested.
+
+    Reads the module tree and the one example the run deploys; ``sources/`` (the
+    accelerator, a submodule), other examples and test fixtures are not loaded by
+    it and are skipped.
+    """
+    if not _IAM_PATH_RE.match(iam_path):
+        raise ValueError(f"{iam_path!r} is not an IAM path")
+    found: Dict[Path, List[Tuple[str, str]]] = {}
+    for dirpath, dirnames, filenames in os.walk(upstream_root):
+        rel = Path(dirpath).relative_to(upstream_root)
+        if rel.parts and rel.parts[0] in ("sources", ".git"):
+            dirnames[:] = []
+            continue
+        if rel.parts[:1] == ("examples",) and not (
+            Path(UPSTREAM_EXAMPLE).is_relative_to(rel) or rel == Path(UPSTREAM_EXAMPLE)
+        ):
+            dirnames[:] = []
+            continue
+        if ".terraform" in rel.parts or "tests" in rel.parts:
+            dirnames[:] = []
+            continue
+        for name in sorted(filenames):
+            if not name.endswith(".tf") or name.endswith("override.tf"):
+                continue
+            text = (Path(dirpath) / name).read_text(encoding="utf-8")
+            found.setdefault(Path(dirpath), []).extend(_IAM_RESOURCE_RE.findall(text))
+    files: Dict[Path, str] = {}
+    for directory, blocks in sorted(found.items()):
+        if not blocks:
+            continue
+        lines = [
+            "# Written by scripts/sdlc/terraform_migration_test.py: puts upstream's IAM",
+            "# under this run's path and permissions boundary. Not part of upstream.",
+        ]
+        for kind, name in blocks:
+            lines += ["", f'resource "{kind}" "{name}" {{', f'  path = "{iam_path}"']
+            if kind == "aws_iam_role":
+                lines.append(f'  permissions_boundary = "{boundary_arn}"')
+            lines.append("}")
+        files[directory / IAM_OVERRIDE_FILE] = "\n".join(lines) + "\n"
+    return files
 
 
 def validate_names(old_name: str, new_name: str) -> List[str]:
@@ -625,10 +753,14 @@ GATING_PHASES = ("verify",)
 
 
 def stored_name_problems(
-    ctx: Dict[str, Any], old_name: str, new_name: str
+    ctx: Dict[str, Any],
+    old_name: str,
+    new_name: str,
+    upstream_iam_path: Optional[str] = None,
 ) -> List[str]:
     """Each run name given on the command line that differs from the one the work
-    directory's run recorded."""
+    directory's run recorded. The upstream IAM path counts as a name: a resumed
+    run under another path would plan every upstream role for replacement."""
     problems = []
     for key, given in (("oldName", old_name), ("newName", new_name)):
         stored = ctx.get(key)
@@ -636,6 +768,11 @@ def stored_name_problems(
             problems.append(
                 f"{key} is {given!r} here but {stored!r} in this work directory's run"
             )
+    if "upstreamIamPath" in ctx and ctx["upstreamIamPath"] != upstream_iam_path:
+        problems.append(
+            f"the upstream IAM path is {upstream_iam_path!r} here but "
+            f"{ctx['upstreamIamPath']!r} in this work directory's run"
+        )
     return problems
 
 
@@ -752,6 +889,13 @@ class Settings:
     #: starts, so that teardown fits inside an outer time limit (CI's build).
     deadline_seconds: Optional[int] = None
     expected_account: Optional[str] = None
+    #: Both or neither: the IAM path and permissions boundary every upstream role
+    #: is created with (see upstream_iam_overrides). CI passes both.
+    upstream_iam_path: Optional[str] = None
+    upstream_permissions_boundary_arn: Optional[str] = None
+    #: ``s3://<bucket>/<prefix>/`` (see parse_state_mirror), or None for a run
+    #: whose states stay in its work directory.
+    state_mirror: Optional[str] = None
 
 
 def first_party_pythonpath() -> str:
@@ -786,6 +930,7 @@ class Run:
         self._boto_cache: Dict[str, Any] = {}
         self.started = time.monotonic()
         self.preflight_passed = False
+        self._mirror_cleared = False
 
     # -- plumbing --------------------------------------------------------------
 
@@ -798,9 +943,117 @@ class Run:
         return self.work / "new" / self.s.new_name
 
     def save(self) -> None:
+        self.save_local()
+        if self.s.state_mirror and not self._mirror_cleared:
+            try:
+                self.upload_mirror()
+            except Exception as e:  # noqa: BLE001 - preflight proved it writable
+                print(f"  ⚠ could not update the state mirror: {e}", flush=True)
+
+    def save_local(self) -> None:
         tmp = self.context_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.ctx, indent=1, default=str))
         tmp.replace(self.context_path)
+
+    # -- the state mirror --------------------------------------------------------------
+
+    def upload_mirror(self) -> None:
+        """Copy the context and the new root's configuration to the mirror. Never
+        secrets.json: a teardown needs names, not passwords."""
+        bucket, prefix = parse_state_mirror(self.s.state_mirror or "")
+        s3 = self.boto("s3")
+        s3.put_object(
+            Bucket=bucket,
+            Key=prefix + MIRROR_CONTEXT,
+            Body=self.context_path.read_bytes(),
+            ServerSideEncryption="AES256",
+        )
+        for f in new_root_files(self.new_dir):
+            s3.put_object(
+                Bucket=bucket,
+                Key=prefix + MIRROR_NEW_ROOT + f.name,
+                Body=f.read_bytes(),
+                ServerSideEncryption="AES256",
+            )
+
+    def download_mirror_context(self) -> bool:
+        """Load the context from the mirror into this work directory. False when
+        the mirror holds none."""
+        bucket, prefix = parse_state_mirror(self.s.state_mirror or "")
+        try:
+            body = (
+                self.boto("s3")
+                .get_object(Bucket=bucket, Key=prefix + MIRROR_CONTEXT)["Body"]
+                .read()
+            )
+        except Exception as e:  # noqa: BLE001 - reported as a refusal
+            print(f"  could not read the mirrored context: {e}", flush=True)
+            return False
+        self.context_path.write_bytes(body)
+        self.ctx = json.loads(body)
+        for key in ("completed", "phases", "findings"):
+            self.ctx.setdefault(key, [])
+        return True
+
+    def download_new_root(self) -> List[str]:
+        bucket, prefix = parse_state_mirror(self.s.state_mirror or "")
+        s3 = self.boto("s3")
+        names = []
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix + MIRROR_NEW_ROOT):
+            for item in page.get("Contents", []):
+                name = item["Key"][len(prefix + MIRROR_NEW_ROOT) :]
+                if not name or "/" in name or "tfstate" in name:
+                    continue
+                self.new_dir.mkdir(parents=True, exist_ok=True)
+                body = s3.get_object(Bucket=bucket, Key=item["Key"])["Body"].read()
+                write_private(self.new_dir / name, body.decode())
+                names.append(name)
+        return names
+
+    def clear_mirror(self) -> None:
+        """Delete every object and version under the mirror prefix, the states
+        included. Only once a teardown found nothing left: until then the mirror
+        is what lets a later build try again."""
+        bucket, prefix = parse_state_mirror(self.s.state_mirror or "")
+        s3 = self.boto("s3")
+        paginator = s3.get_paginator("list_object_versions")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for item in page.get("Versions", []) + page.get("DeleteMarkers", []):
+                s3.delete_object(
+                    Bucket=bucket, Key=item["Key"], VersionId=item["VersionId"]
+                )
+        self._mirror_cleared = True
+        print(f"  state mirror s3://{bucket}/{prefix} removed", flush=True)
+
+    def write_backend(self, directory: Path, filename: str, which: str) -> None:
+        bucket, prefix = parse_state_mirror(self.s.state_mirror or "")
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / filename).write_text(
+            render_backend(bucket, f"{prefix}{which}/terraform.tfstate", self.s.region)
+        )
+
+    def restore_for_teardown(self) -> List[str]:
+        """Rebuild what the teardown phases read, for a work directory that is not
+        the one the run used: the pinned upstream clone with the run's tfvars, IAM
+        overrides, backend and provider lock, and the new root from the mirror;
+        each initialised. Returns what was restored."""
+        restored = []
+        old_initialised = (self.old_dir / ".terraform").is_dir()
+        if self.ctx.get("oldDeployStarted") and not old_initialised:
+            if not (self.work / "upstream" / ".git").is_dir():
+                self.phase_upstream_clone()
+            self.prepare_old_root()
+            self.terraform(
+                self.old_dir, "init", "-input=false", log="restore-old-init.log"
+            )
+            restored.append("old root")
+        if not (self.new_dir / "main.tf").is_file() and self.download_new_root():
+            self.terraform(
+                self.new_dir, "init", "-input=false", log="restore-new-init.log"
+            )
+            restored.append("new root")
+        return restored
 
     def boto(self, service: str):
         if service not in self._boto_cache:
@@ -983,7 +1236,9 @@ class Run:
         unusable, differ from the ones the work directory's run used, or the
         credentials are for another account than it ran in."""
         problems = validate_names(self.s.old_name, self.s.new_name)
-        problems += stored_name_problems(self.ctx, self.s.old_name, self.s.new_name)
+        problems += stored_name_problems(
+            self.ctx, self.s.old_name, self.s.new_name, self.s.upstream_iam_path
+        )
         account = self.boto("sts").get_caller_identity()["Account"]
         if self.ctx.get("account") and self.ctx["account"] != account:
             problems.append(
@@ -1017,6 +1272,16 @@ class Run:
             )
         version = self.terraform_capture(self.work, "version", "-json")
         self.ctx["terraformVersion"] = json.loads(version)["terraform_version"]
+        if self.s.state_mirror:
+            # A run that cannot write its mirror could not be torn down by a later
+            # build if this one died, so it creates nothing.
+            self.save_local()
+            try:
+                self.upload_mirror()
+            except Exception as e:  # noqa: BLE001
+                raise PhaseFailed(
+                    f"cannot write the state mirror {self.s.state_mirror}: {e}"
+                ) from e
         if not self.ctx.get("oldDeployStarted"):
             clashes = self.existing_matches()
             if clashes:
@@ -1095,12 +1360,39 @@ class Run:
             f"{UPSTREAM_SOURCES_COMMIT[:12]}"
         )
 
-    def phase_upstream_deploy(self) -> str:
+    def prepare_old_root(self) -> str:
+        """Write what the upstream example's root needs beside upstream's own
+        files: the tfvars, the IAM overrides, the backend and the provider lock.
+        The same for the deploy and for a teardown in a rebuilt work directory."""
         tfvars = upstream_tfvars(self.s.old_name, self.ctx["runId"], self.s.region)
         (self.old_dir / "terraform.tfvars").write_text(tfvars)
+        if self.s.state_mirror:
+            self.write_backend(self.old_dir, OLD_BACKEND_FILE, "old")
         lock = self.old_dir / ".terraform.lock.hcl"
         if not lock.exists():
             shutil.copyfile(UPSTREAM_LOCK_FILE, lock)
+        overridden = ""
+        if self.s.upstream_iam_path:
+            files = upstream_iam_overrides(
+                self.work / "upstream",
+                self.s.upstream_iam_path,
+                self.s.upstream_permissions_boundary_arn or "",
+            )
+            if not files:
+                raise PhaseFailed(
+                    "found no upstream aws_iam_role to put under the run's boundary; "
+                    "upstream's layout has changed"
+                )
+            for path, text in files.items():
+                path.write_text(text)
+            count = sum(
+                text.count('resource "aws_iam_role"') for text in files.values()
+            )
+            overridden = f", {count} roles under {self.s.upstream_iam_path}"
+        return overridden
+
+    def phase_upstream_deploy(self) -> str:
+        overridden = self.prepare_old_root()
         self.terraform(self.old_dir, "init", "-input=false", log="old-init.log")
         self.terraform(
             self.old_dir, "plan", "-input=false", "-out=old.tfplan", log="old-plan.log"
@@ -1115,7 +1407,7 @@ class Run:
         outputs = json.loads(self.terraform_capture(self.old_dir, "output", "-json"))
         self.ctx["old"] = outputs["e2e_stack"]["value"]
         write_private(self.work / "old-outputs.json", json.dumps(outputs, indent=1))
-        return f"name prefix {self.ctx['old']['name_prefix']}"
+        return f"name prefix {self.ctx['old']['name_prefix']}{overridden}"
 
     # Seeding -----------------------------------------------------------------------
 
@@ -1501,6 +1793,10 @@ class Run:
         ]
         if self.s.assume_role_arn:
             args += ["--terraform-assume-role-arn", self.s.assume_role_arn]
+        if self.s.state_mirror:
+            # Before the command's own `init`, so the new state is in the bucket
+            # from its first write.
+            self.write_backend(self.new_dir, NEW_BACKEND_FILE, "new")
         self.migrate("plan", *args)
         plan = json.loads(
             (
@@ -2191,6 +2487,10 @@ class Run:
         forward phase: for a run whose own teardown did not finish. Refuses unless
         the names and account match the work directory's run and it created
         something."""
+        if self.s.state_mirror and not self.context_path.is_file():
+            # A work directory rebuilt by a later build: the run's context is in
+            # its mirror. The checks below hold it to the names given here.
+            self.download_mirror_context()
         problems = self.identity_problems()
         if not self.ctx.get("created"):
             problems.append("the work directory's run created nothing")
@@ -2198,12 +2498,22 @@ class Run:
             print("✗ teardown refused: " + "; ".join(problems), flush=True)
             return 2
         self.preflight_passed = True
+        self.ctx.pop("leftovers", None)
+        if self.s.state_mirror:
+            try:
+                restored = self.restore_for_teardown()
+                if restored:
+                    print(f"  restored {', '.join(restored)}", flush=True)
+            except Exception as e:  # noqa: BLE001 - the teardown reports what is left
+                self.finding(f"restore for teardown: {e}")
         self.emergency_teardown()
         left = self.ctx.get("leftovers")
         # Its own files: a teardown-only pass must not rewrite the run's verdict.
         self.write_result(
             failed=bool(left) or left is None, stopped=False, name="teardown"
         )
+        if left == [] and self.s.state_mirror:
+            self.clear_mirror()
         return 0 if left == [] else 1
 
     def remaining_seconds(self) -> Optional[float]:
@@ -2230,15 +2540,19 @@ class Run:
         return None
 
     def execute(self) -> int:
-        stored = stored_name_problems(self.ctx, self.s.old_name, self.s.new_name)
+        stored = stored_name_problems(
+            self.ctx, self.s.old_name, self.s.new_name, self.s.upstream_iam_path
+        )
         if stored:
             # Refuse before touching the context: overwriting its names would let a
             # later teardown sweep for the wrong deployment.
             print("✗ " + "; ".join(stored), flush=True)
             return 2
+        self.ctx.pop("leftovers", None)
         self.ctx.update(
             oldName=self.s.old_name,
             newName=self.s.new_name,
+            upstreamIamPath=self.s.upstream_iam_path,
             region=self.s.region,
             moduleUrl=self.s.module_url,
             upstreamTag=self.s.upstream_tag,
@@ -2275,6 +2589,12 @@ class Run:
                 else:
                     self.emergency_teardown()
             self.write_result(failed, stopped)
+            if (
+                self.s.state_mirror
+                and not self.s.keep
+                and self.ctx.get("leftovers") == []
+            ):
+                self.clear_mirror()
         return 1 if failed or (self.ctx["findings"] and not stopped) else 0
 
     def write_result(self, failed: bool, stopped: bool, name: str = "result") -> None:
@@ -2611,6 +2931,18 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
     p.add_argument("--upstream-tag", default=UPSTREAM_TAG)
     p.add_argument("--upstream-commit", default=UPSTREAM_COMMIT)
     p.add_argument("--expected-account", help="refuse to run in any other account")
+    p.add_argument(
+        "--upstream-iam-path",
+        help="IAM path for every upstream role and policy (with the boundary below)",
+    )
+    p.add_argument(
+        "--state-mirror",
+        help="s3://<bucket>/<prefix>/ for both states, the context and the new root",
+    )
+    p.add_argument(
+        "--upstream-permissions-boundary-arn",
+        help="permissions boundary for every upstream role (with the path above)",
+    )
     p.add_argument("--min-role-headroom", type=int, default=400)
     p.add_argument(
         "--accept-change",
@@ -2637,6 +2969,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         "--stop-after", choices=PHASES, help="stop (without teardown) after this phase"
     )
     a = p.parse_args(argv)
+    if bool(a.upstream_iam_path) != bool(a.upstream_permissions_boundary_arn):
+        p.error(
+            "--upstream-iam-path and --upstream-permissions-boundary-arn go together"
+        )
+    if a.state_mirror and not _STATE_MIRROR_RE.match(a.state_mirror):
+        p.error(f"--state-mirror {a.state_mirror!r} is not s3://<bucket>/<prefix>/")
+    if a.upstream_iam_path and not _IAM_PATH_RE.match(a.upstream_iam_path):
+        p.error(f"--upstream-iam-path {a.upstream_iam_path!r} is not an IAM path")
     work = (
         Path(a.work_dir).expanduser()
         if a.work_dir
@@ -2666,6 +3006,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Settings:
         accept_changes=tuple(a.accept_change),
         teardown_only=a.teardown_only,
         deadline_seconds=a.deadline_seconds,
+        upstream_iam_path=a.upstream_iam_path,
+        upstream_permissions_boundary_arn=a.upstream_permissions_boundary_arn,
+        state_mirror=a.state_mirror,
     )
 
 

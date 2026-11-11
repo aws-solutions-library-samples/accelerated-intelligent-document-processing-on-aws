@@ -517,7 +517,7 @@ def stream_new_milestones(logs_client, log_stream, next_token, console, max_page
 # before they expire: it re-assumes idp-sdlc-GitLab again (a fresh 1h session —
 # role chaining allows repeated re-assumes, each capped at 1h) and rebuilds its
 # boto3 clients. So MONITOR_HANDOFF_SECONDS can now exceed the 1h cap. It is set
-# below the GitLab job timeout (3h30m) with headroom for before/after_script.
+# below the GitLab job timeout (4h30m) with headroom for before/after_script.
 # If refresh ever fails (e.g. the self-assume permission is missing), the
 # monitor still hands off gracefully to the S3 summary + SNS email.
 MONITOR_HANDOFF_SECONDS = 6600  # 110 min
@@ -526,9 +526,16 @@ MONITOR_HANDOFF_SECONDS = 6600  # 110 min
 # CodeBuild's main() starts, plus the source stage and provisioning before it.
 # Handing off at 110 min would read the INTERIM summary and leave a probe failure
 # to the email alone, so that run watches longer. Both stay below the GitLab job
-# timeout (3h30m) with the same before/after_script headroom as the nightly.
+# timeout (4h30m) with the same before/after_script headroom as the nightly.
 PROBE_RUN_MONITOR_HANDOFF_SECONDS = 10500  # 175 min
 PROBE_RUN_MONITOR_MAX_WAIT_SECONDS = 11700  # 195 min
+# The weekly Terraform-migration run fills the CodeBuild project's 240-minute
+# timeout (TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES in codebuild_deployment.py), so
+# its monitor watches past that, plus the source stage and provisioning in front of
+# it. Both stay below the GitLab job timeout (4h30m) with before/after_script
+# headroom.
+MIGRATION_RUN_MONITOR_HANDOFF_SECONDS = 15000  # 250 min
+MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS = 15600  # 260 min
 # Re-assume this far before the ~1h chained-session expiry.
 CREDENTIAL_REFRESH_SECONDS = 3000  # 50 min
 GITLAB_ROLE_NAME = "idp-sdlc-GitLab"
@@ -1031,9 +1038,16 @@ def main():
     create_deployment_package()
     version_id = upload_to_s3(bucket_name)
 
-    if variant_probes_requested() or migration:
-        # The migration run is as long as a probe run: two deployments and their
-        # teardown.
+    if migration:
+        # Two deployments, two one-hour DynamoDB waits and both teardowns: the
+        # longest run, filling the build's whole timeout.
+        result = monitor_pipeline(
+            pipeline_name,
+            version_id,
+            max_wait=MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS,
+            handoff_after=MIGRATION_RUN_MONITOR_HANDOFF_SECONDS,
+        )
+    elif variant_probes_requested():
         result = monitor_pipeline(
             pipeline_name,
             version_id,

@@ -517,8 +517,8 @@ def list_available_extensions() -> str:
     Use this when the user asks what add-ons/extensions are available, or before
     offering a capability an extension provides — for example, synthetic document
     generation is provided by the "Test Set Generator" extension
-    (featureId "idp-data-generator"), and "IDP AutoTune"/"Auto Optimizer"
-    (featureId "idp-autotune") can optimize a configuration. Each returned
+    (featureId "idp-data-generator"), and "Auto Optimizer"
+    (featureId "idp-auto-optimizer") can optimize a configuration. Each returned
     extension has featureId, displayName, installedVersion, and featureApiEndpoint.
     Only mention a capability as available if its extension appears here; if not,
     tell the user it can be installed from the Extensions page.
