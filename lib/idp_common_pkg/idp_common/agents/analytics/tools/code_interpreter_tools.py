@@ -38,8 +38,11 @@ class CodeInterpreterTools:
         # stored, as reported by Athena. This is the only object
         # write_query_results_to_code_sandbox reads.
         self._last_query_result_uri: Optional[str] = None
+        self._last_query: Optional[str] = None
 
-    def record_query_result(self, s3_uri: Optional[str]) -> None:
+    def record_query_result(
+        self, s3_uri: Optional[str], query: Optional[str] = None
+    ) -> None:
         """Remember the result location of the query that just ran.
 
         Called by the agent's Athena tool after every query: with the location
@@ -47,6 +50,7 @@ class CodeInterpreterTools:
         so that a failed or refused query leaves no earlier result in place.
         """
         self._last_query_result_uri = s3_uri or None
+        self._last_query = query if s3_uri else None
 
     def _get_code_interpreter_client(self):
         """Get or create the code interpreter client."""
@@ -135,7 +139,12 @@ class CodeInterpreterTools:
             )
             logger.debug(f"Files in code interpreter: {listing_files}")
 
-            result = f"CSV file '{filename}' successfully written to code interpreter environment"
+            result = (
+                f"CSV file '{filename}' successfully written to code interpreter "
+                "environment. It holds the results of this query; if that is not "
+                "the query the answer needs, run that query again and call this tool "
+                f"again: {(self._last_query or '')[:2000]}"
+            )
             analytics_logger.log_content("write_query_results_to_code_sandbox", result)
             return result
 

@@ -47,6 +47,27 @@ ACCEPTED = [
     pytest.param("print('ok')", id="plain"),
     pytest.param(
         "import pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "df['d'] = pd.to_datetime(df['date'])\n"
+        "df['n'] = pd.to_numeric(df['c'], errors='coerce')\n"
+        "df['t'] = pd.to_timedelta(df['s'], unit='s')",
+        id="pandas-converters",
+    ),
+    pytest.param(
+        "import io\nimport matplotlib.pyplot as plt\nplt.savefig(io.BytesIO())",
+        id="savefig-to-memory",
+    ),
+    pytest.param(
+        "import io\nimport matplotlib.pyplot as plt\nb = io.BytesIO()\n"
+        "plt.savefig(b, format='png')",
+        id="savefig-to-a-named-buffer",
+    ),
+    pytest.param(
+        "import pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "df.to_csv('out.csv', index=False)",
+        id="writer-to-a-local-name",
+    ),
+    pytest.param(
+        "import pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
         "print(df.to_json(orient='records'))\nrows = df.to_dict('records')",
         id="to-methods-without-a-path",
     ),
@@ -98,6 +119,36 @@ REFUSED = [
         "import matplotlib.pyplot as plt\nplt.savefig(target)", id="savefig-computed"
     ),
     pytest.param("import numpy as np\nnp.loadtxt(p)", id="numpy-loader"),
+    pytest.param("import random\nrandom._os.system('id')", id="private-attribute"),
+    pytest.param(
+        "import typing\ntyping.sys.modules['os'].system('id')", id="module-attribute"
+    ),
+    pytest.param(
+        "import pandas as pd\npd.io.common.os.listdir('.')", id="nested-module-attr"
+    ),
+    pytest.param(
+        "import pandas as pd\npd.read_csv(**{'filepath_or_buffer': u})",
+        id="unpacked-keywords",
+    ),
+    pytest.param("import pandas as pd\npd.read_csv(*args)", id="unpacked-positional"),
+    pytest.param("import pandas as pd\npd.ExcelFile(u)", id="excel-file"),
+    pytest.param("import pandas as pd\npd.io.common.urlopen(u)", id="urlopen"),
+    pytest.param("open('/proc/self/environ')", id="absolute-literal-path"),
+    pytest.param("open('../x')", id="parent-literal-path"),
+    pytest.param("import io\nio.FileIO(p)", id="fileio"),
+    pytest.param("import numpy as np\nnp.memmap(p)", id="memmap"),
+    pytest.param("import io\nf = io.open\nf(p)", id="opener-alias"),
+    pytest.param("from io import open", id="opener-import"),
+    pytest.param(
+        "import io\nimport matplotlib.pyplot as plt\nb = io.BytesIO()\nb = target\n"
+        "plt.savefig(b)",
+        id="buffer-name-rebound",
+    ),
+    pytest.param(
+        "import pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "df.to_csv('/tmp/x.csv')",
+        id="writer-absolute-path",
+    ),
     pytest.param("!curl remote.example", id="shell-line"),
     pytest.param("%pip install requests", id="notebook-magic"),
     pytest.param("", id="empty"),

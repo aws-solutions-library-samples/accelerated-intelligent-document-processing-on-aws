@@ -316,7 +316,7 @@ def create_analytics_agent(
     - The python code should read the query results from "query_results.csv" file provided, for example with a line like `df = pd.read_csv("query_results.csv")`
     - Make sure the python code will output json representing either "table" or "plotData" responseType as described in the above description of the result format.
     - Any time you generate a plot, make sure to label the x and y axes clearly.
-    - Use built in python libraries, optionally with pandas or matplotlib. Only data, charting and standard-library computation modules can be imported (no os, sys, subprocess or networking modules), and the code may read only "query_results.csv"; code that does otherwise is returned with an error instead of being run.
+    - Use built in python libraries, optionally with pandas or matplotlib. Import only data, charting and standard-library computation modules (not os, sys, subprocess or networking modules), and read only "query_results.csv". The code is checked before it runs, and code that imports other modules or reads or writes other paths is returned with an error instead of being run.
     - Always use the execute_python tool to execute your python code, and be sure to include the reset_state=True flag each time you call this tool.
     
     # Here are some python code examples to guide you:
@@ -375,7 +375,9 @@ def create_analytics_agent(
         code_interpreter_tools.record_query_result(None)
         result = run_athena_query(query, config, return_full_query_results)
         if isinstance(result, dict) and result.get("success"):
-            code_interpreter_tools.record_query_result(result.get("result_csv_s3_uri"))
+            code_interpreter_tools.record_query_result(
+                result.get("result_csv_s3_uri"), result.get("query")
+            )
         return result
 
     # Create the agent with tools and system prompt

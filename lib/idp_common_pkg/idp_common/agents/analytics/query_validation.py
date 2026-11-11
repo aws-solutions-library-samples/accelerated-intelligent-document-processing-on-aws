@@ -23,7 +23,10 @@ Refused:
 - any of the keywords in :data:`REFUSED_KEYWORDS` *anywhere* in the statement,
   outside string literals, quoted identifiers and comments. That is what refuses
   ``USING EXTERNAL FUNCTION``, inline ``WITH FUNCTION`` definitions, table functions
-  (``TABLE(...)``) and a write statement placed after a ``WITH`` clause.
+  (``TABLE(...)``) and a write statement placed after a ``WITH`` clause;
+- a quoted identifier naming a Lambda-backed catalog (``"lambda:<function>"``);
+- a backslash in a ``SHOW`` or ``DESCRIBE`` statement, which Athena runs on its Hive
+  engine, where a backslash escapes a quote.
 
 The check is lexical rather than a full SQL parse. It tokenizes the statement the way
 Trino does for the parts that matter here (``'...'`` literals with ``''`` escapes,
@@ -91,7 +94,7 @@ class QueryNotAllowedError(ValueError):
     """The statement is not exactly one read-only query."""
 
 
-Token = Tuple[str, str]  # (kind, text); kind is "word", "semi" or "punct"
+Token = Tuple[str, str]  # (kind, text); kind is "word", "ident", "semi" or "punct"
 
 
 def _read_quoted(sql: str, start: int, quote: str) -> int:
@@ -135,8 +138,12 @@ def _tokenize(sql: str) -> List[Token]:
             if end == -1:
                 raise QueryNotAllowedError("The query has an unterminated comment.")
             i = end + 2
-        elif ch in ("'", '"', "`"):
+        elif ch == "'":
             i = _read_quoted(sql, i, ch)
+        elif ch in ('"', "`"):
+            end = _read_quoted(sql, i, ch)
+            tokens.append(("ident", sql[i + 1 : end - 1].replace(ch * 2, ch)))
+            i = end
         elif ch == ";":
             tokens.append(("semi", ch))
             i += 1
@@ -181,6 +188,25 @@ def validate_read_only_query(query: str) -> str:
         raise QueryNotAllowedError(
             "Only a single SELECT (optionally starting with WITH), SHOW or DESCRIBE "
             f"statement can be run; this query starts with {leading or 'a symbol'!r}."
+        )
+
+    # A quoted identifier naming a Lambda-backed catalog ("lambda:<function>") makes
+    # Athena invoke that function.
+    if any(
+        kind == "ident" and text.strip().lower().startswith("lambda:")
+        for kind, text in tokens
+    ):
+        raise QueryNotAllowedError(
+            "The query names a Lambda-backed catalog; only the analytics database "
+            "can be queried."
+        )
+
+    # SHOW and DESCRIBE run on Athena's Hive engine, which reads a backslash inside a
+    # literal as an escape. The tokenizer above reads literals the way Trino does, so
+    # a backslash is refused in those statements rather than read two ways.
+    if leading in ("SHOW", "DESCRIBE") and "\\" in query:
+        raise QueryNotAllowedError(
+            "SHOW and DESCRIBE statements cannot contain a backslash."
         )
 
     disallowed = sorted(

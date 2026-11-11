@@ -15,12 +15,16 @@ else that the code's own text makes visible:
   ``urllib``, ``http``, ``requests``, ``httpx``, ``aiohttp``, ``boto3``,
   ``botocore``, ``subprocess``, ``os`` and the rest);
 - the built-ins that import, evaluate or look up names dynamically
-  (:data:`DYNAMIC_NAMES`), and any double-underscore attribute such as
-  ``__class__`` or ``__globals__``;
+  (:data:`DYNAMIC_NAMES`), and any attribute whose name starts with ``_``, which is
+  how module internals (``random._os``) and object internals (``__class__``) are
+  reached, and any attribute named like a refused module (:data:`MODULE_ATTRIBUTES`,
+  ``typing.sys``);
 - a string literal containing ``://`` (a URL in any scheme);
-- a call to a ``read_*`` or ``to_*`` function (``pd.read_csv``, ``df.to_csv``, ...)
-  or to one of :data:`PATH_OPENERS` (``open``, ``np.loadtxt``, ``plt.savefig``, ...)
-  whose first argument is not a string literal naming a local file.
+- a ``read_*`` function, or one of :data:`PATH_OPENERS` or :data:`PATH_WRITERS`
+  (``open``, ``np.loadtxt``, ``df.to_csv``, ``plt.savefig``, ...), used other than by
+  a direct call, called with unpacked arguments, or called with a first argument that
+  is not a literal file name in the working directory (a writer may also target an
+  empty ``io.BytesIO()``/``StringIO()``).
 
 ⚠️ **This is a check on the text and syntax tree of the code, not a boundary.** It
 cannot see what a value will be at run time, so it refuses the forms above rather
@@ -99,24 +103,94 @@ DYNAMIC_NAMES = frozenset(
 
 
 #: Functions that open a file or a URL by the path given as their first argument,
-#: besides every ``read_*`` function. Their first argument must be a literal local
-#: file name.
+#: besides every ``read_*`` function. Their first argument must be a literal file
+#: name in the working directory, and they may only be called, not passed around.
 PATH_OPENERS = frozenset(
     {
         "open",
+        "FileIO",
+        "urlopen",
         "loadtxt",
         "genfromtxt",
         "load",
         "fromfile",
+        "memmap",
         "DataSource",
+        "ExcelFile",
+        "HDFStore",
         "imread",
-        # Writers, alongside every ``to_*`` method (``df.to_csv(...)``).
+    }
+)
+
+#: Functions and methods that write to the path given as their first argument. The
+#: same rule applies, except that an empty in-memory buffer is also accepted.
+PATH_WRITERS = frozenset(
+    {
+        "to_csv",
+        "to_excel",
+        "to_parquet",
+        "to_json",
+        "to_feather",
+        "to_hdf",
+        "to_pickle",
+        "to_stata",
+        "to_html",
+        "to_latex",
+        "to_markdown",
+        "to_xml",
+        "to_orc",
+        "to_sql",
+        "to_string",
         "save",
         "savez",
+        "savez_compressed",
         "savetxt",
         "tofile",
         "savefig",
         "imsave",
+    }
+)
+
+#: Keyword names under which those functions take their path.
+PATH_KEYWORDS = frozenset(
+    {"file", "filepath_or_buffer", "path", "io", "path_or_buf", "buf", "fname", "fp"}
+)
+
+#: In-memory buffers a writer may target.
+IN_MEMORY_BUFFERS = frozenset({"BytesIO", "StringIO"})
+
+
+#: Module names that are refused as attributes too, because an allowed module that
+#: imported one exposes it as an attribute (``typing.sys``, ``pd.io.common.os``).
+MODULE_ATTRIBUTES = frozenset(
+    {
+        "os",
+        "sys",
+        "subprocess",
+        "socket",
+        "ssl",
+        "urllib",
+        "urllib3",
+        "http",
+        "requests",
+        "httpx",
+        "aiohttp",
+        "boto3",
+        "botocore",
+        "shutil",
+        "pathlib",
+        "importlib",
+        "builtins",
+        "ctypes",
+        "multiprocessing",
+        "threading",
+        "asyncio",
+        "ftplib",
+        "smtplib",
+        "pty",
+        "signal",
+        "platform",
+        "fsspec",
     }
 )
 
@@ -126,10 +200,26 @@ class SandboxCodeNotAllowedError(ValueError):
 
 
 def _is_local_path_literal(node: ast.AST) -> bool:
+    """A string literal naming a file in the working directory: relative, with no
+    scheme, no parent reference and no home or absolute prefix."""
+    if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+        return False
+    value = node.value
     return (
-        isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and "://" not in node.value
+        bool(value)
+        and "://" not in value
+        and not value.startswith(("/", "~", "\\"))
+        and ".." not in value.replace("\\", "/").split("/")
+    )
+
+
+def _is_in_memory_buffer(node: ast.AST) -> bool:
+    """``io.BytesIO()`` / ``StringIO()`` called with no arguments."""
+    return (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) in IN_MEMORY_BUFFERS
+        and not node.args
+        and not node.keywords
     )
 
 
@@ -141,8 +231,24 @@ def _call_name(func: ast.AST) -> str:
     return ""
 
 
+def _takes_a_path(name: str) -> bool:
+    return name in PATH_OPENERS or name in PATH_WRITERS or name.startswith("read_")
+
+
 def _findings(tree: ast.AST) -> list[str]:
     found: list[str] = []
+    called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    # Names bound only ever to an empty in-memory buffer (b = io.BytesIO()).
+    bound: dict[str, bool] = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            bound.setdefault(n.id, False)
+        if isinstance(n, ast.Assign):
+            for target in n.targets:
+                if isinstance(target, ast.Name):
+                    ok = _is_in_memory_buffer(n.value)
+                    bound[target.id] = bound.get(target.id, ok) and ok
+    buffers = {name for name, ok in bound.items() if ok}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -153,12 +259,21 @@ def _findings(tree: ast.AST) -> list[str]:
             top = (node.module or "").split(".")[0]
             if node.level or top not in IMPORTABLE_MODULES:
                 found.append(f"import from {node.module or '.'!r}")
-        elif isinstance(node, ast.Name) and node.id in DYNAMIC_NAMES:
-            found.append(f"use of {node.id!r}")
-        elif isinstance(node, ast.Attribute) and (
-            node.attr.startswith("__") and node.attr.endswith("__")
-        ):
-            found.append(f"attribute {node.attr!r}")
+            for alias in node.names:
+                if _takes_a_path(alias.name) or alias.name.startswith("_"):
+                    found.append(f"import of {alias.name!r}")
+        elif isinstance(node, ast.Name):
+            if node.id in DYNAMIC_NAMES:
+                found.append(f"use of {node.id!r}")
+            elif _takes_a_path(node.id) and id(node) not in called:
+                found.append(f"{node.id!r} used other than by calling it")
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("_") or node.attr in MODULE_ATTRIBUTES:
+                # Private and double-underscore attributes reach module internals
+                # (random._os, pd.io.common's imports) and object internals.
+                found.append(f"attribute {node.attr!r}")
+            elif _takes_a_path(node.attr) and id(node) not in called:
+                found.append(f"{node.attr!r} used other than by calling it")
         elif isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
             text = (
                 node.value
@@ -169,30 +284,30 @@ def _findings(tree: ast.AST) -> list[str]:
                 found.append("a URL in a string literal")
         elif isinstance(node, ast.Call):
             name = _call_name(node.func)
-            if (
-                name in PATH_OPENERS
-                or name.startswith("read_")
-                or name.startswith("to_")
+            if not _takes_a_path(name):
+                continue
+            if any(kw.arg is None for kw in node.keywords) or any(
+                isinstance(a, ast.Starred) for a in node.args
             ):
-                first = node.args[0] if node.args else None
-                if first is None:
-                    first = next(
-                        (
-                            kw.value
-                            for kw in node.keywords
-                            if kw.arg
-                            in (
-                                "file",
-                                "filepath_or_buffer",
-                                "path",
-                                "io",
-                                "path_or_buf",
-                            )
-                        ),
-                        None,
-                    )
-                if first is not None and not _is_local_path_literal(first):
-                    found.append(f"{name}() of a path that is not a local file name")
+                found.append(f"{name}() with unpacked arguments")
+                continue
+            first = node.args[0] if node.args else None
+            if first is None:
+                first = next(
+                    (kw.value for kw in node.keywords if kw.arg in PATH_KEYWORDS),
+                    None,
+                )
+            if first is None:
+                continue
+            if _is_local_path_literal(first) or (
+                name in PATH_WRITERS
+                and (
+                    _is_in_memory_buffer(first)
+                    or (isinstance(first, ast.Name) and first.id in buffers)
+                )
+            ):
+                continue
+            found.append(f"{name}() of a path that is not a local file name")
     return found
 
 

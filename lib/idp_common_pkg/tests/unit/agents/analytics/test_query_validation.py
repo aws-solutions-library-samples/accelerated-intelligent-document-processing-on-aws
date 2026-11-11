@@ -29,6 +29,10 @@ ACCEPTED = [
     ),
     pytest.param("(SELECT 1) UNION ALL (SELECT 2)", id="parenthesised-select"),
     pytest.param("SHOW TABLES", id="show-tables"),
+    pytest.param("SHOW TABLES LIKE 'metering*'", id="show-tables-like"),
+    pytest.param(
+        "SELECT * FROM t WHERE x LIKE 'a\\_b'", id="backslash-in-select-literal"
+    ),
     pytest.param("SHOW COLUMNS IN metering", id="show-columns"),
     pytest.param("DESCRIBE metering", id="describe"),
     pytest.param(
@@ -104,7 +108,22 @@ REFUSED = [
     pytest.param("SELECT update FROM t", id="refused-word-as-bare-identifier"),
     pytest.param("/* SELECT */ DROP TABLE t", id="leading-keyword-only-in-comment"),
     pytest.param("'SELECT' DROP TABLE t", id="leading-keyword-only-in-literal"),
+    pytest.param('SELECT * FROM "lambda:some-function".db.t', id="lambda-catalog"),
+    pytest.param(
+        'SELECT * FROM "LAMBDA:some-function".db.t', id="lambda-catalog-uppercase"
+    ),
+    pytest.param("SHOW TABLES LIKE 'a\\''", id="backslash-in-show"),
+    pytest.param("DESCRIBE `t\\`", id="backslash-in-describe"),
 ]
+
+#: Every keyword the validator must refuse wherever it appears, written out here
+#: rather than read from the module, so that dropping one from REFUSED_KEYWORDS
+#: fails this test instead of shrinking it.
+MUST_REFUSE_KEYWORDS = (
+    "INSERT UPDATE DELETE MERGE TRUNCATE CREATE DROP ALTER RENAME COMMENT MSCK "
+    "REPAIR VACUUM OPTIMIZE REFRESH GRANT REVOKE UNLOAD INTO PREPARE EXECUTE "
+    "DEALLOCATE CALL EXTERNAL FUNCTION TABLE SET RESET USE START COMMIT ROLLBACK"
+).split()
 
 
 @pytest.mark.unit
@@ -128,7 +147,8 @@ def test_the_corpus_covers_the_shapes_the_tool_must_refuse():
     not cover."""
     assert len(REFUSED) >= 20
     assert len(ACCEPTED) >= 10
-    for keyword in sorted(REFUSED_KEYWORDS):
+    assert set(MUST_REFUSE_KEYWORDS) <= REFUSED_KEYWORDS
+    for keyword in MUST_REFUSE_KEYWORDS:
         with pytest.raises(QueryNotAllowedError):
             validate_read_only_query(f"SELECT x FROM t WHERE {keyword} = 1")
 

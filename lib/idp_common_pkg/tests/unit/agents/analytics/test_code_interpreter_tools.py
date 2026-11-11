@@ -64,10 +64,11 @@ class TestWriteQueryResultsToCodeSandbox:
 
     def test_reads_the_recorded_result_location(self):
         tools, _, s3 = _tools()
-        tools.record_query_result(RESULT_URI)
+        tools.record_query_result(RESULT_URI, "SELECT 42")
 
-        tools.write_query_results_to_code_sandbox()
+        message = tools.write_query_results_to_code_sandbox()
 
+        assert message.endswith("SELECT 42")
         s3.get_object.assert_called_once_with(
             Bucket="results-bucket", Key="athena-results/q-1.csv"
         )
@@ -141,6 +142,7 @@ class TestAgentWiresTheQueryResultToTheSandboxTool:
             mock_boto3.client.return_value = _athena_success(RESULT_URI)
             assert run("SELECT 1")["success"] is True
         assert code_tools._last_query_result_uri == RESULT_URI
+        assert code_tools._last_query == "SELECT 1"
 
         refused = run("DROP TABLE metering")
         assert refused["success"] is False
