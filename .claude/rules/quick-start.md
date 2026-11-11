@@ -11,6 +11,7 @@ paths:
   - "src/lambda/agent_chat_processor/**"
   - "src/lambda/chat_stream_processor/**"
   - "nested/api-resolvers/src/lambda/agent_chat_resolver/**"
+  - "nested/api-resolvers/src/lambda/configuration_resolver/**"
   - "nested/api-resolvers/src/lambda/discovery_upload_resolver/**"
   - "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/**"
   - "nested/multi-doc-discovery/**"

@@ -121,14 +121,16 @@ documentation, testing, code-review).
   Welcome page, side navigation or tour, the Test Set Generator extension, the
   groups a role holds, or the stack wiring Quick Start reads (the
   `EnableQuickStartWidget` parameter and the installed-features SSM parameter),
-  check that the PR says how the Quick Start journey was exercised: open it,
-  describe a document, approve the drafted fields, profile created and activated.
-  If it renames a page, navigation item or product term, check that the Quick
+  check in the diff that Quick Start's side of any changed contract changed with
+  it. If it renames a page, navigation item or product term, check that the Quick
   Start agent's prompt
   (`lib/idp_common_pkg/idp_common/agents/quick_start/agent.py`),
   `docs/quick-start.md` and its stories in `scripts/ux_stories.toml` still match.
-  An impact the PR does not exercise, or a prompt, page or story that no longer
-  matches, is 🟡. The paths are in `.claude/rules/quick-start.md`
+  A contract changed on one side only, or a prompt, page or story that no longer
+  matches, is 🟡. Where the PR description or commit messages are available, also
+  note whether they say how the Quick Start journey was exercised: open it,
+  describe a document, approve the drafted fields, profile created and activated.
+  The paths are in `.claude/rules/quick-start.md`
 - No obvious race conditions, unbounded loops, or missing pagination
 - Error handling uses explicit exceptions (no bare `except:`), with `exc_info=True`
 - No removal of observability (X-Ray `patch_all`, structured logging)
