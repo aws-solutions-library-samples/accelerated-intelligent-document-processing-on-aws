@@ -424,8 +424,8 @@ and commit it pins, deploys `examples/unified-processor` as `OLD_NAME`, seeds it
 passwords and `@example.com` emails, one configuration edit through the API, a
 baseline and a test set), turns the agent-jobs table's old time-to-live off (the
 guide's hazard; DynamoDB accepts that only about an hour after upstream enabled it,
-and the module's setting only about an hour after that, so a run takes about three
-hours), snapshots every kept bucket and table once the frozen old deployment has
+and the module's setting only about an hour after that; the passing run took 166
+minutes, 76 of them those two waits), snapshots every kept bucket and table once the frozen old deployment has
 stopped writing, and runs each phase of `idp-cli terraform
 migrate-from-genai-idp-terraform` in the guide's order with `--apply`, including
 `restore-config`. It then verifies, destroys the old deployment through its own Terraform

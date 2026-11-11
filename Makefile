@@ -1377,8 +1377,8 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 # it (documents, users, a config edit, a baseline and test set), runs every phase of
 # `idp-cli terraform migrate-from-genai-idp-terraform` with --apply onto a new
 # deployment NEW_NAME of TERRAFORM_MODULE_URL, verifies nothing was lost and the old
-# passwords still sign in, then destroys both and sweeps what they retained. About
-# 3h, an hour and a quarter of it waiting on DynamoDB's TTL intervals. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>; RESUME=1
+# passwords still sign in, then destroys both and sweeps what they retained. Measured
+# at 166 minutes, 76 of them waiting on DynamoDB's TTL intervals. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>; RESUME=1
 # continues a stopped or failed run from WORK_DIR. See docs/testing.md and
 # .claude/skills/release-validation.md (tier J).
 #   make stacktest-terraform-migration OLD_NAME=gitf2 NEW_NAME=gitfnew2 \

@@ -11300,8 +11300,8 @@ TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
 #: is never read as a nightly's.
 TERRAFORM_MIGRATION_RUN_LABEL = "WEEKLY TERRAFORM MIGRATION RUN"
 #: The driver's own budget inside the build: publish and the pre-stack come first,
-#: and the `-iam` teardown after it. Measured, a full run takes about 170 minutes
-#: (77 of them waiting on DynamoDB's time-to-live intervals), so the CodeBuild
+#: and the `-iam` teardown after it. Measured, a full run took 166 minutes
+#: (76 of them waiting on DynamoDB's time-to-live intervals), so the CodeBuild
 #: project's 180-minute timeout is too short for publish plus this; see
 #: CI_TEST_COVERAGE.md.
 TERRAFORM_MIGRATION_TIMEOUT_SECONDS = 200 * 60
