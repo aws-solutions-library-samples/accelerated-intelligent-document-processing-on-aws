@@ -479,7 +479,7 @@ def test_a_prefix_resolves_only_when_unambiguous_and_long_enough() -> None:
     known = frozenset({"--execute", "--exclude", "--config"})
     assert resolve("--exec", known) == "--execute"
     assert resolve("--c", known) == "--c", "too short to resolve"
-    assert resolve("--co", known) == "--co", "too short to resolve"
+    assert resolve("--co", known) == "--config", "four characters resolve"
     assert resolve("--exc", known) == "--exclude"
     assert resolve("--e", known) == "--e"
     ambiguous = frozenset({"--execute", "--exempt"})
