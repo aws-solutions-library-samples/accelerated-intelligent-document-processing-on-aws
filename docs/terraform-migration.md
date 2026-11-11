@@ -26,25 +26,49 @@ copies data across, is described at the end as the fallback.
 
 ## How much of this has been tested
 
-The in-place migration was run by hand against a live deployment of upstream tag
-`v0.6.9-tf.0` (its `examples/unified-processor` configuration), with the import
-blocks and state edits written manually. The command on this page automates those
-same steps and is covered by unit tests built from that run's sanitised state and
-plan, but **the command itself has not yet been run end to end against a live
-deployment.** Rehearse it in a non-production account first.
+The command has been run end to end against a live deployment of upstream tag
+`v0.6.9-tf.0` (its `examples/unified-processor` configuration) by the repeatable
+test `make stacktest-terraform-migration` (`scripts/sdlc/terraform_migration_test.py`).
+That test deploys upstream, seeds it with two processed documents, two users with
+passwords, a configuration edit, an evaluation baseline and a test set, runs every
+phase below with `--apply`, checks that nothing kept was lost, and destroys both
+deployments. It is still only that one upstream configuration, so rehearse the
+migration in a non-production account first.
 
-What the manual run measured:
+What the passing run measured:
 
-- The adoption plan was `17 to import, 1572 to add, 15 to change, 0 to destroy`.
-  (In that run the user pool was imported by an `import` block; the command imports
-  it in its own phase instead, so its plan shows one import fewer.)
-- After the migration, existing users signed in to the new web UI with their old
-  passwords, and each user's per-user scope was preserved.
-- The old deployment's destroy plan, after the adopted resources were removed from
-  its state, touched none of them.
+- The adoption plan was `22 to import, 1558 to add, 21 to change, 0 to destroy`,
+  with one refused change, the agent-jobs time-to-live rename the
+  [hazards](#hazards) describe, accepted.
+- Every object in the kept buckets and every item in the kept tables was still there
+  and unchanged, apart from the changes the migration is meant to make: the two
+  configuration counters `fix-config` removes, the profile `restore-config` put back,
+  the schema, pricing and model-limit rows every deploy rewrites, and the attributes
+  the new deployment's index backfill adds to tracking rows that lacked them.
+- Both users signed in to the new deployment's app client with their old passwords,
+  and each kept its per-user scope; the configuration edit was present; a new upload
+  was processed once, by the new deployment.
+- The old deployment's destroy plan touched no kept resource, and after the old
+  deployment was destroyed every adopted bucket and table still stood and both users
+  still signed in.
+
+How long each step took in that run, end to end about 2 hours 45 minutes. Two of the
+waits are DynamoDB's, not the command's, and a migration of a deployment whose tables
+are older than an hour has only the second of them:
+
+| Step | Minutes |
+|---|---|
+| Plan, retention check, freeze, configuration fix | under 1 |
+| Turn the old agent-jobs time-to-live off ([hazards](#hazards)) | 15, waiting for DynamoDB to accept it: a table whose time-to-live was enabled less than about an hour ago refuses the change (only the test's freshly created deployment meets this) |
+| Adopt the user pool | under 1 |
+| Wait before `apply` | 61, because DynamoDB refuses the module's time-to-live setting until about an hour after the disable |
+| `apply` (plan, check, apply) | 33 |
+| Restore the configuration, verify | 3 |
+| Detach, destroy plan, `check-destroy` | 1 |
+| Destroy the old deployment | 8 |
 
 The [resource table](#what-happens-to-each-resource) marks each kind of resource as
-**measured** (adopted or recreated in that run) or **inferred** (handled the same
+**measured** (adopted or recreated in a live run) or **inferred** (handled the same
 way for the same reason, but not exercised). Other upstream example configurations
 (`bda-processor`, `bedrock-llm-processor` and the rest) use the same resource names
 for most resources, but have not been tried.
@@ -459,31 +483,31 @@ unmanaged** means it stays in the account, managed by neither.
 | Input, output, working buckets | Adopt | `aws_s3_bucket.input_bucket`, `output_bucket`, `working_bucket` | measured |
 | Evaluation baseline bucket | Adopt | `aws_s3_bucket.evaluation_baseline_bucket[0]` | measured |
 | Test-set bucket | Adopt | `aws_s3_bucket.test_set_bucket` | measured |
-| Discovery bucket | Adopt | `aws_s3_bucket.discovery_bucket` | inferred |
-| Access-log bucket | Adopt (fixed 180-day expiry) | `aws_s3_bucket.logging_bucket` | inferred |
-| Reporting bucket | Kept by naming it in `ReportingBucketName` | none (not imported) | inferred |
+| Discovery bucket | Adopt | `aws_s3_bucket.discovery_bucket` | measured |
+| Access-log bucket | Adopt (fixed 180-day expiry) | `aws_s3_bucket.logging_bucket` | measured |
+| Reporting bucket | Kept by naming it in `ReportingBucketName` | none (not imported) | measured |
 | KMS key | Adopt; the module's key policy replaces the old one | `awscc_kms_key.customer_managed_encryption_key` | measured |
 | KMS key alias | Keep unmanaged, still pointing at the adopted key | none | inferred |
 | Tracking table | Adopt; the module's second index builds on adoption | `aws_dynamodb_table.tracking_table` | measured |
 | Configuration table | Adopt after `fix-config` | `aws_dynamodb_table.configuration_table` | measured |
 | Users table | Adopt | `aws_dynamodb_table.users_table` | measured |
 | Agent chat sessions table | Adopt | `aws_dynamodb_table.chat_sessions_table` | measured |
-| Agent chat messages table | Adopt | `aws_dynamodb_table.chat_messages_table` | inferred |
-| Chat memory table | Adopt | `aws_dynamodb_table.id_helper_chat_memory_table` | inferred |
-| Document-chat sessions table | Adopt | `module.apiresolverstack.aws_dynamodb_table.chat_document_sessions_table` | inferred |
-| Agent jobs table | Adopt (see the time-to-live note below) | `aws_dynamodb_table.agent_table` | inferred |
+| Agent chat messages table | Adopt | `aws_dynamodb_table.chat_messages_table` | measured |
+| Chat memory table | Adopt | `aws_dynamodb_table.id_helper_chat_memory_table` | measured |
+| Document-chat sessions table | Adopt | `module.apiresolverstack.aws_dynamodb_table.chat_document_sessions_table` | measured |
+| Agent jobs table | Adopt (see the time-to-live note below) | `aws_dynamodb_table.agent_table` | measured |
 | Cognito user pool | Adopt with `adopt-user-pool` | `aws_cognito_user_pool.user_pool` | measured |
 | Admin, Author, Reviewer, Viewer groups | Adopt | `awscc_cognito_user_pool_group.<role>_group` | measured |
 | Admin user and its Admin membership | Adopt, when the username is exactly `--admin-email` | `aws_cognito_user.admin_user`, `aws_cognito_user_in_group.admin_user_to_group_attachment` | measured |
-| Other users and groups in the pool | Keep in the pool, unmanaged | none | inferred |
+| Other users and groups in the pool | Keep in the pool, unmanaged | none | measured |
 | Discovery tracking table | Recreate (its key schema differs) | | measured |
 | Concurrency table | Recreate | | measured |
 | Queues | Recreate, after `freeze` drains them | | measured |
 | Web UI bucket, app client, identity pool, settings parameters | Recreate | | measured |
 | Knowledge base (OpenSearch Serverless collection and index) | Recreate on S3 Vectors; re-sync from the output bucket | | measured |
 | Reporting Glue database and tables | Recreate (catalog metadata only) | | measured |
-| Installed-features table | Recreate; features installed on the old deployment do not carry over | | inferred |
-| Test-sets table | Recreate; test-set definitions do not carry over, their documents stay in the adopted bucket | | inferred |
+| Installed-features table | Recreate; features installed on the old deployment do not carry over | | measured |
+| Test-sets table | Recreate; test-set definitions do not carry over, their documents stay in the adopted bucket | | measured |
 | BDA project | Keep unmanaged; the `bda` configuration row names it | none | measured |
 | Fine-tuning data bucket, hosted-UI domain | Not handled; `plan` refuses | | |
 
