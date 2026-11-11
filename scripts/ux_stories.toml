@@ -207,7 +207,7 @@ since = "0.6.0"
 origin = "smoke"
 
 [stories.match]
-docs = ["quick-start.md#web-ui", "quick-start.md#a-typical-conversation"]
+docs = ["quick-start.md#web-ui"]
 terms = ["quick start"]
 ui_paths = [
     "src/ui/src/components/agent-chat/QuickStart*",
@@ -227,8 +227,7 @@ since = "0.6.0"
 origin = "smoke"
 
 [stories.match]
-docs = ["quick-start.md#web-ui", "quick-start.md#a-typical-conversation"]
-terms = ["quick start"]
+docs = ["quick-start.md#a-typical-conversation"]
 ui_paths = [
     "src/ui/src/components/agent-chat/QuickStart*",
     "src/ui/src/components/agent-chat/AgentChatLayout.tsx",
