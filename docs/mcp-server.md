@@ -146,6 +146,10 @@ Process documents from S3 or base64 content. To process documents via S3:
   "prefix": {
     "type": "string",
     "description": "Optional batch ID prefix (default: 'mcp-batch')"
+  },
+  "profile": {
+    "type": "string",
+    "description": "Optional Configuration Profile to process under. Without it the destination decides (a configured prefix mapping, else the active profile)."
   }
 }
 ```
@@ -563,7 +567,14 @@ Example:
 2. **Cognito User Pool** validates credentials and returns JWT token
 3. **External Application** calls AgentCore Gateway with Bearer token
 4. **AgentCore Gateway** validates JWT token against Cognito
-5. **Analytics Lambda** processes the request and returns results
+5. **Caller interceptor** resolves the token to a role and a configuration scope
+   (a signed-in user's groups and `allowedConfigVersions`, or the stack-created
+   client-credentials client), refuses a tool that role may not call, and passes a
+   signed caller block to the MCP handler
+6. **MCP handler** verifies the block, applies the caller's configuration scope to
+   every document it reads or writes, and returns the result
+
+Which role may call which tool is in [RBAC: MCP Tools](./rbac.md#mcp-tools).
 
 ### Data Access
 
@@ -580,7 +591,11 @@ The Analytics Lambda has read-only access to:
 The MCP Server uses AWS Cognito OAuth 2.0 for secure authentication:
 - External applications obtain JWT tokens from the Cognito User Pool
 - AgentCore Gateway validates JWT tokens on every request
-- Tokens include scopes (openid, email, profile) for fine-grained access control
+- A token is resolved to the caller's role and configuration scope, and each tool
+  admits the roles of the web UI operation it corresponds to; see
+  [RBAC: MCP Tools](./rbac.md#mcp-tools)
+- A caller limited to some Configuration Profiles sees and processes only documents
+  in those profiles, and cannot process from an S3 location
 - Token expiration and refresh mechanisms prevent unauthorized access
 
 ### IAM Role-Based Access Control

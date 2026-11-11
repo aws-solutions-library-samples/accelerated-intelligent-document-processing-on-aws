@@ -88,7 +88,7 @@ behaviour.
 | Upload outside every tenant's prefixes | Processed under the active profile | **Refused** at ingest once at least one tenant is declared (internal producers excepted, below) |
 | Document chat | Streams through the chat Function URL | The web UI is not given the Function URL and uses the REST path. Both paths scope the turn from the caller's verified identity: the Function URL verifies the Cognito ID token the browser presents and refuses a request without one |
 | Agent Chat, agent queries and Knowledge Base queries, which read across documents | Available to their usual groups | **Admin only** |
-| MCP tools | Available | **Refused**: the gateway passes no user identity to scope by |
+| MCP tools | Available to the caller's role, within their configuration scope | Scoped like the UI: a signed-in user sees only their tenant's documents; `search` is **Admin only**; the stack-created client-credentials client is **refused** |
 
 The ingest rule is a single comparison: **the tenant that owns the object key must
 be the tenant that owns the profile the document resolves to.** It does not depend
@@ -191,11 +191,11 @@ Under `IdpClaim` and `Api` four things change, whatever `TenantIsolationMode` sa
   who has never been granted a tenant, for example one who signed in before any
   entitlement push, is denied rather than served every tenant's documents.
 - **The surfaces that read across tenants are closed to non-Admins,** as in strict
-  mode: Agent Chat, agent queries and Knowledge Base queries are Admin only, MCP tools
-  are refused, and the web UI sends document chat over the REST path. The chat
-  Function URL applies the same rules from the caller's verified ID token. Once users
-  are confined to a tenant, any of these would otherwise be a way around the
-  confinement.
+  mode: Agent Chat, agent queries, Knowledge Base queries and the MCP `search` tool are
+  Admin only, the stack-created MCP client-credentials client is refused, and the web
+  UI sends document chat over the REST path. The chat Function URL applies the same
+  rules from the caller's verified ID token. Once users are confined to a tenant, any
+  of these would otherwise be a way around the confinement.
 - **Admins cannot edit configuration-profile scopes** in User Management or through
   `createUser`/`updateUser`. The field is shown read-only with the tenant and where it
   came from, and the API refuses an edit, naming the grant source. Test-set scope
@@ -389,15 +389,21 @@ inside the stack. That has these consequences:
   `s3:PutObject` on the whole bucket from writing under another tenant's prefix.
   That is an IAM control in your account, covered next.
 
-### If MCP tools return 403 on a stack that is not Strict
+### If MCP tools return 403
 
-Check `TenantGrantSource` first: under `IdpClaim` or `Api` MCP tools are refused by
-design, as described in [Who grants a tenant](#who-grants-a-tenant).
+MCP callers are scoped like web UI users. The gateway's interceptor resolves each
+token to a role and a configuration scope, and the MCP handler refuses a call it
+cannot verify. Check, in order:
 
-The MCP handler reads the mode through `idp_common`. If that library cannot be imported
-(a layer missing from the function), it refuses every tool rather than guess, and the
-response says the isolation mode could not be determined. Attach the function's
-`idp_common` layer; the refusal is not a sign that strict mode is on.
+- **The caller's role.** `process` and `reprocess` need Admin or Author; `search`
+  needs Admin, Author or Viewer and no configuration scope; `status` and
+  `get_results` need Admin, Author, Reviewer or Viewer. A user in no group is
+  refused.
+- **The isolation mode and grant source.** Under `Strict`, `IdpClaim` or `Api` a
+  non-Admin always has a scope, so `search` is Admin only, and the stack-created
+  client-credentials client is refused because it is not assigned to a tenant.
+- **The function's `idp_common` layer.** Without it the handler cannot verify the
+  caller and refuses every tool, saying the caller could not be verified.
 
 ## Hardening in your own environment
 
