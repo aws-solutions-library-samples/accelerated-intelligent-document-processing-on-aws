@@ -96,9 +96,8 @@ def test_the_choice_travels_in_the_run_options(itd, tmp_path):
 
 def test_the_build_refuses_what_the_run_cannot_combine_with():
     assert cbd.terraform_migration_unsupported_reason({}) is None
-    assert "IDP_IAC" in cbd.terraform_migration_unsupported_reason(
-        {"IDP_IAC": "terraform"}
-    )
+    reason = cbd.terraform_migration_unsupported_reason({"IDP_IAC": "terraform"})
+    assert reason is not None and "IDP_IAC" in reason
 
 
 def test_the_summary_and_subject_are_labelled():
