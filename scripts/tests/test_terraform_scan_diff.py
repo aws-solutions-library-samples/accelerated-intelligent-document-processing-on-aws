@@ -245,3 +245,27 @@ def test_a_checkov_venv_built_on_another_architecture_is_never_reused(
     assert exe == arm / "bin" / "checkov"
     assert installed and str(arm) in installed[0]
     assert (amd / "bin" / "checkov").is_file()
+
+
+def test_checkov_is_started_through_its_interpreter_not_its_launcher(
+    gate, tmp_path, monkeypatch
+):
+    """A CI checkout's virtualenv path makes the launcher's #! line longer than
+    older kernels accept (Exec format error), so both calls run the venv Python."""
+    exe = tmp_path / "venv" / "bin" / "checkov"
+    calls = []
+
+    class _Done:
+        stdout = "[]"
+        stderr = ""
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return _Done()
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    gate.run_checkov(exe, ["-d", "."], tmp_path)
+    gate.check_ids(exe, "terraform")
+    interpreter = str(exe.parent / "python")
+    assert [argv[:2] for argv in calls] == [[interpreter, str(exe)]] * 2
