@@ -580,6 +580,27 @@ Resources:
                 Action:
                   - sts:AssumeRole
                 Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*-failure-agent'
+              # A Terraform integration run (IDP_IAC=terraform) creates its
+              # resources as a per-run role, not as this one: Terraform has no
+              # equivalent of passing CloudFormation a service role, and this role
+              # lacks most of what the deployment creates (Cloud Control among
+              # it). The role is a sibling of the CloudFormation service role in
+              # the run's `-iam` pre-stack, with that role's boundary-scoped
+              # permissions, trusting only this role (terraform_deploy_role_template
+              # in scripts/sdlc/codebuild_deployment.py).
+              #
+              # This contains nothing. This role already holds iam:* on
+              # role/idp-* (LimitedIAMAccess above), so it could already edit any
+              # such role's trust and assume it; MR-button runs execute the MR's
+              # code under it either way. What the grant changes is the path: an
+              # assume of the one role a run needs, instead of an
+              # UpdateAssumeRolePolicy first. Removing that iam:* is the change
+              # that would contain anything, and it is not made here.
+              - Sid: AssumePerRunTerraformDeployRole
+                Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/idp-*-TFDeployRole'
         - PolicyName: CloudWatchLogsAccess
           PolicyDocument:
             Version: '2012-10-17'

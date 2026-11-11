@@ -44,7 +44,7 @@ IDP_FEATURE_CLI := $(PYTHON) -m idp_feature_sdk.cli
 # Keep this list complete, and never split it across multiple pip calls.
 FIRST_PARTY_EDITABLES := \
 	-e "lib/idp_common_pkg[all,dev,test]" \
-	-e lib/idp_sdk \
+	-e "lib/idp_sdk[terraform]" \
 	-e lib/idp_cli_pkg \
 	-e lib/idp_mcp_connector_pkg \
 	-e lib/idp_feature_sdk
@@ -718,6 +718,58 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings c
 cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) in full
 	@$(MAKE) --no-print-directory cfn-lint CFN_LINT_SHOW_WARNINGS=1
 
+# Terraform offline gate: translate template.yaml with terraform/translator, then
+# `init -backend=false` and `validate` the generated module under each binary in
+# TERRAFORM_CHECK_BINARIES. It proves the generated HCL loads and type-checks
+# against the provider schemas; it plans and deploys nothing, so AWS-side
+# rejections are out of its reach. See scripts/terraform_check.py.
+#
+# Pinned for the reason CFN_LINT_VERSION is. The floor is the oldest release the
+# generated versions.tf admits (`required_version = ">= 1.7.0"`), the other is the
+# latest stable when last bumped; both CI configs pass the same four versions and
+# scripts/tests/test_ci_gate_parity.py fails if any of them drift. A new version
+# also needs its archive hashes in scripts/terraform_binaries.lock.json:
+#   python3 scripts/terraform_check.py --update-lock terraform@<v>
+TERRAFORM_FLOOR_VERSION := 1.7.5
+TERRAFORM_LATEST_VERSION := 1.17.1
+OPENTOFU_FLOOR_VERSION := 1.7.10
+OPENTOFU_LATEST_VERSION := 1.13.9
+TERRAFORM_CHECK_BINARIES ?= terraform@$(TERRAFORM_FLOOR_VERSION) terraform@$(TERRAFORM_LATEST_VERSION) tofu@$(OPENTOFU_FLOOR_VERSION) tofu@$(OPENTOFU_LATEST_VERSION)
+# Provider versions are pinned in scripts/terraform_binaries.lock.json, beside the
+# binaries' hashes, so both CI caches can key on one file.
+# Verified binaries and the provider plugin cache. Outside the checkout by default
+# (the plugin cache is ~2 GB, which would otherwise sit inside every scanner's walk);
+# CI points it at a cached directory.
+TERRAFORM_CHECK_CACHE ?= $(HOME)/.cache/idp-terraform-check
+
+terraform-check: ## Translate template.yaml to Terraform offline, then init + validate it with each pinned Terraform/OpenTofu, then diff a static scan of both (needs network for binaries, providers and checkov)
+	@$(PYTHON) scripts/terraform_check.py \
+		--binaries "$(TERRAFORM_CHECK_BINARIES)" \
+		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
+	@$(MAKE) --no-print-directory terraform-scan-diff
+
+# The static-scan diff: checkov over the CloudFormation templates and over the
+# Terraform generated from them, failing when the Terraform side has a finding the
+# CloudFormation side does not (softer than upstream), beyond the explained entries
+# in scripts/terraform_scan_baseline.json. Pinned for the reason CFN_LINT_VERSION is:
+# a scanner release adds rules, and an unpinned one changes the verdict with no code
+# change. checkov is installed into its own venv under TERRAFORM_CHECK_CACHE. See
+# scripts/terraform_scan_diff.py for what it does and does not prove.
+CHECKOV_VERSION := 3.4.0
+terraform-scan-diff: ## Diff a pinned checkov scan of the CloudFormation templates against the generated Terraform; fail on a Terraform-only finding not in the baseline
+	@$(PYTHON) scripts/terraform_scan_diff.py \
+		--checkov-version "$(CHECKOV_VERSION)" \
+		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
+
+# Release-time property parity between a CloudFormation stack and a Terraform
+# deployment of the same release with the same parameters: every resource of both,
+# main and nested stacks, read through Cloud Control and diffed, with explained
+# differences in terraform/tools/parity_baseline.json. Read-only, but it needs AWS
+# credentials and both deployments, so it is a release-validation tier, not a CI gate.
+terraform-parity: ## Compare every resource of a Terraform deployment with its CloudFormation twin (CFN_STACK=<name> TF_STACK=<label stack>; needs AWS)
+	@test -n "$(CFN_STACK)" -a -n "$(TF_STACK)" || { echo "usage: make terraform-parity CFN_STACK=<name> TF_STACK=<name> [REGION=<region>]"; exit 2; }
+	@$(PYTHON) terraform/tools/parity.py --cfn-stack "$(CFN_STACK)" --tf-stack "$(TF_STACK)" $(if $(REGION),--region "$(REGION)")
+
 # Deliberately NOT part of `lint`, `fastlint` or `lint-cicd`, and deliberately NOT
 # in test_ci_gate_parity.py's SHARED_GATES. It needs network access and a token
 # with administration:read, and on this repository it reports "not protected" on
@@ -866,6 +918,9 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running feature platform tests..."
 	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
+	@echo "Running Terraform translator and bridge tests..."
+	cd terraform/translator && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
+	cd terraform/bridge && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
 	cd feature-platform/feature-template/feature-api && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
 	@# These three ran in NO CI gate until #974. `make test` picked them up via
@@ -996,14 +1051,15 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd nested/api-resolvers/src/lambda/delete_agent_chat_session_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	@echo "Running the KB-ingestion and docker-build custom-resource suites..."
-	@# Both built a boto3 client at import time with no region, so both errored at
-	@# COLLECTION under $(PYTEST_HERMETIC) while passing on a developer machine.
-	@# Each now supplies its own region from its own conftest.py, which is what makes
-	@# running them through the wrapper meaningful -- the wrapper takes the region
-	@# away rather than handing one over. See #988.
+	@echo "Running the KB-ingestion custom-resource suite..."
+	@# It built a boto3 client at import time with no region, so it errored at
+	@# COLLECTION under $(PYTEST_HERMETIC) while passing on a developer machine. It
+	@# now supplies its own region from its own conftest.py, which is what makes
+	@# running it through the wrapper meaningful -- the wrapper takes the region
+	@# away rather than handing one over. See #988. (The multi-document-discovery
+	@# build-run handler that sat beside it is now src/lambda/start_codebuild,
+	@# tested above; #1824.)
 	cd nested/bedrockkb/src/start_ingestion_job_custom_resource && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	cd nested/multi-doc-discovery/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running the feature-platform extension suites that reached neither CI..."
 	@# The three pii-anonymizer suites above were added by #974; these eight are the
 	@# rest of the same tree -- the ConfBench test-set extension, the data generator's
@@ -1013,6 +1069,7 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# CI; the other modules in it run unconditionally.
 	cd feature-platform/confbench-testset && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/idp-data-generator/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/idp-data-generator/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/feature-template/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
@@ -1225,7 +1282,7 @@ ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make ux-test STACK_NAME=<stack-name> [REGION=... GROUP=...])
 endif
 	@echo "Creating a throwaway UX-test session for $(STACK_NAME)..."
-	@$(PYTHON) scripts/ux_test_session.py setup $(STACK_NAME) \
+	@$(RUN_FIRST_PARTY) scripts/ux_test_session.py setup $(STACK_NAME) \
 	    --group $(if $(GROUP),$(GROUP),Admin) \
 	    $(if $(REGION),--region $(REGION),)
 	@echo -e "$(YELLOW)Now drive the flows in scripts/ux_flows.yaml — see .claude/skills/ux-test.md$(NC)"
@@ -1600,6 +1657,13 @@ endif
 	@# literal version rather than the `<VERSION>` placeholder the published host
 	@# template uses — nothing would substitute a placeholder here.
 	@$(PYTHON) -c "import re,pathlib; p=pathlib.Path('feature-platform/seller-entitlement-service/template.yaml'); t=p.read_text(); n,c=re.subn(r\"(ServiceVersion:\\s*\\n\\s*Value: )'[^']*'\", r\"\\g<1>'$(V)'\", t); p.write_text(n); raise SystemExit(0 if c==1 else f'ERROR: expected 1 ServiceVersion replacement, made {c}')"
+	@# The lockfile records the project's own version, and `uv export --locked`
+	@# (make lock-constraints, run by make setup and by every CI job that builds
+	@# the Python environment) refuses a lockfile whose project version disagrees
+	@# with pyproject.toml, so the bump has to reach it. Only the project's own
+	@# version line moves; nothing is re-resolved, so no dependency pin can change
+	@# as a side effect of a version bump (#1818).
+	@$(PYTHON) -c "import re,pathlib; p=pathlib.Path('lib/idp_common_pkg/uv.lock'); t=p.read_text(); n,c=re.subn(r'(\[\[package\]\]\nname = \"idp-common\"\nversion = \")[^\"]*(\")', r'\g<1>$(V)\g<2>', t); p.write_text(n); raise SystemExit(0 if c==1 else f'ERROR: expected 1 idp-common version line in lib/idp_common_pkg/uv.lock, replaced {c}')"
 	@echo -e "$(GREEN)✅ Version updated to $(V) in:$(NC)"
 	@echo "  - VERSION"
 	@echo "  - lib/idp_cli_pkg/pyproject.toml"
@@ -1607,6 +1671,7 @@ endif
 	@echo "  - lib/idp_sdk/pyproject.toml"
 	@echo "  - lib/idp_sdk/idp_sdk/__init__.py"
 	@echo "  - lib/idp_common_pkg/pyproject.toml"
+	@echo "  - lib/idp_common_pkg/uv.lock"
 	@echo "  - lib/idp_mcp_connector_pkg/pyproject.toml"
 	@echo "  - lib/idp_mcp_connector_pkg/idp_mcp_connector/__init__.py"
 	@echo "  - lib/idp_feature_sdk/pyproject.toml"

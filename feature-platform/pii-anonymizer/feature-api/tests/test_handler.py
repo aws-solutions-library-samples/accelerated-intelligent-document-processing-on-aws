@@ -868,3 +868,49 @@ def test_a_host_without_the_grant_parameter_is_manual(mod, monkeypatch):
     assert mod._grants_are_external() is False
     monkeypatch.setattr(mod, "TENANT_GRANT_SOURCE_PARAMETER", "")
     assert mod._grants_are_external() is False
+
+
+# ---- A row recording a different Cognito sub ---------------------------------
+#
+# Cognito does not make ``email`` unique, so the address can match a row that
+# records another account's sub. Where an unscoped caller is denied, that row's
+# scope belongs to the other account and is not applied; under Manual with
+# isolation Off it is a restriction and is applied.
+
+
+@pytest.mark.parametrize(
+    "source,mode,status",
+    [
+        ("IdpClaim", "Off", 404),
+        ("Api", "Off", 404),
+        ("Manual", "Strict", 404),
+        ("Manual", "Off", 200),
+    ],
+)
+def test_a_row_recording_another_accounts_sub(mod, monkeypatch, source, mode, status):
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc31.pdf", "acme-x")
+    _put_user("shared@x", ["acme-*"], user_id="u31", sub="sub-first-account")
+    _set_mode(mod, monkeypatch, mode)
+    _set_grant_source(mod, monkeypatch, source)
+
+    second = _get_with_claims(
+        mod,
+        "/report/doc31.pdf/mapping",
+        {
+            "email": "shared@x",
+            "sub": "sub-second-account",
+            "cognito:groups": "[Viewer]",
+        },
+    )
+    assert second["statusCode"] == status
+
+    # The account the row records is unaffected.
+    mod._mode_cache.clear()
+    first = _get_with_claims(
+        mod,
+        "/report/doc31.pdf/mapping",
+        {"email": "shared@x", "sub": "sub-first-account", "cognito:groups": "[Viewer]"},
+    )
+    assert first["statusCode"] == 200

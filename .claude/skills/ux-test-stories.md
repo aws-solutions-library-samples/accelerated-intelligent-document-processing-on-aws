@@ -486,15 +486,37 @@ of its earlier story jobs whether they posted or not, and past that one reply po
 `make ai-ux-test-stories-local MR=<iid>`. The `ai_ux_test_stories_nightly`
 shards run the nightly set against `idp-ux-nightly` after the deploy, and
 `ai_ux_test_stories_digest` writes a digest and, in the scheduled pipeline, compares the
-night with the scheduled nights before it and posts a one-line summary to Slack, as
-`🧭 UX STORIES · …`, when `UX_TEST_STORIES_SLACK_WEBHOOK_URL` is set: a Workflow
-Builder webhook of its own, never the integration build's `SLACK_WEBHOOK_URL`. A bad result counts as a regression when a
-second attempt confirms it; one whose confirming re-run did not fit in the night's
-budget or time is listed too, marked unconfirmed in the digest and on Slack, and the
-record's `reruns_not_run` names it. `UX_TEST_STORIES` set to `mr` or
+night with the scheduled nights before it and posts it to Slack when
+`UX_TEST_STORIES_SLACK_WEBHOOK_URL` is set: a Workflow Builder webhook of its own, never
+the integration build's `SLACK_WEBHOOK_URL`. The shards read the review stack's state
+from the integration build's `codebuild_logs.txt`, the row under the last review-stack
+header in its final MiB before the line that starts the build's Bedrock narrative, which
+is model output and never read, and a night is compared only when that row says the
+stack was updated or already up to date and every audit was clean. A bad result counts
+as a regression when a second attempt confirms it; one whose confirming re-run did not
+fit in the night's budget or time is listed too, marked unconfirmed in the digest and on
+Slack, and the record's `reruns_not_run` names it. `UX_TEST_STORIES` set to `mr` or
 `nightly` keeps only that kind, and any other value, `off` among them, turns all three
-off; a manual pipeline on `develop` with `UX_TEST_STORIES_RUN=all` runs the nightly
-set. Every job is `allow_failure` and none is a gate.
+off; a manual pipeline on `develop` with `UX_TEST_STORIES_RUN=all` runs the nightly set.
+Every job is `allow_failure` and none is a gate.
+
+**Reading the Slack post.** The status is the night's outcome from its stories:
+`✅ 13 of 13 passed`; `❌ 2 regressions`, for confirmed regressions only;
+`⚠️ harness problem`, for a harness error or an unclean audit; `⚠️ 11 of 13 passed`,
+when a flow did not pass and none is a confirmed regression; or `⏭️ not run`. Once no
+night has been compared for four nights in a row, tonight included and a night with no
+readable digest counted as not compared, the tally carries a warning instead, as
+`⚠️ 13 of 13 passed, not compared for 4 nights`, because in such a run no regression can
+be flagged. The summary lists every flow by its catalogue title and persona, one icon
+per outcome (✅ done, 🚫 refused as the docs say, ❌ missed the docs' expectation, ⚠️ did
+not finish, 🛠️ harness error, ⏭️ not run): confirmed regressions first, then the other
+flows that did not pass, each saying why in a few words, then the passes with their
+steps. A night that could not be compared, in a shorter run, keeps its ✅ when every
+story passed and says why on its own line, such as "Not compared with earlier nights:
+the review stack's update could not be confirmed." It closes with what the night was
+compared with, its hesitations and dead ends, and its spend against the night's cap, and
+stays within 2,000 characters of plain text by folding passes into "and N more passed"
+before any failure is cut.
 
 ## Writing a story
 

@@ -1,7 +1,7 @@
 import logging
-from idp_common import image, s3
 from typing import Any, Dict, List
 
+from idp_common import image, s3
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
     LEGACY_ATTRIBUTES_PROMPT,
@@ -9,10 +9,10 @@ from idp_common.config.schema_constants import (
     LEGACY_IMAGE_PATH,
     X_AWS_IDP_ATTRIBUTES_PROMPT,
     X_AWS_IDP_CLASS_PROMPT,
-    X_AWS_IDP_CLASSIFICATION,
     X_AWS_IDP_EXAMPLES,
     X_AWS_IDP_IMAGE_PATH,
 )
+from idp_common.prompt_comments import strip_prompt_comments
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +116,10 @@ def build_few_shot_examples_content(config: IDPConfig) -> List[Dict[str, Any]]:
         # Examples are stored directly on the schema object
         examples = schema.get(X_AWS_IDP_EXAMPLES, [])
         for example in examples:
-            class_prompt = _example_field(
-                example, X_AWS_IDP_CLASS_PROMPT, LEGACY_CLASS_PROMPT
+            # {# ... #} comments are removed here too, so a configuration handed
+            # to a service directly does not send them (see prompt_comments).
+            class_prompt = strip_prompt_comments(
+                _example_field(example, X_AWS_IDP_CLASS_PROMPT, LEGACY_CLASS_PROMPT)
             )
 
             # Only process this example if it has a non-empty class_prompt
@@ -199,8 +201,10 @@ def build_few_shot_extraction_examples_content(
 
     for example in examples:
         # For extraction, use attributesPrompt instead of classPrompt
-        attributes_prompt = _example_field(
-            example, X_AWS_IDP_ATTRIBUTES_PROMPT, LEGACY_ATTRIBUTES_PROMPT
+        attributes_prompt = strip_prompt_comments(
+            _example_field(
+                example, X_AWS_IDP_ATTRIBUTES_PROMPT, LEGACY_ATTRIBUTES_PROMPT
+            )
         )
 
         # Only process this example if it has a non-empty attributesPrompt

@@ -310,10 +310,26 @@ def _caller_allowed_versions(email: str, caller_sub: str = "") -> Optional[list]
         # this is not an answer about the caller — their row may simply predate the
         # pointer writer — and there is no second key to try, so it denies.
         raise ScopeLookupError("no caller email, and no row records this caller's sub")
+    unscoped_denied = _isolation_mode() == ISOLATION_STRICT or _grants_are_external()
+    recorded_sub = str((row or {}).get("cognitoSub") or "").strip()
+    if caller_sub and recorded_sub and recorded_sub != caller_sub:
+        # The row records a different Cognito account (Cognito does not make
+        # `email` unique). Where an unscoped caller is denied, that row's scope is
+        # the other account's grant rather than a restriction on this caller, so
+        # the caller is denied. Mirrors ``resolve_allowed_config_versions`` in the
+        # host's ``idp_common.config_scope``.
+        if unscoped_denied:
+            logger.warning(
+                "A host UsersTable row found for the caller records a different "
+                "Cognito sub; denying"
+            )
+            return [STRICT_UNSCOPED_DENY]
+        logger.warning(
+            "A host UsersTable row found for the caller records a different "
+            "Cognito sub; its scope is being applied"
+        )
     scope = _normalize_scope(row.get("allowedConfigVersions")) if row else None
-    if scope is None and (
-        _isolation_mode() == ISOLATION_STRICT or _grants_are_external()
-    ):
+    if scope is None and unscoped_denied:
         # Strict isolation, or a tenant granted externally (TenantGrantSource of
         # IdpClaim or Api), closes the "unscoped means unrestricted" branch, as
         # ``idp_common.config_scope`` does on the host: a sentinel no profile name
