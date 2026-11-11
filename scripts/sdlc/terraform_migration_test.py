@@ -1266,7 +1266,8 @@ class Run:
             "ReportingBucketName"
         )
         return (
-            f"{out.get('import_count', out.get('importCount', '?'))} imports; verdicts {verdicts}; "
+            f"{(self.new_dir / 'adopt.tf').read_text().count('import {')} import blocks; "
+            f"verdicts {verdicts}; "
             f"kept beyond the required set: {extra}"
         )
 
