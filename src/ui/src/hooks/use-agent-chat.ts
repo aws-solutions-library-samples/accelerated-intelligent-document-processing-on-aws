@@ -834,7 +834,8 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
   const setOptIn = (key: OptInKey, checked: boolean): void => {
     const { startNewSession, updates } = optInChange(agentChatState, key, checked);
     if (startNewSession) {
-      startNewAgentChatSession(updates);
+      // Keep a typed draft: only the conversation is new.
+      startNewAgentChatSession({ ...updates, inputValue: agentChatState.inputValue });
       sentMessagesRef.current = new Set();
       return;
     }

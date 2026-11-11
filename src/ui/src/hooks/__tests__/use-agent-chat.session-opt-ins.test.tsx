@@ -103,6 +103,7 @@ describe('opt-in agents per session', () => {
     expect(result.current.ctx.agentChatState.sessionHoldsDataResults).toBe(true);
     expect(result.current.ctx.agentChatState.messages.length).toBeGreaterThan(0);
 
+    act(() => result.current.ctx.updateAgentChatState({ inputValue: 'a draft' }));
     act(() => result.current.chat.setOptIn('enableCodeIntelligence', true));
 
     const state = result.current.ctx.agentChatState;
@@ -111,6 +112,7 @@ describe('opt-in agents per session', () => {
     expect(state.enableCodeIntelligence).toBe(true);
     expect(state.sessionHoldsDataResults).toBe(false);
     expect(state.sessionNotice).toBe(NEW_SESSION_NOTICE);
+    expect(state.inputValue).toBe('a draft');
   });
 
   it('opting in on a session with no data result keeps the session', async () => {

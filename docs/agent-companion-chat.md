@@ -102,8 +102,10 @@ conversation's memory for the turns that follow. So the two kinds of agent are
 never used in the same conversation:
 
 - Once the Analytics Agent or the Error Analyzer Agent has returned a result in a
-  conversation, Code Intelligence and External MCP agents are left out of it for
-  good, whatever the checkboxes say. Within the turn that produced the result, an
+  conversation, Code Intelligence and External MCP agents are left out of it from
+  then on, whatever the checkboxes say. This also holds for a second turn running
+  at the same time on the same conversation, for example in another browser tab:
+  an opt-in agent checks again just before it runs. Within the turn that produced the result, an
   opt-in agent that had already been made available answers that it is not
   available in this conversation instead of running.
 - Turning on either opt-in in such a conversation starts a new conversation, with
@@ -114,8 +116,11 @@ never used in the same conversation:
 
 The record that a conversation holds those results is kept on the session's owner
 record in `ChatSessionOwnersTable`, which belongs to one signed-in user, so it
-applies to that user's conversation and no other. It is kept for as long as that
-record is, which is the data-retention period after the conversation's last turn.
+applies to that user's conversation and no other. That record is kept for the
+data-retention period (`DataRetentionInDays`) after the conversation's last turn,
+plus an hour. The conversation's memory is kept for the same retention period after
+its last write, so it expires first: a conversation resumed after both have expired
+starts with neither its memory nor the record.
 
 ### Data Storage and Retention
 
