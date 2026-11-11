@@ -30,7 +30,12 @@ import SafeMarkdown from '../SafeMarkdown';
 import { STYLE_ATTRIBUTE_VALUE, safeSchema, s3BucketOf } from '../safe-markdown-policy';
 
 const OWN_BUCKET = 'idp-stack-outputbucket-abc123';
-const SETTINGS = { OutputBucket: OWN_BUCKET, InputBucket: 'idp-stack-inputbucket-def456', StackName: 'idp-stack' };
+const SETTINGS = {
+  OutputBucket: OWN_BUCKET,
+  InputBucket: 'idp-stack-inputbucket-def456',
+  PublicArtifactsBucket: 'shared-public-artifacts',
+  StackName: 'idp-stack',
+};
 const ORIGIN = window.location.origin;
 
 const renderMarkdown = (markdown: string, withSettings = true): HTMLElement => {
@@ -81,8 +86,14 @@ const ownImage = (src: string): boolean => {
   }
   if (url.origin === ORIGIN) return !src.includes('\\');
   if (url.protocol !== 'https:' || !url.hostname.endsWith('.amazonaws.com')) return false;
+  // Exact host shapes only: one optional region label, or the interface-endpoint form.
+  const host = url.hostname;
+  const label = '[a-z0-9-]+';
   return [OWN_BUCKET, SETTINGS.InputBucket].some(
-    (b) => url.hostname.startsWith(`${b}.s3`) || (url.hostname.startsWith('s3.') && url.pathname.startsWith(`/${b}/`)),
+    (b) =>
+      new RegExp(`^${b}\\.s3(?:\\.${label})?\\.amazonaws\\.com$`).test(host) ||
+      new RegExp(`^${b}\\.vpce-${label}\\.s3\\.${label}\\.vpce\\.amazonaws\\.com$`).test(host) ||
+      (new RegExp(`^s3(?:\\.${label})?\\.amazonaws\\.com$`).test(host) && url.pathname.startsWith(`/${b}/`)),
   );
 };
 
@@ -170,6 +181,11 @@ const CORPUS: Array<[string, string]> = [
   ['own bucket name as a subdomain elsewhere', `![x](https://${OWN_BUCKET}.s3.amazonaws.com.remote.example/p.png)`],
   ['own bucket name on a non-S3 AWS host', `![x](https://${OWN_BUCKET}.execute-api.us-west-2.amazonaws.com/q.png)`],
   ['own bucket over http', `![x](http://${OWN_BUCKET}.s3.us-west-2.amazonaws.com/r.png)`],
+  ['own bucket name as a prefix of another bucket', `![x](https://${OWN_BUCKET}.s3-other.s3.amazonaws.com/s.png)`],
+  ['own bucket name as a prefix, dotted', `![x](https://${OWN_BUCKET}.s3.other.s3.us-west-2.amazonaws.com/t.png)`],
+  ['own bucket name on an access point host', `![x](https://${OWN_BUCKET}.s3-accesspoint.us-east-1.amazonaws.com/u.png)`],
+  ['own bucket name on an object lambda host', `![x](https://${OWN_BUCKET}.s3-object-lambda.us-east-1.amazonaws.com/v.png)`],
+  ['shared public bucket from settings', `![x](https://shared-public-artifacts.s3.us-west-2.amazonaws.com/w.png)`],
   ['blob of another origin', `<img src="blob:${REMOTE}/2f1e">`],
   ['non-image data URL', `<img src="data:text/html;base64,PGI+">`],
   ['javascript URL image', `<img src="javascript:alert(1)">`],
@@ -352,6 +368,11 @@ describe('safe-markdown-policy', () => {
     ['https://b.s3.dualstack.us-east-1.amazonaws.com/k', 'b'],
     ['https://b.vpce-01-ab.s3.us-west-2.vpce.amazonaws.com/k', 'b'],
     ['https://b.s3.cn-north-1.amazonaws.com.cn/k', 'b'],
+    ['https://b.s3-fips.us-gov-west-1.amazonaws.com/k', 'b'],
+    ['https://own.s3-other.s3.amazonaws.com/k', 'own.s3-other'],
+    ['https://own.s3.other.s3.amazonaws.com/k', 'own.s3.other'],
+    ['https://b.s3-accesspoint.us-east-1.amazonaws.com/k', null],
+    ['https://b.s3-evil.amazonaws.com/k', null],
     ['https://b.execute-api.us-west-2.amazonaws.com/k', null],
     ['https://b.s3.amazonaws.com.remote.example/k', null],
     ['http://b.s3.amazonaws.com/k', null],

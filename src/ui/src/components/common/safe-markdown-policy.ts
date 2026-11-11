@@ -152,15 +152,20 @@ export interface ResourceOrigins {
   buckets: ReadonlySet<string>;
 }
 
+/** An AWS region name: `us-west-2`, `us-gov-west-1`, `cn-north-1`, `ap-southeast-3`. */
+const REGION = '[a-z]{2}(?:-[a-z]+)+-\\d+';
 /**
- * S3 endpoint host names, without the bucket: `s3.amazonaws.com`,
+ * S3 endpoint host names, without the bucket, written as the actual endpoint
+ * grammar rather than "anything starting with s3": `s3.amazonaws.com`,
  * `s3.<region>.amazonaws.com`, `s3-<region>.amazonaws.com`,
- * `s3.dualstack.<region>.amazonaws.com`, and the `.cn` forms. `amazonaws.com`
- * is the endpoint suffix in both the commercial and GovCloud partitions.
+ * `s3.dualstack.<region>.amazonaws.com`, the `s3-fips` forms, and `.cn`.
+ * A looser rule would read `own.s3-other.s3.amazonaws.com` as bucket `own`, when
+ * S3 reads it as bucket `own.s3-other`. `amazonaws.com` is the endpoint suffix in
+ * both the commercial and GovCloud partitions.
  */
-const S3_ENDPOINT_HOST = /^s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com(?:\.cn)?$/;
+const S3_ENDPOINT_HOST = new RegExp(`^s3(?:-fips)?(?:\\.dualstack)?(?:[.-]${REGION})?\\.amazonaws\\.com(?:\\.cn)?$`);
 /** An S3 interface-endpoint host, without the bucket: `vpce-<id>.s3.<region>.vpce.amazonaws.com`. */
-const S3_VPCE_HOST = /^vpce-[a-z0-9-]+\.s3\.[a-z0-9-]+\.vpce\.amazonaws\.com(?:\.cn)?$/;
+const S3_VPCE_HOST = new RegExp(`^vpce-[a-z0-9-]+\\.s3\\.${REGION}\\.vpce\\.amazonaws\\.com(?:\\.cn)?$`);
 
 /** The bucket an https URL addresses, if it is an S3 URL in either addressing style. */
 export const s3BucketOf = (url: URL): string | null => {
@@ -206,11 +211,28 @@ export const isAllowedImageUrl = (raw: string, origins: ResourceOrigins): boolea
   return bucket !== null && origins.buckets.has(bucket);
 };
 
-/** Bucket names from the settings document: every string value of a key ending in `Bucket`. */
+/**
+ * The settings keys that name this deployment's own buckets. Listed rather than
+ * matched by suffix: settings also carry `PublicArtifactsBucket`, a shared public
+ * release bucket the deployment does not own, and a future `*Bucket` key should
+ * be added here deliberately rather than trusted by its name.
+ */
+export const DEPLOYMENT_BUCKET_SETTINGS = [
+  'InputBucket',
+  'OutputBucket',
+  'DiscoveryBucket',
+  'TestSetBucket',
+  'ConfigurationBucket',
+  'ReportingBucket',
+  'EvaluationBaselineBucket',
+] as const;
+
+/** This deployment's bucket names, from the settings document. */
 export const bucketsFromSettings = (settings: Record<string, unknown> | undefined | null): Set<string> => {
   const names = new Set<string>();
-  for (const [key, value] of Object.entries(settings ?? {})) {
-    if (key.endsWith('Bucket') && typeof value === 'string' && value.trim()) names.add(value.trim().toLowerCase());
+  for (const key of DEPLOYMENT_BUCKET_SETTINGS) {
+    const value = settings?.[key];
+    if (typeof value === 'string' && value.trim()) names.add(value.trim().toLowerCase());
   }
   return names;
 };
