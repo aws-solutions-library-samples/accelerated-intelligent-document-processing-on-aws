@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.3 |
-| **Last Updated** | 2026-09-19 |
+| **Document Version** | 3.4 |
+| **Last Updated** | 2026-11-09 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
 | **System** | GenAI Intelligent Document Processing (IDP) Accelerator |
@@ -31,7 +31,7 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 | **Lambda Functions** | 130+ |
 | **DynamoDB Tables** | 15 (parent and nested stacks) |
 | **S3 Buckets** | 13 |
-| **UI API operations** | 164 (single `POST /op/{field}` route) |
+| **UI API operations** | 168 (single `POST /op/{field}` route) |
 | **Processing Modes** | 2 (Pipeline, BDA) |
 | **RBAC Roles** | 5 (Admin, Author, Reviewer, Annotator, Viewer) + separate M2M OAuth realm for the Jobs API |
 | **UI hosting modes** | 2 (CloudFront, API Gateway S3 proxy) |
@@ -42,31 +42,31 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 
 | Category | Count |
 |----------|-------|
-| **Total threats identified** | **104** |
+| **Total threats identified** | **109** |
 | Critical risk (score 8-9) | 9 |
-| High risk (score 6-7) | 31 |
-| Medium risk (score 3-5) | 47 |
-| Low risk (score 1-2) | 17 |
+| High risk (score 6-7) | 32 |
+| Medium risk (score 3-5) | 50 |
+| Low risk (score 1-2) | 18 |
 
 ### 3.2 STRIDE Distribution
 
 | STRIDE Category | Count | Key Concern |
 |----------------|-------|-------------|
-| **Tampering** | 40 | Prompt injection, configuration manipulation, data/ground-truth poisoning, reviewer-controlled output |
-| **Information Disclosure** | 40 | Data exfiltration via extensibility points, object-read scoping, review metadata, token/credential exposure |
-| **Elevation of Privilege** | 34 | RBAC bypass, hook/feature privilege escalation, deployment-role breadth, per-object authorization that is opt-in per resolver, parser exploits |
-| **Denial of Service** | 18 | Resource exhaustion, cost escalation, redaction loops, service dependency |
-| **Spoofing** | 16 | Token theft, caller-identity spoofing, credential compromise |
+| **Tampering** | 42 | Prompt injection, configuration manipulation, data/ground-truth poisoning, reviewer-controlled output |
+| **Information Disclosure** | 42 | Data exfiltration via extensibility points, object-read scoping, review metadata, token/credential exposure |
+| **Elevation of Privilege** | 38 | RBAC bypass, hook/feature privilege escalation, deployment-role breadth, per-object authorization that is opt-in per resolver, parser exploits |
+| **Denial of Service** | 19 | Resource exhaustion, cost escalation, redaction loops, service dependency |
+| **Spoofing** | 17 | Token theft, caller-identity spoofing, credential compromise |
 | **Repudiation** | 5 | Insufficient audit trail, BDA opacity, review history that is not tamper-evident |
 
-> Counts sum to more than 104 because a threat may carry multiple STRIDE categories.
+> Counts sum to more than 109 because a threat may carry multiple STRIDE categories.
 
 ### 3.3 Mitigation Status
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| **Mitigated** | 64 | 62% |
-| **Partially Mitigated** | 33 | 32% |
+| **Mitigated** | 65 | 60% |
+| **Partially Mitigated** | 37 | 34% |
 | **Open** (real gap, needs work) | **3** | **3%** |
 | **Accepted** | 4 | 4% |
 
@@ -123,11 +123,13 @@ The system's high configurability (prompts, schemas, model selection, agent tool
 
 ### 4.4 Authentication & Authorization
 
-The API Gateway Cognito authorizer only authenticates the JWT. Group evaluation happens in two places: the API dispatcher enforces each operation's declared groups and refuses an undeclared operation, and the resolver Lambdas enforce everything narrower — configuration-profile and test-set scope, ownership, and review-queue eligibility. A resolver missing one of those checks exposes the objects it guards to every caller the operation's groups admit (AUTH.T03, AUTH.T08, AUTH.T16). The system is single-tenant per deployment.
+The API Gateway Cognito authorizer only authenticates the JWT. Group evaluation happens in two places: the API dispatcher enforces each operation's declared groups and refuses an undeclared operation, and the resolver Lambdas enforce everything narrower — configuration-profile and test-set scope, ownership, and review-queue eligibility. A resolver missing one of those checks exposes the objects it guards to every caller the operation's groups admit (AUTH.T03, AUTH.T08, AUTH.T16). A deployment can be one tenant's, or shared by several tenants (v0.6.14), in which case those same scope checks are what separate one tenant from another (TEN.T01–T05).
 
-HITL review queues (v0.6.13) add 40 operations and give the `Annotator` group production documents in the queues it is eligible for; their per-item operations check eligibility and profile scope and fail closed, the listings filter each item by its own profile (HITL.T01), and only an item's holder can write it (HITL.T02).
+HITL review queues (v0.6.13) add 40 operations and give the `Annotator` group production documents in the queues it is eligible for; their per-item operations check eligibility and profile scope and fail closed, the listings and a scoped caller's queue counts filter each item by its own profile (HITL.T01), and only an item's holder can write it (HITL.T02).
 
-**Mitigations**: A default-deny group floor at the dispatcher and per-operation resolver authorization for all 164 routable operations, config-version scope checks, object-level ownership checks, and — because the boundary is now imperative code rather than a declarative gateway rule — an **automated authorization test harness** (`make api-test` / `make api-test-static`) that fails the CI gate on any missing or regressed check. Cognito advanced security features.
+Tenant isolation (v0.6.14) lets several tenants share one stack. Tenant declarations tie Input-bucket prefixes to a profile name pattern and are enforced when mappings, tenants and scopes are written. `TenantIsolationMode=Strict` makes isolation fail closed, and `TenantGrantSource` moves who grants a user's tenant to the identity provider's claim or an entitlement system. Isolation is enforced by the application rather than by IAM, Admins are cross-tenant, and the defaults (`Off`, `Manual`) leave an unscoped non-Admin unrestricted, so a shared stack should run `Strict` (TEN.T01). Under `Strict` the bucket policies delegate to every S3 Access Point the account owns, so restricting access point creation is a prerequisite the template cannot enforce (TEN.T02).
+
+**Mitigations**: A default-deny group floor at the dispatcher and per-operation resolver authorization for all 168 routable operations, config-version scope checks, object-level ownership checks, and — because the boundary is now imperative code rather than a declarative gateway rule — an **automated authorization test harness** (`make api-test` / `make api-test-static`) that fails the CI gate on any missing or regressed check. Cognito advanced security features.
 
 The dispatcher now denies an undeclared operation by default (**issue #928**,
 closed), but that floor decides only which groups may call an operation. Every
@@ -197,4 +199,4 @@ The threat model has been developed using:
 | [STRIDE Analysis](../threat-analysis/stride-analysis.md) | Full STRIDE analysis across all components |
 | [Risk Matrix](../risk-assessment/risk-matrix.md) | Complete risk register with scoring |
 | [Implementation Guide](implementation-guide.md) | Security controls implementation details |
-| [Threat ID Glossary](../threat-id-glossary.md) | All 104 threat IDs with cross-references |
+| [Threat ID Glossary](../threat-id-glossary.md) | All 109 threat IDs with cross-references |

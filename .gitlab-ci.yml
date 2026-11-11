@@ -20,7 +20,7 @@ default:
 
 # Pipeline structure (see scripts/sdlc/docs/CI_TEST_COVERAGE.md for the full
 # trigger matrix):
-#   - fast_checks: the whole no-AWS gate, as SEVEN parallel jobs on every push and
+#   - fast_checks: the whole no-AWS gate, as EIGHT parallel jobs on every push and
 #     every MR. Nothing in this stage depends on anything else in it, so they all
 #     carry `needs: []` and the stage costs its SLOWEST member rather than their
 #     sum.
@@ -492,6 +492,48 @@ ui_tests:
     # It silences console output from tests only; failure output is unaffected.
     - (cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent)
 
+# The Terraform offline gate: translate template.yaml with terraform/translator,
+# then `init -backend=false` and `validate` the generated module with every pinned
+# Terraform and OpenTofu release. It deploys nothing and needs no AWS credentials;
+# it does need network access, for the binaries (verified against the published
+# SHA256SUMS and the hashes committed in scripts/terraform_binaries.lock.json) and
+# the providers. See scripts/terraform_check.py for what it does and does not prove.
+#
+# Its own job, mirroring GitHub's `terraform_checks`, so that a release host or
+# registry outage reds this job alone. No Node and no UI dependencies: the
+# translator needs only aws-sam-translator and PyYAML, both in the lock.
+terraform_checks:
+  <<: *fast_check_job
+  tags:
+    - size:large
+
+  variables:
+    # Keep in step with TERRAFORM_*_VERSION / OPENTOFU_*_VERSION in the Makefile;
+    # scripts/tests/test_ci_gate_parity.py fails if this, GitHub's
+    # developer-tests.yml and the Makefile disagree.
+    TERRAFORM_CHECK_BINARIES: "terraform@1.7.5 terraform@1.17.1 tofu@1.7.10 tofu@1.13.9"
+    TERRAFORM_CHECK_CACHE: "$CI_PROJECT_DIR/.cache/idp-terraform-check"
+
+  # Verified binaries plus the provider plugin cache (~430 MB compressed). Keyed on
+  # the file that pins both and on the vendored awscc schema whose version the gate
+  # pins that provider to, so a pin change starts a clean cache. Both runner
+  # architectures can share an entry: binaries and providers are stored per
+  # platform inside it.
+  cache:
+    key:
+      prefix: terraform-check
+      files:
+        - scripts/terraform_binaries.lock.json
+        - terraform/translator/schemas/awscc.json
+    paths:
+      - .cache/idp-terraform-check/
+
+  before_script:
+    - *python_setup
+
+  script:
+    - make terraform-check
+
 deployment_validation:
   stage: deployment_validation
   interruptible: true
@@ -580,6 +622,20 @@ integration_tests:
   #     below serialises it against the nightly; it does NOT reduce the burst of
   #     primary + probe stacks inside the run, which codebuild_deployment.py's
   #     launch stagger, concurrency cap and retry bound instead.
+  #   - the nightly Terraform schedule           → auto, primary suite only,
+  #     against a TERRAFORM deployment of the accelerator. It is a second daily
+  #     schedule beside the CloudFormation nightly, told apart from it by
+  #     IDP_IAC alone, never by its cadence or its description. The schedule carries
+  #     IDP_IAC=terraform, and integration_test_deployment.py (iac_requested)
+  #     honours it only on a scheduled pipeline and refuses it combined with
+  #     IDP_RUN_PROBES or IDP_TEST_REGION. It reaches the build in
+  #     ci_run_options.json; the build installs the pinned, checksum-verified
+  #     Terraform release itself (ensure_terraform_binary in
+  #     codebuild_deployment.py), because CodeBuild, not this job, runs it.
+  #     Nothing in this file turns it on: with no schedule carrying the variable,
+  #     no Terraform run happens. It holds the same resource_group as the
+  #     CloudFormation nightly, so the two serialise; schedule it to start after
+  #     the nightly normally finishes (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
   #   - any MR targeting develop                 → MANUAL button on the MR page
   #   - push to develop                          → MANUAL button on the pipeline
   #   - anything else                            → never
@@ -913,6 +969,14 @@ integration_tests:
           if os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
           else ""
       )
+      # And the nightly Terraform run, keyed like iac_requested(): the variable
+      # counts only on a schedule. It is a second daily schedule, so this label,
+      # not the cadence, is what keeps it from reading as the CloudFormation
+      # nightly.
+      terraform_run = (
+          os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+          and os.environ.get("IDP_IAC", "").strip().lower() == "terraform"
+      )
       # ⚠️ A green job is NOT the same claim as "the suite passed".
       # integration_test_deployment.py exits 0 on the HANDOFF path too (the
       # monitor stopped before the pipeline reached a terminal state, on its
@@ -953,6 +1017,8 @@ integration_tests:
           status = "🔬 WEEKLY VARIANT PROBES · " + status
       if region_run:
           status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
+      if terraform_run:
+          status = "🧱 NIGHTLY TERRAFORM RUN · " + status
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
@@ -2002,6 +2068,14 @@ nightly_notification:
           )
           if region_run:
               status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
+          # And the nightly Terraform run, read exactly as the post in
+          # integration_tests reads it.
+          terraform_run = (
+              os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+              and os.environ.get("IDP_IAC", "").strip().lower() == "terraform"
+          )
+          if terraform_run:
+              status = "🧱 NIGHTLY TERRAFORM RUN · " + status
 
           # Same flat, all-string contract as the post in integration_tests: these
           # four keys are declared on the Slack Workflow Builder trigger as Text, and
@@ -2051,7 +2125,12 @@ nightly_notification:
 #   - Run pipeline on develop with UX_TEST_STORIES_RUN=all, automatically;
 #   - a push to develop, as a manual button.
 # The weekly region schedules (IDP_TEST_REGION) are excluded for the same reason:
-# the review stack is in us-east-1 and they leave it alone.
+# the review stack is in us-east-1 and they leave it alone. So is the nightly
+# Terraform schedule (IDP_IAC=terraform), which leaves the review stack alone too.
+# It is a scheduled develop pipeline every night, exactly as the CloudFormation
+# nightly is, so IDP_IAC is the only thing that tells the two apart here: without
+# that rule the story set would run twice a night against the same stack and the
+# digest would compare the night with itself.
 # The weekly variant-probe schedule (IDP_RUN_PROBES=true) is also a scheduled
 # develop pipeline and is excluded: it leaves the review stack alone, so a story
 # run there would re-test the night's stack and add a second "night" to the
@@ -2093,6 +2172,8 @@ ai_ux_test_stories_nightly:
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_TEST_REGION
       when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_IAC =~ /^\s*terraform\s*$/i
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "develop"
       when: always
     - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == "develop" && $UX_TEST_STORIES_RUN == "all"
@@ -2100,7 +2181,12 @@ ai_ux_test_stories_nightly:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"
       when: manual
     - when: never
-  # deployment_summary.txt, which records the review stack's state for the night.
+  # codebuild_logs.txt, the integration build's log, whose consolidated summary
+  # records the review stack's state for the night; the shard reads its last
+  # MiB, up to the line that starts the Bedrock narrative, which it never reads.
+  # Not deployment_summary.txt: when the job cannot fetch the build's
+  # summary from S3 it keeps only the log after that table, so the stack's row
+  # is not in it.
   dependencies:
     - integration_tests
   # ai_ux_test's environment, as on ai_ux_test_stories.
@@ -2116,7 +2202,7 @@ ai_ux_test_stories_nightly:
     # Under CI, --all is the nightly shard: a flow that gave up or ran out of
     # steps runs once more at twice its step budget, inside the catalogue's
     # job_usd and deadline.
-    UX_MODE_ARGS: "--all --shard $CI_NODE_INDEX/$CI_NODE_TOTAL --deploy-summary deployment_summary.txt"
+    UX_MODE_ARGS: "--all --shard $CI_NODE_INDEX/$CI_NODE_TOTAL --deploy-summary codebuild_logs.txt"
     UX_ARTIFACTS: "ux-test-stories/shard-$CI_NODE_INDEX"
   before_script: *ux_confined_setup
   # UX_HARNESS_SHA as in ai_ux_test_stories.
@@ -2198,8 +2284,9 @@ ai_ux_test_stories_digest:
   script:
     # The shards merged; on the schedule, compared with the earlier scheduled
     # nights' digests, read with GITLAB_REVIEW_TOKEN by GET requests alone, and
-    # the one-line summary posted to Slack, with UX_TEST_STORIES_SLACK_WEBHOOK_URL
-    # set. digest.md says when no earlier night was read.
+    # the night's summary posted to Slack, with UX_TEST_STORIES_SLACK_WEBHOOK_URL
+    # set: one plain-text line per flow, as the integration build's own post
+    # lists its tests. digest.md says when no earlier night was read.
     - python3 -B "$UX_HARNESS_DIR/$UX_ENTRY" --digest ux-test-stories --out "$UX_ARTIFACTS"
   artifacts:
     when: always

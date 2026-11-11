@@ -440,7 +440,10 @@ class TestDeployFromCode:
     ):
         """The build shells out to the project's own ``publish.py`` with three
         positional arguments, run from the project root. The bucket basename
-        embeds the account id, so it has to come from STS."""
+        embeds the account id, so it has to come from STS. ``--no-terraform``
+        is passed because a direct ``publish.py`` run otherwise also publishes
+        the Terraform module, which this CloudFormation deployment never reads
+        and which can fail on its own."""
         seen = self._record_subprocess(monkeypatch)
         deployer.deploy_result = {"success": True}
 
@@ -454,6 +457,7 @@ class TestDeployFromCode:
             "idp-accelerator-artifacts-123456789012",
             "idp-sdk",
             REGION,
+            "--no-terraform",
         ]
         assert deployer.calls["deploy_stack"]["template_path"] == str(
             project / ".aws-sam" / "idp-main.yaml"
@@ -471,7 +475,7 @@ class TestDeployFromCode:
         with mock_aws():
             IDPClient(stack_name=STACK_NAME).stack.deploy(from_code=str(project))
 
-        assert seen["cmd"][-1] == "us-west-2"
+        assert seen["cmd"][4] == "us-west-2"
 
     def test_a_project_without_publish_py_is_refused(
         self, deployer, aws_credentials, tmp_path, monkeypatch

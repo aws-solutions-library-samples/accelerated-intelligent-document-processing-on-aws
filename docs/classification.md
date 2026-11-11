@@ -1580,6 +1580,11 @@ examples below are written for the combined page call
 (`classification.combined.page`); the packet call, the splitting call and section
 classification have the same two prompts in their own blocks.
 
+Each default classification prompt starts with a `{# ... #}` comment stating its
+contract: the output it must ask for, the placeholders it can use and where
+`<<CACHEPOINT>>` goes. Comments are removed before a prompt is sent; see
+[Comments in a prompt](configuration.md#comments-in-a-prompt).
+
 ### System Prompts
 
 Define overall model behavior and constraints:

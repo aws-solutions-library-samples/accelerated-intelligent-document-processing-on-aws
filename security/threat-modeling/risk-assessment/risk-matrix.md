@@ -4,11 +4,11 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.3 |
-| **Last Updated** | 2026-09-19 |
+| **Document Version** | 3.4 |
+| **Last Updated** | 2026-11-09 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threats Identified** | 104 |
+| **Total Threats Identified** | 109 |
 
 ## 1. Risk Scoring Methodology
 
@@ -95,6 +95,7 @@
 | SELL.T01 | Service Deployed Into an Account That Does Not Own the Product | **6** | Seller Entitlement Service | Mitigated |
 | SELL.T03 | Resource-Policy Over-Exposure (`Principal: '*'`) | **6** | Seller Entitlement Service | Mitigated |
 | SELL.T08 | Unavailability of the Activation Service Locks Out Paying Customers | **6** | Seller Entitlement Service | Partially Mitigated |
+| TEN.T01 | Cross-Tenant Access in a Shared Stack | **6** | Tenant Isolation | Partially Mitigated |
 | UI.T01 | Cross-Site Scripting (XSS) | **6** | Web UI | Partially Mitigated |
 | UI.T03 | UI API Abuse (REST dispatcher) | **6** | Web UI | Mitigated |
 | UI.T06 | Object Reads Carry No Document Ownership Axis | **6** | Web UI | **Partially Mitigated** (#1033; residual is the missing ownership axis) |
@@ -140,6 +141,9 @@
 | HOOK.T03 | Inference Hook Result Tampering | **3** | Lambda Hooks | Mitigated |
 | HOOK.T05 | Privilege Escalation via Hook IAM Role | **3** | Lambda Hooks | Mitigated |
 | JOB.T02 | Jobs API Is Outside the Automated Authorization Test Harness | **3** | Jobs API | **Open** |
+| TEN.T02 | Access-Point Delegation Trusts Every Access Point in the Account | **3** | Tenant Isolation | Partially Mitigated |
+| TEN.T03 | An External Grant Source Decides Tenancy | **3** | Tenant Isolation | Partially Mitigated |
+| TEN.T04 | The Sign-In Trigger Holds UsersTable Write Under `IdpClaim` | **3** | Tenant Isolation | Partially Mitigated |
 | JOB.T03 | Static Client Secret with No Rotation Mechanism | **3** | Jobs API | Partially Mitigated |
 | MCP.T02 | Malicious Tool Injection | **3** | MCP Integration | Mitigated |
 | PII.T02 | Redaction Loop / Re-Entrancy via Input-Bucket Writeback | **3** | PII Anonymization | Partially Mitigated |
@@ -168,6 +172,7 @@
 | RPT.T01 | Reporting Data Tampering | **2** | Reporting/Analytics | Mitigated |
 | RPT.T03 | Glue Catalog Manipulation | **2** | Reporting/Analytics | Mitigated |
 | SELL.T07 | Product-Existence Oracle | **2** | Seller Entitlement Service | Mitigated |
+| TEN.T05 | Tenant Declarations Are an Authorization Input and a Single Point of Failure | **2** | Tenant Isolation | Mitigated |
 | UI.T02 | Presigned Upload URL Abuse | **2** | Web UI | Mitigated |
 | UI.T04 | Hosting Origin Misconfiguration | **2** | Web UI | Mitigated |
 | UI.T05 | Client-Side Configuration Exposure | **2** | Web UI | Mitigated |
@@ -175,11 +180,11 @@
 ## 3. Risk Distribution Summary
 
 ```mermaid
-pie title Risk Distribution (104 Threats)
+pie title Risk Distribution (109 Threats)
     "Critical (8-9)" : 9
-    "High (6-7)" : 31
-    "Medium (3-5)" : 47
-    "Low (1-2)" : 17
+    "High (6-7)" : 32
+    "Medium (3-5)" : 50
+    "Low (1-2)" : 18
 ```
 
 ### By Component
@@ -201,8 +206,9 @@ pie title Risk Distribution (104 Threats)
 | Review Queues | 0 | 0 | 2 | 2 | 4 |
 | SDK/CLI | 1 | 2 | 2 | 0 | 5 |
 | Seller Entitlement Service | 2 | 3 | 4 | 1 | 10 |
+| Tenant Isolation | 0 | 1 | 3 | 1 | 5 |
 | Web UI | 0 | 3 | 1 | 3 | 7 |
-| **Total** | **9** | **31** | **47** | **17** | **104** |
+| **Total** | **9** | **32** | **50** | **18** | **109** |
 
 ### By STRIDE Category
 
@@ -211,19 +217,19 @@ than the threat total.
 
 | STRIDE Category | Threats | Highest Risk |
 |----------------|---------|--------------|
-| **Spoofing** | 16 | Critical |
-| **Tampering** | 40 | Critical |
+| **Spoofing** | 17 | Critical |
+| **Tampering** | 42 | Critical |
 | **Repudiation** | 5 | High |
-| **Information Disclosure** | 40 | Critical |
-| **Denial of Service** | 18 | High |
-| **Elevation of Privilege** | 34 | Critical |
+| **Information Disclosure** | 42 | Critical |
+| **Denial of Service** | 19 | High |
+| **Elevation of Privilege** | 38 | Critical |
 
 ### Mitigation Status
 
 | Status | Count | Description |
 |--------|-------|-------------|
-| **Mitigated** | 64 | Controls implemented and verified |
-| **Partially Mitigated** | 33 | Some controls in place, additional measures recommended |
+| **Mitigated** | 65 | Controls implemented and verified |
+| **Partially Mitigated** | 37 | Some controls in place, additional measures recommended |
 | **Open** | 3 | **Real gap with no effective control today — see the open-items list below** |
 | **Accepted** | 4 | Risk accepted with documented rationale |
 
@@ -267,6 +273,7 @@ Ranked by risk score, then by how much work remains (Open → Partially Mitigate
 | 13 | AUTH.T07 | Config-Version Scope Bypass (Fail-Open Scope Lookup) | 6 | Partially Mitigated |
 | 14 | AUTH.T16 | Per-Object Authorization Is Opt-In Per Resolver (Default Deny Covers the Group Floor Only) | 6 | Partially Mitigated (#928 closed; per-object checks remain opt-in) |
 | 15 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | 6 | Partially Mitigated |
+| 16 | TEN.T01 | Cross-Tenant Access in a Shared Stack | 6 | Partially Mitigated |
 
 ## 5. Recommendations
 
@@ -357,6 +364,15 @@ effort-to-value:
    (**issue #968**); what remains is to set `ExternalIdPAnnotatorGroupName` on any
    federated deployment that uses annotators, since at its empty default
    `Annotator` is managed outside the IdP's joiner/leaver process
+11. **Tenant isolation in a shared stack (TEN.T01, TEN.T02, TEN.T04)**: deploy a
+   shared stack with `TenantIsolationMode=Strict` and run `idp-cli tenancy audit`
+   first, since under the defaults an unscoped non-Admin is unrestricted; restrict
+   `s3:CreateAccessPoint` and `s3:PutAccessPointPolicy` to the access point
+   deployer before switching (the SCP in
+   [Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md)), because the bucket
+   policies delegate to every access point the account owns; and condition the
+   sign-in trigger's UsersTable `UpdateItem` on the scope attributes under
+   `IdpClaim`
 
 ### Ongoing Monitoring
 

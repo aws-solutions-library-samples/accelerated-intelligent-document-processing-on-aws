@@ -23,6 +23,10 @@ Example:
     >>> client.config.create(features="min", output="config.yaml")
 """
 
+from ._core import terraform_stack as _terraform_stack
+from ._core.terraform_deploy import (
+    default_pointer_url as default_terraform_pointer_url,
+)
 from .client import IDPClient
 from .exceptions import (
     IDPConfigurationError,
@@ -161,6 +165,8 @@ __all__ = [
     "IDPValidationError",
     "IDPResourceNotFoundError",
     "IDPTimeoutError",
+    # Terraform: the latest-module pointer beside a template URL
+    "default_terraform_pointer_url",
     # Enums
     "StackState",
     "DocumentState",
@@ -274,3 +280,7 @@ __all__ = [
     "TenantUserGrant",
     "TenantVerifyResult",
 ]
+
+# Lets every CloudFormation lookup by --stack-name resolve a Terraform
+# deployment through its label stack. See _core/terraform_stack.py.
+_terraform_stack.install()

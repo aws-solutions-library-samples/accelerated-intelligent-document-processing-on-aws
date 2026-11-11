@@ -146,8 +146,8 @@ Environment
     ``--post`` to reply. A scheduled ``--digest`` uses the same token only to
     read: develop's earlier scheduled pipelines and each one's ``digest.json``.
 ``UX_TEST_STORIES_SLACK_WEBHOOK_URL``
-    Optional. A scheduled ``--digest`` posts its one-line summary to this Slack
-    Workflow Builder webhook; without it nothing is posted and nothing is said.
+    Optional. A scheduled ``--digest`` posts its summary to this Slack Workflow
+    Builder webhook; without it nothing is posted and nothing is said.
     It is never ``SLACK_WEBHOOK_URL``, the integration build's: that one reaches
     every job, so any process running the digest in a scheduled pipeline, a test
     among them, would post through it, and its workflow's message names the
@@ -194,7 +194,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import urlsplit
 
 _SCRIPTS_DIR = str(Path(__file__).resolve().parents[1])
@@ -970,16 +970,19 @@ def post_slack(
 
 
 def post_digest_summary(
-    digest: Mapping[str, Any], runtime: Runtime, scrub: artifacts.Scrub
+    digest: Mapping[str, Any],
+    runtime: Runtime,
+    scrub: artifacts.Scrub,
+    facts: story_digest.SlackFacts | None = None,
 ) -> None:
-    """The scheduled digest's one-line Slack summary, when a webhook is set.
+    """The scheduled digest's Slack summary, when a webhook is set.
 
-    ``story_digest.slack_payload`` builds it from closed values only, and
-    ``CI_JOB_URL`` is its link. Without :data:`SLACK_WEBHOOK_ENV` nothing is
-    posted or printed; outside a scheduled pipeline one line says it was not
-    posted; a value that is not an https URL is reported by the variable's name
-    and posts nothing; and whatever happens, the digest's own outcome does not
-    change.
+    ``story_digest.slack_payload`` builds it from closed values only, the
+    digest's and ``facts``', and ``CI_JOB_URL`` is its link. Without
+    :data:`SLACK_WEBHOOK_ENV` nothing is posted or printed; outside a scheduled
+    pipeline one line says it was not posted; a value that is not an https URL
+    is reported by the variable's name and posts nothing; and whatever happens,
+    the digest's own outcome does not change.
     """
     webhook = runtime.environ.get(SLACK_WEBHOOK_ENV, "").strip()
     if not webhook or runtime.slack is None:
@@ -995,7 +998,7 @@ def post_digest_summary(
         return
     try:
         payload = story_digest.slack_payload(
-            digest, job_url=runtime.environ.get("CI_JOB_URL", "").strip()
+            digest, job_url=runtime.environ.get("CI_JOB_URL", "").strip(), facts=facts
         )
         outcome = runtime.slack(webhook, payload)
     except Exception as error:
@@ -1235,8 +1238,8 @@ def _shard(keys: Sequence[stories.FlowKey], spec: str | None) -> list[stories.Fl
     return stories.shard(keys, index, total)
 
 
-def _read_bounded(path: Path, limit: int, what: str) -> bytes:
-    """A regular file, opened without following a link, of at most ``limit`` bytes."""
+def _open_regular(path: Path, what: str) -> BinaryIO:
+    """A regular file opened for reading without following a link."""
     try:
         descriptor = os.open(
             path,
@@ -1246,13 +1249,28 @@ def _read_bounded(path: Path, limit: int, what: str) -> bytes:
         raise StoryRunError(
             f"{what} cannot be read: {error.strerror or type(error).__name__}"
         ) from None
-    with os.fdopen(descriptor, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            raise StoryRunError(f"{what} is not a regular file")
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise StoryRunError(f"{what} is not a regular file")
+    return os.fdopen(descriptor, "rb")
+
+
+def _read_bounded(path: Path, limit: int, what: str) -> bytes:
+    """A regular file, opened without following a link, of at most ``limit`` bytes."""
+    with _open_regular(path, what) as handle:
         data = handle.read(limit + 1)
     if len(data) > limit:
         raise StoryRunError(f"{what} is larger than {limit} bytes")
     return data
+
+
+def _read_tail(path: Path, limit: int, what: str) -> bytes:
+    """A regular file's last ``limit`` bytes, opened without following a link."""
+    with _open_regular(path, what) as handle:
+        size = os.fstat(handle.fileno()).st_size
+        if size > limit:
+            handle.seek(size - limit)
+        return handle.read(limit)
 
 
 def _read_json(path: Path, what: str, limit: int = _RECORD_MAX_BYTES) -> Any:
@@ -1267,15 +1285,19 @@ def _is_whole(value: object) -> bool:
 
 
 def deploy_state(path: Path | None) -> str | None:
-    """The review stack's state from ``deployment_summary.txt``; None without a path.
+    """The review stack's state from the integration build's log; None without a path.
 
-    A summary that is absent or cannot be read is ``missing``, which runs the
-    flows and records the night as not comparable.
+    The CI shards pass ``codebuild_logs.txt``, the build's log, which prints its
+    consolidated summary near the end, just before its Bedrock narrative; the
+    state is that summary's row under the review stack's last header before the
+    narrative, in the file's final :data:`_SUMMARY_MAX_BYTES`, so a longer log is
+    read rather than refused. A file that is absent or cannot be read is
+    ``missing``, which runs the flows and records the night as not comparable.
     """
     if path is None:
         return None
     try:
-        text = _read_bounded(path, _SUMMARY_MAX_BYTES, "the deployment summary")
+        text = _read_tail(path, _SUMMARY_MAX_BYTES, "the deployment log")
     except StoryRunError:
         return "missing"
     return story_digest.classify_stack_state(text.decode("utf-8", errors="replace"))
@@ -1354,8 +1376,8 @@ def precheck_flows(
 ) -> Decision:
     """The decision for ``--story``, ``--all`` and ``--interactive`` runs.
 
-    In order: the flows (after ``--shard``), the review stack's state when a
-    deployment summary is given (a stack still updating skips the shard before
+    In order: the flows (after ``--shard``), the review stack's state when the
+    deployment log is given (a stack still updating skips the shard before
     anything is installed), the UI source and the CI variables.
     """
     environ = runtime.environ
@@ -4816,8 +4838,8 @@ def digest_main(args: argparse.Namespace, runtime: Runtime) -> int:
     (:func:`nightly_history`); without them nothing is compared, and ``digest.md``
     says so. ``digest.json`` is what later nights read back; ``history.json`` is
     the nights it was compared with. Once those are written, a scheduled pipeline
-    with a webhook posts the one-line Slack summary (:func:`post_digest_summary`),
-    which never changes the outcome.
+    with a webhook posts the Slack summary (:func:`post_digest_summary`), which
+    never changes the outcome.
     """
     scrub = artifacts.Scrub(artifacts.redactor_for(runtime.environ))
     dirs = shard_dirs([Path(args.digest)])
@@ -4857,6 +4879,13 @@ def digest_main(args: argparse.Namespace, runtime: Runtime) -> int:
         catalogue = load_catalogue()
         nudges = _unreleased_nudges(Path(args.repo_dir), catalogue)
         cap = len(dirs) * float(catalogue.runs.job_usd)
+        facts = story_digest.SlackFacts(
+            results=results,
+            run=judged.record,
+            history=history,
+            titles={story.id: story.title for story in catalogue.stories},
+            cap_usd=cap,
+        )
         text = story_digest.compose_digest_md(
             digest,
             results,
@@ -4883,7 +4912,7 @@ def digest_main(args: argparse.Namespace, runtime: Runtime) -> int:
     ) as error:
         _say(scrub, f"FAILED: {error}")
         return 1
-    post_digest_summary(digest, runtime, scrub)
+    post_digest_summary(digest, runtime, scrub, facts)
     _say(
         scrub,
         f"DIGEST: {len(dirs)} shard(s), {len(found)} regression(s), in {out}; {cost}",
@@ -5112,7 +5141,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--deploy-summary",
         type=Path,
-        help="the nightly deploy's deployment_summary.txt, for the stack's state",
+        help="the nightly deploy's codebuild_logs.txt, whose consolidated summary "
+        "names the review stack's state",
     )
     parser.add_argument(
         "--deadline-minutes",

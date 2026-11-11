@@ -827,10 +827,18 @@ def sync_cognito_users_to_dynamodb():
             break
         existing_scan_kwargs["ExclusiveStartKey"] = last_key
 
-    # List all Cognito users
+    # List all Cognito users. Read in full before matching, because whether a row
+    # recording another sub may be re-bound depends on whether that account still
+    # exists in the pool.
     paginator = cognito.get_paginator("list_users")
+    pages = list(paginator.paginate(UserPoolId=USER_POOL_ID))
+    live_subs = {
+        _sub_from_cognito_attributes(user.get("Attributes"))
+        for page in pages
+        for user in page.get("Users", [])
+    } - {""}
 
-    for page in paginator.paginate(UserPoolId=USER_POOL_ID):
+    for page in pages:
         for user in page.get("Users", []):
             username = user["Username"]
 
@@ -859,21 +867,35 @@ def sync_cognito_users_to_dynamodb():
 
             if existing is not None:
                 recorded = str(existing.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
+                if caller_sub and recorded and recorded != caller_sub:
+                    if recorded in live_subs:
+                        # Matched by address to a row another account in the pool
+                        # records. Cognito does not make `email` unique, and a row
+                        # belongs to the account it records, so it stays bound to
+                        # that account rather than moving to this one. No row is
+                        # created either: the scope readers deny this account where
+                        # an unscoped caller is denied, and apply the row's scope as
+                        # a restriction where one is unrestricted.
+                        logger.warning(
+                            "A Cognito account shares its address with a user row "
+                            "another account in the pool records; leaving the row "
+                            "bound to that account. Delete the account that should "
+                            "not hold the address to resolve it."
+                        )
+                        continue
                 scoped = _is_scoped(existing)
                 if caller_sub and (recorded != caller_sub or scoped):
                     # A row can only record one sub. Where it already recorded a
-                    # different one, that pointer is superseded and is **deleted**: a
-                    # native and a federated Cognito account can share one address and
-                    # both be live, so the previous sub may well still authenticate,
-                    # and a pointer it still resolves would keep naming this row after
-                    # the row stops recording it. Leaving it behind is what puts a
-                    # pointer out of step with the row it names.
+                    # different one — an account no longer in the pool, since a row
+                    # another live account records is left alone above — that
+                    # pointer is superseded and is **deleted**: a pointer left behind
+                    # would keep naming this row after the row stops recording it,
+                    # which puts a pointer out of step with the row it names.
                     if recorded and recorded != caller_sub:
                         logger.warning(
-                            "A user row's recorded Cognito %s changed; replacing its "
-                            "pointer. If two live accounts share this address, only "
-                            "the one this row now records resolves through the %s key "
-                            "space.",
+                            "A user row's recorded Cognito %s names an account no "
+                            "longer in the pool; re-binding it and replacing its %s "
+                            "pointer.",
                             SCOPE_SUB_CLAIM,
                             USERS_TABLE_SUB_POINTER_PREFIX,
                         )
