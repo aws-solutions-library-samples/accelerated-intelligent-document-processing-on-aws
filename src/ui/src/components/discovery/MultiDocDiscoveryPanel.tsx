@@ -43,8 +43,9 @@ import type { SelectProps } from '@cloudscape-design/components';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { generateClient } from '../../api/client-shim';
+import { uploadDiscoveryZip } from '../../api/discovery-zip-upload';
 
-import { startMultiDocDiscovery, uploadMultiDocDiscoveryZip, listDiscoveryJobs, deleteDiscoveryJob } from '../../graphql/generated';
+import { startMultiDocDiscovery, listDiscoveryJobs, deleteDiscoveryJob } from '../../graphql/generated';
 import { useNavigate } from 'react-router-dom';
 import { DISCOVERY_JOB_PATH } from '../../routes/constants';
 import useSettingsContext from '../../contexts/settings';
@@ -244,34 +245,10 @@ const MultiDocDiscoveryPanel = () => {
 
     try {
       if (inputMode === 'zip' && zipFile) {
-        // Step 1: Get presigned URL for zip upload
         setUploading(true);
-        const uploadResponse = await client.graphql({
-          query: uploadMultiDocDiscoveryZip,
-          variables: {
-            fileName: zipFile.name,
-            fileSize: zipFile.size,
-            configVersion: selectedVersion.value!,
-          },
-        });
-
-        const uploadData = (uploadResponse as any)?.data?.uploadMultiDocDiscoveryZip;
-        if (!uploadData?.presignedUrl) {
-          throw new Error('Failed to get upload URL');
-        }
-
-        // Step 2: Upload zip file via presigned URL
-        const uploadResult = await fetch(uploadData.presignedUrl, {
-          method: 'PUT',
-          body: zipFile,
-          headers: { 'Content-Type': 'application/zip' },
-        });
-        if (!uploadResult.ok) {
-          throw new Error(`Upload failed: ${uploadResult.statusText}`);
-        }
+        await uploadDiscoveryZip(zipFile, selectedVersion.value!);
         setUploading(false);
 
-        // Step 3: Start discovery with zip reference
         const startResponse = await client.graphql({
           query: startMultiDocDiscovery,
           variables: {

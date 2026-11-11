@@ -992,3 +992,128 @@ def test_config_list_is_matched_by_whole_profile_name():
     assert not tmt.profile_listed(listing, "default")
     assert tmt.profile_listed(listing, "bda")
     assert tmt.profile_listed("│ default │", "default")
+
+
+# -- upstream IAM under the run's path and boundary ------------------------------
+
+PATH_ = "/idp-1111-235959-upstream/"
+BOUNDARY = "arn:aws:iam::123456789012:policy/idp-1111-235959-PermissionsBoundary"
+
+
+def _upstream_tree(root):
+    files = {
+        "main.tf": 'resource "aws_iam_role" "root_role" {\n  name = "x"\n}\n',
+        "modules/api/iam.tf": (
+            'resource "aws_iam_role" "resolver" {\n  name = "ConfigurationResolverRole"\n}\n'
+            'resource "aws_iam_policy" "s3" {\n  name = "UploadResolverS3Policy"\n}\n'
+            'resource "aws_iam_role_policy_attachment" "a" {}\n'
+        ),
+        "modules/api/tests/fixture.tf": 'resource "aws_iam_role" "fixture" {}\n',
+        f"{tmt.UPSTREAM_EXAMPLE}/knowledge-base.tf": 'resource "aws_iam_role" "kb" {}\n',
+        "examples/bda-processor/main.tf": 'resource "aws_iam_role" "other" {}\n',
+        "sources/template.tf": 'resource "aws_iam_role" "accelerator" {}\n',
+        "modules/api/.terraform/x.tf": 'resource "aws_iam_role" "cached" {}\n',
+        "modules/api/mine_override.tf": 'resource "aws_iam_role" "resolver" {}\n',
+    }
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+
+def test_every_loaded_iam_role_and_policy_gets_the_path_and_roles_the_boundary(
+    tmp_path,
+):
+    _upstream_tree(tmp_path)
+    files = tmt.upstream_iam_overrides(tmp_path, PATH_, BOUNDARY)
+    by_dir = {p.parent.relative_to(tmp_path).as_posix(): t for p, t in files.items()}
+    assert set(by_dir) == {".", "modules/api", tmt.UPSTREAM_EXAMPLE}
+    assert all(p.name == tmt.IAM_OVERRIDE_FILE for p in files)
+    api = by_dir["modules/api"]
+    assert 'resource "aws_iam_role" "resolver" {' in api
+    assert 'resource "aws_iam_policy" "s3" {' in api
+    assert api.count(f'path = "{PATH_}"') == 2
+    # a policy takes a path, never a boundary
+    assert api.count("permissions_boundary") == 1
+    assert f'permissions_boundary = "{BOUNDARY}"' in api
+    assert "aws_iam_role_policy_attachment" not in api
+
+
+def test_files_the_example_does_not_load_are_not_overridden(tmp_path):
+    """Other examples, the accelerator submodule, test fixtures, provider caches
+    and existing override files are not part of the deployed configuration; an
+    override naming one of their blocks would fail `terraform init`."""
+    _upstream_tree(tmp_path)
+    text = "".join(tmt.upstream_iam_overrides(tmp_path, PATH_, BOUNDARY).values())
+    for absent in ("fixture", "other", "accelerator", "cached"):
+        assert f'"{absent}"' not in text
+    assert text.count('"resolver"') == 1
+
+
+@pytest.mark.parametrize("path", ["idp-x/", "/idp-x", "/idp x/", ""])
+def test_a_malformed_iam_path_is_refused(tmp_path, path):
+    with pytest.raises(ValueError):
+        tmt.upstream_iam_overrides(tmp_path, path, BOUNDARY)
+
+
+def _args(*extra):
+    return [
+        "--old-name",
+        "idpo11112359",
+        "--new-name",
+        "idp-1111-235959",
+        "--work-dir",
+        "/tmp/w",
+        "--terraform-bin",
+        "/bin/sh",
+        "--terraform-module-url",
+        "https://m.zip",
+        *extra,
+    ]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ("--upstream-iam-path", PATH_),
+        ("--upstream-permissions-boundary-arn", BOUNDARY),
+        (
+            "--upstream-iam-path",
+            "no-slashes",
+            "--upstream-permissions-boundary-arn",
+            BOUNDARY,
+        ),
+    ],
+    ids=["path-only", "boundary-only", "malformed"],
+)
+def test_the_path_and_boundary_are_given_together_and_well_formed(extra, capsys):
+    with pytest.raises(SystemExit):
+        tmt.parse_args(_args(*extra))
+    err = capsys.readouterr().err
+    assert "go together" in err or "is not an IAM path" in err, err
+
+
+def test_both_reach_the_settings():
+    s = tmt.parse_args(
+        _args(
+            "--upstream-iam-path",
+            PATH_,
+            "--upstream-permissions-boundary-arn",
+            BOUNDARY,
+        )
+    )
+    assert (s.upstream_iam_path, s.upstream_permissions_boundary_arn) == (
+        PATH_,
+        BOUNDARY,
+    )
+
+
+def test_a_resume_under_another_iam_path_is_refused():
+    """The path is part of every upstream role's identity: resuming under another
+    would plan all of them for replacement, so it is refused like a changed name."""
+    ctx = {"oldName": "o", "newName": "n", "upstreamIamPath": PATH_}
+    assert tmt.stored_name_problems(ctx, "o", "n", PATH_) == []
+    assert tmt.stored_name_problems(ctx, "o", "n", "/idp-other-upstream/")
+    assert tmt.stored_name_problems(ctx, "o", "n", None)
+    # a context written before the path existed carries no claim about it
+    assert tmt.stored_name_problems({"oldName": "o"}, "o", "n", PATH_) == []
