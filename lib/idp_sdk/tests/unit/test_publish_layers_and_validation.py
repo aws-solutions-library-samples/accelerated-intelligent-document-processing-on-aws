@@ -1481,6 +1481,10 @@ Resources:
     Properties:
       Hash: <SAMPLE_FEATURES_HASH_TOKEN>
       List: '<SAMPLE_FEATURES_LIST_TOKEN>'
+  MultiDocDiscovery:
+    Properties:
+      BuildHash: <MULTI_DOC_DISCOVERY_BUILD_HASH_TOKEN>
+      SourceZipfile: <ARTIFACT_PREFIX_TOKEN>/<MULTI_DOC_DISCOVERY_SOURCE_ZIPFILE_TOKEN>
 """
 
 
@@ -1489,6 +1493,12 @@ def _main_template_tree(root):
     _write(root, "src/lambda/other/index.py", "def handler(e, c): return 1\n")
     _write(root, "config_library/pattern/config.yaml", "classes: []\n")
     _write(root, "config_library/pricing.yaml", "models: []\n")
+    # The multi-doc discovery image's inputs, which every checkout carries; the
+    # main template's BuildHash and source-zip tokens are derived from them.
+    _write(root, "lib/idp_common_pkg/idp_common/__init__.py", "VERSION = 1\n")
+    _write(root, "src/lambda/multi_doc_discovery/index.py", "def handler(e, c): ...\n")
+    _write(root, "nested/multi-doc-discovery/Dockerfile", "FROM python:3.12\n")
+    _write(root, "nested/multi-doc-discovery/requirements.txt", "Pillow==11.0.0\n")
 
 
 def _sam_stub(root, ok=True):
@@ -1574,6 +1584,14 @@ def test_build_main_template_substitutes_every_token_and_uploads_both_keys(
     assert "Key: layers/idp-common-base-aaaa1111.zip" in built
     assert "Key: layers/idp-common-multi_document_discovery-aaaa1111.zip" in built
     assert "Hash: feat0003" in built
+    # BuildHash and the source zip it is built from carry the same content hash
+    # (#1856), so the image tag always names the inputs CodeBuild receives.
+    build_hash = pub.multi_doc_discovery_build_hash()
+    assert f"BuildHash: {build_hash}\n" in built
+    assert (
+        f"SourceZipfile: {_PREFIX}/{_VERSION}/multi-doc-discovery-source-{build_hash}.zip"
+        in built
+    )
     assert "List: '[\"sample-feature\"]'" in built
     # The config file list is the sorted relative paths under config_library.
     assert '\'["pattern/config.yaml", "pricing.yaml"]\'' in built

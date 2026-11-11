@@ -18,7 +18,6 @@ arrangement so that regression cannot come back unnoticed.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import zipfile
 from pathlib import Path
@@ -173,93 +172,25 @@ class TestRebuildTriggers:
             )
 
 
-class TestBuildHashCoversTheImageInputs:
-    """`BuildHash` must change when any input to the container image changes.
+def test_the_template_takes_build_hash_and_zip_name_from_the_member_list():
+    """Both template tokens come from the one member listing (#1856).
 
-    This is the load-bearing assertion, and it is NOT the same as the
-    component-dependency check above. `BuildHash` is the only meaningful property
-    of the `DockerBuildRun` custom resource, so it alone decides whether
-    CloudFormation re-invokes the resource (and thus whether CodeBuild rebuilds
-    the image) on a stack UPDATE. A component-checksum change merely re-SAM-builds
-    the template.
-
-    Regression guard: `BuildHash` originally hashed only
-    `src/lambda/multi_doc_discovery`, so a Dependabot bump to requirements.txt
-    left it byte-identical — CloudFormation saw no delta, the build never ran, and
-    the vulnerable dependency stayed deployed. A fresh stack create always builds,
-    which is why this was invisible to end-to-end create testing.
+    The behaviour is asserted in test_publish_ui_and_source_packaging.py against
+    a constructed tree; this pins the wiring into the main template, where
+    rendering the whole template in a unit test is not practical.
     """
-
-    def _build_hash(self, publisher):
-        """Compute the BuildHash token the same way the publisher does."""
-        return hashlib.sha256(
-            (
-                publisher.get_directory_checksum("src/lambda/multi_doc_discovery")
-                + "".join(
-                    publisher.get_file_checksum(build_input)
-                    for build_input in MULTI_DOC_DISCOVERY_BUILD_INPUTS
-                )
-            ).encode()
-        ).hexdigest()[:16]
-
-    @pytest.mark.parametrize("build_input", MULTI_DOC_DISCOVERY_BUILD_INPUTS)
-    def test_build_hash_changes_when_a_build_input_changes(
-        self, build_input, monkeypatch, tmp_path
-    ):
-        """Mutating requirements.txt / Dockerfile MUST move BuildHash."""
-        monkeypatch.chdir(_REPO_ROOT)
-        publisher = IDPPublisher()
-        before = self._build_hash(publisher)
-
-        # Simulate a Dependabot bump by returning a different checksum for just
-        # this one input, leaving the handler directory untouched.
-        real_file_checksum = publisher.get_file_checksum
-        monkeypatch.setattr(
-            publisher,
-            "get_file_checksum",
-            lambda p: "bumped" if str(p) == build_input else real_file_checksum(p),
-        )
-        after = self._build_hash(publisher)
-
-        assert before != after, (
-            f"BuildHash is unchanged after a bump to {build_input}; "
-            "CloudFormation would see no delta on DockerBuildRun, skip the "
-            "container rebuild, and keep serving the previous image"
-        )
-
-    def test_build_hash_still_tracks_the_handler_code(self, monkeypatch):
-        """Don't lose the original trigger while adding the new ones."""
-        monkeypatch.chdir(_REPO_ROOT)
-        publisher = IDPPublisher()
-        before = self._build_hash(publisher)
-        monkeypatch.setattr(
-            publisher, "get_directory_checksum", lambda p: "changed-handler-code"
-        )
-        assert before != self._build_hash(publisher)
-
-    def test_build_hash_is_stable_when_nothing_changes(self, monkeypatch):
-        """It must not churn, or every publish would force a needless rebuild."""
-        monkeypatch.chdir(_REPO_ROOT)
-        publisher = IDPPublisher()
-        assert self._build_hash(publisher) == self._build_hash(publisher)
-
-    def test_publisher_emits_a_build_hash_covering_the_inputs(self, monkeypatch):
-        """End-to-end: the token the publisher actually bakes in matches.
-
-        Guards against the test's local reimplementation drifting from
-        publish.py — if someone changes the real computation, this fails.
-        """
-        monkeypatch.chdir(_REPO_ROOT)
-        source = (
-            _REPO_ROOT / "lib" / "idp_sdk" / "idp_sdk" / "_core" / "publish.py"
-        ).read_text()
-        token_idx = source.index("<MULTI_DOC_DISCOVERY_BUILD_HASH_TOKEN>")
-        # Take the expression that follows the token assignment.
-        expr = source[token_idx : token_idx + 700]
-        assert "MULTI_DOC_DISCOVERY_BUILD_INPUTS" in expr, (
-            "the BuildHash token no longer incorporates the container build "
-            "inputs — a dependency bump would stop triggering a rebuild"
-        )
+    source = (
+        _REPO_ROOT / "lib" / "idp_sdk" / "idp_sdk" / "_core" / "publish.py"
+    ).read_text()
+    assert '"<MULTI_DOC_DISCOVERY_BUILD_HASH_TOKEN>": multi_doc_build_hash' in source
+    assert "multi_doc_members = self.multi_doc_discovery_source_members()" in source
+    assert '"<MULTI_DOC_DISCOVERY_SOURCE_ZIPFILE_TOKEN>"' in source
+    template = (_REPO_ROOT / "template.yaml").read_text()
+    assert (
+        'SourceZipfile: "<ARTIFACT_PREFIX_TOKEN>/<MULTI_DOC_DISCOVERY_SOURCE_ZIPFILE_TOKEN>"'
+        in template
+    )
+    assert "multi-doc-discovery-source.zip" not in template
 
 
 # --------------------------------------------------------------------------- #
@@ -379,7 +310,9 @@ def packaging_run(monkeypatch, staging_checkout, checkout_build_output):
     snapshot, _changed, _message = checkout_build_output
     staging = staging_checkout
     publisher = _quiet_publisher(monkeypatch)
-    zip_path = staging / ".aws-sam" / "multi-doc-discovery-source.zip"
+    zip_path = (
+        staging / ".aws-sam" / publisher.multi_doc_discovery_source_zipfile_name()
+    )
     before = snapshot()
     try:
         publisher.package_multi_doc_discovery_source()
@@ -409,7 +342,7 @@ def test_packaging_leaves_no_build_output_in_the_checkout(
 
     ⚠️ **The property is "unchanged by this run", not "absent".** A genuine
     `python3 publish.py …` writes precisely
-    `.aws-sam/multi-doc-discovery-source.zip` relative to the repository root, so
+    `.aws-sam/multi-doc-discovery-source-<hash>.zip` relative to the repository root, so
     plenty of legitimate developer trees carry that exact path — as does any tree
     that ran `make test` before this guard existed. Asserting absence would turn
     those into a red test blaming the current run for a file it did not create.

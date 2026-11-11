@@ -29,7 +29,9 @@ docstring, and none of them is a request to change production code here.
 from __future__ import annotations
 
 import concurrent.futures
+import io
 import os
+import re
 import zipfile
 
 import boto3
@@ -840,7 +842,8 @@ def test_mdd_zip_members_and_exclusions(tmp_path, monkeypatch, aws_credentials):
 
     name = pub.package_multi_doc_discovery_source()
 
-    assert name == "multi-doc-discovery-source.zip"
+    assert re.fullmatch(r"multi-doc-discovery-source-[0-9a-f]{16}\.zip", name)
+    assert name == pub.multi_doc_discovery_source_zipfile_name()
     assert _zip_names(os.path.join(".aws-sam", name)) == [
         "lib/idp_common_pkg/idp_common/__init__.py",
         "lib/idp_common_pkg/pyproject.toml",
@@ -855,25 +858,25 @@ def test_mdd_zip_members_and_exclusions(tmp_path, monkeypatch, aws_credentials):
 def test_mdd_zip_is_rebuilt_every_time_and_uploaded(
     tmp_path, monkeypatch, aws_credentials
 ):
-    """The name is fixed, so the zip must be regenerated on every publish.
+    """A local file at the zip's path is overwritten, and the result uploaded.
 
-    Unlike the other two artifacts this one is not content-addressed. If it were
-    ever skipped when the file already existed, an edited handler could never
-    ship — so the "always recreate" behaviour is the correctness property, and a
-    hand-written zip at that path must be overwritten.
+    The name is content-addressed, so a leftover file under it should already
+    hold the same members; rebuilding regardless means a half-written or
+    hand-edited leftover can never be what ships.
     """
     monkeypatch.chdir(tmp_path)
     _mdd_tree(tmp_path)
-    os.makedirs(".aws-sam", exist_ok=True)
-    stale = os.path.join(".aws-sam", "multi-doc-discovery-source.zip")
-    with zipfile.ZipFile(stale, "w") as zf:
-        zf.writestr("stale.txt", "previous publish")
     s3 = boto3.client("s3", region_name="us-east-1")
     s3.create_bucket(Bucket=_BUCKET)
     pub = _publisher(s3)
+    os.makedirs(".aws-sam", exist_ok=True)
+    stale = os.path.join(".aws-sam", pub.multi_doc_discovery_source_zipfile_name())
+    with zipfile.ZipFile(stale, "w") as zf:
+        zf.writestr("stale.txt", "previous publish")
 
     name = pub.package_multi_doc_discovery_source()
 
+    assert os.path.join(".aws-sam", name) == stale
     assert "stale.txt" not in _zip_names(stale)
     key = f"{_PREFIX_AND_VERSION}/{name}"
     with open(stale, "rb") as fh:
@@ -881,34 +884,141 @@ def test_mdd_zip_is_rebuilt_every_time_and_uploaded(
 
 
 @mock_aws
-def test_mdd_zip_upload_is_skipped_when_the_key_exists(
+def test_mdd_zip_upload_is_skipped_only_when_the_content_named_key_exists(
     tmp_path, monkeypatch, aws_credentials
 ):
-    """DEFECT pinned: a fixed key plus a skip-if-present check strands changes.
+    """Skipping the upload is safe only because the key names the contents.
 
-    The zip is always rebuilt locally, but the upload is guarded by
-    ``head_object`` on a key that carries no content hash
-    (``<prefix>/<version>/multi-doc-discovery-source.zip``). So the second and
-    every later publish *of the same version* uploads nothing: the freshly-built
-    zip is discarded and CodeBuild keeps downloading the first one. Re-publishing
-    the same version after a handler fix — which is exactly what an iteration
-    loop does — silently ships the old code.
-
-    This is pinned rather than fixed; it needs either a content hash in the key
-    or an unconditional upload.
+    An object already at this exact key holds these exact members, so it is left
+    alone. This is the half of #1856's fix that keeps a republish cheap.
     """
     monkeypatch.chdir(tmp_path)
     _mdd_tree(tmp_path)
     s3 = boto3.client("s3", region_name="us-east-1")
     s3.create_bucket(Bucket=_BUCKET)
-    key = f"{_PREFIX_AND_VERSION}/multi-doc-discovery-source.zip"
+    pub = _publisher(s3)
+    key = f"{_PREFIX_AND_VERSION}/{pub.multi_doc_discovery_source_zipfile_name()}"
     s3.put_object(Bucket=_BUCKET, Key=key, Body=b"the previous publish")
 
-    _publisher(s3).package_multi_doc_discovery_source()
+    pub.package_multi_doc_discovery_source()
 
     assert (
         s3.get_object(Bucket=_BUCKET, Key=key)["Body"].read() == b"the previous publish"
     )
+
+
+@mock_aws
+def test_mdd_republish_after_an_edit_uploads_a_new_key(
+    tmp_path, monkeypatch, aws_credentials
+):
+    """Regression guard for #1856: an edit under the same version must ship.
+
+    The zip used to have a fixed key, so the second publish of a version found
+    the first one's object, skipped the upload, and CodeBuild built the old code
+    under the new BuildHash tag. Editing idp_common in particular must reach S3,
+    since the image installs it.
+    """
+    monkeypatch.chdir(tmp_path)
+    _mdd_tree(tmp_path)
+    s3 = boto3.client("s3", region_name="us-east-1")
+    s3.create_bucket(Bucket=_BUCKET)
+    pub = _publisher(s3)
+    first = pub.package_multi_doc_discovery_source()
+
+    _write(
+        tmp_path / "lib" / "idp_common_pkg" / "idp_common" / "__init__.py",
+        "VERSION = 2\n",
+    )
+    second = pub.package_multi_doc_discovery_source()
+
+    assert second != first
+    body = s3.get_object(Bucket=_BUCKET, Key=f"{_PREFIX_AND_VERSION}/{second}")["Body"]
+    with zipfile.ZipFile(io.BytesIO(body.read())) as zf:
+        assert zf.read("lib/idp_common_pkg/idp_common/__init__.py") == b"VERSION = 2\n"
+
+
+# BuildHash: the content hash of exactly the zip's members (#1856)
+
+
+def _mdd_hash(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    return _publisher().multi_doc_discovery_build_hash()
+
+
+@pytest.mark.parametrize(
+    "relpath",
+    [
+        # idp_common is installed into the image; before #1856 BuildHash left it
+        # out, so a release changing only idp_common never rebuilt the image.
+        "lib/idp_common_pkg/idp_common/__init__.py",
+        "lib/idp_common_pkg/pyproject.toml",
+        "src/lambda/multi_doc_discovery/index.py",
+        "src/lambda/multi_doc_discovery/helpers/split.py",
+        "nested/multi-doc-discovery/Dockerfile",
+        "nested/multi-doc-discovery/requirements.txt",
+    ],
+)
+def test_mdd_build_hash_moves_with_every_zip_member(tmp_path, monkeypatch, relpath):
+    _mdd_tree(tmp_path)
+    before = _mdd_hash(tmp_path, monkeypatch)
+    _write(tmp_path / relpath, (tmp_path / relpath).read_text() + "# edited\n")
+    assert _mdd_hash(tmp_path, monkeypatch) != before
+
+
+def test_mdd_build_hash_moves_when_a_member_is_added(tmp_path, monkeypatch):
+    _mdd_tree(tmp_path)
+    before = _mdd_hash(tmp_path, monkeypatch)
+    _write(tmp_path / "lib" / "idp_common_pkg" / "idp_common" / "new.py", "x = 1\n")
+    assert _mdd_hash(tmp_path, monkeypatch) != before
+
+
+@pytest.mark.parametrize(
+    "relpath",
+    [
+        "lib/idp_common_pkg/.venv/lib/wheel.py",
+        "lib/idp_common_pkg/idp_common.egg-info/PKG-INFO",
+        "lib/idp_common_pkg/idp_common/stale.pyc",
+        "lib/idp_common_pkg/build/out.py",
+        "src/lambda/multi_doc_discovery/__pycache__/index.pyc",
+        "src/lambda/multi_doc_discovery/index.pyc",
+        # Outside every member root.
+        "lib/idp_sdk/unrelated.py",
+    ],
+)
+def test_mdd_build_hash_ignores_what_the_zip_excludes(tmp_path, monkeypatch, relpath):
+    """Only zip members count, or every local build artifact would force a rebuild."""
+    _mdd_tree(tmp_path)
+    before = _mdd_hash(tmp_path, monkeypatch)
+    _write(tmp_path / relpath, "changed outside the image")
+    assert _mdd_hash(tmp_path, monkeypatch) == before
+
+
+def test_mdd_build_hash_is_the_one_in_the_zip_name(tmp_path, monkeypatch):
+    _mdd_tree(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    pub = _publisher()
+    build_hash = pub.multi_doc_discovery_build_hash()
+    assert len(build_hash) == 16
+    assert pub.multi_doc_discovery_source_zipfile_name() == (
+        f"multi-doc-discovery-source-{build_hash}.zip"
+    )
+
+
+def test_mdd_build_hash_hashes_the_same_members_the_zip_writes(tmp_path, monkeypatch):
+    """The zip and the hash read one listing, so they cannot describe different files."""
+    _mdd_tree(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    pub = _publisher()
+    members = [arcname for _path, arcname in pub.multi_doc_discovery_source_members()]
+    assert members == sorted(members)
+    assert members == [
+        "lib/idp_common_pkg/idp_common/__init__.py",
+        "lib/idp_common_pkg/pyproject.toml",
+        "nested/multi-doc-discovery/Dockerfile",
+        "nested/multi-doc-discovery/requirements.txt",
+        "src/lambda/multi_doc_discovery/helpers/split.py",
+        "src/lambda/multi_doc_discovery/index.py",
+    ]
 
 
 @mock_aws

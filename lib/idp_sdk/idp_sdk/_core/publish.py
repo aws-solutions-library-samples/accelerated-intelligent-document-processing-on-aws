@@ -52,6 +52,25 @@ MULTI_DOC_DISCOVERY_BUILD_INPUTS = (
     "nested/multi-doc-discovery/requirements.txt",
 )
 
+# Directories never copied from lib/idp_common_pkg into the multi-doc discovery
+# source zip. A developer checkout commonly carries a virtualenv and build
+# leftovers in there: host-architecture wheels the image must not inherit, and
+# the venv alone is ~900 MB. `<dist>.egg-info` is matched by suffix separately.
+MULTI_DOC_DISCOVERY_LIB_EXCLUDED_DIRS = frozenset(
+    {
+        "__pycache__",
+        ".pytest_cache",
+        ".venv",
+        "venv",
+        ".tox",
+        ".mypy_cache",
+        ".ruff_cache",
+        "dist",
+        "build",
+    }
+)
+MULTI_DOC_DISCOVERY_HANDLER_EXCLUDED_DIRS = frozenset({"__pycache__", ".pytest_cache"})
+
 
 class IDPPublisher:
     def __init__(self, verbose=False):
@@ -1301,6 +1320,77 @@ STDERR:
 
         return zipfile_name
 
+    def multi_doc_discovery_source_members(self):
+        """Every (path, arcname) pair the multi-doc discovery source zip holds.
+
+        The single definition of the zip's contents: `package_multi_doc_discovery_source`
+        writes exactly these members and `multi_doc_discovery_build_hash` hashes
+        exactly these members, so the image tag cannot describe a different set of
+        files than the one CodeBuild receives. Sorted, so the hash does not depend
+        on directory listing order.
+
+        The image installs lib/idp_common_pkg, so it is a member here and part of
+        the hash: a release that changed only idp_common used to leave BuildHash,
+        and therefore the deployed image, unchanged (#1856).
+        """
+        members = []
+        for top, excluded_dirs in (
+            ("lib/idp_common_pkg", MULTI_DOC_DISCOVERY_LIB_EXCLUDED_DIRS),
+            (
+                "src/lambda/multi_doc_discovery",
+                MULTI_DOC_DISCOVERY_HANDLER_EXCLUDED_DIRS,
+            ),
+        ):
+            for root, dirs, files in os.walk(top):
+                dirs[:] = sorted(
+                    d
+                    for d in dirs
+                    if d not in excluded_dirs and not d.endswith(".egg-info")
+                )
+                for file in sorted(files):
+                    if file.endswith((".pyc", ".pyo")):
+                        continue
+                    file_path = os.path.join(root, file)
+                    members.append(
+                        (
+                            file_path,
+                            os.path.relpath(file_path, ".").replace(os.sep, "/"),
+                        )
+                    )
+
+        # The build inputs themselves. The CodeBuild buildspec builds
+        # `-f nested/multi-doc-discovery/Dockerfile`, which COPYs
+        # nested/multi-doc-discovery/requirements.txt, so both must be present.
+        for build_input in MULTI_DOC_DISCOVERY_BUILD_INPUTS:
+            if not os.path.isfile(build_input):
+                self.console.print(
+                    f"[red]❌ Missing multi-doc discovery build input: "
+                    f"{build_input}[/red]"
+                )
+                sys.exit(1)
+            members.append((build_input, build_input))
+
+        return sorted(members, key=lambda member: member[1])
+
+    def multi_doc_discovery_build_hash(self, members=None):
+        """Content hash of the multi-doc discovery image's inputs (16 hex chars).
+
+        Covers each member's archive name and bytes, so adding, removing,
+        renaming or editing any file in the zip moves it, and nothing outside the
+        zip does.
+        """
+        if members is None:
+            members = self.multi_doc_discovery_source_members()
+        digest = hashlib.sha256()
+        for file_path, arcname in members:
+            digest.update(arcname.encode("utf-8") + b"\0")
+            digest.update(self.get_file_checksum(file_path).encode("ascii") + b"\0")
+        return digest.hexdigest()[:16]
+
+    def multi_doc_discovery_source_zipfile_name(self, members=None):
+        """The content-addressed name of the multi-doc discovery source zip."""
+        return f"multi-doc-discovery-source-{self.multi_doc_discovery_build_hash(members)}.zip"
+
     def package_multi_doc_discovery_source(self):
         """Package multi-doc discovery source code for CodeBuild to build Docker image.
 
@@ -1311,73 +1401,24 @@ STDERR:
             "[bold cyan]📦 Packaging multi-doc discovery source for Docker builds[/bold cyan]"
         )
 
-        zipfile_name = "multi-doc-discovery-source.zip"
+        # One member list feeds both the zip and BuildHash, and the zip is named
+        # by that hash (#1856). BuildHash is what decides whether the stack
+        # rebuilds the image and is the image's tag, so it has to cover exactly
+        # what the image is built from; and the S3 key has to change whenever
+        # the contents do, or the skip-if-present upload below keeps serving an
+        # older zip to CodeBuild under the new tag.
+        members = self.multi_doc_discovery_source_members()
+        zipfile_name = self.multi_doc_discovery_source_zipfile_name(members)
         zipfile_path = os.path.join(".aws-sam", zipfile_name)
 
-        # Always recreate to ensure latest code is included
         os.makedirs(".aws-sam", exist_ok=True)
         self.console.print(
             f"[cyan]Creating multi-doc discovery source zip: {zipfile_name}[/cyan]"
         )
 
         with zipfile.ZipFile(zipfile_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-            # Add lib/idp_common_pkg
-            for root, dirs, files in os.walk("lib/idp_common_pkg"):
-                # A developer checkout commonly carries a virtualenv and build
-                # leftovers in here. They are host-architecture wheels the image
-                # must not inherit, and the venv alone is ~900 MB — big enough to
-                # turn the CodeBuild download into the slowest step of publish.
-                # Note `.egg-info` needs a suffix test, not set membership: the
-                # directory is named `<dist>.egg-info`, so the `*.egg-info` glob
-                # this filter used to list never matched anything.
-                dirs[:] = [
-                    d
-                    for d in dirs
-                    if d
-                    not in {
-                        "__pycache__",
-                        ".pytest_cache",
-                        ".venv",
-                        "venv",
-                        ".tox",
-                        ".mypy_cache",
-                        ".ruff_cache",
-                        "dist",
-                        "build",
-                    }
-                    and not d.endswith(".egg-info")
-                ]
-                for file in files:
-                    if file.endswith((".pyc", ".pyo")):
-                        continue
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(file_path, ".")
-                    zipf.write(file_path, arcname)
-
-            # Add src/lambda/multi_doc_discovery/*.py
-            for root, dirs, files in os.walk("src/lambda/multi_doc_discovery"):
-                dirs[:] = [d for d in dirs if d not in {"__pycache__", ".pytest_cache"}]
-                for file in files:
-                    if file.endswith((".pyc", ".pyo")):
-                        continue
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(file_path, ".")
-                    zipf.write(file_path, arcname)
-
-            # Add the build inputs themselves. The CodeBuild buildspec builds
-            # `-f nested/multi-doc-discovery/Dockerfile`, which in turn COPYs
-            # nested/multi-doc-discovery/requirements.txt, so BOTH must be in
-            # the zip. They used to be heredoc'd inline in the buildspec, which
-            # let the real files (and Dependabot's security bumps to them) drift
-            # out of the image entirely.
-            for build_input in MULTI_DOC_DISCOVERY_BUILD_INPUTS:
-                if not os.path.isfile(build_input):
-                    self.console.print(
-                        f"[red]❌ Missing multi-doc discovery build input: "
-                        f"{build_input}[/red]"
-                    )
-                    sys.exit(1)
-                zipf.write(build_input, build_input)
+            for file_path, arcname in members:
+                zipf.write(file_path, arcname)
 
         self.console.print(
             f"[green]✅ Created multi-doc discovery source zip ({os.path.getsize(zipfile_path) / 1024 / 1024:.2f} MB)[/green]"
@@ -2634,6 +2675,13 @@ STDERR:
                     else ""
                 )
 
+                # The multi-doc discovery image's inputs, hashed once so its
+                # BuildHash and its source zip's name come from one listing.
+                multi_doc_members = self.multi_doc_discovery_source_members()
+                multi_doc_build_hash = self.multi_doc_discovery_build_hash(
+                    multi_doc_members
+                )
+
                 # Replace tokens in template
 
                 build_date_time = datetime.now(timezone.utc).strftime(
@@ -2715,29 +2763,20 @@ STDERR:
                     "<w2_dataset_deployer_HASH_TOKEN>": self.get_directory_checksum(
                         "src/lambda/w2_dataset_deployer"
                     )[:16],
-                    # BuildHash is the ONLY meaningful property of the
-                    # DockerBuildRun custom resource, so it is the sole thing
-                    # that re-triggers the container build on a stack update: if
-                    # it doesn't change, CloudFormation sees no delta, never
-                    # re-invokes the resource, and the ECR :latest image keeps
-                    # whatever it had. It must therefore cover EVERY input to the
-                    # image — the handler code AND the Dockerfile/requirements.txt
-                    # the build installs from. Hashing only the handler directory
-                    # meant a Dependabot bump to requirements.txt left BuildHash
-                    # byte-identical and the vulnerable dependency stayed
-                    # deployed (a fresh create always builds, so this is only
-                    # observable on an in-place update).
-                    "<MULTI_DOC_DISCOVERY_BUILD_HASH_TOKEN>": hashlib.sha256(
-                        (
-                            self.get_directory_checksum(
-                                "src/lambda/multi_doc_discovery"
-                            )
-                            + "".join(
-                                self.get_file_checksum(build_input)
-                                for build_input in MULTI_DOC_DISCOVERY_BUILD_INPUTS
-                            )
-                        ).encode()
-                    ).hexdigest()[:16],
+                    # BuildHash is the only property of the multi-doc
+                    # DockerBuildRun custom resource that changes between
+                    # publishes, so it alone decides whether a stack update
+                    # rebuilds the image, and it is the image tag. It is the
+                    # content hash of exactly the files the source zip holds,
+                    # and the zip is named by the same hash, so the build always
+                    # receives the inputs its tag describes (#1856). Covering
+                    # only the handler and its build inputs let a change to
+                    # idp_common alone leave the deployed image unchanged on an
+                    # in-place upgrade (a fresh create always builds).
+                    "<MULTI_DOC_DISCOVERY_BUILD_HASH_TOKEN>": multi_doc_build_hash,
+                    "<MULTI_DOC_DISCOVERY_SOURCE_ZIPFILE_TOKEN>": (
+                        self.multi_doc_discovery_source_zipfile_name(multi_doc_members)
+                    ),
                     "<SAMPLE_FEATURES_HASH_TOKEN>": sample_features_hash,
                     "<SAMPLE_FEATURES_LIST_TOKEN>": json.dumps(
                         sample_features_list or []
