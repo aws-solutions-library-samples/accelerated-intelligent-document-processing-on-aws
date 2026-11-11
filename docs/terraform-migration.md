@@ -246,7 +246,12 @@ new deployment reads those counters as a revision history that exists, and write
 default configuration over yours. This phase backs up every `Config#` row to
 `genai-idp-terraform-migration/configuration-table-backup-<time>.json` (readable by
 you only), then removes the two counters from each row. The new deployment then
-starts each profile's revision history from your existing configuration.
+starts each profile's revision history from your existing configuration: its first
+deploy records what each profile holds as that profile's first revision. For a
+profile the module itself ships (`default`, at least), the same deploy then saves the
+module's preset over it as the next revision, as every stack deployment does, so
+after `apply` that profile runs the preset and your content is the revision before
+it. Step 6a puts it back.
 
 It refuses a table that already holds a revision index (`ConfigRevIndex#` rows):
 that means this repository's code has already run against the table, so its counters
@@ -350,6 +355,24 @@ of the new deployment are meant to use `idp-cli deploy --terraform` from the sam
 directory, as for any Terraform deployment. **This is unverified**: whether the first
 such deploy after the schema rewrite in step 5 plans cleanly against the adopted user
 pool has not been measured yet. Run it without applying first and read the plan.
+
+### 6a. Restore the configuration profiles the first deploy replaced
+
+```bash
+idp-cli terraform migrate-from-genai-idp-terraform restore-config \
+    --stack-name my-idp --region us-west-2 --apply
+```
+
+For each profile in the `fix-config` backup whose published revision was cut by the
+first deploy (`createdBy: stack-deployment`) right after the revision recording what
+the profile held before the migration, this restores that earlier revision as a new
+revision. History is not rewritten: the preset stays in the history, and
+`idp-cli config-revisions` shows both. A profile the deploy did not replace, or that
+someone has changed since, is left alone and listed as such. Without `--apply` it
+lists what it would restore.
+
+In the measured run the `default` profile was the one replaced, and a configuration
+edit made on the old deployment was missing from the new one until this phase ran.
 
 ### 7. Verify the new deployment
 

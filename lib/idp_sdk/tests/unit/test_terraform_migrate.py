@@ -2388,3 +2388,46 @@ def test_a_switch_on_a_table_whose_ttl_is_off_applies():
         )
         == []
     )
+
+
+def _rev(n, by, notes="", published=False):
+    return {"revision": n, "createdBy": by, "notes": notes, "published": published}
+
+
+def test_a_profile_the_first_deploy_replaced_is_restored_to_its_old_content():
+    """Measured live: `default` came back as the preset, revision 2 by
+    stack-deployment, with the migrated content only in revision 1."""
+    revs = [
+        _rev(2, "stack-deployment", "Updated by stack deployment", published=True),
+        _rev(1, "system", tm.PRE_HISTORY_NOTES),
+    ]
+    assert tm.overwritten_revision(revs) == 1
+
+
+def test_a_profile_someone_has_since_changed_is_left_alone():
+    revs = [
+        _rev(3, "admin@example.com", published=True),
+        _rev(2, "stack-deployment"),
+        _rev(1, "system", tm.PRE_HISTORY_NOTES),
+    ]
+    assert tm.overwritten_revision(revs) is None
+
+
+def test_a_profile_whose_content_was_kept_is_left_alone():
+    assert (
+        tm.overwritten_revision([_rev(1, "system", tm.PRE_HISTORY_NOTES, True)]) is None
+    )
+    assert (
+        tm.overwritten_revision([_rev(1, "stack-deployment", published=True)]) is None
+    )
+
+
+def test_the_backup_names_its_profiles():
+    backup = {
+        "Items": [
+            {"Configuration": {"S": "Config#default"}},
+            {"Configuration": {"S": "Config#__active"}},
+            {"Configuration": {"S": "Config#bda"}},
+        ]
+    }
+    assert tm.backed_up_profiles(backup) == ["bda", "default"]
