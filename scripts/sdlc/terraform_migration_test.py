@@ -1232,7 +1232,7 @@ class Run:
         ]
         if self.s.assume_role_arn:
             args += ["--terraform-assume-role-arn", self.s.assume_role_arn]
-        out = self.migrate("plan", *args)
+        self.migrate("plan", *args)
         plan = json.loads(
             (
                 self.new_dir / "genai-idp-terraform-migration" / "migration-plan.json"
