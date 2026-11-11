@@ -86,7 +86,11 @@ What those tools can and cannot do:
   one that passes `ResourceAccessPolicy(allow_remote=False)`
   (`_render_without_remote_fetches` in `engine.py`). A remote reference is then
   logged by xhtml2pdf and left out of the PDF, and the render carries on;
-  SEED's generator prompt does not ask for remote resources. That policy exists
+  SEED's generator prompt does not ask for remote resources. Inline `data:`
+  resources still load. Local reads stay confined, as with SEED's own call, to
+  the process's working directory, which is the runtime user's home directory
+  (`/home/appuser`), so a file the model writes beside its HTML in the job's
+  temporary directory is not loaded. That policy exists
   in xhtml2pdf 0.2.27 and 0.2.28 and not in 0.2.17. If the installed xhtml2pdf has no
   `xhtml2pdf.config.resources`, or SEED no longer keeps its backends in
   `seed_data.tools._HTML_RENDERERS`, the adapter logs

@@ -65,13 +65,16 @@ RUN cd /app && pip install -r /tmp/runtime-requirements.txt
 COPY agent-source/runtime/*.py /app/
 
 # /app stays owned by root, so the runtime user can read the code it runs but
-# not write into the directory it is started from. The runtime writes only
-# under tempfile.mkdtemp(). PYTHONSAFEPATH keeps the script's directory off
-# sys.path; handler.py imports no sibling module, so nothing needs it there.
+# not write to it. The process starts in the user's home directory instead,
+# because augraphy (scan/fax effects) creates an `augraphy_cache` directory in
+# the current working directory on every call; job output goes under
+# tempfile.mkdtemp(). PYTHONSAFEPATH keeps the script's directory off sys.path;
+# handler.py imports no sibling module, so nothing needs it there.
 ENV PYTHONSAFEPATH=1
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
+WORKDIR /home/appuser
 
 EXPOSE 8080
 
-CMD ["python", "handler.py"]
+CMD ["python", "/app/handler.py"]

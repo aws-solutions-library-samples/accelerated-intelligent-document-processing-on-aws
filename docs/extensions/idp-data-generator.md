@@ -101,8 +101,8 @@ backend, no tool SEED gives its models takes a URL, runs a command or calls an
 AWS API; the document generator writes HTML and reads and writes local files,
 then renders the HTML to a PDF. The extension renders that HTML with remote
 resources turned off, so an `http(s)` image, stylesheet or font the HTML
-references is left out of the PDF rather than fetched; local files and inline
-`data:` resources still load. The AgentCore runtime is created in `PUBLIC`
+references is left out of the PDF rather than fetched; inline `data:` resources
+still load, and local files load only from the runtime's working directory. The AgentCore runtime is created in `PUBLIC`
 network mode, and VPC network mode is not offered. The per-agent tool inventory,
 and the AWS services the runtime reaches, are in the extension's
 [README](../../feature-platform/idp-data-generator/README.md#what-the-generators-model-can-do).

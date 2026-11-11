@@ -43,24 +43,33 @@ def _instructions():
     return out
 
 
-def _pip_requirements():
-    """Every requirement passed to a ``pip install`` in a RUN instruction."""
-    reqs = []
+def _run_words():
+    """Every shell word of every RUN instruction."""
+    words = []
     for keyword, rest in _instructions():
-        if keyword != "RUN":
-            continue
-        for command in re.split(r"&&|;", rest):
-            words = shlex.split(command)
-            if words[:2] == ["pip", "install"]:
-                reqs.extend(w for w in words[2:] if not w.startswith("-"))
-    return reqs
+        if keyword == "RUN":
+            words.extend(shlex.split(rest))
+    return words
 
 
 def _pin(name):
+    """The one exact ``name[extras]==version`` in any RUN, with no other mention.
+
+    Matching words rather than ``pip install`` commands covers ``pip3``,
+    ``python -m pip``, ``uv pip`` and a later ``pip install -U <name>``: any RUN
+    word naming the package other than the single exact pin fails here.
+    """
     pattern = re.compile(rf"^{re.escape(name)}(\[[^\]]*\])?==([\w.]+)$")
-    matches = [m for r in _pip_requirements() if (m := pattern.match(r))]
-    assert len(matches) == 1, f"expected one exact pin for {name}, got {matches}"
-    return matches[0].group(1) or "", matches[0].group(2)
+    mentions = [w for w in _run_words() if re.match(rf"^{re.escape(name)}\b", w)]
+    pins = [m for w in mentions if (m := pattern.match(w))]
+    assert len(pins) == 1 and len(mentions) == 1, mentions
+    return pins[0].group(1) or "", pins[0].group(2)
+
+
+def _final(keyword):
+    values = [rest for k, rest in _instructions() if k == keyword]
+    assert values, f"no {keyword} instruction"
+    return values[-1]
 
 
 def test_seed_is_pinned_exactly_with_the_augment_extra():
@@ -81,17 +90,31 @@ def test_xhtml2pdf_is_pinned_to_a_release_with_the_access_policy():
 def test_app_directory_is_not_handed_to_the_runtime_user():
     for keyword, rest in _instructions():
         if keyword == "RUN":
-            assert "chown" not in rest, rest
-            assert "chmod" not in rest, rest
+            # chown/chmod/setfacl anywhere, or coreutils `install` as a command
+            # (`install -d -o appuser ...`); `pip install` and `apt-get install`
+            # are arguments, not commands, so they do not match.
+            assert not re.search(r"\b(chown|chmod|setfacl)\b", rest), rest
+            assert not re.search(r"(^|&&|;|\|\|?)\s*install\s", rest), rest
         if keyword in ("COPY", "ADD"):
             assert "--chown" not in rest and "--chmod" not in rest, rest
-    users = [rest for keyword, rest in _instructions() if keyword == "USER"]
-    assert users and users[-1] not in ("root", "0")
+    user = _final("USER")
+    assert not re.match(r"^(0|root)\b", user), user
+
+
+def test_runtime_starts_outside_app_in_the_users_home():
+    """augraphy creates ``augraphy_cache`` in the working directory on each call."""
+    user = _final("USER")
+    assert _final("WORKDIR") == f"/home/{user}"
+    cmd = _final("CMD")
+    assert "/app/handler.py" in cmd, cmd
 
 
 def test_script_directory_is_kept_off_the_import_path():
     envs = [rest for keyword, rest in _instructions() if keyword == "ENV"]
-    assert any(re.search(r"\bPYTHONSAFEPATH=1\b", e) for e in envs), envs
+    values = [
+        m.group(1) for e in envs for m in re.finditer(r"\bPYTHONSAFEPATH=(\S*)", e)
+    ]
+    assert values and values[-1] == "1", values
 
 
 def test_runtime_entrypoint_imports_no_sibling_module():
@@ -108,3 +131,11 @@ def test_runtime_entrypoint_imports_no_sibling_module():
             else:
                 continue
             assert not siblings.intersection(names), (path.name, names)
+
+
+def test_runtime_requirements_do_not_restate_the_pinned_packages():
+    """A second spec in requirements.txt would be installed after the pins."""
+    req = (EXT / "agent-source" / "requirements.txt").read_text(encoding="utf-8")
+    lines = [ln.split("#")[0].strip() for ln in req.splitlines()]
+    for name in ("seed-data", "xhtml2pdf"):
+        assert not [ln for ln in lines if re.match(rf"^{name}\b", ln)], name

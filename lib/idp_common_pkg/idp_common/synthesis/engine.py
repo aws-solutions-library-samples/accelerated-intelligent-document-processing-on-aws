@@ -206,9 +206,11 @@ def _render_without_remote_fetches() -> None:
     fetches public ``http(s)`` references (images, stylesheets, ``@import``,
     fonts) while the PDF renders. SEED's own configuration has no switch for
     that, so the backend in ``seed_data.tools._HTML_RENDERERS`` is replaced
-    with one that passes ``ResourceAccessPolicy(allow_remote=False)``. Local
-    files and ``data:`` URIs still load as before; a refused reference is
-    logged by xhtml2pdf and left out of the PDF, and the render carries on.
+    with one that passes ``ResourceAccessPolicy(allow_remote=False)``.
+    ``data:`` URIs still load, and local reads keep xhtml2pdf's default
+    confinement to the process's working directory, as SEED's own call did; a
+    refused reference is logged by xhtml2pdf and left out of the PDF, and the
+    render carries on.
 
     ``make_render_tool`` reads that dict each time it builds a document
     generator, so the replacement must happen before ``generate_batch``. If
