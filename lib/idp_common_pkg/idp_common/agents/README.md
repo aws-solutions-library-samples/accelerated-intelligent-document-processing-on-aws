@@ -381,6 +381,46 @@ The system includes several specialized agents:
 
 All agents are automatically available to the orchestrator - no manual selection needed.
 
+### What the analytics agent's tools read
+
+The analytics agent writes its own SQL and its own Python, so both tools that move
+data are bounded in code rather than by the prompt:
+
+- **`run_athena_query`** runs exactly one read-only statement: a `SELECT` (optionally
+  opening with `WITH` or parentheses), or a `SHOW` or `DESCRIBE` statement.
+  `analytics/query_validation.py` checks the statement before Athena is called and
+  refuses more than one statement, any other leading keyword, and the keywords in
+  `REFUSED_KEYWORDS` (writes, DDL, `UNLOAD`, `PREPARE`/`EXECUTE`, external and
+  inline functions, table functions, session statements) anywhere outside string
+  literals, quoted identifiers and comments. A refused query returns
+  `{"success": False, "state": "NOT_RUN", "error": ...}` and is not sent.
+- **`write_query_results_to_code_sandbox`** takes no arguments. It copies the result
+  object of the agent's most recent successful query, at the location Athena
+  reported for it, into the Code Interpreter session as `query_results.csv`. The
+  agent's Athena tool clears that location before every query and sets it only when
+  one succeeds, so a failed or refused query leaves nothing to copy, and the tool
+  refuses when no query has succeeded. Its reply names the query whose results it
+  wrote. The query validator also refuses a quoted `"lambda:<function>"` catalog and a
+  backslash in `SHOW`/`DESCRIBE` (run on Athena's Hive engine).
+
+- **`execute_python`** runs the agent's code only if `analytics/sandbox_code_checks.py`
+  accepts it: the code must parse, import only `IMPORTABLE_MODULES` (data, charting
+  and standard-library computation), avoid `DYNAMIC_NAMES`, attributes starting with
+  `_` and attributes named like a refused module (`MODULE_ATTRIBUTES`), carry no `://`
+  literal, and call `read_*`, `PATH_OPENERS` and `PATH_WRITERS` only directly, without
+  unpacked arguments, and with a literal file name in the working directory (a writer
+  may also target an empty `io.BytesIO()`/`StringIO()`). Refused code is returned to the agent
+  as `{"isError": true, "error": ...}`. The check reads text and syntax only, so it is
+  not a boundary; it is checked after the optional description is prepended, so the
+  text checked is the text that runs.
+
+Tests: `tests/unit/agents/analytics/test_query_validation.py` (the accepted and
+refused statement corpus), `test_code_interpreter_tools.py` and
+`test_sandbox_code_checks.py`. The repository gate
+`scripts/tests/test_tool_resource_arguments.py` requires a Strands tool parameter that
+names a resource (`query`, `*_uri`, `*_key`, `path`, ...) to be passed to a registered
+validator before any other use.
+
 ### A system prompt names only tools its agent registers
 
 An agent's system prompt is the model's only guide to choosing among its tools,

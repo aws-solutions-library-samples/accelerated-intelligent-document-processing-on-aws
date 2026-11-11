@@ -3386,6 +3386,39 @@
       "crossReferences": [
         "scripts/test_api_rbac.py::SCOPED_DISCOVERY_CELLS"
       ]
+    },
+    "scripts/tests/test_tool_resource_arguments.py::RESOURCE_ARGUMENTS_PERMITTED_UNVALIDATED": {
+      "kind": "exemption",
+      "memberKind": "one Strands tool parameter, as <path>::<function>::<parameter>, whose name says it references a resource",
+      "turnsOff": "the requirement that the parameter's first use is as an argument of a registered validator, for that one parameter of that one tool",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/tests/test_tool_resource_arguments.py",
+      "reason": "Discovered by name (PERMIT). Each member carries its own reason in the constant. Why JUDGEMENT: whether an unvalidated reference is acceptable depends on what the tool does with it, read per member -- fetch_document_record's object_key can only select a record of the stack's own tracking table, and view_buffer_data_section's path is a JSON Pointer into in-memory agent state. The second member's premise is partly computed: test_in_memory_members_make_no_service_call fails if that function's body comes to name boto3, botocore, httpx, requests, urllib, a client or a session. The ratchet is staleness in both directions: a listed member that now passes the validation rule fails as a stale entry, and a listed member that vanished from the derived universe fails test_every_listed_member_still_exists. The residual is the vocabulary: a parameter whose name does not contain one of RESOURCE_NAME_PARTS is outside the universe whatever it holds."
+    },
+    "lib/idp_common_pkg/tests/unit/agents/analytics/test_query_validation.py::ACCEPTED": {
+      "kind": "fixture",
+      "memberKind": "one SQL statement the analytics agent's Athena tool must accept",
+      "turnsOff": "nothing. It is a corpus of inputs validate_read_only_query must accept, each one a query shape the agent's prompt teaches or a refused keyword appearing only as data; a member that is refused turns test_accepted red, so membership makes the gate stricter.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/agents/analytics/test_query_validation.py",
+      "reason": "Discovered by name (ACCEPTED is in the discovery vocabulary); a test corpus rather than a carve-out. Why JUDGEMENT: which statements the agent legitimately needs is read from its prompt, not computed. The ratchet is test_the_corpus_covers_the_shapes_the_tool_must_refuse, which holds both this corpus and REFUSED to a floor so an emptied list cannot leave the parametrized tests vacuous."
+    },
+    "lib/idp_common_pkg/tests/unit/agents/analytics/test_sandbox_code_checks.py::ACCEPTED": {
+      "kind": "fixture",
+      "memberKind": "one Python snippet the analytics sandbox code check must accept",
+      "turnsOff": "nothing. It is a corpus of code check_sandbox_code must accept, beside the examples derived from the agent's own prompt; a member that is refused turns test_accepted red, so membership makes the gate stricter.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/agents/analytics/test_sandbox_code_checks.py",
+      "reason": "Discovered by name (ACCEPTED is in the discovery vocabulary); a test corpus rather than a carve-out. Why JUDGEMENT: the hand-written members are shapes chosen to cover the import and file-reading rules, which is a reading of the rules rather than a computation; the derived half comes from load_python_plot_generation_examples(). The ratchet is test_the_prompt_examples_are_found, which holds the derived examples and both hand-written corpora to a floor so none can be emptied into a vacuous test."
     }
   }
 }
