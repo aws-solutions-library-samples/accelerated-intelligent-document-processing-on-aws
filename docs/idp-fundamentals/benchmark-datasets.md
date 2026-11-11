@@ -15,7 +15,7 @@ comparisons in your own account.
 |---|---|---|---|---|---|
 | [Synthetic bank statements](#synthetic-bank-statements) | Generated, exact answers | Document boundaries | **Long lists** | **Field scores** | Generate with the benchmark suite |
 | [RealKIE-FCC-Verified](#realkie-fcc-verified) | Real invoices | — | **Yes** | Partly | Yes |
-| [DocSplit-Poly-Seq](#docsplit-poly-seq) | Real packets | **Yes** | — | **Type scores** | Yes |
+| [DocSplit-Poly-Seq](#docsplit-poly-seq) | Real packets | **Yes** | — | **Class scores** | Yes |
 | [OmniAI-OCR-Benchmark](#omniai-ocr-benchmark) | Real images | — | Single-page images | — | Yes |
 | [Fake-W2-Tax-Forms](#fake-w2-tax-forms) | Synthetic forms | — | Ready to run | — | Yes |
 
@@ -34,7 +34,7 @@ validation. For those, build a test set from your own documents; see
   exactly which rows came back and checks each row's date and amount.
 - **Measures:** extraction completeness and accuracy as documents grow, field-confidence
   calibration and ranking, and document boundaries in one- and two-statement files.
-- **Scope:** clean, regular tables of one document type. Extraction rarely gets a value
+- **Scope:** clean, regular tables of one document class. Extraction rarely gets a value
   wrong on them, which makes them ideal for measuring completeness and too clean for
   measuring how confidence ranks errors on hard documents.
 
@@ -48,7 +48,7 @@ validation. For those, build a test set from your own documents; see
   payment terms, commission) and a list of line items. Stickler scores it as weighted
   accuracy.
 - **Measures:** extraction from real documents with real layout variation.
-- **Scope:** one document type. With 20 documents, treat differences under about 5 points as
+- **Scope:** one document class. With 20 documents, treat differences under about 5 points as
   within the noise.
 - **In Test Studio:** [RealKIE-FCC-Verified](../test-studio.md#realkie-fcc-verified).
 
@@ -56,12 +56,12 @@ validation. For those, build a test set from your own documents; see
 
 - **Source:** [amazon/doc_split](https://huggingface.co/datasets/amazon/doc_split): packets
   built from the pages of [RVL-CDIP-N-MP](https://huggingface.co/datasets/jordyvl/rvl_cdip_n_mp).
-- **Size:** 500 packets of 5–20 pages, each joining whole documents of different types,
-  across 13 types in all. The benchmark uses the first 20 packets (298 pages).
-- **Ground truth:** the type of every page and the pages of every document.
-- **Measures:** page typing, document boundaries, and document-type confidence.
+- **Size:** 500 packets of 5–20 pages, each joining whole documents of different document classes,
+  across 13 classes in all. The benchmark uses the first 20 packets (298 pages).
+- **Ground truth:** the document class of every page and the page range of every section.
+- **Measures:** page classification, section boundaries, and classification confidence.
 - **Scope:** it has no field values, so it measures splitting but not extraction. Neighboring
-  documents in a packet are always of different types.
+  documents in a packet always have different document classes.
 - **In Test Studio:** [DocSplit-Poly-Seq](../test-studio.md#docsplit-poly-seq).
 
 ## OmniAI-OCR-Benchmark

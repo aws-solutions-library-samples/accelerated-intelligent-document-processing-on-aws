@@ -59,7 +59,7 @@ flowchart LR
 |---|---|---|
 | **Managed OCR service** | Amazon Textract, or Amazon Bedrock Data Automation | Word positions and confidence, table and form structure, predictable cost |
 | **Vision-language model** | Any supported Bedrock model, prompted to transcribe the page | Unusual layouts; returns tables as Markdown |
-| **Specialized OCR model** | Your own model or a third-party service, through a Lambda hook | A script, layout or document type it was built for |
+| **Specialized OCR model** | Your own model or a third-party service, through a Lambda hook | A script, layout or kind of document it was built for |
 
 ## How to measure it
 

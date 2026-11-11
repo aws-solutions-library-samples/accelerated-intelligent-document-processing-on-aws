@@ -32,7 +32,7 @@ flowchart LR
 | Problem set | Question it answers | Output |
 |---|---|---|
 | [Digitization (OCR)](digitization.md) | What does each page say? | Text and layout for every page |
-| [Splitting and section classification](splitting-and-classification.md) | Where does each document start and end, and what type is it? | Sections, each with its pages and a document type |
+| [Splitting and section classification](splitting-and-classification.md) | Where does each document start and end, and what document class is it? | Sections, each with its pages and a document class |
 | [Key information extraction](extraction.md) | What are the values of the fields I need? | A record per section that matches your schema |
 | [Confidence assessment](confidence-assessment.md) | Which results can I trust without checking? | A confidence score for every result |
 | [Rule validation](rule-validation.md) | Does the document meet my business rules? | A verdict per rule, with its evidence |
@@ -42,20 +42,20 @@ they reach the database.
 
 Each step works from the output of the step before it. When results are wrong, fix the
 earliest step that is wrong first. Better extraction cannot recover a misread page or a
-document filed under the wrong type.
+document given the wrong document class.
 
 ## From setup to a pipeline you trust
 
 You have a working pipeline as soon as you have told it what to look for. Everything after
 that is improvement, done at your own pace, and agents can do much of the work for you.
 
-### 1. Define your document types and fields
+### 1. Define your document classes and fields
 
 You define two things, and the pipeline works from them:
 
-- **Your document types.** The kinds of document you receive, such as invoice, pay stub or
+- **Your document classes.** The kinds of document you receive, such as invoice, pay stub or
   bank statement, each with a short description of what sets it apart from the others.
-- **The fields for each type.** What to extract from each one: a name, what the field means,
+- **The fields for each document class.** What to extract from each one: a name, what the field means,
   and its format, such as "statement period: the date range the statement covers,
   YYYY-MM-DD to YYYY-MM-DD".
 
@@ -63,7 +63,7 @@ These definitions decide which table each document lands in and which columns it
 they come from you. [Discovery](../discovery.md) and [Quick Start](../quick-start.md) can
 draft them from sample documents or a plain description, and you review the draft.
 
-With your types and fields saved, the pipeline is live: documents go in, records come out.
+With your document classes and fields saved, the pipeline is live: documents go in, records come out.
 
 ### 2. Run your documents and look at the results
 
@@ -89,7 +89,7 @@ depend on confidence and rules. Start with the earliest step that is getting thi
 ### 4. Measure with ground truth
 
 Ground truth is optional, and it turns "this looks better" into a score. It is the correct
-answer for a sample of your documents: the pages and type of each document in a file, and
+answer for a sample of your documents: the page range and document class of each section in a file, and
 the right value of every field. With it, you can score every change against the same
 answers.
 
@@ -125,8 +125,8 @@ how much the field counts toward the overall score:
 | Lists of line items | Hungarian | Minimum similarity for pairing each item with its match |
 | Nested objects | AggregateObject | Set on each field inside |
 
-Stickler scores splitting too: whether each page got the right type and landed in the right
-document. One run reports both. See [Evaluation](../evaluation.md) for every option.
+Stickler scores splitting too: whether each page received the right document class and
+landed in the right section. One run reports both. See [Evaluation](../evaluation.md) for every option.
 
 Keep your test set after you go live. Re-run it whenever you change the configuration or
 upgrade, and you will see a regression in your scores before you see it in your data. Run

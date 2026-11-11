@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT-0
 ## What it does
 
 Confidence assessment gives every result a score for how likely it is to be right: each
-extracted field, and each document's type. The score lets you automate the results you can
+extracted field, and the document class of each section. The score lets you automate the results you can
 trust and send only the rest to a person. When it works, your reviewers spend their time on
 the few fields that need them, and everything else flows straight into your database.
 
@@ -44,7 +44,7 @@ long lists, rely on the accelerator's row-count check to catch rows that never c
   errors that matter look plausible.
 - **Identity documents:** a cross-check of the printed fields against the machine-readable
   zone is the strongest review signal there is.
-- **Several documents per file:** read the confidence of each document's type as well as its
+- **Several documents per file:** read the confidence of each section's document class as well as its
   fields.
 
 ## How confidence works
@@ -119,10 +119,10 @@ What this shows:
   the wrong fields low (AUROC 0.86) without changing extraction accuracy, at a higher scoring
   cost per page.
 
-### Document-type confidence
+### Document-class confidence
 
 **Dataset:** [DocSplit-Poly-Seq](benchmark-datasets.md#docsplit-poly-seq), 20 packets
-(298 pages, 13 document types). **Run:** release 0.6.7, September 2026, one run per model.
+(298 pages, 13 document classes). **Run:** release 0.6.7, September 2026, one run per model.
 
 | Classifier | Page accuracy | AUROC | Classification cost per page |
 |---|---|---|---|
@@ -131,12 +131,12 @@ What this shows:
 
 Source: [Classification Confidence study](../benchmarking/studies/classification-confidence.md).
 
-**Claude Haiku 4.5's type scores separated right from wrong far better,** at the same
+**Claude Haiku 4.5's classification scores separated right from wrong far better,** at the same
 accuracy and about 6 times the classification cost, which is still well under a cent per
-page. Choose it when you route review by document type.
+page. Choose it when you route review by document class.
 
 **How far this carries:** the field results rest on about 60 wrong fields in synthetic
-documents, and the type results on 20 packets, both from earlier releases. Measure on your
+documents, and the classification results on 20 packets, both from earlier releases. Measure on your
 own test set before you set thresholds.
 
 ## Reproduce it
@@ -166,7 +166,7 @@ inference.
 - **Choose a confidence mode and scoring model:**
   [Confidence Assessment](../extraction-and-confidence.md#3-confidence-assessment) and
   [Confidence configuration](../configuration.md#confidence-assessment-configuration).
-- **Score document types:**
+- **Score document classes:**
   [classification confidence](../configuration.md#classification-confidence-classificationcombinedllmconfidence).
 - **Set thresholds:**
   [Confidence thresholds](../extraction-and-confidence.md#6-confidence-thresholds) and

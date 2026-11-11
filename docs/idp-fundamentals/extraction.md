@@ -51,7 +51,7 @@ it. See [Few-Shot Examples](../few-shot-examples.md).
 - **Several records in one section,** such as two W-2 forms on one page: declare the section
   as multi-instance. See
   [multi-instance sections](../extraction-and-confidence.md#multi-instance-sections-x-aws-idp-multi-instance).
-- **Documents where a page type may be missing,** such as a packet without its signature
+- **Documents where an expected page may be missing,** such as a packet without its signature
   page: see [Missing Page Handling](../missing-page-handling.md).
 - **Poor scans or handwriting.** If values are wrong across the board, improve the text first.
   See [Digitization](digitization.md).
@@ -148,7 +148,7 @@ What this shows:
 - **Layout-only OCR cut cost by a third** for at most a small change in accuracy.
 
 **How far this carries:** the statements are synthetic and clean, and RealKIE is 20 documents
-of one type, run once per configuration, so treat differences under about 5 points as within
+of one document class, run once per configuration, so treat differences under about 5 points as within
 the noise. Confirm the choice on your own documents.
 
 ## Reproduce it
@@ -184,12 +184,12 @@ See the [benchmark suite](../benchmarking/index.md) for setup, and
 
 - **Start here:** [Choosing a configuration](../extraction-and-confidence.md#0-choosing-a-configuration-start-here)
   in Extraction and Confidence.
-- **Define types and fields:** [Configuration](../configuration.md), the
+- **Define document classes and fields:** [Configuration](../configuration.md), the
   [Document Schema Builder](../web-ui.md#document-schema-builder), and
   [Configuration Best Practices](../idp-configuration-best-practices.md).
 - **Draft a schema for you:** [Discovery](../discovery.md) from sample documents, or
   [Quick Start](../quick-start.md) from a description.
-- **Use a different model for one document type:**
+- **Use a different model for one document class:**
   [per-class model override](../extraction-and-confidence.md#per-class-extraction-model-override).
 - **Correct a result by hand:** [Document Details](../web-ui.md#document-details) and
   [Re-extract Sections](../web-ui.md#re-extract-sections).

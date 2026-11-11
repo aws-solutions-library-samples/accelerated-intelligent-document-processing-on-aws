@@ -15,7 +15,7 @@ and how to tell that it worked, then links to the detailed page if you need more
 flowchart LR
     A["0. Is this<br/>for you?"] --> B["1. Deploy"]
     B --> C["2. Process a<br/>sample document"]
-    C --> D["3. Define your<br/>types and fields"]
+    C --> D["3. Define your<br/>classes and fields"]
     D --> E["4. Improve it"]
     E --> F["5. Go to<br/>production"]
 ```
@@ -26,11 +26,11 @@ results at your own pace, by hand or with an agent.
 ## Step 0: Decide whether this is the right tool
 
 The accelerator turns documents (PDFs, images, office files) into structured data. It
-reads each page with OCR or a vision model, works out which document types are present
+reads each page with OCR or a vision model, works out which document classes are present
 and where each one starts and ends, extracts the fields you define, scores how
 confident it is in each value, and routes uncertain results to a person for review.
 
-It fits well when you have a recurring stream of documents of known types, you can
+It fits well when you have a recurring stream of documents of known kinds, you can
 describe the fields you need, and you want the results in your own AWS account. It is
 not an OCR-only service, a document management system, or a search engine over
 documents.
@@ -47,7 +47,7 @@ and you can change your mind later.
 |---|---|---|
 | What runs | OCR, then classification and extraction with Bedrock models you choose | Amazon Bedrock Data Automation handles the whole document |
 | Control | Every prompt, model and threshold is configurable | Fewer settings; the managed service decides |
-| Best for | Getting the most accuracy from a specific document type | A quick start with standard document types |
+| Best for | Getting the most accuracy from your own document classes | A quick start with standard kinds of document |
 | Reference | [Pipeline mode](pattern-2.md) | [BDA mode](pattern-1.md) |
 
 **You will need:** an AWS account where you can deploy with administrator access (or a
@@ -97,24 +97,24 @@ Other ways to deploy, once you know you need them: [from source with the IDP CLI
 **Done when** you can find a field value on the page image and see the same value in the
 extracted data. The [Web UI guide](web-ui.md#document-details) explains every panel.
 
-## Step 3: Define your document types and fields
+## Step 3: Define your document classes and fields
 
-**An hour to a day, depending on how many document types you have.**
+**An hour to a day, depending on how many document classes you have.**
 
-Tell the pipeline what you receive and what you need from it: your **document types**, and
+Tell the pipeline what you receive and what you need from it: your **document classes**, and
 the **fields** to extract from each. You have three ways to start, and you can combine them:
 
 | Start from | When | Guide |
 |---|---|---|
-| A conversation | You can describe your documents in words. An assistant drafts the types and fields and activates them. | [Quick Start](quick-start.md) |
-| Your own sample documents | You have examples but no schema. Discovery reads them and drafts types and fields. | [Discovery](discovery.md) |
+| A conversation | You can describe your documents in words. An assistant drafts the document classes and fields and activates them. | [Quick Start](quick-start.md) |
+| Your own sample documents | You have examples but no schema. Discovery reads them and drafts document classes and fields. | [Discovery](discovery.md) |
 | A shipped preset | One of the presets in `config_library/unified/` is close to your documents. | [Configuration](configuration.md) |
 
 Review the draft before you rely on it, especially the field descriptions. A description is
 the instruction the model follows, so a precise one ("statement period: the date range the
 statement covers, YYYY-MM-DD to YYYY-MM-DD") is the quickest accuracy gain there is.
 
-**Done when** your own documents come out as records with the types and fields you defined.
+**Done when** your own documents come out as records with the document classes and fields you defined.
 You now have a working pipeline.
 
 ## Step 4: Improve it
@@ -139,8 +139,8 @@ you decide what counts as a match for each field. See
 
 Where to look first depends on your documents:
 
-- **Several documents per file, or many types:** check that each document is found and
-  typed correctly. See
+- **Several documents per file, or many document classes:** check that each section has the
+  right pages and the right document class. See
   [Splitting and Section Classification](idp-fundamentals/splitting-and-classification.md).
 - **Values wrong across the board:** check the text the pipeline read. See
   [Digitization (OCR)](idp-fundamentals/digitization.md).
