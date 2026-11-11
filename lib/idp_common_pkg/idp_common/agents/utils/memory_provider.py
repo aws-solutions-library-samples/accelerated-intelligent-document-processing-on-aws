@@ -93,6 +93,28 @@ class _ConversationReadFailed(Exception):
     """
 
 
+def _unexpired(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """``items`` without those whose ``ExpiresAfter`` has passed.
+
+    DynamoDB deletes an expired item some time after its expiry, not at it, and
+    each table on its own schedule. Reading past-expiry memory as gone keeps
+    memory expiring before the session owner record that says whether it holds
+    Analytics or Error Analyzer results, whenever either is physically deleted.
+    An item with no ``ExpiresAfter`` is kept.
+    """
+    now = time.time()
+    kept = []
+    for item in items:
+        expires = item.get("ExpiresAfter")
+        try:
+            if expires is not None and float(expires) <= now:
+                continue
+        except (TypeError, ValueError):
+            pass
+        kept.append(item)
+    return kept
+
+
 def _sleep_before_retry(attempt: int) -> None:
     """
     Sleep a jittered interval before rebuilding an append that lost a conflict.
@@ -245,7 +267,7 @@ class DynamoDBMemoryHookProvider(HookProvider):
                 Limit=1,
             )
 
-            items = response.get("Items", [])
+            items = _unexpired(response.get("Items", []))
             return items[0] if items else None
 
         except Exception as e:
@@ -554,7 +576,7 @@ class DynamoDBMemoryHookProvider(HookProvider):
                 Limit=10,  # Get more items than needed to ensure we have enough messages
             )
 
-            items = response.get("Items", [])
+            items = _unexpired(response.get("Items", []))
 
             if not items:
                 logger.info(

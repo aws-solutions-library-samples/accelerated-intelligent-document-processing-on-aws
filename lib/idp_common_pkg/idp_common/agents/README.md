@@ -428,7 +428,9 @@ The flag lives as long as the owner row, whose expiry is the retention period pl
 an hour after the last turn. Memory items carry `ExpiresAfter` set to the
 retention period (`DATA_RETENTION_DAYS`) after their last write
 (`DynamoDBMemoryHookProvider(expires_after_seconds=...)`), so memory expires
-before the flag that describes it.
+before the flag that describes it. An item past its `ExpiresAfter` is not read,
+since DynamoDB deletes expired items some time later and per table. Items written
+before the expiry existed carry none and are still read.
 
 ### A system prompt names only tools its agent registers
 

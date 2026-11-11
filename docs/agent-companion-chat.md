@@ -119,8 +119,10 @@ record in `ChatSessionOwnersTable`, which belongs to one signed-in user, so it
 applies to that user's conversation and no other. That record is kept for the
 data-retention period (`DataRetentionInDays`) after the conversation's last turn,
 plus an hour. The conversation's memory is kept for the same retention period after
-its last write, so it expires first: a conversation resumed after both have expired
-starts with neither its memory nor the record.
+its last write, so it expires first, and memory past its expiry is not loaded even
+before DynamoDB deletes it: a conversation resumed after both have expired starts
+with neither its memory nor the record. Memory written before this behaviour was
+introduced carries no expiry.
 
 ### Data Storage and Retention
 

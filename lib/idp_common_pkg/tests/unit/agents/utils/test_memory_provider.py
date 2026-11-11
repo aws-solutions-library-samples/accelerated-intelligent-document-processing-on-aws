@@ -1011,3 +1011,34 @@ class TestMemoryExpiry:
         mod = importlib.import_module("idp_common.agents.factory.agent_factory")
         monkeypatch.setenv("DATA_RETENTION_DAYS", days)
         assert mod._memory_expiry_seconds() == expected
+
+
+@pytest.mark.unit
+class TestExpiredMemoryIsNotRead:
+    """An item past its ``ExpiresAfter`` reads as gone before DynamoDB deletes it."""
+
+    def test_history_skips_an_expired_item(self):
+        provider, table = _provider()
+        table.query.return_value = {
+            "Items": [
+                _item("t2", [_message("user", "new")], ExpiresAfter=2000),
+                _item("t1", [_message("user", "old")], ExpiresAfter=500),
+            ]
+        }
+        with patch(f"{MODULE}.time.time", return_value=1000):
+            turns = provider._load_conversation_history()
+        texts = [m["content"]["text"] for turn in turns for m in turn]
+        assert texts == ["new"]
+
+    def test_an_expired_newest_item_is_not_appended_to(self):
+        provider, table = _provider(expires_after_seconds=100)
+        table.query.return_value = {
+            "Items": [_item("t1", [_message("user", "old")], ExpiresAfter=500)]
+        }
+        with patch(f"{MODULE}.time.time", return_value=1000):
+            assert provider._get_latest_conversation_item() is None
+
+    def test_an_item_without_expiry_is_read(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        assert provider._get_latest_conversation_item() is not None
