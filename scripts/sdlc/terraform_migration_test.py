@@ -599,6 +599,12 @@ def kept_deletions(
     return out
 
 
+def managed_addresses(addresses: Iterable[str]) -> List[str]:
+    """``terraform state list`` output without data sources, which a destroy
+    leaves in no state and which hold nothing."""
+    return [a for a in addresses if not a.startswith("data.") and ".data." not in a]
+
+
 def summarise(result: Dict[str, Any]) -> str:
     """The human summary: one line per phase, then the findings."""
     lines = [
@@ -1934,6 +1940,20 @@ class Run:
             self.ctx.get("oldNames") or {}, self.ctx.get("newNames") or {}
         )
         left = Sweeper(self, names).inventory()
+        # The inventory reaches only the kinds the sweep deletes, by name, and many
+        # upstream resources carry neither run name (measured: a failed old destroy
+        # left Lambda functions and roles the inventory did not see). A state that
+        # still lists managed resources is the complete answer for everything else.
+        for label, directory in (("old", self.old_dir), ("new", self.new_dir)):
+            if not (directory / ".terraform").is_dir():
+                continue
+            try:
+                listed = self.terraform_capture(directory, "state", "list").split()
+            except PhaseFailed:
+                listed = []
+            managed = managed_addresses(listed)
+            if managed:
+                left.append(f"the {label} state still lists {len(managed)} resources")
         self.ctx["leftovers"] = left
         # A KMS key cannot be deleted at once; pending deletion is the end state.
         if left:
@@ -2017,6 +2037,11 @@ class Run:
                 "destroy",
                 "-auto-approve",
                 "-input=false",
+                # After the new deployment's delete, refresh cannot read resources
+                # tied to the adopted key, now pending deletion (measured: GetItem on
+                # the old concurrency table failed with KMSInvalidStateException and
+                # aborted the destroy, leaving most of the old deployment standing).
+                "-refresh=false",
                 log="old-destroy-forced.log",
                 check=False,
             )

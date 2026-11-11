@@ -767,3 +767,16 @@ def test_an_unknown_attribute_added_is_reported():
     before = {"k": _run_row()}
     after = {"k": _run_row(Surprise={"S": "x"})}
     assert tmt.compare_items("tracking_table", before, after)["changed"]
+
+
+def test_a_state_still_listing_resources_counts_as_leftovers_but_data_sources_do_not():
+    listed = [
+        "aws_lambda_function.x",
+        "module.m.aws_iam_role.r",
+        "data.aws_region.current",
+        "module.m.data.aws_caller_identity.me",
+    ]
+    assert tmt.managed_addresses(listed) == [
+        "aws_lambda_function.x",
+        "module.m.aws_iam_role.r",
+    ]
