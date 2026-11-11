@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/e2dea2c5-5eb1-42f6-9af5-469afd2135a7
 - **Intelligent Orchestration**: Automatic query routing based on content analysis and agent capabilities
 - **Multi-Agent Selection**: Select multiple agents simultaneously for complex analysis workflows
 - **MCP External Integration**: Connect custom external tools and systems via MCP servers
-- **Secure Architecture**: All code execution happens in AWS Bedrock AgentCore sandboxes, not in Lambda functions
+- **Sandboxed Architecture**: All code execution happens in AWS Bedrock AgentCore Code Interpreter sessions, not in Lambda functions; a session has no AWS credentials and reaches only Amazon S3 in its own region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
 - **Database Schema Discovery**: Analytics agents automatically explore and understand your database structure
 - **Flexible Visualization**: Supports multiple chart types including bar charts, line charts, pie charts, and data tables
 - **Query History**: Track and manage previous questions through the web interface with agent selection memory
@@ -142,7 +142,7 @@ The analytics agent has access to four specialized tools:
 ### 3. Code Sandbox Tool
 
 - **Purpose**: Securely transfers query results to AgentCore sandbox
-- **Security**: Isolated environment with no Lambda file system access
+- **Environment**: Runs in the Code Interpreter session, with no access to the Lambda file system, no AWS credentials, and network reach limited to Amazon S3 in the session's region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
 - **Data Format**: CSV files containing query results
 
 ### 4. Python Execution Tool
