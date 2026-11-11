@@ -1190,6 +1190,29 @@ class TestFixConfig:
         assert result.ok is True
         assert self.row("Config#default")["LatestRevision"] == {"N": "3"}
 
+    def test_restore_keeps_the_head_fields_other_writers_own(
+        self, planned_dir, aws_credentials
+    ):
+        """The backup restores the revision counters it removed, but a BDA link the
+        new deployment wrote since is kept, not replaced by the old row's."""
+        backup = migration().fix_config(str(planned_dir), apply=True).backup_path
+        self.ddb.update_item(
+            TableName="idp-configuration-table-mr68w2wl",
+            Key={"Configuration": {"S": "Config#default"}},
+            UpdateExpression="SET BdaProjectArn = :a, BdaSyncStatus = :s",
+            ExpressionAttributeValues={
+                ":a": {"S": "new-deployment-project"},
+                ":s": {"S": "synced"},
+            },
+        )
+        migration().fix_config(
+            str(planned_dir), apply=True, restore=backup, restore_after_apply=True
+        )
+        row = self.row("Config#default")
+        assert row["LatestRevision"] == {"N": "3"}
+        assert row["BdaProjectArn"] == {"S": "new-deployment-project"}
+        assert row["BdaSyncStatus"] == {"S": "synced"}
+
     def test_a_table_with_a_revision_history_is_refused(
         self, planned_dir, aws_credentials
     ):

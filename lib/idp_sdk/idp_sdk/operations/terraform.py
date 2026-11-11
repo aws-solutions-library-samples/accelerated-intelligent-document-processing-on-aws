@@ -510,8 +510,34 @@ class GenaiIdpTerraformMigration:
                     ],
                 )
             if apply:
+                from idp_common.config.configuration_manager import (
+                    _PRESERVED_HEAD_FIELDS,
+                )
+
+                # The backup is the old row whole, revision counters included:
+                # restoring them is the point. Every other field another writer
+                # owns (the BDA link, which the new deployment may have set
+                # since) is taken from the head as it is now, as
+                # ConfigurationManager._restore_head does.
+                current_owned = [
+                    f for f in _PRESERVED_HEAD_FIELDS if f not in tm.REVISION_COUNTERS
+                ]
                 for item in items:
-                    ddb.put_item(TableName=table, Item=tm.item_from_json(item))
+                    restored = tm.item_from_json(item)
+                    current = (
+                        ddb.get_item(
+                            TableName=table,
+                            Key={"Configuration": restored["Configuration"]},
+                            ProjectionExpression=", ".join(_PRESERVED_HEAD_FIELDS),
+                        ).get("Item")
+                        or {}
+                    )
+                    for field in current_owned:
+                        if field in current:
+                            restored[field] = current[field]
+                        else:
+                            restored.pop(field, None)
+                    ddb.put_item(TableName=table, Item=restored)
             return TerraformMigrationStepResult(
                 phase="fix-config", applied=apply, ok=True, changes=changes
             )
