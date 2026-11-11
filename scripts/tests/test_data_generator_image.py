@@ -11,6 +11,7 @@ image itself is built only at install time by CodeBuild.
 """
 
 import ast
+import json
 import re
 import shlex
 from pathlib import Path
@@ -52,6 +53,11 @@ def _run_words():
     return words
 
 
+def _normalise(word):
+    """pip's name normalisation: ``seed_data``, ``Seed.Data`` and ``seed-data`` match."""
+    return re.sub(r"[-_.]+", "-", word).lower()
+
+
 def _pin(name):
     """The one exact ``name[extras]==version`` in any RUN, with no other mention.
 
@@ -59,11 +65,12 @@ def _pin(name):
     ``python -m pip``, ``uv pip`` and a later ``pip install -U <name>``: any RUN
     word naming the package other than the single exact pin fails here.
     """
-    pattern = re.compile(rf"^{re.escape(name)}(\[[^\]]*\])?==([\w.]+)$")
-    mentions = [w for w in _run_words() if re.match(rf"^{re.escape(name)}\b", w)]
+    pattern = re.compile(rf"^{re.escape(name)}(\[[^\]]*\])?==([\w-]+)$")
+    words = [_normalise(w) for w in _run_words()]
+    mentions = [w for w in words if re.match(rf"^{re.escape(name)}(?![a-z0-9])", w)]
     pins = [m for w in mentions if (m := pattern.match(w))]
     assert len(pins) == 1 and len(mentions) == 1, mentions
-    return pins[0].group(1) or "", pins[0].group(2)
+    return pins[0].group(1) or "", pins[0].group(2).replace("-", ".")
 
 
 def _final(keyword):
@@ -88,6 +95,12 @@ def test_xhtml2pdf_is_pinned_to_a_release_with_the_access_policy():
 
 
 def test_app_directory_is_not_handed_to_the_runtime_user():
+    """A denylist of the usual ways to give the runtime user write access.
+
+    It catches chown/chmod/setfacl, coreutils ``install`` as a command and
+    ``COPY``/``ADD --chown``; it does not parse every shell construct (a
+    ``mkdir -m 777`` or a heredoc ``RUN``, for example).
+    """
     for keyword, rest in _instructions():
         if keyword == "RUN":
             # chown/chmod/setfacl anywhere, or coreutils `install` as a command
@@ -105,8 +118,8 @@ def test_runtime_starts_outside_app_in_the_users_home():
     """augraphy creates ``augraphy_cache`` in the working directory on each call."""
     user = _final("USER")
     assert _final("WORKDIR") == f"/home/{user}"
-    cmd = _final("CMD")
-    assert "/app/handler.py" in cmd, cmd
+    assert not [rest for k, rest in _instructions() if k == "ENTRYPOINT"]
+    assert json.loads(_final("CMD")) == ["python", "/app/handler.py"]
 
 
 def test_script_directory_is_kept_off_the_import_path():
@@ -138,4 +151,5 @@ def test_runtime_requirements_do_not_restate_the_pinned_packages():
     req = (EXT / "agent-source" / "requirements.txt").read_text(encoding="utf-8")
     lines = [ln.split("#")[0].strip() for ln in req.splitlines()]
     for name in ("seed-data", "xhtml2pdf"):
-        assert not [ln for ln in lines if re.match(rf"^{name}\b", ln)], name
+        hits = [ln for ln in lines if re.match(rf"^{name}(?![a-z0-9])", _normalise(ln))]
+        assert not hits, hits
