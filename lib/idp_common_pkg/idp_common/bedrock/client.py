@@ -68,6 +68,12 @@ from idp_common.timeout_budget import (
     CONFIDENCE_READ_TIMEOUT_SECONDS,
 )
 
+from .guardrail import (  # noqa: F401 - re-exported for existing importers
+    GUARDRAIL_ENV_VAR,
+    guardrail_config_from_env,
+    guardrail_id_and_version_from_env,
+    guardrail_invoke_model_params,
+)
 from .model_utils import (
     LONG_CONTEXT_SUFFIX,
     REGION_PREFIXES,
@@ -959,6 +965,7 @@ for _model_id in CACHEPOINT_SUPPORTED_MODELS:
 
 # Module-level cache for inference profile -> cachepoint support resolution
 _inference_profile_cachepoint_cache: Dict[str, bool] = {}
+
 
 
 class BedrockClient:
@@ -2398,27 +2405,7 @@ class BedrockClient:
         Returns:
             Optional guardrail configuration dict with id and version
         """
-        guardrail_env = os.environ.get("GUARDRAIL_ID_AND_VERSION", "")
-        if not guardrail_env:
-            return None
-
-        try:
-            guardrail_id, guardrail_version = guardrail_env.split(":")
-            if guardrail_id and guardrail_version:
-                logger.debug(
-                    f"Using Bedrock Guardrail ID: {guardrail_id}, Version: {guardrail_version}"
-                )
-                return {
-                    "guardrailIdentifier": guardrail_id,
-                    "guardrailVersion": guardrail_version,
-                    "trace": "enabled",  # Enable tracing for guardrail violations
-                }
-        except ValueError:
-            logger.warning(
-                f"Invalid GUARDRAIL_ID_AND_VERSION format: {guardrail_env}. Expected format: 'id:version'"
-            )
-
-        return None
+        return guardrail_config_from_env()
 
     def generate_embedding(
         self,
