@@ -75,7 +75,8 @@ view; in the Test Studio view it is shown disabled). It holds:
 N counts the selected rows each action applies to; the server decides each document
 and reports a result per document, which can be exported. Larger runs continue as a
 background job under **Home › Jobs**, where every bulk run is listed with its status,
-counts and results.
+counts and results, and where a queued or running job can be cancelled and a finished
+one deleted (see [Skip All Reviews for many documents](human-review.md#skip-all-reviews-for-many-documents)).
 
 ### Deleting documents
 

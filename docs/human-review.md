@@ -527,6 +527,22 @@ exported to Excel; the Inbox tells you when a background job finishes. A Reviewe
 their own jobs, an Admin every job. Results are kept for 30 days, or for the stack's
 data retention if that is shorter.
 
+The Jobs table works like the Inbox: find a job by its ID, type, status, requester,
+profile or reason, page through the list, and use the settings (gear) to choose the
+page size and columns. **Job ID**, **Type**, **Requested by**, **Created**, **Finished**
+and **Action** are shown at first; **Status**, **Mode**, **Profile**, **Processed /
+Total** and **Skipped** can be added. Each row's actions menu (**⋮**) offers:
+
+- **Cancel**, for a queued or running job. After you confirm, the job finishes the page
+  of up to 25 documents it is working on, then stops and shows **Cancelled**. Documents
+  it skipped stay skipped and the rest keep their pending reviews; the requester gets
+  an Inbox message.
+- **Delete**, for a finished job (Succeeded, Failed or Cancelled). After you confirm,
+  the job and its results leave Home › Jobs. Skipped documents stay skipped. Cancel an
+  active job first.
+
+A Reviewer can cancel and delete their own jobs; an Admin can cancel and delete any job.
+
 Per-document results: **Skipped**, **Not permitted** (outside your scope, or no such
 document), **Not pending**, **Already finished**, **Held by another reviewer**, **Test
 Studio excluded**, **Not finished processing**, **Resubmit failed** (the review was

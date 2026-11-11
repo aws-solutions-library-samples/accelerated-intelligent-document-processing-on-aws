@@ -1810,6 +1810,8 @@ _TABLE = "components/document-list/documents-table-config.tsx"
 _REVIEW_MENU = "components/review-bulk/review-menu-items.ts"
 _BULK_SKIP = "components/review-bulk/BulkSkipModal.tsx"
 _SEND_TO_REVIEW = "components/review-bulk/SendToReviewModal.tsx"
+#: Home › Jobs row actions, confirmed in a dialog (Cancel job, Delete job).
+_JOB_ACTIONS = "components/review-bulk/JobActionModals.tsx"
 #: The test-set item's edit model, whose Claim calls claimTestSetDocument
 #: (:data:`CLAIM_CALL_SITES`).
 _TEST_SET_MODEL = "components/edit-screen/test-set-item-edit-model.tsx"
@@ -1861,6 +1863,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "BulkSkipAllReviews": (
         Shipped(_BULK_SKIP, "Skip All Reviews", inside_dialog=True),
     ),
+    "CancelBulkReviewJob": (Shipped(_JOB_ACTIONS, "Cancel job", inside_dialog=True),),
     "ClaimReview": (
         Shipped(_REVIEW_MENU, "Start Review", role="menuitem"),
         Shipped(_DETAIL_ACTIONS, "Start Review"),
@@ -1962,6 +1965,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/custom-models/CustomModelsLayout.tsx", "Delete"),
         Shipped("components/custom-models/FinetuningJobDetail.tsx", "Delete"),
     ),
+    "DeleteBulkReviewJob": (Shipped(_JOB_ACTIONS, "Delete job", inside_dialog=True),),
     "DeleteInboxMessages": (
         Shipped(
             "components/inbox/DeleteInboxMessagesModal.tsx",

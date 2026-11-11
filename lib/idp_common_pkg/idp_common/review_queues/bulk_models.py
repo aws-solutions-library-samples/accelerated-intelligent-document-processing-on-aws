@@ -101,6 +101,8 @@ class JobStatus(str, Enum):
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+    #: Stopped at the requester's or an Admin's request, before its next page.
+    CANCELLED = "CANCELLED"
 
 
 class JobKind(str, Enum):
@@ -112,7 +114,11 @@ class JobType(str, Enum):
     SKIP_ALL_REVIEWS = "SKIP_ALL_REVIEWS"
 
 
-FINAL_JOB_STATUSES = frozenset({JobStatus.SUCCEEDED, JobStatus.FAILED})
+FINAL_JOB_STATUSES = frozenset(
+    {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED}
+)
+#: A job that is still waiting or working, and so can be cancelled.
+ACTIVE_JOB_STATUSES = frozenset({JobStatus.QUEUED, JobStatus.RUNNING})
 
 
 class ReviewCaller(BaseModel):

@@ -267,7 +267,7 @@ The solution creates various IAM roles to run different components of the system
   * `sqs:SendMessage` on the DocumentQueue (finalize runs); S3 read/write of `review/` objects in the Output bucket and writes to the Working bucket
   * `cognito-idp:ListUsersInGroup`, `ListUsers`, `AdminListGroupsForUser` on the user pool; the customer-managed key; `cloudwatch:PutMetricData` in the stack's namespace
 
-* **Bulk Review Resolver Role** (API resolver Lambda for `bulkSkipAllReviews`, `getBulkReviewJob`, `listBulkReviewJobs` and `sendToReview`):
+* **Bulk Review Resolver Role** (API resolver Lambda for `bulkSkipAllReviews`, `getBulkReviewJob`, `listBulkReviewJobs`, `cancelBulkReviewJob`, `deleteBulkReviewJob` and `sendToReview`):
   * The Review Queues Resolver's grants (the skips go through the same review queue service)
   * `dynamodb:BatchGetItem` and `Query` on the Tracking table and its `TypeDateIndex` (selection by configuration profile and date)
   * `sqs:SendMessage` on `BulkReviewJobQueue` (requests above `hitl.bulk_skip_sync_limit`), and `sqs:GetQueueAttributes` on the DocumentQueue

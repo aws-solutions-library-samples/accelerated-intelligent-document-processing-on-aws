@@ -987,6 +987,7 @@ export type Mutation = {
   assignTestSetDocuments?: Maybe<Array<TestSetDocumentAssignment>>;
   autoDetectSections?: Maybe<Scalars['String']['output']>;
   bulkSkipAllReviews?: Maybe<BulkSkipAllReviewsResult>;
+  cancelBulkReviewJob?: Maybe<BulkReviewJob>;
   claimNextReviewItem?: Maybe<ClaimNextResult>;
   claimReview?: Maybe<Document>;
   claimReviewItem?: Maybe<ReviewItem>;
@@ -1002,6 +1003,7 @@ export type Mutation = {
   createReviewQueue?: Maybe<ReviewQueueDefinition>;
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
+  deleteBulkReviewJob?: Maybe<Scalars['Boolean']['output']>;
   deleteChatSession?: Maybe<Scalars['Boolean']['output']>;
   deleteConfigPrefixMapping?: Maybe<ConfigPrefixMappingMutationResponse>;
   deleteConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
@@ -1206,6 +1208,11 @@ export type MutationBulkSkipAllReviewsArgs = {
 };
 
 
+export type MutationCancelBulkReviewJobArgs = {
+  jobId: Scalars['String']['input'];
+};
+
+
 export type MutationClaimNextReviewItemArgs = {
   queueName?: InputMaybe<Scalars['String']['input']>;
   queueProfile?: InputMaybe<Scalars['String']['input']>;
@@ -1286,6 +1293,11 @@ export type MutationCreateUserArgs = {
 
 export type MutationDeleteAgentJobArgs = {
   jobId: Scalars['ID']['input'];
+};
+
+
+export type MutationDeleteBulkReviewJobArgs = {
+  jobId: Scalars['String']['input'];
 };
 
 
@@ -3269,6 +3281,13 @@ export type BulkSkipAllReviewsMutationVariables = Exact<{
 
 export type BulkSkipAllReviewsMutation = { bulkSkipAllReviews?: { dryRun: boolean, runMode: string, syncLimit: number, approximate: boolean, eligibleCount: number, limitReached: boolean, jobId?: string | null, counts: Array<{ outcome: string, count: number }>, results: Array<{ objectKey: string, outcome: string, kind: string, detail?: string | null }> } | null };
 
+export type CancelBulkReviewJobMutationVariables = Exact<{
+  jobId: Scalars['String']['input'];
+}>;
+
+
+export type CancelBulkReviewJobMutation = { cancelBulkReviewJob?: { jobId: string, jobType: string, kind: string, status: string, mode: string, profile?: string | null, submittedFrom?: string | null, submittedTo?: string | null, reason: string, note?: string | null, resubmit: boolean, requestedBy: string, total: number, processed: number, limitReached: boolean, stalled: boolean, error?: string | null, createdAt: string, startedAt?: string | null, finishedAt?: string | null, counts: Array<{ outcome: string, count: number }> } | null };
+
 export type ClaimNextReviewItemMutationVariables = Exact<{
   queueProfile?: InputMaybe<Scalars['String']['input']>;
   queueName?: InputMaybe<Scalars['String']['input']>;
@@ -3377,6 +3396,13 @@ export type DeleteAgentJobMutationVariables = Exact<{
 
 
 export type DeleteAgentJobMutation = { deleteAgentJob?: boolean | null };
+
+export type DeleteBulkReviewJobMutationVariables = Exact<{
+  jobId: Scalars['String']['input'];
+}>;
+
+
+export type DeleteBulkReviewJobMutation = { deleteBulkReviewJob?: boolean | null };
 
 export type DeleteChatSessionMutationVariables = Exact<{
   sessionId: Scalars['ID']['input'];

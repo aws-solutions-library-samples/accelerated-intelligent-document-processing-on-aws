@@ -1204,6 +1204,27 @@ operations:
     note: >-
       Home > Jobs. A Reviewer lists only the jobs they requested (their own index
       partition, keyed by the verified caller); an Admin lists every job.
+  cancelBulkReviewJob:
+    groups: [Admin, Reviewer]
+    kind: mutation
+    ownership: true
+    enforced_in: *brv
+    args: { jobId: "__nope__" }
+    note: >-
+      Stops a queued or running bulk Skip All Reviews job before its next page, so
+      only the roles that can start one need it. A Reviewer cancels only jobs they
+      requested (RequesterKey from verified claims); another user's job reads as
+      not found, so the matrix's nonexistent id changes nothing.
+  deleteBulkReviewJob:
+    groups: [Admin, Reviewer]
+    kind: mutation
+    ownership: true
+    enforced_in: *brv
+    args: { jobId: "__nope__" }
+    note: >-
+      Deletes a finished bulk Skip All Reviews job from Home > Jobs. A Reviewer
+      deletes only jobs they requested (RequesterKey from verified claims); another
+      user's job reads as not found, and an active job is refused.
   saveSectionReviewEdits:
     groups: [Admin, Reviewer]
     kind: mutation

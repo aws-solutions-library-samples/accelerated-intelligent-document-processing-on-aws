@@ -29,6 +29,8 @@ _FIELDS = [
     "bulkSkipAllReviews",
     "getBulkReviewJob",
     "listBulkReviewJobs",
+    "cancelBulkReviewJob",
+    "deleteBulkReviewJob",
     "sendToReview",
 ]
 _INDEX = Path(__file__).with_name("index.py")
@@ -160,6 +162,48 @@ class TestJobs:
     def test_a_missing_job_id_is_a_bad_argument(self, mod):
         with pytest.raises(ValueError):
             mod.handler(_event("getBulkReviewJob", {}), None)
+
+    @pytest.mark.parametrize("field", ["cancelBulkReviewJob", "deleteBulkReviewJob"])
+    def test_cancel_and_delete_need_a_job_id(self, mod, field):
+        with pytest.raises(ValueError, match="jobId is required"):
+            mod.handler(_event(field, {}), None)
+
+    def test_cancel_returns_the_job_for_the_verified_caller(self, mod):
+        view = SimpleNamespace()
+        mod._SERVICES.bulk.cancel_job.return_value = view
+        mod._job_shape = lambda v: {"jobId": "brj-x", "status": "CANCELLED"}
+        mod.resolve_allowed_config_versions = lambda *a, **k: ["claims"]
+        out = mod.handler(
+            _event("cancelBulkReviewJob", {"jobId": "brj-x"}, groups=("Reviewer",)),
+            None,
+        )
+        assert out == {"jobId": "brj-x", "status": "CANCELLED"}
+        caller, job_id = mod._SERVICES.bulk.cancel_job.call_args.args
+        assert (caller.email, caller.is_admin, job_id) == (
+            "admin@example.com",
+            False,
+            "brj-x",
+        )
+
+    def test_a_job_that_is_not_yours_cannot_be_cancelled_or_deleted(self, mod):
+        mod._SERVICES.bulk.cancel_job.return_value = None
+        mod._SERVICES.bulk.delete_job.return_value = False
+        for field in ("cancelBulkReviewJob", "deleteBulkReviewJob"):
+            with pytest.raises(ResourceNotFound):
+                mod.handler(_event(field, {"jobId": "brj-x"}), None)
+
+    def test_delete_returns_true(self, mod):
+        mod._SERVICES.bulk.delete_job.return_value = True
+        assert mod.handler(_event("deleteBulkReviewJob", {"jobId": "brj-x"}), None)
+
+    def test_an_active_job_delete_is_a_bad_argument(self, mod):
+        from idp_common.review_queues import ReviewValidationError
+
+        mod._SERVICES.bulk.delete_job.side_effect = ReviewValidationError(
+            "JOB_ACTIVE", "cancel the job first"
+        )
+        with pytest.raises(ValueError, match="^JOB_ACTIVE"):
+            mod.handler(_event("deleteBulkReviewJob", {"jobId": "brj-x"}), None)
 
 
 @pytest.mark.unit

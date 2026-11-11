@@ -44,6 +44,10 @@
       "Author",
       "Viewer"
     ],
+    "cancelBulkReviewJob": [
+      "Admin",
+      "Reviewer"
+    ],
     "checkFeatureEntitlement": "ANY",
     "claimNextReviewItem": [
       "Admin",
@@ -119,6 +123,10 @@
       "Author",
       "Reviewer",
       "Viewer"
+    ],
+    "deleteBulkReviewJob": [
+      "Admin",
+      "Reviewer"
     ],
     "deleteChatSession": [
       "Admin",

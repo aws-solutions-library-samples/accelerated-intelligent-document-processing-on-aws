@@ -204,8 +204,9 @@ def task_reminder(item: ReviewItemRecord) -> None:
 
 
 def bulk_job_finished(job: Any) -> int:
-    """Tell the requester a bulk Skip All Reviews job finished (``job`` is a
-    ``BulkJobView``). Warning severity when anything failed or was not attempted."""
+    """Tell the requester a bulk Skip All Reviews job finished, failed or was
+    cancelled (``job`` is a ``BulkJobView``). Warning severity when anything failed
+    or was not attempted."""
     counts = {c.outcome.value: c.count for c in job.counts}
     skipped = counts.get("SKIPPED", 0)
     trouble = (
@@ -214,9 +215,12 @@ def bulk_job_finished(job: Any) -> int:
         + counts.get("NOT_ATTEMPTED", 0)
     )
     failed = job.status.value == "FAILED"
+    cancelled = job.status.value == "CANCELLED"
     title = (
         "Bulk Skip All Reviews failed"
         if failed
+        else f"Bulk Skip All Reviews cancelled: {skipped} skipped of {job.total}"
+        if cancelled
         else f"Bulk Skip All Reviews finished: {skipped} skipped of {job.total}"
     )
     body = (

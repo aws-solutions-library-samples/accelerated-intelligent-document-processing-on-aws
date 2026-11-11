@@ -5,11 +5,14 @@
 import { generateClient } from '../../api/client-shim';
 import {
   bulkSkipAllReviews as bulkSkipAllReviewsMutation,
+  cancelBulkReviewJob as cancelBulkReviewJobMutation,
+  deleteBulkReviewJob as deleteBulkReviewJobMutation,
   getBulkReviewJob as getBulkReviewJobQuery,
   listBulkReviewJobs as listBulkReviewJobsQuery,
   sendToReview as sendToReviewMutation,
 } from '../../graphql/generated';
 import type {
+  BulkReviewJob,
   BulkReviewJobPage,
   BulkReviewJobResults,
   BulkSkipAllReviewsInput,
@@ -78,6 +81,18 @@ export const getBulkJob = async (variables: {
 export const listBulkJobs = async (variables: { limit?: number; nextToken?: string | null } = {}): Promise<BulkReviewJobPage> => {
   const r = await client.graphql({ query: listBulkReviewJobsQuery, variables });
   return required(r.data?.listBulkReviewJobs, 'listBulkReviewJobs');
+};
+
+/** Stop a queued or running job before its next page; returns the job, now Cancelled. */
+export const cancelBulkJob = async (jobId: string): Promise<BulkReviewJob> => {
+  const r = await client.graphql({ query: cancelBulkReviewJobMutation, variables: { jobId } });
+  return required(r.data?.cancelBulkReviewJob, 'cancelBulkReviewJob');
+};
+
+/** Delete a finished job (Succeeded, Failed or Cancelled) from Home › Jobs. */
+export const deleteBulkJob = async (jobId: string): Promise<void> => {
+  const r = await client.graphql({ query: deleteBulkReviewJobMutation, variables: { jobId } });
+  required(r.data?.deleteBulkReviewJob, 'deleteBulkReviewJob');
 };
 
 export const sendToReview = async (objectKeys: string[], reason: string, note?: string): Promise<SendToReviewResult> => {

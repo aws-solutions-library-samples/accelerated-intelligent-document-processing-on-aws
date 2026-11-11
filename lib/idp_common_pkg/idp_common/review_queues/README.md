@@ -367,7 +367,7 @@ Rows in this table, none with a GSI key:
 
 | PK | SK | Holds |
 |---|---|---|
-| `BRJOB#<jobId>` | `META` | The job: requester, mode and selection, reason, note, resubmit, status (`QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`), `Total`, `Processed`, `Counts` per outcome, the page cursor and wake tokens, heartbeat, and `ExpiresAfter` (30 days, or the data retention if shorter) |
+| `BRJOB#<jobId>` | `META` | The job: requester, mode and selection, reason, note, resubmit, status (`QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`), `Total`, `Processed`, `Counts` per outcome, the page cursor and wake tokens, heartbeat, and `ExpiresAfter` (30 days, or the data retention if shorter) |
 | `BRJOB#<jobId>` | `K#<seq>` | A selected-mode key chunk (25 object keys) |
 | `BRJOB#<jobId>` | `R#<sha256(objectKey)[:32]>` | One document's outcome, put once (`attribute_not_exists(SK)`); the counters move only when the put succeeds |
 | `BRJOBS#U#<reviewerKey>`, `BRJOBS#ALL` | `<createdAt>#<jobId>` | The requester's and the all-jobs (Admin) lists |
@@ -385,6 +385,17 @@ marks the job `FAILED`; a job with no heartbeat for 30 minutes reads as `stalled
 The requester's scope is snapshotted at submission and intersected with their current
 scope once per step; a by-profile job whose profile leaves the scope fails
 (`scope_revoked`).
+
+`cancel_job` (the requester or an Admin; another user's job reads as not found) sets a
+`QUEUED` or `RUNNING` job to `CANCELLED` with a conditional write, records
+`CancelledBy` and notifies the requester; a finished job is refused (`JOB_FINISHED`).
+The worker reads the status before each page and stops, releasing the lock, so at most
+the page in progress is still skipped. Its start, finish and fail writes are
+conditional on the job still being active, so a cancel is never overwritten.
+`delete_job` deletes a finished job's `META` (conditional on a final status) and its two
+list entries; an active job is refused (`JOB_ACTIVE`). The chunk and result rows are
+unreachable without `META` and expire with it (`ExpiresAfter`), so a job of any size is
+deleted in a bounded number of writes.
 
 ## Send to review
 

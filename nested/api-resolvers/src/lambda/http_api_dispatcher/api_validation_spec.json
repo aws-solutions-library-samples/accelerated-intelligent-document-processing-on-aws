@@ -265,6 +265,17 @@
         }
       ]
     },
+    "cancelBulkReviewJob": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "jobId",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
     "checkFeatureEntitlement": {
       "args": [
         {
@@ -557,6 +568,17 @@
           "name": "jobId",
           "non_null": true,
           "type": "ID"
+        }
+      ]
+    },
+    "deleteBulkReviewJob": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "jobId",
+          "non_null": true,
+          "type": "String"
         }
       ]
     },

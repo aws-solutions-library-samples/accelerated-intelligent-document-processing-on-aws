@@ -7,17 +7,17 @@ SPDX-License-Identifier: MIT-0
 
 ### Added
 
-- **Bulk Skip All Reviews for production reviews.** Select documents in the Document List (**Review › Skip All Reviews**) or on a review queue's page, or choose a configuration profile and a submitted-date range, to finish many pending reviews at once. A reason is required, and a dry run shows what will happen to each document first. Small requests run at once; larger ones run as a background job, listed with every run under the new **Home › Jobs**, with an Inbox message when they finish. Review-queue items finish with their machine results and are recorded as **Skipped**; Test Studio documents are never skipped. Admins and Reviewers can use it, a Reviewer within their configuration scope and never on another reviewer's claim. New setting `hitl.bulk_skip_sync_limit`. See [Skip All Reviews for many documents](docs/human-review.md#skip-all-reviews-for-many-documents).
+- **Bulk Skip All Reviews for production reviews.** Select documents in the Document List (**Review › Skip All Reviews**) or on a review queue's page (**More actions**, which also holds **Move** and **Remove from queue**; **Assign to…** and **Unassign** stay as buttons), or choose a configuration profile and a submitted-date range, to finish many pending reviews at once. A reason is required, and a dry run shows what will happen to each document first. Small requests run at once; larger ones run as a background job, listed with every run under the new **Home › Jobs**, with an Inbox message when they finish. The Jobs table has find, pagination and column settings, and each job's ⋮ menu cancels a queued or running job (it stops after the page in progress) or deletes a finished one; a Reviewer acts on their own jobs, an Admin on any. Review-queue items finish with their machine results and are recorded as **Skipped**; Test Studio documents are never skipped. Admins and Reviewers can use it, a Reviewer within their configuration scope and never on another reviewer's claim. New setting `hitl.bulk_skip_sync_limit`. See [Skip All Reviews for many documents](docs/human-review.md#skip-all-reviews-for-many-documents).
 
 - **Send to review.** Put a finished production document, or a selection of them, into the Default review queue by hand with a reason (**More Actions › Send to review**, or the Document List's **Review** menu). Reviewers see the reason on the item. See [Send to review](docs/human-review.md#send-to-review).
 
+- **Info panels on the Home pages.** The info icon on **Inbox**, **Tasks**, **Queues**, **Jobs** and a job's page opens a panel explaining what the page is for, who uses it, and where to read more.
+
 ### Changed
 
+- **Inbox: the messages table fits the page.** Received is wider and Title has a fixed width, so a long title no longer makes the table scroll sideways.
+
 - **Configuration page: the Configuration tab is now Processing Settings, and Prompt Preview is a Preview prompts button.** The button, beside Refresh, opens the prompt preview in a dialog; a link to the former tab opens the dialog. See [Prompt Preview](docs/web-ui.md#prompt-preview).
-
-- **Production queue page: fewer buttons above Documents.** Assign to… and Unassign stay as buttons; Move, Remove from queue and both Skip All Reviews actions are grouped under More actions. See [Review Queues](docs/review-queues.md).
-
-- **Every Home page has an info panel.** The info icon on **Inbox**, **Tasks**, **Queues**, **Jobs** and a job's page opens a panel explaining what the page is for, who uses it, and where to read more.
 
 - **Skip All Reviews has a Resubmit for downstream processing option** (on by default). Untick it to mark a review skipped without re-running Summarization, Evaluation and the post-processing hook.
 

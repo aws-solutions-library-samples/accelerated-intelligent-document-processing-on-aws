@@ -2443,6 +2443,12 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
   sendToReview(objectKeys: [String!]!, reason: String!, note: String): SendToReviewResult
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  # A queued or running bulk job stops before its next page (the requester's own, or
+  # any for an Admin); a finished one is deleted.
+  cancelBulkReviewJob(jobId: String!): BulkReviewJob
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  deleteBulkReviewJob(jobId: String!): Boolean
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
   # Save a reviewer's edits to one section without completing its review: the
   # review stays In Progress until processChanges or skipAllSectionsReview.
   saveSectionReviewEdits(objectKey: String!, sectionId: String!, editedData: AWSJSON!): Document
