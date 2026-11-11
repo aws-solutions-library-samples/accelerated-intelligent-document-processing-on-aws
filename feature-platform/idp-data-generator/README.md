@@ -44,9 +44,9 @@ The AgentCore runtime installs `seed-data` **0.0.7**, pinned exactly in the
 `Dockerfile`. The tools SEED gives its models can change between releases, so
 re-read this section against the new release's source before moving the pin.
 The inventory below was taken by reading the 0.0.7 wheel, not by running it.
-Two packages it depends on are not pinned here: `strands-agents-tools` (SEED
-requires `>=0.8`; 0.9.0 was read) and `xhtml2pdf` (SEED requires `>=0.2.17`;
-0.2.28 was read).
+The `Dockerfile` also pins `xhtml2pdf==0.2.28` and installs SEED's `augment`
+extra, which the optional scan/fax effects need. `strands-agents-tools` is not
+pinned here (SEED requires `>=0.8`; 0.9.0 was read).
 
 `idp_common.synthesis.engine` calls only `Generator(...).generate_batch`, and it
 names the PDF backend explicitly (`SEED_RENDERER = "xhtml2pdf"`). These are the
