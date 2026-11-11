@@ -1117,3 +1117,324 @@ def test_a_resume_under_another_iam_path_is_refused():
     assert tmt.stored_name_problems(ctx, "o", "n", None)
     # a context written before the path existed carries no claim about it
     assert tmt.stored_name_problems({"oldName": "o"}, "o", "n", PATH_) == []
+
+
+# -- the state mirror ---------------------------------------------------------------
+
+MIRROR = "s3://ci-bucket/terraform-migration-runs/gitfnew2/"
+MIRROR_PREFIX = "terraform-migration-runs/gitfnew2/"
+
+
+class _FakeS3:
+    """Records puts and deletes; serves gets from `objects`."""
+
+    def __init__(self, objects=None, fail_put=False):
+        self.objects = dict(objects or {})
+        self.fail_put = fail_put
+        self.puts = {}
+        self.deleted = []
+
+    def put_object(self, Bucket, Key, Body, **kw):  # noqa: N803 - boto3 casing
+        if self.fail_put:
+            raise RuntimeError("AccessDenied: PutObject")
+        assert kw.get("ServerSideEncryption") == "AES256"
+        self.puts[Key] = Body
+
+    def get_object(self, Bucket, Key):  # noqa: N803
+        if Key not in self.objects:
+            raise RuntimeError("NoSuchKey")
+        body = self.objects[Key]
+
+        class _B:
+            def read(self):
+                return body
+
+        return {"Body": _B()}
+
+    def get_paginator(self, api):
+        fake = self
+
+        class _P:
+            def paginate(self, Bucket, Prefix):  # noqa: N803
+                keys = [k for k in fake.objects if k.startswith(Prefix)]
+                if api == "list_object_versions":
+                    yield {
+                        "Versions": [{"Key": k, "VersionId": "v1"} for k in keys],
+                        "DeleteMarkers": [],
+                    }
+                else:
+                    yield {"Contents": [{"Key": k} for k in keys]}
+
+        return _P()
+
+    def delete_object(self, Bucket, Key, VersionId):  # noqa: N803
+        self.deleted.append(Key)
+
+
+class _FakeSts:
+    def get_caller_identity(self):
+        return {"Account": "123456789012"}
+
+
+def _mirrored(tmp_path, s3, **kw):
+    run = tmt.Run(_settings(tmp_path, state_mirror=MIRROR, **kw))
+    run._boto_cache.update(s3=s3, sts=_FakeSts())
+    return run
+
+
+def test_both_roots_get_an_s3_backend_under_the_mirror_prefix(tmp_path, monkeypatch):
+    run = _mirrored(tmp_path, _FakeS3())
+    run.old_dir.mkdir(parents=True)
+    run.prepare_old_root()
+    old = (run.old_dir / tmt.OLD_BACKEND_FILE).read_text()
+    assert f'key          = "{MIRROR_PREFIX}old/terraform.tfstate"' in old
+    assert 'bucket       = "ci-bucket"' in old and "use_lockfile = true" in old
+    assert "encrypt      = true" in old and 'region       = "us-west-2"' in old
+
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def migrate(command, *args):
+        backend = run.new_dir / tmt.NEW_BACKEND_FILE
+        seen["backend"] = backend.read_text() if backend.is_file() else None
+        raise _Stop()
+
+    monkeypatch.setattr(run, "terraform_capture", lambda *a: "{}")
+    monkeypatch.setattr(run, "secrets", lambda: {"users": [{"username": "a@b"}]})
+    monkeypatch.setattr(run, "migrate", migrate)
+    with pytest.raises(_Stop):
+        run.phase_migrate_plan()
+    # written before `migrate plan`, whose own `init` takes the backend
+    assert f'"{MIRROR_PREFIX}new/terraform.tfstate"' in (seen["backend"] or "")
+
+
+def test_without_a_mirror_no_backend_is_written(tmp_path):
+    run = tmt.Run(_settings(tmp_path))
+    run.old_dir.mkdir(parents=True)
+    run.prepare_old_root()
+    assert not (run.old_dir / tmt.OLD_BACKEND_FILE).exists()
+
+
+def test_save_mirrors_the_context_and_new_root_but_never_secrets_or_state(tmp_path):
+    s3 = _FakeS3()
+    run = _mirrored(tmp_path, s3)
+    run.new_dir.mkdir(parents=True)
+    for name in (
+        "main.tf",
+        "terraform.tfvars",
+        "backend.tf",
+        "adopt.tf",
+        ".terraform.lock.hcl",
+        "terraform.tfstate",
+        "terraform.tfstate.backup",
+        "apply.tfplan",
+    ):
+        (run.new_dir / name).write_text("x")
+    run.save_secrets({"users": [{"password": "hunter2"}]})
+    run.ctx["oldName"] = "gitf2"
+    run.save()
+    keys = set(s3.puts)
+    assert MIRROR_PREFIX + tmt.MIRROR_CONTEXT in keys
+    assert {
+        k[len(MIRROR_PREFIX + tmt.MIRROR_NEW_ROOT) :] for k in keys if "new-root/" in k
+    } == {
+        "main.tf",
+        "terraform.tfvars",
+        "backend.tf",
+        "adopt.tf",
+        ".terraform.lock.hcl",
+    }
+    assert not any("secret" in k or "tfstate" in k or "tfplan" in k for k in keys)
+    assert all(b"hunter2" not in body for body in s3.puts.values())
+
+
+def test_a_failed_mirror_write_only_warns_in_save(tmp_path, capsys):
+    run = _mirrored(tmp_path, _FakeS3(fail_put=True))
+    run.save()
+    assert "could not update the state mirror" in capsys.readouterr().out
+    assert run.context_path.is_file()
+
+
+def test_preflight_fails_when_the_mirror_cannot_be_written(tmp_path, monkeypatch):
+    """A run that could not be torn down by a later build creates nothing."""
+    run = _mirrored(tmp_path, _FakeS3(fail_put=True))
+
+    class _Iam:
+        def get_account_summary(self):
+            return {"SummaryMap": {"RolesQuota": 5000, "Roles": 10}}
+
+    run._boto_cache["iam"] = _Iam()
+    monkeypatch.setattr(run, "identity_problems", lambda: [])
+    run._account = "123456789012"
+    monkeypatch.setattr(
+        run, "terraform_capture", lambda *a: '{"terraform_version": "1.17.1"}'
+    )
+    monkeypatch.setattr(run, "existing_matches", lambda: [])
+    with pytest.raises(tmt.PhaseFailed, match="state mirror"):
+        run.phase_preflight()
+    assert run.preflight_passed is False
+    assert not run.ctx.get("created")
+
+
+def _mirrored_context(**kw):
+    ctx = {
+        "oldName": "gitf2",
+        "newName": "gitfnew2",
+        "runId": "20261111T000000Z",
+        "account": "123456789012",
+        "created": True,
+        "oldDeployStarted": True,
+        "completed": [],
+        "phases": [],
+        "findings": [],
+    }
+    ctx.update(kw)
+    return json.dumps(ctx).encode()
+
+
+def test_teardown_only_reads_the_context_from_the_mirror_and_refuses_other_names(
+    tmp_path, monkeypatch
+):
+    s3 = _FakeS3(
+        {MIRROR_PREFIX + tmt.MIRROR_CONTEXT: _mirrored_context(oldName="idp1")}
+    )
+    run = _mirrored(tmp_path, s3, resume=True, teardown_only=True)
+    calls = []
+    monkeypatch.setattr(run, "restore_for_teardown", lambda: calls.append("restore"))
+    monkeypatch.setattr(run, "emergency_teardown", lambda: calls.append("teardown"))
+    assert run.teardown_only() == 2
+    assert calls == [] and s3.deleted == []
+    assert run.ctx["oldName"] == "idp1"  # read from the mirror, then refused
+
+
+def _teardown(tmp_path, monkeypatch, leftovers):
+    s3 = _FakeS3(
+        {
+            MIRROR_PREFIX + tmt.MIRROR_CONTEXT: _mirrored_context(),
+            MIRROR_PREFIX + "old/terraform.tfstate": b"{}",
+        }
+    )
+    run = _mirrored(tmp_path, s3, resume=True, teardown_only=True)
+    calls = []
+    monkeypatch.setattr(
+        run, "restore_for_teardown", lambda: calls.append("restore") or []
+    )
+
+    def teardown():
+        calls.append("teardown")
+        run.ctx["leftovers"] = leftovers
+
+    monkeypatch.setattr(run, "emergency_teardown", teardown)
+    rc = run.teardown_only()
+    return rc, calls, s3
+
+
+def test_teardown_only_restores_before_tearing_down_and_clears_a_clean_mirror(
+    tmp_path, monkeypatch
+):
+    rc, calls, s3 = _teardown(tmp_path, monkeypatch, [])
+    assert (rc, calls) == (0, ["restore", "teardown"])
+    assert sorted(s3.deleted) == sorted(
+        [MIRROR_PREFIX + tmt.MIRROR_CONTEXT, MIRROR_PREFIX + "old/terraform.tfstate"]
+    )
+
+
+def test_a_teardown_that_left_something_keeps_the_mirror(tmp_path, monkeypatch):
+    rc, _, s3 = _teardown(tmp_path, monkeypatch, ["role x"])
+    assert rc == 1 and s3.deleted == []
+
+
+class _Mirrored(_Scripted):
+    """A scripted run whose leftover check records `leftovers`."""
+
+    leftovers: object = []
+
+    def __getattribute__(self, name):
+        if name == "phase_leftover_check":
+
+            def stub():
+                object.__getattribute__(self, "calls").append("leftover-check")
+                self.ctx["leftovers"] = type(self).leftovers
+                return "ok"
+
+            return stub
+        return super().__getattribute__(name)
+
+
+@pytest.mark.parametrize(
+    ("kw", "leftovers", "cleared"),
+    [
+        ({}, [], True),
+        ({}, ["bucket b"], False),
+        ({"keep": True}, [], False),
+        ({"stop_after": "seed"}, [], False),
+    ],
+    ids=["clean", "leftovers", "keep", "stopped"],
+)
+def test_a_run_clears_its_mirror_only_after_a_clean_leftover_check(
+    tmp_path, kw, leftovers, cleared
+):
+    s3 = _FakeS3({MIRROR_PREFIX + "new/terraform.tfstate": b"{}"})
+    _Mirrored.leftovers = leftovers
+    run = _Mirrored(_settings(tmp_path, state_mirror=MIRROR, **kw))
+    run._boto_cache.update(s3=s3, sts=_FakeSts())
+    run.execute()
+    assert bool(s3.deleted) is cleared
+
+
+def test_a_stale_clean_verdict_from_an_earlier_attempt_does_not_clear(tmp_path):
+    """`leftovers` is this invocation's, not a resumed context's."""
+    s3 = _FakeS3({MIRROR_PREFIX + "new/terraform.tfstate": b"{}"})
+    _Mirrored.leftovers = []
+    run = _Mirrored(
+        _settings(tmp_path, state_mirror=MIRROR, stop_after="seed"), fail=None
+    )
+    run._boto_cache.update(s3=s3, sts=_FakeSts())
+    run.ctx["leftovers"] = []
+    run.execute()
+    assert s3.deleted == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["s3://ci-bucket/prefix", "ci-bucket/prefix/", "s3://Bad_Bucket/p/", "s3://b/"],
+)
+def test_a_malformed_state_mirror_is_refused(url, capsys):
+    with pytest.raises(SystemExit):
+        tmt.parse_args(_args("--state-mirror", url))
+    assert "is not s3://" in capsys.readouterr().err
+
+
+def test_restore_rebuilds_the_old_root_and_fetches_the_new_one(tmp_path, monkeypatch):
+    s3 = _FakeS3(
+        {
+            MIRROR_PREFIX + tmt.MIRROR_NEW_ROOT + "main.tf": b"module {}",
+            MIRROR_PREFIX + tmt.MIRROR_NEW_ROOT + "backend.tf": b"terraform {}",
+            MIRROR_PREFIX + tmt.MIRROR_NEW_ROOT + "terraform.tfstate": b"{}",
+        }
+    )
+    run = _mirrored(tmp_path, s3)
+    run.ctx.update(oldDeployStarted=True, runId="20261111T000000Z")
+    order = []
+
+    def clone():
+        (run.work / "upstream" / ".git").mkdir(parents=True)
+        run.old_dir.mkdir(parents=True)
+        order.append("clone")
+        return "cloned"
+
+    monkeypatch.setattr(run, "phase_upstream_clone", clone)
+    monkeypatch.setattr(
+        run, "terraform", lambda d, *a, **k: order.append(f"init {d.name}")
+    )
+    assert run.restore_for_teardown() == ["old root", "new root"]
+    assert order == [
+        "clone",
+        f"init {run.old_dir.name}",
+        f"init {run.new_dir.name}",
+    ]
+    assert (run.old_dir / tmt.OLD_BACKEND_FILE).is_file()
+    assert (run.old_dir / "terraform.tfvars").is_file()
+    assert sorted(p.name for p in run.new_dir.iterdir()) == ["backend.tf", "main.tf"]
