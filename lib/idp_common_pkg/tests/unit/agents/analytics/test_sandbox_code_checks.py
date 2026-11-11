@@ -68,6 +68,19 @@ ACCEPTED = [
     ),
     pytest.param(
         "import pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "read_count = int(df['read_count'].sum())\nprint(read_count)",
+        id="variable-named-like-a-reader",
+    ),
+    pytest.param(
+        "import pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "m = df.groupby('k')['v'].sum().reset_index()\n"
+        "p = df.pivot_table(index='a', columns='b', values='v', aggfunc='sum')\n"
+        "df['d'] = pd.to_datetime(df['d']).dt.strftime('%Y-%m-%d')\n"
+        "print(f'{m.v.sum():,.2f}', '{:.1%}'.format(0.5))",
+        id="groupby-pivot-dates-formatting",
+    ),
+    pytest.param(
+        "import pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
         "print(df.to_json(orient='records'))\nrows = df.to_dict('records')",
         id="to-methods-without-a-path",
     ),
@@ -148,6 +161,41 @@ REFUSED = [
         "import pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
         "df.to_csv('/tmp/x.csv')",
         id="writer-absolute-path",
+    ),
+    pytest.param(
+        "import operator, random\noperator.attrgetter('_os')(random).system('id')",
+        id="attrgetter",
+    ),
+    pytest.param(
+        "import string, random\n"
+        "string.Formatter().get_field('0._os', [random], {})[0].system('id')",
+        id="formatter-get-field",
+    ),
+    pytest.param("import pandas as pd\npd.io.common.get_handle(p, 'r')", id="pd-io"),
+    pytest.param("import io\nio.open_code(p)", id="open-code"),
+    pytest.param("import numpy as np\nnp.lib.format.open_memmap(p)", id="np-lib"),
+    pytest.param("import scipy.io\nscipy.io.loadmat(p)", id="scipy-io-import"),
+    pytest.param("from scipy.io import wavfile\nwavfile.read(p)", id="scipy-io-from"),
+    pytest.param(
+        "import matplotlib.cbook as cb\ncb.to_filehandle(p)", id="matplotlib-cbook"
+    ),
+    pytest.param("f = open\nf(p)", id="bare-opener-alias"),
+    pytest.param("import pandas as pd\npd.HDFStore(p)", id="hdfstore"),
+    pytest.param("open('proc/self/environ')", id="relative-path-with-directory"),
+    pytest.param(
+        "import io\nimport pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "b = io.BytesIO()\nfor b in [target]:\n    df.to_csv(b)",
+        id="buffer-rebound-by-for",
+    ),
+    pytest.param(
+        "import io\nimport pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "b = io.BytesIO()\nif (b := target):\n    df.to_csv(b)",
+        id="buffer-rebound-by-walrus",
+    ),
+    pytest.param(
+        "import io\nimport pandas as pd\ndf = pd.read_csv('query_results.csv')\n"
+        "b = io.BytesIO()\nwith thing() as b:\n    df.to_csv(b)",
+        id="buffer-rebound-by-with",
     ),
     pytest.param("!curl remote.example", id="shell-line"),
     pytest.param("%pip install requests", id="notebook-magic"),

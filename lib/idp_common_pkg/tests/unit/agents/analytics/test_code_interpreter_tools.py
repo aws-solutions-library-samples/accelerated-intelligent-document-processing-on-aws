@@ -147,3 +147,4 @@ class TestAgentWiresTheQueryResultToTheSandboxTool:
         refused = run("DROP TABLE metering")
         assert refused["success"] is False
         assert code_tools._last_query_result_uri is None
+        assert code_tools._last_query is None

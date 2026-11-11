@@ -18,13 +18,14 @@ else that the code's own text makes visible:
   (:data:`DYNAMIC_NAMES`), and any attribute whose name starts with ``_``, which is
   how module internals (``random._os``) and object internals (``__class__``) are
   reached, and any attribute named like a refused module (:data:`MODULE_ATTRIBUTES`,
-  ``typing.sys``);
+  ``typing.sys``) or like a submodule that holds file and URL helpers (``pd.io``,
+  ``np.lib``, ``scipy.io``, ``matplotlib.cbook``), also in imports;
 - a string literal containing ``://`` (a URL in any scheme);
 - a ``read_*`` function, or one of :data:`PATH_OPENERS` or :data:`PATH_WRITERS`
   (``open``, ``np.loadtxt``, ``df.to_csv``, ``plt.savefig``, ...), used other than by
   a direct call, called with unpacked arguments, or called with a first argument that
-  is not a literal file name in the working directory (a writer may also target an
-  empty ``io.BytesIO()``/``StringIO()``).
+  is not a bare literal file name (a writer may also target an empty
+  ``io.BytesIO()``/``StringIO()``, or a name only ever bound to one).
 
 ⚠️ **This is a check on the text and syntax tree of the code, not a boundary.** It
 cannot see what a value will be at run time, so it refuses the forms above rather
@@ -46,7 +47,9 @@ IMPORTABLE_MODULES = frozenset(
         "matplotlib",
         "seaborn",
         "scipy",
-        # Standard-library computation, formatting and data structures.
+        # Standard-library computation, formatting and data structures. operator and
+        # string are left out: attrgetter, methodcaller and Formatter.get_field look
+        # attributes up by a name held in a string.
         "json",
         "math",
         "cmath",
@@ -62,12 +65,10 @@ IMPORTABLE_MODULES = frozenset(
         "collections",
         "itertools",
         "functools",
-        "operator",
         "heapq",
         "bisect",
         "copy",
         "re",
-        "string",
         "textwrap",
         "csv",
         "io",
@@ -109,6 +110,7 @@ PATH_OPENERS = frozenset(
     {
         "open",
         "FileIO",
+        "open_code",
         "urlopen",
         "loadtxt",
         "genfromtxt",
@@ -191,6 +193,11 @@ MODULE_ATTRIBUTES = frozenset(
         "signal",
         "platform",
         "fsspec",
+        # Submodules that hold file, URL and handle helpers: pd.io, scipy.io,
+        # np.lib, matplotlib.cbook. Refusing the chain covers every helper in it.
+        "io",
+        "lib",
+        "cbook",
     }
 )
 
@@ -200,16 +207,17 @@ class SandboxCodeNotAllowedError(ValueError):
 
 
 def _is_local_path_literal(node: ast.AST) -> bool:
-    """A string literal naming a file in the working directory: relative, with no
-    scheme, no parent reference and no home or absolute prefix."""
+    """A string literal naming a file in the working directory: a bare file name,
+    with no directory separator, scheme or home prefix."""
     if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
         return False
     value = node.value
     return (
         bool(value)
-        and "://" not in value
-        and not value.startswith(("/", "~", "\\"))
-        and ".." not in value.replace("\\", "/").split("/")
+        and "/" not in value
+        and "\\" not in value
+        and not value.startswith("~")
+        and value not in (".", "..")
     )
 
 
@@ -238,26 +246,41 @@ def _takes_a_path(name: str) -> bool:
 def _findings(tree: ast.AST) -> list[str]:
     found: list[str] = []
     called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
-    # Names bound only ever to an empty in-memory buffer (b = io.BytesIO()).
+    # Names bound only ever to an empty in-memory buffer (b = io.BytesIO()). Every
+    # binding of the name counts -- for targets, with ... as, :=, augmented and
+    # unpacking assignments -- and any binding that is not a plain assignment of a
+    # buffer disqualifies it.
+    buffer_stores = {
+        id(target)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign) and _is_in_memory_buffer(n.value)
+        for target in n.targets
+        if isinstance(target, ast.Name)
+    }
     bound: dict[str, bool] = {}
     for n in ast.walk(tree):
-        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
-            bound.setdefault(n.id, False)
-        if isinstance(n, ast.Assign):
-            for target in n.targets:
-                if isinstance(target, ast.Name):
-                    ok = _is_in_memory_buffer(n.value)
-                    bound[target.id] = bound.get(target.id, ok) and ok
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            bound[n.id] = bound.get(n.id, True) and id(n) in buffer_stores
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound[n.name] = False
+        elif isinstance(n, ast.arg):
+            bound[n.arg] = False
     buffers = {name for name, ok in bound.items() if ok}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                top = alias.name.split(".")[0]
-                if top not in IMPORTABLE_MODULES:
+                parts = alias.name.split(".")
+                if parts[0] not in IMPORTABLE_MODULES or any(
+                    part in MODULE_ATTRIBUTES for part in parts[1:]
+                ):
                     found.append(f"import of {alias.name!r}")
         elif isinstance(node, ast.ImportFrom):
-            top = (node.module or "").split(".")[0]
-            if node.level or top not in IMPORTABLE_MODULES:
+            parts = (node.module or "").split(".")
+            if (
+                node.level
+                or parts[0] not in IMPORTABLE_MODULES
+                or any(part in MODULE_ATTRIBUTES for part in parts[1:])
+            ):
                 found.append(f"import from {node.module or '.'!r}")
             for alias in node.names:
                 if _takes_a_path(alias.name) or alias.name.startswith("_"):
@@ -265,14 +288,20 @@ def _findings(tree: ast.AST) -> list[str]:
         elif isinstance(node, ast.Name):
             if node.id in DYNAMIC_NAMES:
                 found.append(f"use of {node.id!r}")
-            elif _takes_a_path(node.id) and id(node) not in called:
+            elif (
+                node.id in PATH_OPENERS
+                and isinstance(node.ctx, ast.Load)
+                and id(node) not in called
+            ):
                 found.append(f"{node.id!r} used other than by calling it")
         elif isinstance(node, ast.Attribute):
             if node.attr.startswith("_") or node.attr in MODULE_ATTRIBUTES:
                 # Private and double-underscore attributes reach module internals
                 # (random._os, pd.io.common's imports) and object internals.
                 found.append(f"attribute {node.attr!r}")
-            elif _takes_a_path(node.attr) and id(node) not in called:
+            elif (node.attr in PATH_OPENERS or node.attr in PATH_WRITERS) and id(
+                node
+            ) not in called:
                 found.append(f"{node.attr!r} used other than by calling it")
         elif isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
             text = (
