@@ -99,7 +99,10 @@ class TestWritePath:
             owners, messages, sessions, "s1", "sub-a", "a@x", allow_new=True, exp=500
         )
         item = owners.get_item(Key={"sessionId": "s1"})["Item"]
-        assert item["ExpiresAfter"] == 500
+        # Kept a margin past the messages, so a reply written at the end of a
+        # turn never outlives its owner row.
+        assert item["ExpiresAfter"] == 500 + owner_mod.EXPIRY_MARGIN_SECONDS
+        assert owner_mod.EXPIRY_MARGIN_SECONDS > 15 * 60
 
     def test_an_unowned_id_with_history_is_not_free(self, tables):
         # History with no owner is a session written before the registry existed.

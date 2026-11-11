@@ -33,9 +33,10 @@ ownership row — and by nobody else. Both kinds of evidence can only have been
 written before the registry, because every path that writes them now registers
 the owner first.
 
-The owner row's expiry is moved forward on every turn, so it always outlives the
-messages written under it (each message expires a retention period after it was
-written).
+The owner row's expiry is moved forward on every turn, to the retention period
+plus :data:`EXPIRY_MARGIN_SECONDS`, so it outlives the messages written under it:
+each message expires a retention period after it was written, and the reply of a
+turn is written at most one Lambda invocation (15 minutes) after the turn began.
 
 Vendored verbatim into the resolver Lambdas that ship without the ``idp_common``
 layer (``nested/api-resolvers/src/lambda/*/chat_session_owner.py``), so it imports
@@ -51,6 +52,9 @@ from botocore.exceptions import ClientError
 OWNER_ATTRIBUTE = "ownerSub"
 #: The table's TTL attribute (epoch seconds), as on the other chat tables.
 EXPIRES_ATTRIBUTE = "ExpiresAfter"
+#: Added to every expiry this module writes. Longer than any one turn can run, so
+#: a reply written at the end of a turn never outlives its session's owner row.
+EXPIRY_MARGIN_SECONDS = 3600
 
 
 def recorded_owner(owners_table: Any, session_id: str) -> Optional[str]:
@@ -85,7 +89,10 @@ def _extend(owners_table: Any, session_id: str, owner_sub: str, expires_after: i
                 "#exp": EXPIRES_ATTRIBUTE,
                 "#owner": OWNER_ATTRIBUTE,
             },
-            ExpressionAttributeValues={":exp": expires_after, ":owner": owner_sub},
+            ExpressionAttributeValues={
+                ":exp": expires_after + EXPIRY_MARGIN_SECONDS,
+                ":owner": owner_sub,
+            },
         )
     except ClientError as error:
         if _is_conditional_failure(error):
@@ -103,7 +110,7 @@ def _register(
             Item={
                 "sessionId": session_id,
                 OWNER_ATTRIBUTE: owner_sub,
-                EXPIRES_ATTRIBUTE: expires_after,
+                EXPIRES_ATTRIBUTE: expires_after + EXPIRY_MARGIN_SECONDS,
             },
             ConditionExpression="attribute_not_exists(sessionId)",
         )
@@ -133,8 +140,10 @@ def claim_chat_session(
         session_id: the id from the request.
         owner_sub: the caller's Cognito ``sub``, from verified claims. Empty
             never owns anything.
-        expires_after: epoch seconds the owner row is kept until; moved forward
-            on every successful call.
+        expires_after: epoch seconds the session's messages are kept until (a
+            retention period from now); the owner row is kept
+            :data:`EXPIRY_MARGIN_SECONDS` longer, and moved forward on every
+            successful call.
         allow_new: True on a path that writes a turn. An id nobody owns and
             that has no stored messages is then registered to the caller.
             False on a read or delete path, which never reserves an unused id.
