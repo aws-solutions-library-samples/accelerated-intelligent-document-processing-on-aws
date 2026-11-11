@@ -509,7 +509,7 @@ def test_stop_after_stops_without_teardown_and_resume_continues(tmp_path):
     assert second.execute() == 0
     # preflight always reruns; nothing else that completed does.
     assert second.calls[0] == "preflight"
-    assert second.calls[1] == "snapshot-before"
+    assert second.calls[1] == tmt.PHASES[tmt.PHASES.index("seed") + 1]
 
 
 def test_a_resumed_run_does_not_inherit_an_earlier_attempts_verdict(tmp_path):

@@ -152,13 +152,14 @@ PHASES = (
     "upstream-clone",
     "upstream-deploy",
     "seed",
+    "old-ttl-off",
     "snapshot-before",
     "migrate-plan",
     "migrate-check-retention",
     "migrate-freeze",
     "migrate-fix-config",
     "migrate-adopt-user-pool",
-    "old-ttl-off",
+    "ttl-settle",
     "migrate-apply-dry-run",
     "migrate-apply",
     "verify",
@@ -1313,19 +1314,15 @@ class Run:
     def phase_old_ttl_off(self) -> str:
         """The guide's hazard for the agent-jobs table: DynamoDB cannot move its
         time-to-live from ``expiresAfter`` to the module's ``ExpiresAfter`` while it
-        is on, so turn it off and wait for DISABLED before the adoption apply."""
-        plan = json.loads(
-            (
-                self.new_dir / "genai-idp-terraform-migration" / "migration-plan.json"
-            ).read_text()
+        is on. Turned off here, straight after seeding, so that the hour DynamoDB
+        then refuses further TTL changes runs alongside the early phases rather than
+        in front of the apply (``ttl-settle`` waits out what is left of it)."""
+        tables = sorted(
+            inst["attributes"]["name"]
+            for inst in state_instances(self.old_state())
+            if inst["type"] == "aws_dynamodb_table" and inst["name"] == "agent_jobs"
         )
-        tables = [
-            r["physical_id"]
-            for r in plan["resources"]
-            if r["kind"] == "agent_table" and r.get("physical_id")
-        ]
         ddb = self.boto("dynamodb")
-        done = []
         for table in tables:
             desc = ddb.describe_time_to_live(TableName=table)["TimeToLiveDescription"]
             if desc.get("TimeToLiveStatus") == "ENABLED":
@@ -1337,7 +1334,18 @@ class Run:
                         "AttributeName": desc["AttributeName"],
                     },
                 )
-            deadline = time.monotonic() + 3900
+        self.ctx["ttlTables"] = tables
+        self.ctx.setdefault("ttlDisabledAt", time.time())
+        return f"time-to-live turning off on {tables or 'no agent-jobs table'}"
+
+    def phase_ttl_settle(self) -> str:
+        """Wait until TTL reads DISABLED and DynamoDB's TTL change interval (about
+        an hour after the disable, measured: an earlier apply failed with "modified
+        multiple times within a fixed interval") has passed."""
+        ddb = self.boto("dynamodb")
+        tables = self.ctx.get("ttlTables") or []
+        deadline = time.monotonic() + TTL_SETTLE_SECONDS
+        for table in tables:
             while (
                 ddb.describe_time_to_live(TableName=table)["TimeToLiveDescription"].get(
                     "TimeToLiveStatus"
@@ -1345,25 +1353,22 @@ class Run:
                 != "DISABLED"
             ):
                 if time.monotonic() > deadline:
-                    raise PhaseFailed(
-                        f"time-to-live on {table} did not turn off in 65 minutes"
-                    )
+                    raise PhaseFailed(f"time-to-live on {table} did not turn off")
                 time.sleep(30)
-            done.append(table)
-        # DynamoDB refuses a second TTL change on a table within about an hour of
-        # the first, even once the status reads DISABLED (measured: the apply failed
-        # with "modified multiple times within a fixed interval"), and the guide says
-        # to wait an hour.
-        disabled_at = self.ctx.setdefault("ttlDisabledAt", time.time())
-        self.save()
-        wait = disabled_at + TTL_SETTLE_SECONDS - time.time()
-        if done and wait > 0:
+        wait = (
+            self.ctx.get("ttlDisabledAt", time.time())
+            + TTL_SETTLE_SECONDS
+            - time.time()
+        )
+        if tables and wait > 0:
             print(
                 f"  waiting {wait / 60:.0f} min for DynamoDB's TTL change interval",
                 flush=True,
             )
             time.sleep(wait)
-        return f"time-to-live off on {done or 'no agent-jobs table'}"
+        return (
+            f"waited {max(wait, 0) / 60:.0f} min" if tables else "nothing to wait for"
+        )
 
     def acceptance_args(self) -> List[str]:
         """``--accept-change`` for each change the guide documents as expected, and
