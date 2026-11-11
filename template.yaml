@@ -15710,11 +15710,21 @@ Resources:
             #     ends in `/`, and the version is chosen by
             #     @monaco-editor/loader rather than by us, so pinning the
             #     version too would turn a dependency bump into a blank editor.
-            #   - style-src's `https:` is NOT narrowed here on purpose: this
-            #     change is scoped to the script-src finding, a stylesheet is a
-            #     materially weaker primitive than a script, and the narrowing
-            #     is only observable by loading the app. It rides with the
-            #     Monaco self-hosting follow-up.
+            #   - default-src 'self' covers every fetch directive not listed
+            #     here (manifest-src, child-src, prefetch). worker-src is NOT
+            #     affected: it falls back to child-src and then script-src
+            #     before default-src, and script-src is set.
+            #   - style-src: 'self' plus the one cross-origin stylesheet the app
+            #     loads, Monaco's editor.main.css, which the AMD loader fetched
+            #     from cdn.jsdelivr.net/npm/ above adds as a <link>.
+            #   - font-src 'self' data:: Cloudscape's and Monaco's fonts are
+            #     data: URLs inside their CSS; nothing loads a font file from
+            #     another origin.
+            #   - media-src 'self': the UI has no <video>/<audio> element.
+            #   - frame-src 'self' data: https://*.amazonaws.com: the file viewer
+            #     frames presigned S3 URLs (PDFs and other binaries) and data:
+            #     URLs (sanitized HTML/text). Without it frame-src would fall
+            #     back to default-src 'self' and blank those viewers.
             #   - script-src/style-src: 'unsafe-inline' and 'unsafe-eval'
             #     retained pending Monaco editor compatibility work
             #     (tracked as Talos finding #12 phase 2).
@@ -15729,8 +15739,18 @@ Resources:
             #     compares the two policies directive-by-directive, so editing
             #     one alone fails the build instead of quietly leaving GovCloud
             #     deployments a directive short.
-            #   - img-src: retains `https:` to allow user-supplied
-            #     document thumbnails from any S3 / CloudFront origin.
+            #   - img-src 'self' data: blob: https://*.amazonaws.com: every <img>
+            #     the UI renders is a presigned S3 URL (page images, thumbnails,
+            #     test-set previews), a data: URL or a blob: URL. The display
+            #     presigner (get_file_contents_resolver) signs virtual-hosted
+            #     regional S3 hosts; the upload presigners use path style or the
+            #     S3 interface endpoint. All are under amazonaws.com, which is the
+            #     endpoint suffix in the commercial and GovCloud partitions alike.
+            #     The host is a literal rather than ${AWS::URLSuffix} because the
+            #     APIGateway copy of this policy is a Mappings value, where no
+            #     intrinsic can be used, and the two copies must stay identical.
+            #     Rendered markdown is held to this deployment's own buckets by
+            #     the UI itself (src/ui/src/components/common/safe-markdown-policy.ts).
             #   - connect-src: includes https://*.on.aws for the chat streaming
             #     Lambda Function URL (RESPONSE_STREAM), whose host is
             #     <id>.lambda-url.<region>.on.aws. CSP host-source only permits a
@@ -15750,7 +15770,7 @@ Resources:
             #     any subdomain depth, which is why the app worked throughout.
             #     Removed rather than corrected, so the policy says what it does.
             #     Do not re-add a host with a wildcard anywhere but the front.
-            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;"
+            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; default-src 'self'; img-src 'self' data: blob: https://*.amazonaws.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/npm/; font-src 'self' data:; media-src 'self'; frame-src 'self' data: https://*.amazonaws.com; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;"
 
           StrictTransportSecurity:
             Override: true

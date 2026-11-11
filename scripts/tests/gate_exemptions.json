@@ -3332,6 +3332,17 @@
       "reason": "Chat history is stored under PK=sessionId and the owner registry is keyed by sessionId by design, so these sites cannot carry a user term; what makes them the caller's own is claim_chat_session deciding whose the id is before they run. Whether that call precedes each site on every path is read from the handler, not computed, so it is a judgement per file, written beside the entry. What IS computed per member: the named guard file must define or call claim_chat_session (test_each_entry_names_a_guard_that_decides_ownership), and the site count is pinned at the number audited when the entry was written.",
       "ratchet": "count-pinned",
       "ratchetEvidence": "scripts/tests/test_session_keyed_storage.py"
+    },
+    "src/ui/src/components/common/__tests__/markdown-surfaces-allowlist.json::markdown-surfaces-allowlist.json": {
+      "kind": "exemption",
+      "memberKind": "a UI source file, with the one capability it is allowed and its pinned count of sites",
+      "turnsOff": "the markdown-surfaces check (src/ui/src/components/common/__tests__/markdown-surfaces.test.ts), which otherwise fails on any import of a markdown/HTML renderer or HTML sanitizer package or any raw-HTML DOM write in UI application code, for exactly the listed number of sites of the listed capability in that one file",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "src/ui/src/components/common/__tests__/markdown-surfaces.test.ts",
+      "reason": "Discovered by name: the file matches the *allowlist*.json glob, and it is one. Each entry is one file and one reason: the SafeMarkdown component (the renderer the check routes everything else through), the file viewer's HTML document view (DOMPurify output in a sandboxed data: iframe), the report print window (writes SafeMarkdown's own rendered output), and the Test Studio print helper (a CSS string literal into a style element it creates). Why JUDGEMENT: whether the HTML a write receives can carry document- or model-derived markup is a reading of the data flow at that site, not a property the check can compute. Each entry pins its expected count of sites, so a new site inside a listed file fails, and an entry whose file holds none fails as stale."
     }
   }
 }

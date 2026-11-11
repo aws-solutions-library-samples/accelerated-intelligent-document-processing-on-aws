@@ -40,8 +40,7 @@ import {
   CollectionPreferences,
 } from '@cloudscape-design/components';
 import type { SelectProps } from '@cloudscape-design/components';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import SafeMarkdown from '../common/SafeMarkdown';
 import { generateClient } from '../../api/client-shim';
 
 import { startMultiDocDiscovery, uploadMultiDocDiscoveryZip, listDiscoveryJobs, deleteDiscoveryJob } from '../../graphql/generated';
@@ -519,7 +518,7 @@ const MultiDocDiscoveryPanel = () => {
     return (
       <ExpandableSection headerText="Quality Review Report" variant="container">
         <div style={{ maxHeight: '600px', overflow: 'auto', padding: '8px' }}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{job.reflectionReport}</ReactMarkdown>
+          <SafeMarkdown rawHtml={false}>{job.reflectionReport}</SafeMarkdown>
         </div>
       </ExpandableSection>
     );
