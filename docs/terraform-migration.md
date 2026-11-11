@@ -489,10 +489,14 @@ one.
   table's time-to-live from one attribute to another while it is on, so `apply` also
   refuses until the old setting is off, and prints the command: `aws dynamodb
   update-time-to-live --table-name <agent jobs table> --time-to-live-specification
-  Enabled=false,AttributeName=expiresAfter`. Turning it off can take up to an hour;
-  run `apply` again when `aws dynamodb describe-time-to-live` reports `DISABLED`.
-  Run it before the maintenance window, since nothing else depends on it: the old
-  deployment's agent jobs simply stop expiring early.
+  Enabled=false,AttributeName=expiresAfter`. Then wait **at least an hour** before
+  `apply`: turning it off can take up to an hour, and DynamoDB also refuses a second
+  time-to-live change on a table within about an hour of the first ("Time to live has
+  been modified multiple times within a fixed interval"), even once
+  `aws dynamodb describe-time-to-live` reports `DISABLED`. `apply` can check the
+  status but not that interval, so an `apply` run too soon fails part way on this
+  table; run it again later. Disable it before the maintenance window, since nothing
+  else depends on it: the old deployment's agent jobs simply stop expiring early.
 - **Some history does not carry over**: discovery jobs, test-set definitions,
   installed features, and the old knowledge base's index (re-sync it).
 
