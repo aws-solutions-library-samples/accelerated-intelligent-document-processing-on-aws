@@ -1495,6 +1495,7 @@ export type MutationSaveTestSetDocumentSectionDraftArgs = {
 
 export type MutationSendAgentChatMessageArgs = {
   enableCodeIntelligence?: InputMaybe<Scalars['Boolean']['input']>;
+  enableExternalMcpAgents?: InputMaybe<Scalars['Boolean']['input']>;
   method?: InputMaybe<Scalars['String']['input']>;
   prompt: Scalars['String']['input'];
   sessionId?: InputMaybe<Scalars['String']['input']>;
@@ -3615,6 +3616,7 @@ export type SendAgentChatMessageMutationVariables = Exact<{
   sessionId?: InputMaybe<Scalars['String']['input']>;
   method?: InputMaybe<Scalars['String']['input']>;
   enableCodeIntelligence?: InputMaybe<Scalars['Boolean']['input']>;
+  enableExternalMcpAgents?: InputMaybe<Scalars['Boolean']['input']>;
   toolMetadata?: InputMaybe<ToolMetadataInput>;
 }>;
 

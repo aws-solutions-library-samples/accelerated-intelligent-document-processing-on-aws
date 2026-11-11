@@ -11,6 +11,15 @@ import { streamChat, type StreamCredentials, type StreamEvent } from '../api/str
 import { pollForAssistantReply, fetchAssistantKeys } from '../api/chat-poll';
 import { streamUrl } from '../aws-exports';
 import useCurrentSessionCreds from './use-current-session-creds';
+import {
+  SESSION_DATA_RESULTS_EVENT,
+  SESSION_REPLACED_EVENT,
+  NEW_SESSION_NOTICE,
+  messagesForNewSession,
+  optInChange,
+  replacedSessionId,
+  type OptInKey,
+} from '../components/agent-chat/session-opt-ins';
 
 const logger = new ConsoleLogger('useAgentChat');
 const client = generateClient();
@@ -39,13 +48,20 @@ interface GraphQLSubscribable {
   };
 }
 
+interface SendOptions {
+  enableCodeIntelligence?: boolean;
+  enableExternalMcpAgents?: boolean;
+}
+
 interface UseAgentChatReturn {
   messages: ChatMessage[];
   isLoading: boolean;
   waitingForResponse: boolean;
   error: string | null;
   sessionId: string;
-  sendMessage: (prompt: string, options?: { enableCodeIntelligence?: boolean }) => Promise<unknown>;
+  sendMessage: (prompt: string, options?: SendOptions) => Promise<unknown>;
+  /** Change an opt-in checkbox; in a session holding data results this starts a new session. */
+  setOptIn: (key: OptInKey, checked: boolean) => void;
   cancelResponse: () => void;
   clearError: () => void;
   clearChat: () => void;
@@ -65,7 +81,13 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
   const agentConfig: AgentChatConfig = { ...defaultConfig, ...config };
 
   // Use context for persistent state
-  const { agentChatState, updateAgentChatState, resetAgentChatState, updateMessages: updateMessagesTyped } = useAgentChatContext();
+  const {
+    agentChatState,
+    updateAgentChatState,
+    resetAgentChatState,
+    startNewAgentChatSession,
+    updateMessages: updateMessagesTyped,
+  } = useAgentChatContext();
   const updateMessages = updateMessagesTyped;
 
   // Extract state from context
@@ -798,7 +820,39 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
     });
   };
 
+  // The server moved this turn to a new session (it opted in to an agent that a
+  // session holding data results does not get). Follow it there.
+  const moveToSession = (newSessionId: string): void => {
+    updateAgentChatState({
+      sessionId: newSessionId,
+      sessionHoldsDataResults: false,
+      sessionNotice: NEW_SESSION_NOTICE,
+    });
+    updateMessages((prevMessages) => messagesForNewSession(prevMessages, newSessionId));
+  };
+
+  const setOptIn = (key: OptInKey, checked: boolean): void => {
+    const { startNewSession, updates } = optInChange(agentChatState, key, checked);
+    if (startNewSession) {
+      startNewAgentChatSession(updates);
+      sentMessagesRef.current = new Set();
+      return;
+    }
+    updateAgentChatState(updates);
+  };
+
   const addMessage = (newMessage: ChatMessage): void => {
+    // Session-level events carry state, not a message to show.
+    if (newMessage.messageType === SESSION_DATA_RESULTS_EVENT) {
+      updateAgentChatState({ sessionHoldsDataResults: true });
+      return;
+    }
+    if (newMessage.messageType === SESSION_REPLACED_EVENT) {
+      const newSessionId = replacedSessionId(newMessage.content);
+      if (newSessionId) moveToSession(newSessionId);
+      return;
+    }
+
     // Filter out messages with isProcessing=true and content containing responseType (JSON data)
     // BUT allow structured_data_start messages through
     if (
@@ -871,7 +925,7 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
   }, [sessionId, agentConfig.subscription]);
 
   // Send a chat message
-  const sendMessage = async (prompt: string, options: { enableCodeIntelligence?: boolean } = {}): Promise<unknown> => {
+  const sendMessage = async (prompt: string, options: SendOptions = {}): Promise<unknown> => {
     if (!prompt.trim()) return undefined;
 
     updateAgentChatState({
@@ -913,6 +967,7 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
             sessionId,
             method: agentConfig.method,
             enableCodeIntelligence: options.enableCodeIntelligence,
+            enableExternalMcpAgents: options.enableExternalMcpAgents,
           },
           credentials: creds,
           onEvent: (event: StreamEvent) => addMessage(event as unknown as ChatMessage),
@@ -927,24 +982,35 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
         // until the full answer lands. Baseline the existing assistant messages
         // BEFORE sending so the poll matches only the NEW reply (clock-
         // independent — no client/server timestamp comparison).
-        const knownAssistantKeys = await fetchAssistantKeys(client, sessionId);
+        let knownAssistantKeys = await fetchAssistantKeys(client, sessionId);
         pollAbortRef.current?.abort();
         pollAbortRef.current = new AbortController();
 
-        await client.graphql({
+        const sent = (await client.graphql({
           query: agentConfig.mutation,
           variables: {
             prompt,
             sessionId,
             method: agentConfig.method,
             enableCodeIntelligence: options.enableCodeIntelligence,
+            enableExternalMcpAgents: options.enableExternalMcpAgents,
           },
-        } as unknown as Parameters<typeof client.graphql>[0]);
+        } as unknown as Parameters<typeof client.graphql>[0])) as { data?: { sendAgentChatMessage?: { sessionId?: string } } };
+
+        // The resolver answers with a different session id when this message
+        // started a new session; the reply is written there.
+        let replySessionId = sessionId;
+        const returnedSessionId = sent?.data?.sendAgentChatMessage?.sessionId;
+        if (returnedSessionId && returnedSessionId !== sessionId) {
+          moveToSession(returnedSessionId);
+          replySessionId = returnedSessionId;
+          knownAssistantKeys = new Set();
+        }
 
         try {
           const reply = await pollForAssistantReply({
             client,
-            sessionId,
+            sessionId: replySessionId,
             knownAssistantKeys,
             signal: pollAbortRef.current.signal,
           });
@@ -955,7 +1021,7 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
               messageType: reply.messageType ?? 'assistant_final_response',
               method: reply.messageType ?? 'assistant_final_response',
               isProcessing: false,
-              sessionId,
+              sessionId: replySessionId,
               timestamp: reply.timestamp,
               id: `assistant-${reply.timestamp}`,
             } as unknown as ChatMessage);
@@ -980,6 +1046,7 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
           sessionId,
           method: agentConfig.method,
           enableCodeIntelligence: options.enableCodeIntelligence,
+          enableExternalMcpAgents: options.enableExternalMcpAgents,
         },
       } as unknown as Parameters<typeof client.graphql>[0]);
 
@@ -1083,6 +1150,9 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
         sessionId: targetSessionId,
         waitingForResponse: false,
         lastMessageCount: formattedMessages.length,
+        // Not known for a loaded session until the server reports it.
+        sessionHoldsDataResults: false,
+        sessionNotice: null,
       });
 
       sentMessagesRef.current = new Set();
@@ -1108,6 +1178,7 @@ const useAgentChat = (config: Partial<AgentChatConfig> = {}): UseAgentChatReturn
     error,
     sessionId,
     sendMessage,
+    setOptIn,
     cancelResponse,
     clearError,
     clearChat,
