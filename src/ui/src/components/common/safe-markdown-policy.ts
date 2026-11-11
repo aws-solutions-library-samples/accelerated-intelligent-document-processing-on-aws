@@ -169,6 +169,9 @@ const S3_ENDPOINT_HOST = new RegExp(`^s3(?:-fips)?(?:\\.dualstack)?(?:[.-]${REGI
  * `bucket.vpce-<id>.s3.<region>.vpce.amazonaws.com`. The leading `bucket.` label is
  * literal: it is how the endpoint's DNS name is written, and the presigners that use
  * the endpoint put the bucket in front of it (virtual-hosted) or in the path.
+ * Residual: an endpoint configured by its bare `vpce-<id>.s3...` DNS name, without the
+ * `bucket.` label, is not recognised, so an image through it is shown as a link. No
+ * presigner in this solution is configured that way.
  */
 const S3_VPCE_HOST = new RegExp(`^bucket\\.vpce-[a-z0-9-]+\\.s3\\.${REGION}\\.vpce\\.amazonaws\\.com(?:\\.cn)?$`);
 

@@ -94,6 +94,8 @@ const HTML_WRITE_METHODS = new Set([
 const REFLECTIVE_WRITERS = new Set(['defineProperty', 'set']);
 const DOCUMENT_WRITE_METHODS = new Set(['write', 'writeln']);
 const HTML_WRITE_ATTRIBUTES = new Set(['dangerouslySetInnerHTML', 'srcdoc', 'srcDoc']);
+/** `setAttribute` lowercases the name on an HTML element, so `setAttribute('SRCDOC', x)` is the same write. */
+const isHtmlWriteAttributeName = (name: string | undefined): boolean => (name ?? '').toLowerCase() === 'srcdoc';
 
 type Capability = 'renderer' | 'html-write';
 interface Site {
@@ -171,12 +173,13 @@ const findSites = (fileName: string, source: string): Site[] => {
       if (method && REFLECTIVE_WRITERS.has(method) && HTML_WRITE_PROPERTIES.has(nameOf(node.arguments[1]) ?? '')) {
         add('html-write', node, `${method} ${nameOf(node.arguments[1])}`);
       }
-      if (method === 'setAttributeNS' && HTML_WRITE_ATTRIBUTES.has(nameOf(node.arguments[1]) ?? '')) {
+      // setAttributeNS does not lowercase its name, so only the exact spelling takes effect.
+      if (method === 'setAttributeNS' && nameOf(node.arguments[1]) === 'srcdoc') {
         add('html-write', node, `sets ${nameOf(node.arguments[1])}`);
       }
       if (method === 'execCommand' && /^insertHTML$/i.test(nameOf(node.arguments[0]) ?? ''))
         add('html-write', node, 'execCommand insertHTML');
-      if (method === 'setAttribute' && HTML_WRITE_ATTRIBUTES.has(nameOf(node.arguments[0]) ?? '')) {
+      if (method === 'setAttribute' && isHtmlWriteAttributeName(nameOf(node.arguments[0]))) {
         add('html-write', node, `sets ${nameOf(node.arguments[0])}`);
       }
     } else if (
@@ -335,6 +338,8 @@ describe('the scanner recognises every form it claims to', () => {
     ['srcdoc JSX', `const f = <iframe srcDoc={x} />;`, 'html-write'],
     ['srcdoc property', `frame.srcdoc = x;`, 'html-write'],
     ['srcdoc setAttribute', `frame.setAttribute('srcdoc', x);`, 'html-write'],
+    ['srcdoc setAttribute uppercase', `frame.setAttribute('SRCDOC', x);`, 'html-write'],
+    ['setAttributeNS keeps case', `frame.setAttributeNS(null, 'SrcDoc', x);`, null],
   ];
   it.each(cases)('%s', (_name, code, expected) => {
     const sites = findSites('probe.tsx', code);

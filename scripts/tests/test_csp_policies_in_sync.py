@@ -100,7 +100,7 @@ def _directive_list(policy: str) -> list[tuple[str, str]]:
             continue
         # Directive names are case-insensitive and end at any ASCII whitespace,
         # which is how browsers read them.
-        name, *rest = chunk.split(None, 1)
+        name, *rest = re.split(r"[\t\n\f\r ]+", chunk, maxsplit=1)
         sources = rest[0] if rest else ""
         parsed.append((name.lower(), re.sub(r"\s+", " ", sources).strip()))
     return parsed
@@ -439,6 +439,8 @@ def test_the_fetch_source_rule_rejects_what_it_claims_to():
     parsed = _directives("default-src 'self'; STYLE-SRC-ELEM https:; img-src\thttps:")
     assert _fetch_directives_in(parsed) == ["default-src", "style-src-elem", "img-src"]
     assert parsed["img-src"] == "https:"
+    # A non-ASCII space is part of the name, as browsers read it: one unknown directive.
+    assert "img-src" not in _directives("img-src\u00a0https:")
     for source in (
         "'self'",
         "data:",
