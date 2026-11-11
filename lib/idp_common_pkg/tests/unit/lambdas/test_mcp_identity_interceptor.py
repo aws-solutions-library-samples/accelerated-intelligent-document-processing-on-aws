@@ -460,3 +460,43 @@ def test_no_token_or_secret_value_is_logged(world, caplog):
     assert ours, "nothing was logged, so this test would pass vacuously"
     assert token.split(".")[1] not in ours
     assert "s" * 64 not in ours
+
+
+def test_fields_beside_the_filtered_ones_are_dropped(world):
+    """A field this filter does not know (structuredContent, a future one) cannot
+    carry an unfiltered tool list past it."""
+    request = _call(ma.GATEWAY_SEARCH_TOOL, {"query": "process"})
+    text = json.dumps({"tools": ALL_TOOLS})
+    response = {
+        "statusCode": 200,
+        "headers": {},
+        "body": {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "isError": False,
+                "content": [{"type": "text", "text": text}],
+                "structuredContent": {"tools": ALL_TOOLS},
+            },
+        },
+        "isStreamingResponse": False,
+    }
+    event = _event(request, user_token(world, "open", "Viewer"), response=response)
+    out = world.mod.handler(event, _context())["mcp"]["transformedGatewayResponse"]
+    assert set(out["body"]["result"]) == {"content", "isError"}
+    listing = {
+        "statusCode": 200,
+        "body": {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {
+                "tools": ALL_TOOLS,
+                "structuredContent": ALL_TOOLS,
+                "nextCursor": "c",
+            },
+        },
+    }
+    body = {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}}
+    event = _event(body, user_token(world, "open", "Viewer"), response=listing)
+    out = world.mod.handler(event, _context())["mcp"]["transformedGatewayResponse"]
+    assert set(out["body"]["result"]) == {"tools", "nextCursor"}

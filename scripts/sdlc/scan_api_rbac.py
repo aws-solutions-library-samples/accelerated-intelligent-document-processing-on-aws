@@ -82,11 +82,18 @@ CHECKS
       `unscoped_only` and `equivalent_op` equal its `MCP_TOOL_POLICY` row.
   M3  MCP is never the more permissive way in — a tool admits no role its
       `equivalent_op` refuses.
+  M3  also requires every tool to be either scope-checked/filtered or
+      `unscoped_only`, and `unscoped_only` wherever its REST equivalent carries no
+      configuration scope.
   M4  MCP enforcement is called — the handler calls `verify_caller` and
       `authorize_tool`; the interceptor calls `resolve_caller`, `authorize_tool`,
       `filter_tool_list` and `sign_caller`; a tool flagged `scope_checked` or
       `scope_filtered` calls the shared scope helper. Calls only, read from the
-      AST, so a mention in a comment or a string does not count.
+      AST, so a mention in a comment or a string does not count. This is a
+      PRESENCE check: it cannot see what a caller does with the result (catching a
+      refusal and carrying on passes it). The behaviour is held by the unit tests
+      in lib/idp_common_pkg/tests/unit/lambdas/test_agentcore_mcp_handler_scope.py
+      and test_mcp_identity_interceptor.py.
   M5  MCP clients — every client the `AgentCoreGateway` resource admits is
       declared in `mcp_clients:` with a kind, and the interceptor's environment
       names exactly the clients of each kind.
@@ -1744,6 +1751,22 @@ def mcp_checks(
             elif not groups <= rest:
                 fail("M3", f"admits {sorted(groups - rest)}, which "
                      f"'{equivalent}' refuses", tool)
+            # Scope: an MCP tool is either filtered or checked by the caller's
+            # scope, or refused to any caller who has one. And where the REST
+            # operation it mirrors cannot be scoped either (no scope_checked or
+            # scope_filtered there), it must be the latter: MCP cannot be the way
+            # a scoped caller reaches what the UI keeps from them.
+            scoped_here = bool(entry.get("scope_checked") or entry.get("scope_filtered"))
+            scoped_rest = bool(
+                ops[equivalent].get("scope_checked")
+                or ops[equivalent].get("scope_filtered")
+            )
+            if not entry.get("unscoped_only") and not scoped_here:
+                fail("M3", "neither unscoped_only nor scope_checked/scope_filtered",
+                     tool)
+            if not scoped_rest and not entry.get("unscoped_only"):
+                fail("M3", f"'{equivalent}' carries no configuration scope, so "
+                     "this tool must be unscoped_only", tool)
         # M4 (per tool): the scope helper is called where the flag says.
         for flag, helpers in MCP_SCOPE_HELPERS.items():
             if not entry.get(flag):

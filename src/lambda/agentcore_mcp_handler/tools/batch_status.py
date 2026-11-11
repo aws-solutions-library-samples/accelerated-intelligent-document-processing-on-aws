@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from idp_common import mcp_access
 
-from .base import IDPTool, config_version_lookup
+from .base import NO_CALLER, IDPTool, config_version_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,8 @@ class BatchStatusTool(IDPTool):
         logger.info(f"=== Batch Status Tool ===")
         logger.info(f"Version: {TOOL_VERSION}")
         logger.info(f"Updated: {TOOL_UPDATED}")
+        if caller is None:
+            return dict(NO_CALLER)
         logger.info(f"Parameters: batch_id={batch_id}, region={region}")
         
         from idp_sdk.client import IDPClient

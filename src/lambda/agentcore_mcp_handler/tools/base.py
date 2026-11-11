@@ -13,6 +13,15 @@ from typing import Any, Callable, Dict, Optional
 BATCH_NOT_FOUND = "Batch not found: {batch_id}"
 
 
+#: Returned by every tool called without a verified caller. The handler never does
+#: that, so this is the answer for any future path that forgets to pass one, rather
+#: than reading the absence as an unscoped caller.
+NO_CALLER = {
+    "success": False,
+    "error": "Unauthorized: the caller of this request could not be verified.",
+}
+
+
 class IDPTool(ABC):
     """Base class for IDP MCP tools.
 

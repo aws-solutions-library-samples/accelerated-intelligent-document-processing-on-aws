@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from idp_common import mcp_access
 
-from .base import IDPTool, config_version_lookup
+from .base import NO_CALLER, IDPTool, config_version_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,8 @@ class BatchReprocessTool(IDPTool):
         logger.info(f"Updated: {TOOL_UPDATED}")
         logger.info(f"Parameters: step={step}, document_ids={document_ids}, batch_id={batch_id}, region={region}")
 
+        if caller is None:
+            return dict(NO_CALLER)
         from idp_sdk.client import IDPClient
 
         try:

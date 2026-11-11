@@ -45,6 +45,14 @@ _signing_key: Dict[str, bytes] = {}
 # Resolved scopes, per container, for SCOPE_CACHE_TTL_SECONDS. Only successful
 # lookups are stored (see config_scope).
 _scope_cache: Dict[str, Any] = {}
+# Resolved signed-in users, per container, keyed on the token itself (its subject,
+# client and issue time), for USER_CACHE_SECONDS. A tools/call is resolved on the
+# request and a tools/list on both request and response, and each resolution reads
+# the user pool, whose read quota the web UI shares. Only users are cached; the
+# window bounds how long a user disabled in Cognito keeps their open token working
+# here, on top of the token's own lifetime.
+USER_CACHE_SECONDS = 30.0
+_user_cache: Dict[tuple, Any] = {}
 
 
 def _client(name: str):
@@ -88,7 +96,15 @@ def _resolve(request: Dict[str, Any]) -> mcp_access.Caller:
             os.environ.get("URL_SUFFIX", "amazonaws.com"),
         ),
     )
-    return mcp_access.resolve_caller(
+    key = (
+        str(claims.get("client_id") or ""),
+        str(claims.get("sub") or ""),
+        str(claims.get("iat") or ""),
+    )
+    cached = _user_cache.get(key)
+    if cached and time.time() - cached[0] < USER_CACHE_SECONDS:
+        return cached[1]
+    caller = mcp_access.resolve_caller(
         claims,
         user_client_ids=_ids("MCP_USER_CLIENT_IDS"),
         stack_service_client_ids=_ids("MCP_STACK_SERVICE_CLIENT_IDS"),
@@ -98,6 +114,11 @@ def _resolve(request: Dict[str, Any]) -> mcp_access.Caller:
         dynamodb=_client("dynamodb"),
         scope_cache=_scope_cache,
     )
+    if caller.kind == "user":
+        if len(_user_cache) > 1000:
+            _user_cache.clear()
+        _user_cache[key] = (time.time(), caller)
+    return caller
 
 
 def _request_id(context: Any) -> str:
@@ -175,17 +196,25 @@ def _on_request(body: Dict[str, Any], request: Dict[str, Any], context: Any):
 
 
 def _filtered_list_body(caller, response_body: Dict[str, Any]) -> Dict[str, Any]:
+    """The listing rebuilt from the fields this filter knows, so a field the gateway
+    adds later cannot carry an unfiltered copy of the tools past it."""
     out = dict(response_body)
-    result = dict(out.get("result") or {})
-    result["tools"] = mcp_access.filter_tool_list(caller, result.get("tools") or [])
-    out["result"] = result
+    result = out.get("result") or {}
+    rebuilt: Dict[str, Any] = {
+        "tools": mcp_access.filter_tool_list(caller, result.get("tools") or [])
+    }
+    if result.get("nextCursor"):
+        rebuilt["nextCursor"] = result["nextCursor"]
+    out["result"] = rebuilt
     return out
 
 
 def _filtered_search_body(caller, response_body: Dict[str, Any]) -> Dict[str, Any]:
-    """The gateway's semantic search returns its tools as JSON text in the result."""
+    """The gateway's semantic search returns its tools as JSON text in the result.
+    The result is rebuilt from ``content`` and ``isError`` only, so any other field
+    (``structuredContent``, for one) cannot carry the unfiltered list past it."""
     out = dict(response_body)
-    result = dict(out.get("result") or {})
+    result = out.get("result") or {}
     content = []
     for item in result.get("content") or []:
         item = dict(item)
@@ -201,8 +230,7 @@ def _filtered_search_body(caller, response_body: Dict[str, Any]) -> Dict[str, An
                 # Not the shape this filter knows, so nothing in it is shown.
                 item["text"] = json.dumps({"tools": []})
         content.append(item)
-    result["content"] = content
-    out["result"] = result
+    out["result"] = {"content": content, "isError": bool(result.get("isError"))}
     return out
 
 

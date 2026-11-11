@@ -34,11 +34,14 @@ import base64
 import hashlib
 import hmac
 import json
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
-import boto3
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rbac_common import aws  # noqa: E402
 
 #: Phrases ``idp_common.mcp_access.authorize_tool`` uses when it refuses on the
 #: caller's role, write permission or scope-only rule. A refusal with none of them
@@ -63,9 +66,16 @@ TARGET = "IDPTools___"
 
 
 def _outputs(ctx):
-    cfn = boto3.client("cloudformation", region_name=ctx["region"])
-    stack = cfn.describe_stacks(StackName=ctx["stack"])["Stacks"][0]
-    return {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+    outputs = aws(
+        "cloudformation",
+        "describe-stacks",
+        "--stack-name",
+        ctx["stack"],
+        "--query",
+        "Stacks[0].Outputs",
+        region=ctx["region"],
+    )
+    return {o["OutputKey"]: o["OutputValue"] for o in outputs or []}
 
 
 def resolve_mcp(ctx):
@@ -74,12 +84,21 @@ def resolve_mcp(ctx):
     url = out.get("MCPServerEndpoint")
     if not url or not url.startswith("https://"):
         return None
-    cognito = boto3.client("cognito-idp", region_name=ctx["region"])
 
     def secret(client_id):
-        return cognito.describe_user_pool_client(
-            UserPoolId=ctx["user_pool"], ClientId=client_id
-        )["UserPoolClient"].get("ClientSecret", "")
+        return aws(
+            "cognito-idp",
+            "describe-user-pool-client",
+            "--user-pool-id",
+            ctx["user_pool"],
+            "--client-id",
+            client_id,
+            "--query",
+            "UserPoolClient.ClientSecret",
+            "--output",
+            "text",
+            region=ctx["region"],
+        )
 
     user_client = out.get("MCPClientId", "")
     connector = out.get("MCPConnectorClientId", "")
@@ -101,18 +120,26 @@ def user_access_token(ctx, mcp, email, password):
         (email + mcp["user_client"]).encode(),
         hashlib.sha256,
     ).digest()
-    cognito = boto3.client("cognito-idp", region_name=ctx["region"])
-    res = cognito.admin_initiate_auth(
-        UserPoolId=ctx["user_pool"],
-        ClientId=mcp["user_client"],
-        AuthFlow="ADMIN_USER_PASSWORD_AUTH",
-        AuthParameters={
-            "USERNAME": email,
-            "PASSWORD": password,
-            "SECRET_HASH": base64.b64encode(digest).decode(),
-        },
+    secret_hash = base64.b64encode(digest).decode()
+    return aws(
+        "cognito-idp",
+        "admin-initiate-auth",
+        "--user-pool-id",
+        ctx["user_pool"],
+        "--client-id",
+        mcp["user_client"],
+        "--auth-flow",
+        "ADMIN_USER_PASSWORD_AUTH",
+        "--auth-parameters",
+        json.dumps(
+            {"USERNAME": email, "PASSWORD": password, "SECRET_HASH": secret_hash}
+        ),
+        "--query",
+        "AuthenticationResult.AccessToken",
+        "--output",
+        "text",
+        region=ctx["region"],
     )
-    return res["AuthenticationResult"]["AccessToken"]
 
 
 def service_token(mcp, client_id, client_secret):

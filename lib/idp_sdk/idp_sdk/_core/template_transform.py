@@ -279,6 +279,9 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "McpIdentityInterceptorFunction",
             "McpIdentityInterceptorLogGroup",
             "McpCallerSigningSecret",
+            "McpGatewayInterceptorAttachment",
+            "McpInterceptorAttachFunction",
+            "McpInterceptorAttachLogGroup",
         }
 
         self.hitl_resources: Set[str] = {

@@ -158,7 +158,8 @@ The headless transform strips the following resource groups (matching the
 
 - Agent table, agent request handler and processor functions
 - AgentCore Gateway and MCP integration resources (gateway manager, analytics
-  Lambda, MCP handler, caller interceptor and its signing secret,
+  Lambda, MCP handler, caller interceptor, its signing secret and the custom
+  resource that attaches it,
   connector/resource-server clients)
 - External MCP agent credentials secret
 - Text-to-SQL / analytics query capabilities

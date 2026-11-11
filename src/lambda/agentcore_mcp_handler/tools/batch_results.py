@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from idp_common import mcp_access
 
-from .base import IDPTool, config_version_lookup, document_id_from_ref
+from .base import NO_CALLER, IDPTool, config_version_lookup, document_id_from_ref
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,8 @@ class GetResultsTool(IDPTool):
         Returns:
             Dictionary with success flag and document results.
         """
+        if caller is None:
+            return dict(NO_CALLER)
         if not batch_id and not document_id:
             return {
                 "success": False,

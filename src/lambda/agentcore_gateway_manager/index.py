@@ -205,9 +205,8 @@ def create_or_update_gateway(props, gateway_name):
     # Check if gateway already exists — paginate through ALL gateways to avoid
     # a ConflictException when the account has more than 10 gateways and the
     # target gateway is not in the first page of list_gateways results.
-    existing_result = None
-    control_client = boto3.client("bedrock-agentcore-control", region_name=region)
     try:
+        control_client = boto3.client("bedrock-agentcore-control", region_name=region)
         all_gateways = []
         paginator = control_client.get_paginator("list_gateways")
         for page in paginator.paginate():
@@ -233,11 +232,7 @@ def create_or_update_gateway(props, gateway_name):
                         if update_result:
                             logger.info(f"Updated gateway target to new Lambda ARN: {lambda_arn}")
 
-                        # The interceptor is attached below, outside both try
-                        # blocks: a failure to attach it must fail the stack
-                        # operation, not be reported as partial details or fall
-                        # through to creating a second gateway.
-                        existing_result = {
+                        return {
                             'gateway_url': gateway_details.get('gatewayUrl'),
                             'gateway_id': gateway_details.get('gatewayId'),
                             'gateway_arn': gateway_details.get('gatewayArn')
@@ -269,12 +264,6 @@ def create_or_update_gateway(props, gateway_name):
 
     except Exception as e:
         logger.warning(f"Error checking for existing gateway: {e}")
-
-    if existing_result is not None:
-        ensure_interceptor(
-            control_client, existing_result['gateway_id'], props.get('InterceptorArn')
-        )
-        return existing_result
 
     # Gateway does not exist — create it now.
     logger.info(f"Gateway {gateway_name} does not exist, creating new one")
@@ -369,90 +358,6 @@ def update_gateway_target_if_needed(control_client, gateway_id, expected_lambda_
     return False
 
 
-def gateway_update_fields(control_client):
-    """Every field UpdateGateway accepts besides the identifier, read from the
-    client's own service model.
-
-    UpdateGateway REPLACES the gateway's configuration rather than patching it
-    (measured against a live gateway: an update that omitted
-    interceptorConfigurations removed the interceptor, and one that omitted
-    protocolConfiguration turned semantic search off, which cannot then be turned
-    back on for a gateway that has targets). So every update writes back every
-    field the gateway currently has, and the list comes from the model rather than
-    from memory, so a field the API gains is not cleared by the next update.
-    """
-    shape = control_client.meta.service_model.operation_model("UpdateGateway")
-    return tuple(
-        name for name in shape.input_shape.members if name != "gatewayIdentifier"
-    )
-
-
-def desired_interceptors(interceptor_arn):
-    """The interceptor configuration the gateway must carry.
-
-    One Lambda for both points, with request headers passed so it can read the
-    caller's validated access token."""
-    return [
-        {
-            "interceptor": {"lambda": {"arn": interceptor_arn}},
-            "interceptionPoints": ["REQUEST", "RESPONSE"],
-            "inputConfiguration": {"passRequestHeaders": True},
-        }
-    ]
-
-
-def full_update_request(gateway, fields, **changes):
-    """An UpdateGateway request that keeps every field of ``gateway`` except
-    ``changes``. Fields the gateway does not have are left out rather than sent as
-    null."""
-    request = {"gatewayIdentifier": gateway["gatewayId"]}
-    for field in fields:
-        value = changes[field] if field in changes else gateway.get(field)
-        if value is not None:
-            request[field] = value
-    return request
-
-
-def wait_until_ready(control_client, gateway_id, attempts=60, delay=5):
-    status = None
-    for _ in range(attempts):
-        status = control_client.get_gateway(gatewayIdentifier=gateway_id).get("status")
-        if status == "READY":
-            return
-        if status in ("FAILED", "UPDATE_UNSUCCESSFUL"):
-            break
-        time.sleep(delay)
-    raise RuntimeError(f"gateway {gateway_id} did not become READY (status {status})")
-
-
-def ensure_interceptor(control_client, gateway_id, interceptor_arn):
-    """Attach the caller interceptor to the gateway, keeping everything else.
-
-    A no-op when the gateway already carries exactly this configuration. Raises
-    when it cannot be applied, so the stack operation fails rather than leaving a
-    gateway without the interceptor. (The MCP handler refuses every call that
-    lacks the interceptor's signed caller block either way.)
-    """
-    if not interceptor_arn:
-        raise ValueError("InterceptorArn is required")
-    wait_until_ready(control_client, gateway_id)
-    gateway = control_client.get_gateway(gatewayIdentifier=gateway_id)
-    desired = desired_interceptors(interceptor_arn)
-    if gateway.get("interceptorConfigurations") == desired:
-        logger.info(f"Gateway {gateway_id} already carries the caller interceptor")
-        return False
-    logger.info(f"Attaching the caller interceptor to gateway {gateway_id}")
-    control_client.update_gateway(
-        **full_update_request(
-            gateway,
-            gateway_update_fields(control_client),
-            interceptorConfigurations=desired,
-        )
-    )
-    wait_until_ready(control_client, gateway_id)
-    return True
-
-
 def create_gateway(props, gateway_name, client: GatewayClient):
     """Create new AgentCore Gateway"""
     region = props['Region']
@@ -542,15 +447,6 @@ def create_gateway(props, gateway_name, client: GatewayClient):
             "lambdaArn": lambda_arn,
             "toolSchema": {"inlinePayload": IDP_TOOLS_SCHEMA},
         },
-    )
-
-    # Attached after the target, by a full-configuration UpdateGateway, so the
-    # toolkit's create call needs no interceptor support. Until it is attached the
-    # MCP handler refuses every call (there is no signed caller block to verify).
-    ensure_interceptor(
-        boto3.client("bedrock-agentcore-control", region_name=region),
-        gateway.get('gatewayId'),
-        props.get('InterceptorArn'),
     )
 
     logger.info("Gateway setup complete")

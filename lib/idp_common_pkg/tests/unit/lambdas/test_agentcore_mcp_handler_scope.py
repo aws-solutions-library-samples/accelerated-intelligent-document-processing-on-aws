@@ -461,3 +461,25 @@ def test_process_refuses_a_named_profile_a_mapping_overrides(monkeypatch):
         )
     assert unnamed is None
     assert overridden and overridden["error"] == "profile_not_permitted"
+
+
+@pytest.mark.parametrize(
+    "module,cls,args",
+    [
+        ("batch_status", "BatchStatusTool", {"batch_id": "x"}),
+        ("batch_results", "GetResultsTool", {"document_id": "a.pdf"}),
+        (
+            "batch_reprocess",
+            "BatchReprocessTool",
+            {"step": "extraction", "batch_id": "x"},
+        ),
+        ("batch_run", "BatchRunTool", {"location": "s3://b/k/"}),
+        ("search", "SearchTool", {"query": "q"}),
+    ],
+)
+def test_a_tool_called_without_a_caller_refuses(sdk, module, cls, args):
+    """Never read as an unscoped caller: a path that forgets to pass one is refused."""
+    tool = getattr(tool_module(module), cls)()
+    out = tool.execute(**args)
+    assert out["success"] is False and "Unauthorized" in out["error"]
+    assert sdk.calls == []

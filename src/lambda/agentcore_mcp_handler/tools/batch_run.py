@@ -12,7 +12,7 @@ from datetime import datetime
 
 from idp_common import mcp_access
 
-from .base import IDPTool
+from .base import NO_CALLER, IDPTool
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,8 @@ class BatchRunTool(IDPTool):
         logger.info(f"Version: {TOOL_VERSION}")
         logger.info(f"Parameters: location={location}, content={'<base64>' if content else None}, name={name}, prefix={prefix}")
 
+        if caller is None:
+            return dict(NO_CALLER)
         # Validate parameters
         validation = self._validate_parameters(location, content, name)
         if not validation['valid']:

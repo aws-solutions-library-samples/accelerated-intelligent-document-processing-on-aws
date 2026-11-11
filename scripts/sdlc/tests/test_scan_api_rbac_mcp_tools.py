@@ -132,8 +132,8 @@ def spec():
 
 OPS = {
     "chat": {"groups": ["Admin", "Author", "Viewer"]},
-    "getDocument": {"groups": "ANY_GROUP"},
-    "upload": {"groups": ["Admin", "Author"]},
+    "getDocument": {"groups": "ANY_GROUP", "scope_checked": True},
+    "upload": {"groups": ["Admin", "Author"], "scope_checked": True},
 }
 
 
@@ -225,6 +225,32 @@ def test_m3_mcp_admits_a_role_the_rest_operation_refuses(tmp_path):
 def test_m3_an_equivalent_operation_that_does_not_exist(tmp_path):
     ops = {k: v for k, v in OPS.items() if k != "chat"}
     assert ("M3", "search") in codes(run(tmp_path, ops=ops))
+
+
+def test_m3_search_made_scoped_while_its_rest_equivalent_cannot_be(tmp_path):
+    """The reviewer's mutation: flip unscoped_only on search in both the table and
+    the expectations. M2 cannot see it (they still agree); M3 must."""
+    policy = POLICY.replace(
+        "write=False,\n                         unscoped_only=True",
+        "write=False,\n                         unscoped_only=False",
+    )
+    s = spec()
+    s["mcp_tools"]["search"]["unscoped_only"] = False
+    s["mcp_tools"]["search"]["scope_filtered"] = True
+    got = run(tmp_path, spec_value=s, **{scanner.MCP_ACCESS_MODULE: policy})
+    assert policy != POLICY
+    assert any(
+        f.check == "M3" and "carries no configuration scope" in f.message for f in got
+    )
+
+
+def test_m3_a_tool_that_is_neither_scoped_nor_unscoped_only(tmp_path):
+    s = spec()
+    del s["mcp_tools"]["process"]["scope_checked"]
+    got = run(tmp_path, spec_value=s)
+    assert any(
+        f.check == "M3" and f.op == "process" and "neither" in f.message for f in got
+    )
 
 
 def test_m4_a_scope_filtered_tool_that_does_not_filter(tmp_path):
