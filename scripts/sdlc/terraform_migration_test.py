@@ -2065,7 +2065,10 @@ class Run:
         forward phase: for a run whose own teardown did not finish."""
         self.emergency_teardown()
         left = self.ctx.get("leftovers")
-        self.write_result(failed=bool(left) or left is None, stopped=False)
+        # Its own files: a teardown-only pass must not rewrite the run's verdict.
+        self.write_result(
+            failed=bool(left) or left is None, stopped=False, name="teardown"
+        )
         return 0 if left == [] else 1
 
     def execute(self) -> int:
@@ -2101,7 +2104,7 @@ class Run:
             self.write_result(failed, stopped)
         return 1 if failed or (self.ctx["findings"] and not stopped) else 0
 
-    def write_result(self, failed: bool, stopped: bool) -> None:
+    def write_result(self, failed: bool, stopped: bool, name: str = "result") -> None:
         status = (
             "FAIL"
             if failed or self.ctx["findings"]
@@ -2124,11 +2127,12 @@ class Run:
             "newDocument": self.ctx.get("newDocument"),
             "leftovers": self.ctx.get("leftovers"),
         }
-        (self.work / "result.json").write_text(
+        (self.work / f"{name}.json").write_text(
             json.dumps(result, indent=1, default=str)
         )
         text = summarise(result)
-        (self.work / "summary.txt").write_text(text)
+        summary_file = "summary.txt" if name == "result" else f"{name}-summary.txt"
+        (self.work / summary_file).write_text(text)
         print("\n" + text, flush=True)
 
 
