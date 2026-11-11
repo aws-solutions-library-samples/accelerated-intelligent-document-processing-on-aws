@@ -19,7 +19,7 @@ The Agent Analysis feature provides intelligent data exploration and analysis ca
 - **Automated SQL Generation**: Analytics agents convert questions into optimized SQL queries
 - **Interactive Visualizations**: Generate charts, graphs, and tables from query results
 - **Real-time Analysis**: Get insights from your processed documents without manual data analysis
-- **Sandboxed Code Execution**: Python visualization code runs in AWS Bedrock AgentCore Code Interpreter sessions, which hold no AWS credentials and reach only Amazon S3 in their own region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
+- **Sandboxed Code Execution**: Python visualization code runs in AWS Bedrock AgentCore Code Interpreter sessions, which hold no AWS credentials and cannot reach public internet hosts, but can reach Amazon S3 in their own region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
 - **MCP Integration**: Connect external systems and tools via Model Context Protocol (MCP) servers
 
 https://github.com/user-attachments/assets/e2dea2c5-5eb1-42f6-9af5-469afd2135a7
@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/e2dea2c5-5eb1-42f6-9af5-469afd2135a7
 - **Intelligent Orchestration**: Automatic query routing based on content analysis and agent capabilities
 - **Multi-Agent Selection**: Select multiple agents simultaneously for complex analysis workflows
 - **MCP External Integration**: Connect custom external tools and systems via MCP servers
-- **Sandboxed Architecture**: All code execution happens in AWS Bedrock AgentCore Code Interpreter sessions, not in Lambda functions; a session has no AWS credentials and reaches only Amazon S3 in its own region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
+- **Sandboxed Architecture**: All code execution happens in AWS Bedrock AgentCore Code Interpreter sessions, not in Lambda functions; a session has no AWS credentials and cannot reach public internet hosts, but can reach Amazon S3 in its own region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
 - **Database Schema Discovery**: Analytics agents automatically explore and understand your database structure
 - **Flexible Visualization**: Supports multiple chart types including bar charts, line charts, pie charts, and data tables
 - **Query History**: Track and manage previous questions through the web interface with agent selection memory
@@ -96,13 +96,17 @@ fully cut off from the network. Measured from a session in `us-west-2` on 2026-1
 | DNS lookup of Amazon S3 in the session's region | succeeds |
 | HTTP PUT to a presigned URL for a bucket in the session's region | succeeds, and the object arrives in the bucket |
 | TCP connection to Amazon S3 in another region, or HTTPS to regional STS | fails: network unreachable |
-| AWS credentials in the environment, in `~/.aws`, from the instance metadata service or a container credential endpoint | none present (the metadata service answers but lists no role) |
+| TCP connection to other AWS endpoints in the region (DynamoDB, Lambda, Bedrock runtime, CloudWatch Logs), checked once by hand | fails: network unreachable |
+| Instance metadata service at `169.254.169.254` | answers (it issues a session token) but lists no role |
+| AWS credentials in the environment, in `~/.aws`, from the instance metadata service or a container credential endpoint | none present |
 
 So code running in a session has no credentials of its own and no general internet
-access, but it can send data to Amazon S3 in that region, including to any bucket a
-presigned URL names. Treat the result of every query the agent runs as data that code
-in the session can read and write to such a location. Only `us-west-2` was measured;
-another region may differ.
+access, but it can send data to Amazon S3 in that region. The measured PUT went to a
+bucket in the same account; a presigned URL carries its own signature, so a bucket in
+another account in that region is expected to accept a PUT the same way, but that case
+was not measured. Treat the result of every query the agent runs as data that code in
+the session can read and can write to such a location. Only `us-west-2` was measured,
+and AWS endpoints other than those listed were not tested; another region may differ.
 
 To re-measure, run `make stacktest-sandbox-network` (it needs no stack, and creates
 and deletes its own bucket). It prints a pass/fail table against the posture above
@@ -142,7 +146,7 @@ The analytics agent has access to four specialized tools:
 ### 3. Code Sandbox Tool
 
 - **Purpose**: Securely transfers query results to AgentCore sandbox
-- **Environment**: Runs in the Code Interpreter session, with no access to the Lambda file system, no AWS credentials, and network reach limited to Amazon S3 in the session's region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
+- **Environment**: Runs in the Code Interpreter session, with no access to the Lambda file system, no AWS credentials, and no public internet access, though it can reach Amazon S3 in the session's region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
 - **Data Format**: CSV files containing query results
 
 ### 4. Python Execution Tool
