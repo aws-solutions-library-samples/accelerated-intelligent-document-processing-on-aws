@@ -1302,8 +1302,8 @@ def test_apigw_global_hosting_accepts_an_https_host_source(cbd, monkeypatch):
 def test_apigw_global_hosting_fails_when_the_outer_quotes_survive(cbd, monkeypatch):
     """The other half of the mis-parse: `'script-src ...'` with quotes intact.
 
-    Browsers discard an invalid first directive, and this policy has no
-    `default-src` to fall back on, so the header is present and enforces nothing.
+    Browsers discard an invalid first directive, so script-src falls back to
+    `default-src 'self'` and the header is present but not the policy written.
     """
     res = _apigw_probe(cbd, monkeypatch, f"'{_GOOD_CSP}'")
     assert res["success"] is False

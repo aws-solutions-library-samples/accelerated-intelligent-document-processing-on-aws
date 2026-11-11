@@ -2701,8 +2701,8 @@ additions.
       strips only the outer pair. The probe therefore asserts the response carries
       a CSP, that `'self'` survived quoted among the `script-src` sources, that
       the header does not still begin with a leftover static-value quote (which
-      would make the first directive invalid and, with no `default-src`, void the
-      policy), and that `script-src` has not regained a blanket `https:`. Both
+      would make the first directive invalid, so `script-src` would fall back to
+      `default-src 'self'` and block the Monaco loader), and that `script-src` has not regained a blanket `https:`. Both
       mis-parse shapes return HTTP 200 with a header present, so the earlier
       status-code-only assertion could not see them. The template-side companion
       is `scripts/tests/test_csp_policies_in_sync.py`, which keeps this mode's
