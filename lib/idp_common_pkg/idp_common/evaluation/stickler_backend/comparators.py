@@ -24,7 +24,10 @@ import logging
 import re
 import threading
 from collections import OrderedDict
-from typing import Any, Optional, Tuple
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Dict, Optional, Tuple
 
 from idp_common.config.models import EvaluationLLMMethodConfig
 from idp_common.evaluation.contract import _is_match_true
@@ -63,6 +66,65 @@ def _refuse_empty_prompts(system_prompt: Any, task_prompt: Any) -> None:
                 f"evaluation.llm_method.{key} is empty; set a prompt or remove the "
                 "key to use the default"
             )
+
+
+# The metering context every evaluation Bedrock call is recorded under, so its
+# keys read ``Evaluation/bedrock/<model>`` beside the processing steps' keys.
+EVALUATION_METERING_CONTEXT = "Evaluation"
+
+
+class _MeteringCollector:
+    """Thread-safe sum of the metering of the evaluation calls made in one scope."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._metering: Dict[str, Any] = {}
+
+    def add(self, metering: Any) -> None:
+        if not isinstance(metering, dict) or not metering:
+            return
+        from idp_common.utils.metering import merge_metering_data
+
+        with self._lock:
+            self._metering = merge_metering_data(self._metering, metering)
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            return {k: dict(v) for k, v in self._metering.items()}
+
+
+# The collector for the evaluation in progress. Comparator instances are cached
+# per (model, field) across documents for the life of a warm container, and
+# Stickler's comparator protocol carries nothing per document, so the document a
+# call belongs to cannot travel with the comparator; it travels in the context
+# instead. A ContextVar does not cross into a ThreadPoolExecutor worker by
+# itself: a fan-out site that runs comparisons must submit through
+# ``contextvars.copy_context().run`` (EvaluationService.evaluate_document does),
+# or its calls go unrecorded.
+_ACTIVE_METERING: ContextVar[Optional[_MeteringCollector]] = ContextVar(
+    "idp_evaluation_metering", default=None
+)
+
+
+@contextmanager
+def collect_evaluation_metering() -> Iterator[_MeteringCollector]:
+    """Collect the metering of every ``compare_llm`` Bedrock call made inside.
+
+    Yields the collector; read ``snapshot()`` once the block's work is done.
+    Calls made outside any such block are billed as before and recorded nowhere.
+    """
+    collector = _MeteringCollector()
+    token = _ACTIVE_METERING.set(collector)
+    try:
+        yield collector
+    finally:
+        _ACTIVE_METERING.reset(token)
+
+
+def _record_metering(response: Any) -> None:
+    collector = _ACTIVE_METERING.get()
+    if collector is not None and isinstance(response, dict):
+        collector.add(response.get("metering"))
 
 
 # Cap on a comparator instance's memo table. Instances are cached per
@@ -563,7 +625,11 @@ def compare_llm(
             top_p=top_p,
             max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
+            context=EVALUATION_METERING_CONTEXT,
         )
+        # Recorded before the response is parsed: the call is billed whether or
+        # not its answer turns out to be usable.
+        _record_metering(response)
 
         # Extract and parse response
         from idp_common import bedrock
