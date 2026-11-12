@@ -1087,8 +1087,9 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
     Validate Bedrock model IDs against pricing.yaml.
 
     Checks every model ID the config names: each classification call the active
-    strategy makes, every path in ``_CATALOG_MODEL_FIELDS``, and the per-class
-    extraction, extraction-escalation and confidence-escalation overrides. An ID
+    strategy makes, every path in ``_CATALOG_MODEL_FIELDS``, the per-class
+    extraction, extraction-escalation and confidence-escalation overrides, and the
+    ``model`` of any field's LLM-comparator method-config. An ID
     is compared as written, so surrounding whitespace or upper case is reported
     like any other typo — the Bedrock client sends it on unchanged.
 
@@ -1125,11 +1126,45 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
         return
 
     from idp_common.config.schema_constants import (
+        EVALUATION_METHOD_LLM,
         X_AWS_IDP_CONFIDENCE_ESCALATION_MODEL,
         X_AWS_IDP_DOCUMENT_TYPE,
+        X_AWS_IDP_EVALUATION_METHOD,
+        X_AWS_IDP_EVALUATION_METHOD_CONFIG,
         X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
         X_AWS_IDP_EXTRACTION_MODEL,
     )
+
+    def llm_judge_models(node: Any, field_path: str, class_name: str) -> None:
+        """A field judged by the LLM comparator may name its own model.
+
+        The Stickler mapper lays a field's method-config over
+        ``evaluation.llm_method``, so a ``model`` there chooses the judge.
+        """
+        if isinstance(node, list):
+            for item in node:
+                llm_judge_models(item, field_path, class_name)
+            return
+        if not isinstance(node, dict):
+            return
+        method_config = node.get(X_AWS_IDP_EVALUATION_METHOD_CONFIG)
+        if node.get(X_AWS_IDP_EVALUATION_METHOD) == EVALUATION_METHOD_LLM and (
+            isinstance(method_config, dict)
+        ):
+            targets.append(
+                (
+                    f"Class '{class_name}' field '{field_path or '<root>'}' "
+                    f"{X_AWS_IDP_EVALUATION_METHOD_CONFIG}.model",
+                    method_config.get("model"),
+                )
+            )
+        for key, value in node.items():
+            if key == "properties" and isinstance(value, dict):
+                for name, child in value.items():
+                    child_path = f"{field_path}.{name}" if field_path else name
+                    llm_judge_models(child, child_path, class_name)
+            elif key != X_AWS_IDP_EVALUATION_METHOD_CONFIG:
+                llm_judge_models(value, field_path, class_name)
 
     # (label, value) per model ID the config names. Classification has one model
     # per call the active strategy makes; every other field is a fixed path.
@@ -1150,6 +1185,7 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
             X_AWS_IDP_CONFIDENCE_ESCALATION_MODEL,
         ):
             targets.append((f"Class '{class_name}' {key}", cls.get(key)))
+        llm_judge_models(cls, "", class_name)
 
     for label, model_id in targets:
         if not model_id or not isinstance(model_id, str):

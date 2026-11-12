@@ -276,3 +276,64 @@ def test_shipped_preset_has_no_model_id_error(preset: str) -> None:
 
 def test_preset_glob_is_not_empty() -> None:
     assert glob.glob(str(_REPO_ROOT / "config_library/unified/*/config.yaml"))
+
+
+# --- every class is read, not only the first -----------------------------------
+
+
+def test_every_class_is_checked() -> None:
+    config = _base_config()
+    second = copy.deepcopy(config["classes"][0])
+    second.update(
+        {"$id": "ReceiptSchema", "x-aws-idp-document-type": "Receipt"},
+    )
+    second[schema_constants.X_AWS_IDP_EXTRACTION_MODEL] = " " + GOOD_MODEL
+    config["classes"].append(second)
+    result = validate_config(config, "pattern-2")
+    assert _model_errors(
+        result, f"Class 'Receipt' {schema_constants.X_AWS_IDP_EXTRACTION_MODEL}"
+    ), result["errors"]
+
+
+# --- a field judged by the LLM comparator may name its own model ---------------
+
+_METHOD = schema_constants.X_AWS_IDP_EVALUATION_METHOD
+_METHOD_CONFIG = schema_constants.X_AWS_IDP_EVALUATION_METHOD_CONFIG
+
+
+def _judge_config(model: str, method: str = "LLM", nested: bool = False):
+    field = {"type": "string", _METHOD: method, _METHOD_CONFIG: {"model": model}}
+    config = _base_config()
+    if nested:
+        config["classes"][0]["properties"] = {
+            "address": {"type": "object", "properties": {"city": field}}
+        }
+        return config, "address.city"
+    config["classes"][0]["properties"] = {"total": field}
+    return config, "total"
+
+
+def _judge_label(path: str) -> str:
+    return f"Class 'Invoice' field '{path}' {_METHOD_CONFIG}.model"
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["top-level", "nested"])
+@pytest.mark.parametrize("kind", list(_bad_spellings(GOOD_MODEL)))
+def test_llm_judge_model_refuses_bad_spelling(kind: str, nested: bool) -> None:
+    config, path = _judge_config(_bad_spellings(GOOD_MODEL)[kind], nested=nested)
+    result = validate_config(config, "pattern-2")
+    assert result["valid"] is False
+    assert _model_errors(result, _judge_label(path)), result["errors"]
+
+
+def test_llm_judge_model_accepts_catalog_model() -> None:
+    config, path = _judge_config(GOOD_MODEL)
+    result = validate_config(config, "pattern-2")
+    assert not _model_errors(result, _judge_label(path)), result["errors"]
+
+
+def test_method_config_model_is_ignored_for_a_non_llm_method() -> None:
+    """Only the LLM comparator reads ``model``; another comparator's kwargs are not IDs."""
+    config, path = _judge_config("not-a-model", method="EXACT")
+    result = validate_config(config, "pattern-2")
+    assert not _model_errors(result, _judge_label(path)), result["errors"]
