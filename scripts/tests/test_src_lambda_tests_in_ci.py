@@ -174,6 +174,60 @@ def _covered_dirs(
     return covered
 
 
+#: The coverage producer both CIs run (it is in ``test_ci_gate_parity.SHARED_GATES``).
+#: Every tree it measures runs its tests on every pull request, under coverage, so a
+#: suite it measures needs no line in ``test-packages-cicd`` as well.
+COVERAGE_TARGET = "coverage-all-cicd"
+
+
+def _coverage_module():
+    spec = importlib.util.spec_from_file_location(
+        "check_coverage_debt", REPO_ROOT / "scripts" / "check_coverage_debt.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _ci_coverage_skips(root: Path | None = None) -> set[str]:
+    """Tree names ``make coverage-all-cicd`` leaves out, read from the Makefile.
+
+    Read rather than assumed: a tree added to ``COVERAGE_CICD_SKIP`` stops running in
+    CI, so it must stop being credited here at the same moment.
+    """
+    text = ((root or REPO_ROOT) / "Makefile").read_text(encoding="utf-8")
+    match = re.search(r"^COVERAGE_CICD_SKIP\s*\??=(.*)$", text, re.MULTILINE)
+    assert match, "the Makefile no longer defines COVERAGE_CICD_SKIP"
+    return set(re.findall(r"--skip\s+(\S+)", match.group(1)))
+
+
+def _coverage_tree_dirs(root: Path | None = None) -> set[str]:
+    """Repo-relative directories ``make coverage-all-cicd`` runs pytest against in CI.
+
+    For a fan-out tree, its derived roots. For any other tree, each path argument it
+    passes, resolved against its ``cwd``, or the ``cwd`` itself when it passes none,
+    which is what pytest collects from there. An option's value (``-m "not
+    integration"``) is not a path.
+    """
+    module = _coverage_module()
+    skipped = _ci_coverage_skips(root)
+    covered: set[str] = set()
+    for tree in module.TREES:
+        if tree.name in skipped:
+            continue
+        if tree.fanout:
+            covered.update(module.fanout_roots(tree))
+            continue
+        base = Path(tree.cwd)
+        paths = _target_paths(list(tree.args))
+        if not paths:
+            covered.add(base.as_posix())
+        for target_path in paths:
+            covered.add((base / target_path).as_posix().rstrip("/"))
+    return covered
+
+
 def _recipe_workdirs(root: Path | None = None) -> set[str]:
     """Directories the root Makefile ``cd``s into before running pytest, by regex.
 
@@ -427,14 +481,15 @@ def test_every_test_dir_is_run_by_a_ci_recipe():
     module = _run_all_tests_module()
     missing = _uncovered(
         REPO_ROOT,
-        covered=_covered_dirs(),
+        covered=_covered_dirs() | _coverage_tree_dirs(),
         quarantined=set(module.QUARANTINE),
     )
 
     assert not missing, (
         "These directories hold test_*.py but are run by neither "
         + " nor ".join(f"`make {target}`" for _, target in CI_RECIPES)
-        + " — the only recipes either CI uses to run this repository's offline "
+        + f" nor `make {COVERAGE_TARGET}`"
+        + " — the only targets either CI uses to run this repository's offline "
         "suites — so their tests run in NEITHER CI:\n  "
         + "\n  ".join(missing)
         + "\n\nAdd each to the test-packages-cicd recipe in the root Makefile. Give "
@@ -455,3 +510,48 @@ def test_quarantined_dirs_carry_a_reason():
     module = _run_all_tests_module()
     for path, reason in module.QUARANTINE.items():
         assert reason and reason.strip(), f"QUARANTINE['{path}'] has no reason"
+
+
+def test_the_coverage_side_credits_real_ci_directories():
+    """The coverage trees credited as run are real, run in CI, and include the big ones.
+
+    The suites dropped from ``test-packages-cicd`` because a coverage tree runs them
+    are credited only through this derivation, so an empty or wrong one would leave
+    them in neither CI with this file green.
+    """
+    credited = _coverage_tree_dirs()
+    for expected in (
+        "scripts/tests",
+        "scripts/sdlc/tests",
+        "lib/idp_sdk",
+        "lib/idp_cli_pkg",
+    ):
+        assert expected in credited, (
+            f"{expected} is not credited; got {sorted(credited)}"
+        )
+    stale = sorted(path for path in credited if not (REPO_ROOT / path).is_dir())
+    assert not stale, "credited coverage directories that do not exist: " + ", ".join(
+        stale
+    )
+    for config in (".gitlab-ci.yml", ".github/workflows/developer-tests.yml"):
+        text = (REPO_ROOT / config).read_text(encoding="utf-8")
+        assert f"make {COVERAGE_TARGET}" in text, (
+            f"{config} no longer runs `make {COVERAGE_TARGET}`, so the trees it "
+            "measures are credited here while running in no CI"
+        )
+
+
+def test_a_skipped_coverage_tree_is_not_credited(tmp_path: Path):
+    """A tree named in ``COVERAGE_CICD_SKIP`` stops counting as run."""
+    makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+    patched = re.sub(
+        r"^COVERAGE_CICD_SKIP\s*\??=.*$",
+        "COVERAGE_CICD_SKIP ?= --skip idp_common --skip scripts",
+        makefile,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    (tmp_path / "Makefile").write_text(patched, encoding="utf-8")
+    credited = _coverage_tree_dirs(tmp_path)
+    assert "scripts/tests" not in credited
+    assert "lib/idp_sdk" in credited

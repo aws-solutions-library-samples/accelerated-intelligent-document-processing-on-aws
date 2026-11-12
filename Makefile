@@ -939,29 +939,29 @@ test-integration-all: ## Run every integration-marked suite across all roots (re
 test-list: ## List the discovered test roots (run vs quarantined) without running them
 	$(PYTHON) scripts/run_all_tests.py --list
 
-test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp_common_pkg test-cicd (all green headless, no AWS)
-	@echo "Running idp_cli_pkg tests..."
-	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
-	@echo "Running idp_sdk tests (not integration)..."
-	cd lib/idp_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -m "not integration" -q -p no:cacheprovider
-	@echo "Running idp_feature_sdk tests..."
-	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
-	@echo "Running feature platform tests..."
-	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
+test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_common_pkg test-cicd nor coverage-all-cicd runs (all green headless, no AWS)
+	@# The suites a coverage tree measures are NOT run here: `make coverage-all-cicd`
+	@# runs each of them, under coverage, in both CIs, and running them a second time
+	@# without coverage cost about 20 minutes of every pull request's longest job for
+	@# no added check. Those are the `scripts` gate suites, idp_sdk, idp_cli,
+	@# idp_feature_sdk, main-stack-extensions, seller-entitlement-service and the
+	@# pii-anonymizer hook and feature API -- every non-fan-out tree in
+	@# scripts/check_coverage_debt.py TREES. scripts/tests/test_src_lambda_tests_in_ci.py
+	@# credits those trees as run, so a suite dropped from here that no tree measures
+	@# fails there. The Lambda and resolver directories a fan-out tree measures are
+	@# still listed below: their runs are seconds each, and several are scoped
+	@# differently from the fan-out's invocation. `make test` runs every root locally.
 	@echo "Running Terraform translator and bridge tests..."
 	cd terraform/translator && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
 	cd terraform/bridge && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
 	cd feature-platform/feature-template/feature-api && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
-	@# These three ran in NO CI gate until #974. `make test` picked them up via
+	@echo "Running pii-anonymizer UI deployer tests..."
+	@# These three ran in NO CI gate until #974. The feature API and hook suites are
+	@# now measured by their coverage trees (see the note at the top of this recipe). `make test` picked them up via
 	@# scripts/run_all_tests.py, but nothing on a PR did — which is how an
 	@# order-dependent failure in the feature API sat unnoticed long enough to be
 	@# written into the docs as a standing failure. All offline (moto), ~2.5s total.
-	cd feature-platform/pii-anonymizer/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	cd feature-platform/pii-anonymizer/hook && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/pii-anonymizer/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	@echo "Running seller entitlement service tests (incl. template-security + payload fuzz)..."
-	cd feature-platform/seller-entitlement-service && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
 	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running circuit breaker + queue processor + workflow tracker Lambda tests (slot ownership, counter reconcile + negative repair, decrement floor/idempotency #915 #916, config pin, idempotent start #904)..."
@@ -1124,14 +1124,6 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	$(PYTEST_HERMETIC) patterns/unified/tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -q -p no:cacheprovider
-	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
-	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/sdlc/tests -q -p no:cacheprovider
-	@echo "Running repo-script tests (Python ARN-partition gate)..."
-	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/tests -q -p no:cacheprovider
-	@echo "Running SRT gate tests (CI-visibility split + suppression baseline hygiene)..."
-	$(PYTEST_HERMETIC) scripts/srt/tests -q -p no:cacheprovider
-	@echo "Running dependency-audit gate tests (OSV allowlist + .ash.yaml hygiene)..."
-	$(PYTEST_HERMETIC) scripts/security/tests -q -p no:cacheprovider
 	@echo -e "$(GREEN)✅ All package/Lambda CI suites passed!$(NC)"
 
 test-cli: ## Run only IDP CLI tests

@@ -419,9 +419,15 @@ package_tests:
 
   before_script:
     - *python_setup
+    # ⚠️ The three toolchains below (Node with basedpyright, pinned cfn-lint, the UI's
+    # npm dependencies) were added for `scripts/tests` and `lib/idp_sdk`. Those suites
+    # no longer run in this job: `test-packages-cicd` leaves out every suite a coverage
+    # tree measures, and `unit_tests` runs them under `coverage-all-cicd` with the same
+    # three toolchains. They are kept here until it is measured that no remaining suite
+    # in this job needs them; the reasons below describe the suites they were added for.
     # ⚠️ Node and basedpyright ARE needed here, which is not obvious from the
     # script below and cost this job a red run when they were left out.
-    # `scripts/tests` is one of the suites `test-packages-cicd` runs, and
+    # `scripts/tests` is one of the suites `coverage-all-cicd` runs, and
     # `test_pyright_config.py` RUNS basedpyright — a live 0.5s probe confirming
     # that pyrightconfig.json's five `extraPaths` really resolve the first-party
     # packages, rather than trusting that the config looks right. That is the whole

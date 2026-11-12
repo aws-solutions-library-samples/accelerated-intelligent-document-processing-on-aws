@@ -28,7 +28,7 @@ its `make` target and the skill that documents how to run it.
 | Release-vs-release benchmark | `make benchmark-release …` (alias `make stacktest-benchmark`) | `.claude/skills/run-benchmarks.md` |
 | In-place upgrade (X→Y) test | `make stacktest-upgrade` (pointer) | `.claude/skills/test-upgrade.md` |
 | Full offline test battery (no AWS) | `make test` | `.claude/skills/full-test-battery.md` |
-| Package/Lambda offline suites (idp_cli, idp_sdk, idp_feature_sdk, feature-platform, seller-entitlement-service) | `make test-packages-cicd` | — *(runs per commit in the GitHub `developer-tests` workflow)* |
+| Package/Lambda offline suites (idp_cli, idp_sdk, idp_feature_sdk, feature-platform, seller-entitlement-service) | `make coverage-all-cicd` for every suite a coverage tree measures; `make test-packages-cicd` for the rest | — *(runs per commit in the GitHub `developer-tests` workflow)* |
 | Seller-service ownership preflight (read-only) | `make seller-entitlement-service-preflight PRODUCT_REGISTRY='{…}'` | `feature-platform/seller-entitlement-service/README.md` |
 | Seller-service **e2e** (deploy → live probe → teardown) | `make stacktest-seller` | `.claude/skills/run-stack-tests.md` |
 | Seller-service live activation + payload probe | `python feature-platform/seller-entitlement-service/tests/dynamic_activation_test.py --endpoint … --product-id …` | `feature-platform/seller-entitlement-service/README.md` |
@@ -82,8 +82,8 @@ assertions, a payload-robustness fuzz corpus, and a live activation probe — be
 it deploys into an AWS Marketplace *seller* account rather than a customer's, and its
 protected assets belong to the seller. Threats `SELL.T01–T10`.
 
-The first two run **offline per commit** via `make test-packages-cicd` (called by the
-GitHub `developer-tests` workflow); the live probe is manual, because issuing a real
+The first two run **offline per commit** via `make coverage-all-cicd`, as the
+`seller_entitlement` coverage tree (called by the GitHub `developer-tests` workflow); the live probe is manual, because issuing a real
 token needs product ownership *and* a subscribed buyer account, neither of which a
 build account has. They are **not** in the curated `test-results/` snapshot.
 
