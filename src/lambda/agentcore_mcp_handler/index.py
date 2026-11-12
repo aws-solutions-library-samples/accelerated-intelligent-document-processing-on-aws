@@ -180,7 +180,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             f"{json.dumps(sanitize_event_for_logging(event))}"
         )
         logger.info(f"Tool execution starting...")
-        result = tool.execute(caller=caller, **event)
+        result = mcp_access.with_provenance(
+            tool_name, tool.execute(caller=caller, **event)
+        )
         logger.info(f"Tool execution completed successfully")
         logger.info(f"Result: {json.dumps(result)[:500]}...")  # Log first 500 chars
         

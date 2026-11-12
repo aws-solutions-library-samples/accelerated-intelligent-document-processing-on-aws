@@ -44,11 +44,20 @@ External App → Cognito Auth → AgentCore Gateway → Analytics Lambda → IDP
 
 ### During Stack Deployment
 
-The MCP integration is controlled by the `EnableMCP` parameter:
+The MCP integration is controlled by the `EnableMCP` parameter, which is **off by
+default**. A new stack has no MCP server until you set it to `'true'`. Updating an
+existing stack keeps its current value when the update reuses previous parameter
+values, as the CloudFormation console and `idp-cli deploy` do. An update that sends
+only the parameters you name takes the default, so pass `EnableMCP=true` there to keep
+MCP on. That covers the AWS CLI, `idp-cli deploy --terraform` (which keeps only the
+parameters an earlier deploy passed, so a stack that relied on the old default has
+none to keep) and the Terraform module used directly. Turning MCP off revokes every
+[service credential](#service-credentials), and switching it back on does not restore
+them.
 
 **Enable MCP Integration:**
 ```yaml
-EnableMCP: 'true'  # Default value
+EnableMCP: 'true'
 ```
 
 **Disable MCP Integration:**
@@ -527,6 +536,33 @@ stack, setting `EnableMCP` to `false`, or downgrading to a release without servi
 credentials removes each credential's app client, schedules its secret for deletion
 and takes it off the gateway. They are not restored if the stack is later upgraded
 or MCP is switched back on; create them again.
+
+## Using MCP clients
+
+An MCP client passes each tool result to its own model, and the IDP server's results
+are mostly text taken from your documents: extracted values, classifications, file
+names, and the analytics agent's answers about them. Operate a client with that in
+mind:
+
+- **Connect the IDP server alongside tools you trust.** Whatever else the client
+  can do (send email, call web APIs, write files), its model can be steered to do
+  with what it read here. Keep the IDP server out of clients that also hold tools
+  you would not want acting on a document's contents.
+- **Results mark which fields are document content.** Each result that carries
+  document text includes a `provenance` field naming those fields
+  (`documentDerived`) and saying to treat them as data to report, not as
+  instructions to follow. The MCP Connector shows that note to the model ahead of
+  the result. A client that drops it loses the hint, not the result.
+- **Give each client the least access it needs.** Prefer a service credential with
+  the Viewer role and only the configuration profiles the integration reads. Turn
+  write tools (`process`, `reprocess`) on only where the client must start
+  processing, and keep `search`, which reads across every profile, to clients that
+  need it; a credential limited to some configuration profiles cannot call `search`
+  at all.
+- **Keep a person in the loop for actions.** Where the client asks before running a
+  tool, leave that on for write tools and for tools of other servers.
+- **Rotate and revoke.** A credential that a client no longer uses should be revoked
+  on the MCP Configuration page; revocation applies to the next request.
 
 ## Important Notes
 

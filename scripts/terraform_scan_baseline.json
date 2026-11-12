@@ -9,7 +9,7 @@
     "CloudFormation side because their condition is false at the parameter defaults."
   ],
   "checkovVersion": "3.4.0",
-  "notEvaluatedCount": 25,
+  "notEvaluatedCount": 49,
   "entries": [
     {
       "check": "CKV_AWS_115",

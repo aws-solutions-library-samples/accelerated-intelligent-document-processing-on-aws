@@ -101,9 +101,10 @@ class GetResultsTool(IDPTool):
                     "documents": [document],
                     "summary": {},
                     "next_token": None,  # nosec B105 - pagination field
+                    # The document's id is a file name, and stays in `documents`,
+                    # which the provenance envelope names as document content.
                     "message": (
-                        f"Retrieved results for document "
-                        f"{document.get('document_id')} "
+                        f"Retrieved results for one document "
                         f"(status: {document.get('status')})"
                     ),
                 }
