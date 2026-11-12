@@ -70,7 +70,7 @@ classes:
               "RecipientName": "The Honorable Wendell H. Ford",
               "Date": "10/31/1995",
               "Subject": null
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
       - x-aws-idp-class-prompt: "This is an example of the class 'Letter'"
         name: "Letter2"
         x-aws-idp-attributes-prompt: |
@@ -80,7 +80,7 @@ classes:
               "RecipientName": "Mr. Addison Y. Yeaman",
               "Date": "10/14/1970",
               "Subject": "Invitation to the Twelfth Annual Meeting of the TGIC"
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter2.png"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter2.png"
 ```
 
 ### Example Fields Explained
@@ -156,12 +156,12 @@ The `x-aws-idp-image-path` field supports multiple formats for maximum flexibili
 
 **Single Image File (Original functionality)**:
 ```yaml
-x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
 ```
 
 **Local Directory with Multiple Images (New)**:
 ```yaml
-x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/"
+x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/"
 ```
 
 **S3 Prefix with Multiple Images (New)**:
@@ -667,37 +667,43 @@ task_prompt: |
 
 ## Testing Your Configuration
 
-Use the provided test notebooks to validate your few-shot configuration:
+To check that a configuration's examples load, including their images, build the
+example content the classification and extraction prompts receive. This makes no
+model call. The builders are the functions both services use, and the snippet runs
+as written from the repository root against the `rvl-cdip-with-few-shot-examples`
+preset; substitute your own configuration file and class:
 
-### Classification Testing
 ```python
-# Test classification few-shot examples
-from idp_common.classification.service import ClassificationService
+# Run from the repository root.
+import os
+
 import yaml
 
-# Load your configuration
-with open('path/to/your/config.yaml', 'r') as f:
-    config = yaml.safe_load(f)
+from idp_common.config.models import IDPConfig
+from idp_common.utils.few_shot_example_builder import (
+    build_few_shot_examples_content,
+    build_few_shot_extraction_examples_content,
+)
 
-# Initialize service
-service = ClassificationService(config=config, backend="bedrock")
+# A local x-aws-idp-image-path is resolved against ROOT_DIR (in a deployed stack,
+# against the configuration bucket instead).
+os.environ["ROOT_DIR"] = os.getcwd()
 
-# Test building examples for all classes
-examples = service._build_few_shot_examples_content()
+with open("config_library/unified/rvl-cdip-with-few-shot-examples/config.yaml") as f:
+    config = IDPConfig.model_validate(yaml.safe_load(f))
+
+# Classification: the examples of every class
+examples = build_few_shot_examples_content(config)
 print(f"Loaded {len(examples)} example items for classification")
-```
 
-### Extraction Testing
-```python
-# Test extraction few-shot examples for specific class
-from idp_common.extraction.service import ExtractionService
-
-service = ExtractionService(config=config)
-
-# Test building examples for specific class (e.g., "letter")
-examples = service._build_few_shot_examples_content('letter')
+# Extraction: the examples of one class (here "letter")
+letter = next(c for c in config.classes if c.get("$id") == "letter")
+examples = build_few_shot_extraction_examples_content(letter)
 print(f"Loaded {len(examples)} example items for 'letter' class extraction")
 ```
+
+An example whose image cannot be found is logged as a warning and contributes its
+text only, so compare the number of image items with the images you expect.
 
 ## Performance Considerations
 
@@ -789,9 +795,10 @@ Monitor these metrics to ensure optimal cache usage:
 
 ### Complete Working Example with Caching
 
-See `config_library/unified/few_shot_example/` for a complete working configuration that demonstrates:
+See `config_library/unified/rvl-cdip-with-few-shot-examples/` for a complete working configuration that demonstrates:
 - Letter classification and extraction with 2 examples
 - Email classification and extraction with 1 example
+- Bank statement classification and extraction with 1 example whose images are a directory of pages
 - Proper image path configuration
 - Task prompts with few-shot placeholder integration and optimal CACHEPOINT placement
 
