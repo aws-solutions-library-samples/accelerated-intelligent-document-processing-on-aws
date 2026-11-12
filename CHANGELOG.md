@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT-0
 
 ### Added
 
+- **Add documents to a test set from the Document List.** Admins can select processed documents in the Production view and choose **Add to test set**, then pick an existing test set. It opens Test Studio's **From processed documents** dialog with the selection already chosen, so documents without ground truth are added unlabeled with the same warnings, and documents that have not finished processing are left out and counted. See [Adding documents to a test set](docs/web-ui.md#adding-documents-to-a-test-set). (#812)
 - **First-time-user stories and the MR UX test now cover Quick Start.** Nightly stories check that a new user finds [Quick Start](docs/quick-start.md) from the Welcome page and from the side navigation and gets as far as describing a document, stopping before it is sent, because Quick Start's agent creates and activates a configuration profile on the shared review stack. The MR UX test reviews the same path, as flow `QS.1`, when an MR changes Quick Start's screens. See [first-time-user stories](.claude/skills/ux-test-stories.md#writing-a-story).
 - **`idp-cli deploy --terraform --from-code .` builds and deploys Terraform from a local checkout.** It publishes the templates and the Terraform module from the checkout, as `idp-cli publish --terraform` does, then deploys that module; `--headless` and `--govcloud` select the variant. See [Terraform deployment](docs/terraform.md#with-idp-cli-deploy---terraform).
 

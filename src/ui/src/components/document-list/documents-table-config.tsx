@@ -23,6 +23,7 @@ import { isQueueManaged } from '../common/review-status';
 import { renderObjectStatus } from '../common/object-status-renderer';
 import { MALWARE_REFUSED_STATUSES, MALWARE_SCANNING_STATUS } from '../common/malware-scan';
 import CircuitBreakerBadge from './CircuitBreakerBadge';
+import AddToTestSetButton from './AddToTestSetButton';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
 import { ABORTABLE_STATUSES } from '../common/document-statuses';
@@ -72,6 +73,8 @@ interface DocumentsCommonHeaderProps {
   onAbort?: (() => void) | null;
   onClaimReview?: (() => void) | null;
   onReleaseReview?: (() => void) | null;
+  /** Opens the add-to-test-set dialog. Null hides the action (it is offered to Admins only). */
+  onAddToTestSet?: (() => void) | null;
   currentUsername?: string;
   loading?: boolean;
   setIsLoading?: (loading: boolean) => void;
@@ -514,6 +517,7 @@ export const DocumentsCommonHeader = ({
   onAbort,
   onClaimReview,
   onReleaseReview,
+  onAddToTestSet,
   onDownloadSelected,
   isDownloadInProgress,
   destructiveDisabledReason,
@@ -619,6 +623,7 @@ export const DocumentsCommonHeader = ({
           >
             Download
           </ButtonDropdown>
+          {onAddToTestSet && <AddToTestSetButton selectedItems={selectedItems} onClick={onAddToTestSet} />}
           {onClaimReview && (
             <Button variant="primary" disabled={!hasClaimableItems} onClick={onClaimReview}>
               Start Review
