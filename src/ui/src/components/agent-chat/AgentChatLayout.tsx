@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import {
   Container,
   Alert,
@@ -42,6 +43,21 @@ import './AgentChatLayout.css';
 import type { ChatMessage } from '../../types/agent-chat';
 
 const logger = new ConsoleLogger('AgentChatLayout');
+
+const uiMessages = defineMessages<{ thirdPartyNotice: NoMessageValues; enableExternalMcpAgents: NoMessageValues }>({
+  thirdPartyNotice: {
+    id: 'agentChat.layout.thirdPartyNotice',
+    defaultMessage:
+      'Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.',
+    description:
+      'Notice beside the agent opt-in checkboxes under the Agent Chat input. Code Intelligence Agent and External MCP agents are the names of the two optional agents.',
+  },
+  enableExternalMcpAgents: {
+    id: 'agentChat.layout.enableExternalMcpAgents',
+    defaultMessage: 'Enable External MCP agents',
+    description: 'Checkbox under the Agent Chat input that lets the chat use agents served by external MCP servers.',
+  },
+});
 
 const sampleClient = generateClient();
 
@@ -110,6 +126,7 @@ const AgentChatLayout = ({
   customStyles = {},
   welcomeName,
 }: AgentChatLayoutProps): React.JSX.Element => {
+  const intl = useIntl();
   const [welcomeAnimated, setWelcomeAnimated] = useState(false);
   const [isLoadingSession, setIsLoadingSession] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
@@ -757,7 +774,7 @@ const AgentChatLayout = ({
               ) : (
                 <SpaceBetween direction="horizontal" size="m" alignItems="center">
                   <Box {...({ fontSize: 'body-s', color: 'text-status-info', flex: '1' } as Record<string, unknown>)}>
-                    Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.
+                    {intl.formatMessage(uiMessages.thirdPartyNotice)}
                   </Box>
                   <Checkbox
                     checked={enableCodeIntelligence}
@@ -771,7 +788,7 @@ const AgentChatLayout = ({
                     onChange={({ detail }) => setOptIn('enableExternalMcpAgents', detail.checked)}
                     disabled={waitingForResponse}
                   >
-                    <Box fontSize="body-s">Enable External MCP agents</Box>
+                    <Box fontSize="body-s">{intl.formatMessage(uiMessages.enableExternalMcpAgents)}</Box>
                   </Checkbox>
                 </SpaceBetween>
               )}
