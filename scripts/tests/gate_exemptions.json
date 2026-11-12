@@ -100,6 +100,18 @@
     "            'nobody is working on it', which is itself information."
   ],
   "exemptions": {
+    "scripts/tests/test_agent_capabilities.py::PENDING_CONTROL_FINDINGS": {
+      "kind": "exemption",
+      "memberKind": "an open finding in scripts/tests/agent_capabilities.yaml: an entry whose external output no control limits (entry:<name>), or a role grant declared unused (role:<function>:<kind>:<bucket and key>)",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Each member is a place the capability manifest records, in its own text beside the member, that nothing in the code limits an external output of an entry that takes untrusted text and reads private data, or that a role holds an S3 grant no code path on it uses. Recording the member is what turns the combination rule's failure for that entry or grant into a pass, so it is a carve-out. Why JUDGEMENT: whether a grant is used, and whether anything limits a channel, is read from the code by a person; the manifest states for each grant whether that reading was measured or inferred, and every current member says inferred. The orchestrator member is expected to close when the orchestrator session flag lands, and the role members when their templates stop granting the unused access.",
+      "turnsOff": "test_agent_capabilities.py's per-output combination rule for one entry's listed outputs, and test_analytics_role_grants.py's declared-access check for one grant, per member",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_agent_capabilities.py",
+      "ratchetGap": "The pin holds the set of findings, not their text: an entry's finding text or an unused grant's note can be wrong, and nothing checks that the access really is unused or the channel really is unlimited. .claude/skills/agent-capability-review.md is the audit that re-reads them."
+    },
     "scripts/tests/test_config_profile_writer_wiring.py::KNOWN_WRITERS": {
       "kind": "fixture",
       "memberKind": "a (template, logical id) pair naming a deployed Lambda measured to save a configuration profile",
