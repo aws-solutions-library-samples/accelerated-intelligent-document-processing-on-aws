@@ -646,20 +646,24 @@ evaluation:
     top_p: "0.0"         # 0 sends temperature instead of top_p
     top_k: "5"
     max_tokens: ""       # Empty = the model's maximum output; set a value to cap it
-    reasoning_effort: medium  # Applied only by models with an effort control
     system_prompt: >-
       You are an evaluator that helps determine if the predicted and expected values match ...
     task_prompt: >-
       I need to evaluate attribute extraction for a document of class: {DOCUMENT_CLASS} ...
 ```
 
-These are the shipped values (the prompts are shortened here). Every setting
-under `llm_method` is sent with each comparison, and the Bedrock client adapts
-them per model as it does for the other steps: a model without an effort control
-ignores `reasoning_effort`, and models that reject sampling parameters do not get
-`temperature`, `top_p` or `top_k`. On a model with an effort control (for example
-Claude Sonnet 4.6), `reasoning_effort` sets how much the model reasons on each
-comparison, which affects its latency and token cost. A prompt you leave out uses the shipped one; an empty
+These are the shipped values (the prompts are shortened here). The model, the
+sampling settings, `max_tokens` and the prompts are sent with each comparison,
+and the Bedrock client adapts them per model as it does for the other steps:
+models that reject sampling parameters do not get `temperature`, `top_p` or
+`top_k`.
+
+⚠️ **Evaluation does not apply `reasoning_effort`.** The editor shows a
+Reasoning effort setting under `llm_method` for models with an effort control,
+but no effort is sent with evaluation comparisons, whatever it is set to, so
+such a model runs at its own default effort.
+
+A prompt you leave out uses the shipped one; an empty
 `system_prompt` or `task_prompt` is refused: every section whose class has an
 `LLM` field is reported as a failed evaluation with a configuration error naming
 the setting, and none of that section's fields are scored.

@@ -1,11 +1,13 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Every `evaluation.llm_method` setting reaches the Converse request.
+"""The `evaluation.llm_method` sampling and output settings reach the request.
 
-The comparator used to keep `top_p` and `max_tokens` without forwarding them, and
-to drop `reasoning_effort` entirely, so an evaluation ran with the Bedrock
-client's own defaults (`top_p` 0.1, no effort) whatever the configuration said.
+The comparator used to keep `top_p` and `max_tokens` without forwarding them, so
+an evaluation ran with the Bedrock client's own `top_p` default (0.1) whatever
+the configuration said. `reasoning_effort` is deliberately NOT applied: every
+stored profile carries its default (`medium`), so forwarding it would start
+sending an effort nobody chose on every effort-capable evaluation model.
 
 These tests drive the real path — `SticklerConfigMapper` -> Stickler's converter ->
 `LLMComparator` -> `compare_llm` -> `BedrockClient.invoke_model` — and stub only
@@ -107,15 +109,11 @@ def test_configured_claude_settings_reach_the_request() -> None:
     assert is_claude_effort_model(_CLAUDE_EFFORT)
     assert not strips_sampling_params(_CLAUDE_EFFORT)
     (request,) = _converse_requests_through_stickler(
-        _shipped_llm_method(
-            model=_CLAUDE_EFFORT, reasoning_effort="high", top_p=0.4, max_tokens=321
-        )
+        _shipped_llm_method(model=_CLAUDE_EFFORT, top_p=0.4, max_tokens=321)
     )
     assert request["modelId"] == _CLAUDE_EFFORT
     assert request["inferenceConfig"] == {"topP": 0.4}
-    extra = request["additionalModelRequestFields"]
-    assert extra["output_config"] == {"effort": "high"}
-    assert extra["max_tokens"] == 321
+    assert request["additionalModelRequestFields"]["max_tokens"] == 321
 
 
 def test_configured_nova_settings_reach_the_request() -> None:
@@ -141,14 +139,36 @@ def test_shipped_defaults_reach_the_request() -> None:
     }
 
 
-def test_shipped_reasoning_effort_reaches_an_effort_model() -> None:
-    default_effort = EvaluationLLMMethodConfig().reasoning_effort
-    assert default_effort
+@pytest.mark.parametrize("effort", ["medium", "high"])
+def test_no_effort_is_sent_for_an_effort_capable_model(effort: str) -> None:
+    """Evaluation does not apply reasoning_effort; the request carries none.
+
+    `medium` is what every stored profile holds (the field default, dumped into
+    the stored item), so this pins that stacks keep today's request. The client
+    would send `output_config.effort` for this model if the comparator passed one.
+    """
+    assert is_claude_effort_model(_CLAUDE_EFFORT)
+    assert EvaluationLLMMethodConfig().reasoning_effort == "medium"
     (request,) = _converse_requests_through_stickler(
-        _shipped_llm_method(model=_CLAUDE_EFFORT)
+        _shipped_llm_method(model=_CLAUDE_EFFORT, reasoning_effort=effort)
     )
+    extra = request["additionalModelRequestFields"]
+    assert "output_config" not in extra
+    assert "reasoning" not in extra
+
+
+def test_the_client_would_send_an_effort_for_that_model() -> None:
+    """Non-vacuity for the test above: the same client does send one when asked."""
+    client = _stub_client()
+    client.invoke_model(
+        model_id=_CLAUDE_EFFORT,
+        system_prompt="s",
+        content=[{"text": "t"}],
+        reasoning_effort="medium",
+    )
+    request = client._client.converse.call_args.kwargs
     assert request["additionalModelRequestFields"]["output_config"] == {
-        "effort": default_effort
+        "effort": "medium"
     }
 
 
@@ -163,14 +183,13 @@ def test_unset_numeric_settings_take_the_llm_method_defaults(
     assert built.llm_config["max_tokens"] == default.max_tokens
     assert built.llm_config["temperature"] == default.temperature
     assert built.llm_config["top_k"] == default.top_k
-    assert built.llm_config["reasoning_effort"] == default.reasoning_effort
 
 
 def test_string_values_are_converted() -> None:
     built = LLMComparator(top_p="0.4", max_tokens="321", reasoning_effort="low")
     assert built.llm_config["top_p"] == 0.4
     assert built.llm_config["max_tokens"] == 321
-    assert built.llm_config["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in built.llm_config
 
 
 @pytest.mark.parametrize(
@@ -187,7 +206,6 @@ def test_factory_forwards_every_setting() -> None:
         "top_k": 7.0,
         "top_p": 0.4,
         "max_tokens": 321,
-        "reasoning_effort": "low",
         "system_prompt": "s",
         "task_prompt": "t",
     }
@@ -200,7 +218,6 @@ _PARAM_SENTINELS = {
     "_DEFAULT_TOP_K": 13.0,
     "_DEFAULT_TOP_P": 0.22,
     "_DEFAULT_MAX_TOKENS": 333,
-    "_DEFAULT_REASONING_EFFORT": "sentinel-effort",
 }
 
 
@@ -231,7 +248,7 @@ def test_compare_llm_parameter_fallbacks_read_the_shared_defaults(
     assert call["top_k"] == 13.0
     assert call["top_p"] == 0.22
     assert call["max_tokens"] == 333
-    assert call["reasoning_effort"] == "sentinel-effort"
+    assert call["reasoning_effort"] is None
 
 
 def test_comparator_parameter_fallbacks_read_the_shared_defaults(
@@ -244,7 +261,6 @@ def test_comparator_parameter_fallbacks_read_the_shared_defaults(
         assert built.llm_config["top_k"] == 13.0
         assert built.llm_config["top_p"] == 0.22
         assert built.llm_config["max_tokens"] == 333
-        assert built.llm_config["reasoning_effort"] == "sentinel-effort"
 
 
 # ---------------------------------------------------------------------------

@@ -486,11 +486,15 @@ laid on top of `evaluation.llm_method`, so it changes only what it names. When
 `system_defaults/base-evaluation.yaml` ships; it carries no model ID or prompt
 text of its own.
 
-Every `llm_method` setting reaches `bedrock.invoke_model`: `model`,
-`temperature`, `top_k`, `top_p`, `max_tokens` and `reasoning_effort`, plus the
-two prompts. The client then applies its usual per-model handling (where
-`max_tokens` is carried, which models take an effort, which reject sampling
-parameters). A setting that is absent, `None` or, for the numeric ones, an empty
+`model`, `temperature`, `top_k`, `top_p`, `max_tokens` and the two prompts
+reach `bedrock.invoke_model`, and the client applies its usual per-model handling
+(where `max_tokens` is carried, which models reject sampling parameters).
+`reasoning_effort` does **not**: `LLMComparator` ignores it, so no effort is sent
+for an `LLM` field. Every stored profile holds the field's default (`medium`),
+dumped into the stored item and indistinguishable from a value a user chose, so
+forwarding it would start sending an effort on every stack whose evaluation
+model has an effort control. `compare_llm` called directly forwards a
+`reasoning_effort` only when its `llm_config` holds one, with no default. A setting that is absent, `None` or, for the numeric ones, an empty
 string takes the `EvaluationLLMMethodConfig` default, so `max_tokens: ""`
 requests the model's maximum output. An **empty** `system_prompt` or
 `task_prompt` is refused rather than sent, as summarization and
