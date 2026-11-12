@@ -258,7 +258,7 @@ via `cacheReadInputTokens` / `cacheWriteInputTokens`.
 
 | Capability | Supported? | Why / what happens |
 |---|---|---|
-| **Agentic extraction** (`extraction.agentic.enabled: true`) | ❌ | The agentic path uses the Strands framework over the Converse API, which GPT-5.x doesn't support. This combination is a **hard error** in `idp-cli config-validate` and **raises at runtime**. |
+| **Agentic extraction** (`extraction.mode: advanced`, or `extraction.agentic.enabled: true` in a configuration that sets no `mode`) | ❌ | The agentic path uses the Strands framework over the Converse API, which GPT-5.x doesn't support. This combination is a **hard error** in `idp-cli config-validate` and **raises at runtime**. |
 | **Discovery** (classes / without- & with-ground-truth / auto-split) | ❌ | Discovery ingests whole PDFs as Converse `document` blocks, which the Responses API cannot accept (text + image only). Rejected by `config-validate` and **guarded at runtime**. |
 | **Policy / Rule Discovery** | ❌ | Same PDF-document-block limitation; agentic rule discovery also uses Strands. Rejected by `config-validate` and guarded at runtime. |
 | PDF `document` input blocks | ❌ | The Responses API accepts text and images only. Pipelines that need whole-PDF ingestion should use a Claude or Nova model. |
@@ -292,11 +292,12 @@ It is **ignored** by models without an effort control — Amazon Nova, Claude
 Sonnet 4.5, and Claude Haiku 4.5. In the config UI, the **Reasoning effort**
 selector appears only when the section's selected model supports it.
 
-**Extraction defaults to `low`.** A full effort sweep (5 extraction methods ×
-{low, medium, high, xhigh} × 2 datasets × 20 docs) found higher effort adds
-output-token cost with negligible extraction-accuracy gain, so `low` keeps the
-Claude Sonnet 5 default affordable. Raise it per-config for genuinely
-reasoning-heavy documents. Other services default to `medium`.
+**Extraction defaults to `low`**, because higher effort spends more output
+tokens and `low` keeps the Claude Sonnet 5 default affordable. Its effect on
+extraction accuracy has not been measured in this repository: every benchmark
+cell holds effort at `low`
+([config-guidance](./benchmarking/config-guidance.md#configuration-axes-measured)).
+If you raise it for reasoning-heavy documents, A/B test it on your own documents. Other services default to `medium`.
 
 ```yaml
 extraction:

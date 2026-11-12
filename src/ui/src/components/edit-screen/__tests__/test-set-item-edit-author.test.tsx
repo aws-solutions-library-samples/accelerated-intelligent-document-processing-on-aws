@@ -10,6 +10,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
 import { act, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
@@ -59,6 +60,13 @@ import {
   uploadDocument,
 } from '../../../graphql/generated';
 import TestSetItemEdit from '../TestSetItemEdit';
+
+/** English, as the app's LocaleProvider gives the page: the model formats its messages with react-intl. */
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const sent = () => graphql.mock.calls.map(([arg]) => (arg as { query: unknown }).query);
 
@@ -118,6 +126,7 @@ const renderItem = () =>
     <MemoryRouter>
       <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 describe('an Author on a Test Studio item', () => {

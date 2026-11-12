@@ -1,6 +1,10 @@
 ---
 title: "PII Anonymization"
 ---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # PII Anonymization
 
 :::caution[Experimental]

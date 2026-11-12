@@ -974,7 +974,7 @@ def handle_get_pricing(manager):
 
     This mirrors the Default/Custom pattern for IDP configuration:
     - DefaultPricing: Full baseline from deployment (stored at deployment time)
-    - CustomPricing: User overrides only (deltas)
+    - CustomPricing: The table the Pricing page saved; replaces DefaultPricing's list
     - Returns:
       - pricing: Merged result (default + custom overrides)
       - defaultPricing: Original defaults for diff highlighting and restore
@@ -987,7 +987,7 @@ def handle_get_pricing(manager):
                nonChargeableUnits: {...}, error: {...} }
     """
     try:
-        # Get merged pricing (DefaultPricing + CustomPricing deltas)
+        # Get effective pricing (CustomPricing replaces DefaultPricing's list)
         pricing_config = manager.get_merged_pricing()
 
         # Also get default pricing for UI diff/restore features
@@ -1044,14 +1044,14 @@ def handle_get_pricing(manager):
 def handle_update_pricing(manager, pricing_config_json):
     """
     Handle the updatePricing GraphQL mutation
-    Saves custom pricing overrides (deltas) to DynamoDB
+    Saves the submitted pricing table to DynamoDB as CustomPricing
 
-    This saves to CustomPricing, which stores only user overrides.
-    The overrides are merged with DefaultPricing when reading.
+    The UI sends the whole table. When reading, it replaces DefaultPricing's
+    pricing list wholesale (see ConfigurationManager.get_merged_pricing).
 
     Args:
         manager: ConfigurationManager instance
-        pricing_config_json: JSON string or dict with pricing deltas
+        pricing_config_json: JSON string or dict with the pricing table
 
     Returns: { success: bool, message: str, error: {...} }
     """
@@ -1065,7 +1065,7 @@ def handle_update_pricing(manager, pricing_config_json):
         # Validate and create PricingConfig
         pricing_config = PricingConfig(**pricing_data)
 
-        # Save to CustomPricing (deltas only)
+        # Save to CustomPricing (the full table)
         success = manager.save_custom_pricing(pricing_config)
 
         if success:
@@ -1231,7 +1231,7 @@ def handle_update_model_config_limits(manager, model_config_limits_json):
     Handle the updateModelConfigLimits GraphQL mutation
     Saves the complete user-edited limits list to CustomModelConfigLimits
 
-    Unlike pricing (deltas), the payload must be the FULL ordered list —
+    The payload must be the FULL ordered list —
     model_limits is matched first-pattern-wins, so order is semantic.
 
     Args:

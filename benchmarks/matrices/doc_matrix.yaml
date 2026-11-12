@@ -87,6 +87,12 @@ synthetic:
   #   Sonnet 5   (200K window, 140,000 usable at the 0.30 buffer) -> ~11 pages
   #   Astra      (1.05M window, 735,000 usable)                   -> ~61 pages
   #
+  # That estimate is conservative for Sonnet 5 on v0.6.14, where every image in a
+  # many-image request is clamped (#994): Sonnet 5 simple mode completed every run on
+  # the 17-page large_narrow (all 800 rows on 5 of 13 coresynth runs, a partial list
+  # on the other 8) and returned all rows of the 26-page dense_250 on 5 of 5, and the
+  # measured refusal is at 66 pages (astracap). See config-guidance.md section 5.2.
+  #
   # Measured live on IDP1 (2026-09-11), which is where those numbers come from:
   # an 81-page doc estimated 964,223 tokens and a 164-page doc 1,971,931 — both
   # rejected by Astra as well as Sonnet 5. The discriminating band for a
@@ -99,8 +105,10 @@ synthetic:
   # (26 pages, ~304,000 est. tokens): 8 columns, 4 interleaved lists, long
   # free-text descriptions, 15% OCR noise, and value_noise so per-row truth is
   # TYPED (currency symbols, accounting negatives, both thousands conventions,
-  # named months). Sonnet 5 cannot take it in one request, so pair it with
-  # advanced mode (which shards) to separate "more capable" from "bigger window".
+  # named months). It was sized on the belief that Sonnet 5 cannot take it in one
+  # request; measured on v0.6.14 Sonnet 5 simple mode returned all 250 rows on 5 of
+  # 5 runs (astravalue). Advanced mode (which shards) is still paired with it to
+  # separate "more capable" from "bigger window".
   - {id: dense_250,       gen: bank_statement, rows: 250,  cols: 8, lists: 4, desc_len: long, ocr_noise: 0.15, value_noise: true, tag: shape=dense}
 
 # --- B. Reference, real labeled sets (already in the stack testset bucket) ------
@@ -154,7 +162,9 @@ groups:
   #   small_narrow  3pp  ~35K   both models fit: the control where a premium model
   #                             should NOT pay for itself
   #   med_narrow    9pp  ~108K  both still fit, at 3x the size: still a control
-  #   large_narrow 17pp  ~203K  Sonnet 5 CANNOT take this in one request; Astra can
+  #   large_narrow 17pp  ~203K  Sonnet 5 takes it in one request but returns a partial
+  #                             list on most simple runs (5 of 13 complete on v0.6.14
+  #                             coresynth); Astra returned all 800 rows on 10 of 10
   #   dense_250    26pp  ~304K  Astra-only AND maximally difficult (8 cols, 4 lists,
   #                             long text, OCR noise, typed value truth)
   # `scale_3200` (66pp, ~790K) is deliberately excluded — it exceeds ASTRA too, so
@@ -163,11 +173,13 @@ groups:
   # opus_docs: the Opus 5.5 vs Opus 5 pair (see the `opus55value` suite). A SUBSET
   # of astra_docs, and the two it drops are dropped for a reason that would
   # otherwise waste the whole suite: `large_narrow` (17pp ~203K) and `dense_250`
-  # (26pp ~304K) are what they are in astra_docs because Astra's window reaches
-  # them and Sonnet 5's does not — that asymmetry IS the Astra finding. Opus 5 and
-  # Opus 5.5 share one window and one sizing budget, so in simple mode both arms
-  # would be refused on both documents, and an A/B whose two arms fail identically
-  # measures nothing while still being billed. The advanced arms would survive by
+  # (26pp ~304K) were put in astra_docs on the belief that Astra's window reaches
+  # them and Sonnet 5's does not. Opus 5 and Opus 5.5 share one window and one
+  # sizing budget, so they were dropped here on the expectation that simple mode
+  # would refuse both arms on both documents, and an A/B whose two arms fail
+  # identically measures nothing while still being billed. Measured on v0.6.14 that
+  # expectation is wrong for large_narrow: both Opus arms returned 800 of 800 rows on
+  # all 13 coresynth simple-mode runs. dense_250 has not been run on either. The advanced arms would survive by
   # sharding, but then only half the suite carries information.
   #
   # So the cost/quality ratio is measured where both arms actually run, and the

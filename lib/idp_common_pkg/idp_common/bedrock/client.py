@@ -256,9 +256,9 @@ _CLAUDE_EFFORT_BASE_NAMES = {
     # here defaults to. That one is read off the Bedrock model card ("effort level
     # configurable - low, medium, high, xhigh, max; default: medium"), NOT measured:
     # a default cannot be observed from a response, since Converse reports no effort
-    # back. Treat it accordingly - it is the stated reason the opus55value benchmark
-    # pair measures the switch rather than the model, so if that matters to a
-    # decision, set effort explicitly rather than relying on this.
+    # back. Treat it accordingly: it applies only when no effort is sent, which the
+    # shipped extraction default ("low") and every benchmark cell avoid, so if the
+    # default matters to a decision, set effort explicitly rather than relying on it.
     #
     # This entry is also redundant-by-prefix and kept anyway: the lookup is
     # `base.startswith(name)`, so "anthropic.claude-opus-5-5" already matched via

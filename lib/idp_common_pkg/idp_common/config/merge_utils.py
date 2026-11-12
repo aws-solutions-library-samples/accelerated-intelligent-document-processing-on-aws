@@ -835,7 +835,7 @@ def validate_config(
     try:
         from idp_common.config.models import IDPConfig
 
-        IDPConfig.model_validate(merged)
+        validated = IDPConfig.model_validate(merged)
     except ImportError:
         raise
     except Exception as e:
@@ -858,7 +858,12 @@ def validate_config(
     sent_prompts = strip_prompt_comments_in_config(merged)
     _validate_task_prompt_placeholders(sent_prompts, result)
     _validate_schema_fields(config.get("classes", []), result)
-    _validate_agentic_openai(merged, result)
+    # The extraction path is decided by the validated model, never by re-reading the
+    # merged dict: `reconcile_mode_and_agentic` makes `extraction.mode` authoritative,
+    # and the runtime reads `config.extraction.agentic.enabled` off this same model.
+    _validate_agentic_openai(
+        merged, result, agentic=validated.extraction.agentic.enabled
+    )
     _validate_simple_integrated_lists(merged, result)
     _validate_prompt_cache_prefix(sent_prompts, result)
     _validate_discovery_openai(merged, result)
@@ -1179,7 +1184,7 @@ def _looks_like_uuid(value: str) -> bool:
 
 
 def _validate_agentic_openai(
-    merged_config: Dict[str, Any], result: Dict[str, Any]
+    merged_config: Dict[str, Any], result: Dict[str, Any], *, agentic: bool
 ) -> None:
     """Error when an OpenAI GPT-5.x model is paired with agentic extraction.
 
@@ -1189,6 +1194,14 @@ def _validate_agentic_openai(
     runtime fallback) so the misconfiguration surfaces at config time instead
     of failing obscurely mid-processing.
 
+    ``agentic`` is whether extraction will actually run the agentic path, and the
+    caller takes it from the validated ``IDPConfig`` — the value the runtime reads.
+    It is a parameter rather than something read here because the merged dict
+    cannot answer it: ``extraction.mode`` decides the path and overrides
+    ``extraction.agentic.enabled`` whenever it is set, so ``mode: advanced`` with
+    no ``agentic`` block is agentic, and ``mode: simple`` with
+    ``agentic.enabled: true`` is not. Reading the raw flag got both wrong.
+
     NOTE this gate is about the ROUTE, not the vendor: ``openai.gpt-6-astra``
     reaches Converse and emits ``toolUse``, so it is allowed for agentic
     extraction. The predicate is ``is_openai_responses_model`` precisely so it
@@ -1197,16 +1210,10 @@ def _validate_agentic_openai(
     from idp_common.bedrock.openai_responses import is_openai_responses_model
     from idp_common.config.schema_constants import X_AWS_IDP_EXTRACTION_MODEL
 
+    if not agentic:
+        return
     extraction = merged_config.get("extraction", {})
     if not isinstance(extraction, dict):
-        return
-
-    # NOTE: reads the raw merged dict, where `agentic.enabled` may disagree with
-    # `mode` (reconcile_mode_and_agentic makes `mode` authoritative in IDPConfig).
-    # Behaviour deliberately unchanged here; see _extraction_is_simple for the
-    # mode-first rule.
-    agentic_enabled = bool(extraction.get("agentic", {}).get("enabled"))
-    if not agentic_enabled:
         return
 
     # Global extraction model
@@ -1215,9 +1222,9 @@ def _validate_agentic_openai(
         result["valid"] = False
         result["errors"].append(
             f"extraction.model '{global_model}' is an OpenAI Responses model, which "
-            "is NOT compatible with agentic extraction (extraction.agentic.enabled=true). "
-            "Set agentic.enabled=false or choose a Converse model — Claude, Amazon "
-            "Nova Pro (not Nova Lite, which fails mid-stream on this path; "
+            "is NOT compatible with agentic extraction (extraction.mode: advanced). "
+            "Set extraction.mode to 'simple' or choose a Converse model — Claude, "
+            "Amazon Nova Pro (not Nova Lite, which fails mid-stream on this path; "
             "see docs/extraction-and-confidence.md), xAI Grok, or OpenAI GPT-6 "
             "Astra support agentic extraction."
         )
@@ -1233,7 +1240,7 @@ def _validate_agentic_openai(
             result["errors"].append(
                 f"Class '{class_name}' overrides extraction with OpenAI Responses "
                 f"model '{override}', which is NOT compatible with agentic extraction "
-                "(extraction.agentic.enabled=true). Set agentic.enabled=false or "
+                "(extraction.mode: advanced). Set extraction.mode to 'simple' or "
                 "choose a Converse model for this class — Claude, Amazon Nova "
                 "Premier/Pro (not Nova Lite, which fails mid-stream on this path; "
                 "see docs/extraction-and-confidence.md), xAI Grok, or OpenAI GPT-6 "

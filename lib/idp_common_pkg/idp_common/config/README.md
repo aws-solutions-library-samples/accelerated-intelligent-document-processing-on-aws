@@ -47,7 +47,7 @@ failure:
 
 | Guard | Rejects | Why |
 |---|---|---|
-| `_validate_agentic_openai` | OpenAI GPT-5.x with `extraction.agentic.enabled` | Served via the `bedrock-mantle` Responses API, incompatible with the Converse-based Strands loop |
+| `_validate_agentic_openai` | OpenAI GPT-5.x when extraction is agentic — `extraction.mode: advanced`, or `agentic.enabled` with no `mode` — as resolved by the validated `IDPConfig`, which is what the runtime reads | Served via the `bedrock-mantle` Responses API, incompatible with the Converse-based Strands loop |
 | `_validate_discovery_openai` | OpenAI GPT-5.x **and xAI Grok** as a discovery model | Discovery ingests whole PDFs as Converse `document` blocks; both models take text + image only, so the document would be silently dropped |
 
 Grok is therefore rejected for **discovery** but not for agentic extraction. The
@@ -469,7 +469,14 @@ Configuration is stored in DynamoDB with two record types:
 
 The same Default/Custom pattern is used for auxiliary records:
 - **`DefaultPricing` / `CustomPricing`** (`PricingConfig`) — service pricing for
-  cost estimation; Custom is deep-merged over Default (`get_merged_pricing`).
+  cost estimation, read through `get_merged_pricing`. ⚠️ Despite the method's
+  name, Custom **replaces** Default's `pricing` list wholesale rather than merging
+  row by row: `deep_update` merges dicts and assigns lists, and the whole table is
+  one list. The Pricing page saves the full table, so a stack that has saved it
+  keeps its saved rates and gets no price for a model added in a later release
+  until the record is deleted (`delete_custom_pricing`, the page's **Restore
+  default (All)**). `test_a_partial_custom_list_replaces_the_default_list_wholesale`
+  pins this.
 - **`DefaultModelConfigLimits` / `CustomModelConfigLimits`**
   (`ModelConfigLimitsConfig`) — the ordered, first-match-wins list of per-model
   token limits, seeded from `config_library/model_config_limits.yaml`. Because

@@ -2,6 +2,9 @@
 title: "IDP SDK Documentation"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # IDP SDK Documentation
 
 The IDP SDK provides programmatic Python access to all IDP Accelerator capabilities with a clean, namespaced API.

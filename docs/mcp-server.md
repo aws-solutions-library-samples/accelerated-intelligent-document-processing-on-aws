@@ -17,7 +17,6 @@ The MCP integration exposes IDP capabilities to external applications by:
 - **Secure Authentication**: Uses AWS Cognito OAuth 2.0 for secure external application access
 - **MCP Protocol**: Implements Model Context Protocol for standardized tool integration
 - **Real-time Queries**: Enables external applications to query document processing results in real-time
-- **Extensible Architecture**: Designed to support additional IDP functionality in future releases
 
 #### Demo with Quick Suite
 https://github.com/user-attachments/assets/529ce6ad-1062-4af5-97c1-86c3a47ac12c

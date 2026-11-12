@@ -2,6 +2,9 @@
 title: "idp_common API Reference"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # idp_common API Reference
 
 The `idp_common` library (`lib/idp_common_pkg/`) is the core shared Python package that powers all document processing in the IDP Accelerator. It provides modular services for each step of the pipeline, a central `Document` data model, and utility functions for S3, Bedrock, DynamoDB, and more.
