@@ -40,7 +40,10 @@ permissions:
 # Keyed on the PR number, so only a newer push to the SAME pull request cancels a
 # run. Cancelling is limited to `pull_request` runs: a `workflow_dispatch` run is
 # the manual recovery path described above, and a second dispatch on the same ref
-# queues behind it rather than silently killing it. A cancelled run reports
+# queues behind it rather than silently killing it. A dispatch run is grouped by
+# ref and a pull_request run by PR number, so a later push does not cancel a
+# dispatch already running for the same branch; that run is the recovery path and
+# keeps its runners until it finishes. A cancelled run reports
 # `cancelled` on a head nobody needs a verdict for any more; the current head's run
 # is unaffected. Pinned by
 # scripts/tests/test_ci_gate_parity.py::test_github_gate_workflows_cancel_superseded_runs.

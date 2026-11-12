@@ -2271,11 +2271,17 @@ def test_github_gate_workflows_cancel_superseded_runs(workflow: Path) -> None:
     )
 
 
-def test_gitlab_fast_checks_are_interruptible() -> None:
-    """The GitLab half of the same property, so neither side can drop it alone."""
+@pytest.mark.parametrize("job", [".fast_check_job", "srt_security_review", "dep_audit"])
+def test_the_gitlab_gate_jobs_are_interruptible(job: str) -> None:
+    """The GitLab half of the same property, so neither side can drop it alone.
+
+    ``.fast_check_job`` carries it for the five jobs built on that anchor. The two
+    security gates, the twins of ``security-checks.yml``, do not use the anchor and
+    set it themselves, so each is pinned on its own.
+    """
     loaded = yaml.safe_load(GITLAB.read_text(encoding="utf-8"))
-    template = loaded.get(".fast_check_job") or {}
-    assert template.get("interruptible") is True, (
-        ".fast_check_job is no longer interruptible, so a superseded MR pipeline's "
-        "gate jobs run to completion"
+    definition = loaded.get(job) or {}
+    assert definition.get("interruptible") is True, (
+        f"{job} is no longer interruptible, so a superseded MR pipeline's run of "
+        "it goes to completion"
     )
