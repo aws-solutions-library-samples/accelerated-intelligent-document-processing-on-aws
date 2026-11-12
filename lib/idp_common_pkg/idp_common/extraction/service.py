@@ -6443,8 +6443,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         if use_agentic and is_openai_responses_model(model_id):
             raise ValueError(
                 f"OpenAI Responses model '{model_id}' is not compatible with agentic "
-                "extraction (extraction.agentic.enabled=true). Set agentic.enabled=false "
-                "or choose a non-OpenAI model. (This is also enforced by "
+                "extraction (extraction.mode: advanced). Set extraction.mode to "
+                "'simple' or choose a non-OpenAI model. (This is also enforced by "
                 "'idp-cli config-validate'.)"
             )
 
