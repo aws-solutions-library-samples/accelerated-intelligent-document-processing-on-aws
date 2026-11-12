@@ -60,6 +60,32 @@
 #                  SCOPE_ITEM_PREDICATES in scan_api_rbac.py). scope_enforced_in
 #                  does not change where that search starts: it starts at the
 #                  op's own dispatch.
+#   document_scope_checked: true -> op names a document, key or prefix AND a
+#                  profile, and checks the object against the caller's profile
+#                  scope through the profile the object is recorded or mapped
+#                  under. S10 requires a DOCUMENT_SCOPE_PATTERNS entry point in
+#                  the code the op reaches.
+#   testset_checked: true -> op names a test-set document (objectKey) and confines
+#                  the caller with the test-set scope (allowedTestSets) rather than
+#                  the profile scope. Static scan (S10) requires the code this op
+#                  reaches to call assert_can_access_test_set (or the resolver's
+#                  _assert_set_access wrapper over it).
+#
+#                  S10 is the other direction of S4: an op whose arguments
+#                  (schema.graphql, input types included, plus `args:` below) name
+#                  a configuration profile, a stored object or a session — decided
+#                  by the words of the argument's name (SCOPE_KEYED_WORDS in
+#                  scan_api_rbac.py), not a list of spellings — must declare how
+#                  that object is scoped:
+#                  scope_checked/scope_filtered for a profile; those,
+#                  document_scope_checked, testset_checked or ownership for a
+#                  document; ownership or scope_checked for a
+#                  session. On an op naming both a profile and a document,
+#                  scope_checked answers for the profile only. An op callable only
+#                  by Admin or IAM needs none, since neither carries a profile scope.
+#                  Otherwise the op needs a known_gap, or a per-op entry in
+#                  SCOPE_KEYED_ARGUMENT_EXEMPT (scan_api_rbac.py), registered in
+#                  scripts/tests/gate_exemptions.json.
 #   scope_enforced_in: OPTIONAL function name, for a scope_checked/scope_filtered
 #                  op whose module has no dispatch S4 can find on the op's name.
 #                  S4 reads only the code THIS op can reach — its dispatch branch
@@ -73,7 +99,7 @@
 #                  (chat sessions, agent jobs).
 #   schema_groups: set only when the code INTENTIONALLY enforces different
 #                  groups than the schema.graphql directive (documented drift).
-#   conditional:   circuit_breaker | feature_platform — op is only routable
+#   conditional:   circuit_breaker | feature_platform | mcp — op is only routable
 #                  when that stack feature is enabled; dynamic test skips on
 #                  404-for-admin instead of failing.
 #   args:          safe arguments for the dynamic test. Mutations use
@@ -406,6 +432,7 @@ operations:
   reprocessDocument:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py
     args: { objectKeys: ["__nope__"] }
@@ -425,6 +452,7 @@ operations:
   uploadDocument:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/upload_resolver/index.py
     scope_enforced_in: _handle_upload_document
@@ -449,6 +477,7 @@ operations:
   uploadSampleDocument:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/upload_resolver/index.py
     scope_enforced_in: _handle_upload_sample_document
@@ -699,11 +728,14 @@ operations:
   uploadDiscoveryDocument:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
+    scope_enforced_in: handle_upload_discovery_document
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     args: { fileName: "x.pdf", contentType: "application/pdf" }
   autoDetectSections:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     # EMPTY rather than "__nope__", and the difference decides which control the
     # matrix measures. This op now calls s3_targets.assert_bucket_allowed, which
@@ -720,11 +752,14 @@ operations:
   startMultiDocDiscovery:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     args: { configVersion: "__nope__" }
   uploadMultiDocDiscoveryZip:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     args: { fileName: "x.zip", fileSize: 1, configVersion: "__nope__" }
 
@@ -806,11 +841,13 @@ operations:
     # enforces allowedTestSets per set.
     groups: [Admin, Author, Annotator]
     kind: read
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   getAnnotationQueue:
     groups: [Admin, Author, Annotator]
     kind: read
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   assignTestSetDocuments:
@@ -830,6 +867,7 @@ operations:
   skipTestSetDocument:
     groups: [Admin, Author, Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", reason: "Other (see note)" }
     note: >-
@@ -838,6 +876,7 @@ operations:
   claimTestSetDocument:
     groups: [Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__" }
     note: >-
@@ -845,6 +884,7 @@ operations:
   saveTestSetDocumentSection:
     groups: [Admin, Author, Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", sectionId: "1" }
     note: >-
@@ -852,6 +892,7 @@ operations:
   saveTestSetDocumentSectionDraft:
     groups: [Admin, Author, Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", sectionId: "1", data: "{}" }
     note: >-
@@ -898,11 +939,13 @@ operations:
     # resolver additionally enforces allowedTestSets per set.
     groups: [Admin, Author, Annotator]
     kind: read
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   generateDraftLabels:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     # schema: generateDraftLabels(input: GenerateDraftLabelsInput!)
     args: { input: {} }
@@ -932,6 +975,7 @@ operations:
     # history are preserved.
     groups: [Admin, Author, Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__", sections: [] } }
 
@@ -940,6 +984,8 @@ operations:
     # additionally enforces allowedTestSets per set.
     groups: [Admin, Author, Annotator]
     kind: mutation
+    scope_checked: true
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__" } }
   resetTestSetLabels:
@@ -1043,6 +1089,9 @@ operations:
     # regenerates extraction data. Refused while the document is in flight.
     groups: [Admin, Reviewer, Annotator]
     kind: mutation
+    scope_checked: true
+    scope_enforced_in: update_document_sections
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf", sections: [] }
     object_scoped_roles: [Annotator]
@@ -1070,6 +1119,8 @@ operations:
   processChanges:
     groups: [Admin, Reviewer]
     kind: mutation
+    scope_checked: true
+    scope_enforced_in: _assert_caller_may_process
     enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
     args: { objectKey: "__x__", modifiedSections: [] }
   completeSectionReview:
@@ -1246,17 +1297,17 @@ operations:
     # allowed role gets a clean 400.
     args: { sessionId: "" }
     note: >-
-      ANY_GROUP, and of every operation tightened for #1033 this is the one with the
-      least to argue about, because it is the only one whose existing control fails
-      OPEN. The message read itself is `PK = sessionId` with no caller term; what
-      bounds it to the caller is _verify_session_ownership, which `return`s **True**
-      when CHAT_SESSIONS_TABLE is unset — "allowing access ... to preserve
-      functionality", in its own words — and which an operator can switch off
-      wholesale with ENFORCE_CHAT_SESSION_OWNERSHIP=false. On either branch a
-      session id is the whole credential, and the resolver's own comment says the
-      messages can hold "user queries, document content quoted by the LLM". So the
-      group floor is not redundant with the ownership check; it is the layer that
-      holds when that check does not. Its cost is provably nil: neither operation
+      ANY_GROUP. The message read itself is `PK = sessionId` with no caller term;
+      what bounds it to the caller is _verify_session_ownership, which accepts only
+      the owner ChatSessionOwnersTable records for the id (the caller's own
+      ChatSessionsTable row counts only for an id with no recorded owner, i.e. a
+      session written before that table existed) and denies when either table is
+      unconfigured. An operator can still switch it off wholesale with
+      ENFORCE_CHAT_SESSION_OWNERSHIP=false, and on that branch a session id is the
+      whole credential; the resolver's own comment says the messages can hold
+      "user queries, document content quoted by the LLM". So the group floor is
+      not redundant with the ownership check; it is the layer that holds when that
+      check is switched off. Its cost is provably nil: neither operation
       that creates a session admits a groupless caller (sendAgentChatMessage is
       Admin/Author/Viewer, sendChatDocumentMessage is ANY_GROUP), so no reachable
       record is lost. The ownership verification stays — it is what stops one
@@ -1306,10 +1357,11 @@ operations:
       suite (src/lambda/chat_with_document_processor/tests/), including a check
       that the index it queries is one template.yaml declares.
       ANY_GROUP: a mutation that sends document content to a model and bills
-      inference to the deployment. ⚠️ On the REST route the dispatcher applies
-      this floor; the streaming Lambda Function URL (POST /chat/document below)
-      reaches the same processor WITHOUT it, because that transport forwards no
-      cognito:groups claim at all — GAP-07.
+      inference to the deployment. On the REST route the dispatcher applies this
+      floor; the streaming Lambda Function URL (POST /chat/document below)
+      applies the same floor from the verified ID token it requires. The session
+      id is registered to, or checked against, its owner in
+      ChatSessionOwnersTable before the processor is invoked.
   queryKnowledgeBase:
     groups: ANY_GROUP
     kind: read
@@ -1898,6 +1950,68 @@ operations:
 #
 # Routes needing no per-user authorization (health checks) are allowlisted in
 # FUNCTION_URL_OPEN_ROUTES in the scanner, not here.
+  # ==========================================================================
+  # MCP service credentials (McpCredentialManagerFunction). Admin only. Not
+  # routable when EnableMCP is false: the field map entry is then empty.
+  # ==========================================================================
+  listMcpCredentials:
+    groups: [Admin]
+    kind: read
+    conditional: mcp
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    args: {}
+    note: >-
+      Lists every credential's id, name, role, scope and lifecycle fields; never a
+      secret, which is not stored on the row.
+  createMcpCredential:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    # An unknown role is refused by validation before anything is created, so an
+    # allowed caller is refused benignly.
+    args: { name: "rbac-probe", role: "__not_a_role__" }
+    note: >-
+      A scoped Admin may grant only profiles inside their own allowedConfigVersions
+      and cannot create an unscoped credential; the scope must sit inside one
+      tenant (scope_rejection_reason, as createUser).
+  updateMcpCredential:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    args: { clientId: "__nonexistent__" }
+  rotateMcpCredential:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    args: { clientId: "__nonexistent__" }
+  revokeMcpCredential:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    args: { clientId: "__nonexistent__" }
+  setMcpCredentialTenant:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    # Only when TenantGrantSource is Api; elsewhere an allowed caller is refused by
+    # the mode check, and the probe id names no credential, so nothing is written.
+    args: { clientId: "__nonexistent__" }
+
 function_url_endpoints:
   ChatStreamProcessorUrl:
     auth_type: AWS_IAM
@@ -1905,44 +2019,132 @@ function_url_endpoints:
     routes:
       POST /chat/document:
         groups: ANY_GROUP
-        transport_enforces: ANY
         ownership: true
         equivalent_op: sendChatDocumentMessage
         enforced_in: src/lambda/chat_with_document_processor/index.py
-        residual_gap: GAP-07
         note: >
-          the same processor as the REST path, carrying the same
-          allowedConfigVersions scope check, but that check does not apply to
-          callers arriving this way: it resolves the caller from the verified
-          claims an invoking transport supplies, and this one can supply none
-          (GAP-07). The route forwards an explicit null identity, the processor
-          stands the check down and logs that it did so per turn. On the
-          dispatcher path the same code denies a turn whose scope cannot be
-          evaluated for any reason. The ANY_GROUP floor its equivalent REST op
-          carries is enforced by the dispatcher, which this transport does not go
-          through, and cannot be re-applied here for the same reason: no
-          cognito:groups claim arrives. So a caller in no group is refused on the
-          REST route and is not refused here. Both halves close together when the
-          endpoint verifies an ID token.
+          the route verifies the caller's Cognito ID token (x-idp-id-token,
+          _verified_caller in app.py) and answers 401 without a valid one. The
+          ANY_GROUP floor is applied in the route (_require_a_group_or_403), the
+          session id is registered to or checked against its owner in
+          ChatSessionOwnersTable before the stream opens (_claim_session_or_403,
+          403 for another user's session), and the processor's
+          allowedConfigVersions scope check reads the verified email and sub it
+          forwards. Nothing identity-like is read from the request body.
       POST /chat/agent:
         groups: [Admin, Author, Viewer]
-        transport_enforces: ANY
+        ownership: true
         equivalent_op: sendAgentChatMessage
         enforced_in: src/lambda/agent_chat_processor/index.py
-        residual_gap: GAP-07
         note: >
-          the processor now carries the same Admin/Author/Viewer check as the
-          agent_chat_resolver, and the route resolves the caller identity from
-          the verified transport principal only. The group check is enforced for
-          callers whose groups are known (the dispatcher path forwards them);
-          this transport forwards no group claim at all, hence GAP-07.
-          transport_enforces: ANY states that plainly — _caller_identity() in
-          chat_stream_processor/app.py returns None unconditionally and
-          _enforce_agent_chat_groups returns early on a null identity, so the
-          declared three-group policy applies on neither half of this route. The
-          span is wider than /chat/document's (three groups' worth of denial lost
-          rather than the group-less caller's), which is why the key belongs on
-          both rather than only on the route whose policy this branch changed.
+          the same verified ID token as /chat/document. The processor's
+          Admin/Author/Viewer check (and the Admin-only rule under tenant
+          isolation) is applied in the route before the stream opens
+          (_enforce_groups_or_403) and again in the processor. The session is
+          checked against its owner the same way, and the processor keys
+          conversation memory on the verified sub, so a turn under another
+          user's session id is refused before any memory loads. A body
+          callerSub is ignored.
+
+# ============================================================================
+# MCP tools — the AgentCore Gateway target (src/lambda/agentcore_mcp_handler)
+# ============================================================================
+# The MCP server is a third way in, beside the REST dispatcher and the Function
+# URL routes: an AgentCore Gateway whose JWT authorizer admits the clients listed
+# under mcp_clients, and whose one Lambda target serves the tools below. The
+# gateway forwards only tool arguments, so a request interceptor
+# (src/lambda/mcp_identity_interceptor) resolves the caller, refuses a tool the
+# caller may not use, and passes a signed `_caller` block to the handler, which
+# verifies it and applies the caller's configuration scope.
+#
+# Entry schema
+# ------------
+#   groups:         the roles admitted. The handler and the interceptor both read
+#                   the same table, idp_common.mcp_access.MCP_TOOL_POLICY, and the
+#                   static scan (checks M1-M5) fails when this file and that table
+#                   differ, in either direction.
+#   write:          true -> the tool starts processing; a service credential must
+#                   also have write tools enabled.
+#   unscoped_only:  true -> the tool reads across every Configuration Profile with
+#                   nothing to filter its output on, so a caller with a
+#                   configuration scope is refused (Admin-only under Strict).
+#   scope_checked:  true -> refuses a request naming a document or a destination
+#                   profile outside the caller's scope.
+#   scope_filtered: true -> returns only documents inside the caller's scope.
+#   equivalent_op:  the REST operation the tool corresponds to. Its groups must
+#                   admit every role this entry admits, so MCP is never the more
+#                   permissive way to do the same thing.
+#   enforced_in:    the tool module; it must call the shared scope helper.
+mcp_clients:
+  # Every Cognito client the gateway authorizer admits through the template, and
+  # how the interceptor resolves a token from it: `user` (a signed-in user, named
+  # in the interceptor's MCP_USER_CLIENT_IDS) or `registry` (a row in the MCP
+  # credential registry, which McpDefaultCredential writes for the stack-created
+  # client). The scan fails if the template admits a client this list does not
+  # declare, or wires one in a way its kind does not match. Clients an Admin
+  # creates are added to the gateway at run time and are registry rows by
+  # construction.
+  ExternalAppClient: user
+  MCPConnectorClient: registry
+
+mcp_tools:
+  search:
+    groups: [Admin, Author, Viewer]
+    write: false
+    unscoped_only: true
+    equivalent_op: sendAgentChatMessage
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/search.py
+    note: >-
+      Runs the analytics agent over the reporting tables, which hold rows for
+      every document and cannot be filtered per row, so it is refused to any
+      scoped caller. Under TenantIsolationMode=Strict every non-admin is scoped,
+      which makes it Admin-only there, as Agent Chat is.
+  status:
+    groups: [Admin, Author, Reviewer, Viewer]
+    write: false
+    unscoped_only: false
+    scope_filtered: true
+    equivalent_op: getDocument
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/batch_status.py
+    note: >-
+      Counts and lists only the batch's documents inside the caller's scope. A
+      batch with none in scope is answered exactly as a batch that does not exist.
+      The four document roles, not ANY_GROUP: Annotator reaches documents only
+      through test-set labelling, whose per-object control MCP does not have.
+  get_results:
+    groups: [Admin, Author, Reviewer, Viewer]
+    write: false
+    unscoped_only: false
+    scope_checked: true
+    scope_filtered: true
+    equivalent_op: getDocument
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/batch_results.py
+    note: >-
+      Single-document mode refuses a document outside the caller's scope; batch
+      mode pages over the in-scope documents only.
+  process:
+    groups: [Admin, Author]
+    write: true
+    unscoped_only: false
+    scope_checked: true
+    equivalent_op: uploadDocument
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/batch_run.py
+    note: >-
+      Resolves the Configuration Profile the uploaded document will process
+      under exactly as uploadDocument does (prefix mappings, the requested
+      profile, the active profile) and refuses one outside the caller's scope.
+      Processing from an S3 location reads with the handler's own role, which
+      can read every profile's documents, so it is limited to unscoped callers.
+  reprocess:
+    groups: [Admin, Author]
+    write: true
+    unscoped_only: false
+    scope_checked: true
+    equivalent_op: reprocessDocument
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/batch_reprocess.py
+    note: >-
+      Every named document, or every document of the named batch, must be in the
+      caller's scope; one outside it refuses the whole request.
 
 # ============================================================================
 # Known gaps register — tracked deviations between the ideal authorization
@@ -2019,87 +2221,8 @@ known_gaps:
     detail: >
       Any authenticated user (including Reviewer) can query the knowledge base
       when one is configured.
-  GAP-07:
-    summary: >
-      the chat Function URL transport carries no Cognito group claim, so
-      neither chat route's group check can be applied to callers arriving
-      that way
-    detail: >
-      POST /chat/agent on ChatStreamProcessorUrl is authenticated by IAM
-      (SigV4 with the authenticated Cognito Identity Pool role), which proves
-      the caller is a signed-in user of this deployment but says nothing about
-      their group. Lambda Function URLs do not forward the Cognito identity:
-      requestContext.authorizer.iam.cognitoIdentity is documented as unused
-      ("Lambda sets this to null or excludes this from the JSON"), and an
-      assumed-role ARN has no cognito:groups claim. The processor's
-      Admin/Author/Viewer check therefore applies to invocations that carry
-      known groups (the dispatcher path forwards them) and stands down on this
-      transport, exactly as it does for IAM-authorized backend invocations.
-      Closing it means the browser presenting its Cognito ID token to this
-      endpoint in addition to signing the request, and the endpoint verifying
-      that token — a change to the transport's auth contract (UI, template and
-      a JWKS verification dependency) that cannot be validated without a
-      deployment. _caller_identity() in
-      src/lambda/chat_stream_processor/app.py is where the claims are obtained;
-      _enforce_groups_or_403() beside it is what turns them into a 403, and it
-      already runs synchronously in the route so closing this gap needs no
-      second change on that path.
-
-      On /chat/agent the practical exposure is limited to the Reviewer group,
-      the only signed-in role excluded from agent chat. On /chat/document the
-      population is different and is not a group at all: that route's declared
-      floor is ANY_GROUP, so what this transport fails to refuse is a caller in
-      NO group — the user a domain-scoped self-signup produces
-      (AllowedSignUpEmailDomain, AUTH.T04). Such a caller is refused
-      sendChatDocumentMessage on the REST route and is not refused
-      POST /chat/document here.
-
-      SCOPE — what the Reviewer sentence does and does not cover. "Limited to
-      the Reviewer group" is true of the AGENT-CHAT GROUP CHECK on this transport
-      specifically: Admin, Author and Viewer are all allowed the operation, so
-      the only group whose denial is lost is Reviewer, and a Reviewer reaching
-      /chat/agent is still an authenticated user of this deployment. The residual
-      is wider than that one check, though: NEITHER streaming route obtains a
-      per-user identity from the transport. That also leaves the
-      allowedConfigVersions scope lookup in
-      src/lambda/chat_with_document_processor/index.py
-      (_allowed_config_versions_for_event) with no verified subject to resolve,
-      so Chat-with-Document turns arriving on this transport are NOT restricted
-      by allowedConfigVersions. The route forwards an explicit null identity,
-      which is the same signal an IAM-authorized backend invocation carries, and
-      the processor stands the check down and logs that it did so on every turn
-      rather than appearing to have consulted the UsersTable. Enforcing the check
-      against the request body's self-asserted identity instead would not be a
-      control: the caller it would restrict is the same caller that chooses the
-      value. Both halves close together when the endpoint verifies an ID token —
-      at which point _caller_identity() returning real claims (which must include
-      `email`, the only identifier that joins to a UsersTable row) turns both on
-      with no further change on this path.
-
-      RESIDUAL — the transport principal's session name is undocumented. The
-      identity resolution in src/lambda/chat_stream_processor/sse.py has to
-      recognise the assumed-role session name Cognito chooses, and AWS documents
-      no RoleSessionName for the Identity Pool enhanced flow. The value is
-      MEASURED, not documented: 499 CloudTrail AssumeRoleWithWebIdentity events
-      across three identity pools and three roles all carry
-      "CognitoIdentityCredentials", with zero counter-examples, and the call is
-      made by an AWS-internal principal so a client cannot influence it. There is
-      no compatibility commitment on that string. The code is written so an
-      unrecognised future value degrades safely — is_user_specific_identity() is
-      a POSITIVE shape test (Cognito sub, or <region>:<uuid> identity id), so an
-      unknown value falls through to the body-supplied fallback rather than
-      refusing every request — but a change to a genuinely per-user session name
-      would silently shift attribution from the body value to the transport one.
-      This is accepted rather than fixed because the only durable fix is the same
-      ID-token verification that closes the gap itself.
-
-      PARTITION — this transport exists in the commercial partition only. On
-      GovCloud the UI falls back to the REST dispatcher plus polling
-      (src/ui/src/components/chat-panel/ChatPanel.tsx), which is the dispatcher
-      path and
-      carries the group claim, so this gap does not apply there.
-# GAP-01, GAP-03, GAP-04, GAP-05 and GAP-06 were RESOLVED (no longer accepted
-# risks — a regression now hard-FAILS the gate):
+# GAP-01, GAP-03, GAP-04, GAP-05, GAP-06 and GAP-07 were RESOLVED (no longer
+# accepted risks — a regression now hard-FAILS the gate):
 #   GAP-01 getStepFunctionExecution now requires the caller-supplied
 #          executionArn to name this deployment's state machine, and enforces
 #          allowedConfigVersions against the execution input's config_version.
@@ -2114,4 +2237,8 @@ known_gaps:
 #   GAP-06 the three feature-platform ops now declare
 #          @aws_cognito_user_pools(cognito_groups:["Admin"]) instead of the
 #          silently-ignored @aws_auth / group-less directive.
+#   GAP-07 the chat Function URL now verifies the caller's Cognito ID token
+#          (x-idp-id-token header) on both routes, so the group checks, the
+#          Chat-with-Document config-version scope and the session owner all
+#          read verified claims; a request without a valid token is a 401.
 # Their ids are retired; the ops' entries above carry a "Formerly GAP-0x" note.

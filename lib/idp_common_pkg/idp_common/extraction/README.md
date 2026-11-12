@@ -1134,6 +1134,34 @@ working deployment.
 Rollback refuses to flatten a baseline holding more than one record, because that
 would discard ground truth the user authored.
 
+## Bedrock Guardrails
+
+When `GUARDRAIL_ID_AND_VERSION` is set (the stack's `BedrockGuardrailId` and
+`BedrockGuardrailVersion`), both extraction modes send the guardrail with every
+model request:
+
+- **Simple mode** calls `BedrockClient.invoke_model`, which adds `guardrailConfig`
+  to the `converse` request.
+- **Advanced (agentic) mode** builds its Strands `BedrockModel` itself, because the
+  boto config, session and request fields are its own. It adds
+  `strands_guardrail_kwargs()`, so the guardrail reaches every turn of the agent
+  loop, sharded runs included.
+
+With no guardrail configured, the helper returns an empty dict and the model is
+built exactly as before.
+
+Two effects are expected on the agentic path. Both are inferred from the request
+shape and have not been measured on a live stack:
+
+- A guardrail intervention should end that turn with the guardrail's blocked-output
+  message instead of a tool call, leaving the section without an extraction, just
+  as an intervention does in Simple mode.
+- The guardrail is sent with every turn of the loop, so its per-request cost should
+  grow with the number of turns rather than once per section.
+
+See `idp_common/bedrock/README.md` for how the variable is parsed and which paths
+send it.
+
 ## Error Handling
 
 The ExtractionService has built-in error handling:

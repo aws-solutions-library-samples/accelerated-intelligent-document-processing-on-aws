@@ -781,15 +781,44 @@ Guardrails are configured via environment variables:
 
 - `GUARDRAIL_ID_AND_VERSION`: Contains the Guardrail ID and Version in format `id:version`
 
-When properly configured, the `get_guardrail_config()` function will automatically include guardrail parameters in Bedrock API calls.
+An unset or empty variable, an empty half, or a value that does not split into
+exactly two parts means no guardrail, and every request is sent exactly as it would
+be without one.
 
 ### How Guardrail Integration Works
 
-1. The `invoke_model` function checks if `GUARDRAIL_ID_AND_VERSION` is set
-2. If configured, guardrail parameters are parsed from the environment variable
-3. Appropriate guardrail parameters are added to Bedrock API calls:
-   - For `converse` API: Uses `guardrailIdentifier`, `guardrailVersion`, and `trace`
-4. Debug logs show when guardrails are being applied
+Within `idp_common` and the Lambdas built on it, the variable is parsed in one
+place, `idp_common.bedrock.guardrail`, and each model-call path attaches the result
+in the shape its API takes. (The knowledge base resolver's
+`retrieve_and_generate` call parses the variable with its own code.)
+
+| Path | API | What is attached | Helper |
+|---|---|---|---|
+| `BedrockClient.invoke_model` (and the module-level `invoke_model`) | `converse` | `guardrailConfig` | `guardrail_config_from_env()` |
+| `create_strands_bedrock_model` and agentic extraction | Strands `BedrockModel` | `guardrail_id`, `guardrail_version`, `guardrail_trace` | `strands_guardrail_kwargs()` in `idp_common.agents.common.strands_bedrock_model` |
+| A direct `converse` / `converse_stream` call (the chat processors) | `converse_stream` | `guardrailConfig` | `guardrail_config_from_env()` |
+| A direct `invoke_model` call (the Z3 rule translator) | `invoke_model` | `guardrailIdentifier`, `guardrailVersion`, `trace` | `guardrail_invoke_model_params()` |
+
+`BedrockClient.get_guardrail_config()` returns the same dict as
+`guardrail_config_from_env()`. Debug logs show when a guardrail is applied.
+
+Code that builds its own request rather than going through `BedrockClient` or the
+factory must attach the guardrail with one of these helpers.
+`scripts/tests/test_model_call_guardrail.py` enforces that. It finds every
+`BedrockModel(`, `converse(`, `converse_stream(`, `invoke_model(` and
+`invoke_model_with_response_stream(` in `lib/`, `src/lambda/`, `nested/*/src/` and
+`patterns/*/src/` by AST. Each call
+must go through one of the paths above, attach the guardrail itself, or be listed
+with its own reason.
+
+Two paths do not send the guardrail:
+
+- **Embeddings.** `generate_embedding` calls `invoke_model` on an embedding model,
+  and the request carries no guardrail.
+- **OpenAI GPT-5.x models.** `BedrockClient.invoke_model` sends these to the
+  Responses API on the `bedrock-mantle` endpoint (`openai_responses.py`), and that
+  request carries no guardrail. When one is configured, the first such request in
+  each process logs a warning.
 
 ### Example with Guardrails
 

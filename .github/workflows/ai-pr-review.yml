@@ -154,41 +154,46 @@ jobs:
           npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
           claude --version
 
-      # ⚠️ PIN THE HARNESS TO THE TARGET BRANCH BEFORE RUNNING IT.
+      # ⚠️ STAGE THE HARNESS FROM THE TARGET BRANCH, OUTSIDE THE CHECKOUT, AND
+      # RUN IT ISOLATED.
       #
-      # On a pull_request run this checkout contains the PR's changes, so without
-      # this the reviewer is the PR's own copy of itself: the permission mode,
-      # both tool lists, the secret-stripping list and the prompt are all
-      # author-controlled, and the script's internal pinning of instruction files
-      # runs too late to matter because the code doing the pinning is also the
-      # PR's. The blast radius is this job's environment, which holds a Bedrock
-      # credential and a token that can post publicly.
+      # On a pull_request run this checkout contains the PR's changes, so its copy
+      # of the reviewer (the permission mode, both tool lists, the secret-stripping
+      # list, the posting check and the prompt) is author-controlled. So the
+      # harness comes from the target branch and only the DIFF comes from the PR.
       #
-      # So the harness comes from the target branch and only the DIFF comes from
-      # the PR. The trade is explicit and is the same one .gitlab-ci.yml makes: a
-      # PR that improves the reviewer is not exercised by its own run: it takes
-      # effect once merged.
+      # `git archive` into a fresh directory under $RUNNER_TEMP, rather than
+      # `git checkout FETCH_HEAD -- ...` in place: an in-place checkout leaves
+      # PR-added files beside the pinned ones, and Python resolves imports from
+      # the script's own directory first, so a PR adding scripts/sdlc/json.py
+      # would run in this job. The Review step runs the staged copy with
+      # `python3 -I`, which also keeps the current directory and PYTHON*
+      # variables off the import path. The path list is REVIEW_HARNESS_PATHS in
+      # ai_mr_review.py; test_ai_mr_review.py asserts the two agree. The fetch
+      # names refs/heads/ so a tag called like the branch cannot stand in for it.
       #
-      # This also covers the schedule and dispatch paths, where the checkout is
-      # the DEFAULT branch rather than the target branch. That is `develop` today,
-      # so the two coincide, but pinning keeps the harness tied to the target
-      # branch should the default branch ever differ from it again.
+      # The trade is explicit and is the same one .gitlab-ci.yml makes: a PR that
+      # improves the reviewer is not exercised by its own run; it takes effect
+      # once merged. The schedule and dispatch paths check out the default branch,
+      # which is `develop` today, so there the two coincide.
       #
       # The anonymous fetch works because this repository is public and
       # persist-credentials is off above.
-      - name: Pin the review harness to the target branch
+      - name: Stage the review harness from the target branch
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git fetch -q origin "$TARGET_BRANCH"
-          HARNESS="scripts/sdlc/ai_mr_review.py .claude/skills/pr-review.md .claude/skills/pr-review-ci.md CLAUDE.md"
-          if git checkout FETCH_HEAD -- $HARNESS 2>/dev/null; then
-            echo "Harness pinned to origin/$TARGET_BRANCH: $HARNESS"
+          git fetch -q origin "refs/heads/$TARGET_BRANCH"
+          HARNESS="scripts/sdlc/ai_mr_review.py scripts/ux_runner/__init__.py scripts/ux_runner/redact.py scripts/hooks/check_commit_text.py"
+          STAGED="$RUNNER_TEMP/review-harness"
+          rm -rf "$STAGED" && mkdir -p "$STAGED"
+          if git archive --format=tar -o "$RUNNER_TEMP/review-harness.tar" FETCH_HEAD -- $HARNESS && tar -xf "$RUNNER_TEMP/review-harness.tar" -C "$STAGED" && chmod -R go-w "$STAGED"; then
+            echo "Harness staged from origin/$TARGET_BRANCH in $STAGED: $HARNESS"
           else
-            echo "❌ Could not pin the harness to origin/$TARGET_BRANCH — it does not"
-            echo "   carry all of: $HARNESS"
+            echo "❌ Could not stage the harness from origin/$TARGET_BRANCH — it does"
+            echo "   not carry all of: $HARNESS"
             echo "   REFUSING to run this checkout's own copy. On a pull request that"
             echo "   would make the reviewer the PR's own copy of the reviewer, which"
-            echo "   is the one thing this step exists to prevent. Fix the path list."
+            echo "   is the one thing this step exists to prevent."
             exit 1
           fi
 
@@ -232,9 +237,20 @@ jobs:
           # model's environment by SECRET_ENV_KEYS in ai_mr_review.py.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+          # The role github-oidc-review-role.yml creates. The script asks STS which
+          # role it holds and refuses to review on any other.
+          REVIEW_ROLE_NAME: idp-sdlc-GitHubReview
         run: |
+          # A target branch whose reviewer predates --checkout and --require-aws-role
+          # cannot run this way; say so instead of failing on an argument error.
+          if ! grep -q -- "--require-aws-role" "$RUNNER_TEMP/review-harness/scripts/sdlc/ai_mr_review.py"; then
+            echo "❌ The target branch's reviewer predates the staged, role-checked run,"
+            echo "   so it cannot review this PR. Reviews resume once the target carries it."
+            exit 1
+          fi
+          REVIEW="python3 -I $RUNNER_TEMP/review-harness/scripts/sdlc/ai_mr_review.py --checkout $GITHUB_WORKSPACE --require-aws-role $REVIEW_ROLE_NAME"
           if [ -n "$PR_NUMBER" ]; then
-            python3 scripts/sdlc/ai_mr_review.py \
+            $REVIEW \
               --forge github --mr "$PR_NUMBER" \
               --target-branch "$TARGET_BRANCH"
           else
@@ -242,7 +258,7 @@ jobs:
             # batch of ten has a 200-minute worst case against this job's 45m
             # limit, so the sweep's own bound would never be the one that fires
             # and the job would be cut off mid-review. Three fits.
-            python3 scripts/sdlc/ai_mr_review.py \
+            $REVIEW \
               --forge github --all-open --max-mrs 3 \
               --target-branch "$TARGET_BRANCH"
           fi

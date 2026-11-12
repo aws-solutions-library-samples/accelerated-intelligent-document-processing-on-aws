@@ -561,7 +561,7 @@ parameters.
 | `LambdaSecurityGroupId` | — | Lambda security group id |
 | `ApiGatewayVpcEndpointId` | — | execute-api interface endpoint id |
 | `S3PresignedUrlViaVpcEndpoint` | — | `false` (default, uploads via NAT) or `true` (uploads via BYO S3 VPCE) |
-| `EnableMCP` | `true` (default) | `false` (requires public endpoint) |
+| `EnableMCP` | `false` (default) | `false` (requires public endpoint) |
 | `DocumentKnowledgeBase` | `BEDROCK_KNOWLEDGE_BASE (Create)` (default) | `DISABLED` |
 | `KnowledgeBaseVectorStore` | `S3_VECTORS` (default) or `OPENSEARCH_SERVERLESS` — only read when `DocumentKnowledgeBase` creates one | — |
 | `ArtifactsBucketKmsKeyArn` | optional | optional (required if bucket is KMS-encrypted) |

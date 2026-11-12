@@ -246,6 +246,7 @@ review = gitlab_api.review
 HARNESS_PATHS = (
     "scripts/sdlc/ai_ux_test_stories.py",
     "scripts/sdlc/ai_mr_review.py",
+    "scripts/hooks/check_commit_text.py",
     "scripts/ux_runner",
     "scripts/ux_test_proxy.py",
     "scripts/ux_recorder.py",

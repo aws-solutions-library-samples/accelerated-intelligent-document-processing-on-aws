@@ -73,6 +73,7 @@ flowchart TD
 | **Severity** | Critical |
 | **Affected Components** | Customer Lambda hooks, IAM roles |
 | **Mitigations** | Customer responsibility for hook security, documentation of security best practices, hook Lambda runs with customer-managed IAM role (separate from platform roles), platform only has invoke permission on hook |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### HOOK.T02: Data Exfiltration via Post-Processing Hook
 
@@ -87,6 +88,7 @@ flowchart TD
 | **Severity** | Critical |
 | **Affected Components** | Post-Processing Hook Lambda, Decompressor Lambda |
 | **Mitigations** | Customer-managed VPC with egress controls on hook Lambda, security review of hook code, network-level monitoring, data loss prevention policies |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### HOOK.T03: Inference Hook Result Tampering
 
@@ -101,6 +103,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Inference Hook Lambda, downstream pipeline steps |
 | **Mitigations** | Output schema validation in platform code, assessment step as verification layer, evaluation framework to detect accuracy degradation, human review for critical documents |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### HOOK.T04: Hook Lambda Timeout/Failure Cascade
 
@@ -115,6 +118,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | Step Functions, Hook Lambdas |
 | **Mitigations** | Step Functions timeout configuration on hook invocation states, error handling with fallback states, CloudWatch alarms on hook failures, DLQ for failed processing |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### HOOK.T05: Privilege Escalation via Hook IAM Role
 
@@ -129,6 +133,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Hook Lambda IAM role, platform resources |
 | **Mitigations** | Documentation emphasizing least-privilege IAM for hooks, platform resources use resource-based policies that don't grant hook roles access, clear boundary between platform and customer IAM roles |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### HOOK.T06: Preprocessing Hook Operates on the Raw Source Document and Can Halt or Replace It
 
@@ -144,6 +149,7 @@ flowchart TD
 | **Affected Components** | Pipeline hooks dispatcher, `preprocessing` config section, S3 Input Bucket, workflow state machine |
 | **Mitigations** | Registration is a **configuration action** requiring the Admin/Author group and is config-versioned, attributable, and reversible (PM.T06 controls). The hook is a **separate customer/feature-managed Lambda** with its own IAM role — the platform holds only `lambda:InvokeFunction` on it (HOOK.T01/T05 controls apply unchanged). The dispatcher **only invokes Lambdas tagged `idp:feature-id`**, so an arbitrary ARN cannot be dispatched without that tag. The hook config is a deliberately **generic** `arn` + key/value `args` shape with no feature-specific fields, limiting the platform's own attack surface. `onError: fail` is **terminal** (fail-closed — no fall-through to processing the un-preprocessed original). The distinct, visible **`PREPROCESSING`** document status (abortable like other in-flight statuses) makes a hook that hangs or halts observable in the UI rather than silent, and it is a no-op when no hook is registered (backward-compatible default). |
 | **Residual risk** | A `halt: true` return is a legitimate, expected outcome (the PII feature uses it after spawning a replacement document), so a *malicious* halt is not distinguishable from a *correct* one by the platform alone — detection depends on operators noticing documents that never produce results. Recommend monitoring the rate of halted executions and alerting on anomalies. See [PII Anonymization](pii-anonymization.md) for the reference consumer's own threats (PII.T01–T05). |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### HOOK.T07: `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points
 
@@ -159,6 +165,7 @@ flowchart TD
 | **Affected Components** | `patterns/unified/statemachine/workflow.asl.json` (the `Catch` blocks on `PostOcrHook`, `PostClassificationHook`, `PostExtractionHook`, `PostRuleValidationHook`, `PostSummarizationHook`, `PostprocessingHook`), `patterns/unified/src/pipeline_hooks_function/index.py` |
 | **Mitigations** | `onError: fail` is terminal at **every** hook point. Each of the seven states routes its catch to a terminal failure state — `PreprocessingHookFailed`, `PostExtractionHookFailed`, or the shared `PostStepHookFailed` for the other five — so the declared behaviour and the actual behaviour now agree, and a hook at any point may be relied on as a gate. Verified against `patterns/unified/statemachine/workflow.asl.json` by reading each hook state's `Catch`, not from the setting's documentation. The dispatcher raises on a failed `onError: fail` hook, so the signal exists and is recorded in execution state, and hook failures remain visible in CloudWatch and in the execution history. ⚠️ `onError: continue` is unchanged and still routes forward by design — the distinction this threat was about is now the one the configuration key makes. |
 | **Residual risk / recommendation** | Even once the routing is corrected, a hook is customer code and a *gate implemented as a hook* is only as reliable as the hook's own availability. Where a control must hold, prefer `preprocessing` (terminal today) and alert on the rate of failed and halted executions rather than inferring success from the absence of errors. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ## 4. Security Controls Summary
 

@@ -13,6 +13,7 @@ import boto3
 from strands import tool
 
 from ..analytics_logger import analytics_logger
+from ..query_validation import QueryNotAllowedError, validate_read_only_query
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,10 @@ def run_athena_query(
 ) -> Dict[str, Any]:
     """
     Execute a SQL query on Amazon Athena.
+
+    The query must be exactly one read-only statement: a SELECT (optionally starting
+    with WITH), or a SHOW or DESCRIBE statement. Anything else is refused without
+    being sent to Athena, and the response explains why.
 
     Uses boto3 to execute the query on Athena. Query results are stored in s3.
     Successful execution will return a dict with result_column_metadata,
@@ -49,6 +54,21 @@ def run_athena_query(
     """
     start_time = time.time()
     try:
+        # Only one read-only statement is sent to Athena. The SQL is model output,
+        # so this check runs before anything else is done with it.
+        try:
+            query = validate_read_only_query(query)
+        except QueryNotAllowedError as e:
+            logger.warning(f"Query not run: {e}")
+            result = {
+                "success": False,
+                "error": str(e),
+                "query": query,
+                "state": "NOT_RUN",
+            }
+            analytics_logger.log_content("run_athena_query", result)
+            return result
+
         # Create Athena client
         athena_client = boto3.client("athena", region_name=config.get("aws_region"))
 

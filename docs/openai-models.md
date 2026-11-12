@@ -252,7 +252,7 @@ via `cacheReadInputTokens` / `cacheWriteInputTokens`.
 | Text input | ✅ | |
 | Image input | ✅ | Page images are sent as image content |
 | Reasoning effort control | ✅ | New `reasoning_effort` config field (see below) |
-| Guardrails | ✅ | Applied via the standard headers on the mantle endpoint |
+| Guardrails | ❌ | Not sent. Requests to the mantle endpoint carry no guardrail; when `BedrockGuardrailId` is set, a warning is logged once per Lambda process |
 
 ### What is NOT supported (GPT-5.x)
 
