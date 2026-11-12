@@ -2642,7 +2642,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
 **Validation Checks:**
 - **YAML/JSON Syntax** - Ensures file is well-formed
 - **Schema Validation** - Validates against Pydantic models
-- **Model IDs** - Verifies Bedrock model IDs are valid (checked against pricing.yaml)
+- **Model IDs** - Verifies every Bedrock model ID the configuration names is in `config_library/pricing.yaml`: each section's model, the confidence, escalation, review-agent, chat, agent, discovery, rule-validation and evaluation models, the per-class `x-aws-idp-extraction-model`, `x-aws-idp-extraction-escalation-model` and `x-aws-idp-confidence-escalation-model` overrides, and the `model` in the `x-aws-idp-evaluation-method-config` of any field evaluated with `LLM`. `config-upload` runs the same check unless given `--no-validate`. An ID is compared as written, so one with surrounding spaces or in upper case is reported like any other typo. Embedding-model fields are not checked, because `pricing.yaml` prices no embedding model. A model named by an ARN whose underlying model cannot be determined offline is a warning rather than an error
 - **Placeholder Validation** - Ensures required placeholders are present in custom task_prompts:
   - `ocr.task_prompt` (bedrock only): Requires `{DOCUMENT_IMAGE}`
   - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`

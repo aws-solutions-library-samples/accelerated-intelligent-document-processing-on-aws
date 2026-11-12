@@ -15,7 +15,7 @@ import os
 import sys
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
 
@@ -1042,11 +1042,56 @@ def _load_valid_bedrock_models() -> set:
         return set()
 
 
+# Every model-ID field outside classification that names a Bedrock model
+# ``config_library/pricing.yaml`` prices, as a dotted path into the merged config.
+# Classification is read per call by ``_classification_calls``, and the per-class
+# overrides are read in ``_validate_model_ids``. Three model fields are deliberately
+# absent, each for its own reason:
+#
+# - ``classification.split_then_classify.section_classification.embeddings.model``
+#   and ``discovery.multi_document.embedding_model_id`` name embedding models,
+#   and pricing.yaml prices none: the shipped default ``us.cohere.embed-v4:0`` is
+#   not in it, so checking either would refuse the default configuration.
+# - The per-class ``x-aws-idp-evaluation-model-name`` is the name of the Stickler
+#   model class the evaluator builds, not a Bedrock model.
+#
+# ``tests/unit/config/test_model_id_catalog_coverage.py`` walks ``IDPConfig`` and
+# fails on a model field that is in neither this tuple nor its list of the above.
+_CATALOG_MODEL_FIELDS: Tuple[str, ...] = (
+    "ocr.model_id",
+    "extraction.model",
+    "extraction.agentic.review_agent_model",
+    "extraction.confidence.model",
+    "extraction.confidence.escalation_model",
+    "extraction.validation.escalation_model",
+    "summarization.model",
+    "chat.model",
+    "rule_validation.fact_extraction.model",
+    "rule_validation.rule_validation_orchestrator.model",
+    "rule_validation.z3_rule_translator.model",
+    "rule_validation.z3_value_extraction.model",
+    "agents.error_analyzer.model_id",
+    "agents.chat_companion.model_id",
+    "discovery.without_ground_truth.model_id",
+    "discovery.with_ground_truth.model_id",
+    "discovery.auto_split.model_id",
+    "discovery.multi_document.analysis_model_id",
+    "discovery.rules.model",
+    "discovery.rules.agentic.review_agent_model",
+    "evaluation.llm_method.model",
+)
+
+
 def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -> None:
     """
     Validate Bedrock model IDs against pricing.yaml.
 
-    Checks that model IDs in config are valid and recognized.
+    Checks every model ID the config names: each classification call the active
+    strategy makes, every path in ``_CATALOG_MODEL_FIELDS``, the per-class
+    extraction, extraction-escalation and confidence-escalation overrides, and the
+    ``model`` of any field's LLM-comparator method-config. An ID
+    is compared as written, so surrounding whitespace or upper case is reported
+    like any other typo — the Bedrock client sends it on unchanged.
 
     A model may be named by ARN rather than by bare model ID — GovCloud
     requires an account-scoped inference-profile ARN, and provisioned-throughput
@@ -1080,35 +1125,70 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
         # Can't validate - skip silently
         return
 
-    sections_with_models = {
-        "ocr": "model_id",
-        "classification": "model",
-        "extraction": "model",
-        "assessment": "model",
-        "summarization": "model",
-    }
+    from idp_common.config.schema_constants import (
+        EVALUATION_METHOD_LLM,
+        X_AWS_IDP_CONFIDENCE_ESCALATION_MODEL,
+        X_AWS_IDP_DOCUMENT_TYPE,
+        X_AWS_IDP_EVALUATION_METHOD,
+        X_AWS_IDP_EVALUATION_METHOD_CONFIG,
+        X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
+        X_AWS_IDP_EXTRACTION_MODEL,
+    )
 
-    targets: List[tuple] = []
-    for section_name, model_field in sections_with_models.items():
-        if section_name not in merged_config:
-            continue
-        if section_name == "classification":
-            # One model per call the active strategy makes.
-            targets.extend(
-                (path, "model", call.get("model"))
-                for path, call in _classification_calls(merged_config)
-            )
-        else:
+    def llm_judge_models(node: Any, field_path: str, class_name: str) -> None:
+        """A field judged by the LLM comparator may name its own model.
+
+        The Stickler mapper lays a field's method-config over
+        ``evaluation.llm_method``, so a ``model`` there chooses the judge.
+        """
+        if isinstance(node, list):
+            for item in node:
+                llm_judge_models(item, field_path, class_name)
+            return
+        if not isinstance(node, dict):
+            return
+        method_config = node.get(X_AWS_IDP_EVALUATION_METHOD_CONFIG)
+        if node.get(X_AWS_IDP_EVALUATION_METHOD) == EVALUATION_METHOD_LLM and (
+            isinstance(method_config, dict)
+        ):
             targets.append(
                 (
-                    section_name,
-                    model_field,
-                    merged_config[section_name].get(model_field),
+                    f"Class '{class_name}' field '{field_path or '<root>'}' "
+                    f"{X_AWS_IDP_EVALUATION_METHOD_CONFIG}.model",
+                    method_config.get("model"),
                 )
             )
+        for key, value in node.items():
+            if key == "properties" and isinstance(value, dict):
+                for name, child in value.items():
+                    child_path = f"{field_path}.{name}" if field_path else name
+                    llm_judge_models(child, child_path, class_name)
+            elif key != X_AWS_IDP_EVALUATION_METHOD_CONFIG:
+                llm_judge_models(value, field_path, class_name)
 
-    for section, field_name, model_id in targets:
-        if not model_id:
+    # (label, value) per model ID the config names. Classification has one model
+    # per call the active strategy makes; every other field is a fixed path.
+    targets: List[tuple] = [
+        (f"{path}.model", call.get("model"))
+        for path, call in _classification_calls(merged_config)
+    ]
+    for path in _CATALOG_MODEL_FIELDS:
+        *parents, leaf = path.split(".")
+        targets.append((path, _dict_at(merged_config, *parents).get(leaf)))
+    for cls in merged_config.get("classes", []) or []:
+        if not isinstance(cls, dict):
+            continue
+        class_name = cls.get(X_AWS_IDP_DOCUMENT_TYPE, "<unnamed>")
+        for key in (
+            X_AWS_IDP_EXTRACTION_MODEL,
+            X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
+            X_AWS_IDP_CONFIDENCE_ESCALATION_MODEL,
+        ):
+            targets.append((f"Class '{class_name}' {key}", cls.get(key)))
+        llm_judge_models(cls, "", class_name)
+
+    for label, model_id in targets:
+        if not model_id or not isinstance(model_id, str):
             continue
 
         resolved = resolve_model_id_from_arn(model_id)
@@ -1125,7 +1205,7 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
         if retirement is not None:
             result["valid"] = False
             result["errors"].append(
-                f"{section}.{field_name} has invalid model ID: {model_id} reached "
+                f"{label} has invalid model ID: {model_id} reached "
                 f"end of life on {retirement['eol']} and is no longer available in "
                 f"any region — every call returns ResourceNotFoundException. "
                 f"Choose a current model. Verify with: {retirement['verify']}"
@@ -1155,14 +1235,14 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
                 # (has family.name shape) but doesn't match — treat as a typo.
                 result["valid"] = False
                 result["errors"].append(
-                    f"{section}.{field_name} names a Bedrock ARN whose resolved "
+                    f"{label} names a Bedrock ARN whose resolved "
                     f"model ID ({resolved!r}) is not a known Bedrock model. This is "
                     f"most likely a typo in the ARN's resource-id, partition, or "
                     f"account. Full ARN: {model_id}"
                 )
                 continue
             result["warnings"].append(
-                f"{section}.{field_name} names a Bedrock ARN whose underlying "
+                f"{label} names a Bedrock ARN whose underlying "
                 f"model can't be determined offline: {model_id}. Cost reporting "
                 f"needs a matching entry in config_library/pricing.yaml."
             )
@@ -1170,7 +1250,7 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
 
         result["valid"] = False
         result["errors"].append(
-            f"{section}.{field_name} has invalid model ID: {model_id}. "
+            f"{label} has invalid model ID: {model_id}. "
             f"Verify the model name is correct and ensure it's enabled in the Bedrock console. "
             f"Check config_library/pricing.yaml for valid model IDs."
         )
