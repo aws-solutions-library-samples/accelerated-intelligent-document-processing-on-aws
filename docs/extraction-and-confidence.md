@@ -269,9 +269,12 @@ Agentic extraction requires models with tool-use support:
 > `openai.gpt-5.*` models (`openai.gpt-5.4`, `openai.gpt-5.5`, and GPT-5.6
 > Sol/Terra/Luna) run on the `bedrock-mantle` Responses API and do not support
 > the Converse-based Strands agent loop. Pairing an OpenAI model with
-> `extraction.agentic.enabled: true` is a **hard error** in
-> `idp-cli config-validate` and raises at runtime. OpenAI models are fully
-> supported for **Simple (non-agentic) extraction**. See
+> **Advanced** extraction — `extraction.mode: advanced`, or, in a configuration
+> that sets no `mode`, `extraction.agentic.enabled: true` — is a **hard error** in
+> `idp-cli config-validate` and raises at runtime. `mode` wins whenever it is set,
+> so `mode: simple` with `agentic.enabled: true` runs Simple extraction and is
+> accepted. OpenAI models are fully supported for **Simple (non-agentic)
+> extraction**. See
 > [OpenAI GPT-5.x Models](openai-models.md).
 
 > **✅ xAI Grok CAN be used with agentic extraction.** Grok 4.6

@@ -47,7 +47,7 @@ failure:
 
 | Guard | Rejects | Why |
 |---|---|---|
-| `_validate_agentic_openai` | OpenAI GPT-5.x with `extraction.agentic.enabled` | Served via the `bedrock-mantle` Responses API, incompatible with the Converse-based Strands loop |
+| `_validate_agentic_openai` | OpenAI GPT-5.x when extraction is agentic — `extraction.mode: advanced`, or `agentic.enabled` with no `mode` — as resolved by the validated `IDPConfig`, which is what the runtime reads | Served via the `bedrock-mantle` Responses API, incompatible with the Converse-based Strands loop |
 | `_validate_discovery_openai` | OpenAI GPT-5.x **and xAI Grok** as a discovery model | Discovery ingests whole PDFs as Converse `document` blocks; both models take text + image only, so the document would be silently dropped |
 
 Grok is therefore rejected for **discovery** but not for agentic extraction. The

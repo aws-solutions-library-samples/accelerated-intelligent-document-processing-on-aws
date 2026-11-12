@@ -806,7 +806,15 @@ class TestValidateMaxTokens:
 
 
 class TestValidateAgenticOpenAI:
-    """Test _validate_agentic_openai function (OpenAI + agentic incompatibility)."""
+    """Test _validate_agentic_openai function (OpenAI + agentic incompatibility).
+
+    These call the helper directly with ``agentic`` already resolved, so they cover
+    the model predicate only. How ``agentic`` is resolved from ``extraction.mode``
+    and ``extraction.agentic.enabled`` is covered through ``validate_config`` in
+    ``test_agentic_openai_mode_matrix.py``, and through the ``config-validate`` CLI,
+    which reaches it via the SDK, in
+    ``lib/idp_cli_pkg/tests/test_config_validate_agentic_openai.py``.
+    """
 
     def test_openai_with_agentic_errors(self):
         """OpenAI model + agentic.enabled=true is a hard validation error."""
@@ -817,7 +825,7 @@ class TestValidateAgenticOpenAI:
             }
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result)
+        _validate_agentic_openai(config, result, agentic=True)
 
         # Hard error — surfaced at config time, not a silent runtime fallback.
         assert result["valid"] is False
@@ -834,7 +842,7 @@ class TestValidateAgenticOpenAI:
             }
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result)
+        _validate_agentic_openai(config, result, agentic=True)
 
         assert result["valid"] is False
         assert "openai.gpt-5.6-terra" in result["errors"][0]
@@ -848,7 +856,7 @@ class TestValidateAgenticOpenAI:
             }
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result)
+        _validate_agentic_openai(config, result, agentic=False)
 
         assert result["valid"] is True
         assert result["errors"] == []
@@ -862,7 +870,7 @@ class TestValidateAgenticOpenAI:
             }
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result)
+        _validate_agentic_openai(config, result, agentic=True)
 
         assert result["valid"] is True
         assert result["errors"] == []
@@ -882,7 +890,7 @@ class TestValidateAgenticOpenAI:
             ],
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result)
+        _validate_agentic_openai(config, result, agentic=True)
 
         assert result["valid"] is False
         assert len(result["errors"]) == 1
@@ -902,7 +910,7 @@ class TestValidateAgenticOpenAI:
             }
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result)
+        _validate_agentic_openai(config, result, agentic=True)
         assert result["valid"] is True
         assert result["errors"] == []
 
@@ -923,7 +931,7 @@ class TestValidateAgenticOpenAI:
             }
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result)
+        _validate_agentic_openai(config, result, agentic=True)
         assert result["valid"] is True
         assert result["errors"] == []
 
@@ -939,7 +947,7 @@ class TestValidateAgenticOpenAI:
             ],
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result)
+        _validate_agentic_openai(config, result, agentic=True)
         assert result["valid"] is True
         assert result["errors"] == []
 
