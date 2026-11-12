@@ -23,7 +23,7 @@ version). Reports include confidence calibration metrics:
 - **📈 Per-Field Confidence Analysis** - Identify which fields have poorly calibrated confidence scores
 - **🎯 Coverage Tracking** - Visibility into fields with vs without confidence data
 
-**Enhanced Reporting (v0.4.9+)**: Fine-grain field comparison details. See [evaluation-enhanced-reporting.md](./evaluation-enhanced-reporting.md) for:
+**Field comparison details**: Fine-grain field comparison details. See [evaluation-enhanced-reporting.md](./evaluation-enhanced-reporting.md) for:
 
 - 📊 **Nested field comparison details** - See individual field matches within complex objects and arrays
 - 🔍 **Interactive report controls** - Filter to show only unmatched rows for focused debugging
@@ -414,8 +414,8 @@ The evaluation framework provides different comparison methods optimized for var
 | **Fuzzy** | Names, addresses, general text | Yes | 0.7 | Token-based fuzzy matching allowing minor variations and reordering. Threshold controls minimum similarity score |
 | **Levenshtein** | Text with typos, variations | Yes | 0.7 | Edit distance-based string comparison for detecting character-level differences. Threshold controls minimum similarity score |
 | **Semantic** | Descriptions, free text | Yes | 0.7 | Embedding-based similarity using Bedrock Titan embeddings for meaning comparison. Threshold controls minimum similarity score |
-| **Date** | Dates, date ranges | No (binary) | N/A | Format-insensitive date comparison (Stickler v0.5.0+ `DateComparator`). Parses both values into dates first, so `01/05/2024`, `2024-01-05`, and `January 5, 2024` all match. Handles ranges. Optionally tuned via `x-aws-idp-evaluation-method-config` (`dayfirst`, `tolerance`, `range_mode`). Not for time-only values |
-| **LLM** | Complex semantic equivalence on **scalar** fields | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score. **Not supported inside a list** — see below |
+| **Date** | Dates, date ranges | No (binary) | N/A | Format-insensitive date comparison (Stickler's `DateComparator`). Parses both values into dates first, so `01/05/2024`, `2024-01-05`, and `January 5, 2024` all match. Handles ranges. Optionally tuned via `x-aws-idp-evaluation-method-config` (`dayfirst`, `tolerance`, `range_mode`). Not for time-only values |
+| **LLM** | Complex semantic equivalence on **scalar** fields | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score. Judged with the `evaluation.llm_method` model and prompts, including on a field that sets its own `x-aws-idp-evaluation-method-config`. **Not supported inside a list** — see below |
 | **Hungarian** | Arrays of structured objects | Yes (match_threshold) | 0.8 | Optimal bipartite matching algorithm for list comparison. Uses the class-level match threshold for item pairing |
 | **AggregateObject** | Nested objects | No | N/A | Recursive field-by-field comparison of nested structures. No top-level threshold |
 
@@ -453,13 +453,11 @@ Setting an evaluation method on the **array itself** has no effect and never has
 (lists are scored through their item fields, and row pairing is Hungarian). That
 is now reported as a warning instead of being silently ignored.
 
-> **Scores from the `LLM` method changed in this release.** The comparison prompt
-> includes the document class, field name and field description, but those were
-> not being passed to the model — every comparison was sent with them blank, so
-> the model judged two bare values with no idea what field it was grading.
-> `LLM`-method scores from earlier releases are not directly comparable with
-> current ones. Identical values now also short-circuit to a match without calling
-> the model at all.
+> **`LLM`-method scores from releases before 0.6.6 are not comparable with current
+> ones.** The comparison prompt includes the document class, field name and field
+> description; before 0.6.6 those were sent to the model blank, so it judged two
+> bare values with no idea what field it was grading. Identical values short-circuit
+> to a match without calling the model at all.
 
 ### Threshold Display in Reports
 
@@ -643,12 +641,43 @@ Control evaluation behavior through the configuration file (no stack redeploymen
 evaluation:
   enabled: true  # Set to false to disable evaluation processing
   llm_method:
-    model: "us.anthropic.claude-haiku-4-5-20251001-v1:0"  # Model for the LLM comparison method
+    model: us.amazon.nova-2-lite-v1:0  # Model for the LLM comparison method
     temperature: "0.0"
-    top_p: "0.0"
-    max_tokens: "4096"
-    # Additional model parameters...
+    top_p: "0.0"         # 0 sends temperature instead of top_p
+    top_k: "5"
+    max_tokens: ""       # Empty = the model's maximum output; set a value to cap it
+    system_prompt: >-
+      You are an evaluator that helps determine if the predicted and expected values match ...
+    task_prompt: >-
+      I need to evaluate attribute extraction for a document of class: {DOCUMENT_CLASS} ...
 ```
+
+These are the shipped values (the prompts are shortened here). The model, the
+sampling settings, `max_tokens` and the prompts are sent with each comparison,
+and the Bedrock client adapts them per model as it does for the other steps:
+models that reject sampling parameters do not get `temperature`, `top_p` or
+`top_k`.
+
+⚠️ **Evaluation does not apply `reasoning_effort`.** The editor shows a
+Reasoning effort setting under `llm_method` for models with an effort control,
+but no effort is sent with evaluation comparisons, whatever it is set to, so
+such a model runs at its own default effort.
+
+A prompt you leave out uses the shipped one; an empty
+`system_prompt` or `task_prompt` is refused: every section whose class has an
+`LLM` field is reported as a failed evaluation with a configuration error naming
+the setting, and none of that section's fields are scored.
+
+**Cost of LLM comparisons.** Each comparison the `LLM` method sends to Bedrock
+is added to the document's metering under the `Evaluation` context, so it
+appears in the document's cost and in the reporting `metering` table with
+`context = 'Evaluation'`, beside the processing steps. A comparison is counted
+even when the model's answer cannot be read, and an evaluation that fails still
+reports the comparisons it made. Values that are equal after ignoring case and
+whitespace are matched without a call and cost nothing. Comparisons made by an
+attempt of the Evaluation step that is cut off (a Lambda timeout or crash) are
+not reported: the workflow continues with the document as it was before that
+attempt, so if a retry then succeeds, only the retry's comparisons appear.
 
 **Benefits of Configuration-Based Control:**
 - Enable/disable evaluation without stack redeployment
@@ -1283,7 +1312,7 @@ Once documents are processed with baselines:
 ### Configuration Best Practices
 
 - **Choose appropriate evaluation methods**: Match methods to your data types (EXACT for IDs, FUZZY for names, SEMANTIC for descriptions)
-- **Set realistic thresholds**: Start with strict thresholds (0.9+) and adjust based on your accuracy requirements
+- **Set realistic thresholds**: Start from the defaults (0.7 for `FUZZY`, and the per-type defaults in [Comparator Inference Rules](#comparator-inference-rules)) and raise a field's threshold only where a near-match should count as wrong; no measurement in this repository supports a stricter starting value such as 0.9
 - **Configure confidence tracking**: Leave `extraction.confidence.mode` at `separate` or `integrated` (not `off`) to get confidence scores in evaluation reports
 
 ## Automatic Field Discovery
@@ -1331,7 +1360,7 @@ which is where accuracy over time is tracked.
 
 The framework calculates the following detailed metrics for each document and section:
 
-**Extraction Accuracy Metrics.** As of v0.6.7, counts are derived directly from Stickler's row-level `field_comparisons` — one count per drilldown row the UI displays — with item-level rejected/missing/extra rows weighted by their leaf count so a truncated 5-item list and a partially-wrong 5-item list contribute the same leaf-normalized units. This means:
+**Extraction Accuracy Metrics.** Counts are derived directly from Stickler's row-level `field_comparisons` — one count per drilldown row the UI displays — with item-level rejected/missing/extra rows weighted by their leaf count so a truncated 5-item list and a partially-wrong 5-item list contribute the same leaf-normalized units. This means:
 
 - **Precision**: Accuracy of positive predictions — `TP / (TP + FP)` where `FP = FA + FD`
 - **Recall**: Coverage of actual positive cases — `TP / (TP + FN)`
@@ -1698,7 +1727,7 @@ annotation table preserves full auditability.
 See the end-to-end demo at
 `notebooks/usecase-specific-examples/ds11-passport-application/demo.ipynb`.
 
-## A failed evaluation no longer discards the document
+## A failed evaluation does not discard the document
 
 Evaluation is a **measurement** step: by the time it runs, OCR, classification,
 extraction, assessment and summarization have all succeeded and their output
@@ -1707,13 +1736,13 @@ continues to the normal end of the workflow with an honest
 `EvaluationStatus` (`FAILED` or `TIMED_OUT`) rather than failing the execution
 and throwing away that work.
 
-Two things changed to make that true:
+Three things make that true:
 
 - **A timeout is retried once, not eight times.** An evaluation Lambda timeout is
   *deterministic* — the document needs more time than the function has, so every
-  retry burns another full timeout and fails identically. It used to share the
-  transient-error retry policy (8 attempts at 2.5× backoff), which meant one such
-  document held a workflow-concurrency slot for **~5.2 hours** before failing.
+  retry burns another full timeout and fails identically. Under the
+  transient-error retry policy (8 attempts at 2.5× backoff) one such document
+  would hold a workflow-concurrency slot for **~5.2 hours** before failing.
   Genuinely transient faults (throttling, Lambda service errors) still get the
   full retry budget. This policy now applies to **every** Lambda task state in the
   workflow, not just evaluation — see

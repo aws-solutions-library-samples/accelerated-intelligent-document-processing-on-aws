@@ -721,7 +721,7 @@ dependency-sensitive; tracks are independent.
 - **Rollup-Lambda layer swap-in-place guard.** Both the rollup and the
   migration Lambdas now use `IDPCommonReportingLayer` for pyarrow +
   `idp_common`. External customers install this feature via
-  CreateFunction (new resource in this release) so the layer attaches
+  CreateFunction so the layer attaches
   cleanly under the 250 MB "combined code + layers" limit. A *future*
   release that swaps the rollup Lambda's runtime shape in-place
   (bundled ↔ layer, or a much larger layer) risks the same

@@ -2,6 +2,9 @@
 title: "Enhanced Evaluation Reporting"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Enhanced Evaluation Reporting
 
 This document describes the enhanced evaluation reporting features surfaced
@@ -188,7 +191,7 @@ with open('evaluation/report.md', 'r') as f:
 
 ## Configuration
 
-No additional configuration required! The enhancement automatically activates when using stickler-eval v0.1.4+.
+No additional configuration is required: the pinned `stickler-eval` release provides the field comparison details, so the reports include them by default.
 
 The feature is enabled in `lib/idp_common_pkg/idp_common/evaluation/service.py`:
 
@@ -278,11 +281,3 @@ comparison details). Run:
 ```bash
 cd lib/idp_common_pkg && python -m pytest tests/unit/evaluation/test_golden_fixture_stickler.py -v
 ```
-
-## Future Enhancements
-
-Potential future improvements:
-- Export to CSV with nested details flattened
-- Comparison history tracking across runs
-- Threshold recommendations based on field mismatch patterns
-- Visual diff viewer for nested structures

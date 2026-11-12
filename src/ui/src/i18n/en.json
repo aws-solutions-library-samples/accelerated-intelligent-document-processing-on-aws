@@ -323,6 +323,22 @@
     "defaultMessage": "Jobs",
     "description": "Side-navigation link under Home to the list of bulk Skip All Reviews jobs (Admins and Reviewers)."
   },
+  "pricing.layout.cannotSaveInvalidPrices": {
+    "defaultMessage": "Cannot save: {count, plural, one {# price is} other {# prices are}} not valid. Correct the prices listed under Invalid prices and save again.",
+    "description": "Error shown when Save changes is chosen on the Pricing page while some prices are invalid. {count} is how many."
+  },
+  "pricing.layout.invalidPrice": {
+    "defaultMessage": "Enter a non-negative decimal number with no spaces, such as 0.0015 or 6.0E-8.",
+    "description": "Inline error under a price field on the Pricing page when the value is not a valid price."
+  },
+  "pricing.layout.invalidPriceItem": {
+    "defaultMessage": "{apiName} / {unitName}: \"{price}\" is not a valid price. Use a non-negative decimal number with no spaces, such as 0.0015 or 6.0E-8.",
+    "description": "One line in the list of invalid prices on the Pricing page. {apiName} is the service/API name, {unitName} the unit name, {price} the value as typed."
+  },
+  "pricing.layout.invalidPricesHeader": {
+    "defaultMessage": "Invalid prices",
+    "description": "Header of the warning that lists every price on the Pricing page that cannot be saved."
+  },
   "reviewBulk.bulkResultsModal.close": {
     "defaultMessage": "Close",
     "description": "Button that closes the results dialog of a bulk Skip All Reviews run or of Send to review."
@@ -898,5 +914,13 @@
   "routes.myWork.jobCrumb": {
     "defaultMessage": "Job",
     "description": "Last breadcrumb on the page of one bulk Skip All Reviews job, after Home › Jobs."
+  },
+  "testStudio.itemEdit.regroupPending": {
+    "defaultMessage": "Loading the saved grouping…",
+    "description": "Why Edit Page Grouping is unavailable: a page grouping was just saved and the document editor is still re-reading the saved sections."
+  },
+  "testStudio.itemEdit.regroupRereadFailed": {
+    "defaultMessage": "The saved grouping could not be re-read. Choose Refresh to load it.",
+    "description": "Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page."
   }
 }

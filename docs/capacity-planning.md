@@ -2,10 +2,10 @@
 title: "Capacity Planning"
 ---
 
-# Capacity Planning
-
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
+
+# Capacity Planning
 
 ## Overview
 
@@ -37,7 +37,7 @@ The capacity planning system consists of several integrated components that work
 
 ### Core Components
 
-1. **GraphQL Resolver**: `CalculateCapacityResolverFunction` that handles capacity calculation requests
+1. **API Resolver**: `CalculateCapacityResolverFunction`, which handles the `calculateCapacity` operation the Web UI calls through the REST API dispatcher (`POST /op/calculateCapacity`)
 2. **Capacity Calculation Engine**: Lambda-based processing engine that analyzes document requirements and generates recommendations
 3. **Web UI Interface**: Interactive React-based capacity planning calculator with real-time visualizations
 4. **Token Usage Analysis**: Automatic population of token usage from processed documents' metering data
@@ -48,7 +48,7 @@ The capacity planning system consists of several integrated components that work
 
 1. **Input Configuration**: Users define document types, token usage, and processing schedules through the Web UI
 2. **Historical Analysis**: System extracts token usage and page counts from processed documents' metering data
-3. **Capacity Calculation**: GraphQL resolver invokes calculation engine to process requirements
+3. **Capacity Calculation**: The resolver Lambda invokes the calculation engine to process requirements
 4. **Real Metrics**: Processing times and queue delays are calculated from actual processed document data
 5. **Quota Assessment**: System calculates required AWS service quotas (TPM and RPM) with direct console links
 6. **Visualization**: Results displayed through interactive dashboard with hourly token distribution charts
@@ -80,7 +80,7 @@ The Web UI provides an intuitive interface for capacity planning with real-time 
 
 ### 2. Advanced Analytics Engine
 
-The capacity calculation system provides sophisticated analysis through GraphQL resolvers:
+The capacity calculation system provides the following analysis through its resolver Lambda:
 
 **Token Usage Extraction**:
 - Automatic extraction from processed documents' metering data

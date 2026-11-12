@@ -12,6 +12,11 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+#: Cross-region inference-profile prefixes that bind a model to one geography. A
+#: fallback served through one of them cannot be invoked from a stack outside it.
+_GEOGRAPHIC_PROFILE_PREFIXES = ("us", "eu", "apac", "ca", "jp", "au")
+
+
 def _default_agent_model_id() -> str:
     """The model an agent falls back to when its configured model cannot be read.
 
@@ -23,6 +28,13 @@ def _default_agent_model_id() -> str:
     not, so the fallback turned a recoverable configuration error into a
     ``ResourceNotFoundException`` that names the wrong problem.
 
+    ⚠️ The model is the field default's, but the profile is ``global.``. The field
+    default equals what ``base-agents.yaml`` ships, a ``us.`` profile, and a stored
+    configuration naming it is remapped to the stack's own geography at deploy
+    time by the ``update_configuration`` function. Nothing remaps a code default,
+    so a ``us.`` fallback could not be invoked from an EU or Canadian stack — on
+    the one path that runs because configuration could not be read.
+
     The import is local and guarded. This runs on an error path — often *because*
     configuration could not be loaded — and it must not be the thing that raises.
     The literal below is the last resort and is covered by the same gate that
@@ -33,10 +45,13 @@ def _default_agent_model_id() -> str:
 
         default = ChatCompanionConfig.model_fields["model_id"].default
         if isinstance(default, str) and default:
+            prefix, _, rest = default.partition(".")
+            if prefix in _GEOGRAPHIC_PROFILE_PREFIXES and rest:
+                return f"global.{rest}"
             return default
     except Exception:  # pragma: no cover - defensive, see docstring
         pass
-    return "global.anthropic.claude-sonnet-4-6"
+    return "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
 #: Fallback model for agents whose configured model id cannot be resolved.

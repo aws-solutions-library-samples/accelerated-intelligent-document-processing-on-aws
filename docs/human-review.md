@@ -2,10 +2,10 @@
 title: "Human-in-the-Loop (HITL) Review"
 ---
 
-# Human-in-the-Loop (HITL) Review
-
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
+
+# Human-in-the-Loop (HITL) Review
 
 ## Table of Contents
 
@@ -315,7 +315,10 @@ field highlights (see [extraction-and-confidence.md](extraction-and-confidence.m
 1. Open **Configuration** in the Web UI.
 2. Find the **Human-in-the-Loop (HITL) Review (Optional)** section.
 3. Set **Confidence threshold** (0.0–1.0, the `hitl.confidence_threshold` key):
-   - `0.8` = 80% confidence threshold (recommended starting point)
+   - `0.8` = 80% confidence threshold. With the default confidence model (Amazon
+     Nova Lite) a threshold in this range rarely triggers review: on the v0.6.14
+     benchmark grid it scored 0 of 119,937 confidence leaves below 0.9, including
+     on values that were wrong. See [Threshold Optimization](#threshold-optimization)
    - A confidence that is NaN or infinite is not a usable score and is read as 0.0, so
      it triggers review too
 4. Choose **Save**.
@@ -424,7 +427,17 @@ When evaluation data is available, turn on **Show Evaluation**:
 
 ### Threshold Optimization
 
-- **Start conservative**: begin with higher thresholds (0.8–0.9) and adjust based on accuracy needs
+- **Choose the confidence model and the threshold together**: the default confidence
+  model (Amazon Nova Lite) is well calibrated but does not rank wrong values below
+  right ones, so with the defaults review rarely triggers — on the v0.6.14 benchmark
+  grid it scored 0 of 119,937 confidence leaves below 0.9, and 0 of 6,664 on the one
+  configuration whose extraction got about 0.5% of values wrong. Claude Sonnet 5 as
+  the confidence model scored about 638 leaves below 0.9 over the same grid, and 173
+  of 6,668 on that configuration, for $160.70 against $90.33 for the whole grid
+  ([config-guidance §5.4](./benchmarking/config-guidance.md#54-confidence-model),
+  [confidence calibration study](./benchmarking/studies/confidence-calibration.md)).
+  No measurement here supports a particular threshold: check how many known-wrong
+  values fall below a candidate threshold on a labelled sample of your own documents
 - **Use per-field thresholds**: set `x-aws-idp-confidence-threshold` on the fields that
   matter most, rather than lowering the profile-wide threshold
 - **Iterative refinement**: use review corrections to improve extraction prompts

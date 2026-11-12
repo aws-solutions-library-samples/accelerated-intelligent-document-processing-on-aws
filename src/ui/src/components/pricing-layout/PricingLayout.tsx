@@ -1,7 +1,8 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import {
   Container,
   Header,
@@ -24,6 +25,39 @@ import Editor from '@monaco-editor/react';
 import yaml from 'js-yaml';
 import usePricing from '../../hooks/use-pricing';
 import useUserRole from '../../hooks/use-user-role';
+import { hasPricingCustomizations } from './pricing-customizations';
+import { findInvalidPrices, parsePrice } from './price-format';
+
+const messages = defineMessages<{
+  invalidPrice: NoMessageValues;
+  invalidPriceItem: { readonly apiName: string; readonly unitName: string; readonly price: string };
+  invalidPricesHeader: NoMessageValues;
+  cannotSaveInvalidPrices: { readonly count: number };
+}>({
+  invalidPrice: {
+    id: 'pricing.layout.invalidPrice',
+    defaultMessage: 'Enter a non-negative decimal number with no spaces, such as 0.0015 or 6.0E-8.',
+    description: 'Inline error under a price field on the Pricing page when the value is not a valid price.',
+  },
+  invalidPriceItem: {
+    id: 'pricing.layout.invalidPriceItem',
+    defaultMessage:
+      '{apiName} / {unitName}: "{price}" is not a valid price. Use a non-negative decimal number with no spaces, such as 0.0015 or 6.0E-8.',
+    description:
+      'One line in the list of invalid prices on the Pricing page. {apiName} is the service/API name, {unitName} the unit name, {price} the value as typed.',
+  },
+  invalidPricesHeader: {
+    id: 'pricing.layout.invalidPricesHeader',
+    defaultMessage: 'Invalid prices',
+    description: 'Header of the warning that lists every price on the Pricing page that cannot be saved.',
+  },
+  cannotSaveInvalidPrices: {
+    id: 'pricing.layout.cannotSaveInvalidPrices',
+    defaultMessage:
+      'Cannot save: {count, plural, one {# price is} other {# prices are}} not valid. Correct the prices listed under Invalid prices and save again.',
+    description: 'Error shown when Save changes is chosen on the Pricing page while some prices are invalid. {count} is how many.',
+  },
+});
 
 interface PricingUnit {
   name: string;
@@ -53,6 +87,7 @@ interface PricingTableItem {
 const PricingLayout = (): React.JSX.Element => {
   const { pricing, defaultPricing, loading, refreshing, error, updatePricing, fetchPricing, restoreDefaultPricing } = usePricing();
   const { isAdmin } = useUserRole();
+  const intl = useIntl();
 
   const [formValues, setFormValues] = useState<PricingFormValues>({ pricing: [] });
   const [jsonContent, setJsonContent] = useState('');
@@ -132,33 +167,11 @@ const PricingLayout = (): React.JSX.Element => {
     }
   }, [pricing]);
 
-  // Check if any pricing values are customized
-  const hasCustomizations = (): boolean => {
-    if (!defaultPricing || !formValues || !(defaultPricing as PricingFormValues).pricing || !formValues.pricing) return false;
+  // Prices the backend would refuse to save (see price-format.ts)
+  const invalidPrices = useMemo(() => findInvalidPrices(formValues), [formValues]);
 
-    // Compare pricing arrays
-    const defaultMap = new Map();
-    (defaultPricing as PricingFormValues).pricing.forEach((entry) => {
-      if (entry.name && entry.units) {
-        entry.units.forEach((unit) => {
-          defaultMap.set(`${entry.name}:${unit.name}`, unit.price);
-        });
-      }
-    });
-
-    for (const entry of formValues.pricing) {
-      if (entry.name && entry.units) {
-        for (const unit of entry.units) {
-          const key = `${entry.name}:${unit.name}`;
-          const defaultPrice = defaultMap.get(key);
-          if (defaultPrice === undefined || Math.abs(Number(unit.price) - Number(defaultPrice)) > 0.000001) {
-            return true;
-          }
-        }
-      }
-    }
-    return false;
-  };
+  // Check if the table differs from the defaults (see pricing-customizations.ts)
+  const hasCustomizations = (): boolean => hasPricingCustomizations(formValues, defaultPricing);
 
   // Handle changes in the JSON editor
   const handleJsonEditorChange = (value: string | undefined): void => {
@@ -203,6 +216,10 @@ const PricingLayout = (): React.JSX.Element => {
   const handleSave = async () => {
     if (validationErrors.length > 0) {
       setSaveError('Cannot save: Pricing contains validation errors');
+      return;
+    }
+    if (invalidPrices.length > 0) {
+      setSaveError(intl.formatMessage(messages.cannotSaveInvalidPrices, { count: invalidPrices.length }));
       return;
     }
 
@@ -288,6 +305,11 @@ const PricingLayout = (): React.JSX.Element => {
     setNewServiceName('');
     setNewServiceUnits([{ name: '', price: '' }]);
   };
+
+  // A price typed into the Add Service modal. Left empty, the row is dropped on
+  // Add rather than saved, so only a non-empty value can be invalid; it is
+  // trimmed on Add, so it is judged trimmed.
+  const newUnitPriceInvalid = (price: string): boolean => price.trim() !== '' && parsePrice(price.trim()) === null;
 
   // Helper functions for managing dynamic units in Add Service modal
   const handleAddUnit = () => {
@@ -463,15 +485,21 @@ const PricingLayout = (): React.JSX.Element => {
           {
             id: 'price',
             header: 'Price ($)',
-            cell: (item) => (
-              <Input
-                type="text"
-                value={String(item.price)}
-                onChange={({ detail }) => updateUnitPrice(item.apiName, item.unitName, detail.value)}
-                disabled={!isAdmin}
-                readOnly={!isAdmin}
-              />
-            ),
+            cell: (item) => {
+              const invalid = parsePrice(item.price) === null;
+              return (
+                <FormField errorText={invalid ? intl.formatMessage(messages.invalidPrice) : undefined}>
+                  <Input
+                    type="text"
+                    value={String(item.price)}
+                    invalid={invalid}
+                    onChange={({ detail }) => updateUnitPrice(item.apiName, item.unitName, detail.value)}
+                    disabled={!isAdmin}
+                    readOnly={!isAdmin}
+                  />
+                </FormField>
+              );
+            },
             width: 200,
           },
           {
@@ -587,7 +615,13 @@ const PricingLayout = (): React.JSX.Element => {
               >
                 Cancel
               </Button>
-              <Button variant="primary" onClick={handleAddService} disabled={!newServiceName.trim() || newServiceUnits.length === 0}>
+              <Button
+                variant="primary"
+                onClick={handleAddService}
+                disabled={
+                  !newServiceName.trim() || newServiceUnits.length === 0 || newServiceUnits.some((u) => newUnitPriceInvalid(u.price))
+                }
+              >
                 Add
               </Button>
             </SpaceBetween>
@@ -613,13 +647,16 @@ const PricingLayout = (): React.JSX.Element => {
                     placeholder="Unit name (e.g., pages, inputTokens)"
                     ariaLabel="Unit name"
                   />
-                  <Input
-                    type="text"
-                    value={unit.price}
-                    onChange={({ detail }) => handleUpdateUnit(index, 'price', detail.value)}
-                    placeholder="Price (e.g., 0.0015, 6.0E-8)"
-                    ariaLabel="Unit price"
-                  />
+                  <FormField errorText={newUnitPriceInvalid(unit.price) ? intl.formatMessage(messages.invalidPrice) : undefined}>
+                    <Input
+                      type="text"
+                      value={unit.price}
+                      invalid={newUnitPriceInvalid(unit.price)}
+                      onChange={({ detail }) => handleUpdateUnit(index, 'price', detail.value)}
+                      placeholder="Price (e.g., 0.0015, 6.0E-8)"
+                      ariaLabel="Unit price"
+                    />
+                  </FormField>
                   <Button
                     variant="icon"
                     iconName="remove"
@@ -790,6 +827,23 @@ const PricingLayout = (): React.JSX.Element => {
                 {validationErrors.map((e, index) => (
                   // eslint-disable-next-line react/no-array-index-key
                   <li key={index}>{e.message}</li>
+                ))}
+              </ul>
+            </Alert>
+          )}
+
+          {invalidPrices.length > 0 && (
+            <Alert type="warning" header={intl.formatMessage(messages.invalidPricesHeader)}>
+              <ul>
+                {invalidPrices.map((p, index) => (
+                  // eslint-disable-next-line react/no-array-index-key
+                  <li key={index}>
+                    {intl.formatMessage(messages.invalidPriceItem, {
+                      apiName: p.apiName,
+                      unitName: p.unitName,
+                      price: String(p.price ?? ''),
+                    })}
+                  </li>
                 ))}
               </ul>
             </Alert>

@@ -285,7 +285,7 @@ The solution creates various IAM roles to run different components of the system
   * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
   * `cloudwatch:PutMetricData`, limited to the stack's namespace
 
-* **Inbox producers** (none in this release). A Lambda that posts Inbox messages through `idp_common.notifications` needs the grants listed in the [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md#producer-iam):
+* **Inbox producers**. A Lambda that posts Inbox messages through `idp_common.notifications` needs the grants listed in the [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md#producer-iam):
   * `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem`, `dynamodb:ConditionCheckItem` on `NotificationsTable` and its `UnreadIndex`
   * read access to the Configuration table (for retention and the per-user cap)
   * `cognito-idp:ListUsersInGroup` on the user pool, only when it posts to Cognito groups
