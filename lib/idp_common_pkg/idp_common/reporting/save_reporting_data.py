@@ -16,7 +16,7 @@ import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from idp_common.config.models import IDPConfig
+from idp_common.config.models import IDPConfig, read_price
 from idp_common.metering_units import (
     CACHE_UNITS,
     NOT_CHARGEABLE,
@@ -1050,17 +1050,20 @@ class SaveReportingData:
                     service_name = service.name
                     for unit_info in service.units:
                         unit_name = unit_info.name
-                        try:
-                            # Convert price string to float for calculations
-                            price = float(unit_info.price)
-                            if service_name not in pricing_map:
-                                pricing_map[service_name] = {}
-                            pricing_map[service_name][unit_name] = price
-                            config_loaded_count += 1
-                        except (ValueError, TypeError) as e:
+                        # The same rule the save path enforces (PricingConfig), so
+                        # a price is priced here exactly when the Pricing page
+                        # accepts it; ``float()`` alone also took nan, inf and
+                        # ``1_000``, which the page reads differently.
+                        price = read_price(unit_info.price)
+                        if price is None:
                             logger.warning(
-                                f"Invalid price value for {service_name}/{unit_name}: {unit_info.price}, error: {e}. Skipping entry."
+                                f"Invalid price value for {service_name}/{unit_name}: {unit_info.price!r}. Skipping entry."
                             )
+                            continue
+                        if service_name not in pricing_map:
+                            pricing_map[service_name] = {}
+                        pricing_map[service_name][unit_name] = price
+                        config_loaded_count += 1
 
                 if config_loaded_count > 0:
                     logger.info(
