@@ -147,7 +147,7 @@ Use with: `config_library/unified/ocr-benchmark/config.yaml`
 
 ### Common Features
 
-Both datasets share these deployment characteristics:
+The pre-deployed datasets share these deployment characteristics:
 
 - **Fully Automatic**: Complete deployment during stack creation with zero user effort
 - **Version Control**: Dataset version pinned in CloudFormation, updateable via parameter
@@ -331,9 +331,8 @@ Use with: `config_library/unified/fake-w2/config.yaml`
 
 ---
 
-### Common Features
+### Choosing a dataset
 
-All datasets share these deployment characteristics:
 **OmniAI-OCR-Benchmark** is ideal for:
 - Testing classification across diverse document types
 - Evaluating extraction on complex nested schemas
@@ -346,10 +345,6 @@ All datasets share these deployment characteristics:
 - Assessing section boundary detection in complex packets
 
 ---
-
-### Common Features
-
-All datasets share these deployment characteristics:
 
 ### Backend Components
 
