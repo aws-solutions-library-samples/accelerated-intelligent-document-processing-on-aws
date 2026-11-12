@@ -29,6 +29,7 @@ from .models import (
 from .merge_utils import (
     deep_update,
     get_diff_dict,
+    overlay_pricing_rows,
 )
 from .constants import (
     ACTIVE_POINTER_KEY,
@@ -1938,13 +1939,19 @@ class ConfigurationManager:
 
     def get_merged_pricing(self) -> Optional[PricingConfig]:
         """
-        Get the effective pricing configuration (DefaultPricing, or CustomPricing).
+        Get the effective pricing configuration: DefaultPricing with CustomPricing laid over it.
 
-        CustomPricing is applied with ``deep_update``, which assigns lists, so a
-        CustomPricing record replaces DefaultPricing's ``pricing`` list wholesale
-        rather than merging row by row. The Pricing page saves the full table, so
-        a stack that has saved it does not see later corrections or additions to
-        the defaults until the record is deleted (``delete_custom_pricing``).
+        The saved rows are applied per model and per unit
+        (``merge_utils.overlay_pricing_rows``): a saved unit replaces the default
+        unit of the same name, a saved unit or entry the defaults lack is added,
+        and a default entry or unit the saved table does not mention is kept. So a
+        model a later release adds to the defaults is priced on a stack that saved
+        the Pricing page earlier, and a default row deleted in the editor comes
+        back. A saved rate still wins over a later corrected default for the same
+        unit, until the record is deleted (``delete_custom_pricing``).
+
+        Only this reader merges; the stored records are unchanged, and the Pricing
+        page still saves the full table.
 
         Returns:
             Merged PricingConfig with custom overrides applied, or None if not found
@@ -1975,8 +1982,12 @@ class ConfigurationManager:
 
         default_dict = default_config.model_dump(mode="python")
         custom_dict = custom_config.model_dump(mode="python")
+        custom_rows = custom_dict.pop("pricing", None) or []
         merged_dict = deepcopy(default_dict)
         deep_update(merged_dict, custom_dict)
+        merged_dict["pricing"] = overlay_pricing_rows(
+            default_dict.get("pricing") or [], custom_rows
+        )
 
         logger.info("Applied CustomPricing over DefaultPricing")
         # Both halves were read from storage, so an invalid stored price is
@@ -1986,7 +1997,7 @@ class ConfigurationManager:
     def save_custom_pricing(
         self, pricing_deltas: Union[PricingConfig, Dict[str, Any]]
     ) -> bool:
-        """Save the custom pricing table to DynamoDB; it replaces the default list."""
+        """Save the custom pricing table to DynamoDB; it is laid over the defaults per row."""
         if isinstance(pricing_deltas, dict):
             pricing_deltas = PricingConfig(**pricing_deltas)
         self.save_configuration(CONFIG_TYPE_CUSTOM_PRICING, pricing_deltas)
@@ -2013,8 +2024,8 @@ class ConfigurationManager:
 
         Custom is a FULL replacement list rather than deltas, and deliberately
         so: model_limits is an ordered first-match-wins list, so a partial merge
-        could not preserve ordering intent. (Pricing ends up replaced wholesale
-        too, but only because deep_update assigns lists; see get_merged_pricing.)
+        could not preserve ordering intent. (Pricing, which has no ordering, is
+        merged per model and unit instead; see get_merged_pricing.)
 
         Returns:
             Effective ModelConfigLimitsConfig, or None if no Default is seeded
