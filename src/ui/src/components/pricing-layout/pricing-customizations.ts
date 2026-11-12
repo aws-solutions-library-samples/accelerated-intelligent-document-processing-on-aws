@@ -18,6 +18,8 @@
  *   customisation too, and restoring brings the row back.
  */
 
+import { parsePrice } from './price-format';
+
 export interface PricingUnitLike {
   name: string;
   price: string | number;
@@ -56,9 +58,11 @@ export const pricesDiffer = (a: string, b: string): boolean => {
   const y = b.trim();
   // Number('') is 0, so an emptied field would otherwise equal a default of 0.
   if (x === '' || y === '') return x !== y;
-  const nx = Number(x);
-  const ny = Number(y);
-  if (!Number.isFinite(nx) || !Number.isFinite(ny)) return x !== y;
+  // A value that is not a valid price (`0x10`, `Infinity`) is compared as text:
+  // `Number('0x10') === 16` would otherwise read it as unchanged from `16`.
+  const nx = parsePrice(x);
+  const ny = parsePrice(y);
+  if (nx === null || ny === null) return x !== y;
   return nx !== ny;
 };
 

@@ -18,6 +18,7 @@ import { resolve } from 'node:path';
 import yaml from 'js-yaml';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 import { hasPricingCustomizations, pricesDiffer } from '../pricing-customizations';
 import type { PricingTableLike } from '../pricing-customizations';
@@ -76,7 +77,11 @@ const restoreButton = (): HTMLButtonElement => screen.getByRole('button', { name
 const renderWith = (pricing: PricingTableLike): void => {
   pricingState.pricing = pricing;
   pricingState.defaultPricing = DEFAULTS;
-  render(<PricingLayout />);
+  render(
+    <IntlProvider locale="en" defaultLocale="en">
+      <PricingLayout />
+    </IntlProvider>,
+  );
 };
 
 describe('Restore default (All) on the Pricing page', () => {
