@@ -127,6 +127,15 @@ workflow that succeeded. And when an extraction attempt fails with a transient
 error and Step Functions retries it, the calls of the failed attempt are not
 counted; only the attempt that finishes is.
 
+**Validation escalation is one row in both extraction modes.** The calls a
+[validation escalation](extraction-and-confidence.md#schema-validation-and-model-escalation)
+makes to the escalation model are metered under the context
+`ExtractionEscalation`, whether the section was extracted in Simple or Advanced
+mode. Documents that earlier releases processed in Simple mode carry those calls
+under `Extraction-Escalation` instead, so a query over the `metering` table that
+groups escalation cost across releases should match both spellings, for example
+`context IN ('ExtractionEscalation', 'Extraction-Escalation')`.
+
 #### Editing the pricing table
 
 Administrators change prices on the **Pricing** page. The shipped rates come from
