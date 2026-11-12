@@ -415,7 +415,7 @@ The evaluation framework provides different comparison methods optimized for var
 | **Levenshtein** | Text with typos, variations | Yes | 0.7 | Edit distance-based string comparison for detecting character-level differences. Threshold controls minimum similarity score |
 | **Semantic** | Descriptions, free text | Yes | 0.7 | Embedding-based similarity using Bedrock Titan embeddings for meaning comparison. Threshold controls minimum similarity score |
 | **Date** | Dates, date ranges | No (binary) | N/A | Format-insensitive date comparison (Stickler's `DateComparator`). Parses both values into dates first, so `01/05/2024`, `2024-01-05`, and `January 5, 2024` all match. Handles ranges. Optionally tuned via `x-aws-idp-evaluation-method-config` (`dayfirst`, `tolerance`, `range_mode`). Not for time-only values |
-| **LLM** | Complex semantic equivalence on **scalar** fields | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score. **Not supported inside a list** — see below |
+| **LLM** | Complex semantic equivalence on **scalar** fields | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score. Judged with the `evaluation.llm_method` model and prompts, including on a field that sets its own `x-aws-idp-evaluation-method-config`. **Not supported inside a list** — see below |
 | **Hungarian** | Arrays of structured objects | Yes (match_threshold) | 0.8 | Optimal bipartite matching algorithm for list comparison. Uses the class-level match threshold for item pairing |
 | **AggregateObject** | Nested objects | No | N/A | Recursive field-by-field comparison of nested structures. No top-level threshold |
 

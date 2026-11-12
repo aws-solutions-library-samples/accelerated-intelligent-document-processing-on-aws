@@ -475,6 +475,17 @@ per-field `x-aws-stickler-comparator-config` channel the model config uses, and
 > idea what field it was grading. Scores produced by the `LLM` method before this
 > fix are context-free and not comparable with scores produced after it.
 
+#### Which model and prompts judge an `LLM` field
+
+Every `LLM`-method field is judged with the service's `evaluation.llm_method`
+model, prompts and parameters. A field that also carries an
+`x-aws-idp-evaluation-method-config` (for example a `threshold`) has those keys
+laid on top of `evaluation.llm_method`, so it changes only what it names. When
+`LLMComparator` is given no model, or an empty one, or no prompt, it uses the
+`EvaluationLLMMethodConfig` field default, the same value
+`system_defaults/base-evaluation.yaml` ships; it carries no model ID or prompt
+text of its own.
+
 Identical values (after case and whitespace normalization) short-circuit to a
 match with **no** Bedrock call, and repeated `(expected, actual)` pairs are
 memoized per comparator instance.
