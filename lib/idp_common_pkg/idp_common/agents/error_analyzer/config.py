@@ -71,31 +71,20 @@ def get_error_analyzer_model_id() -> str:
         return default_model_id
 
 
-#: What :func:`default_error_analyzer_model_id` returns when the field default
-#: cannot be read: the same model through the same profile.
-ERROR_ANALYZER_MODEL_LAST_RESORT = "global.anthropic.claude-sonnet-4-6"
-
-
 def default_error_analyzer_model_id() -> str:
     """The error analyzer's model when its configuration cannot be read.
 
     ``ErrorAnalyzerConfig.model_id``'s declared default, which equals what
-    ``base-agents.yaml`` ships, served through its ``global.`` profile because a
-    ``us.`` fallback cannot be invoked from an EU or Canadian stack (see
-    :func:`idp_common.agents.common.config.portable_profile`). The import is
-    guarded: this runs because configuration could not be loaded.
+    ``base-agents.yaml`` ships and which
+    ``tests/unit/agents/test_common_config.py`` holds equal to
+    :data:`~idp_common.regional_models.SONNET_4_6_MODEL_ID`, translated to the
+    stack's Region (see
+    :func:`idp_common.agents.common.config._default_agent_model_id`).
     """
-    from ..common.config import portable_profile
+    from ...regional_models import SONNET_4_6_MODEL_ID, regional_default
+    from ..common.config import stack_region
 
-    try:
-        from ...config.models import ErrorAnalyzerConfig
-
-        default = ErrorAnalyzerConfig.model_fields["model_id"].default
-        if isinstance(default, str) and default:
-            return portable_profile(default)
-    except Exception:  # defensive, see docstring
-        pass
-    return ERROR_ANALYZER_MODEL_LAST_RESORT
+    return regional_default(SONNET_4_6_MODEL_ID, stack_region())
 
 
 def get_aws_service_capabilities() -> Dict[str, Any]:

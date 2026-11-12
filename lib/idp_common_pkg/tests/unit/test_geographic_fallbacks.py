@@ -9,8 +9,7 @@ a model written in code, so a ``us.`` fallback cannot be invoked from an EU or
 Canada stack, on the path that runs because configuration was empty or could not
 be read. A fallback names its US model through
 :func:`idp_common.regional_models.regional_default` instead, or a ``global.``
-profile (the agents, through
-:func:`idp_common.agents.common.config.portable_profile`).
+profile.
 
 What is read, and what is not:
 
@@ -130,7 +129,7 @@ def _fallback_positions(tree: ast.AST):
 
 
 #: Calls whose argument is a model the call translates, not the fallback itself.
-_TRANSLATORS = {"regional_default", "portable_profile"}
+_TRANSLATORS = {"regional_default"}
 
 
 def _walk_values(expr: ast.AST):

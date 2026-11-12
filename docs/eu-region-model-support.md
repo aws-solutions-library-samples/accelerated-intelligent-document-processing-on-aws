@@ -256,8 +256,8 @@ steps (including the reflection report written when discovered classes are saved
 schema authoring and catalog matching in synthetic data generation, and the SDK
 and CLI's local discovery when the system defaults name no model. Each of these
 uses the model the deploy-time mapping would have written for the stack's
-Region, so an EU stack gets the `eu.` profile. The agents' code fallbacks use a
-`global.` profile instead.
+Region, so an EU stack gets the `eu.` profile. The agents' fallbacks, used when
+an agent's configured model cannot be read, follow the same rule.
 
 Claude Sonnet 4.5 (`eu.anthropic.claude-sonnet-4-5-20250929-v1:0`) remains
 selectable but is not the default for any step in a commercial-partition
