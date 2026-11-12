@@ -223,9 +223,9 @@ This method analyzes documents from scratch without any prior knowledge or label
 discovery:
   without_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0
+    temperature: 0.0
     top_p: 0.1
-    max_tokens: 10000
+    max_tokens: ""    # empty = the model's maximum output
     system_prompt: >-
       You are an expert in processing forms. Analyze forms line by line to identify 
       field names, data types, and organizational structure. Focus on creating 
@@ -291,9 +291,9 @@ This method uses existing labeled data or known field definitions to optimize th
 discovery:
   with_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0
+    temperature: 0.0
     top_p: 0.1
-    max_tokens: 10000
+    max_tokens: ""    # empty = the model's maximum output
     system_prompt: >-
       You are an expert in processing forms. Use provided ground truth data as 
       reference to optimize field extraction and ensure consistency with expected 
@@ -342,10 +342,10 @@ The auto-detect prompt is fully configurable via the Discovery Configuration in 
 ```yaml
 discovery:
   auto_split:
-    model_id: "us.amazon.nova-pro-v1:0"
+    model_id: "us.anthropic.claude-opus-4-6-v1:1m"
     temperature: 0.0    # Low temperature for consistent boundary detection
     top_p: 0.1
-    max_tokens: 4096
+    max_tokens: ""      # empty = the model's maximum output
     system_prompt: >-
       You are an expert document analyst. Your task is to identify
       distinct document sections within a multi-page document package.
@@ -565,16 +565,22 @@ The Discovery module supports comprehensive configuration through the deployment
 ### Model Configuration
 
 **Supported Models:**
-- `us.amazon.nova-lite-v1:0` - Fast, cost-effective for simple documents
-- `us.amazon.nova-pro-v1:0` - Balanced performance and accuracy (recommended)
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0` - Fast processing
-- `us.anthropic.claude-haiku-5-5` - Fastest and cheapest; first Haiku with reasoning effort
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - High accuracy, but an AWS
-  Health notice puts it in legacy with end of life on 2027-04-08
-- `us.anthropic.claude-sonnet-4-6` - High accuracy, Active
-- `us.anthropic.claude-sonnet-5` - Latest capabilities
-- `us.anthropic.claude-sonnet-5-5` - 1M default context window and the cheapest
-  cache reads of any Claude here. **Not available for Multi-Document Discovery
+
+Discovery is not covered by the benchmark suite, so the notes below describe the
+models rather than rank their discovery quality. Try candidates on your own
+documents.
+
+- `us.amazon.nova-lite-v1:0` - Lowest input and output token prices of the models
+  listed here (`config_library/pricing.yaml`)
+- `us.amazon.nova-pro-v1:0` - The shipped default for discovery with and without
+  ground truth (`base-discovery.yaml`)
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+- `us.anthropic.claude-haiku-5-5` - First Haiku with reasoning effort
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - An AWS Health notice puts it
+  in legacy with end of life on 2027-04-08
+- `us.anthropic.claude-sonnet-4-6` - Active
+- `us.anthropic.claude-sonnet-5`
+- `us.anthropic.claude-sonnet-5-5` - 1M default context window. **Not available for Multi-Document Discovery
   cluster analysis** — see the note below
 
 > **⚠️ Two Claude models are not available for Multi-Document Discovery cluster
@@ -623,9 +629,9 @@ The Discovery module supports comprehensive configuration through the deployment
 discovery:
   without_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0        # Creativity level (0.0-1.0)
+    temperature: 0.0        # Creativity level (0.0-1.0)
     top_p: 0.1             # Nucleus sampling (0.0-1.0)
-    max_tokens: 10000      # Maximum response length
+    max_tokens: ""         # Maximum response length; empty = the model's maximum
 ```
 
 **Parameter Guidelines:**
@@ -758,16 +764,16 @@ UpdateSchemaConfig:
 discovery:
   without_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0
+    temperature: 0.0
     top_p: 0.1
-    max_tokens: 10000
+    max_tokens: ""    # empty = the model's maximum output
     system_prompt: "You are an expert in processing forms..."
     user_prompt: "This image contains forms data..."
   with_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0
+    temperature: 0.0
     top_p: 0.1
-    max_tokens: 10000
+    max_tokens: ""    # empty = the model's maximum output
     system_prompt: "You are an expert in processing forms..."
     user_prompt: "This image contains unstructured data..."
   output_format:
@@ -1909,10 +1915,10 @@ Flatten complex structures — avoid nested objects and place arrays at the top 
 ### Configuration Tuning
 
 **Model Selection Guidelines:**
-- **Nova Lite**: Simple forms with clear structure
-- **Nova Pro**: Most document types (recommended default)
-- **Claude Sonnet 4.5 / 4.6**: Complex layouts, handwritten content
-- **Claude Models**: Alternative for specific use cases
+- **Nova Pro** is the shipped default. Discovery model quality has not been
+  benchmarked, so if the default's output is not good enough for your documents,
+  compare it against a larger model (a Claude Sonnet, for example) on a few
+  representative samples.
 
 **Parameter Optimization:**
 ```yaml
