@@ -2228,3 +2228,54 @@ def test_the_github_ui_deps_input_actually_installs_the_dependencies() -> None:
         "therefore inert, and those jobs run scripts/tests with no UI dependencies "
         "while appearing to ask for them."
     )
+
+
+@pytest.mark.parametrize(
+    "workflow", [GITHUB_TESTS, GITHUB_SECURITY], ids=lambda p: p.name
+)
+def test_github_gate_workflows_cancel_superseded_runs(workflow: Path) -> None:
+    """GitHub's spelling of GitLab's ``interruptible: true`` on the gate jobs.
+
+    Without it a push to a pull request leaves the previous head's run going to
+    completion on a runner the new head's jobs then queue behind, which is the
+    queue tail this exists to remove. Three properties, each with its own way of
+    going wrong:
+
+    - the group names the workflow, or the two gate workflows share one group and
+      cancel each other on every push;
+    - the group names the pull request, or a push to one PR cancels another's run;
+    - cancelling is limited to ``pull_request`` runs, so a ``workflow_dispatch``
+      re-run — the recovery path for a dropped event — is never killed by a second
+      one, only queued behind it.
+    """
+    loaded = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    concurrency = loaded.get("concurrency")
+    assert isinstance(concurrency, dict), (
+        f"{workflow.name} has no top-level `concurrency` block, so a superseded "
+        "head's run holds its runner until it finishes"
+    )
+    group = str(concurrency.get("group", ""))
+    assert "github.workflow" in group, (
+        f"{workflow.name}: the concurrency group does not name the workflow, so "
+        "both gate workflows land in one group and cancel each other"
+    )
+    assert "github.event.pull_request.number" in group, (
+        f"{workflow.name}: the concurrency group is not per pull request"
+    )
+    cancel = str(concurrency.get("cancel-in-progress", ""))
+    assert re.fullmatch(
+        r"\$\{\{\s*github\.event_name\s*==\s*'pull_request'\s*\}\}", cancel
+    ), (
+        f"{workflow.name}: cancel-in-progress is {cancel!r}; it must cancel "
+        "pull_request runs only, so a manual dispatch is never cancelled"
+    )
+
+
+def test_gitlab_fast_checks_are_interruptible() -> None:
+    """The GitLab half of the same property, so neither side can drop it alone."""
+    loaded = yaml.safe_load(GITLAB.read_text(encoding="utf-8"))
+    template = loaded.get(".fast_check_job") or {}
+    assert template.get("interruptible") is True, (
+        ".fast_check_job is no longer interruptible, so a superseded MR pipeline's "
+        "gate jobs run to completion"
+    )
