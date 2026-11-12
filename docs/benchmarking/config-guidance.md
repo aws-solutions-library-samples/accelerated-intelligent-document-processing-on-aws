@@ -1226,9 +1226,9 @@ The two core cells, which are what a customer actually chooses between:
    its dollar figure is a lower bound (see the header). ⚠️ The `:1m` figure ($2.50) is inflated by the
    pricing defect described in finding 4 and is not the variant's price — `:1m` is billed
    at exactly plain Sonnet 5's rates. The other four carry no `:1m` premium, but this
-   block's Sonnet 5 figures, `:1m` included, were priced at the Sonnet 5 rows as they stood
-   before #1830 (1.5× the published rate) and are not re-priced here, so the Opus 5 and Astra
-   premiums over Sonnet 5 above are understated.
+   block's Sonnet 5 figures were priced at the Sonnet 5 rows as they stood before #1830 (1.5×
+   the published rate, and 3× for `:1m`) and are not re-priced here, so every Opus 5 and Astra
+   premium over Sonnet 5 in this block is understated.
 2. **The cheap end is not usable on lists.** Nova Lite in simple mode returns every row of a
    5-row form and a 100-row statement (with 12% of values wrong) and **none** of a 400-row
    one — two of the three 400-row documents came back with 0 matching rows, `COMPLETED`. On
@@ -1275,8 +1275,9 @@ The two core cells, which are what a customer actually chooses between:
    Sonnet 5's 0.977: the difference is that Opus 5 truncated one 400-row document once
    (`enforce-warn` / `wide_400`, 43 rows) where Sonnet 5 truncated the 800-row document
    three times under three OCR/format variants (the v0.6.8 §2, finding 2). Both are at cell accuracy
-   1.000. At +23% (simple) / +41% (advanced) it is a price for consistency on long lists in
-   simple mode, not for accuracy.
+   1.000. At +23% (simple) / +41% (advanced) — understated, like every Opus 5 premium in this
+   block (finding 1) — it is a price for consistency on long lists in simple mode, not for
+   accuracy.
 6. **GPT-6 Astra gets values wrong where the Claude models do not, and returns nothing on
    the 17-page document.** Grid cell accuracy **0.902**: with enforcement *off* Astra emits
    amounts as strings (`"0.00"`, `"-13.70"`) on every document, which the typed match
