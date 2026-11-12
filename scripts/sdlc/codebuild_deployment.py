@@ -12060,10 +12060,10 @@ def main():
         text = label_ci_run(
             ("✅ PASSED\n\n" if ok else "❌ FAILED\n\n") + migration_summary
         )
-        # The GitLab job reads the summary from the log, from this marker on: its
-        # role cannot read deploy/summaries/ (S3PutObjectPolicy grants code.zip
-        # only), so without the line the job and both Slack posts report "no
-        # deployment summary" for a run that wrote one.
+        # The GitLab job reads the summary from deploy/summaries/, and from the
+        # log from this marker on when that read fails; without the line a failed
+        # read leaves the job and both Slack posts reporting "no deployment
+        # summary" for a run that wrote one.
         print(DEPLOYMENT_SUMMARY_LOG_MARKER)
         print(text)
         publish_summary_to_s3(text)
