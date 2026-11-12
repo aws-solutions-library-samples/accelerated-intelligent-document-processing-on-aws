@@ -1654,6 +1654,12 @@ Resources:
           USERS_TABLE_NAME: !Ref UsersTableName
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          GUARDRAIL_ID_AND_VERSION:
+            !If [
+              HasGuardrail,
+              !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}",
+              "",
+            ]
       LoggingConfig:
         LogGroup: !Ref DiscoveryUploadResolverFunctionLogGroup
       Policies:
@@ -1722,6 +1728,12 @@ Resources:
                 - states:StartExecution
               Resource:
                 - !Ref MultiDocDiscoveryStateMachineArn
+            - !If
+              - HasGuardrail
+              - Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${BedrockGuardrailId}"
+              - !Ref AWS::NoValue
   GetAgentChatMessagesFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:

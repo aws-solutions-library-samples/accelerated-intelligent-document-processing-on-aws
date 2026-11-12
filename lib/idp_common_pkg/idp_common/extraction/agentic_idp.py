@@ -42,6 +42,7 @@ from strands.types.media import (
     ImageSource,
 )
 
+from idp_common.agents.common.strands_bedrock_model import strands_guardrail_kwargs
 from idp_common.bedrock.client import (
     ASTRA_EFFORT_LEVELS,
     CACHEPOINT_SUPPORTED_MODELS,
@@ -2539,6 +2540,11 @@ async def structured_output_async(
         model=BedrockModel(
             **model_config,
             **inference_params,
+            # The guardrail in GUARDRAIL_ID_AND_VERSION, when one is configured.
+            # This model is built here rather than by create_strands_bedrock_model
+            # because its boto config, session and request fields are its own;
+            # the guardrail must still reach it like every other model call.
+            **strands_guardrail_kwargs(),
         ),  # pyright: ignore[reportArgumentType]
         tools=tools,
         system_prompt=_build_system_prompt_content(

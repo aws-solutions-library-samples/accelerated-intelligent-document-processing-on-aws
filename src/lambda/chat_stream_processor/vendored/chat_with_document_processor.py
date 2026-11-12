@@ -47,6 +47,7 @@ from idp_common.bedrock.client import (
     is_grok_model,
     strips_sampling_params,
 )
+from idp_common.bedrock.guardrail import guardrail_config_from_env
 from idp_common.bedrock.model_utils import parse_model_id
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config import get_config
@@ -819,6 +820,11 @@ def _invoke_bedrock_stream_and_emit(
         kwargs["additionalModelRequestFields"] = additional_model_fields
     if service_tier_param:
         kwargs["serviceTier"] = service_tier_param
+    # The guardrail in GUARDRAIL_ID_AND_VERSION, when one is configured; parsed
+    # by the same function BedrockClient uses for its converse calls.
+    guardrail_config = guardrail_config_from_env()
+    if guardrail_config:
+        kwargs["guardrailConfig"] = guardrail_config
 
     response = client.converse_stream(**kwargs)
     stream = response.get("stream")
