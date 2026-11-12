@@ -11316,6 +11316,10 @@ def send_failure_notification(subject, summary_text):
 # ---------------------------------------------------------------------------
 
 TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
+#: The line the GitLab job's after_script reads the build's summary from (its
+#: `sed -n '/<marker>/,$p'` over the CodeBuild log, in .gitlab-ci.yml). Every
+#: path that ends a build with a summary prints it first.
+DEPLOYMENT_SUMMARY_LOG_MARKER = "🤖 Generating deployment summary with Bedrock..."
 #: Heads the summary and marks the failure email on a migration run, so its result
 #: is never read as a nightly's.
 TERRAFORM_MIGRATION_RUN_LABEL = "WEEKLY TERRAFORM MIGRATION RUN"
@@ -12056,6 +12060,11 @@ def main():
         text = label_ci_run(
             ("✅ PASSED\n\n" if ok else "❌ FAILED\n\n") + migration_summary
         )
+        # The GitLab job reads the summary from the log, from this marker on: its
+        # role cannot read deploy/summaries/ (S3PutObjectPolicy grants code.zip
+        # only), so without the line the job and both Slack posts report "no
+        # deployment summary" for a run that wrote one.
+        print(DEPLOYMENT_SUMMARY_LOG_MARKER)
         print(text)
         publish_summary_to_s3(text)
         if not ok:
@@ -12435,7 +12444,7 @@ def main():
         )
     print(f"\n{consolidated}\n")
 
-    print("\n🤖 Generating deployment summary with Bedrock...")
+    print(f"\n{DEPLOYMENT_SUMMARY_LOG_MARKER}")
     full_summary = consolidated
     if ai_summary:
         print(ai_summary)

@@ -774,3 +774,17 @@ def test_main_hands_the_migration_runs_to_the_stack_sweep(monkeypatch):
     with pytest.raises(_Stop):
         cbd.main()
     assert seen == {"terraform_runs": {DEAD}}
+
+
+def test_the_job_finds_the_summary_of_a_migration_run():
+    """The GitLab job cannot read deploy/summaries/, so it reads the summary from
+    the log, from the marker on. A migration run returns before the ordinary
+    summary prints it, so it prints the marker itself."""
+    ci = CI_CONFIG.read_text(encoding="utf-8")
+    assert f"sed -n '/{cbd.DEPLOYMENT_SUMMARY_LOG_MARKER}/,$p'" in ci
+    source = (REPO_ROOT / "scripts" / "sdlc" / "codebuild_deployment.py").read_text()
+    branch = source.split("# A weekly Terraform-migration run ends here", 1)[1]
+    branch = branch.split("os._exit(", 1)[0]
+    assert branch.index("print(DEPLOYMENT_SUMMARY_LOG_MARKER)") < branch.index(
+        "print(text)"
+    )
