@@ -37,6 +37,7 @@ Everything else that differs is listed, one path per entry, in
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Iterator, List, Tuple
 
 import pytest
@@ -346,13 +347,34 @@ def test_a_prompt_with_a_code_copy_keeps_it(path: str):
     )
 
 
+#: The names a prompt field takes. Deliberately not the excuse's own ``"prompt" in
+#: name`` test, which ``prompt_cache`` and ``fallback_to_prompt`` also pass.
+_PROMPT_FIELD_NAME = re.compile(r"^(system|task|user)_prompt(_\w+)?$")
+
+
 def test_only_prompt_fields_take_the_prompt_excuse():
-    """Bounds the prompt excuse to fields whose name says they are a prompt."""
-    excused = sorted(
-        path
+    """Bounds the prompt excuse with tests independent of the excuse's own.
+
+    Each excused field must be named like a prompt and must ship prose — a string
+    with whitespace in it. A switch, a mode or an unset value that took the excuse
+    fails here, which the excuse's own predicate restated could never do.
+    """
+    excused = [
+        (path, name, shipped)
         for pattern in VALID_PATTERNS
-        for path, model, name, _, _ in _shipped_leaves(pattern)
+        for path, model, name, shipped, _ in _shipped_leaves(pattern)
         if _is_prompt_without_code_copy(model, name, path)
-    )
+        # Only where the excuse is used: an empty prompt shipped over an empty
+        # code default agrees, and needs no excuse.
+        and _coerced(model, name, shipped) != _field_default(model, name)
+    ]
     assert excused, "no prompt takes the excuse, so it is dead"
-    assert all("prompt" in path.rsplit(".", 1)[-1] for path in excused), excused
+    not_prompts = sorted(
+        path
+        for path, name, shipped in excused
+        if not _PROMPT_FIELD_NAME.match(name)
+        or not (isinstance(shipped, str) and re.search(r"\s", shipped.strip()))
+    )
+    assert not not_prompts, (
+        f"these fields take the prompt excuse but are not prose prompts: {not_prompts}"
+    )
