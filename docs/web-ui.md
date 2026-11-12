@@ -32,7 +32,7 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
+- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins and Reviewers also get **Jobs** (bulk Skip All Reviews runs); Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -58,6 +58,25 @@ Test Studio submits its documents through the same pipeline as ordinary uploads 
 - **Test Studio** — documents submitted by a [Test Studio](test-studio.md) run. Adds a **Test Run** column linking to that run's results, and holds the **Abort**, **Reprocess** and **Delete** actions: a run's results (and the confidence calibration derived from them) are scored against these exact documents, so a run's lifecycle is managed from **Test Executions**, not here.
 
 The two views are mutually exclusive by design — there is no combined view. On a stack that uses Test Studio regularly the test documents outnumber real uploads by an order of magnitude, so merging them would bury the uploads. The selection is not remembered between visits, so the list always opens on Production.
+
+### Review actions on selected documents
+
+Admins and Reviewers get a **Review** menu in the Document List's toolbar (Production
+view; in the Test Studio view it is shown disabled). It holds:
+
+- **Start Review** — claim the selected pending reviews (one opens the document).
+- **Release Review** (Admin) — release the selected claimed reviews.
+- **Skip All Reviews (N selected)** and **Skip All Reviews by profile…** — finish many
+  pending production reviews at once, with a reason, after a count of what will happen
+  (see [Skip All Reviews for many documents](human-review.md#skip-all-reviews-for-many-documents)).
+- **Send to review (N selected)** — put finished documents into the Default review
+  queue, with a reason (see [Send to review](human-review.md#send-to-review)).
+
+N counts the selected rows each action applies to; the server decides each document
+and reports a result per document, which can be exported. Larger runs continue as a
+background job under **Home › Jobs**, where every bulk run is listed with its status,
+counts and results, and where a queued or running job can be cancelled and a finished
+one deleted (see [Skip All Reviews for many documents](human-review.md#skip-all-reviews-for-many-documents)).
 
 ### Adding documents to a test set
 
@@ -153,8 +172,11 @@ beside it, left to right:
   - **Use As Evaluation Baseline** — copy the document's results into the evaluation
     baseline. The **Evaluation** field shows the copy while it runs and when it is done
     or has failed, and a failed copy is reported.
-  - **Skip All Reviews** — finish a pending review without checking it, with a reason
-    (see [Human review](human-review.md)).
+  - **Skip All Reviews** — finish a pending review without checking it, with a reason;
+    **Resubmit for downstream processing** (ticked by default) re-runs Summarization
+    and Evaluation (see [Human review](human-review.md)).
+  - **Send to review** — put the finished document into the Default review queue, with
+    a reason (see [Send to review](human-review.md#send-to-review)).
   - **Download All (ZIP)**, **Download Predictions (ZIP)** and **Download Baselines
     (ZIP)** — the document's outputs as a ZIP (see
     [Download Document Data](#download-document-data)).
@@ -175,7 +197,7 @@ still loading, it ran in BDA mode, or there is no report to show. Who may do wha
 |---|---|
 | Reports (except Estimated Cost), the downloads, Refresh, Details \| Source | every role |
 | Estimated Cost | Admin, Author, Viewer (it reads the stack's pricing) |
-| Edit Page Grouping, Re-extract Sections, Reset Page Class, Skip All Reviews, Start Review | Admin, Reviewer |
+| Edit Page Grouping, Re-extract Sections, Reset Page Class, Skip All Reviews, Send to review, Start Review | Admin, Reviewer |
 | Edit Page Text | Admin (it saves the page text and reprocesses the document, and only Admins may do both) |
 | Use As Evaluation Baseline, Reprocess, Abort, Delete | Admin, Author |
 | Troubleshoot | Admin, Author, Viewer |
@@ -504,7 +526,7 @@ For the schema format itself and how to author it by hand, see the [JSON Schema 
 
 ## Prompt Preview
 
-The **Prompt Preview** tab in the Configuration page allows you to see exactly what prompts are sent to the LLM for each processing step, with configuration-derived placeholders filled in using your actual class definitions and schemas.
+The **Preview prompts** button on the Configuration page (beside **Refresh**) opens the prompt preview, which lets you see exactly what prompts are sent to the LLM for each processing step, with configuration-derived placeholders filled in using your actual class definitions and schemas.
 
 ![Prompt Preview for the classification step, with configuration-derived values highlighted in the task prompt](../images/webui-prompt-preview.png)
 
@@ -523,7 +545,7 @@ The **Prompt Preview** tab in the Configuration page allows you to see exactly w
 ### How to Use
 
 1. Navigate to the Configuration page
-2. Click the **Prompt Preview** tab (alongside Configuration, Document Schema, Rule Schema)
+2. Choose **Preview prompts** in the editor's header, beside **Refresh**. It previews the values in the editor, saved or not, and opens over the **Processing Settings**, **Document Schema** and **Policy Schema** tabs
 3. Select a **Processing Step** from the dropdown: the classification step or steps your configured strategy makes (see above), Extraction, Confidence Assessment, or Summarization
 4. For Extraction or Confidence Assessment, select a **Document Class** to preview its schema in the prompt
 5. View the rendered prompts in the Task Prompt and System Prompt sub-tabs
@@ -674,7 +696,7 @@ The "Chat with Document" feature is available at the bottom of the Document Deta
 
 ### Model selection
 
-Chat has its own dedicated configuration section (**Configuration tab → "Chat-with-Document Configuration"**) — it is **independent from summarization**. This is important because chat sends the entire document text to the model in a single prompt, so a large-context model (such as `us.anthropic.claude-opus-4-8:1m` — the default — or `us.anthropic.claude-sonnet-4-6:1m`) is usually the best choice, even if you've configured a smaller, cheaper model for summarization.
+Chat has its own dedicated configuration section (**Processing Settings tab → "Chat-with-Document Configuration"**) — it is **independent from summarization**. This is important because chat sends the entire document text to the model in a single prompt, so a large-context model (such as `us.anthropic.claude-opus-4-8:1m` — the default — or `us.anthropic.claude-sonnet-4-6:1m`) is usually the best choice, even if you've configured a smaller, cheaper model for summarization.
 
 The Chat panel includes a **Model** selector that defaults to the `chat.model` in the current configuration of the profile that processed the document (its current revision, which may be newer than the one the document ran under). You can override the model for the current chat session via the dropdown. The list of selectable models comes from the `chat.model` enum in the configuration schema.
 
@@ -840,7 +862,8 @@ entry points:
   or **Delete** them. **More actions** offers **Mark all as read** and **Clear read**
   (which deletes every read message) without a selection. Each row's actions menu
   (**⋮**) opens, marks or deletes that one message. Opening a message shows its details
-  and marks it read; **Open related page** follows its link.
+  and marks it read; **Open related page** follows its link. The info icon opens a panel
+  describing the page.
 
 **Settings.** The settings button (gear icon) at the top right of the Inbox page opens
 **Inbox settings**, which lists the message types and lets you turn off the ones you

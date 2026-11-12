@@ -137,6 +137,78 @@ export type BaseModelInfo = {
   provider: Scalars['String']['output'];
 };
 
+export type BulkDocumentOutcome = {
+  detail?: Maybe<Scalars['String']['output']>;
+  kind: Scalars['String']['output'];
+  objectKey: Scalars['String']['output'];
+  outcome: Scalars['String']['output'];
+};
+
+export type BulkOutcomeCount = {
+  count: Scalars['Int']['output'];
+  outcome: Scalars['String']['output'];
+};
+
+export type BulkReviewJob = {
+  counts: Array<BulkOutcomeCount>;
+  createdAt: Scalars['String']['output'];
+  error?: Maybe<Scalars['String']['output']>;
+  finishedAt?: Maybe<Scalars['String']['output']>;
+  jobId: Scalars['String']['output'];
+  jobType: Scalars['String']['output'];
+  kind: Scalars['String']['output'];
+  limitReached: Scalars['Boolean']['output'];
+  mode: Scalars['String']['output'];
+  note?: Maybe<Scalars['String']['output']>;
+  processed: Scalars['Int']['output'];
+  profile?: Maybe<Scalars['String']['output']>;
+  reason: Scalars['String']['output'];
+  requestedBy: Scalars['String']['output'];
+  resubmit: Scalars['Boolean']['output'];
+  stalled: Scalars['Boolean']['output'];
+  startedAt?: Maybe<Scalars['String']['output']>;
+  status: Scalars['String']['output'];
+  submittedFrom?: Maybe<Scalars['String']['output']>;
+  submittedTo?: Maybe<Scalars['String']['output']>;
+  total: Scalars['Int']['output'];
+};
+
+export type BulkReviewJobPage = {
+  jobs: Array<BulkReviewJob>;
+  nextToken?: Maybe<Scalars['String']['output']>;
+};
+
+export type BulkReviewJobResults = {
+  job: BulkReviewJob;
+  nextToken?: Maybe<Scalars['String']['output']>;
+  results: Array<BulkDocumentOutcome>;
+};
+
+export type BulkSkipAllReviewsInput = {
+  clientRequestId?: InputMaybe<Scalars['String']['input']>;
+  dryRun?: InputMaybe<Scalars['Boolean']['input']>;
+  mode: Scalars['String']['input'];
+  note?: InputMaybe<Scalars['String']['input']>;
+  objectKeys?: InputMaybe<Array<Scalars['String']['input']>>;
+  profile?: InputMaybe<Scalars['String']['input']>;
+  reason: Scalars['String']['input'];
+  resubmit?: InputMaybe<Scalars['Boolean']['input']>;
+  submittedFrom?: InputMaybe<Scalars['String']['input']>;
+  submittedTo?: InputMaybe<Scalars['String']['input']>;
+};
+
+export type BulkSkipAllReviewsResult = {
+  approximate: Scalars['Boolean']['output'];
+  counts: Array<BulkOutcomeCount>;
+  dryRun: Scalars['Boolean']['output'];
+  eligibleCount: Scalars['Int']['output'];
+  jobId?: Maybe<Scalars['String']['output']>;
+  limitReached: Scalars['Boolean']['output'];
+  results: Array<BulkDocumentOutcome>;
+  runMode: Scalars['String']['output'];
+  syncLimit: Scalars['Int']['output'];
+};
+
 export type CalculationDetails = {
   quotasUsed?: Maybe<QuotasUsed>;
 };
@@ -945,6 +1017,8 @@ export type Mutation = {
   applyFeatureConfigPreset: FeatureConfigPresetResult;
   assignTestSetDocuments?: Maybe<Array<TestSetDocumentAssignment>>;
   autoDetectSections?: Maybe<Scalars['String']['output']>;
+  bulkSkipAllReviews?: Maybe<BulkSkipAllReviewsResult>;
+  cancelBulkReviewJob?: Maybe<BulkReviewJob>;
   claimNextReviewItem?: Maybe<ClaimNextResult>;
   claimReview?: Maybe<Document>;
   claimReviewItem?: Maybe<ReviewItem>;
@@ -961,6 +1035,7 @@ export type Mutation = {
   createReviewQueue?: Maybe<ReviewQueueDefinition>;
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
+  deleteBulkReviewJob?: Maybe<Scalars['Boolean']['output']>;
   deleteChatSession?: Maybe<Scalars['Boolean']['output']>;
   deleteConfigPrefixMapping?: Maybe<ConfigPrefixMappingMutationResponse>;
   deleteConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
@@ -1034,6 +1109,7 @@ export type Mutation = {
   sendAgentChatMessage?: Maybe<AgentChatMessage>;
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
   sendTestRunToReview?: Maybe<SendTestRunToReviewResult>;
+  sendToReview?: Maybe<SendToReviewResult>;
   setActiveVersion?: Maybe<UpdateConfigurationResponse>;
   setMcpCredentialTenant?: Maybe<McpCredential>;
   setUserTenant?: Maybe<User>;
@@ -1163,6 +1239,16 @@ export type MutationAutoDetectSectionsArgs = {
 };
 
 
+export type MutationBulkSkipAllReviewsArgs = {
+  input: BulkSkipAllReviewsInput;
+};
+
+
+export type MutationCancelBulkReviewJobArgs = {
+  jobId: Scalars['String']['input'];
+};
+
+
 export type MutationClaimNextReviewItemArgs = {
   queueName?: InputMaybe<Scalars['String']['input']>;
   queueProfile?: InputMaybe<Scalars['String']['input']>;
@@ -1252,6 +1338,11 @@ export type MutationCreateUserArgs = {
 
 export type MutationDeleteAgentJobArgs = {
   jobId: Scalars['ID']['input'];
+};
+
+
+export type MutationDeleteBulkReviewJobArgs = {
+  jobId: Scalars['String']['input'];
 };
 
 
@@ -1578,6 +1669,13 @@ export type MutationSendTestRunToReviewArgs = {
 };
 
 
+export type MutationSendToReviewArgs = {
+  note?: InputMaybe<Scalars['String']['input']>;
+  objectKeys: Array<Scalars['String']['input']>;
+  reason: Scalars['String']['input'];
+};
+
+
 export type MutationSetActiveVersionArgs = {
   versionName: Scalars['String']['input'];
 };
@@ -1599,6 +1697,7 @@ export type MutationSkipAllSectionsReviewArgs = {
   note?: InputMaybe<Scalars['String']['input']>;
   objectKey: Scalars['String']['input'];
   reason: Scalars['String']['input'];
+  resubmit?: InputMaybe<Scalars['Boolean']['input']>;
 };
 
 
@@ -1840,6 +1939,8 @@ export type MutationUploadSampleDocumentArgs = {
 };
 
 export type MyReviewQueues = {
+  bulkSkipSyncLimit: Scalars['Int']['output'];
+  defaultQueueEnabled: Scalars['Boolean']['output'];
   items: ReviewItemPage;
   myClaimCount: Scalars['Int']['output'];
   queues: Array<ReviewQueueSummary>;
@@ -1945,6 +2046,7 @@ export type Query = {
   getAgentChatMessages?: Maybe<Array<Maybe<AgentChatMessage>>>;
   getAgentJobStatus?: Maybe<AgentJob>;
   getAnnotationQueue?: Maybe<AnnotationQueue>;
+  getBulkReviewJob?: Maybe<BulkReviewJobResults>;
   getChatMessages?: Maybe<Array<Maybe<AgentChatMessage>>>;
   getCircuitBreakerStatus?: Maybe<CircuitBreakerStatus>;
   getConfigProfileRevision?: Maybe<ConfigProfileRevisionResponse>;
@@ -1986,6 +2088,7 @@ export type Query = {
   listAvailableAgents?: Maybe<Array<Maybe<Agent>>>;
   listAvailableModels?: Maybe<AvailableModelsResult>;
   listBucketFiles?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
+  listBulkReviewJobs?: Maybe<BulkReviewJobPage>;
   /**
    * List all features published to the feature bucket (the catalog), whether
    * installed or not. The UI takes the union of this + listInstalledFeatures to
@@ -2074,6 +2177,14 @@ export type QueryGetAnnotationQueueArgs = {
   mineOnly?: InputMaybe<Scalars['Boolean']['input']>;
   objectKey?: InputMaybe<Scalars['String']['input']>;
   testSetId: Scalars['String']['input'];
+};
+
+
+export type QueryGetBulkReviewJobArgs = {
+  jobId: Scalars['String']['input'];
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
+  outcome?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -2214,6 +2325,12 @@ export type QueryListBucketFilesArgs = {
   bucketType: Scalars['String']['input'];
   filePattern: Scalars['String']['input'];
   modifiedAfter?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type QueryListBulkReviewJobsArgs = {
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -2459,6 +2576,7 @@ export type ReviewItem = {
   rejectReason?: Maybe<Scalars['String']['output']>;
   reviewStatus: Scalars['String']['output'];
   sections: Array<Scalars['String']['output']>;
+  sentToReview?: Maybe<ReviewSendInfo>;
   state: Scalars['String']['output'];
   version: Scalars['Int']['output'];
 };
@@ -2562,6 +2680,13 @@ export type ReviewSectionDetail = {
   sectionId: Scalars['String']['output'];
 };
 
+export type ReviewSendInfo = {
+  note?: Maybe<Scalars['String']['output']>;
+  reason: Scalars['String']['output'];
+  requestedAt: Scalars['AWSDateTime']['output'];
+  requestedBy: Scalars['String']['output'];
+};
+
 export type ReviewerLoad = {
   claimed: Scalars['Int']['output'];
   email: Scalars['String']['output'];
@@ -2623,6 +2748,11 @@ export type SendTestRunToReviewResult = {
   skippedCount?: Maybe<Scalars['Int']['output']>;
   testRunId: Scalars['String']['output'];
   testSetId?: Maybe<Scalars['String']['output']>;
+};
+
+export type SendToReviewResult = {
+  counts: Array<BulkOutcomeCount>;
+  results: Array<BulkDocumentOutcome>;
 };
 
 export type StepFunctionExecutionResponse = {

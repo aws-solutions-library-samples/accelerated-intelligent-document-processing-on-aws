@@ -25,7 +25,7 @@ pip install -e "lib/idp_common_pkg[review_queues]"
 
 | Module | What it owns |
 |---|---|
-| `statuses.py` | The one declaration of `ReviewStatus` (`in_review`, `complete`, `rejected`), `QueueItemState` and the legacy `HITLStatus` spellings, plus `normalize_hitl_status`. Standard library only, so the layer-free list resolvers can vendor it |
+| `statuses.py` | The one declaration of `ReviewStatus` (`in_review`, `complete`, `rejected`), `QueueItemState` and the legacy `HITLStatus` spellings, plus `normalize_hitl_status`, and the one definition of "review finished" (`is_review_finished`, `FINISHED_HITL_STATUSES`), "review raised" and "legacy review pending" (`is_review_raised`, `is_legacy_review_pending`, and their DynamoDB form `pending_filter_expression`), the Skip All and Send to review reasons, and `MACHINE_RESULT_DISPOSITIONS` (`removed`, `skipped`). Standard library only, so the layer-free list resolvers, `lookup_function` and `backfill_gsi_attributes` vendor it byte for byte as `review_statuses.py` |
 | `models.py` | Pydantic records for the table (`ReviewItemRecord`, `DraftRecord`, `HistoryEntry`), `StatusObject`, `ReviewDecision`, `CallerContext` |
 | `keys.py` | Table key layout and the opaque list cursors |
 | `store.py` | `ReviewStore`: every read and write of `HITLTable`, all conditional on the item `Version` |
@@ -37,13 +37,20 @@ pip install -e "lib/idp_common_pkg[review_queues]"
 | `routing.py` | `review_mode` (the `hitl.enabled` and Default-queue gate) and `route_for_review`: the one routing function both ProcessResults steps call |
 | `tracker.py` | WorkflowTracker integration: activation after phase 1 and completion after the finalize run |
 | `service.py` | `ReviewQueueService`: listing, claims, leases, drafts, dispositions and the supervisor actions behind the review API |
-| `finalize.py` | The finalize token, `FinalizeSender` and `apply_corrections` |
+| `finalize.py` | The finalize token, `DocumentResubmitter` (puts a tracked document back on the DocumentQueue, optionally with a `ResubmitIdempotencyToken`, and raises on failure), `FinalizeSender` (the finalize message, a `DocumentResubmitter` that resets metering) and `apply_corrections` |
 | `status_object.py` | Writing and deleting `<document>/review/status.json` |
 | `notify.py` | Inbox messages (`review.*` notification types); never raises |
 | `testset_labels.py` | `TestSetLabels`: the one writer of a reviewed Test Studio label (`write_reviewed`: `labelSource = reviewed-human`, the `_editHistory` entry with field diffs, capped at `MAX_EDIT_HISTORY_ENTRIES`, the confidence-curve observations, the section's draft deleted), and section drafts (save, list, delete, move). Used by `test_set_resolver` and `complete_section_review` |
 | `section_writes.py` | `assert_section_result_writable`: refuses (`QUEUE_MANAGED`) a direct write of `<document>/sections/<id>/result.json` to the Output bucket while the document is in review, reading its tracking row. Used by `uploadDocument` (`upload_resolver`) |
 | `sweeper.py` | `ReviewSweeper`: assignment reminders and self-healing, run every 5 minutes |
 | `api_models.py` | The camelCase API views and argument models |
+| `legacy_skip.py` | Skip All Reviews on a review outside a queue: `skip_legacy_review` (the conditional `HITLStatus = Review Skipped` write and its `HITLReviewHistory` entry, with `source`, `jobId` and `resubmitted`) and its guards. Takes the tracking table as a Table-protocol object; the caller resubmits. Used by `complete_section_review` and `review_skip` |
+| `review_skip.py` | One document of a bulk Skip All Reviews: `classify` (the outcome from the tracking row and the queue item, shared with the dry run) and `skip_document` (a queue item through `ReviewQueueService.skip_all_reviews`, a legacy review through `legacy_skip`, then the resubmit). Never raises |
+| `send_to_review.py` | `SendToReviewService`: creates a manual (`origin="manual"`) Default-queue item for a finished production document, with the tracking row as the commit point, and `abandon`, which the sweeper also calls for a manual item left `HOLDING` |
+| `bulk_models.py` | The bulk contracts: `BulkOutcome` (the per-document outcomes the UI mirrors), `BulkSkipRequest`, `SendToReviewRequest`, the result and job views, and the limits |
+| `bulk_selection.py` | `PendingReviewQuery`: a profile's pending production reviews in a submitted-date range, one paginated `TypeDateIndex` Query filtered by `pending_filter_expression` |
+| `bulk_jobs.py` | `BulkJobStore` (job, chunk, result, list and lock rows in this table) and `BulkSkipService` (dry run, the inline run on 8 threads within an 11 s admission budget, async jobs, and the worker step: one job at a time, paced against the DocumentQueue, idempotent per document) |
+| `bulk_settings.py` | `effective_sync_limit`: `hitl.bulk_skip_sync_limit` from the active profile, clamped to 1-100 |
 | `testset_summaries.py` | Computing a Test Studio document's summary from its labels in S3 (label source, alert and field counts, the weakest confidence and its threshold, classes, sections) for one document, one page, or a whole set (`summarize_test_set`, which lists `input/` and `baseline/` once each). Used by the test-set resolver and, for whole sets, by `TestSetFileCopierFunction` |
 | `testset_docs.py` | Test Studio documents as queue items: one `TSDOC#<testSetId>` / `D#<objectKey>` item per document with its summary (label source, alert count, lowest confidence, classes, sections, reviewed) and assignment, so a set's queue is one Query while the labels stay in S3. Assign, unassign, skip, the assignee check, and the assigned / unassigned / reminder Inbox notices. Standard library and boto3 only |
 
@@ -345,6 +352,7 @@ A **section draft** is a section's saved edits that are not reviewed and start n
 | `takeOverReviewItem` | Admin | an item `CLAIMED` by someone else → `CLAIMED` by the calling Admin, draft kept; a `taken_over` history event, both claim counters moved, and the former holder told (`review.claim_released`). Refused with `NOT_ASSIGNED` for an `OPEN` item (claim it instead), `ALREADY_YOURS` for the Admin's own, and `INVALID_STATE` once the item has left review |
 | `moveReviewItem` | Admin | move to another queue (ends any assignment) |
 | `removeReviewItem` | Admin | an `OPEN` or `CLAIMED` item → `FINALIZING`, disposition `removed`, with an optional note in a `removed` history event; an assignee is released and told. No draft is applied: the document ends `COMPLETED` with its machine results, the item ends `COMPLETE`, the status object is **deleted** rather than written, and `document_reviews` records disposition `removed` |
+| `bulkSkipAllReviews` (`ReviewQueueService.skip_all_reviews`) | Admin, or a Reviewer in scope | an `OPEN` item, the caller's own claim, or (Admin) any claim → `FINALIZING`, disposition `skipped`, finished like `removed` (machine results, status object deleted), with a `skipped` history event carrying the reason (`SKIP_ALL_REASONS`), note, source and job id, and `skip_job_id` on the item. A claimant other than the caller is told. Another reviewer's claim is refused for a Reviewer (`HELD_BY_OTHER`). A finalize message that could not be sent adds a `finalize_send_failed` history event; the sweeper resends it |
 
 A disposition writes `FINALIZING` with a finalize token `rvw-<32 hex>` derived from
 the document, cycle and attempt, then sends one message to the DocumentQueue. The
@@ -358,6 +366,54 @@ The tracking row then holds phase 1 plus the finalize run, while reporting, the
 finalize run's own usage only. If the message is lost or the run fails, the sweeper resends the
 same token, then retries with a new token up to 3 attempts before
 `FINALIZE_FAILED`.
+
+## Bulk Skip All Reviews jobs
+
+Rows in this table, none with a GSI key:
+
+| PK | SK | Holds |
+|---|---|---|
+| `BRJOB#<jobId>` | `META` | The job: requester, mode and selection, reason, note, resubmit, status (`QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`), `Total`, `Processed`, `Counts` per outcome, the page cursor and wake tokens, heartbeat, and `ExpiresAfter` (30 days, or the data retention if shorter) |
+| `BRJOB#<jobId>` | `K#<seq>` | A selected-mode key chunk (25 object keys) |
+| `BRJOB#<jobId>` | `R#<sha256(objectKey)[:32]>` | One document's outcome, put once (`attribute_not_exists(SK)`); the counters move only when the put succeeds |
+| `BRJOBS#U#<reviewerKey>`, `BRJOBS#ALL` | `<createdAt>#<jobId>` | The requester's and the all-jobs (Admin) lists |
+| `BRJOB#ACTIVE` | `LOCK` | The one-running-job lock, with a lease |
+
+A request at or under the inline limit runs in the resolver and is recorded as a
+`SYNC` job; a larger one is an `ASYNC` job advanced by `BulkReviewWorkerFunction` from
+`BulkReviewJobQueue`. A step defers (re-sends itself 60 s later) while another job
+holds the lock or while the DocumentQueue holds at least half of
+`MaxConcurrentWorkflows`, and hands itself to its next wake-up when the invocation runs
+low on time. A legacy resubmit carries `ResubmitIdempotencyToken = rsb-sha256(jobId|key)`,
+which `queue_processor` uses only to name the execution, so a retried step starts no
+second run. A dead-lettered job message, or a step that fails on its last receive,
+marks the job `FAILED`; a job with no heartbeat for 30 minutes reads as `stalled`.
+The requester's scope is snapshotted at submission and intersected with their current
+scope once per step; a by-profile job whose profile leaves the scope fails
+(`scope_revoked`).
+
+`cancel_job` (the requester or an Admin; another user's job reads as not found) sets a
+`QUEUED` or `RUNNING` job to `CANCELLED` with a conditional write, records
+`CancelledBy` and notifies the requester; a finished job is refused (`JOB_FINISHED`).
+The worker reads the status before each page and stops, releasing the lock, so at most
+the page in progress is still skipped. Its start, finish and fail writes are
+conditional on the job still being active, so a cancel is never overwritten.
+`delete_job` deletes a finished job's `META` (conditional on a final status) and its two
+list entries; an active job is refused (`JOB_ACTIVE`). The chunk and result rows are
+unreachable without `META` and expire with it (`ExpiresAfter`), so a job of any size is
+deleted in a bounded number of writes.
+
+## Send to review
+
+`SendToReviewService.send` creates a `HOLDING` item with `origin="manual"` and the
+`manual_request` (reason from `SEND_TO_REVIEW_REASONS`, note, requester, and the
+tracking row's prior `HITLStatus`/`HITLCompleted`), then conditionally marks the
+tracking row `in_review` (the commit point: finished, production, not in a review),
+publishes the `in_review` status object, and moves the item to `OPEN` with the
+document's cumulative usage as `phase1_metering_json`. A failure after the commit point
+is undone by `abandon`, which restores the row, deletes the status object and deletes
+the item; the sweeper does the same for a manual item it finds still `HOLDING`. The
+send reason is shown to reviewers as the item's `sentToReview`.
 
 ## Sweeper
 

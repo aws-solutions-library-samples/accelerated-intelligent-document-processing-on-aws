@@ -1058,6 +1058,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@echo "Running the Inbox and review-queue resolver dispatcher suites..."
 	cd nested/api-resolvers/src/lambda/notifications_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/review_queues_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/bulk_review_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/bulk_review_worker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \

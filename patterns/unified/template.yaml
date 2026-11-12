@@ -2976,6 +2976,14 @@ Resources:
                     maximum: 200
                     default: 50
                     order: 1
+              bulk_skip_sync_limit:
+                type: number
+                title: "Bulk skip synchronous limit"
+                description: "Bulk Skip All Reviews runs immediately for up to this many documents and as a background job (Home > Jobs) above it. Read from the active configuration profile; values are clamped to 1-100."
+                minimum: 1
+                maximum: 100
+                default: 50
+                order: 4
           summarization:
             order: 7
             type: object

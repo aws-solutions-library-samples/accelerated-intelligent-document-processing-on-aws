@@ -157,6 +157,12 @@ export const reviewManagementHref = (view?: ReviewManagementView): string => `#$
 /** Home: every user's Inbox, and an Annotator's Tasks (assigned items) and Queues. */
 export const MY_WORK_PATH = '/my-work';
 export const MY_TASKS_PATH = `${MY_WORK_PATH}/tasks`;
+/** Home › Jobs: bulk Skip All Reviews runs (Admins and Reviewers). */
+export const JOBS_PATH = `${MY_WORK_PATH}/jobs`;
+/** Route path of one bulk review job; mirrors Python's `notifications.links.bulk_job_link`. */
+export const jobDetailPath = (jobId: string): string => `${JOBS_PATH}/${encodeURIComponent(jobId)}`;
+/** Hash-link helper for a bulk review job's page. */
+export const jobDetailHref = (jobId: string): string => `#${jobDetailPath(jobId)}`;
 /** The queues that list the caller as an Annotator (production and Test Studio). */
 export const MY_QUEUES_PATH = `${MY_WORK_PATH}/queues`;
 /** The former My Tasks location; redirects to MY_TASKS_PATH. */

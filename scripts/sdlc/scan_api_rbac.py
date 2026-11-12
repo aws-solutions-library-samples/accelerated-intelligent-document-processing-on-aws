@@ -141,8 +141,8 @@ REPO = Path(__file__).resolve().parents[2]
 # Methods intentionally unauthenticated (CORS preflight + static SPA serving).
 ALLOWED_UNAUTH_METHODS = {
     "HttpApiOptionsMethod",  # CORS preflight (MOCK)
-    "WebUIRootMethod",       # GET / static SPA
-    "WebUIProxyMethod",      # GET /{proxy+} static SPA
+    "WebUIRootMethod",  # GET / static SPA
+    "WebUIProxyMethod",  # GET /{proxy+} static SPA
 }
 
 # The complete policy vocabulary of the `groups:` key, in the expectations file
@@ -214,6 +214,7 @@ def weaker_policy_problem(enforceable: object, declared: object) -> str | None:
         return None
     # Same rank, both sentinels: equal, which the caller reports separately.
     return None
+
 
 # Substrings that count as a server-side enforcement pattern in a resolver.
 ENFORCE_PATTERNS = (
@@ -323,6 +324,8 @@ def unscoped_key_accesses(text: str) -> list[str]:
             if not any(term in expr.lower() for term in _CALLER_KEY_TERMS):
                 unscoped.append(" ".join(expr.split())[:120])
     return unscoped
+
+
 SCOPE_PATTERNS = (
     "allowedConfigVersions",
     "allowed_config_versions",
@@ -591,14 +594,18 @@ def _iter_fields(body: str):
         end = hard_end
         for j in range(line_no, hard_end):
             s = lines[j].strip()
-            if j > line_no and d == 0 and (
-                s == "" or s.startswith("#") or s.startswith('"')
+            if (
+                j > line_no
+                and d == 0
+                and (s == "" or s.startswith("#") or s.startswith('"'))
             ):
                 end = j
                 break
             d += (
-                lines[j].count("(") + lines[j].count("[")
-                - lines[j].count(")") - lines[j].count("]")
+                lines[j].count("(")
+                + lines[j].count("[")
+                - lines[j].count(")")
+                - lines[j].count("]")
             )
         yield name, "\n".join(lines[line_no:end])
 
@@ -643,7 +650,7 @@ def template_methods(template_text: str) -> list[tuple[str, str]]:
         logical = m.group(1)
         # find AuthorizationType within this resource's block (until next 2-space id)
         block_start = m.start()
-        nxt = re.search(r"\n  \w+:\n", template_text[m.end():])
+        nxt = re.search(r"\n  \w+:\n", template_text[m.end() :])
         block_end = m.end() + (nxt.start() if nxt else 0)
         block = template_text[block_start : block_end or len(template_text)]
         am = re.search(r"AuthorizationType:\s*(\w+)", block)
@@ -1039,9 +1046,7 @@ def _selects_literal(test: ast.AST, literal: str) -> bool:
         left = node.left
         for operator, comparator in zip(node.ops, node.comparators):
             if isinstance(operator, ast.Eq):
-                if _names_literal(left, literal) or _names_literal(
-                    comparator, literal
-                ):
+                if _names_literal(left, literal) or _names_literal(comparator, literal):
                     return True
             elif isinstance(operator, ast.In):
                 if _names_literal(comparator, literal):
@@ -1489,9 +1494,7 @@ def op_per_item_scope_filter(
     sites = []
     for mod, node in reachable:
         where = f"{mod.dotted or 'resolver'}:{getattr(node, 'name', '<module>')}"
-        sites.extend(
-            f"{where}:{p}" for p in _per_item_filter_sites(index, mod, node)
-        )
+        sites.extend(f"{where}:{p}" for p in _per_item_filter_sites(index, mod, node))
     return None, sites
 
 
@@ -1537,8 +1540,9 @@ _VERSION_WORDS = frozenset({"version", "versions", "revision"})
 def scope_keyed_kind(name: str) -> str | None:
     """The kind of object argument ``name`` names, or None (see SCOPE_KEYED_WORDS)."""
     words = {w.lower() for w in _NAME_WORDS.findall(name)}
-    if words & {"profile", "profiles", "config"} and words & (
-        SCOPE_KEYED_WORDS["profile"]
+    if (
+        words & {"profile", "profiles", "config"}
+        and words & (SCOPE_KEYED_WORDS["profile"])
     ):
         return "profile"
     if words & {"profile", "profiles"}:
@@ -1591,6 +1595,17 @@ DOCUMENT_SCOPE_PATTERNS = (
 #: that kind, or now declares one) is itself a FAIL, so it cannot outlive its reason
 #: and pre-exempt the next operation of that name.
 SCOPE_KEYED_ARGUMENT_EXEMPT: dict[tuple[str, str], str] = {
+    ("bulkSkipAllReviews", "object"): (
+        "input.objectKeys is scope-checked document by document, but in the shared "
+        "library rather than in bulk_review_resolver/index.py, which is all S10 "
+        "reads: every path (dry run, inline run, async job) goes through "
+        "idp_common.review_queues.bulk_jobs.BulkSkipService, whose classify step "
+        "(review_skip.classify -> in_scope) checks each document's recorded profile "
+        "against the caller's allowedConfigVersions and reports an out-of-scope or "
+        "unknown key as NOT_PERMITTED. The by-profile form is checked in the "
+        "resolver by _enforce_scope, which scope_checked declares. Follow-up: call "
+        "a DOCUMENT_SCOPE_PATTERNS check from the resolver so S10 can see it."
+    ),
     ("autoDetectSections", "object"): (
         "documentKey names an upload in the discovery bucket, which IAM bounds this "
         "function to and which is a shared Admin/Author workspace: an upload is not "
@@ -1709,6 +1724,8 @@ def _unscoped_policy(groups: object) -> bool:
     caller, so S10 has nothing to require of it.
     """
     return groups == POLICY_IAM_ONLY or groups == ["Admin"]
+
+
 # --- MCP tool checks (M1-M5) ---------------------------------------------------
 # The MCP server is the third way in. Its authorization is a table in
 # idp_common.mcp_access, applied by a gateway interceptor and by the handler; these
@@ -1797,7 +1814,9 @@ def mcp_tool_policy_from_source(text: str) -> dict[str, dict] | None:
         if not isinstance(value, ast.Call):
             return None
         kwargs = {kw.arg: kw.value for kw in value.keywords if kw.arg}
-        roles = _literal_strings(kwargs.get("roles"), names) if "roles" in kwargs else None
+        roles = (
+            _literal_strings(kwargs.get("roles"), names) if "roles" in kwargs else None
+        )
         entry = {"roles": roles}
         for flag in ("write", "unscoped_only"):
             node = kwargs.get(flag)
@@ -1950,52 +1969,87 @@ def mcp_checks(
         groups = resolve(entry.get("groups"))
         # M2: the expectations and the code agree, field by field.
         if groups is None:
-            fail("M2", f"groups {entry.get('groups')!r} is not a group list or "
-                 f"{POLICY_ANY_GROUP}", tool)
+            fail(
+                "M2",
+                f"groups {entry.get('groups')!r} is not a group list or "
+                f"{POLICY_ANY_GROUP}",
+                tool,
+            )
         elif groups != set(code["roles"]):
-            fail("M2", f"declared groups {sorted(groups)} differ from "
-                 f"MCP_TOOL_POLICY roles {sorted(code['roles'])}", tool)
+            fail(
+                "M2",
+                f"declared groups {sorted(groups)} differ from "
+                f"MCP_TOOL_POLICY roles {sorted(code['roles'])}",
+                tool,
+            )
         unknown = set(code["roles"]) - set(app_groups)
         if unknown:
-            fail("M2", f"MCP_TOOL_POLICY names roles the stack does not create: "
-                 f"{sorted(unknown)}", tool)
+            fail(
+                "M2",
+                f"MCP_TOOL_POLICY names roles the stack does not create: "
+                f"{sorted(unknown)}",
+                tool,
+            )
         for flag in ("write", "unscoped_only"):
             if bool(entry.get(flag)) != code[flag]:
-                fail("M2", f"{flag}: expectations say {bool(entry.get(flag))}, "
-                     f"MCP_TOOL_POLICY says {code[flag]}", tool)
+                fail(
+                    "M2",
+                    f"{flag}: expectations say {bool(entry.get(flag))}, "
+                    f"MCP_TOOL_POLICY says {code[flag]}",
+                    tool,
+                )
         if entry.get("equivalent_op") != code["equivalent_op"]:
-            fail("M2", f"equivalent_op: expectations say "
-                 f"{entry.get('equivalent_op')!r}, MCP_TOOL_POLICY says "
-                 f"{code['equivalent_op']!r}", tool)
+            fail(
+                "M2",
+                f"equivalent_op: expectations say "
+                f"{entry.get('equivalent_op')!r}, MCP_TOOL_POLICY says "
+                f"{code['equivalent_op']!r}",
+                tool,
+            )
         # M3: never more permissive than the REST operation it corresponds to.
         equivalent = entry.get("equivalent_op")
         if equivalent not in ops:
-            fail("M3", f"equivalent_op '{equivalent}' is not a declared operation",
-                 tool)
+            fail(
+                "M3", f"equivalent_op '{equivalent}' is not a declared operation", tool
+            )
         elif groups is not None:
             rest = resolve(ops[equivalent].get("groups"))
             if rest is None:
-                fail("M3", f"equivalent_op '{equivalent}' has a policy "
-                     f"({ops[equivalent].get('groups')!r}) MCP cannot match", tool)
+                fail(
+                    "M3",
+                    f"equivalent_op '{equivalent}' has a policy "
+                    f"({ops[equivalent].get('groups')!r}) MCP cannot match",
+                    tool,
+                )
             elif not groups <= rest:
-                fail("M3", f"admits {sorted(groups - rest)}, which "
-                     f"'{equivalent}' refuses", tool)
+                fail(
+                    "M3",
+                    f"admits {sorted(groups - rest)}, which '{equivalent}' refuses",
+                    tool,
+                )
             # Scope: an MCP tool is either filtered or checked by the caller's
             # scope, or refused to any caller who has one. And where the REST
             # operation it mirrors cannot be scoped either (no scope_checked or
             # scope_filtered there), it must be the latter: MCP cannot be the way
             # a scoped caller reaches what the UI keeps from them.
-            scoped_here = bool(entry.get("scope_checked") or entry.get("scope_filtered"))
+            scoped_here = bool(
+                entry.get("scope_checked") or entry.get("scope_filtered")
+            )
             scoped_rest = bool(
                 ops[equivalent].get("scope_checked")
                 or ops[equivalent].get("scope_filtered")
             )
             if not entry.get("unscoped_only") and not scoped_here:
-                fail("M3", "neither unscoped_only nor scope_checked/scope_filtered",
-                     tool)
+                fail(
+                    "M3", "neither unscoped_only nor scope_checked/scope_filtered", tool
+                )
             if not scoped_rest and not entry.get("unscoped_only"):
-                fail("M3", f"'{equivalent}' carries no configuration scope, so "
-                     "this tool must be unscoped_only", tool)
+                fail(
+                    "M3",
+                    f"'{equivalent}' carries no configuration scope, so "
+                    "this tool must be unscoped_only",
+                    tool,
+                )
         # M4 (per tool): the scope helper is called where the flag says.
         for flag, helpers in MCP_SCOPE_HELPERS.items():
             if not entry.get(flag):
@@ -2030,8 +2084,11 @@ def mcp_checks(
     kinds = set(MCP_INTERCEPTOR_CLIENT_ENV) | {MCP_REGISTRY_KIND}
     for client, kind in clients.items():
         if kind not in kinds:
-            fail("M5", f"mcp_clients '{client}' has kind {kind!r}; expected one of "
-                 f"{sorted(kinds)}")
+            fail(
+                "M5",
+                f"mcp_clients '{client}' has kind {kind!r}; expected one of "
+                f"{sorted(kinds)}",
+            )
     template = source("template.yaml") or ""
     gateway_block = _resource_block(template, MCP_GATEWAY_RESOURCE)
     interceptor_block = _resource_block(template, MCP_INTERCEPTOR_FUNCTION)
@@ -2047,21 +2104,30 @@ def mcp_checks(
         for ref in _block_refs(gateway_block, prop)
     }
     if admitted != set(clients):
-        fail("M5", f"{MCP_GATEWAY_RESOURCE} admits {sorted(admitted)}; "
-             f"mcp_clients declares {sorted(clients)}")
+        fail(
+            "M5",
+            f"{MCP_GATEWAY_RESOURCE} admits {sorted(admitted)}; "
+            f"mcp_clients declares {sorted(clients)}",
+        )
     for kind, env in MCP_INTERCEPTOR_CLIENT_ENV.items():
         wired = set(_block_refs(interceptor_block, env))
         expected = {c for c, k in clients.items() if k == kind}
         if wired != expected:
-            fail("M5", f"{MCP_INTERCEPTOR_FUNCTION} {env} names {sorted(wired)}; "
-                 f"mcp_clients declares {sorted(expected)} as {kind}")
+            fail(
+                "M5",
+                f"{MCP_INTERCEPTOR_FUNCTION} {env} names {sorted(wired)}; "
+                f"mcp_clients declares {sorted(expected)} as {kind}",
+            )
     registry = {c for c, k in clients.items() if k == MCP_REGISTRY_KIND}
     if registry:
         block = _resource_block(template, MCP_REGISTRY_RESOURCE)
         registered = set(_block_refs(block, "ClientId")) if block else set()
         if registered != registry:
-            fail("M5", f"{MCP_REGISTRY_RESOURCE} registers {sorted(registered)}; "
-                 f"mcp_clients declares {sorted(registry)} as {MCP_REGISTRY_KIND}")
+            fail(
+                "M5",
+                f"{MCP_REGISTRY_RESOURCE} registers {sorted(registered)}; "
+                f"mcp_clients declares {sorted(registry)} as {MCP_REGISTRY_KIND}",
+            )
     return findings
 
 
@@ -2104,7 +2170,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     if not app_groups:
         findings.append(
             Finding(
-                "S0", "FAIL",
+                "S0",
+                "FAIL",
                 "no AWS::Cognito::UserPoolGroup found in template.yaml, so the "
                 "group vocabulary could not be read — ANY_GROUP cannot be "
                 "resolved and every group name below is unverifiable",
@@ -2116,7 +2183,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             if groups not in POLICY_SENTINELS:
                 findings.append(
                     Finding(
-                        "S0", "FAIL",
+                        "S0",
+                        "FAIL",
                         f"{where} '{name}' declares groups '{groups}', which is "
                         f"not a group list nor one of {list(POLICY_SENTINELS)} — "
                         "an unrecognised policy would be read as the most "
@@ -2128,7 +2196,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         if not isinstance(groups, list) or not groups:
             findings.append(
                 Finding(
-                    "S0", "FAIL",
+                    "S0",
+                    "FAIL",
                     f"{where} '{name}' declares groups {groups!r}; expected a "
                     f"non-empty list of group names or one of "
                     f"{list(POLICY_SENTINELS)}",
@@ -2140,7 +2209,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         if bogus:
             findings.append(
                 Finding(
-                    "S0", "FAIL",
+                    "S0",
+                    "FAIL",
                     f"{where} '{name}' requires group(s) {bogus} that no "
                     f"AWS::Cognito::UserPoolGroup in template.yaml creates "
                     f"(known: {sorted(app_groups)}) — an unmatchable group name "
@@ -2168,7 +2238,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     for op in sorted(routable - expected):
         findings.append(
             Finding(
-                "S1", "FAIL",
+                "S1",
+                "FAIL",
                 f"routable op '{op}' has no entry in api_rbac_expectations.yaml "
                 "(add its RBAC policy)",
                 op,
@@ -2177,7 +2248,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     for op in sorted(expected - routable):
         findings.append(
             Finding(
-                "S1", "FAIL",
+                "S1",
+                "FAIL",
                 f"expectations entry '{op}' is not a routable op "
                 "(stale — remove it or fix the name)",
                 op,
@@ -2194,7 +2266,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             continue  # not in schema (ddb-direct-only or conditional feature op)
         if dec == "AWS_AUTH_IGNORED" and exp_for_schema != "AWS_AUTH_IGNORED":
             gap_or_fail(
-                op, "S2",
+                op,
+                "S2",
                 "schema uses @aws_auth(cognito_groups) which is SILENTLY IGNORED "
                 "on this multi-auth API — the field is open to any authenticated "
                 "user at the gateway; use @aws_cognito_user_pools(cognito_groups) "
@@ -2216,7 +2289,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             dw = sorted(dec) if isinstance(dec, set) else dec
             ww = sorted(want) if isinstance(want, set) else want
             gap_or_fail(
-                op, "S2",
+                op,
+                "S2",
                 f"schema.graphql declares {dw} but expectations say {ww}",
             )
 
@@ -2225,8 +2299,10 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         src = repo / o["enforced_in"]
         if not src.exists():
             findings.append(
-                Finding("S3", "FAIL",
-                        f"enforced_in file missing: {o['enforced_in']}", op))
+                Finding(
+                    "S3", "FAIL", f"enforced_in file missing: {o['enforced_in']}", op
+                )
+            )
             continue
         text = src.read_text()
         groups = o["groups"]
@@ -2234,7 +2310,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             # must have a real enforcement pattern
             if not any(p in text for p in ENFORCE_PATTERNS):
                 gap_or_fail(
-                    op, "S3",
+                    op,
+                    "S3",
                     f"no group-enforcement pattern found in {o['enforced_in']}",
                 )
         else:  # ANY / ANY_GROUP
@@ -2267,10 +2344,14 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                     p in text for p in ENFORCE_PATTERNS + OWNERSHIP_PATTERNS
                 ):
                     findings.append(
-                        Finding("S3", "WARN",
-                                f"ANY-auth mutation with no visible check in "
-                                f"{o['enforced_in']} — confirm this is intended",
-                                op))
+                        Finding(
+                            "S3",
+                            "WARN",
+                            f"ANY-auth mutation with no visible check in "
+                            f"{o['enforced_in']} — confirm this is intended",
+                            op,
+                        )
+                    )
 
     # --- S4: scope enforcement ---------------------------------------------
     # Scoped to the code the OPERATION can reach, not the whole file — see
@@ -2298,7 +2379,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             continue
         if not any(p in reachable for p in SCOPE_PATTERNS):
             gap_or_fail(
-                op, "S4",
+                op,
+                "S4",
                 "scope enforcement flagged but nothing this operation can reach "
                 f"in {o['enforced_in']} references allowedConfigVersions — a "
                 "sibling operation's reference in the same module does not "
@@ -2319,7 +2401,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             gap_or_fail(op, "S4-per-item", f"{error} ({o['enforced_in']})")
         elif not sites:
             gap_or_fail(
-                op, "S4-per-item",
+                op,
+                "S4-per-item",
                 "declared scope_filtered, but no code this operation can reach "
                 f"from {o['enforced_in']} (following calls into idp_common) "
                 "applies a per-item scope check to what it returns: expected a "
@@ -2392,7 +2475,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 gap_or_fail(op, "S10", f"{error} ({o['enforced_in']})")
             elif not any(p in reachable for p in DOCUMENT_SCOPE_PATTERNS):
                 gap_or_fail(
-                    op, "S10",
+                    op,
+                    "S10",
                     "declared document_scope_checked, but nothing this operation can "
                     f"reach in {o['enforced_in']} calls one of "
                     f"{list(DOCUMENT_SCOPE_PATTERNS)}",
@@ -2423,15 +2507,23 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         if logical in ALLOWED_UNAUTH_METHODS:
             if auth != "NONE":
                 findings.append(
-                    Finding("S5", "WARN",
-                            f"{logical} expected AuthorizationType NONE, got {auth}"))
+                    Finding(
+                        "S5",
+                        "WARN",
+                        f"{logical} expected AuthorizationType NONE, got {auth}",
+                    )
+                )
             continue
         if auth != "COGNITO_USER_POOLS":
             findings.append(
-                Finding("S5", "FAIL",
-                        f"{logical} has AuthorizationType {auth} — expected "
-                        "COGNITO_USER_POOLS (add to ALLOWED_UNAUTH_METHODS only "
-                        "if intentionally public)"))
+                Finding(
+                    "S5",
+                    "FAIL",
+                    f"{logical} has AuthorizationType {auth} — expected "
+                    "COGNITO_USER_POOLS (add to ALLOWED_UNAUTH_METHODS only "
+                    "if intentionally public)",
+                )
+            )
 
     # --- S6-S9: Lambda Function URL routes ----------------------------------
     endpoints: dict[str, dict] = spec.get("function_url_endpoints") or {}
@@ -2467,7 +2559,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     for logical in sorted(set(url_resources) - set(endpoints)):
         findings.append(
             Finding(
-                "S6", "FAIL",
+                "S6",
+                "FAIL",
                 f"Function URL '{logical}' in template.yaml has no "
                 "function_url_endpoints entry in api_rbac_expectations.yaml "
                 "(declare its routes and their authorization)",
@@ -2477,7 +2570,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     for logical in sorted(set(endpoints) - set(url_resources)):
         findings.append(
             Finding(
-                "S6", "FAIL",
+                "S6",
+                "FAIL",
                 f"function_url_endpoints entry '{logical}' is not an "
                 "AWS::Lambda::Url in template.yaml (stale — remove it or fix "
                 "the name)",
@@ -2496,29 +2590,49 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         # the accepted-risk register.
         for bad in sorted(set(ep) - ENDPOINT_ENTRY_KEYS):
             findings.append(
-                Finding("S6", "FAIL",
-                        f"{logical} declares unknown key '{bad}' — a misspelled "
-                        f"key is silently ignored (known: "
-                        f"{sorted(ENDPOINT_ENTRY_KEYS)})", logical))
+                Finding(
+                    "S6",
+                    "FAIL",
+                    f"{logical} declares unknown key '{bad}' — a misspelled "
+                    f"key is silently ignored (known: "
+                    f"{sorted(ENDPOINT_ENTRY_KEYS)})",
+                    logical,
+                )
+            )
         for route, rc in declared_routes.items():
             for bad in sorted(set(rc or {}) - ROUTE_POLICY_KEYS):
                 findings.append(
-                    Finding("S6", "FAIL",
-                            f"route '{route}' on {logical} declares unknown key "
-                            f"'{bad}' — a misspelled key is silently ignored "
-                            f"(known: {sorted(ROUTE_POLICY_KEYS)})", route))
+                    Finding(
+                        "S6",
+                        "FAIL",
+                        f"route '{route}' on {logical} declares unknown key "
+                        f"'{bad}' — a misspelled key is silently ignored "
+                        f"(known: {sorted(ROUTE_POLICY_KEYS)})",
+                        route,
+                    )
+                )
 
         if res:
             if res["auth_type"] == "NONE":
                 findings.append(
-                    Finding("S6", "FAIL",
-                            f"{logical} has AuthType NONE — the Function URL is "
-                            "reachable unauthenticated", logical))
+                    Finding(
+                        "S6",
+                        "FAIL",
+                        f"{logical} has AuthType NONE — the Function URL is "
+                        "reachable unauthenticated",
+                        logical,
+                    )
+                )
             elif res["auth_type"] != ep.get("auth_type"):
                 findings.append(
-                    Finding("S6", "FAIL",
-                            f"{logical} AuthType is {res['auth_type']} but "
-                            f"expectations say {ep.get('auth_type')}", logical))
+                    Finding(
+                        "S6",
+                        "FAIL",
+                        f"{logical} AuthType is {res['auth_type']} but "
+                        f"expectations say {ep.get('auth_type')}",
+                        logical,
+                    )
+                )
             # Resolve the handler from the template rather than trusting the
             # expectations file, so a retargeted URL cannot keep pointing the
             # scan at the old (still-clean) source file. Both halves of that
@@ -2528,28 +2642,43 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             code_uri = function_code_uri(main_text, res["target"])
             if not res["target"]:
                 findings.append(
-                    Finding("S6", "FAIL",
-                            f"{logical}: could not resolve TargetFunctionArn to a "
-                            "function logical id, so the declared handler cannot "
-                            "be checked against the target's CodeUri", logical))
+                    Finding(
+                        "S6",
+                        "FAIL",
+                        f"{logical}: could not resolve TargetFunctionArn to a "
+                        "function logical id, so the declared handler cannot "
+                        "be checked against the target's CodeUri",
+                        logical,
+                    )
+                )
             elif not code_uri:
                 findings.append(
-                    Finding("S6", "FAIL",
-                            f"{logical} targets {res['target']}, which has no "
-                            "resolvable CodeUri in template.yaml, so the declared "
-                            "handler cannot be checked against it", logical))
+                    Finding(
+                        "S6",
+                        "FAIL",
+                        f"{logical} targets {res['target']}, which has no "
+                        "resolvable CodeUri in template.yaml, so the declared "
+                        "handler cannot be checked against it",
+                        logical,
+                    )
+                )
             if code_uri and not ep["handler"].startswith(code_uri.rstrip("/")):
                 findings.append(
-                    Finding("S6", "FAIL",
-                            f"{logical} targets {res['target']} (CodeUri "
-                            f"{code_uri}) but expectations name handler "
-                            f"{ep['handler']}", logical))
+                    Finding(
+                        "S6",
+                        "FAIL",
+                        f"{logical} targets {res['target']} (CodeUri "
+                        f"{code_uri}) but expectations name handler "
+                        f"{ep['handler']}",
+                        logical,
+                    )
+                )
 
         handler_src = repo / ep["handler"]
         if not handler_src.exists():
             findings.append(
-                Finding("S6", "FAIL",
-                        f"handler file missing: {ep['handler']}", logical))
+                Finding("S6", "FAIL", f"handler file missing: {ep['handler']}", logical)
+            )
             continue
         handler_text = handler_src.read_text()
         actual_routes = app_routes(handler_text)
@@ -2558,9 +2687,14 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         except HandlerUnparseable as exc:
             # A check that cannot be run is not a check that passed.
             findings.append(
-                Finding("S7", "FAIL",
-                        f"could not parse {ep['handler']}, so the route-level "
-                        f"identity checks did not run: {exc}", logical))
+                Finding(
+                    "S7",
+                    "FAIL",
+                    f"could not parse {ep['handler']}, so the route-level "
+                    f"identity checks did not run: {exc}",
+                    logical,
+                )
+            )
             continue
         # The identity decision may live in a sibling module of the same Lambda
         # package (the app file imports FastAPI, so pure logic is factored out to
@@ -2574,15 +2708,25 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             set(actual_routes) - set(declared_routes) - FUNCTION_URL_OPEN_ROUTES
         ):
             findings.append(
-                Finding("S6", "FAIL",
-                        f"{ep['handler']} serves '{route}' with no "
-                        "function_url_endpoints route entry (declare its "
-                        "authorization)", route))
+                Finding(
+                    "S6",
+                    "FAIL",
+                    f"{ep['handler']} serves '{route}' with no "
+                    "function_url_endpoints route entry (declare its "
+                    "authorization)",
+                    route,
+                )
+            )
         for route in sorted(set(declared_routes) - set(actual_routes)):
             findings.append(
-                Finding("S6", "FAIL",
-                        f"declared route '{route}' is not served by "
-                        f"{ep['handler']} (stale entry)", route))
+                Finding(
+                    "S6",
+                    "FAIL",
+                    f"declared route '{route}' is not served by "
+                    f"{ep['handler']} (stale entry)",
+                    route,
+                )
+            )
 
         for route, rc in declared_routes.items():
             body = actual_routes.get(route)
@@ -2594,16 +2738,22 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             c_at = _first_index(body, CLIENT_IDENTITY_TOKENS)
             if v_at < 0:
                 route_gap_or_fail(
-                    rc, route, "S7",
+                    rc,
+                    route,
+                    "S7",
                     f"route resolves no transport-verified caller identity in "
-                    f"{ep['handler']}")
+                    f"{ep['handler']}",
+                )
             elif 0 <= c_at < v_at:
                 route_gap_or_fail(
-                    rc, route, "S7",
+                    rc,
+                    route,
+                    "S7",
                     "route prefers the request-body caller identity over the "
                     f"transport-verified one in {ep['handler']} — the verified "
                     "identity must be resolved first, the body value is a "
-                    "fallback only")
+                    "fallback only",
+                )
 
             # Structural half of S7: resolving the verified identity first means
             # nothing if a later statement overwrites it. The token comparison
@@ -2616,12 +2766,15 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 if rebound is not None:
                     name, lines = rebound
                     route_gap_or_fail(
-                        rc, route, "S7",
+                        rc,
+                        route,
+                        "S7",
                         f"'{name}' holds the transport-verified caller identity "
                         f"in {ep['handler']} but is assigned {len(lines)} times "
                         f"(lines {lines}) — a later assignment can substitute a "
                         "client-supplied identity for the verified one no matter "
-                        "how it is spelled; resolve it once and do not rebind it")
+                        "how it is spelled; resolve it once and do not rebind it",
+                    )
 
             # --- S8: a contradicting body identity must be refused -------
             # The comparison lives in a shared resolver, so look across the
@@ -2633,11 +2786,14 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 for fn in package_functions
             ):
                 route_gap_or_fail(
-                    rc, route, "S8",
+                    rc,
+                    route,
+                    "S8",
                     f"{ep['handler']} accepts a body-supplied caller identity "
                     "but never refuses one that contradicts the verified "
                     "identity (expected an explicit rejection, not a silent "
-                    "preference)")
+                    "preference)",
+                )
 
             # --- S9: downstream group enforcement ------------------------
             groups = rc.get("groups")
@@ -2646,17 +2802,24 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 src = repo / enforced_in
                 if not src.exists():
                     findings.append(
-                        Finding("S9", "FAIL",
-                                f"enforced_in file missing: {enforced_in}",
-                                route))
+                        Finding(
+                            "S9",
+                            "FAIL",
+                            f"enforced_in file missing: {enforced_in}",
+                            route,
+                        )
+                    )
                 else:
                     text = src.read_text()
                     if not any(p in text for p in ENFORCE_PATTERNS):
                         route_gap_or_fail(
-                            rc, route, "S9",
+                            rc,
+                            route,
+                            "S9",
                             f"no group-enforcement pattern found in "
                             f"{enforced_in} — a Function URL route declared "
-                            f"for {groups} reaches this handler directly")
+                            f"for {groups} reaches this handler directly",
+                        )
                     else:
                         # Compare the handler's group list with the declared one
                         # in BOTH directions where possible. Reading the module
@@ -2667,11 +2830,14 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                         if actual is not None:
                             if actual != set(groups):
                                 route_gap_or_fail(
-                                    rc, route, "S9",
+                                    rc,
+                                    route,
+                                    "S9",
                                     f"{enforced_in} enforces "
                                     f"{sorted(actual)} but the route declares "
                                     f"{sorted(groups)} — the code and the "
-                                    "expectations must name the same groups")
+                                    "expectations must name the same groups",
+                                )
                         else:
                             # No group-list constant found, so fall back to
                             # containment. NOTE this direction is ASYMMETRIC: it
@@ -2687,10 +2853,13 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                             missing = [g for g in groups if f'"{g}"' not in text]
                             if missing:
                                 route_gap_or_fail(
-                                    rc, route, "S9",
+                                    rc,
+                                    route,
+                                    "S9",
                                     f"{enforced_in} has a group check but does "
                                     f"not name {missing} — declared groups "
-                                    f"{groups}")
+                                    f"{groups}",
+                                )
             # --- S9: declared policy vs what the transport can enforce -----
             # `groups` is the route's POLICY and must equal the equivalent REST
             # operation's — one user action, one policy. `transport_enforces` is
@@ -2708,7 +2877,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 if enforceable == declared_floor:
                     findings.append(
                         Finding(
-                            "S9", "FAIL",
+                            "S9",
+                            "FAIL",
                             f"route declares transport_enforces {enforceable!r}, "
                             "which equals its groups — remove the key rather than "
                             "asserting a divergence that does not exist",
@@ -2718,7 +2888,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 elif weaker_policy_problem(enforceable, declared_floor):
                     findings.append(
                         Finding(
-                            "S9", "FAIL",
+                            "S9",
+                            "FAIL",
                             weaker_policy_problem(enforceable, declared_floor) or "",
                             route,
                         )
@@ -2726,7 +2897,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 elif not rc.get("residual_gap") and not rc.get("known_gap"):
                     findings.append(
                         Finding(
-                            "S9", "FAIL",
+                            "S9",
+                            "FAIL",
                             f"route enforces only {enforceable!r} but declares "
                             f"{declared_floor!r}, with no residual_gap/known_gap "
                             "naming the limitation — an unrecorded gap between the "
@@ -2738,7 +2910,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                     gid = rc.get("residual_gap") or rc.get("known_gap")
                     findings.append(
                         Finding(
-                            "S9", "FAIL" if strict else "WARN",
+                            "S9",
+                            "FAIL" if strict else "WARN",
                             f"route declares {declared_floor!r} but this transport "
                             f"can only enforce {enforceable!r}, so a caller the "
                             "declared policy would refuse is not refused here "
@@ -2752,17 +2925,25 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             if equivalent:
                 if equivalent not in ops:
                     findings.append(
-                        Finding("S9", "FAIL",
-                                f"equivalent_op '{equivalent}' is not a "
-                                "declared operation", route))
+                        Finding(
+                            "S9",
+                            "FAIL",
+                            f"equivalent_op '{equivalent}' is not a declared operation",
+                            route,
+                        )
+                    )
                 elif ops[equivalent]["groups"] != groups:
                     findings.append(
-                        Finding("S9", "FAIL",
-                                f"route groups {groups} disagree with the "
-                                f"equivalent REST op '{equivalent}' "
-                                f"({ops[equivalent]['groups']}) — one entry "
-                                "path is more permissive than the other",
-                                route))
+                        Finding(
+                            "S9",
+                            "FAIL",
+                            f"route groups {groups} disagree with the "
+                            f"equivalent REST op '{equivalent}' "
+                            f"({ops[equivalent]['groups']}) — one entry "
+                            "path is more permissive than the other",
+                            route,
+                        )
+                    )
 
     # --- M1-M5: MCP tools ------------------------------------------------
     findings.extend(mcp_checks(repo, spec, ops, app_groups))
@@ -2778,8 +2959,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     }
     for gid in sorted(referenced - set(known_gaps)):
         findings.append(
-            Finding("S0", "FAIL",
-                    f"operation references undefined known_gap '{gid}'"))
+            Finding("S0", "FAIL", f"operation references undefined known_gap '{gid}'")
+        )
     # A gap the DYNAMIC harness assigns at runtime has no operation to reference
     # it — the condition is a property of the response, not of a declared
     # operation — so the orphan check's premise does not hold for it. Declaring
@@ -2792,22 +2973,34 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         assigner = spec.get("assigned_by") if isinstance(spec, dict) else None
         if not assigner:
             findings.append(
-                Finding("S0", "WARN",
-                        f"known_gap '{gid}' is defined but no operation references "
-                        "it (fixed? remove it)"))
+                Finding(
+                    "S0",
+                    "WARN",
+                    f"known_gap '{gid}' is defined but no operation references "
+                    "it (fixed? remove it)",
+                )
+            )
             continue
         assigner_path = REPO / assigner
         if not assigner_path.is_file():
             findings.append(
-                Finding("S0", "FAIL",
-                        f"known_gap '{gid}' declares assigned_by '{assigner}', "
-                        "which is not a file in this repo"))
+                Finding(
+                    "S0",
+                    "FAIL",
+                    f"known_gap '{gid}' declares assigned_by '{assigner}', "
+                    "which is not a file in this repo",
+                )
+            )
         elif gid not in assigner_path.read_text():
             findings.append(
-                Finding("S0", "FAIL",
-                        f"known_gap '{gid}' declares assigned_by '{assigner}', "
-                        f"but that file does not mention '{gid}' — the gap is "
-                        "registered and assigned by nothing"))
+                Finding(
+                    "S0",
+                    "FAIL",
+                    f"known_gap '{gid}' declares assigned_by '{assigner}', "
+                    f"but that file does not mention '{gid}' — the gap is "
+                    "registered and assigned by nothing",
+                )
+            )
 
     # --- accepted-risk register (always surfaced for auditability) ---------
     # Each declared gap is emitted so the report explicitly lists accepted
@@ -2827,7 +3020,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         ops_list = ", ".join(sorted(gap_ops.get(gid, [])))
         findings.append(
             Finding(
-                "GAP", "FAIL" if strict else "WARN",
+                "GAP",
+                "FAIL" if strict else "WARN",
                 f"{gid}: {summary} — affects: {ops_list}",
             )
         )
@@ -2839,8 +3033,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Static RBAC scan for the IDP UI API.")
     ap.add_argument("--json", metavar="PATH", help="write findings as JSON to PATH")
     ap.add_argument(
-        "--strict", action="store_true",
-        help="treat known_gap WARNs as failures (verify a gap was fixed)")
+        "--strict",
+        action="store_true",
+        help="treat known_gap WARNs as failures (verify a gap was fixed)",
+    )
     args = ap.parse_args()
 
     findings = run_checks(args.strict)

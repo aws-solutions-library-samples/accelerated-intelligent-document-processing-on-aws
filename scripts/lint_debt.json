@@ -342,8 +342,6 @@
     "nested/api-resolvers/src/lambda/http_api_dispatcher/ddb_direct.py",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/index.py",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/tests/test_surface_filter.py",
-    "nested/api-resolvers/src/lambda/list_documents_gsi_resolver/index.py",
-    "nested/api-resolvers/src/lambda/list_documents_range_resolver/index.py",
     "nested/api-resolvers/src/lambda/list_documents_range_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/reprocess_document_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/index.py",
@@ -484,6 +482,6 @@
   "highWaterMark": {
     "lintDebtFiles": 71,
     "lintFindings": 174,
-    "formatDebtFiles": 160
+    "formatDebtFiles": 158
   }
 }

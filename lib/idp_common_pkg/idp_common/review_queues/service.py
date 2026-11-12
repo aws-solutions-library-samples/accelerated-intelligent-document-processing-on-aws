@@ -32,6 +32,7 @@ from .annotators import cognito_user_lookup  # noqa: F401 — re-exported
 from .api_models import (
     MAX_DRAFT_BYTES,
     MAX_DRAFT_DEPTH,
+    MAX_NOTE,
     ClaimNextResult,
     MyReviewQueues,
     ReviewDraftView,
@@ -45,16 +46,23 @@ from .api_models import (
     ReviewQueueSummary,
     ReviewReasonView,
     ReviewSectionDetail,
+    ReviewSendInfoView,
     draft_depth,
 )
 from .directory import QueueDirectory
 from .exceptions import (
     ReviewAccessDenied,
     ReviewConflict,
+    ReviewHeldByOther,
     ReviewItemNotFound,
     ReviewValidationError,
 )
-from .finalize import FinalizeSender, finalize_execution_name, finalize_token
+from .finalize import (
+    DocumentResubmitter,
+    FinalizeSender,
+    finalize_execution_name,
+    finalize_token,
+)
 from .models import (
     CallerContext,
     DraftRecord,
@@ -98,8 +106,17 @@ _HISTORY_EVENTS = {
     "complete": "completed",
     "rejected": "rejected",
     "removed": "removed",
+    "skipped": "skipped",
 }
-_METRIC_KINDS = {"complete": "complete", "rejected": "reject", "removed": "removed"}
+_METRIC_KINDS = {
+    "complete": "complete",
+    "rejected": "reject",
+    "removed": "removed",
+    "skipped": "skipped",
+}
+#: History event recorded when a skip's finalize message could not be sent (the
+#: sweeper resends it).
+FINALIZE_SEND_FAILED_EVENT = "finalize_send_failed"
 
 
 def utc_now() -> datetime:
@@ -191,6 +208,16 @@ def item_view(
         disposed_at=record.disposed_at,
         reject_reason=record.reject_reason,
         version=record.version,
+        sent_to_review=(
+            ReviewSendInfoView(
+                reason=record.manual_request.reason,
+                note=record.manual_request.note,
+                requested_by=record.manual_request.requested_by,
+                requested_at=record.manual_request.requested_at,
+            )
+            if record.manual_request is not None
+            else None
+        ),
     )
 
 
@@ -492,12 +519,18 @@ class ReviewQueueService:
         with ThreadPoolExecutor(max_workers=8) as pool:
             summaries = list(pool.map(summarise, queues))
         summaries.sort(key=lambda s: (-s.priority, s.profile, s.name))
+        from .bulk_settings import effective_sync_limit
+        from .routing import default_queue
+
+        default = default_queue(self.store)
         return MyReviewQueues(
             queues=summaries,
             my_claim_count=len(owned),
             items=self.list_queue_items(
                 caller, None, claimable=False, limit=item_limit, cursor=None
             ),
+            default_queue_enabled=bool(default is not None and default.enabled),
+            bulk_skip_sync_limit=effective_sync_limit(),
         )
 
     def _caller_refs(
@@ -1117,10 +1150,65 @@ class ReviewQueueService:
         hold (Remove from queue); the write is conditioned on the state read, and
         a claimant is told their claim ended.
         """
-        if supervised:
+        view, _ = self._finalize_item(
+            caller,
+            object_key,
+            cycle_id,
+            disposition=disposition,
+            apply=apply,
+            access="supervised" if supervised else "holder",
+            details={
+                **({"reason": reason} if reason else {}),
+                **({"note": note} if note else {}),
+            },
+        )
+        return view
+
+    def _skippable(
+        self, caller: CallerContext, object_key: str, cycle_id: str
+    ) -> ReviewItemRecord:
+        """The item Skip All Reviews applies to: OPEN, or CLAIMED by the caller (any
+        claim for an Admin), within the caller's scope and queues."""
+        record = self._load(object_key)
+        self._check_access(caller, record)
+        self._check_cycle(record, cycle_id)
+        if record.state not in (OPEN, CLAIMED):
+            raise ReviewConflict("INVALID_STATE", f"the item is {record.state}")
+        if (
+            record.state == CLAIMED
+            and record.owner_key != caller.reviewer_key
+            and not caller.is_admin
+        ):
+            logger.warning("Rejecting skip of a review another reviewer holds")
+            raise ReviewHeldByOther()
+        return record
+
+    def _finalize_item(
+        self,
+        caller: CallerContext,
+        object_key: str,
+        cycle_id: str,
+        *,
+        disposition: str,
+        apply: Callable[[ReviewItemRecord], None],
+        access: str,
+        details: Mapping[str, Any],
+    ) -> tuple[ReviewItemView, bool]:
+        """Move the item to FINALIZING; return its view and whether the finalize
+        message was sent.
+
+        ``access`` is ``holder`` (the claimant, or an Admin on a claim: Complete,
+        Reject), ``supervised`` (an Admin on an OPEN or CLAIMED item: Remove from
+        queue) or ``skip`` (Skip All Reviews: an OPEN item, the caller's own claim,
+        or for an Admin any claim). A claimant other than the caller is told their
+        claim ended.
+        """
+        if access == "supervised":
             old = self._supervised(caller, object_key, cycle_id)
             if old.state not in (OPEN, CLAIMED):
                 raise ReviewConflict("INVALID_STATE", f"the item is {old.state}")
+        elif access == "skip":
+            old = self._skippable(caller, object_key, cycle_id)
         else:
             old = self._disposable(caller, object_key, cycle_id)
         _, now_ms, now_iso = self._now()
@@ -1148,48 +1236,124 @@ class ReviewQueueService:
                 new,
                 _HISTORY_EVENTS[disposition],
                 caller.email,
-                {
-                    **({"reason": reason} if reason else {}),
-                    **({"note": note} if note else {}),
-                },
+                details,
                 now_ms,
                 now_iso,
             )
         )
-        if supervised:
+        if access == "supervised":
             condition, values = "#st = :st", {":st": old.state}
+        elif access == "skip":
+            if old.state == OPEN:
+                condition, values = "#st = :st", {":st": OPEN}
+            else:
+                condition, values = (
+                    "#st = :st AND OwnerKey = :owner",
+                    {
+                        ":st": CLAIMED,
+                        ":owner": old.owner_key,
+                    },
+                )
         else:
             condition, values = self._disposition_condition(caller, old, now_ms)
         try:
             self._write(old, new, condition=condition, values=values, extra_txn=extra)
         except DynamoDBTransactionCanceledError:
-            if supervised:
+            if access != "holder":
                 raise ReviewConflict(
                     "INVALID_STATE", "the item changed; reload it"
                 ) from None
             self._raise_lease_failure(object_key, owner or caller.reviewer_key)
-        self._send_finalize(new)
+        sent = self._send_finalize(new)
+        if not sent and access == "skip":
+            try:
+                _, ms, iso_now = self._now()
+                self.store.put_history(
+                    new.doc_key,
+                    new.cycle_id,
+                    FINALIZE_SEND_FAILED_EVENT,
+                    "system",
+                    {k: v for k, v in details.items() if k == "jobId"},
+                    new.expires_after,
+                    now_ms=ms,
+                    now_iso=iso_now,
+                )
+            except Exception:  # noqa: BLE001 — best effort; the sweeper resends
+                logger.warning("event=review_history_put_failed", exc_info=True)
         _put_metric(
             DISPOSITION_METRIC,
             dimensions=[{"Name": "Kind", "Value": _METRIC_KINDS[disposition]}],
         )
-        if supervised and old.state == CLAIMED and old.owner_email:
+        notify_claimant = access == "supervised" or (
+            access == "skip" and old.owner_key != caller.reviewer_key
+        )
+        if notify_claimant and old.state == CLAIMED and old.owner_email:
             self.notify.claim_released(new, old.owner_email, disposition)
         logger.info("event=review_disposed disposition=%s", disposition)
-        return item_view(new, caller)
+        return item_view(new, caller), sent
 
-    def _send_finalize(self, record: ReviewItemRecord) -> None:
-        """Send the finalize message; a failure is logged and healed by the sweeper."""
+    def skip_all_reviews(
+        self,
+        caller: CallerContext,
+        object_key: str,
+        cycle_id: str,
+        *,
+        reason: str,
+        note: Optional[str] = None,
+        source: str = "ui",
+        job_id: Optional[str] = None,
+    ) -> tuple[ReviewItemView, bool]:
+        """Skip All Reviews on a queue item: finish it with its machine results.
+
+        Allowed on an OPEN item, the caller's own claim, or (Admin) any claim, in
+        the caller's scope. Recorded as the ``skipped`` disposition with the reason,
+        note, source and bulk job id. Returns the view and whether the finalize
+        message was sent (a failed send is resent by the sweeper and recorded in
+        the item's history).
+        """
+        from .statuses import SKIP_ALL_REASONS
+
+        if reason not in SKIP_ALL_REASONS:
+            raise ReviewValidationError(
+                "REASON_REQUIRED",
+                "reason must be one of: " + ", ".join(SKIP_ALL_REASONS),
+            )
+        note = (note or "").strip() or None
+        if note and len(note) > MAX_NOTE:
+            raise ReviewValidationError("BAD_ARGUMENT", "the note is too long")
+
+        def apply(r: ReviewItemRecord) -> None:
+            r.complete_note = note
+            r.skip_job_id = job_id
+
+        return self._finalize_item(
+            caller,
+            object_key,
+            cycle_id,
+            disposition="skipped",
+            apply=apply,
+            access="skip",
+            details={
+                "reason": reason,
+                **({"note": note} if note else {}),
+                "source": source,
+                **({"jobId": job_id} if job_id else {}),
+            },
+        )
+
+    def _send_finalize(self, record: ReviewItemRecord) -> bool:
+        """Send the finalize message; return whether it was sent. A failure is
+        logged and healed by the sweeper."""
         if self.finalize_sender is None:
             logger.error("event=review_finalize_send_failed reason=no_sender")
             _put_metric("ReviewFinalizeSendFailures")
-            return
+            return False
         try:
             self.finalize_sender.send(record)
         except Exception:  # noqa: BLE001 — recorded; the sweeper resends (FR-11)
             logger.error("event=review_finalize_send_failed", exc_info=True)
             _put_metric("ReviewFinalizeSendFailures")
-            return
+            return False
         try:
             _, _, now_iso = self._now()
             self.store.client.update_item(
@@ -1204,6 +1368,7 @@ class ReviewQueueService:
             )
         except Exception:  # noqa: BLE001 — best effort bookkeeping
             logger.debug("FinalizeSentAt not recorded", exc_info=True)
+        return True
 
     def complete(
         self,
@@ -1782,6 +1947,26 @@ def create_finalize_sender(document_service: Any = None) -> Optional[FinalizeSen
     return FinalizeSender(
         boto3.client("sqs"),
         queue_url,
+        os.environ.get("WORKING_BUCKET"),
+        document_service,
+        input_bucket=os.environ.get("INPUT_BUCKET"),
+        output_bucket=os.environ.get("OUTPUT_BUCKET"),
+    )
+
+
+def create_resubmitter(document_service: Any = None) -> DocumentResubmitter:
+    """A :class:`DocumentResubmitter` from the environment (``QUEUE_URL`` may be
+    unset: :meth:`DocumentResubmitter.resubmit` then raises
+    :class:`ResubmitNotConfigured`)."""
+    import boto3
+
+    if document_service is None:
+        from idp_common.docs_service import create_document_service
+
+        document_service = create_document_service(mode="dynamodb")
+    return DocumentResubmitter(
+        boto3.client("sqs"),
+        os.environ.get("QUEUE_URL", ""),
         os.environ.get("WORKING_BUCKET"),
         document_service,
         input_bucket=os.environ.get("INPUT_BUCKET"),

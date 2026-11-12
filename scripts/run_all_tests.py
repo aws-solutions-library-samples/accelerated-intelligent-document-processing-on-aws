@@ -182,6 +182,8 @@ RUN_ROOTS = [
     # caller from verified claims, exact error classes) over a stub service.
     "nested/api-resolvers/src/lambda/notifications_resolver",
     "nested/api-resolvers/src/lambda/review_queues_resolver",
+    "nested/api-resolvers/src/lambda/bulk_review_resolver",
+    "nested/api-resolvers/src/lambda/bulk_review_worker",
     # syncBdaIdp mutates the BDA project linked to a Configuration Profile, so a
     # caller whose scope cannot be resolved must be refused in-band.
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver",
