@@ -1222,7 +1222,10 @@ def _ensure_boundary_policy(iam_client, account_id, policy_name):
 
 
 def create_iam_resources(
-    stack_name, shared_boundary=False, terraform_deployer_arn=None
+    stack_name,
+    shared_boundary=False,
+    terraform_deployer_arn=None,
+    terraform_migration=False,
 ):
     """Create the permissions boundary, then the CFN service role that requires it.
 
@@ -1293,7 +1296,11 @@ def create_iam_resources(
         ]
         output_key = "ServiceRoleArn"
         if terraform_deployer_arn:
-            template_body = json.dumps(terraform_deploy_role_template(template_body))
+            template_body = json.dumps(
+                terraform_deploy_role_template(
+                    template_body, terraform_migration=terraform_migration
+                )
+            )
             parameters.append(
                 {
                     "ParameterKey": "TerraformDeployerPrincipalArn",
@@ -4748,7 +4755,23 @@ def _cfn_long_form(loader, suffix, node):
 _CfnLongFormLoader.add_multi_constructor("!", _cfn_long_form)
 
 
-def terraform_deploy_role_template(service_role_template_text: str) -> dict:
+#: What a Terraform-migration run's deploy role holds beyond a nightly's: the
+#: driver's preflight reads the account's IAM role count against its quota
+#: (iam:GetAccountSummary, which takes no resource but "*") before two
+#: deployments holding several hundred roles between them are started. Read-only.
+TERRAFORM_MIGRATION_ROLE_ADDITIONS = (
+    {
+        "Sid": "TerraformMigrationRoleQuotaRead",
+        "Effect": "Allow",
+        "Action": ["iam:GetAccountSummary"],
+        "Resource": "*",
+    },
+)
+
+
+def terraform_deploy_role_template(
+    service_role_template_text: str, terraform_migration: bool = False
+) -> dict:
     """The CI pre-stack for a Terraform run: the customer service-role template
     plus a sibling role Terraform assumes.
 
@@ -4809,6 +4832,11 @@ def terraform_deploy_role_template(service_role_template_text: str) -> dict:
                         "Action": ["cloudcontrol:*"],
                         "Resource": "*",
                     },
+                    *(
+                        copy.deepcopy(list(TERRAFORM_MIGRATION_ROLE_ADDITIONS))
+                        if terraform_migration
+                        else []
+                    ),
                     deny_self,
                 ],
             },
@@ -11601,7 +11629,9 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
     success = False
     try:
         role_arn, boundary_arn = create_iam_resources(
-            new_name, terraform_deployer_arn=_caller_principal_arn()
+            new_name,
+            terraform_deployer_arn=_caller_principal_arn(),
+            terraform_migration=True,
         )
         if not role_arn or not boundary_arn or not _wait_until_assumable(role_arn):
             return False, f"❌ the run's TFDeployRole for {new_name} was not usable"

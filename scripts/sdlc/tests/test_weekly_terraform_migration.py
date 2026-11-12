@@ -788,3 +788,50 @@ def test_the_job_finds_the_summary_of_a_migration_run():
     assert branch.index("print(DEPLOYMENT_SUMMARY_LOG_MARKER)") < branch.index(
         "print(text)"
     )
+
+
+def _additions(template):
+    role = template["Resources"]["TerraformDeployRole"]["Properties"]
+    (doc,) = [
+        p["PolicyDocument"]
+        for p in role["Policies"]
+        if p["PolicyName"] == "TerraformDeployAdditions"
+    ]
+    return doc["Statement"]
+
+
+def test_only_a_migration_runs_role_can_read_the_role_quota():
+    """The driver's preflight reads the account's role count against its quota;
+    a nightly's deploy role does not need that and does not get it."""
+    text = SERVICE_ROLE_TEMPLATE.read_text()
+    nightly = _additions(cbd.terraform_deploy_role_template(text))
+    migration = _additions(
+        cbd.terraform_deploy_role_template(text, terraform_migration=True)
+    )
+    quota = [s for s in migration if "iam:GetAccountSummary" in s.get("Action", [])]
+    assert quota == list(cbd.TERRAFORM_MIGRATION_ROLE_ADDITIONS)
+    assert not [s for s in nightly if "iam:GetAccountSummary" in s.get("Action", [])]
+    # the read is the whole addition: nothing else is granted beside it
+    assert [len(s) for s in migration if s not in nightly] == [4]
+    (added,) = [s for s in migration if s not in nightly]
+    assert added["Action"] == ["iam:GetAccountSummary"] and added["Effect"] == "Allow"
+
+
+def test_the_migration_run_builds_its_role_with_the_quota_read(monkeypatch, tmp_path):
+    seen = {}
+    real = cbd.create_iam_resources
+
+    def record(name, **kwargs):
+        seen.update(kwargs)
+        return ("arn:role", f"arn:aws:iam::1:policy/{name}-B")
+
+    monkeypatch.setattr(cbd, "create_iam_resources", record)
+    monkeypatch.setattr(cbd, "_invoke_bedrock", lambda prompt: "")
+    assert real is not record
+    monkeypatch.setattr(cbd, "ci_region", lambda: "us-east-1")
+    monkeypatch.setattr(cbd, "terraform_work_directory", lambda n: str(tmp_path / n))
+    monkeypatch.setattr(cbd, "_caller_principal_arn", lambda: "arn:cb")
+    monkeypatch.setattr(cbd, "_wait_until_assumable", lambda arn: False)
+    monkeypatch.setattr(cbd, "cleanup_iam_resources", lambda name: [])
+    cbd.run_terraform_migration("idp-1111-235959", "https://m.zip", "terraform")
+    assert seen.get("terraform_migration") is True
