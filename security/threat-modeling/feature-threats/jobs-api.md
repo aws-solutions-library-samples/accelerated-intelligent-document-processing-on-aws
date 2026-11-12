@@ -63,6 +63,7 @@ flowchart TD
 | **Affected Components** | `ApiUserPool`, `ApiResourceServer`, `ApiAppClient`, `ApiGateway` (PRIVATE), `ApiHandlerFunction` |
 | **Mitigations** | The API is **`EndpointConfiguration: PRIVATE`** with a resource policy that **denies** any invocation whose `aws:SourceVpce` does not match the supplied VPC endpoint — so the endpoint is not reachable from the internet at all, and a leaked secret alone is insufficient without network access. Scopes are **separated by intent** (`jobs.read` vs `jobs.write`), so a read-only integration need not hold write capability. The feature is **off by default** (`EnableJobsApi=false`) and, when enabled, is guarded by a CloudFormation rule requiring VPC parameters. The separate user pool means a Jobs API secret compromise does **not** grant Web UI access or expose human user accounts. |
 | **Residual risk / recommendation** | The two-realm design is deliberate and sound, but it must be **documented as such** so operators do not assume UI RBAC covers this path. A single shared client with both scopes is the default shape; recommend (1) issuing separate clients per integration with the narrowest scope, (2) rotating the client secret on a schedule, and (3) noting explicitly in the deployment docs that Jobs API submissions are **not** config-version scoped. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### JOB.T02: Jobs API Is Outside the Automated Authorization Test Harness
 
@@ -78,6 +79,7 @@ flowchart TD
 | **Affected Components** | `scripts/test_api_rbac.py`, `scripts/sdlc/scan_api_rbac.py`, `scripts/api_rbac_expectations.yaml` |
 | **Mitigations** | The Jobs API surface is **small and static** (a handful of `/jobs` routes vs 168 UI operations), so the review burden is low and drift is unlikely. Authorization is enforced by the API Gateway Cognito authorizer plus scope configuration in the template — declarative IaC rather than per-resolver imperative code, which is the class of defect the UI harness exists to catch (AUTH.T08). The `zapdast` deployment-variant probe and the `stacktest-jobsapi` deploy-variant test exercise the deployed Jobs API stack. |
 | **Residual risk / recommendation** | Add a small scope-negative test (a `jobs.read`-only token attempting a write route must be refused, and an unauthenticated request must 401) to the Jobs API stack test. Low cost, closes the gate asymmetry. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### JOB.T03: Static Client Secret with No Rotation Mechanism
 
@@ -93,6 +95,7 @@ flowchart TD
 | **Affected Components** | `ApiAppClient`, consuming integrations |
 | **Mitigations** | Access tokens minted from the secret are themselves short-lived. The PRIVATE endpoint means the secret is unusable without VPC network position (the dominant compensating control — see JOB.T01). Rotation is possible at any time by updating the client. CloudTrail records token issuance and API invocations for detection. |
 | **Residual risk / recommendation** | Document a rotation procedure and cadence; prefer sourcing the secret from AWS Secrets Manager with automatic rotation over embedding it in CI configuration. Consider per-integration clients so one leak has a bounded blast radius and can be revoked independently. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ## 4. Security Controls Summary
 

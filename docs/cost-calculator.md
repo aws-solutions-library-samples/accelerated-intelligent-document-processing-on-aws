@@ -115,6 +115,27 @@ The GenAI IDP Accelerator solution includes a built-in cost estimation feature i
 
 This real-time cost tracking helps you monitor actual usage patterns and optimize costs based on real-world usage.
 
+**Model calls whose result was not used are still counted.** An Advanced-mode
+(agentic) extraction run that stops on an error, or that ends without a valid
+extraction, adds the tokens of every model call it completed to the document's
+metering under its step. The case you will see in the estimate is a failed
+[validation escalation](extraction-and-confidence.md#schema-validation-and-model-escalation): it keeps the original result, the document
+continues, and the escalation's calls appear under `ExtractionEscalation`. Two
+cases are not counted. A document whose workflow fails records no cost in the
+reports at all, for any step, because the tracker saves metering only from a
+workflow that succeeded. And when an extraction attempt fails with a transient
+error and Step Functions retries it, the calls of the failed attempt are not
+counted; only the attempt that finishes is.
+
+**Validation escalation is one row in both extraction modes.** The calls a
+[validation escalation](extraction-and-confidence.md#schema-validation-and-model-escalation)
+makes to the escalation model are metered under the context
+`ExtractionEscalation`, whether the section was extracted in Simple or Advanced
+mode. Documents that earlier releases processed in Simple mode carry those calls
+under `Extraction-Escalation` instead, so a query over the `metering` table that
+groups escalation cost across releases should match both spellings, for example
+`context IN ('ExtractionEscalation', 'Extraction-Escalation')`.
+
 #### Editing the pricing table
 
 Administrators change prices on the **Pricing** page. The shipped rates come from
@@ -125,29 +146,43 @@ A price is a non-negative decimal number, optionally with an exponent: `0.0015`,
 `6.0E-8` and `.5` are prices. Hexadecimal (`0x10`), `Infinity`, `NaN` and digit
 separators (`1_000`) are not, because the cost reports and the web UI read them
 differently. A sign and surrounding spaces are not accepted either, so that every
-saved price has one form. The Pricing page marks an invalid value and will not save
-the table until it is corrected, and the backend refuses to store one.
+saved price has one form. A missing price (`null`) is refused as well. Earlier
+releases stored a null sent to the backend as `0.0`, so such a price now reads as a
+plain zero: it is valued at $0 and is not listed for correction. The Pricing page
+marks an invalid value and will not save the table until it is corrected, and the
+backend refuses to store one.
 
 A custom table saved by an earlier release can still hold such a value. It still
 loads, and the page lists the value for correction. A value whose only problem is
 surrounding spaces is still priced, because the reports and the web UI both read it.
 Any other invalid value is reported as unpriced until it is corrected.
 
-⚠️ **Saving the Pricing page stores the whole table, and a saved table replaces the
-default table in full.** It is not merged over the defaults row by row. Two things
-follow for a stack that has ever saved the page, however small the edit:
+The Pricing page saves the whole table, and the stack prices with the shipped
+defaults with your saved table laid over them, model by model and unit by unit:
 
-- A rate a later release corrects in `pricing.yaml` does not reach it, because the
-  saved table still carries the old rate.
-- A model a later release adds has no price on it. Its usage is reported as
-  unpriced (`NULL` in the reporting `metering` table) rather than costed.
+- A rate you saved overrides the default rate for that unit of that model.
+- A unit or model you added that the defaults do not have is kept.
+- A default unit or model your saved table does not mention is priced at its
+  default rate. So a model that a later release adds to `pricing.yaml` is priced
+  on a stack that saved the page before the upgrade.
 
-To pick up the current defaults, choose **Restore default (All)** on the Pricing
-page, which discards the saved table, and then re-apply your own changes. The button
-is enabled whenever the table on the page differs from the defaults: a price that
-differs by any amount (the same value in a different notation, such as `2.2E-6` and
-`0.0000022`, does not count), a row the defaults do not have, or a default row you
-deleted.
+Two consequences follow:
+
+- ⚠️ A rate that a later release corrects in `pricing.yaml` does not reach a unit
+  your saved table holds, even if you never edited that unit, because every save
+  stores the whole table. Saving once pins the defaults of that moment for every
+  row in the table.
+- Deleting a default row in the editor does not stick. The saved table records no
+  deletions, so the row is back at its default rate once the table is saved and the
+  page is reloaded. To have a default model cost nothing in the reports, set its
+  rates to `0` instead.
+
+To pick up the current defaults for every row, choose **Restore default (All)** on
+the Pricing page, which discards the saved table, and then re-apply your own
+changes. The button is enabled whenever the table on the page differs from the
+defaults: a price that differs by any amount (the same value in a different
+notation, such as `2.2E-6` and `0.0000022`, does not count), a row the defaults do
+not have, or a default row you have deleted and not yet saved.
 
 ### What the estimate cannot express: prices that change with request size
 

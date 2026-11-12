@@ -974,7 +974,8 @@ def handle_get_pricing(manager):
 
     This mirrors the Default/Custom pattern for IDP configuration:
     - DefaultPricing: Full baseline from deployment (stored at deployment time)
-    - CustomPricing: The table the Pricing page saved; replaces DefaultPricing's list
+    - CustomPricing: The table the Pricing page saved; laid over DefaultPricing per
+      model and unit
     - Returns:
       - pricing: Merged result (default + custom overrides)
       - defaultPricing: Original defaults for diff highlighting and restore
@@ -987,7 +988,7 @@ def handle_get_pricing(manager):
                nonChargeableUnits: {...}, error: {...} }
     """
     try:
-        # Get effective pricing (CustomPricing replaces DefaultPricing's list)
+        # Effective pricing: DefaultPricing with CustomPricing laid over it per row
         pricing_config = manager.get_merged_pricing()
 
         # Also get default pricing for UI diff/restore features
@@ -1046,8 +1047,8 @@ def handle_update_pricing(manager, pricing_config_json):
     Handle the updatePricing GraphQL mutation
     Saves the submitted pricing table to DynamoDB as CustomPricing
 
-    The UI sends the whole table. When reading, it replaces DefaultPricing's
-    pricing list wholesale (see ConfigurationManager.get_merged_pricing).
+    The UI sends the whole table. When reading, its rows are laid over
+    DefaultPricing per model and unit (see ConfigurationManager.get_merged_pricing).
 
     Args:
         manager: ConfigurationManager instance

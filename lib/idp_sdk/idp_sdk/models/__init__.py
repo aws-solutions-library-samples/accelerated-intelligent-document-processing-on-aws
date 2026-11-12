@@ -77,6 +77,7 @@ from .evaluation import (
     UseAsBaselineResult,
 )
 from .manifest import ManifestDocument, ManifestResult, ManifestValidationResult
+from .mcp import McpCredential, McpCredentialIssued
 from .publish import PublishResult, TemplateTransformResult
 from .search import SearchCitation, SearchDocumentReference, SearchResult
 from .stack import (
@@ -237,5 +238,7 @@ __all__ = [
     "TenantVerifyCheck",
     "TenantVerifyOutcome",
     "TenantUserGrant",
+    "McpCredential",
+    "McpCredentialIssued",
     "TenantVerifyResult",
 ]

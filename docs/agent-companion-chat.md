@@ -88,13 +88,49 @@ The Agent Companion Chat includes an optional Code Intelligence Agent that can p
 3. **Use other agents** (Analytics, Error Analyzer) for queries involving your actual system data
 4. **Enable only when needed** for generic code help, then disable it again
 
+### Opt-in agents and conversations that hold your data
+
+Two kinds of agent send their query to a service outside your deployment: the Code
+Intelligence Agent and every External MCP agent. Each kind is off until you turn it
+on for the conversation, with its own checkbox under the chat input ("Enable Code
+Intelligence Agent", "Enable External MCP agents"). A new conversation starts with
+both off.
+
+The Analytics Agent and the Error Analyzer Agent read your deployment's own data —
+the reporting database, logs and execution records — and their results stay in the
+conversation's memory for the turns that follow. So the two kinds of agent are
+never used in the same conversation:
+
+- Once the Analytics Agent or the Error Analyzer Agent has returned a result in a
+  conversation, Code Intelligence and External MCP agents are left out of it from
+  then on, whatever the checkboxes say. This also holds for a second turn running
+  at the same time on the same conversation, for example in another browser tab:
+  an opt-in agent checks again just before it runs. Within the turn that produced the result, an
+  opt-in agent that had already been made available answers that it is not
+  available in this conversation instead of running.
+- Turning on either opt-in in such a conversation starts a new conversation, with
+  empty memory, and a short notice above the chat input says why. A message sent
+  with an opt-in on to such a conversation through the API is handled the same
+  way: it is stored and answered in a new session, and the response (or, when
+  streaming, a `session_replaced` event) carries the new session id.
+
+The record that a conversation holds those results is kept on the session's owner
+record in `ChatSessionOwnersTable`, which belongs to one signed-in user, so it
+applies to that user's conversation and no other. That record is kept for the
+data-retention period (`DataRetentionInDays`) after the conversation's last turn,
+plus an hour. The conversation's memory is kept for the same retention period after
+its last write, so it expires first, and memory past its expiry is not loaded even
+before DynamoDB deletes it: a conversation resumed after both have expired starts
+with neither its memory nor the record. Memory written before this behaviour was
+introduced carries no expiry.
+
 ### Data Storage and Retention
 
 **Conversation History**:
 - All conversations are stored in DynamoDB within your AWS account
 - Conversation history is retained for the duration of your session
 - Data remains within your AWS environment and is subject to your AWS security policies
-- No conversation data is sent to external services except when Code Intelligence is enabled and invoked
+- No conversation data is sent to external services except when Code Intelligence or External MCP agents are enabled and invoked, and never from a conversation that holds Analytics or Error Analyzer results (see above)
 
 **Session Isolation**:
 - Each conversation has a unique session ID
@@ -291,7 +327,7 @@ The Analytics Agent has access to four specialized tools:
    - Generates visualizations and tables from query data
    - Uses Pandas, Matplotlib, and other standard Python libraries
    - Outputs JSON-formatted charts and tables for web display
-   - Runs in isolated AgentCore sandbox for security
+   - Runs in an AgentCore Code Interpreter session with no AWS credentials and no public internet access; the session can still reach Amazon S3 in its region (see [Network reach of the Python interpreter](agent-analysis.md#network-reach-of-the-python-interpreter))
 
 **Workflow**:
 1. Agent explores database schema using Database Info tool
@@ -375,7 +411,8 @@ More information of the agent can be found in error-analyzer.md
 2. Click to enable or disable
 3. When disabled, the orchestrator won't route queries to this agent
 4. Your preference is saved for the session
-5. **Recommendation**: Keep disabled unless you specifically need code assistance and are certain your queries contain no sensitive information
+5. In a conversation that already holds Analytics or Error Analyzer results, enabling it starts a new conversation (see [Opt-in agents and conversations that hold your data](#opt-in-agents-and-conversations-that-hold-your-data))
+6. **Recommendation**: Keep disabled unless you specifically need code assistance and are certain your queries contain no sensitive information
 
 ### MCP Integration
 
@@ -401,6 +438,10 @@ More information of the agent can be found in error-analyzer.md
 "Look up customer information from our CRM"
 "Retrieve data from our custom analytics platform"
 ```
+
+**Enabling External MCP agents**:
+- External MCP agents are off by default in every conversation. Turn on "Enable External MCP agents" under the chat input to include them, or pass `enableExternalMcpAgents: true` with the message through the API.
+- Like Code Intelligence, they are never used in a conversation that holds Analytics or Error Analyzer results, and enabling them there starts a new conversation (see [Opt-in agents and conversations that hold your data](#opt-in-agents-and-conversations-that-hold-your-data)).
 
 **Setting Up MCP Integration**:
 
@@ -463,11 +504,12 @@ The chat interface provides sample prompts to help you get started:
 - This creates a new session and clears conversation history
 - Previous conversations are saved but not accessible in the current session
 
-**Code Intelligence Toggle**:
-- Located near the top of the chat interface
-- Shows current status (enabled/disabled)
+**Code Intelligence and External MCP Toggles**:
+- Located under the chat input
+- Show current status (enabled/disabled); both start disabled in a new conversation
 - Click to toggle on or off
 - Changes take effect immediately for new messages
+- In a conversation that holds Analytics or Error Analyzer results, turning either on starts a new conversation and shows a notice
 
 ### Understanding Responses
 

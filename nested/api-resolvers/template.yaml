@@ -41,6 +41,10 @@ Parameters:
   
   ChatSessionsTableName:
     Type: String
+
+  ChatSessionOwnersTableName:
+    Type: String
+    Description: DynamoDB table recording which user each chat session id belongs to (keyed by sessionId)
   
   NotificationsTableName:
     Type: String
@@ -184,6 +188,11 @@ Parameters:
   
   DataRetentionInDays:
     Type: Number
+
+  MaxConcurrentWorkflows:
+    Type: Number
+    Default: 100
+    Description: Maximum concurrent workflows (used to pace bulk review resubmissions)
   
   PermissionsBoundaryArn:
     Type: String
@@ -324,6 +333,10 @@ Parameters:
     Type: String
     Default: ""
     Description: ARN of UserManagementFunction from main template.
+  McpCredentialManagerFunctionArn:
+    Type: String
+    Default: ""
+    Description: ARN of the MCP credential manager from the main template (empty when MCP is disabled).
   FinetuningJobsResolverFunctionArn:
     Type: String
     Default: ""
@@ -400,7 +413,7 @@ Mappings:
   # quotes are correct as written — do NOT "fix" or escape them.
   WebUiSecurity:
     ContentSecurityPolicy:
-      Value: "'script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;'"
+      Value: "'script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; default-src 'self'; worker-src 'self' blob:; img-src 'self' data: blob: https://*.amazonaws.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/npm/; font-src 'self' data:; media-src 'self'; frame-src 'self' data: https://*.amazonaws.com; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;'"
 
 Conditions:
   HasHITLTable: !Not [!Equals [!Ref HITLTableName, ""]]
@@ -598,6 +611,7 @@ Resources:
           AGENT_CHAT_PROCESSOR_FUNCTION: !Ref AgentChatProcessorFunctionArn
           DATA_RETENTION_DAYS: !Ref DataRetentionInDays
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTableName
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
       LoggingConfig:
         LogGroup: !Ref AgentChatResolverLogGroup
       Policies:
@@ -609,6 +623,8 @@ Resources:
             TableName: !Ref ChatMessagesTableName
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatSessionsTableName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
         - LambdaInvokePolicy:
             FunctionName: !Ref AgentChatProcessorFunctionArn
         - Statement:
@@ -714,14 +730,23 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Read only: where this resolver recorded owners before
+          # ChatSessionOwnersTable existed.
           CHAT_DOCUMENT_SESSIONS_TABLE: !Ref ChatDocumentSessionsTable
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          # Read to tell an unused session id from one that already has history.
+          CHAT_MESSAGES_TABLE: !Ref ChatMessagesTableName
           CHAT_DOCUMENT_PROCESSOR_FUNCTION_ARN: !Ref ChatWithDocumentProcessorFunctionArn
           DATA_RETENTION_DAYS: !Ref DataRetentionInDays
       LoggingConfig:
         LogGroup: !Ref SendChatDocumentMessageResolverFunctionLogGroup
       Policies:
-        - DynamoDBCrudPolicy:
+        - DynamoDBReadPolicy:
             TableName: !Ref ChatDocumentSessionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
+        - DynamoDBReadPolicy:
+            TableName: !Ref ChatMessagesTableName
         - Statement:
             - Effect: Allow
               Action: lambda:InvokeFunction
@@ -1106,6 +1131,416 @@ Resources:
                 StringEquals:
                   # Root-stack name via parameter (nested template).
                   cloudwatch:namespace: !Ref StackName
+
+  ##########################################################################
+  # Bulk review (bulk Skip All Reviews, its jobs, and Send to review)
+  ##########################################################################
+  BulkReviewJobDLQ:
+    Type: AWS::SQS::Queue
+    Metadata:
+      cdk_nag:
+        rules_to_suppress:
+          - id: AwsSolutions-SQS3
+            reason: "This queue is itself a DLQ - does not need its own DLQ"
+    Properties:
+      KmsMasterKeyId: !Ref CustomerManagedEncryptionKeyArn
+      VisibilityTimeout: 960
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  BulkReviewJobDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref BulkReviewJobDLQ
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 'sqs:*'
+            Resource: !GetAtt BulkReviewJobDLQ.Arn
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+  BulkReviewJobQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: !Ref CustomerManagedEncryptionKeyArn
+      # Above the worker's 900 s timeout, as an event source mapping requires.
+      VisibilityTimeout: 960
+      MessageRetentionPeriod: 345600 # 4 days
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt BulkReviewJobDLQ.Arn
+        maxReceiveCount: 5
+
+  BulkReviewJobQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref BulkReviewJobQueue
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 'sqs:*'
+            Resource: !GetAtt BulkReviewJobQueue.Arn
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+  BulkReviewResolverFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      RetentionInDays: !Ref LogRetentionDays
+
+  BulkReviewResolverFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with DynamoDB, S3, SQS and Cognito via AWS APIs"
+          - id: W92
+            reason: "Function does not require reserved concurrency as it scales with reviewer UI demand"
+          - id: W12
+            reason: "Lambda requires CloudWatch logs permissions"
+    # checkov:skip=CKV_AWS_116: "DLQ not required: invoked synchronously by the API dispatcher, which returns errors to the caller"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales with reviewer UI demand"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold only resource names, log level and stack name - no sensitive data"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      Handler: index.handler
+      Runtime: python3.12
+      CodeUri: ./src/lambda/bulk_review_resolver
+      Description: Serves bulk Skip All Reviews (dry run, inline runs, job creation and status) and Send to review
+      MemorySize: 1024
+      Timeout: 30
+      Layers:
+        - !Ref IDPCommonBaseLayerArn
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          STACK_NAME: !Ref StackName
+          METRIC_NAMESPACE: !Ref StackName
+          HITL_TABLE_NAME: !Ref HITLTableName
+          TRACKING_TABLE: !Ref TrackingTableName
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
+          USER_POOL_ID: !Ref UserPoolId
+          QUEUE_URL: !Ref DocumentQueueUrl
+          WORKING_BUCKET: !Ref WorkingBucketName
+          INPUT_BUCKET: !Ref InputBucketName
+          OUTPUT_BUCKET: !Ref OutputBucketName
+          DATA_RETENTION_IN_DAYS: !Ref DataRetentionInDays
+          JOB_QUEUE_URL: !Ref BulkReviewJobQueue
+      LoggingConfig:
+        LogGroup: !Ref BulkReviewResolverFunctionLogGroup
+      Policies:
+        - Statement:
+            # Queue items, drafts, history, claim counters, the registry, and the
+            # bulk job, result, list and lock rows.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+            # Tracking rows (the skip itself, Send to review) and the by-profile
+            # selection on the production document index.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:BatchGetItem
+                - dynamodb:Query
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}/index/TypeDateIndex"
+            # The queue directory and the active profile's hitl settings.
+            - Effect: Allow
+              Action:
+                - dynamodb:Scan
+              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
+            # Inbox producer grants (idp_common/notifications/README.md).
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}/index/UnreadIndex"
+            # Resubmissions and finalize messages on the DocumentQueue; its depth
+            # paces bulk jobs.
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:GetQueueAttributes
+              Resource: !Sub "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${DocumentQueueName}"
+            # The status object (review/), section results, and message bodies.
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*/review/*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*"
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${WorkingBucketName}/*"
+            # Claim-released notices fan out by group.
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsersInGroup
+                - cognito-idp:ListUsers
+                - cognito-idp:AdminListGroupsForUser
+              Resource: !Sub "arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}"
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Ref CustomerManagedEncryptionKeyArn
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  # Root-stack name via parameter (nested template).
+                  cloudwatch:namespace: !Ref StackName
+            # Bulk Skip All Reviews jobs above the inline limit.
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt BulkReviewJobQueue.Arn
+
+  BulkReviewWorkerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      RetentionInDays: !Ref LogRetentionDays
+
+  BulkReviewWorkerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with DynamoDB, S3, SQS and Cognito via AWS APIs"
+          - id: W92
+            reason: "Concurrency is bounded by the event source mapping's MaximumConcurrency and the job lock, not reserved concurrency"
+          - id: W12
+            reason: "Lambda requires CloudWatch logs permissions"
+    # checkov:skip=CKV_AWS_116: "SQS-triggered: failed messages are redriven to BulkReviewJobDLQ, which this function also consumes to fail the job"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_115: "Concurrency is bounded by the event source mapping's MaximumConcurrency and the job lock"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold only resource names, log level and stack name - no sensitive data"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      Handler: index.handler
+      Runtime: python3.12
+      CodeUri: ./src/lambda/bulk_review_worker
+      Description: Advances bulk Skip All Reviews jobs, paced against the document queue
+      MemorySize: 1024
+      Timeout: 900
+      Layers:
+        - !Ref IDPCommonBaseLayerArn
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          STACK_NAME: !Ref StackName
+          METRIC_NAMESPACE: !Ref StackName
+          HITL_TABLE_NAME: !Ref HITLTableName
+          TRACKING_TABLE: !Ref TrackingTableName
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
+          USER_POOL_ID: !Ref UserPoolId
+          QUEUE_URL: !Ref DocumentQueueUrl
+          WORKING_BUCKET: !Ref WorkingBucketName
+          INPUT_BUCKET: !Ref InputBucketName
+          OUTPUT_BUCKET: !Ref OutputBucketName
+          DATA_RETENTION_IN_DAYS: !Ref DataRetentionInDays
+          JOB_QUEUE_URL: !Ref BulkReviewJobQueue
+          JOB_DLQ_ARN: !GetAtt BulkReviewJobDLQ.Arn
+          MAX_CONCURRENT_WORKFLOWS: !Ref MaxConcurrentWorkflows
+          MAX_RECEIVES: "5"
+      LoggingConfig:
+        LogGroup: !Ref BulkReviewWorkerFunctionLogGroup
+      Events:
+        JobQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt BulkReviewJobQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+            ScalingConfig:
+              MaximumConcurrency: 2
+        JobDeadLetters:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt BulkReviewJobDLQ.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+            ScalingConfig:
+              MaximumConcurrency: 2
+      Policies:
+        - Statement:
+            # Queue items, drafts, history, claim counters, the registry, and the
+            # bulk job, result, list and lock rows.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+            # Tracking rows (the skip itself, Send to review) and the by-profile
+            # selection on the production document index.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:BatchGetItem
+                - dynamodb:Query
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}/index/TypeDateIndex"
+            # The queue directory and the active profile's hitl settings.
+            - Effect: Allow
+              Action:
+                - dynamodb:Scan
+              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
+            # Inbox producer grants (idp_common/notifications/README.md).
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}/index/UnreadIndex"
+            # Resubmissions and finalize messages on the DocumentQueue; its depth
+            # paces bulk jobs.
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:GetQueueAttributes
+              Resource: !Sub "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${DocumentQueueName}"
+            # The status object (review/), section results, and message bodies.
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*/review/*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*"
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${WorkingBucketName}/*"
+            # Claim-released notices fan out by group.
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsersInGroup
+                - cognito-idp:ListUsers
+                - cognito-idp:AdminListGroupsForUser
+              Resource: !Sub "arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}"
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Ref CustomerManagedEncryptionKeyArn
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  # Root-stack name via parameter (nested template).
+                  cloudwatch:namespace: !Ref StackName
+            # Its own job queue (continuations) and the dead-letter queue.
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+                - sqs:ChangeMessageVisibility
+              Resource:
+                - !GetAtt BulkReviewJobQueue.Arn
+                - !GetAtt BulkReviewJobDLQ.Arn
   CopyToBaselineResolverFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1311,6 +1746,9 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           CHAT_MESSAGES_TABLE: !Ref ChatMessagesTableName
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTableName
+          # The delete checks the session's owner the way getChatMessages does.
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          DATA_RETENTION_DAYS: !Ref DataRetentionInDays
       LoggingConfig:
         LogGroup: !Ref DeleteAgentChatSessionFunctionLogGroup
       Policies:
@@ -1318,6 +1756,8 @@ Resources:
             TableName: !Ref ChatMessagesTableName
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatSessionsTableName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
         - Statement:
             - Effect: Allow
               Action:
@@ -1618,15 +2058,40 @@ Resources:
         Variables:
           LOG_LEVEL: !Ref LogLevel
           DISCOVERY_BUCKET: !Ref DiscoveryBucketName
+          # Multi-document discovery's source is scope-checked by bucket: Input
+          # bucket prefixes through the configuration prefix mappings. Not named
+          # INPUT_BUCKET, which s3_targets reads into the upload allow-list.
+          SCOPED_SOURCE_INPUT_BUCKET: !Ref InputBucketName
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTableName
           DISCOVERY_QUEUE_URL: !Ref DiscoveryQueueUrl
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           MULTI_DOC_DISCOVERY_STATE_MACHINE_ARN: !Ref MultiDocDiscoveryStateMachineArn
           S3_ENDPOINT_URL: !If [HasS3EndpointUrl, !Ref S3EndpointUrl, !Ref AWS::NoValue]
+          # The caller's allowedConfigVersions, checked against the profile each
+          # discovery operation names.
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          GUARDRAIL_ID_AND_VERSION:
+            !If [
+              HasGuardrail,
+              !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}",
+              "",
+            ]
       LoggingConfig:
         LogGroup: !Ref DiscoveryUploadResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions.
+        # The lookup fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - Statement:
             # Configuration-profile revision bodies (config_revisions/<profile>/).
             # This function saves profiles, and a save that cannot cut a revision
@@ -1682,6 +2147,12 @@ Resources:
                 - states:StartExecution
               Resource:
                 - !Ref MultiDocDiscoveryStateMachineArn
+            - !If
+              - HasGuardrail
+              - Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${BedrockGuardrailId}"
+              - !Ref AWS::NoValue
   GetAgentChatMessagesFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1729,6 +2200,10 @@ Resources:
           # the non-streaming (GovCloud) poll path, so it verifies ownership
           # against this table too.
           CHAT_DOCUMENT_SESSIONS_TABLE: !Ref ChatDocumentSessionsTable
+          # Who each session id belongs to; the ownership check reads it and
+          # registers an owner for a session written before it existed.
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          DATA_RETENTION_DAYS: !Ref DataRetentionInDays
           # Feature flag to disable ownership enforcement in case of legacy
           # session migration. Defaults to "true" (enforce). Customers should
           # only set this to "false" temporarily during data backfill.
@@ -1745,6 +2220,8 @@ Resources:
         # Same ownership check for document-chat sessions.
         - DynamoDBReadPolicy:
             TableName: !Ref ChatDocumentSessionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
         - Statement:
             - Effect: Allow
               Action:
@@ -3650,6 +4127,7 @@ Resources:
             "getCircuitBreakerStatus": "${CircuitBreakerResolverFunctionArn}",
             "getDocumentCount": "${ListDocumentsGSIResolverFunction}",
             "getFileContents": "${GetFileContentsResolverFunction}",
+            "bulkSkipAllReviews": "${BulkReviewResolverFunction}",
             "getMyReviewQueues": "${ReviewQueuesResolverFunction}",
             "getSampleDocumentUrl": "${GetSampleDocumentResolverFunction}",
             "getStepFunctionExecution": "${GetStepFunctionExecutionResolverFunction}",
@@ -3668,6 +4146,7 @@ Resources:
             "uploadDocument": "${UploadResolverFunction}",
             "claimReview": "${CompleteSectionReviewFunctionArn}",
             "createUser": "${UserManagementFunctionArn}",
+            "listMcpCredentials": "${McpCredentialManagerFunctionArn}",
             "createFinetuningJob": "${FinetuningJobsResolverFunctionArn}",
             "calculateCapacity": "${CalculateCapacityResolverFunctionArn}",
             "getLatestPublishedVersion": "${VersionCheckResolverFunctionArn}",

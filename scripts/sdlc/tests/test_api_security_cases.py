@@ -2077,3 +2077,129 @@ class TestReviewSeeding:
         emails = self._emails()
         assert definition.allows(emails["ReviewIdorB"])
         assert not definition.allows(emails["ReviewIdorC"])
+
+
+# --- chat session IDOR -------------------------------------------------------
+
+
+def _chat_world(*, fixed=True, owner_reads=True, stream=True):
+    """Fakes for a deployment that does or does not keep B out of A's session.
+
+    ``fixed=False`` is the shape before the owner table: B's message under A's id
+    is accepted and creates B's own row, after which B reads A's history and B's
+    delete removes it.
+    """
+    state = {"b_has_row": False, "deleted": False, "marker": None}
+
+    def seed(session_id, marker):
+        state["marker"] = marker
+        return True
+
+    def call_body(_api, field, args, token):
+        b = token == "tok-b"
+        history = "" if state["deleted"] else state["marker"]
+        if field == "getChatMessages":
+            if b and (fixed or not state["b_has_row"]):
+                return 403, '{"errors":[{"errorType":"Unauthorized"}]}'
+            if not b and not owner_reads:
+                return 200, "[]"
+            return 200, f'[{{"content":"{history}"}}]'
+        if field == "sendAgentChatMessage":
+            if fixed:
+                return 403, '{"errors":[{"errorType":"Unauthorized"}]}'
+            state["b_has_row"] = True
+            return 200, '{"role":"user"}'
+        if field == "deleteChatSession":
+            if fixed or not state["b_has_row"]:
+                return 403, '{"errors":[{"errorType":"Unauthorized"}]}'
+            state["deleted"] = True
+            return 200, "true"
+        raise AssertionError(field)
+
+    def stream_fn(path, body, token):
+        if not stream:
+            return None
+        if token is None:
+            return (401, "unauthorized") if fixed else (200, "data: {}\n\n")
+        if fixed:
+            return 403, "belongs to another user"
+        return 200, f'data: {{"content":"{state["marker"]}"}}\n\n'
+
+    return seed, call_body, stream_fn
+
+
+def _run_chat(**world):
+    rec = _Recorder()
+    seed, call_body, stream_fn = _chat_world(**world)
+    sec.run_chat_session_idor_suite(
+        CTX,
+        rec,
+        [],
+        {"Admin": "tok-a", "userB": "tok-b"},
+        seed_fn=seed,
+        call_body=call_body,
+        stream_fn=stream_fn,
+    )
+    return rec
+
+
+def test_chat_idor_passes_where_b_is_kept_out_on_both_paths():
+    rec = _run_chat(fixed=True)
+    assert rec.rows and all(r["passed"] for r in rec.rows), [
+        (r["op"], r["principal"], r["detail"]) for r in rec.rows if not r["passed"]
+    ]
+    assert len(rec.rows) == 8
+
+
+def test_chat_idor_fails_where_a_message_opens_the_history():
+    rec = _run_chat(fixed=False)
+    failed = {(r["op"], r["principal"]) for r in rec.rows if not r["passed"]}
+    assert ("sendAgentChatMessage", "userB(sends into A's session)") in failed
+    assert ("getChatMessages", "userB(reads A's session after sending)") in failed
+    assert ("deleteChatSession", "userB(deletes A's session)") in failed
+    assert ("getChatMessages", "userA(reads own session)") in failed
+    assert ("POST /chat/agent", "no-id-token") in failed
+    assert ("POST /chat/agent", "userB(A's session, body callerSub=A)") in failed
+    # The first read happens before B's message and is refused even here.
+    assert ("getChatMessages", "userB(reads A's session)") not in failed
+
+
+def test_chat_idor_retracts_the_reads_when_the_owner_cannot_read_the_seed():
+    rec = _run_chat(fixed=True, owner_reads=False)
+    assert rec.outcomes("userB(reads A's session)") == ["SKIP"]
+    assert rec.outcomes("chat-idor-inconclusive") == ["SKIP"]
+
+
+def test_chat_idor_skips_the_stream_cells_without_a_streaming_endpoint():
+    rec = _run_chat(fixed=True, stream=False)
+    stream_rows = [r for r in rec.rows if r["op"].startswith("POST /chat/")]
+    assert len(stream_rows) == 3
+    assert all(r["outcome"] == "SKIP" for r in stream_rows)
+
+
+def test_chat_idor_skips_without_a_seed():
+    rec = _Recorder()
+    sec.run_chat_session_idor_suite(
+        CTX,
+        rec,
+        [],
+        {"Admin": "tok-a", "userB": "tok-b"},
+        seed_fn=lambda sid, marker: None,
+        call_body=lambda *a: (200, ""),
+    )
+    assert rec.outcomes("chat-idor-seed") == ["SKIP"]
+    assert len(rec.rows) == 1
+
+
+def test_chat_idor_a_dead_connection_is_inconclusive_not_a_pass():
+    rec = _Recorder()
+    sec.run_chat_session_idor_suite(
+        CTX,
+        rec,
+        [],
+        {"Admin": "tok-a", "userB": "tok-b"},
+        seed_fn=lambda sid, marker: True,
+        call_body=lambda *a: (0, "<request error: timed out>"),
+    )
+    (row,) = rec.by_principal("userB(reads A's session)")
+    assert row["outcome"] == "ERROR" and not row["passed"]

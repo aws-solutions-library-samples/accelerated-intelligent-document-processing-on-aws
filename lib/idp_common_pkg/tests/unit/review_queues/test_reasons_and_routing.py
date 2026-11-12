@@ -467,7 +467,12 @@ class TestRouteForReview:
 
     @pytest.mark.parametrize(
         ("disposition", "outcome"),
-        [("rejected", "rejected"), ("removed", "complete"), ("complete", "complete")],
+        [
+            ("rejected", "rejected"),
+            ("removed", "complete"),
+            ("skipped", "complete"),
+            ("complete", "complete"),
+        ],
     )
     def test_the_finalize_run_of_a_disposed_item_is_recognised(
         self, disposition, outcome, monkeypatch

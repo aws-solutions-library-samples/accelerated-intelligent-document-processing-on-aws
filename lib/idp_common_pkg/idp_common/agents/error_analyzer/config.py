@@ -66,10 +66,25 @@ def get_error_analyzer_model_id() -> str:
     except Exception as e:
         logger.warning(f"Failed to load model ID from configuration: {e}")
 
-        # Final fallback to default
-        default_model_id = "us.anthropic.claude-sonnet-4-6"
+        default_model_id = default_error_analyzer_model_id()
         logger.info(f"Using default error analyzer model ID: {default_model_id}")
         return default_model_id
+
+
+def default_error_analyzer_model_id() -> str:
+    """The error analyzer's model when its configuration cannot be read.
+
+    ``ErrorAnalyzerConfig.model_id``'s declared default, which equals what
+    ``base-agents.yaml`` ships and which
+    ``tests/unit/agents/test_common_config.py`` holds equal to
+    :data:`~idp_common.regional_models.SONNET_4_6_MODEL_ID`, translated to the
+    stack's Region (see
+    :func:`idp_common.agents.common.config._default_agent_model_id`).
+    """
+    from ...regional_models import SONNET_4_6_MODEL_ID, regional_default
+    from ..common.config import stack_region
+
+    return regional_default(SONNET_4_6_MODEL_ID, stack_region())
 
 
 def get_aws_service_capabilities() -> Dict[str, Any]:

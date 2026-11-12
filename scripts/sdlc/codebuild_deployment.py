@@ -5083,6 +5083,9 @@ def _primary_param_pairs(permissions_boundary_arn, malware_mode):
         # Must equal the service role's CreatedRolePermissionsBoundaryArn.
         f"PermissionsBoundaryArn={permissions_boundary_arn}",
         f"MalwareScanning={malware_mode}",
+        # MCP is off by default, and the deploy path's MCP resources (gateway,
+        # interceptor, credential registry) are exercised only if it is on.
+        "EnableMCP=true",
     ]
 
 
@@ -9342,8 +9345,9 @@ def validate_apigw_global_hosting(stack_name):
     if csp.startswith("'"):
         # The other half of the same mis-parse: API Gateway left the *outer*
         # quotes on, so the first directive reads `'script-src` and browsers
-        # discard it. With no `default-src` in this policy, discarding the first
-        # directive voids the protection while the header still looks present.
+        # discard it. script-src then falls back to `default-src 'self'`, which
+        # blocks the Monaco loader and inline script, while the header still
+        # looks present.
         # Only the LEADING quote is checked: a policy legitimately ends with one
         # whenever its last source is a keyword (`frame-ancestors 'none'`).
         return {

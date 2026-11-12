@@ -811,16 +811,13 @@ class TestMergedPricing:
         assert merged is not None
         assert merged.pricing[0].units[0].price == "9.9"
 
-    def test_a_partial_custom_list_replaces_the_default_list_wholesale(
-        self, monkeypatch
-    ):
-        """Pinned behaviour, and a sharp edge worth knowing.
+    def test_a_partial_custom_list_is_laid_over_the_defaults_per_row(self, monkeypatch):
+        """A custom record naming one service leaves every other default priced.
 
-        `deep_update` assigns lists rather than merging them, so CustomPricing
-        is a full replacement of `pricing` despite the docstring calling it
-        "deltas". A custom record naming one service drops the price of every
-        other service, and the cost report then records those services as
-        unpriced (NULL) rather than costing them.
+        The list used to be assigned wholesale by `deep_update`, so this record
+        dropped `textract/a`'s price and the cost report recorded it as unpriced
+        (#1886). `test_pricing_row_merge.py` covers the rule against the shipped
+        table.
         """
         _make_table()
         manager = _manager(monkeypatch)
@@ -833,13 +830,15 @@ class TestMergedPricing:
         merged = manager.get_merged_pricing()
 
         assert merged is not None
-        assert [e.name for e in merged.pricing] == ["bedrock/b"]
-        assert "textract/a" not in [e.name for e in merged.pricing]
+        assert [(e.name, e.units[0].price) for e in merged.pricing] == [
+            ("textract/a", "1.5"),
+            ("bedrock/b", "0.9"),
+        ]
 
-    def test_an_empty_custom_pricing_record_erases_all_default_prices(
+    def test_an_empty_custom_pricing_record_leaves_the_defaults_in_force(
         self, monkeypatch
     ):
-        """An empty CustomPricing is not the same as no CustomPricing."""
+        """An empty CustomPricing overrides nothing, so it is the defaults."""
         _make_table()
         manager = _manager(monkeypatch)
         manager.save_configuration(
@@ -850,7 +849,9 @@ class TestMergedPricing:
         merged = manager.get_merged_pricing()
 
         assert merged is not None
-        assert merged.pricing == []
+        assert [(e.name, e.units[0].price) for e in merged.pricing] == [
+            ("textract/a", "1.5")
+        ]
 
     def test_the_merge_is_a_new_object_and_writes_nothing_back(self, monkeypatch):
         """Reading the effective pricing must be a pure read.

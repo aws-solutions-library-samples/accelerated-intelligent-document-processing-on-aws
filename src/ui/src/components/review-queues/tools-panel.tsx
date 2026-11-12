@@ -4,33 +4,18 @@
 // The info panels (the right-hand panel the info icon opens) of Review Studio › Review Management
 // and of a queue's page, Production or Test Studio.
 import React from 'react';
-import { HelpPanel, Icon } from '@cloudscape-design/components';
+import { HelpPanel } from '@cloudscape-design/components';
 
-import { DOCS_BASE_URL } from '../../constants/github';
+import LearnMoreLinks from '../common/LearnMoreLinks';
 
 const LearnMore = (): React.JSX.Element => (
-  <div>
-    <h3>
-      Learn more <Icon name="external" />
-    </h3>
-    <ul>
-      <li>
-        <a href={`${DOCS_BASE_URL}/review-queues/`} target="_blank" rel="noopener noreferrer">
-          Review queues
-        </a>
-      </li>
-      <li>
-        <a href={`${DOCS_BASE_URL}/human-review/`} target="_blank" rel="noopener noreferrer">
-          Human review
-        </a>
-      </li>
-      <li>
-        <a href={`${DOCS_BASE_URL}/test-studio/`} target="_blank" rel="noopener noreferrer">
-          Test Studio
-        </a>
-      </li>
-    </ul>
-  </div>
+  <LearnMoreLinks
+    links={[
+      { text: 'Review queues', docsPath: 'review-queues/' },
+      { text: 'Human review', docsPath: 'human-review/' },
+      { text: 'Test Studio', docsPath: 'test-studio/' },
+    ]}
+  />
 );
 
 export const ReviewManagementToolsPanel = (): React.JSX.Element => (

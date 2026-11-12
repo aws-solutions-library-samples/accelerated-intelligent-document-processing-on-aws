@@ -14,7 +14,8 @@
 
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { act, render } from '@testing-library/react';
+import { act } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 
 interface ListedVersion {
   versionName: string;
@@ -114,7 +115,7 @@ describe('DocumentPanel — a scoped caller', () => {
   it('reads only the profile the document was processed with, never default', async () => {
     scopedTo(['tenant-a_*']);
     state.versions = [{ versionName: 'tenant-a_prod' }];
-    render(<DocumentPanel item={documentWith('tenant-a_prod')} />);
+    renderWithIntl(<DocumentPanel item={documentWith('tenant-a_prod')} />);
     await settle();
 
     expect(requestedProfiles()).toEqual(['tenant-a_prod']);
@@ -125,7 +126,7 @@ describe('DocumentPanel — a scoped caller', () => {
 describe('DocumentPanel — an unscoped caller', () => {
   it('reads default once for a document that names no profile, and uses it', async () => {
     state.versions = [{ versionName: 'default' }, { versionName: 'lending', isActive: true }];
-    render(<DocumentPanel item={documentWith(undefined)} />);
+    renderWithIntl(<DocumentPanel item={documentWith(undefined)} />);
     await settle();
 
     expect(requestedProfiles()).toEqual(['default']);
@@ -134,7 +135,7 @@ describe('DocumentPanel — an unscoped caller', () => {
 
   it('reads default alongside the profile the document names', async () => {
     state.versions = [{ versionName: 'default' }, { versionName: 'lending', isActive: true }];
-    render(<DocumentPanel item={documentWith('lending')} />);
+    renderWithIntl(<DocumentPanel item={documentWith('lending')} />);
     await settle();
 
     expect(requestedProfiles()).toEqual(['default', 'lending']);

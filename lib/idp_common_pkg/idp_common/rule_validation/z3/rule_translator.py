@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
+from idp_common.bedrock.guardrail import guardrail_invoke_model_params
+
 from .config_loader import ConfigLoader
 from .exceptions import TranslationError
 from .models import Parameter, PathMapping, RuleJSON
@@ -527,6 +529,9 @@ Do not extract paths from the data structure.
                     body=json.dumps(request_body),
                     contentType="application/json",
                     accept="application/json",
+                    # The guardrail in GUARDRAIL_ID_AND_VERSION, when configured;
+                    # an empty dict otherwise, which leaves the request unchanged.
+                    **guardrail_invoke_model_params(),
                 )
 
                 # Parse response

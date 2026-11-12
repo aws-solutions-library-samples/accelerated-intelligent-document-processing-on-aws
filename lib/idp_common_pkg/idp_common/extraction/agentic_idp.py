@@ -42,6 +42,7 @@ from strands.types.media import (
     ImageSource,
 )
 
+from idp_common.agents.common.strands_bedrock_model import strands_guardrail_kwargs
 from idp_common.bedrock.client import (
     ASTRA_EFFORT_LEVELS,
     CACHEPOINT_SUPPORTED_MODELS,
@@ -69,6 +70,7 @@ from idp_common.utils.bedrock_utils import (
     async_exponential_backoff_retry,
     is_max_tokens_agent_error,
 )
+from idp_common.utils.metering import attach_failure_metering
 from idp_common.utils.strands_agent_tools.todo_list import (
     create_todo_list,
     update_todo,
@@ -1281,6 +1283,40 @@ def _accumulate_token_usage(response: Any, token_usage: dict[str, int]) -> None:
     if response and response.metrics and response.metrics.accumulated_usage:
         for key in token_usage.keys():
             token_usage[key] += response.metrics.accumulated_usage.get(key, 0)
+
+
+def _agent_run_metering(
+    agent: Any, context: str, model_id: str
+) -> dict[str, "BedrockUsage"]:
+    """The metering of every model call ``agent`` has completed, or ``{}``.
+
+    Read from ``agent.event_loop_metrics.accumulated_usage``. Strands adds a model
+    call's usage there as soon as the response has been received, before it
+    inspects the stop reason, so a call that ended in ``max_tokens`` is in it. The
+    total spans every ``invoke_async`` on the agent: a new invocation appends an
+    ``AgentInvocation`` record but does not reset the accumulated total. So one
+    reading covers every feedback round and every resumed retry, and it is read
+    exactly once per run — adding readings together would count earlier calls
+    twice. A call that raised before returning a response recorded nothing, and
+    nothing is invented for it.
+
+    This is the same total the success path reads off the ``AgentResult``, whose
+    ``metrics`` is this same ``EventLoopMetrics`` object, and it is keyed the same
+    way, so a run's usage reads identically whether or not it produced an
+    extraction.
+    """
+    metrics = getattr(agent, "event_loop_metrics", None)
+    usage = getattr(metrics, "accumulated_usage", None)
+    if not isinstance(usage, dict):
+        return {}
+    token_usage = _initialize_token_usage()
+    for key in token_usage:
+        token_usage[key] += usage.get(key, 0) or 0
+    if not any(token_usage.values()):
+        return {}
+    return {
+        f"{context}/bedrock/{metering_model_id(model_id)}": BedrockUsage(**token_usage)
+    }
 
 
 def _build_system_prompt(
@@ -2539,6 +2575,11 @@ async def structured_output_async(
         model=BedrockModel(
             **model_config,
             **inference_params,
+            # The guardrail in GUARDRAIL_ID_AND_VERSION, when one is configured.
+            # This model is built here rather than by create_strands_bedrock_model
+            # because its boto config, session and request fields are its own;
+            # the guardrail must still reach it like every other model call.
+            **strands_guardrail_kwargs(),
         ),  # pyright: ignore[reportArgumentType]
         tools=tools,
         system_prompt=_build_system_prompt_content(
@@ -2606,14 +2647,21 @@ async def structured_output_async(
             extra={"buffer_summary": buffer_summary},
         )
 
-    response, result = await _invoke_agent_for_extraction(
-        agent=agent,
-        prompt_content=prompt_content,
-        data_format=data_format,
-        max_extraction_retries=3,
-        schema_validator=schema_validator,
-        model_id=model_id,
-    )
+    try:
+        response, result = await _invoke_agent_for_extraction(
+            agent=agent,
+            prompt_content=prompt_content,
+            data_format=data_format,
+            max_extraction_retries=3,
+            schema_validator=schema_validator,
+            model_id=model_id,
+        )
+    except Exception as e:
+        # Throttle exhaustion, an invalid tool-use sequence, a context overflow, an
+        # unsalvageable max_tokens stop: every one of them can come after turns the
+        # model already answered and Bedrock already billed (#1923).
+        attach_failure_metering(e, _agent_run_metering(agent, context, model_id))
+        raise
 
     # Accumulate token usage
     _accumulate_token_usage(response, token_usage)
@@ -2708,7 +2756,10 @@ async def structured_output_async(
         "Failed to extract structured data",
         extra={"data_format": data_format.__name__},
     )
-    raise ValueError("Failed to generate valid structured output.")
+    raise attach_failure_metering(
+        ValueError("Failed to generate valid structured output."),
+        _agent_run_metering(agent, context, model_id),
+    )
 
 
 def structured_output(

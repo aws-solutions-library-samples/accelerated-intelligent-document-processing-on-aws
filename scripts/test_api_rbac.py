@@ -29,7 +29,8 @@ WHAT IT CHECKS
                                  mutation args is fine — proves auth passed)
   * IAM-only backend ops       -> 403 for every Cognito role
   * config-version scope       -> a scoped Author is denied an out-of-scope
-                                 version (in-band Unauthorized) and Admin is not
+                                 version (in-band Unauthorized) and Admin is not;
+                                 the discovery operations refuse it (403)
   * token negatives            -> tampered / wrong-issuer / no-token -> 401
 
 SAFETY
@@ -156,6 +157,28 @@ TEST_PW = "Aa1!" + secrets.token_urlsafe(24)
 SCOPE_VERSION = "rbac-test-scope-v1"  # a version the scoped user is limited to
 OUT_OF_SCOPE_VERSION = "default"  # exists, but outside the scoped user's set
 
+#: Discovery operations the scope suite drives with the scoped Author against
+#: OUT_OF_SCOPE_VERSION. Each must refuse (403) before doing any work.
+SCOPED_DISCOVERY_CELLS = (
+    (
+        "startMultiDocDiscovery",
+        {"configVersion": OUT_OF_SCOPE_VERSION, "zipFileName": "rbac-scope-probe.zip"},
+    ),
+    (
+        "uploadMultiDocDiscoveryZip",
+        {"fileName": "rbac-scope-probe.zip", "fileSize": 1,
+         "configVersion": OUT_OF_SCOPE_VERSION},
+    ),
+    (
+        "uploadDiscoveryDocument",
+        # No bucket: the scope check runs before the bucket is read, and a bucket
+        # outside the allow-list would be refused by THAT check in either build,
+        # which would make the cell pass for the wrong reason.
+        {"fileName": "rbac-scope-probe.pdf", "contentType": "application/pdf",
+         "version": OUT_OF_SCOPE_VERSION, "skipJobCreation": True},
+    ),
+)
+
 ANY = "ANY"
 IAM = "IAM_ONLY"
 # Resolved to the stack's group names by _resolve_any_group before the matrix
@@ -242,6 +265,8 @@ OPERATION_ENTRY_KEYS = frozenset(
         "alias_of",
         "args",
         "conditional",
+        # Read by scan_api_rbac.py (S10), like testset_checked below.
+        "document_scope_checked",
         "enforced_in",
         "groups",
         "kind",
@@ -258,6 +283,9 @@ OPERATION_ENTRY_KEYS = frozenset(
         "scope_enforced_in",
         "scope_filtered",
         "skip_allowed",
+        # Read by scan_api_rbac.py (S10): a document key governed by the test-set
+        # scope rather than the profile scope.
+        "testset_checked",
     }
 )
 
@@ -1019,6 +1047,227 @@ def cleanup_seeded_agent_jobs(ctx):
             )
         except Exception:  # noqa: BLE001
             pass
+
+
+def _stack_resource(ctx, logical):
+    """Physical id of a resource in the parent stack, or "" (cached on ctx)."""
+    cache = ctx.setdefault("_stack_resources", {})
+    if logical not in cache:
+        try:
+            cache[logical] = aws(
+                "cloudformation",
+                "list-stack-resources",
+                "--stack-name",
+                ctx["stack"],
+                "--query",
+                f"StackResourceSummaries[?LogicalResourceId=='{logical}']"
+                ".PhysicalResourceId",
+                "--output",
+                "text",
+                region=ctx["region"],
+            )
+        except Exception:  # noqa: BLE001
+            cache[logical] = ""
+    return cache[logical] or ""
+
+
+def _jwt_claims(token):
+    """The payload of one of this harness's own tokens. Not verified: it is ours."""
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload))
+
+
+def seed_chat_session(ctx, session_id, marker, owner_token):
+    """Seed a chat session OWNED BY the Admin test user, for the chat IDOR suite.
+
+    Writes what a first message from the owner writes: the owner row
+    (ChatSessionOwnersTable, ownerSub = the owner's Cognito sub), the owner's
+    session-list row (ChatSessionsTable, keyed by email as identity.username is)
+    and one message carrying ``marker`` (ChatMessagesTable, PK = session id).
+    Returns True, or None when the stack predates the owner table (-> SKIP).
+    """
+    owners = _stack_resource(ctx, "ChatSessionOwnersTable")
+    sessions = _stack_resource(ctx, "ChatSessionsTable")
+    messages = _stack_resource(ctx, "ChatMessagesTable")
+    if not (owners and sessions and messages):
+        return None
+    claims = _jwt_claims(owner_token)
+    owner_email = claims.get("email") or test_email("Admin")
+    ctx["chat_idor_owner_email"] = owner_email
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime())
+    expires = str(int(time.time()) + 86400)
+    items = [
+        (
+            owners,
+            {
+                "sessionId": {"S": session_id},
+                "ownerSub": {"S": claims["sub"]},
+                "ExpiresAfter": {"N": expires},
+            },
+        ),
+        (
+            sessions,
+            {
+                "userId": {"S": owner_email},
+                "sessionId": {"S": session_id},
+                "title": {"S": "rbac chat idor probe"},
+                "messageCount": {"N": "1"},
+                "ExpiresAfter": {"N": expires},
+            },
+        ),
+        (
+            messages,
+            {
+                "PK": {"S": session_id},
+                "SK": {"S": ts},
+                "role": {"S": "user"},
+                "content": {"S": marker},
+                "timestamp": {"S": ts},
+                "isProcessing": {"BOOL": False},
+                "ExpiresAfter": {"N": expires},
+            },
+        ),
+    ]
+    try:
+        for table, item in items:
+            aws(
+                "dynamodb",
+                "put-item",
+                "--table-name",
+                table,
+                "--item",
+                json.dumps(item),
+                region=ctx["region"],
+            )
+    except Exception as e:  # noqa: BLE001
+        print(f"  (seed_chat_session failed: {e})")
+        cleanup_chat_session(ctx, session_id)
+        return None
+    return True
+
+
+def cleanup_chat_session(ctx, session_id):
+    """Remove everything the chat IDOR suite seeded or caused (best-effort)."""
+    owners = _stack_resource(ctx, "ChatSessionOwnersTable")
+    sessions = _stack_resource(ctx, "ChatSessionsTable")
+    messages = _stack_resource(ctx, "ChatMessagesTable")
+
+    def _delete(table, key):
+        if not table:
+            return
+        try:
+            aws(
+                "dynamodb",
+                "delete-item",
+                "--table-name",
+                table,
+                "--key",
+                json.dumps(key),
+                region=ctx["region"],
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    _delete(owners, {"sessionId": {"S": session_id}})
+    for user in ("Admin", USER_B):
+        _delete(
+            sessions,
+            {"userId": {"S": test_email(user)}, "sessionId": {"S": session_id}},
+        )
+    if not messages:
+        return
+    try:
+        listed = aws(
+            "dynamodb",
+            "query",
+            "--table-name",
+            messages,
+            "--key-condition-expression",
+            "PK = :s",
+            "--expression-attribute-values",
+            json.dumps({":s": {"S": session_id}}),
+            "--projection-expression",
+            "PK, SK",
+            "--output",
+            "json",
+            region=ctx["region"],
+        )
+        for item in json.loads(listed or "{}").get("Items", []):
+            _delete(messages, {"PK": item["PK"], "SK": item["SK"]})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def stream_post(ctx, path, body, id_token, signer_token):
+    """POST to the chat Function URL as a signed-in browser would.
+
+    Signs with SigV4 using Identity Pool credentials obtained for
+    ``signer_token`` (so the request passes the Function URL's IAM check) and
+    sends ``id_token`` in the ``x-idp-id-token`` header, or no such header when it
+    is None. Returns ``(status, body)``, or None when the stack has no streaming
+    endpoint (GovCloud, or tenant isolation with the stream URL withheld).
+    """
+    import boto3
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    from botocore.credentials import Credentials
+
+    if "_stream_url" not in ctx:
+        function = _stack_resource(ctx, "ChatStreamProcessorFunction")
+        url = ""
+        if function:
+            try:
+                url = aws(
+                    "lambda",
+                    "get-function-url-config",
+                    "--function-name",
+                    function,
+                    "--query",
+                    "FunctionUrl",
+                    "--output",
+                    "text",
+                    region=ctx["region"],
+                )
+            except Exception:  # noqa: BLE001
+                url = ""
+        ctx["_stream_url"] = (url or "").rstrip("/")
+    if not ctx["_stream_url"]:
+        return None
+    identity_pool = _stack_resource(ctx, "IdentityPool")
+    if not identity_pool:
+        return None
+    provider = f"cognito-idp.{ctx['region']}.amazonaws.com/{ctx['user_pool']}"
+    cognito = boto3.client("cognito-identity", region_name=ctx["region"])
+    logins = {provider: signer_token}
+    identity_id = cognito.get_id(IdentityPoolId=identity_pool, Logins=logins)[
+        "IdentityId"
+    ]
+    creds = cognito.get_credentials_for_identity(
+        IdentityId=identity_id, Logins=logins
+    )["Credentials"]
+    payload = json.dumps(body).encode()
+    headers = {"content-type": "application/json"}
+    if id_token:
+        headers["x-idp-id-token"] = id_token
+    request = AWSRequest(
+        method="POST", url=f"{ctx['_stream_url']}{path}", data=payload, headers=headers
+    )
+    SigV4Auth(
+        Credentials(creds["AccessKeyId"], creds["SecretKey"], creds["SessionToken"]),
+        "lambda",
+        ctx["region"],
+    ).add_auth(request)
+    req = urllib.request.Request(
+        request.url, data=payload, method="POST", headers=dict(request.headers)
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:  # nosec B310 - the stack's own chat Function URL
+            return r.status, r.read(65536).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(65536).decode("utf-8", "replace")
+    except Exception as e:  # noqa: BLE001
+        return 0, f"<request error: {e}>"
 
 
 def _notifications_table_name(ctx):
@@ -1928,19 +2177,20 @@ def run_group_matrix(ops, ctx, tokens, results, skip_fields=frozenset()):
                 )
                 print(f"  {field:28s} SKIP (circuit breaker disabled)")
                 continue
-        if cond == "feature_platform":
+        if cond in ("feature_platform", "mcp"):
             st, et, *_ = call(ctx["api_base"], field, o["args"], tokens["Admin"])
             if _is_feature_absent_404(st, et):
+                what = "feature platform" if cond == "feature_platform" else "MCP"
                 _record(
                     results,
                     field,
                     "*",
                     "SKIP",
                     False,
-                    "feature platform disabled (404 for all)",
+                    f"{what} disabled (404 for all)",
                     outcome="SKIP",
                 )
-                print(f"  {field:28s} SKIP (feature platform disabled)")
+                print(f"  {field:28s} SKIP ({what} disabled)")
                 continue
 
         cells = [field]
@@ -2068,6 +2318,41 @@ def run_scope_suite(ctx, tokens, results):
         f"  scoped Author getConfigVersion('{OUT_OF_SCOPE_VERSION}') -> "
         f"{st}/{et or ib} ({'OK denied' if denied else 'LEAK'})"
     )
+
+    # The discovery operations name a profile too, and save into it. Each cell asks
+    # for the out-of-scope profile; before these operations were scope-checked,
+    # startMultiDocDiscovery and uploadDiscoveryDocument answered 400 ("the default
+    # profile is read-only") and uploadMultiDocDiscoveryZip 200 with an upload URL,
+    # so every cell fails on a stack without the check. The arguments
+    # are chosen so that no job starts and nothing is uploaded either way:
+    # skipJobCreation keeps uploadDiscoveryDocument to a presign, and no zip is ever
+    # PUT to the URL uploadMultiDocDiscoveryZip returns. autoDetectSections is not
+    # probed here: refusing it needs a real allow-listed bucket, and with an empty
+    # one the resolver answers 400 before the scope check in both builds. Its check
+    # is covered by discovery_upload_resolver/test_profile_scope.py.
+    for field, arguments in SCOPED_DISCOVERY_CELLS:
+        st, et, ib, rid = call(ctx["api_base"], field, arguments, tokens["scoped"])
+        why = inconclusive(st, et)
+        denied = (not why) and (
+            et == "Unauthorized" or ib == "Unauthorized" or st == 403
+        )
+        _record(
+            results,
+            field,
+            "scoped(out-of-scope)",
+            st,
+            denied,
+            f"INCONCLUSIVE: {why}" if why else f"expect denial; got {st}/{et}/{ib}",
+            et,
+            ib,
+            rid,
+            gap=_inconclusive_gap(st) if why else None,
+            outcome="ERROR" if why else None,
+        )
+        print(
+            f"  scoped Author {field}('{OUT_OF_SCOPE_VERSION}') -> "
+            f"{st}/{et or ib} ({'OK denied' if denied else 'NOT REFUSED'})"
+        )
 
     # Admin asks for the same version -> must NOT be denied
     st, et, ib, rid = call(
@@ -2684,6 +2969,35 @@ def _run_token_lifecycle(ctx, results):
 # ----------------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------------
+def _run_mcp_suite(ctx, tokens, results):
+    """The MCP cells (scripts/api_rbac_mcp.py), with this harness's role users."""
+    import api_rbac_mcp
+    import yaml
+
+    with EXPECTATIONS_PATH.open() as fh:
+        mcp_tools = yaml.safe_load(fh).get("mcp_tools") or {}
+    api_rbac_mcp.run_mcp_suite(
+        ctx,
+        _record,
+        results,
+        mcp_tools,
+        [*MATRIX_PRINCIPALS, SCOPED],
+        test_email,
+        TEST_PW,
+        live_object_key=resolve_document_object_key(ctx, tokens),
+        scoped_principal=SCOPED,
+    )
+    api_rbac_mcp.run_credential_cells(
+        ctx,
+        _record,
+        results,
+        tokens["Admin"],
+        call_body,
+        scope_version=SCOPE_VERSION,
+        live_object_key=resolve_document_object_key(ctx, tokens),
+    )
+
+
 def main():
     ap = argparse.ArgumentParser(description="Live RBAC/auth test for the IDP API.")
     ap.add_argument("--stack-name", required=True)
@@ -2743,6 +3057,7 @@ def main():
         run_scope_suite(ctx, tokens, results)
         run_document_bytes_scope_suite(ctx, tokens, results)
         run_token_negatives(ctx, tokens, results)
+        _run_mcp_suite(ctx, tokens, results)
 
         # --- Mandatory security-focused test cases (checklist 2.1-4) ---------
         # These run AFTER the RBAC matrix. The logout test globally signs out a
@@ -2771,6 +3086,22 @@ def main():
             seed_fn=lambda: seed_review_item(ctx),
             call_body=call_body,
             cleanup_fn=lambda seeded: cleanup_review_item(ctx, seeded),
+        )
+        sec.run_chat_session_idor_suite(
+            ctx,
+            _record,
+            results,
+            tokens,
+            seed_fn=lambda sid, marker: seed_chat_session(
+                ctx, sid, marker, tokens["Admin"]
+            ),
+            call_body=call_body,
+            # Every request is signed with User B's own Identity Pool credentials,
+            # so the IAM check passes and what is measured is the endpoint's own.
+            stream_fn=lambda path, body, token: stream_post(
+                ctx, path, body, token, tokens["userB"]
+            ),
+            cleanup_fn=lambda sid: cleanup_chat_session(ctx, sid),
         )
         sec.run_deleted_resource_suite(
             ctx, call, _record, results, tokens, call_body=call_body
