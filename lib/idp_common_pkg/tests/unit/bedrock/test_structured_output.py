@@ -564,6 +564,36 @@ class TestCapabilityGate:
         with patch.object(client_mod, "_OUTPUT_CONFIG_IN_BOTOCORE", None):
             assert client_mod._botocore_supports_output_config() is True
 
+    def test_the_config_ui_lists_exactly_the_supported_models(self):
+        """The Web UI's setting description names the models it works with, so a
+        user can tell from the editor whether their extraction model qualifies.
+        Derived from the gate's own allowlist in both directions: a model added to
+        the gate but not the description, or named in the description but not
+        allowed by the gate, fails here."""
+        import re
+
+        text = _TEMPLATE.read_text()
+        start = text.index("sectionLabel: Structured Outputs (experimental)")
+        block = text[start : text.index("multi_instance_detection:", start)]
+        assert block
+
+        def human(base: str) -> str:
+            family, *ver = base.removeprefix("anthropic.claude-").split("-")
+            version = ".".join(v for v in ver if len(v) <= 2)
+            return f"{family.capitalize()} {version}"
+
+        expected = {human(b) for b in STRUCTURED_OUTPUT_BASE_NAMES}
+        assert len(expected) == len(STRUCTURED_OUTPUT_BASE_NAMES)
+        for name in expected:
+            assert re.search(rf"\b{re.escape(name)}(?![.\d])", block), name
+        named = {
+            f"{f} {v}"
+            for f, v in re.findall(
+                r"\b(Haiku|Sonnet|Opus|Fable)\s+(\d+(?:\.\d+)?)", block
+            )
+        }
+        assert named == expected
+
     def test_base_names_are_anthropic(self):
         assert STRUCTURED_OUTPUT_BASE_NAMES
         assert all(
