@@ -518,8 +518,11 @@ extraction:
 > `list_batch_size` is the one knob. Any leftover `granular.*` keys still validate
 > but are ignored — no config edit required.
 
-**For large documents**, prefer **Advanced (agentic) extraction** — it shards both
-extraction and confidence assessment and yields the best-calibrated confidence.
+**For sections that can hold more than about 400 list rows**, prefer **Advanced
+(agentic) extraction** — it shards both extraction and confidence assessment, and on
+the v0.6.14 benchmark it returned every row where Simple mode returned part of an
+800-row list on 8 of 13 runs at the shipped default
+([config-guidance §5.5](./benchmarking/config-guidance.md#55-recommendations-by-document-profile)).
 
 ### Classification confidence (`classification.combined.llm.confidence.*`)
 

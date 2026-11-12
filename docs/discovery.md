@@ -637,7 +637,7 @@ discovery:
 **Parameter Guidelines:**
 - **Temperature**: Use 1.0 for creative structure discovery, 0.0 for consistent results
 - **Top P**: Lower values (0.1) for focused analysis, higher for diverse interpretations
-- **Max Tokens**: 10000+ recommended for complex documents with many fields
+- **Max Tokens**: leave empty (the default), which requests the model's maximum output; set a number only to cap the response below that
 
 ### Prompt Customization
 
