@@ -573,7 +573,7 @@ class TestCapabilityGate:
         import re
 
         text = _TEMPLATE.read_text()
-        start = text.index("sectionLabel: Structured Outputs (experimental)")
+        start = text.index("sectionLabel: Schema Enforcement (experimental)")
         block = text[start : text.index("multi_instance_detection:", start)]
         assert block
 
@@ -593,6 +593,22 @@ class TestCapabilityGate:
             )
         }
         assert named == expected
+
+    def test_the_prompt_preview_mirror_matches_the_gate(self):
+        """The Web UI's Prompt Preview decides, under ``mode: auto``, whether a
+        forced tool is shown from a TypeScript copy of this allowlist. A copy is
+        exactly what drifts, so it is read back and compared."""
+        import re
+
+        tsx = (
+            _REPO / "src/ui/src/components/configuration-layout/PromptPreview.tsx"
+        ).read_text()
+        block = tsx.split("export const STRUCTURED_OUTPUT_MODEL_STEMS = [", 1)[1]
+        stems = re.findall(r"'([a-z0-9-]+)'", block.split("];", 1)[0])
+        assert stems
+        assert sorted("anthropic." + s for s in stems) == sorted(
+            STRUCTURED_OUTPUT_BASE_NAMES
+        )
 
     def test_base_names_are_anthropic(self):
         assert STRUCTURED_OUTPUT_BASE_NAMES

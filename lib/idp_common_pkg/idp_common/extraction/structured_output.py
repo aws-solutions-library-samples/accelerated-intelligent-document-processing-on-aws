@@ -11,7 +11,8 @@ is JSON that matches it. Unlike a forced tool (``forced_tool.py``) it needs no
 ``toolChoice``, so it also works on Claude Opus 5.5 and Sonnet 5.5, which reject a
 forced one.
 
-**Off by default** (``extraction.structured_output.enabled``). Constraining the
+**Off by default** (``extraction.schema_enforcement.mode``: ``structured_output``
+or ``auto``). Constraining the
 shape says nothing about the values, so whether it changes accuracy is a question
 for the benchmark, not this module.
 

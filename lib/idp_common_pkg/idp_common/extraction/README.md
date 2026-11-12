@@ -652,7 +652,34 @@ mirrors both in `src/ui/src/components/common/promptCacheModel.ts` (per-class in
 section's Processing Report tab, per-phase on the document cost table's subtotal rows).
 See [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780) and `docs/benchmarking/studies/prompt-caching.md` for the measurements.
 
-## Forced tool use (Simple mode, `extraction.forced_tool`)
+## Schema enforcement (Simple mode, `extraction.schema_enforcement`)
+
+One setting makes the reply match the class schema instead of only describing the
+schema in the prompt. Off by default.
+
+| `mode` | Mechanism | Decided by |
+|---|---|---|
+| `off` | none — prose schema in the prompt | — |
+| `structured_output` | Bedrock structured outputs (`outputConfig.textFormat`) | `structured_output.should_use_structured_output`, then `prepare_schema` fitting the limits |
+| `forced_tool` | forced Converse tool (`toolChoice: {"tool": ...}`) | `forced_tool.should_force_tool` |
+| `auto` | structured outputs when it applies, otherwise the forced tool, otherwise the prompt | both, in that order |
+
+`SchemaEnforcementConfig.wants_structured_output` / `wants_forced_tool` are what the
+service asks. Structured outputs is planned first; the forced tool is planned only
+when no output format will be sent, so the two are never combined on one request.
+If Bedrock rejects the output format, the section is retried with the forced tool
+under `auto` and with the prompt under `structured_output`.
+
+**`metadata.schema_enforcement`** records `mode` and `used` (`structured_output`,
+`forced_tool` or `prompt`) whenever the mode is not `off`. The mechanism blocks below
+carry the detail.
+
+**Config migration.** The setting replaces `extraction.forced_tool` (and a
+pre-release `extraction.structured_output`); `config/migrations/v010_to_v011.py`
+moves them on read (format v0.11): `forced_tool.enabled` → `mode: forced_tool`, both
+on → `mode: auto`, and `fallback_to_prompt` moves with it.
+
+### Forced tool call (`mode: forced_tool`)
 
 Coercion and validation act on a result that already exists. Forced tool use tries
 to prevent one failure mode up front: instead of describing the schema in prose
@@ -695,11 +722,11 @@ effect" from "forcing never ran", and both look identical in the output.
 > `bedrock.<name>(...)` calls and asserts each resolves; add the re-export line
 > whenever you call a new client method that way.
 
-## Structured outputs (Simple mode, `extraction.structured_output`)
+### Structured outputs (`mode: structured_output`)
 
 Bedrock structured outputs constrains decoding to a JSON Schema, so the reply is
 **guaranteed** to be JSON matching it — where a forced tool only steers the shape.
-With `extraction.structured_output.enabled: true` (off by default), the Simple path
+Under `mode: structured_output` or `auto` (off by default), the Simple path
 sends the wire class schema as a Converse `outputConfig.textFormat` and, for a reply
 that ends with `stopReason: end_turn`, parses it with `json.loads` directly: no
 fenced-block heuristics and no `repair_truncated_json`. The prompt is unchanged.
@@ -730,14 +757,14 @@ reads the original class schema, so a removed constraint is still checked when
 `tests/unit/bedrock/test_structured_output.py` does exactly that.
 
 **Fallbacks never fail the section.** An unsupported model or a schema that does not
-fit uses today's path (including `forced_tool` if that is on). A `ValidationException`
+fit uses the forced tool under `auto` and the prompt otherwise. A `ValidationException`
 from Bedrock — a schema is validated immediately, but the optional-property limit is
 enforced while the grammar compiles, up to ~90 s — is retried once without the output
 format, and remembered for the container once that retry succeeds. A `max_tokens`
 stop or a refusal is never trusted as complete, even if the text parses, and goes
 down the ordinary parse-and-repair path.
 
-**Precedence.** When structured outputs applies, `forced_tool` is not sent, and
+**Under `auto`**, when structured outputs applies no forced tool is sent, and
 `metadata.forced_tool.skipped` says so.
 
 **`metadata.structured_output`** records `requested`, `applied`, `parsed`,

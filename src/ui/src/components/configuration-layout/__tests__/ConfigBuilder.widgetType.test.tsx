@@ -10,7 +10,7 @@
  * template gets one without every prompt in every schema having to declare
  * `format: textarea`. That test looked at the name before the declared `type`, so
  * a boolean whose key merely ENDS in "prompt" rendered as a free-text box:
- * `extraction.forced_tool.fallback_to_prompt` (Schema Enforcement) and
+ * `extraction.schema_enforcement.fallback_to_prompt` (Schema Enforcement) and
  * `extraction.agentic.restate_schema_in_system_prompt` both shipped that way,
  * while every other true/false setting is a toggle.
  *

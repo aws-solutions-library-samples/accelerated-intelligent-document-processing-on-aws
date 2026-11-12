@@ -13,7 +13,7 @@
  * `lib/idp_common_pkg/tests/unit/classification/test_class_and_attribute_names_placeholder.py`).
  *
  * The rest covers the schema-enforcement blocks the preview used to be blind to:
- * the forced toolSpec (Simple + `extraction.forced_tool.enabled`) and the agentic
+ * the forced toolSpec (Simple + `extraction.schema_enforcement.mode: forced_tool`) and the agentic
  * system-prompt restatement (Advanced + `restate_schema_in_system_prompt`, which
  * DEFAULTS ON). Two properties matter most and are asserted through a real render
  * rather than through the helpers alone, because they are what a user reads:
@@ -242,14 +242,23 @@ describe('schemaDivergenceFor', () => {
   });
 
   describe('forcedTool', () => {
-    const forcing = (extra: Record<string, unknown> = {}) => ({ extraction: { forced_tool: { enabled: true }, ...extra } });
+    const forcing = (extra: Record<string, unknown> = {}) => ({ extraction: { schema_enforcement: { mode: 'forced_tool' }, ...extra } });
 
     it('is on for Simple + Schema Enforcement, and off when the knob is off', () => {
       expect(schemaDivergenceFor(forcing({ mode: 'simple' }), {}, 'extraction').forcedTool).toBe(true);
-      expect(schemaDivergenceFor({ extraction: { mode: 'simple', forced_tool: { enabled: false } } }, {}, 'extraction').forcedTool).toBe(
-        false,
-      );
-      // Absent key defaults FALSE — ForcedToolConfig.enabled.
+      expect(
+        schemaDivergenceFor({ extraction: { mode: 'simple', schema_enforcement: { mode: 'off' } } }, {}, 'extraction').forcedTool,
+      ).toBe(false);
+      // An unquoted YAML `mode: off` arrives as false, and means off.
+      expect(
+        schemaDivergenceFor({ extraction: { mode: 'simple', schema_enforcement: { mode: false } } }, {}, 'extraction').forcedTool,
+      ).toBe(false);
+      // Structured outputs alone never sends a toolConfig.
+      expect(
+        schemaDivergenceFor({ extraction: { mode: 'simple', schema_enforcement: { mode: 'structured_output' } } }, {}, 'extraction')
+          .forcedTool,
+      ).toBe(false);
+      // Absent key defaults to 'off' — SchemaEnforcementConfig.mode.
       expect(schemaDivergenceFor({ extraction: { mode: 'simple' } }, {}, 'extraction').forcedTool).toBe(false);
     });
 
@@ -289,6 +298,27 @@ describe('schemaDivergenceFor', () => {
       expect(schemaDivergenceFor(simple('us.anthropic.claude-haiku-5-5'), {}, 'extraction').forcedTool).toBe(true);
       // An unset model keeps the tab: the backend decides, this only affects the preview.
       expect(schemaDivergenceFor(forcing({ mode: 'simple' }), {}, 'extraction').forcedTool).toBe(true);
+    });
+  });
+
+  describe('forcedTool under schema_enforcement.mode: auto', () => {
+    // Auto sends structured outputs to a model that takes it and the forced tool
+    // only to one that does not, so the Tool Schema tab must follow the model.
+    const auto = (model: string) => ({ extraction: { mode: 'simple', model, schema_enforcement: { mode: 'auto' } } });
+
+    it('shows no tool for a Claude model that takes structured outputs', () => {
+      expect(schemaDivergenceFor(auto('us.anthropic.claude-sonnet-5'), {}, 'extraction').forcedTool).toBe(false);
+      expect(schemaDivergenceFor(auto('us.anthropic.claude-haiku-4-5-20251001-v1:0'), {}, 'extraction').forcedTool).toBe(false);
+    });
+
+    it('shows the tool for a model that can be forced but takes no structured outputs', () => {
+      expect(schemaDivergenceFor(auto('us.amazon.nova-pro-v1:0'), {}, 'extraction').forcedTool).toBe(true);
+      expect(schemaDivergenceFor(auto('us.xai.grok-4.6'), {}, 'extraction').forcedTool).toBe(true);
+    });
+
+    it('shows nothing for a model that takes neither', () => {
+      expect(schemaDivergenceFor(auto('LambdaHook'), {}, 'extraction').forcedTool).toBe(false);
+      expect(schemaDivergenceFor(auto('openai.gpt-5.5'), {}, 'extraction').forcedTool).toBe(false);
     });
   });
 
@@ -546,7 +576,7 @@ describe('PromptPreview token accounting', () => {
     const baseline = totalTokens();
     unmount();
 
-    render(<PromptPreview formValues={configWith({ mode: 'simple', forced_tool: { enabled: true } })} />);
+    render(<PromptPreview formValues={configWith({ mode: 'simple', schema_enforcement: { mode: 'forced_tool' } })} />);
     await showExtractionStep();
     expect(screen.getByText(/^Tool Schema \(~\d+ tokens\)$/)).toBeTruthy();
     expect(screen.getByText('Tool schema')).toBeTruthy();
@@ -574,7 +604,7 @@ describe('PromptPreview token accounting', () => {
   });
 
   it('Advanced with the forced-tool knob on still shows no Tool Schema tab', async () => {
-    render(<PromptPreview formValues={configWith({ mode: 'advanced', forced_tool: { enabled: true } })} />);
+    render(<PromptPreview formValues={configWith({ mode: 'advanced', schema_enforcement: { mode: 'forced_tool' } })} />);
     await showExtractionStep();
     expect(screen.queryByText(/^Tool Schema/)).toBeNull();
   });
@@ -583,7 +613,11 @@ describe('PromptPreview token accounting', () => {
     render(
       <PromptPreview
         formValues={{
-          ...configWith({ mode: 'simple', forced_tool: { enabled: true }, confidence: { system_prompt: 'sys', task_prompt: 'task' } }),
+          ...configWith({
+            mode: 'simple',
+            schema_enforcement: { mode: 'forced_tool' },
+            confidence: { system_prompt: 'sys', task_prompt: 'task' },
+          }),
         }}
       />,
     );

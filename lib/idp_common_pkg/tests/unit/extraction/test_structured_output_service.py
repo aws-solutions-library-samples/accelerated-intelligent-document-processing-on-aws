@@ -58,8 +58,11 @@ def _config(properties=_PROPS, *, enabled=True, model=_CLAUDE, forced=False):
                 {ATTRIBUTE_NAMES_AND_DESCRIPTIONS}
                 {DOCUMENT_TEXT}
             """),
-            "structured_output": {"enabled": enabled},
-            "forced_tool": {"enabled": forced},
+            "schema_enforcement": {
+                "mode": ("auto" if forced else "structured_output")
+                if enabled
+                else ("forced_tool" if forced else "off")
+            },
             "coercion": {"enabled": False},
             "validation": {"enabled": False},
         },
@@ -176,7 +179,7 @@ class TestTheOutputFormatReachesBedrock:
 
     def test_off_by_default_sends_nothing(self):
         cfg = _config()
-        del cfg["extraction"]["structured_output"]
+        del cfg["extraction"]["schema_enforcement"]
         _, calls = _run(cfg, lambda **kw: _reply('{"invoice_number": "X"}'))
         assert "output_config" not in calls[0]
 
@@ -345,3 +348,70 @@ class TestPrecedenceOverForcedTool:
         assert calls[0]["tool_config"] is None
         assert "output_config" in calls[0]
         assert "structured outputs" in written["metadata"]["forced_tool"]["skipped"]
+
+
+def _mode_config(mode, model):
+    cfg = _config(model=model)
+    cfg["extraction"]["schema_enforcement"] = {"mode": mode}
+    return cfg
+
+
+class TestTheModeDecidesTheMechanism:
+    """``extraction.schema_enforcement.mode`` is one decision with four answers."""
+
+    @pytest.mark.parametrize(
+        "mode,model,used",
+        [
+            ("auto", "us.anthropic.claude-sonnet-5", "structured_output"),
+            ("auto", "us.anthropic.claude-opus-5-5", "structured_output"),
+            ("auto", "us.amazon.nova-pro-v1:0", "forced_tool"),
+            ("structured_output", "us.amazon.nova-pro-v1:0", "prompt"),
+            ("forced_tool", "us.anthropic.claude-sonnet-5", "forced_tool"),
+            ("forced_tool", "us.anthropic.claude-opus-5-5", "prompt"),
+            ("structured_output", "us.anthropic.claude-sonnet-5", "structured_output"),
+        ],
+    )
+    def test_the_mechanism_sent_and_recorded(self, mode, model, used):
+        written, calls = _run(
+            _mode_config(mode, model), lambda **kw: _reply('{"invoice_number": "A"}')
+        )
+        assert ("output_config" in calls[0]) is (used == "structured_output")
+        assert (calls[0]["tool_config"] is not None) is (used == "forced_tool")
+        assert written["metadata"]["schema_enforcement"] == {"mode": mode, "used": used}
+
+    def test_off_records_nothing(self):
+        written, calls = _run(
+            _mode_config("off", _CLAUDE), lambda **kw: _reply('{"invoice_number": "A"}')
+        )
+        assert "output_config" not in calls[0] and calls[0]["tool_config"] is None
+        for key in ("schema_enforcement", "structured_output", "forced_tool"):
+            assert key not in written["metadata"], key
+
+    def test_a_rejection_under_structured_output_mode_does_not_force_a_tool(self):
+        calls = []
+
+        def answer(**kw):
+            calls.append(kw)
+            if "output_config" in kw:
+                raise _validation_error()
+            return _reply('{"invoice_number": "A"}')
+
+        written, _ = _run(
+            _mode_config("structured_output", "us.anthropic.claude-sonnet-5"), answer
+        )
+        assert len(calls) == 2
+        assert calls[1]["tool_config"] is None and "output_config" not in calls[1]
+        assert written["metadata"]["schema_enforcement"]["used"] == "prompt"
+
+    def test_the_legacy_forced_tool_key_still_works(self):
+        """A configuration saved before v0.11 carries ``forced_tool.enabled``;
+        the v0.10 -> v0.11 migration reads it as ``mode: forced_tool``."""
+        cfg = _config(model="us.anthropic.claude-sonnet-5")
+        del cfg["extraction"]["schema_enforcement"]
+        cfg["extraction"]["forced_tool"] = {"enabled": True}
+        written, calls = _run(cfg, lambda **kw: _reply('{"invoice_number": "A"}'))
+        assert calls[0]["tool_config"] is not None
+        assert written["metadata"]["schema_enforcement"] == {
+            "mode": "forced_tool",
+            "used": "forced_tool",
+        }

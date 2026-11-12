@@ -89,8 +89,10 @@ def _changed_paths(before: Any, after: Any) -> set:
     return {p for p in a.keys() | b.keys() if a.get(p, object()) != b.get(p, object())}
 
 
-def test_the_current_format_is_this_hop():
-    assert CONFIG_FORMAT_VERSION == TARGET_VERSION
+def test_the_current_format_is_at_or_after_this_hop():
+    from idp_common.config.migrations._version import is_at_or_after
+
+    assert is_at_or_after(CONFIG_FORMAT_VERSION, TARGET_VERSION)
 
 
 def test_the_old_default_is_the_one_the_hop_rewrites():

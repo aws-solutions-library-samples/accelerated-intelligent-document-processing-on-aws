@@ -608,7 +608,7 @@ its retry budget on a 400 that cannot succeed.
 
 Because a forced `toolChoice` is the strongest shape enforcement `bedrock-runtime`
 offers, there is no equivalent to fall back to on such a model — so
-`extraction.forced_tool` degrades to the prose schema and records the reason in the
+`extraction.schema_enforcement` (`mode: forced_tool`) degrades to the prose schema and records the reason in the
 section's audit metadata. Every other currently selectable Claude and Nova family
 accepts all three modes.
 
@@ -702,7 +702,7 @@ emits the `toolUse` block (verified live on Converse,
 absent.
 
 Consult the forcing gate whenever you pass `tool_choice`; `auto` never needs it.
-`extraction.forced_tool` already does, and falls back to the prose schema with the
+`extraction.schema_enforcement` (`mode: forced_tool`) already does, and falls back to the prose schema with the
 reason in its audit metadata.
 
 xAI Grok and OpenAI GPT-6 Astra reach Converse, so they **do** support

@@ -216,12 +216,17 @@ class TestConfigWiring:
     def test_disabled_by_default(self):
         from idp_common.config.models import IDPConfig
 
-        ft = IDPConfig().extraction.forced_tool
-        assert ft.enabled is False
-        assert ft.fallback_to_prompt is True
+        se = IDPConfig().extraction.schema_enforcement
+        assert se.mode == "off" and not se.wants_forced_tool
+        assert se.fallback_to_prompt is True
 
     def test_switchable_on(self):
         from idp_common.config.models import IDPConfig
 
-        cfg = IDPConfig(**{"extraction": {"forced_tool": {"enabled": True}}})
-        assert cfg.extraction.forced_tool.enabled is True
+        cfg = IDPConfig(
+            **{"extraction": {"schema_enforcement": {"mode": "forced_tool"}}}
+        )
+        assert cfg.extraction.schema_enforcement.wants_forced_tool
+        # The pre-v0.11 key still switches it on, through the migration.
+        legacy = IDPConfig(**{"extraction": {"forced_tool": {"enabled": True}}})
+        assert legacy.extraction.schema_enforcement.mode == "forced_tool"

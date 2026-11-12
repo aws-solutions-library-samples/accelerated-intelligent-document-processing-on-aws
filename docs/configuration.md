@@ -169,7 +169,7 @@ yet. The authoritative enumeration is the `system_defaults/` directory itself:
 | `base.yaml` | top-level keys shared by every pattern |
 | `base-ocr.yaml` | OCR backends and image handling |
 | `base-classification.yaml` | classification: strategy, the combined and split-then-classify calls, `document_shape` |
-| `base-extraction.yaml` | extraction, `agentic.*`, `forced_tool.*`, `structured_output.*`, `multi_instance_detection.*` |
+| `base-extraction.yaml` | extraction, `agentic.*`, `schema_enforcement.*`, `multi_instance_detection.*` |
 | `base-confidence.yaml` | assessment / confidence |
 | `base-evaluation.yaml`, `base-summarization.yaml`, `base-discovery.yaml`, `base-agents.yaml`, `base-chat.yaml`, `base-geometry.yaml`, `base-rule-validation.yaml`, `base-rule-discovery.yaml`, `base-classes.yaml`, `base-notes.yaml` | the remaining stages |
 | `pattern-1.yaml` / `pattern-2.yaml` | which of the above compose for BDA vs Pipeline mode |

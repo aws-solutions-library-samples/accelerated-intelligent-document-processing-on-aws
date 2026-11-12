@@ -2241,36 +2241,26 @@ Resources:
                         default: true
                         order: 6
                         dependsOn: { field: "enabled", value: true }
-              forced_tool:
+              schema_enforcement:
                 type: object
                 sectionLabel: Schema Enforcement (experimental)
-                description: "Send the document schema to the model as a required tool rather than describing it in the prompt, so the response structure is enforced by the API. EXPERIMENTAL and off by default: this constrains the SHAPE of the reply, not the accuracy of the values in it, and whether it helps is still being measured. Models reached through a custom Lambda hook or the GPT-5.x route cannot use it and fall back to the prompt automatically. Applies to Simple extraction only (Advanced already sends a tool schema), so this is shown only when Extraction mode is 'simple'."
+                description: "Make the model's reply match your document schema instead of only describing the schema in the prompt. Two mechanisms: Bedrock structured outputs (constrained decoding — the reply is guaranteed to be valid JSON matching the schema and is read without JSON repair; Claude models only) and a forced tool call (the schema is sent as a tool the model must call — best effort, most models). Auto uses structured outputs where the model supports it, otherwise the forced tool, otherwise the prompt. EXPERIMENTAL and off by default: either constrains the SHAPE of the reply, not the accuracy of the values in it. Whatever cannot apply falls back to the prompt and the reason is recorded in the section metadata (structured_output / forced_tool / schema_enforcement). Applies to Simple extraction only (Advanced already sends a tool schema). [How it works in this solution](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/extraction-and-confidence/#schema-enforcement-extractionschema_enforcement--experimental-off-by-default) · [Amazon Bedrock: structured outputs](https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html) · [Anthropic: structured outputs](https://docs.claude.com/en/docs/build-with-claude/structured-outputs)"
                 order: 4.05
                 dependsOn: { field: "extraction.mode", value: "simple" }
                 properties:
-                  enabled:
-                    type: boolean
-                    description: "Require the model to answer by calling a tool whose input is your document schema. A malformed-JSON reply becomes structurally impossible for the fields the schema declares. Off by default because it is unproven — measure accuracy and completeness on your own documents before enabling it."
-                    default: false
+                  mode:
+                    type: string
+                    enum: ["off", "auto", "structured_output", "forced_tool"]
+                    enumLabels: { "off": "Off — describe the schema in the prompt (default)", "auto": "Auto — structured outputs where supported, else forced tool", "structured_output": "Structured outputs — guaranteed (Claude only)", "forced_tool": "Forced tool call — best effort" }
+                    default: "off"
+                    description: "Structured outputs works with these extraction models: Claude Haiku 4.5, Haiku 5.5, Sonnet 4.5, Sonnet 4.6, Sonnet 5, Sonnet 5.5, Opus 4.5, Opus 4.6, Opus 4.7, Opus 4.8, Opus 5 and Opus 5.5, in every regional (us./eu./global.) and 1M-context (:1m) variant offered; a document schema beyond its limits (16 nullable plus 12 optional fields) falls back. The forced tool call works with Amazon Nova, xAI Grok, OpenAI GPT-6 Astra and the Claude models above except Opus 5.5 and Sonnet 5.5, which reject a forced tool call. Neither works with OpenAI GPT-5.x or a custom Lambda hook. A per-class model override is checked the same way. With structured outputs, the first document of each class can take up to about 90 seconds longer while Bedrock compiles the schema; later ones reuse it for 24 hours. Measure accuracy and completeness on your own documents before turning this on."
                     order: 0
                   fallback_to_prompt:
                     type: boolean
-                    description: "If the model accepts the tool but replies in prose anyway (which happens, and is not an error), read the prose reply as usual. Leave this ON. Turning it off makes such a reply a failed section, which is only useful for measuring how often the model actually complies."
+                    description: "Forced tool call only. If the model accepts the tool but replies in prose anyway (which happens, and is not an error), read the prose reply as usual. Leave this ON. Turning it off makes such a reply a failed section, which is only useful for measuring how often the model actually complies."
                     default: true
                     order: 1
-                    dependsOn: { field: "enabled", value: true }
-              structured_output:
-                type: object
-                sectionLabel: Structured Outputs (experimental)
-                description: "Send the document schema to Bedrock as a structured-outputs JSON Schema, so the reply is guaranteed to be valid JSON matching it (constrained decoding) and is read without JSON repair. EXPERIMENTAL and off by default: it constrains the SHAPE of the reply, not the accuracy of the values in it. Works only with Claude models (listed under the setting below); with any other extraction model it is skipped and the prompt is used as before. Document schemas within its limits are sent as-is (up to 16 optional fields become required-and-nullable, so an absent field comes back null, and up to 12 more stay optional); a larger schema falls back to the prompt. Every fallback reason is recorded in the section's metadata.structured_output. Takes precedence over Schema Enforcement when both are on. Applies to Simple extraction only. [How it works in this solution](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/extraction-and-confidence/#structured-outputs-extractionstructured_output--experimental-off-by-default) · [Amazon Bedrock: structured outputs](https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html) · [Anthropic: structured outputs](https://docs.claude.com/en/docs/build-with-claude/structured-outputs)"
-                order: 4.06
-                dependsOn: { field: "extraction.mode", value: "simple" }
-                properties:
-                  enabled:
-                    type: boolean
-                    description: "Constrain the model's reply to your document schema. Supported extraction models: Claude Haiku 4.5, Haiku 5.5, Sonnet 4.5, Sonnet 4.6, Sonnet 5, Sonnet 5.5, Opus 4.5, Opus 4.6, Opus 4.7, Opus 4.8, Opus 5 and Opus 5.5, in every regional (us./eu./global.) and 1M-context (:1m) variant offered. Not supported, so the setting is skipped and the prompt is used: Amazon Nova, xAI Grok, OpenAI GPT models, and a custom Lambda hook. A per-class model override is checked the same way. The first document of each class can take up to about 90 seconds longer while Bedrock compiles the schema; later ones reuse it for 24 hours. Measure accuracy and completeness on your own documents before enabling it."
-                    default: false
-                    order: 0
+                    dependsOn: { field: "mode", values: ["forced_tool", "auto"] }
               multi_instance_detection:
                 type: object
                 sectionLabel: Multi-instance Section Detection

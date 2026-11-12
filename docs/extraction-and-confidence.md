@@ -910,120 +910,70 @@ section beside the rest of its report. The report names the extraction modes
 > **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
 > configurations are migrated automatically on read — no action required.
 
-### Forced tool use (`extraction.forced_tool`) — experimental, off by default
+### Schema enforcement (`extraction.schema_enforcement`) — experimental, off by default
 
-Coercion and validation repair or report a bad result *after* the fact. Forced
-tool use tries to make one shape of bad result impossible in the first place: the
-class schema is sent to the model as a **required tool** whose input *is* your
-schema, rather than described in prose in the prompt, and the API constrains the
-reply to that shape.
-
-```yaml
-extraction:
-  forced_tool:
-    enabled: false             # experimental; measure before turning it on
-    fallback_to_prompt: true   # a prose answer still gets parsed (recommended)
-```
-
-Applies to **Simple** extraction only — Advanced (agentic) extraction already
-sends a tool schema. Configurable under **Configuration → Extraction → Schema
-Enforcement (experimental)**.
-
-**Why it is off by default.** Forcing constrains the *structure* of the reply, not
-the *accuracy* of the values in it. A model that would have emitted a stray key
-may instead emit a worse value that fits the schema, so this is not a free
-accuracy win and it is not yet proven on real corpora. Measure completeness and
-field accuracy on your own documents before enabling it.
-
-**When it is skipped automatically.** Two different things can make forcing
-unavailable, and both fall back to the prompt with the reason recorded — so a
-before/after comparison can tell "forcing changed nothing" from "forcing never
-ran", which are very different results.
-
-- **The route carries no tool configuration at all**: models reached through a
-  custom Lambda hook, and the GPT-5.x (Responses API) route.
-- **The model carries a tool configuration but rejects a *forced* choice**:
-  **Claude Opus 5.5** and **Claude Sonnet 5.5**. Both answer `toolChoice: auto`
-  with a `toolUse` block and both return a 400 for `{"any": {}}` and
-  `{"tool": {...}}` (`tool_choice: type "tool" and "any" are not supported for this
-  model`), so schema enforcement is simply not available on them and the prose
-  schema is used instead.
-
-⚠️ **This is per model id, not per family.** Claude **Sonnet 5** and **Opus 5**
-both accept a forced choice, as does **Haiku 5.5** — so switching from Sonnet 5 to
-Sonnet 5.5 silently turns schema enforcement off, and `metadata.forced_tool.skipped`
-is where that shows up. Check it before reading a Sonnet 5 → Sonnet 5.5 comparison
-as a model difference.
-
-**A fixed failure to know about.** Before this fix, a *group* attribute whose name
-contains a space (`Account Holder Address` — normal in human-authored classes,
-including the shipped `bank-statement-sample`) came back from Claude Sonnet 5 as a
-JSON **string** rather than an object, so every section carrying it failed
-validation: the schema's `$defs` entry kept its spaced name and Sonnet 5 did not
-resolve the `$ref` pointer to it. Definition names are now made wire-safe like
-property names, the pointers are rewritten, and a group the model still returns as
-a JSON string is parsed while its field names are restored — so the stored result
-carries the names you authored, not the wire spellings. The name map follows each
-`$ref` to its definition, so this holds for a class with several groups (the shipped
-lending package has three) and never restores one group's names against another's.
-A `$ref` to a shared *string* definition (an enum factored into `$defs`) is treated as
-a string, so JSON-looking text in it is left alone. If you measured forcing before and
-saw every section invalid, that was this ([#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783)).
-
-**What gets recorded.** Each section's `metadata.forced_tool` holds `requested`,
-`honored` (the model can accept a tool configuration and still answer in prose),
-`renamed_properties`, `renamed_definitions`, and `skipped` with a reason where
-applicable. `honored` is
-the number to look at first: forcing that is not honored has not been tested.
-
-**Visible in the Prompt Preview.** With Extraction mode **Simple** and this
-setting on, **Configuration → Prompt Preview** gains a **Tool Schema** tab showing
-the exact `toolSpec` — tool name, tool description, and input schema — and its
-tokens are added to the previewed total, so the cost of turning enforcement on is
-no longer invisible. The tab shows property names **as you authored them** and
-says so, because the wire-safe rewriting below is reversed in the stored result;
-the token estimate is taken from the compact form actually serialized onto the
-request, not from the indentation added for readability.
-
-> **Field names with spaces are handled.** Bedrock restricts top-level tool
-> property names to `^[a-zA-Z0-9_.-]{1,64}$`, which several shipped configuration
-> presets violate (`"Invoice Number"`). Such names are rewritten to a wire-safe
-> form for the request and restored to exactly what you authored in the stored
-> result — you never see the sanitized names, and no configuration change is
-> needed.
-
-`fallback_to_prompt: false` turns an unhonored force into a **parse failure**
-instead of falling back. That loses data by design and exists only to measure how
-often forcing is actually honored; leave it on in production.
-
-### Structured outputs (`extraction.structured_output`) — experimental, off by default
-
-Forced tool use *asks* the model to answer in your schema's shape. Bedrock
-**structured outputs** *guarantees* it: the class schema is sent as a JSON Schema
-output format and constrained decoding makes the reply valid JSON that matches it.
-A reply that ends normally is then read as-is, with no JSON repair.
+Coercion and validation repair or report a bad result *after* the fact. Schema
+enforcement tries to make the shape of a bad result impossible in the first place:
+instead of only describing your class schema in the prompt, the request makes the
+model's reply match it. One setting chooses how:
 
 ```yaml
 extraction:
-  structured_output:
-    enabled: false   # experimental; measure before turning it on
+  schema_enforcement:
+    mode: "off"                # off | auto | structured_output | forced_tool
+    fallback_to_prompt: true   # forced tool only: a prose answer still gets parsed
 ```
 
-Applies to **Simple** extraction only. Configurable under **Configuration →
-Extraction → Structured Outputs (experimental)**. When it applies it takes
-precedence over [forced tool use](#forced-tool-use-extractionforced_tool--experimental-off-by-default),
-and `metadata.forced_tool.skipped` says so.
+| `mode` | What is sent | Guarantee |
+|---|---|---|
+| `off` (default) | The schema is described in the prompt only | None — the reply is parsed and repaired |
+| `structured_output` | The schema as a Bedrock **structured outputs** JSON Schema | The reply is valid JSON matching the schema (constrained decoding) |
+| `forced_tool` | The schema as a Converse tool the model **must call** | Best effort — the model can still answer in prose |
+| `auto` | Structured outputs where the model supports it, else the forced tool, else the prompt | Whichever was sent |
 
-**Why it is off by default.** It constrains the *structure* of the reply, not the
-*accuracy* of the values in it, and it has not yet been benchmarked against the
-default path. Measure field accuracy, completeness, cost and latency on your own
-documents before enabling it.
+Applies to **Simple** extraction only — Advanced (agentic) extraction already sends a
+tool schema. Configurable under **Configuration → Extraction → Schema Enforcement
+(experimental)**. Quote `"off"` in a hand-written YAML file; an unquoted `off` is
+read as `false`, which is accepted and means the same.
 
-**Which models.** Claude models whose Bedrock model card lists structured outputs —
-every Claude model the solution offers, including **Claude Opus 5.5** and **Sonnet
-5.5**, which reject a forced tool but need no tool here. Other models (Amazon Nova,
-xAI Grok, OpenAI GPT-6 Astra and GPT-5.x) and a custom Lambda hook use the prompt as
-before.
+**Why it is off by default.** Either mechanism constrains the *structure* of the
+reply, not the *accuracy* of the values in it. A model that would have emitted a
+stray key may instead emit a worse value that fits, so this is not a free accuracy
+win and it is not yet proven on real corpora. Measure completeness and field
+accuracy on your own documents before enabling it.
+
+**Which models.** Per model id, not per family, and a per-class model override is
+checked the same way:
+
+| Extraction model | `structured_output` | `forced_tool` |
+|---|---|---|
+| Claude Haiku 4.5 and 5.5; Sonnet 4.5, 4.6 and 5; Opus 4.5, 4.6, 4.7, 4.8 and 5 | ✅ | ✅ |
+| Claude Sonnet 5.5 and Opus 5.5 | ✅ | ❌ rejects a forced tool call |
+| Amazon Nova, xAI Grok, OpenAI GPT-6 Astra | ❌ | ✅ |
+| OpenAI GPT-5.x, a custom Lambda hook | ❌ | ❌ |
+
+Whatever cannot apply falls back to the prompt with the reason recorded, so a
+before/after comparison can tell "enforcement changed nothing" from "enforcement
+never ran", which are very different results.
+
+**What gets recorded.** Each section's `metadata.schema_enforcement` holds the `mode`
+and which mechanism the request `used` (`structured_output`, `forced_tool` or
+`prompt`) — under `auto` that is the field to read first. The mechanism's own
+block carries the detail: `metadata.structured_output` (`applied`, `parsed`,
+`stop_reason`, `skipped` or `rejected`, and a `schema` summary of what was changed to
+fit) and `metadata.forced_tool` (`requested`, `honored`, `renamed_properties`,
+`renamed_definitions`, `skipped`).
+
+> **Upgrading.** This setting replaces `extraction.forced_tool`. A stored
+> configuration with `forced_tool.enabled: true` is read as `mode: forced_tool`, and
+> its `fallback_to_prompt` moves with it (config format v0.11); no action is needed.
+
+#### Structured outputs (`mode: structured_output`)
+
+The class schema is sent as a JSON Schema output format and constrained decoding
+makes the reply valid JSON that matches it. A reply that ends normally is read as-is,
+with no JSON repair. It needs no tool call, so it works on Claude Sonnet 5.5 and
+Opus 5.5 too.
 
 **Which document schemas.** Structured outputs accepts a subset of JSON Schema and
 limits how many fields may be missing. Before sending, the solution:
@@ -1056,8 +1006,63 @@ reuse it for 24 hours.
 the optional and nullable counts). `applied` and `parsed` are the numbers to look
 at first.
 
-See the [extraction module README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/extraction/README.md#structured-outputs-simple-mode-extractionstructured_output)
+See the [extraction module README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/extraction/README.md#schema-enforcement-simple-mode-extractionschema_enforcement)
 for the implementation.
+
+#### Forced tool call (`mode: forced_tool`)
+
+The class schema is sent as a **required tool** whose input *is* your schema, and
+the API steers the reply to that shape. A model can accept the tool and still answer
+in prose; that is a normal outcome and the prose reply is parsed as usual.
+
+⚠️ **This is per model id, not per family.** Claude **Sonnet 5** and **Opus 5**
+both accept a forced choice, as does **Haiku 5.5** — so under `mode: forced_tool`,
+switching from Sonnet 5 to Sonnet 5.5 silently turns enforcement off, and
+`metadata.forced_tool.skipped` is where that shows up. Check it before reading a
+Sonnet 5 → Sonnet 5.5 comparison as a model difference. Under `mode: auto` both models
+get structured outputs instead.
+
+**A fixed failure to know about.** Before this fix, a *group* attribute whose name
+contains a space (`Account Holder Address` — normal in human-authored classes,
+including the shipped `bank-statement-sample`) came back from Claude Sonnet 5 as a
+JSON **string** rather than an object, so every section carrying it failed
+validation: the schema's `$defs` entry kept its spaced name and Sonnet 5 did not
+resolve the `$ref` pointer to it. Definition names are now made wire-safe like
+property names, the pointers are rewritten, and a group the model still returns as
+a JSON string is parsed while its field names are restored — so the stored result
+carries the names you authored, not the wire spellings. The name map follows each
+`$ref` to its definition, so this holds for a class with several groups (the shipped
+lending package has three) and never restores one group's names against another's.
+A `$ref` to a shared *string* definition (an enum factored into `$defs`) is treated as
+a string, so JSON-looking text in it is left alone. If you measured forcing before and
+saw every section invalid, that was this ([#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783)).
+
+**What gets recorded.** Each section's `metadata.forced_tool` holds `requested`,
+`honored` (the model can accept a tool configuration and still answer in prose),
+`renamed_properties`, `renamed_definitions`, and `skipped` with a reason where
+applicable. `honored` is
+the number to look at first: forcing that is not honored has not been tested.
+
+**Visible in the Prompt Preview.** With Extraction mode **Simple** and a forced
+tool in effect (`mode: forced_tool`, or `auto` on a model that takes no structured
+outputs), **Configuration → Prompt Preview** gains a **Tool Schema** tab showing
+the exact `toolSpec` — tool name, tool description, and input schema — and its
+tokens are added to the previewed total, so the cost of turning enforcement on is
+no longer invisible. The tab shows property names **as you authored them** and
+says so, because the wire-safe rewriting below is reversed in the stored result;
+the token estimate is taken from the compact form actually serialized onto the
+request, not from the indentation added for readability.
+
+> **Field names with spaces are handled.** Bedrock restricts top-level tool
+> property names to `^[a-zA-Z0-9_.-]{1,64}$`, which several shipped configuration
+> presets violate (`"Invoice Number"`). Such names are rewritten to a wire-safe
+> form for the request and restored to exactly what you authored in the stored
+> result — you never see the sanitized names, and no configuration change is
+> needed.
+
+`fallback_to_prompt: false` turns an unhonored force into a **parse failure**
+instead of falling back. That loses data by design and exists only to measure how
+often forcing is actually honored; leave it on in production.
 
 ### Several records in one section (`instance_count`)
 

@@ -556,8 +556,8 @@ const PYDANTIC_FALSE_STRINGS = ['false', 'no', 'off', '0', 'f', 'n'];
  * Read a config flag the way pydantic would, with an explicit default for an
  * ABSENT key.
  *
- * `whenAbsent` is a required argument on purpose: `forced_tool.enabled` defaults
- * FALSE while `agentic.restate_schema_in_system_prompt` defaults TRUE, so a
+ * `whenAbsent` is a required argument on purpose: `multi_instance_detection.enabled`
+ * defaults FALSE while `agentic.restate_schema_in_system_prompt` defaults TRUE, so a
  * missing key means the OPPOSITE thing in the two cases. A single truthiness
  * test — which is what this replaced — silently gets the second one wrong, and
  * the wrong answer there is "the preview under-reports the prompt by ~40%".
@@ -637,7 +637,9 @@ export const simpleIntegratedDowngraded = (
  * - `forcedTool` is Simple-only: the forced toolConfig is built in the non-agentic
  *   branch of `_invoke_extraction_model`, and Advanced already sends the schema as
  *   the Strands tool. Assessment never sends a forced tool at all. It is ALSO
- *   model-dependent — see `modelCanBeForced`.
+ *   model-dependent — see `modelCanBeForced` — and mode-dependent: under
+ *   `schema_enforcement.mode: auto` a model that takes structured outputs gets
+ *   that instead, and no toolConfig is sent (see `modelTakesStructuredOutput`).
  * - `restatesSchema` is Advanced-only and DEFAULTS TRUE — see `boolish`.
  */
 
@@ -690,6 +692,51 @@ const modelCanBeForced = (modelId: unknown): boolean => {
   return true;
 };
 
+// Whether Bedrock structured outputs reaches this model. Mirrors
+// STRUCTURED_OUTPUT_BASE_NAMES in idp_common/bedrock/client.py (the Claude models
+// whose Bedrock model card lists the capability); a test there reads this list
+// back and fails if the two differ. Matched as a prefix of the base name, like the
+// backend, so dated foundation ids resolve.
+export const STRUCTURED_OUTPUT_MODEL_STEMS = [
+  'claude-haiku-4-5',
+  'claude-haiku-5-5',
+  'claude-sonnet-4-5',
+  'claude-sonnet-4-6',
+  'claude-sonnet-5',
+  'claude-sonnet-5-5',
+  'claude-opus-4-5',
+  'claude-opus-4-6',
+  'claude-opus-4-7',
+  'claude-opus-4-8',
+  'claude-opus-5',
+  'claude-opus-5-5',
+];
+
+export const modelTakesStructuredOutput = (modelId: unknown): boolean => {
+  if (typeof modelId !== 'string' || !modelId) return false;
+  const id = modelId.toLowerCase();
+  const at = id.indexOf('anthropic.');
+  if (at < 0) return false;
+  const base = id.slice(at + 'anthropic.'.length);
+  return STRUCTURED_OUTPUT_MODEL_STEMS.some((stem) => base.startsWith(stem));
+};
+
+/**
+ * The effective `extraction.schema_enforcement.mode`. Mirrors
+ * ``SchemaEnforcementConfig``: absent means 'off', and an unquoted YAML `off`
+ * arrives as the boolean false.
+ */
+export const schemaEnforcementModeOf = (
+  formValues: Record<string, unknown> | null | undefined,
+): 'off' | 'auto' | 'structured_output' | 'forced_tool' => {
+  const extraction = (formValues?.extraction as Record<string, unknown>) || {};
+  const enforcement = (extraction.schema_enforcement as Record<string, unknown>) || {};
+  const raw = enforcement.mode;
+  if (typeof raw !== 'string') return 'off';
+  const mode = raw.trim().toLowerCase();
+  return mode === 'auto' || mode === 'structured_output' || mode === 'forced_tool' ? mode : 'off';
+};
+
 export const schemaDivergenceFor = (
   formValues: Record<string, unknown> | null | undefined,
   selectedClass: Record<string, unknown> | null | undefined,
@@ -697,14 +744,15 @@ export const schemaDivergenceFor = (
 ): { wrapped: boolean; probe: boolean; forcedTool: boolean; restatesSchema: boolean } => {
   const extraction = (formValues?.extraction as Record<string, unknown>) || {};
   const detection = (extraction.multi_instance_detection as Record<string, unknown>) || {};
-  const forcedTool = (extraction.forced_tool as Record<string, unknown>) || {};
+  const enforcement = schemaEnforcementModeOf(formValues);
+  const sendsForcedTool = enforcement === 'forced_tool' || (enforcement === 'auto' && !modelTakesStructuredOutput(extraction.model));
   const agentic = (extraction.agentic as Record<string, unknown>) || {};
   const mode = extractionModeOf(formValues);
   const isExtraction = selectedStep === 'extraction';
   return {
     wrapped: Boolean(selectedClass?.[X_AWS_IDP_MULTI_INSTANCE]),
     probe: boolish(detection.enabled, false) && mode === 'simple' && isExtraction,
-    forcedTool: boolish(forcedTool.enabled, false) && mode === 'simple' && isExtraction && modelCanBeForced(extraction.model),
+    forcedTool: sendsForcedTool && mode === 'simple' && isExtraction && modelCanBeForced(extraction.model),
     restatesSchema: boolish(agentic.restate_schema_in_system_prompt, true) && mode === 'advanced' && isExtraction,
   };
 };
