@@ -347,7 +347,8 @@ def test_a_missing_basedpyright_is_named_on_stdout(monkeypatch, capsys, mod) -> 
     code = mod.run_type_check(["scripts/sdlc/typecheck_pr_changes.py"])
 
     out = capsys.readouterr().out
-    assert code != 0, "a run that checked nothing must not pass"
+    assert code == mod.TOOL_MISSING_EXIT, "a run that checked nothing must not pass"
+    assert mod.TOOL_MISSING_EXIT not in mod.INTERPRETABLE_EXIT_CODES
     assert "basedpyright is not on PATH" in out
     assert "npm install -g basedpyright" in out
 
@@ -368,9 +369,30 @@ def test_main_does_not_blame_type_errors_when_the_tool_is_missing(
     code = mod.main()
 
     out = capsys.readouterr().out
-    assert code != 0
+    assert code == mod.TOOL_MISSING_EXIT
     assert "errors above" not in out
     assert "basedpyright is not installed" in out
+
+
+@pytest.mark.unit
+def test_main_still_blames_type_errors_when_the_check_found_some(
+    monkeypatch, capsys, mod
+) -> None:
+    """The tool-missing summary must not replace the one for a real failing check."""
+    monkeypatch.setattr(
+        mod,
+        "get_changed_files",
+        lambda _branch: ["scripts/sdlc/typecheck_pr_changes.py"],
+    )
+    monkeypatch.setattr(mod, "run_type_check", lambda _files: 1)
+    monkeypatch.setattr(sys, "argv", ["typecheck_pr_changes.py", "develop"])
+
+    code = mod.main()
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "errors above" in out
+    assert "not installed" not in out
 
 
 # --------------------------------------------------------------------------- #
