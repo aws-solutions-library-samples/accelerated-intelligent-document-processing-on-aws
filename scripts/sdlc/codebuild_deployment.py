@@ -11479,7 +11479,6 @@ def terraform_migration_driver_command(
     old_name,
     new_name,
     module_url,
-    role_arn,
     terraform_bin,
     work_dir,
     region,
@@ -11487,6 +11486,11 @@ def terraform_migration_driver_command(
     boundary_arn,
     state_mirror=None,
 ):
+    """The driver's argv. No ``--terraform-assume-role-arn``: the driver and every
+    process it starts already run as the run's TFDeployRole through the AWS
+    profile (render_migration_aws_config), and that role's trust admits only the
+    build's principal, so asking it to assume itself is refused — by the SDK's
+    own lookups in ``migrate plan`` and by the new root's providers alike."""
     mirror = ["--state-mirror", state_mirror] if state_mirror else []
     return [
         sys.executable,
@@ -11503,8 +11507,6 @@ def terraform_migration_driver_command(
         terraform_bin,
         "--terraform-module-url",
         module_url,
-        "--terraform-assume-role-arn",
-        role_arn,
         "--expected-account",
         account,
         "--upstream-iam-path",
@@ -11673,7 +11675,6 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
             old_name,
             new_name,
             module_url,
-            role_arn,
             terraform_bin,
             work_dir,
             region,
@@ -11717,6 +11718,35 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
     return success, summary
 
 
+#: The driver's context beside run.json in a migration run's mirror
+#: (MIRROR_CONTEXT in terraform_migration_test.py).
+TERRAFORM_MIGRATION_CONTEXT_KEY = "context.json"
+
+
+def _migration_run_created_anything(client, bucket, prefix, keys) -> bool:
+    """Whether the mirrored context says the run created something. No context,
+    or one that cannot be read, counts as created: the reap then runs, and the
+    driver's own checks decide."""
+    key = prefix + TERRAFORM_MIGRATION_CONTEXT_KEY
+    if key not in keys:
+        return True
+    try:
+        context = json.loads(client.get_object(Bucket=bucket, Key=key)["Body"].read())
+    except Exception:  # noqa: BLE001
+        return True
+    return bool(context.get("created"))
+
+
+def _remove_s3_prefix(client, bucket, prefix) -> None:
+    """Delete every object version and delete marker under ``prefix``."""
+    paginator = client.get_paginator("list_object_versions")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for item in page.get("Versions", []) + page.get("DeleteMarkers", []):
+            client.delete_object(
+                Bucket=bucket, Key=item["Key"], VersionId=item["VersionId"]
+            )
+
+
 def _reap_terraform_migration(new_name, bucket, keys, s3=None):
     """Tear down one dead migration run from its mirror: the driver's own
     ``--resume --teardown-only``, in a scratch work directory it rebuilds from the
@@ -11740,6 +11770,16 @@ def _reap_terraform_migration(new_name, bucket, keys, s3=None):
             "Body"
         ].read()
     )
+    if not _migration_run_created_anything(client, bucket, prefix, keys):
+        # Refused before it created anything (a preflight that failed, say): the
+        # build already removed its `-iam` pre-stack, so there is no role to
+        # assume and nothing to destroy. Read with this build's own credentials.
+        print(f"[{new_name}] the dead run created nothing; removing its mirror")
+        _remove_s3_prefix(client, bucket, prefix)
+        return {
+            "findings": [f"{new_name}: {f}" for f in cleanup_iam_resources(new_name)],
+            "timed_out": False,
+        }
     with tempfile.TemporaryDirectory(prefix="idp-tfmig-reap-") as tmp:
         config_path = os.path.join(tmp, "aws-config")
         with open(config_path, "w") as f:
@@ -11756,7 +11796,6 @@ def _reap_terraform_migration(new_name, bucket, keys, s3=None):
             record["old_name"],
             new_name,
             record["module_url"],
-            record["role_arn"],
             ensure_terraform_binary(),
             os.path.join(tmp, "work"),
             record["region"],

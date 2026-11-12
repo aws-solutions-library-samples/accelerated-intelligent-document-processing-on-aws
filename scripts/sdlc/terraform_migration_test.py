@@ -2592,9 +2592,18 @@ class Run:
             if (
                 self.s.state_mirror
                 and not self.s.keep
-                and self.ctx.get("leftovers") == []
+                and (
+                    self.ctx.get("leftovers") == []
+                    # Refused before creating anything: there is nothing for a
+                    # later build to tear down, and the run's role, which a reap
+                    # would assume, goes with the build's own `-iam` cleanup.
+                    or not self.ctx.get("created")
+                )
             ):
-                self.clear_mirror()
+                try:
+                    self.clear_mirror()
+                except Exception as e:  # noqa: BLE001 - the verdict stands
+                    print(f"⚠ could not remove the state mirror: {e}", flush=True)
         return 1 if failed or (self.ctx["findings"] and not stopped) else 0
 
     def write_result(self, failed: bool, stopped: bool, name: str = "result") -> None:

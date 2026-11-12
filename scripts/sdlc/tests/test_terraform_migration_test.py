@@ -1438,3 +1438,25 @@ def test_restore_rebuilds_the_old_root_and_fetches_the_new_one(tmp_path, monkeyp
     assert (run.old_dir / tmt.OLD_BACKEND_FILE).is_file()
     assert (run.old_dir / "terraform.tfvars").is_file()
     assert sorted(p.name for p in run.new_dir.iterdir()) == ["backend.tf", "main.tf"]
+
+
+@pytest.mark.parametrize("fail", ["preflight", "upstream-clone"])
+def test_a_run_refused_before_it_created_anything_clears_its_mirror(tmp_path, fail):
+    """Nothing to tear down, and the run's role goes with the build's `-iam`
+    cleanup, so a mirror left behind would only send every later build's reaper
+    to assume a role that no longer exists."""
+    s3 = _FakeS3({MIRROR_PREFIX + tmt.MIRROR_CONTEXT: b"{}"})
+    run = _Mirrored(_settings(tmp_path, state_mirror=MIRROR), fail=fail)
+    run._boto_cache.update(s3=s3, sts=_FakeSts())
+    run.execute()
+    assert not run.ctx.get("created")
+    assert s3.deleted
+
+
+def test_a_run_that_created_something_and_failed_keeps_its_mirror(tmp_path):
+    s3 = _FakeS3({MIRROR_PREFIX + "old/terraform.tfstate": b"{}"})
+    _Mirrored.leftovers = ["bucket b"]
+    run = _Mirrored(_settings(tmp_path, state_mirror=MIRROR), fail="seed")
+    run._boto_cache.update(s3=s3, sts=_FakeSts())
+    run.execute()
+    assert run.ctx.get("created") and s3.deleted == []
