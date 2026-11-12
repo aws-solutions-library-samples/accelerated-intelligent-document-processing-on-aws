@@ -32,7 +32,9 @@ export interface PricingTableLike {
   pricing: PricingEntryLike[];
 }
 
-const unitKey = (entryName: string, unitName: string): string => `${entryName}\u0000${unitName}`;
+// An internal map key, never shown: a separator that cannot occur in a name.
+const KEY_SEPARATOR = '\u0000';
+const unitKey = (entryName: string, unitName: string): string => [entryName, unitName].join(KEY_SEPARATOR);
 
 const priceMap = (table: PricingTableLike): Map<string, string> => {
   const map = new Map<string, string>();
