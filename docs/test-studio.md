@@ -362,7 +362,7 @@ The UI reaches every backend operation below through the REST API, as
 #### TestSetFileCopier Lambda
 - **Location**: `src/lambda/test_set_file_copier/index.py`
 - **Purpose**: Copies files from source buckets to the test set bucket
-- **Features**: Pattern-based file matching, baseline validation, automatic baseline filtering for Input Bucket sources, time-based file filtering, file count recount, supports both create and append modes
+- **Features**: Pattern-based file matching, baseline validation, Input Bucket documents without a baseline added unlabeled, time-based file filtering, file count recount, supports both create and append modes
 
 #### TestSetZipExtractor Lambda
 - **Location**: `src/lambda/test_set_zip_extractor/index.py`
@@ -632,8 +632,14 @@ The **From files already in a bucket** step adds a **Modified after** filter —
 a preset (last hour, 24 hours, 7 days, …) or a custom date and time, which makes
 it easy to pick up only recently reviewed documents — and a **Check matching
 files** button that reports the match count before you commit. When reading from
-the input bucket, documents with no ground truth in the evaluation baseline bucket
-are skipped rather than failing, so a broad pattern is safe. Patterns match the full
+the input bucket, a matching document with no ground truth in the evaluation baseline
+bucket is added **unlabeled**, as it is from every other source: its input is copied
+and it waits for [draft labels](#draft-labeling-unlabeled-documents--ground-truth).
+A broad pattern therefore brings in every file it matches, labeled or not, and
+one unlabeled document makes the whole set read as `unlabeled` until it is
+draft-labeled. A pattern re-applied when adding documents leaves the set's existing
+unlabeled documents as they are. A set whose every match is unlabeled is created as an unlabeled set.
+Patterns match the full
 object key: `*` matches within one folder level, `**` matches across folders, `?`
 matches a single character. The folder path before the first wildcard must be typed
 as it exists in the bucket; everything after it is matched regardless of case.
@@ -730,7 +736,7 @@ The same **Add documents** menu is available in two places: on the Test Sets tab
 On the table, the set shows an "Updating..." status while files are being added and the file count updates when it completes. On the set's page, a notice reports that documents are arriving and the list refreshes when they land; for generation it follows the job and refreshes when the job completes.
 
 **Key behaviors:**
-- **Automatic baseline filtering** (Input Bucket pattern import only): Files without matching baseline data in the evaluation bucket are automatically excluded rather than failing. Documents added **From processed documents** are never excluded for this reason; they arrive unlabeled instead. A result message reports the counts (e.g., "Added 8 of 12 files (4 excluded - no baseline data)").
+- **Documents without ground truth arrive unlabeled**: From the Input Bucket, by pattern or **From processed documents**, a file with no matching baseline data in the evaluation bucket is added without labels rather than skipped. Adding one to a labeled or draft-labeled set makes the set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. From the Test Set Bucket, every matching file must still have a baseline folder, or the add fails.
 - **Idempotent**: Adding a document that already exists overwrites it. File counts are always recounted from S3 for accuracy.
 - **Prepopulated file pattern**: The file pattern field is pre-filled with the pattern used to create the test set, so you can reuse or adjust it.
 - **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns.
@@ -757,7 +763,7 @@ my-test-set/
   A *partially* labeled set (baselines for some documents but not others) is
   still a validation error, since that indicates an incomplete upload rather
   than a deliberate label-later workflow.
-- When using Input Bucket as source, files without baselines are automatically excluded (not treated as an error)
+- When using Input Bucket as source, files without baselines are added unlabeled (not treated as an error), so the set can be partially labeled; it reads as `unlabeled` until those documents are draft-labeled
 - Status: COMPLETED (valid), FAILED (validation errors), QUEUED/COPYING (creating), UPDATING (adding documents)
 - These rules apply to a zip upload exactly as they do to folders found in the bucket: the
   zip extractor accepts an archive with no `baseline/` folder as an unlabeled set and still

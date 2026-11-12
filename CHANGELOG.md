@@ -18,6 +18,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
+- **Test Studio "From files in S3" now adds Input-bucket documents that have no ground truth as unlabeled instead of skipping them.** This is how the zip upload, folder discovery and "From processed documents" routes already treat such documents. A create whose every match is unlabeled now succeeds as an unlabeled set, where before it was reported as started and then left a FAILED set behind. A broad pattern now brings in every file it matches, and one unlabeled document makes a labeled set read as unlabeled until it is draft-labeled. The create wizard and the add-documents dialog now say this. Test Set Bucket patterns still require a baseline for every match. See [Test Studio](docs/test-studio.md).
+
 - **The generated Terraform's custom-resource bridge is hardened, and the Terraform scan now fails on a new Terraform-only finding.** The bridge's log group is encrypted with the stack's customer-managed key and its bucket sends server access logs to the stack's logging bucket, as the template's own resources do, in every module that has a bridge. `make terraform-scan-diff` compares a Terraform check with a CloudFormation check of the same policy under a different id, and findings on checks with no CloudFormation counterpart, which it used to count and not compare, are pinned per check and resource type with a reason in `scripts/terraform_scan_tf_only_baseline.json`, so a new one or a higher count fails the gate. See [the static scan diff](terraform/README.md#the-static-scan-diff).
 
 - **Template security hardening: WAF request logging, CodeBuild log groups, an unprivileged UI build and tighter bucket lifecycles.** Visible on upgrade:

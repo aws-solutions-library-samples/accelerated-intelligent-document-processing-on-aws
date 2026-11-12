@@ -84,6 +84,15 @@ describe('AddDocumentsModals, pattern dialog', () => {
   });
 });
 
+describe('AddDocumentsModals, pattern dialog text (#1817)', () => {
+  it('says documents without ground truth from the input bucket are added unlabeled, not excluded', () => {
+    render(<AddDocumentsModals testSet={target} mode="pattern" onDismiss={vi.fn()} onSubmitted={vi.fn()} />);
+    // The Input Bucket is the default source, which is when this note is shown.
+    expect(screen.getByText(/Files without matching baseline data in the evaluation bucket are added unlabeled\./)).toBeTruthy();
+    expect(screen.queryByText(/excluded/i)).toBeNull();
+  });
+});
+
 describe('AddDocumentsModals, zip dialog', () => {
   const realFetch = globalThis.fetch;
   const fetchMock = vi.fn();
