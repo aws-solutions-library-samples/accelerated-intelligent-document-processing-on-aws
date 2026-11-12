@@ -5,6 +5,7 @@
 Unit tests for the agents common configuration module.
 """
 
+import builtins
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -12,11 +13,15 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from idp_common.agents.common import config as common_config
 from idp_common.agents.common.config import (
+    AGENT_MODEL_LAST_RESORT,
     DEFAULT_AGENT_MODEL_ID,
     get_environment_config,
+    portable_profile,
     validate_aws_credentials,
 )
+from idp_common.agents.error_analyzer import config as error_analyzer_config
 from idp_common.config.models import ChatCompanionConfig
 
 
@@ -121,3 +126,81 @@ class TestDefaultAgentModelId:
             for entry in yaml.safe_load(_PRICING.read_text())["pricing"]
         }
         assert f"bedrock/{DEFAULT_AGENT_MODEL_ID}" in names
+
+
+def _without_config_models(monkeypatch):
+    """Make the configuration models unimportable, as on the error path."""
+    real_import = builtins.__import__
+    models = {"ChatCompanionConfig", "ErrorAnalyzerConfig"}
+
+    def refuse(name, globals=None, locals=None, fromlist=(), level=0):
+        if models & set(fromlist or ()):
+            raise ImportError("simulated: configuration cannot be loaded")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", refuse)
+
+
+@pytest.mark.unit
+class TestLastResortModels:
+    """The literal each fallback returns when even the field default is unreadable.
+
+    The literal equals the derived value by design, so "the call returned the
+    literal" cannot show the import failure was reached; each test swaps the literal
+    for a sentinel first, then checks the real literal separately.
+    """
+
+    def test_agent_last_resort_is_reached(self, monkeypatch):
+        monkeypatch.setattr(common_config, "AGENT_MODEL_LAST_RESORT", "SENTINEL")
+        _without_config_models(monkeypatch)
+        assert common_config._default_agent_model_id() == "SENTINEL"
+
+    def test_agent_last_resort_is_the_derived_model(self):
+        assert AGENT_MODEL_LAST_RESORT == DEFAULT_AGENT_MODEL_ID
+
+    def test_error_analyzer_last_resort_is_reached(self, monkeypatch):
+        monkeypatch.setattr(
+            error_analyzer_config, "ERROR_ANALYZER_MODEL_LAST_RESORT", "SENTINEL"
+        )
+        _without_config_models(monkeypatch)
+        assert error_analyzer_config.default_error_analyzer_model_id() == "SENTINEL"
+
+    def test_error_analyzer_last_resort_is_the_derived_model(self):
+        assert (
+            error_analyzer_config.ERROR_ANALYZER_MODEL_LAST_RESORT
+            == error_analyzer_config.default_error_analyzer_model_id()
+        )
+
+    def test_error_analyzer_fallback_is_the_shipped_model_through_global(self):
+        from idp_common.config.models import ErrorAnalyzerConfig
+
+        shipped = ErrorAnalyzerConfig().model_id
+        fallback = error_analyzer_config.default_error_analyzer_model_id()
+        assert fallback.startswith("global."), fallback
+        assert fallback.partition(".")[2] == shipped.partition(".")[2]
+        names = {
+            entry.get("name")
+            for entry in yaml.safe_load(_PRICING.read_text())["pricing"]
+        }
+        assert f"bedrock/{fallback}" in names
+
+    def test_error_analyzer_uses_it_when_configuration_cannot_be_read(self):
+        with patch(
+            "idp_common.config.get_config", side_effect=RuntimeError("no table")
+        ):
+            model_id = error_analyzer_config.get_error_analyzer_model_id()
+        assert model_id == error_analyzer_config.default_error_analyzer_model_id()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model_id", "expected"),
+    [
+        ("us.anthropic.claude-sonnet-4-6", "global.anthropic.claude-sonnet-4-6"),
+        ("eu.amazon.nova-pro-v1:0", "global.amazon.nova-pro-v1:0"),
+        ("global.anthropic.claude-sonnet-4-6", "global.anthropic.claude-sonnet-4-6"),
+        ("amazon.nova-pro-v1:0", "amazon.nova-pro-v1:0"),
+    ],
+)
+def test_portable_profile(model_id, expected):
+    assert portable_profile(model_id) == expected

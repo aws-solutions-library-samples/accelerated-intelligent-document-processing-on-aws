@@ -17,6 +17,21 @@ logger = logging.getLogger(__name__)
 _GEOGRAPHIC_PROFILE_PREFIXES = ("us", "eu", "apac", "ca", "jp", "au")
 
 
+def portable_profile(model_id: str) -> str:
+    """``model_id`` through its ``global.`` profile when it names a geographic one.
+
+    For a fallback model only. A stored configuration naming a ``us.`` profile is
+    remapped to the stack's own geography at deploy time by the
+    ``update_configuration`` function; nothing remaps a code default, so a ``us.``
+    fallback could not be invoked from an EU or Canadian stack, on the one path that
+    runs because configuration could not be read. Any other ID is returned as is.
+    """
+    prefix, _, rest = model_id.partition(".")
+    if prefix in _GEOGRAPHIC_PROFILE_PREFIXES and rest:
+        return f"global.{rest}"
+    return model_id
+
+
 def _default_agent_model_id() -> str:
     """The model an agent falls back to when its configured model cannot be read.
 
@@ -28,12 +43,9 @@ def _default_agent_model_id() -> str:
     not, so the fallback turned a recoverable configuration error into a
     ``ResourceNotFoundException`` that names the wrong problem.
 
-    ⚠️ The model is the field default's, but the profile is ``global.``. The field
-    default equals what ``base-agents.yaml`` ships, a ``us.`` profile, and a stored
-    configuration naming it is remapped to the stack's own geography at deploy
-    time by the ``update_configuration`` function. Nothing remaps a code default,
-    so a ``us.`` fallback could not be invoked from an EU or Canadian stack — on
-    the one path that runs because configuration could not be read.
+    ⚠️ The model is the field default's, but the profile is ``global.``: the field
+    default equals what ``base-agents.yaml`` ships, a ``us.`` profile, and
+    :func:`portable_profile` says why a fallback cannot use one.
 
     The import is local and guarded. This runs on an error path — often *because*
     configuration could not be loaded — and it must not be the thing that raises.
@@ -45,13 +57,16 @@ def _default_agent_model_id() -> str:
 
         default = ChatCompanionConfig.model_fields["model_id"].default
         if isinstance(default, str) and default:
-            prefix, _, rest = default.partition(".")
-            if prefix in _GEOGRAPHIC_PROFILE_PREFIXES and rest:
-                return f"global.{rest}"
-            return default
-    except Exception:  # pragma: no cover - defensive, see docstring
+            return portable_profile(default)
+    except Exception:  # defensive, see docstring
         pass
-    return "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    return AGENT_MODEL_LAST_RESORT
+
+
+#: What :func:`_default_agent_model_id` returns when the chat companion's field
+#: default cannot be read. It is the same model through the same profile, which
+#: ``tests/unit/agents/test_common_config.py`` holds.
+AGENT_MODEL_LAST_RESORT = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
 #: Fallback model for agents whose configured model id cannot be resolved.

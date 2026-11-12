@@ -230,14 +230,22 @@ describe('schemaDivergenceFor', () => {
     expect(schemaDivergenceFor({}, {}, 'extraction').probe).toBe(false);
   });
 
-  it('reports the probe on Simple mode only, because agentic skips it', () => {
-    // _build_wire_schema returns the schema untouched when agentic.enabled, so
-    // claiming the probe in Advanced mode warned about something never sent.
+  it('reports the probe in BOTH modes, because Advanced probes its single-agent call', () => {
+    // Simple adds it in _build_wire_schema; Advanced adds it to the transport model
+    // of the unsharded agent call in _agentic_probe_model (#772). Hiding it in
+    // Advanced mode told the user no probe was sent when one was.
     expect(
       schemaDivergenceFor({ extraction: { mode: 'simple', multi_instance_detection: { enabled: true } } }, {}, 'extraction').probe,
     ).toBe(true);
     expect(
       schemaDivergenceFor({ extraction: { mode: 'advanced', multi_instance_detection: { enabled: true } } }, {}, 'extraction').probe,
+    ).toBe(true);
+    expect(
+      schemaDivergenceFor({ extraction: { agentic: { enabled: true }, multi_instance_detection: { enabled: true } } }, {}, 'extraction')
+        .probe,
+    ).toBe(true);
+    expect(
+      schemaDivergenceFor({ extraction: { mode: 'advanced', multi_instance_detection: { enabled: true } } }, {}, 'confidence').probe,
     ).toBe(false);
   });
 
@@ -600,6 +608,21 @@ describe('PromptPreview token accounting', () => {
     // ...but the RAW template tab must show only what the user typed, since that
     // is the text they edit. A block appended by the runtime is not part of it.
     expect(await promptBody(/^Raw System Template$/)).toBe('You are a document extraction expert.');
+  });
+
+  it('names the detection probe in Advanced mode, with its shard limit, and not when detection is off', async () => {
+    // Advanced adds the probe to the unsharded agent call (_agentic_probe_model,
+    // #772) but never to a sharded section, so the alert must say both.
+    const SHARD_LIMIT = /In Advanced mode it is not added when a section is split into page-range shards\./;
+    const first = render(<PromptPreview formValues={configWith({ mode: 'advanced', multi_instance_detection: { enabled: true } })} />);
+    await showExtractionStep();
+    expect(screen.getByText(/IDPDocumentInstanceCount/)).toBeTruthy();
+    expect(screen.getByText(SHARD_LIMIT)).toBeTruthy();
+    first.unmount();
+
+    render(<PromptPreview formValues={configWith({ mode: 'advanced', multi_instance_detection: { enabled: false } })} />);
+    await showExtractionStep();
+    expect(screen.queryByText(SHARD_LIMIT)).toBeNull();
   });
 });
 

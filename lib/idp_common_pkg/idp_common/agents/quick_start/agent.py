@@ -28,7 +28,10 @@ from .tools import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+# A global. profile: this is the model used when the caller passes none, and a
+# us. profile cannot be invoked from an EU or Canadian stack (see
+# idp_common.agents.common.config.portable_profile).
+DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 
 SYSTEM_PROMPT = """
 You are the Quick Start Agent for the GenAI IDP Accelerator. You help a new user

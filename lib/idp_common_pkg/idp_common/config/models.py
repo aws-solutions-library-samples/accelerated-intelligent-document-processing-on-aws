@@ -667,8 +667,10 @@ class MultiInstanceDetectionConfig(BaseModel):
             "documents of the same class. There the measurement says it will be "
             "right, and the alternative is shipping one record out of N with no "
             "signal at all. "
-            "Applies to Simple extraction (prompt and forced-tool paths); "
-            "Advanced (agentic) extraction is not covered."
+            "Applies to Simple extraction (prompt and forced-tool paths) and to "
+            "Advanced (agentic) extraction, except where an Advanced section is "
+            "split into page-range shards or resumed from a validated checkpoint; "
+            "those are not checked."
         ),
     )
     question: str = Field(
