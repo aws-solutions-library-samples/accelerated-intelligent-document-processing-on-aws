@@ -16252,9 +16252,19 @@ Resources:
             #     @monaco-editor/loader rather than by us, so pinning the
             #     version too would turn a dependency bump into a blank editor.
             #   - default-src 'self' covers every fetch directive not listed
-            #     here (manifest-src, child-src, prefetch). worker-src is NOT
-            #     affected: it falls back to child-src and then script-src
-            #     before default-src, and script-src is set.
+            #     here (manifest-src, child-src, prefetch).
+            #   - worker-src 'self' blob:: Monaco's AMD entry
+            #     (min/vs/editor/editor.main.js, loaded from the jsDelivr path
+            #     above) sets MonacoEnvironment.getWorker, which wraps each
+            #     language worker's jsDelivr URL in a same-origin `blob:` URL
+            #     (URL.createObjectURL of a one-line `importScripts(<url>)`) and
+            #     starts the Worker from that. Without worker-src the directive
+            #     falls back to script-src, which has no blob:, so the JSON/YAML
+            #     views lost their workers and ran that code on the main thread.
+            #     A blob: worker inherits this policy, so its importScripts of
+            #     the jsDelivr URL is still held to script-src. 'self' keeps the
+            #     pdf.js worker, a bundled same-origin asset, which script-src
+            #     'self' allowed before this directive existed.
             #   - style-src: 'self' plus the one cross-origin stylesheet the app
             #     loads, Monaco's editor.main.css, which the AMD loader fetched
             #     from cdn.jsdelivr.net/npm/ above adds as a <link>.
@@ -16311,7 +16321,7 @@ Resources:
             #     any subdomain depth, which is why the app worked throughout.
             #     Removed rather than corrected, so the policy says what it does.
             #     Do not re-add a host with a wildcard anywhere but the front.
-            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; default-src 'self'; img-src 'self' data: blob: https://*.amazonaws.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/npm/; font-src 'self' data:; media-src 'self'; frame-src 'self' data: https://*.amazonaws.com; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;"
+            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; default-src 'self'; worker-src 'self' blob:; img-src 'self' data: blob: https://*.amazonaws.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/npm/; font-src 'self' data:; media-src 'self'; frame-src 'self' data: https://*.amazonaws.com; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;"
 
           StrictTransportSecurity:
             Override: true

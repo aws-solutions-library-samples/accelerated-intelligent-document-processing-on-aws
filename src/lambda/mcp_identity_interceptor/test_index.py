@@ -34,6 +34,8 @@ from idp_common.config_scope import TENANT_GRANT_SOURCE_ENV, TENANT_ISOLATION_EN
 pytestmark = pytest.mark.unit
 
 REGION = "us-east-1"
+# Value of the Cognito ``token_use`` claim on an access token.
+USE_ACCESS = "access"
 INTERCEPTOR = Path(__file__).resolve().parent / "index.py"
 REQUEST_ID = "184bd53c-b0bc-48a5-8d59-bcf4b4ada42c"
 USER_CLIENT = "6g97km074t91v627s3ugutgiae"
@@ -182,7 +184,7 @@ def user_token(world, name, *groups, client=USER_CLIENT):
     return _jwt(
         {
             "iss": world.issuer,
-            "token_use": "access",
+            "token_use": USE_ACCESS,
             "client_id": client,
             "sub": world.subs[name],
             "username": name,
@@ -196,7 +198,7 @@ def service_token(world, client=SERVICE_CLIENT):
     return _jwt(
         {
             "iss": world.issuer,
-            "token_use": "access",
+            "token_use": USE_ACCESS,
             "client_id": client,
             "sub": client,
             "scope": "idp-mcp-connector/access",

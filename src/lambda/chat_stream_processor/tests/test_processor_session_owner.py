@@ -96,12 +96,12 @@ def world(request, monkeypatch):
         "AWS_REGION": "us-east-1",
         "AWS_DEFAULT_REGION": "us-east-1",
         "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
-        "AWS_SECRET_ACCESS_KEY": "testing",
         "CHAT_MESSAGES_TABLE": "messages",
         "CHAT_SESSIONS_TABLE": "sessions",
         "CHAT_SESSION_OWNERS_TABLE": "owners",
     }.items():
         monkeypatch.setenv(k, v)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
     with mock_aws():

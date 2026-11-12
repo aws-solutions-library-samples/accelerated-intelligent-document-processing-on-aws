@@ -100,7 +100,7 @@ _DONE = object()
 
 #: Header the web UI sends its Cognito ID token in. ``Authorization`` is taken by
 #: the SigV4 signature the Function URL itself checks.
-ID_TOKEN_HEADER = "x-idp-id-token"
+ID_TOKEN_HEADER = "x-idp-id-token"  # nosec B105 - HTTP header name, not a credential
 
 _DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 
