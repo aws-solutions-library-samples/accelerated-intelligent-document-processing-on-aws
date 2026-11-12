@@ -115,6 +115,28 @@ The GenAI IDP Accelerator solution includes a built-in cost estimation feature i
 
 This real-time cost tracking helps you monitor actual usage patterns and optimize costs based on real-world usage.
 
+#### Editing the pricing table
+
+Administrators change prices on the **Pricing** page. The shipped rates come from
+`config_library/pricing.yaml` and are stored at deployment as the stack's default
+pricing; what you save is stored separately as custom pricing.
+
+⚠️ **Saving the Pricing page stores the whole table, and a saved table replaces the
+default table in full.** It is not merged over the defaults row by row. Two things
+follow for a stack that has ever saved the page, however small the edit:
+
+- A rate a later release corrects in `pricing.yaml` does not reach it, because the
+  saved table still carries the old rate.
+- A model a later release adds has no price on it. Its usage is reported as
+  unpriced (`NULL` in the reporting `metering` table) rather than costed.
+
+To pick up the current defaults, choose **Restore default (All)** on the Pricing
+page, which discards the saved table, and then re-apply your own changes. The button
+is enabled whenever the table on the page differs from the defaults: a price that
+differs by any amount (the same value in a different notation, such as `2.2E-6` and
+`0.0000022`, does not count), a row the defaults do not have, or a default row you
+deleted.
+
 ### What the estimate cannot express: prices that change with request size
 
 The estimate multiplies a token count by one rate per unit. A model that instead

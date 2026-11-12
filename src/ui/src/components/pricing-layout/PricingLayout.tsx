@@ -24,6 +24,7 @@ import Editor from '@monaco-editor/react';
 import yaml from 'js-yaml';
 import usePricing from '../../hooks/use-pricing';
 import useUserRole from '../../hooks/use-user-role';
+import { hasPricingCustomizations } from './pricing-customizations';
 
 interface PricingUnit {
   name: string;
@@ -132,33 +133,8 @@ const PricingLayout = (): React.JSX.Element => {
     }
   }, [pricing]);
 
-  // Check if any pricing values are customized
-  const hasCustomizations = (): boolean => {
-    if (!defaultPricing || !formValues || !(defaultPricing as PricingFormValues).pricing || !formValues.pricing) return false;
-
-    // Compare pricing arrays
-    const defaultMap = new Map();
-    (defaultPricing as PricingFormValues).pricing.forEach((entry) => {
-      if (entry.name && entry.units) {
-        entry.units.forEach((unit) => {
-          defaultMap.set(`${entry.name}:${unit.name}`, unit.price);
-        });
-      }
-    });
-
-    for (const entry of formValues.pricing) {
-      if (entry.name && entry.units) {
-        for (const unit of entry.units) {
-          const key = `${entry.name}:${unit.name}`;
-          const defaultPrice = defaultMap.get(key);
-          if (defaultPrice === undefined || Math.abs(Number(unit.price) - Number(defaultPrice)) > 0.000001) {
-            return true;
-          }
-        }
-      }
-    }
-    return false;
-  };
+  // Check if the table differs from the defaults (see pricing-customizations.ts)
+  const hasCustomizations = (): boolean => hasPricingCustomizations(formValues, defaultPricing);
 
   // Handle changes in the JSON editor
   const handleJsonEditorChange = (value: string | undefined): void => {
