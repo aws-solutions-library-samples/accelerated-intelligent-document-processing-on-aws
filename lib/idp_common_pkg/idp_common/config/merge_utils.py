@@ -1584,6 +1584,27 @@ def _modality_supplies_content(modality: Dict[str, Any]) -> bool:
     )
 
 
+def _confidence_pass_can_run(merged_config: Dict[str, Any]) -> bool:
+    """False only when the confidence block turns scoring off.
+
+    Read through ``ConfidenceConfig`` rather than by re-reading ``mode`` and
+    ``enabled`` here: the model is what the runtime reads, and it folds the legacy
+    ``enabled: false`` into ``mode: off``. ``integrated`` still counts as able to run,
+    because simple extraction scores a class with list fields in the separate pass
+    even then. A block the model refuses is reported by the Pydantic step, so it is
+    treated here as able to run and its prompt is still checked.
+    """
+    from idp_common.config.models import ConfidenceConfig
+
+    try:
+        block = ConfidenceConfig.model_validate(
+            _dict_at(merged_config, "extraction", "confidence")
+        )
+    except Exception:
+        return True
+    return block.enabled
+
+
 def _validate_task_prompt_placeholders(
     merged_config: Dict[str, Any], result: Dict[str, Any]
 ) -> None:
@@ -1593,70 +1614,90 @@ def _validate_task_prompt_placeholders(
     Checks for missing required placeholders that would cause silent failures
     when custom task_prompts are provided.
 
-    Required placeholders by section:
-    - ocr: {DOCUMENT_IMAGE}
+    Required placeholders by prompt:
+    - ocr.task_prompt: {DOCUMENT_IMAGE}
     - classification: {DOCUMENT_TEXT} or {DOCUMENT_IMAGE}
-    - extraction: {DOCUMENT_TEXT} or {DOCUMENT_IMAGE}
-    - assessment: {DOCUMENT_IMAGE}, {OCR_TEXT_CONFIDENCE}, {EXTRACTION_RESULTS}
-    - summarization: {DOCUMENT_TEXT}, {EXTRACTION_RESULTS}
+    - extraction.task_prompt: {DOCUMENT_TEXT} or {DOCUMENT_IMAGE}
+    - extraction.confidence.task_prompt: {EXTRACTION_RESULTS}, and at least one of
+      {DOCUMENT_TEXT}, {OCR_TEXT_CONFIDENCE} or {DOCUMENT_IMAGE}
+    - summarization.task_prompt: {DOCUMENT_TEXT}, {EXTRACTION_RESULTS}
+
+    The confidence prompt lives at ``extraction.confidence.task_prompt``. A pre-0.6
+    ``assessment.task_prompt`` is not read here: ``validate_config`` checks the
+    merged configuration, and the merge runs the migration chain, which moves that
+    block under ``extraction.confidence`` and leaves no top-level ``assessment``.
+    {DOCUMENT_IMAGE} alone is not required of it, because removing that placeholder
+    is the documented way to make the confidence pass text-only (the assessment
+    service attaches page images only when the prompt asks for them).
     """
-    # Validation rules: section -> (required_placeholders, require_all_flag)
-    # require_all_flag: True = ALL placeholders required, False = ANY one required
-    validation_rules = {
-        "ocr": (
+    # Validation rules: (section, prompt path, ALL of these, at least ONE of these
+    # (empty = no such requirement), message).
+    validation_rules = [
+        (
+            "ocr",
+            ("ocr",),
             ["{DOCUMENT_IMAGE}"],
-            True,  # Must have DOCUMENT_IMAGE
+            [],
             "ocr.task_prompt must include {DOCUMENT_IMAGE} placeholder. "
             "Without this placeholder, the OCR model will not receive the document image, "
             "resulting in OCR failures. "
             "Either add the required placeholder or remove task_prompt to use system defaults.",
         ),
-        "classification": (
+        (
+            "classification",
+            ("classification",),
+            [],
             ["{DOCUMENT_TEXT}", "{DOCUMENT_IMAGE}"],
-            False,  # Must have at least one
             "{path} must include {DOCUMENT_TEXT} or {DOCUMENT_IMAGE} placeholder. "
             "Without these placeholders, the classification model will not receive document content, "
             "resulting in classification failures. "
             "Either add at least one required placeholder or remove task_prompt to use system defaults.",
         ),
-        "extraction": (
+        (
+            "extraction",
+            ("extraction",),
+            [],
             ["{DOCUMENT_TEXT}", "{DOCUMENT_IMAGE}"],
-            False,  # Must have at least one
             "extraction.task_prompt must include {DOCUMENT_TEXT} or {DOCUMENT_IMAGE} placeholder. "
             "Without these placeholders, the LLM will not receive document content from OCR, "
             "resulting in silent extraction failures. "
             "Either add at least one required placeholder or remove task_prompt to use system defaults.",
         ),
-        "assessment": (
-            ["{DOCUMENT_IMAGE}", "{OCR_TEXT_CONFIDENCE}", "{EXTRACTION_RESULTS}"],
-            True,  # Must have all three
-            "assessment.task_prompt must include {DOCUMENT_IMAGE}, {OCR_TEXT_CONFIDENCE}, and {EXTRACTION_RESULTS} placeholders. "
-            "Without these placeholders, the assessment model cannot evaluate extraction quality or provide bounding boxes. "
-            "Either add all required placeholders or remove task_prompt to use system defaults.",
+        (
+            "confidence",
+            ("extraction", "confidence"),
+            ["{EXTRACTION_RESULTS}"],
+            ["{DOCUMENT_TEXT}", "{OCR_TEXT_CONFIDENCE}", "{DOCUMENT_IMAGE}"],
+            "extraction.confidence.task_prompt must include {EXTRACTION_RESULTS} and at least one of "
+            "{DOCUMENT_TEXT}, {OCR_TEXT_CONFIDENCE} or {DOCUMENT_IMAGE}. "
+            "Without them, the confidence model is not shown the values it is asked to score "
+            "or the document to score them against. "
+            "Either add the required placeholders or remove task_prompt to use system defaults.",
         ),
-        "summarization": (
+        (
+            "summarization",
+            ("summarization",),
             ["{DOCUMENT_TEXT}", "{EXTRACTION_RESULTS}"],
-            True,  # Must have both
+            [],
             "summarization.task_prompt must include {DOCUMENT_TEXT} and {EXTRACTION_RESULTS} placeholders. "
             "Without these placeholders, the summarization model cannot generate accurate summaries. "
             "Either add all required placeholders or remove task_prompt to use system defaults.",
         ),
-    }
+    ]
 
-    # Check each section that has validation rules
-    for section_name, (
-        required_placeholders,
-        require_all,
-        error_message,
-    ) in validation_rules.items():
-        section = merged_config.get(section_name, {})
+    for section_name, prompt_path, all_of, any_of, error_message in validation_rules:
+        section = _dict_at(merged_config, *prompt_path)
         if section_name == "classification":
             # One prompt per call the active strategy makes; see
             # `_classification_task_prompts`.
             prompts = _classification_task_prompts(merged_config)
         else:
             prompts = [
-                (f"{section_name}.task_prompt", section.get("task_prompt", ""), {})
+                (
+                    ".".join(prompt_path + ("task_prompt",)),
+                    section.get("task_prompt", ""),
+                    {},
+                )
             ]
 
         # Special case: OCR task_prompt is only used when backend is 'bedrock'
@@ -1666,11 +1707,11 @@ def _validate_task_prompt_placeholders(
                 # Skip OCR validation for non-bedrock backends (Textract doesn't use prompts)
                 continue
 
-        # Skip validation for disabled sections (assessment, summarization)
-        if section_name in ["assessment", "summarization"]:
-            if not section.get("enabled", True):
-                # Section is explicitly disabled, skip validation
-                continue
+        # Skip validation when the prompt is never sent.
+        if section_name == "confidence" and not _confidence_pass_can_run(merged_config):
+            continue
+        if section_name == "summarization" and not section.get("enabled", True):
+            continue
 
         for path, task_prompt, modality in prompts:
             if not task_prompt:
@@ -1680,22 +1721,9 @@ def _validate_task_prompt_placeholders(
                 # asks for it or not, and the service normalises the prompt to
                 # match. See `_classification_task_prompts`.
                 continue
-            # Check which placeholders are present
-            present_placeholders = [
-                placeholder
-                for placeholder in required_placeholders
-                if placeholder in task_prompt
-            ]
-
-            # Determine if validation passes
-            if require_all:
-                # ALL placeholders must be present
-                validation_passed = len(present_placeholders) == len(
-                    required_placeholders
-                )
-            else:
-                # At least ONE placeholder must be present
-                validation_passed = len(present_placeholders) > 0
+            validation_passed = all(p in task_prompt for p in all_of) and (
+                not any_of or any(p in task_prompt for p in any_of)
+            )
 
             if not validation_passed:
                 result["valid"] = False
