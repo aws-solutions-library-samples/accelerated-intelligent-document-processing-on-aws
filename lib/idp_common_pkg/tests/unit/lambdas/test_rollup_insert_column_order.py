@@ -24,6 +24,7 @@ alone.
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import re
 import sys
@@ -72,7 +73,8 @@ def _cfn_tag(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.Node) -> Any:
 _CfnLoader.add_multi_constructor("!", _cfn_tag)
 
 
-def _glue_column_order(table_name: str) -> list[str]:
+@functools.lru_cache(maxsize=None)
+def _glue_column_order(table_name: str) -> tuple[str, ...]:
     """The table's data columns in declared order, then its partition keys.
 
     This is the exact tuple shape an ``INSERT ... SELECT`` has to produce.
@@ -88,7 +90,9 @@ def _glue_column_order(table_name: str) -> list[str]:
             c["Name"] for c in table_input["StorageDescriptor"].get("Columns") or []
         ]
         parts = [c["Name"] for c in table_input.get("PartitionKeys") or []]
-        return data + parts
+        # Tuple, not list: the lru_cache above hands the SAME object to every
+        # caller, and a list would let one test's mutation reach the next.
+        return tuple(data + parts)
     raise AssertionError(f"no AWS::Glue::Table named {table_name!r} in template.yaml")
 
 
@@ -251,7 +255,7 @@ _TABLES = (
 class TestInsertColumnOrderMatchesTheGlueSchema:
     @pytest.mark.parametrize("table", _TABLES)
     def test_select_emits_the_schema_order(self, rollup, table: str) -> None:
-        expected = _glue_column_order(table)
+        expected = list(_glue_column_order(table))
         actual = _select_output_names(_sql_for(rollup, table))
         assert actual == expected, (
             f"the INSERT into {table} emits columns in a different order than "
@@ -313,11 +317,33 @@ class TestRunsAreCountedPerDocumentNotPerCell:
             f"the outer aggregate does not SUM the per-document run counts:\n{outer}"
         )
 
-    def test_the_daily_rollup_sums_the_hourly_runs(self, rollup) -> None:
-        """A run falls in exactly one hour, so SUM over hours stays exact."""
+    def test_the_daily_rollup_propagates_an_incomplete_day(self, rollup) -> None:
+        """⚠️ A bare ``SUM(n_runs)`` is wrong here, and quietly.
+
+        A run falls in exactly one hour, so summing hours is the right
+        arithmetic — but only over hours that recorded a run count. Rows
+        written before the column existed carry no value, and Athena's ``SUM``
+        ignores NULLs, so a day whose hourly cells are PARTLY pre-bump returns
+        an ordinary-looking number that is low by whatever those hours held.
+
+        The migration window's lower bound is hour-aligned rather than
+        day-aligned, so the day it lands on is exactly that case — and it is
+        the oldest day history is available for, which is the one an operator
+        reaches for first. A wholly-unrecorded day reads NULL and is visibly
+        unknown; this makes a half-recorded one read the same way.
+        """
         sql = " ".join(_sql_for(rollup, "metering_docs_daily").split())
-        assert "SUM(n_runs) AS n_runs" in sql, (
-            f"metering_docs_daily must SUM the hourly n_runs:\n{sql}"
+        assert "COUNT(n_runs) = COUNT(*)" in sql, (
+            "the daily rollup does not check that every hourly cell in the "
+            f"group recorded a run count before summing:\n{sql}"
+        )
+        assert "SUM(n_runs)" in sql, (
+            f"the daily rollup does not sum the hourly n_runs at all:\n{sql}"
+        )
+        # The bare form, with nothing guarding it, is the defect.
+        assert "SUM(n_runs) AS n_runs" not in sql, (
+            "the daily rollup sums n_runs unguarded, so a day straddling the "
+            f"schema bump understates instead of reading unknown:\n{sql}"
         )
         assert "DISTINCT" not in sql.upper(), (
             "the daily rollup reads an already-aggregated table; a DISTINCT "

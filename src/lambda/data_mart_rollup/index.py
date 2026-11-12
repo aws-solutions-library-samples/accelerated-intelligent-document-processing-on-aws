@@ -1553,10 +1553,22 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         # raw metering with COUNT(DISTINCT document_id). See §2 in the doc.
         # ``n_runs`` does NOT fan out that way: a run is one
         # (document_id, timestamp) pair and so falls in exactly one hour,
-        # which makes SUM(n_runs) exact over however many days it spans.
-        # Rows written before n_runs existed have no value for it, so this
-        # SUM reads NULL for a day whose hourly partitions predate the
-        # schema bump — see MigrationVersion in template.yaml.
+        # which makes it exact over however many days it spans.
+        #
+        # ⚠️ It is NOT a bare SUM, and that is the point. Rows written before
+        # the column existed carry no value for it, and Athena's SUM ignores
+        # NULLs — so a day whose hourly cells are PARTLY pre-bump would return
+        # a perfectly ordinary number that is low by whatever those hours held.
+        # That is not a hypothetical day: the migration window's lower bound is
+        # hour-aligned, not day-aligned, so the day it lands on is partly
+        # replayed and partly not, and it is the oldest day an operator looking
+        # for history will reach for. A wholly-unrecorded day reads NULL and is
+        # obviously unknown; a half-recorded one would not be.
+        #
+        # So the gap is propagated: a group yields its SUM only when every
+        # hourly cell in it carries a value, and NULL otherwise. Both kinds of
+        # missing data then look the same to a reader, which is the only honest
+        # answer available — see MigrationVersion in template.yaml.
         # Grain widened with ``document_class`` — reads the (already widened)
         # metering_docs_hourly rollup, so no CTE needed here.
         # nosec B608 — target_date is derived from datetime, not user input.
@@ -1568,7 +1580,8 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
                 document_class,
                 SUM(n_docs) AS n_docs,
                 SUM(sum_pages) AS sum_pages,
-                SUM(n_runs) AS n_runs,
+                IF(COUNT(n_runs) = COUNT(*), SUM(n_runs), CAST(NULL AS bigint))
+                    AS n_runs,
                 '{target_date}' AS date
             FROM "{DATABASE}"."metering_docs_hourly"
             WHERE date = '{target_date}'
