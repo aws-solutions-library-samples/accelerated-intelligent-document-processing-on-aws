@@ -1730,7 +1730,9 @@ def test_the_configured_core_is_the_one_coverage_uses(tmp_path: Path) -> None:
     and simply three times slower, which nothing else would notice. Asserting the
     variable's spelling would pass in exactly those cases, so this asks coverage.
     """
-    env = cov_all.subprocess_coverage_env(tmp_path, tmp_path)
+    # An empty base environment, so a deliberate `COVERAGE_CORE=ctrace` comparison run
+    # of this suite measures the default this asserts rather than its own override.
+    env = cov_all.subprocess_coverage_env(tmp_path, tmp_path, env={})
     assert env["COVERAGE_CORE"] == cov_all.COVERAGE_CORE
     assert _active_core(env, tmp_path) == "SysMonitor"
 
@@ -1746,10 +1748,12 @@ def test_the_probe_can_tell_the_cores_apart(tmp_path: Path) -> None:
         tmp_path, tmp_path, env={"COVERAGE_CORE": "ctrace"}
     )
     assert env["COVERAGE_CORE"] == "ctrace", "a caller's own core must be kept"
-    assert _active_core(env, tmp_path) == "CTracer"
+    # PyTracer is what a coverage build without its C extension reports; either way
+    # the probe has told the cores apart, which is the property under test.
+    assert _active_core(env, tmp_path) in {"CTracer", "PyTracer"}
     if sys.version_info < (3, 14):
         sysmon = cov_all.subprocess_coverage_env(tmp_path, tmp_path, env={})
-        assert _active_core(sysmon, tmp_path, "--branch") == "CTracer"
+        assert _active_core(sysmon, tmp_path, "--branch") in {"CTracer", "PyTracer"}
 
 
 @pytest.mark.unit

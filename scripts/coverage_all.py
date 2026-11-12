@@ -196,8 +196,10 @@ def worker_share(jobs: int, cpus: int | None = None) -> int:
     return max(2, cpus // max(1, jobs))
 
 
-#: The measurement core every coverage run here uses: ``sys.monitoring`` (PEP 669),
-#: available from Python 3.12 and coverage 7.4, instead of the default C tracer.
+#: The measurement core for every coverage report the ratchet reads (this script's
+#: trees, and idp_common's `test-cicd`, which exports the same value):
+#: ``sys.monitoring`` (PEP 669), available from Python 3.12 and coverage 7.4, instead
+#: of the default C tracer.
 #:
 #: Measured on 2026-11-12 on 4 CPUs, the size of a GitHub runner, running what the
 #: ``unit_tests`` CI job runs: ``test-cicd`` for idp_common took 485 s under the C

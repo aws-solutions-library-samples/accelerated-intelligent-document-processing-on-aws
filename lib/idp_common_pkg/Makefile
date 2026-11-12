@@ -52,8 +52,8 @@ COV_FLOOR ?= --cov-fail-under=82
 
 # The coverage measurement core, the same one scripts/coverage_all.py uses (its
 # COVERAGE_CORE constant carries the measurement). `sys.monitoring` instead of the C
-# tracer, which on Python 3.12+ makes line coverage close to free. Exported rather than
-# set on the recipe line because the hermetic wrapper keeps the environment it is given.
+# tracer, which on Python 3.12+ makes line coverage close to free. `export` with `?=`
+# rather than an assignment on the recipe line, so a caller's own value wins:
 # `COVERAGE_CORE=ctrace make test-cicd` selects the C tracer for a comparison run.
 export COVERAGE_CORE ?= sysmon
 
