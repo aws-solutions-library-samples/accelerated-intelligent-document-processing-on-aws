@@ -226,6 +226,36 @@ runtime code that looks resources up through CloudFormation.
 - `cfn-nag` / `checkov` suppressions include `reason:` metadata
 - No new public S3 buckets, public SNS topics, or open security groups
 
+#### Agent capability
+
+Apply this when the change touches any of: a Strands tool or agent, a system or
+user prompt, a model call, an MCP tool or client, a markdown renderer
+(`SafeMarkdown`, `safe-markdown-policy.ts`, anything rendering model output), the web
+UI content policy, or the IAM grants of a role that runs a model. For each surface
+the change touches, answer three questions from the code, not from the PR text:
+
+1. **What can the model read?** Which tools does it hold, what do they reach with
+   whose credentials, and which data is private (documents, reporting tables,
+   another user's chat, logs, CI credentials)?
+2. **What document-derived or external text reaches it?** Document text and page
+   images, extracted values, reporting rows, log lines, discovered configuration,
+   MCP server responses, a PR's own diff. Any of these can carry instructions.
+3. **Where can its output go?** A rendered page that can request remote resources,
+   the Code Interpreter sandbox, an MCP client or server, a PR comment, a saved
+   configuration that a later model reads.
+
+When all three hold at once (untrusted text in, private data readable, an external
+channel out), something in the code must limit each external channel. A system
+prompt instruction is not such a limit.
+
+Then check that `scripts/tests/agent_capabilities.yaml` was updated to match: a new
+tool or agent has an entry, a changed tool updates its entry's `reads`, `inputs` or
+`outputs`, and a removed control is not still named. `test_agent_capabilities.py`
+fails on an unregistered surface or a missing symbol, but it checks declarations,
+not truth: an entry that understates what a model can read passes it. A manifest
+that was not updated when the capability changed is 🟡 at least; a new
+combination of all three with no control and no recorded `finding` is 🔴.
+
 #### SRT security scan (`make srt-scan`)
 
 CI runs the `srt_security_review` job on every MR targeting `develop`. Check

@@ -91,7 +91,12 @@ STATUS: dict[str, tuple[int, str]] = {
     "BDA.T05": (2, "Mitigated"),
     # Agents
     "AGT.T01": (6, "Mitigated"),
-    "AGT.T02": (4, "Mitigated"),
+    # "Partially Mitigated": the tool reads only the result of the query the agent
+    # ran, and code is checked before it is sent, but code in a session can still
+    # write that result to Amazon S3 in the session's region (the entry's residual,
+    # measured by `make stacktest-sandbox-network`), and the interpreter is the
+    # AWS-managed one with no VPC configuration.
+    "AGT.T02": (4, "Partially Mitigated"),
     "AGT.T03": (4, "Mitigated"),
     "AGT.T04": (2, "Mitigated"),
     "AGT.T05": (6, "Mitigated"),

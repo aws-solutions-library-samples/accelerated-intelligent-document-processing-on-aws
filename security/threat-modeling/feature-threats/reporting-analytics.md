@@ -65,6 +65,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | S3 Reporting Bucket, Parquet files |
 | **Mitigations** | S3 versioning, write-only IAM policies for reporting Lambdas (no delete/overwrite), S3 Object Lock for critical records, CloudTrail logging of S3 operations |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### RPT.T02: Athena Query Data Exposure
 
@@ -79,6 +80,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Amazon Athena, S3 query results, Glue Data Catalog |
 | **Mitigations** | Athena workgroup with restricted query result location, S3 lifecycle policies on query results (auto-delete), IAM restrictions on Athena access (Admin/Author only), Athena query logging |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### RPT.T03: Glue Catalog Manipulation
 
@@ -93,6 +95,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | AWS Glue Data Catalog, Glue Crawler |
 | **Mitigations** | IAM restrictions on Glue API operations, Glue Catalog resource policies, CloudTrail logging of Glue operations, periodic catalog validation |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### RPT.T04: Evaluation Data Manipulation
 
@@ -107,6 +110,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | S3 (ground truth and evaluation data), Evaluation Lambda |
 | **Mitigations** | RBAC (Admin-only ground truth management), S3 versioning on ground truth data, evaluation result integrity checks, separate evaluation metrics storage |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### RPT.T05: Discovery Feature — Prompt Injection via Sample Documents
 
@@ -121,6 +125,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Discovery Lambda, Amazon Bedrock, Configuration S3 |
 | **Mitigations** | Discovery generates draft configs that require human review before activation, configuration schema validation, RBAC (Admin/Author required), evaluation testing before production use |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### RPT.T06: Test Studio — Uncontrolled Processing Costs
 
@@ -135,6 +140,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | Test Studio, processing pipeline, Bedrock, Textract |
 | **Mitigations** | RBAC (Admin/Author required for Test Studio), rate limiting on test submissions, separate test processing tracking, CloudWatch alarms on processing costs |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### RPT.T07: Ground-Truth Tampering via the Test Set Visual Editor
 
@@ -150,6 +156,7 @@ flowchart TD
 | **Affected Components** | `test_set_resolver` (`getTestSetDocuments`), test-set baseline objects in TestSetBucket, evaluation framework |
 | **Mitigations** | Edits require the **Admin/Author** group, enforced server-side (`getTestSetDocuments` is Admin/Author; other roles are read-only in the editor). Every save writes an **`_editHistory` provenance entry** to the baseline, so a modification is attributable and reviewable rather than anonymous — the key anti-repudiation control here. TestSetBucket CORS permits only GET/HEAD + ranged reads for the browser's presigned fetches, so the browser cannot write objects directly; writes go through the resolver. S3 versioning on the bucket retains prior baseline bytes for recovery. |
 | **Residual risk** | `_editHistory` records that a change happened but nothing *alerts* on baseline mutation, and an Author is legitimately allowed to edit ground truth (that is the feature's purpose), so policy cannot distinguish correction from sabotage. Recommend (1) alerting/reporting on baseline edits for high-value test sets, and (2) treating unexplained accuracy improvements as a signal to diff `_editHistory`. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### RPT.T08: Extended Data Retention via Document Version History
 
@@ -165,6 +172,7 @@ flowchart TD
 | **Affected Components** | `document_versions_resolver`, versioned S3 output objects, run manifests, `getFilePresignedUrl` |
 | **Mitigations** | Snapshots are bounded by **`DataRetentionInDays`**, so retention is finite and operator-configurable rather than indefinite. `deleteDocumentVersion` is **Admin-only** (server-side enforced), giving an explicit purge path for a specific run. The feature is documented, and the UI surfaces a Version History panel so retained versions are **visible** rather than hidden state. |
 | **Residual risk** | `listDocumentVersions` requires an **assigned group** (`ANY_GROUP`), so the enumerable index of object keys *and* version ids is not reachable by a caller in no group — but every group reaches all of it, which is the axis that still matters here. Reading the bytes now requires an API operation: `CognitoAuthorizedRole` grants **nothing** on the Output bucket, and **no** `s3:GetObjectVersion` on any bucket, so a `?versionId=` fetch goes through `getFilePresignedUrl` or `getFilePresignedUrls`, where the group floor, the bucket allow-list and `document_scope` apply. `document_scope` matches the owning document's `ConfigVersion` against the caller's `allowedConfigVersions`, which refuses a **scoped** caller another profile's version history — a narrowing this entry did not previously have. It refuses an **unscoped** caller nothing, scoping being opt-in per user, so for the default user row version history still widens the practical impact of UI.T06 and the group floor does not narrow that. Recommend scoping `listDocumentVersions` per document rather than per group, which needs the same document-ownership attribute UI.T06's residual asks for — the group floor is the wrong axis for "may this caller see this document's history", and no setting of it supplies one. For redaction workflows, prefer the PII feature's *redact copy and stop* mode (which deletes the original) over manual replace-and-reupload. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ## 4. Security Controls Summary
 
