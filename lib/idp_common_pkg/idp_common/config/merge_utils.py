@@ -861,8 +861,15 @@ def validate_config(
     # The extraction path is decided by the validated model, never by re-reading the
     # merged dict: `reconcile_mode_and_agentic` makes `extraction.mode` authoritative,
     # and the runtime reads `config.extraction.agentic.enabled` off this same model.
+    # Escalation is read off the same model, which is what the runtime reads,
+    # including a pre-0.7 `extraction.agentic.validation` block once migrated.
+    vcfg = validated.extraction.validation
     _validate_agentic_openai(
-        merged, result, agentic=validated.extraction.agentic.enabled
+        merged,
+        result,
+        agentic=validated.extraction.agentic.enabled,
+        escalates=vcfg.enabled and vcfg.fail_action == "escalate",
+        escalation_model=vcfg.escalation_model,
     )
     _validate_simple_integrated_lists(merged, result)
     _validate_prompt_cache_prefix(sent_prompts, result)
@@ -1184,7 +1191,12 @@ def _looks_like_uuid(value: str) -> bool:
 
 
 def _validate_agentic_openai(
-    merged_config: Dict[str, Any], result: Dict[str, Any], *, agentic: bool
+    merged_config: Dict[str, Any],
+    result: Dict[str, Any],
+    *,
+    agentic: bool,
+    escalates: bool,
+    escalation_model: Optional[str],
 ) -> None:
     """Error when an OpenAI GPT-5.x model is paired with agentic extraction.
 
@@ -1206,9 +1218,23 @@ def _validate_agentic_openai(
     reaches Converse and emits ``toolUse``, so it is allowed for agentic
     extraction. The predicate is ``is_openai_responses_model`` precisely so it
     tracks the mantle route rather than the "openai." prefix.
+
+    The escalation model is held to the same rule, because agentic escalation
+    (``ExtractionService._escalate_failing_fields``) calls the same Strands
+    ``structured_output`` with it. ``escalates`` is whether that call can happen at
+    all — validation enabled and ``fail_action: escalate`` — and is taken from the
+    validated model for the same reason ``agentic`` is. Simple-mode escalation is a
+    plain ``bedrock.invoke_model`` call, which routes GPT-5.x through the Responses
+    API, so nothing is refused there. An unset escalation model falls back to the
+    extraction model, which the checks above already cover. Without this check the
+    runtime caught the Strands ``ValueError``, kept the unescalated result and
+    recorded the reason only in the section's metadata.
     """
     from idp_common.bedrock.openai_responses import is_openai_responses_model
-    from idp_common.config.schema_constants import X_AWS_IDP_EXTRACTION_MODEL
+    from idp_common.config.schema_constants import (
+        X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
+        X_AWS_IDP_EXTRACTION_MODEL,
+    )
 
     if not agentic:
         return
@@ -1245,6 +1271,36 @@ def _validate_agentic_openai(
                 "Premier/Pro (not Nova Lite, which fails mid-stream on this path; "
                 "see docs/extraction-and-confidence.md), xAI Grok, or OpenAI GPT-6 "
                 "Astra support agentic extraction."
+            )
+
+    if not escalates:
+        return
+    escalation_remedy = (
+        "Escalation in agentic extraction (extraction.mode: advanced) runs the "
+        "same agent loop. Choose a Converse escalation model — Claude, Amazon Nova "
+        "Premier/Pro, xAI Grok or OpenAI GPT-6 Astra — or set "
+        "extraction.validation.fail_action to 'warn' or 'reject', or set "
+        "extraction.mode to 'simple', where escalation is a plain model call that "
+        "OpenAI GPT-5.x supports."
+    )
+    if escalation_model and is_openai_responses_model(escalation_model):
+        result["valid"] = False
+        result["errors"].append(
+            f"extraction.validation.escalation_model '{escalation_model}' is an "
+            "OpenAI Responses model, which is NOT compatible with agentic "
+            f"extraction. {escalation_remedy}"
+        )
+    for cls in merged_config.get("classes", []) or []:
+        if not isinstance(cls, dict):
+            continue
+        override = cls.get(X_AWS_IDP_EXTRACTION_ESCALATION_MODEL)
+        if override and is_openai_responses_model(override):
+            class_name = cls.get("x-aws-idp-document-type", "<unnamed>")
+            result["valid"] = False
+            result["errors"].append(
+                f"Class '{class_name}' overrides the extraction escalation model "
+                f"with OpenAI Responses model '{override}', which is NOT compatible "
+                f"with agentic extraction. {escalation_remedy}"
             )
 
 

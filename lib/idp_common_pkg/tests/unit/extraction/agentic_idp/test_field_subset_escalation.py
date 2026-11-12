@@ -222,6 +222,49 @@ def test_escalation_failure_reason_is_one_bounded_line_without_document_text():
     assert "\n" not in decision and "SSN" not in decision and len(decision) < 220
 
 
+def test_an_openai_responses_escalation_model_is_reported_as_not_run():
+    """#1911: agentic escalation calls the same Strands loop, which refuses an
+    OpenAI GPT-5.x model. Nothing is faked between the service and that refusal:
+    the real ``structured_output`` raises before any network call, the service
+    keeps the original result, and the Processing Issue built from the resulting
+    metadata says the escalation failed, and why. It used to say the escalation
+    model "did not resolve" the violation, which described a model whose answer
+    was judged."""
+    svc = _service(escalation_model="openai.gpt-5.5")
+    bad = {"invoice_id": "INV-9", "status": "pending", "notes": "keep me"}
+    with patch(
+        "idp_common.extraction.service.create_pydantic_model_from_json_schema",
+        return_value=StatusOnlyModel,
+    ):
+        fields, _data, meta, metering, _ok = svc._validate_and_maybe_escalate(
+            extracted_fields=dict(bad),
+            structured_data=FullModel(**bad),
+            data_model=FullModel,
+            model_id="us.amazon.nova-pro-v1:0",
+            message_prompt="(p)",
+            agentic_images=[],
+            custom_instruction=None,
+            section_info=_FakeSection(),
+            parsing_succeeded=True,
+        )
+    assert fields == bad
+    assert metering == {}
+    assert meta["escalation_model"] == "openai.gpt-5.5"
+    assert meta["escalation_decision"].startswith(
+        "escalation call failed: ValueError: OpenAI Responses-API models"
+    )
+
+    issues = svc._build_extraction_issues(
+        extracted_fields=fields, metadata={"validation": meta}, section_id="1"
+    )
+    issue = next(i for i in issues if i.code == "extraction_validation_failed")
+    assert "did not resolve" not in issue.message
+    assert "Escalation to openai.gpt-5.5 failed (" in issue.message
+    assert "nothing from it was kept" in issue.message
+    assert "agentic/Strands" in issue.message
+    assert issue.details["escalation_decision"] == meta["escalation_decision"]
+
+
 def test_escalation_seed_is_none_when_every_failing_field_is_null():
     """An all-null seed must not construct: a truthy existing_data triggers the
     'RESUME FROM CHECKPOINT — do NOT call extraction_tool again' prompt, telling
