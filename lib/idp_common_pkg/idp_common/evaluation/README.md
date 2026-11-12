@@ -486,6 +486,25 @@ laid on top of `evaluation.llm_method`, so it changes only what it names. When
 `system_defaults/base-evaluation.yaml` ships; it carries no model ID or prompt
 text of its own.
 
+Every `llm_method` setting reaches `bedrock.invoke_model`: `model`,
+`temperature`, `top_k`, `top_p`, `max_tokens` and `reasoning_effort`, plus the
+two prompts. The client then applies its usual per-model handling (where
+`max_tokens` is carried, which models take an effort, which reject sampling
+parameters). A setting that is absent, `None` or, for the numeric ones, an empty
+string takes the `EvaluationLLMMethodConfig` default, so `max_tokens: ""`
+requests the model's maximum output. An **empty** `system_prompt` or
+`task_prompt` is refused rather than sent, as summarization and
+classification's combined page prompt refuse one (these prompts have always
+shipped, so an empty one is a broken configuration rather than an old stored
+profile): `LLMComparator` raises `ValueError`, which Stickler reports as a
+configuration error for the field. Because that happens while the section's
+Stickler model is built, `EvaluationService` records the **whole section** as
+failed (`failure_type: schema_configuration_error`, score 0), its non-`LLM`
+fields included. `compare_llm` called directly returns `(False, 0.0, <reason>)`
+without calling Bedrock. For `compare_llm` itself only an absent or `None`
+setting takes the default; an empty string is passed to the client, which
+treats an empty `top_p` or `max_tokens` as unset.
+
 Identical values (after case and whitespace normalization) short-circuit to a
 match with **no** Bedrock call, and repeated `(expected, actual)` pairs are
 memoized per comparator instance.

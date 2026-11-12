@@ -641,12 +641,28 @@ Control evaluation behavior through the configuration file (no stack redeploymen
 evaluation:
   enabled: true  # Set to false to disable evaluation processing
   llm_method:
-    model: "us.anthropic.claude-haiku-4-5-20251001-v1:0"  # Model for the LLM comparison method
+    model: us.amazon.nova-2-lite-v1:0  # Model for the LLM comparison method
     temperature: "0.0"
-    top_p: "0.0"
-    max_tokens: "4096"
-    # Additional model parameters...
+    top_p: "0.0"         # 0 sends temperature instead of top_p
+    top_k: "5"
+    max_tokens: ""       # Empty = the model's maximum output; set a value to cap it
+    reasoning_effort: medium  # Applied only by models with an effort control
+    system_prompt: >-
+      You are an evaluator that helps determine if the predicted and expected values match ...
+    task_prompt: >-
+      I need to evaluate attribute extraction for a document of class: {DOCUMENT_CLASS} ...
 ```
+
+These are the shipped values (the prompts are shortened here). Every setting
+under `llm_method` is sent with each comparison, and the Bedrock client adapts
+them per model as it does for the other steps: a model without an effort control
+ignores `reasoning_effort`, and models that reject sampling parameters do not get
+`temperature`, `top_p` or `top_k`. On a model with an effort control (for example
+Claude Sonnet 4.6), `reasoning_effort` sets how much the model reasons on each
+comparison, which affects its latency and token cost. A prompt you leave out uses the shipped one; an empty
+`system_prompt` or `task_prompt` is refused: every section whose class has an
+`LLM` field is reported as a failed evaluation with a configuration error naming
+the setting, and none of that section's fields are scored.
 
 **Benefits of Configuration-Based Control:**
 - Enable/disable evaluation without stack redeployment
