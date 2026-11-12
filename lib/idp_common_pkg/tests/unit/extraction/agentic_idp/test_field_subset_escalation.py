@@ -302,3 +302,52 @@ def test_escalation_seed_is_none_when_every_failing_field_is_null():
                 parsing_succeeded=True,
             )
         assert (captured["existing_data"] is not None) is expect_seed, status
+
+
+class _UnserialisableStatus(BaseModel):
+    """A re-extraction that returns, then fails to serialise in the merge step."""
+
+    status: str | None = None
+
+    def model_dump(self, *args, **kwargs):  # type: ignore[override]
+        raise ValueError("cannot serialise the re-extracted value")
+
+
+def test_a_reextraction_that_returned_keeps_its_metering_when_a_later_step_raises():
+    """#1914: the re-extraction ran and was billed before the merge step raised;
+    the failure handler returned `{}` in place of its metering."""
+    svc = _service()
+    bad = {"invoice_id": "INV-9", "status": "pending", "notes": "keep me"}
+    billed = {"ExtractionEscalation/bedrock/strong": {"inputTokens": 10}}
+
+    def returns_then_merge_fails(*args, **kwargs):
+        return _UnserialisableStatus(status="void"), {
+            "metering": {**billed, "_table_parsing_stats": {"tables": 1}}
+        }
+
+    with (
+        patch(
+            "idp_common.extraction.service.create_pydantic_model_from_json_schema",
+            return_value=StatusOnlyModel,
+        ),
+        patch(
+            "idp_common.extraction.service.structured_output",
+            returns_then_merge_fails,
+        ),
+    ):
+        fields, _data, meta, metering, _ok = svc._validate_and_maybe_escalate(
+            extracted_fields=dict(bad),
+            structured_data=FullModel(**bad),
+            data_model=FullModel,
+            model_id="us.amazon.nova-pro-v1:0",
+            message_prompt="(p)",
+            agentic_images=[],
+            custom_instruction=None,
+            section_info=_FakeSection(),
+            parsing_succeeded=True,
+        )
+
+    assert fields["status"] == "pending"
+    assert meta["escalation_kept"] is False
+    assert meta["escalation_decision"].startswith("escalation call failed: ")
+    assert metering == billed

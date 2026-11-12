@@ -5903,6 +5903,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         retry_content = [*content, {"text": corrective}]
 
+        # Bound before the call so the failure handler below can return the usage
+        # of a call that was made: a response that then fails to parse was still
+        # billed.
+        metering: dict[str, Any] = {}
         try:
             response = bedrock.invoke_model(
                 model_id=escalation_model,
@@ -5916,6 +5920,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 model_lambda_hook_arn=self.config.extraction.model_lambda_hook_arn,
                 reasoning_effort=self.config.extraction.reasoning_effort,
             )
+            metering = response.get("metering", {}) or {}
             text = bedrock.extract_text_from_response(dict(response))
             corrected = json.loads(extract_json_from_text(text))
             corrected, ok, _count, _rec = self._normalize_list_result(
@@ -5929,7 +5934,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return (
                     extracted_fields,
                     report,
-                    response.get("metering", {}),
+                    metering,
                     False,
                     "escalation response unusable",
                 )
@@ -5949,7 +5954,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return (
                     extracted_fields,
                     report,
-                    response.get("metering", {}),
+                    metering,
                     False,
                     "escalation response unusable",
                 )
@@ -5985,7 +5990,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return (
                     extracted_fields,
                     report,
-                    response.get("metering", {}),
+                    metering,
                     False,
                     decision,
                 )
@@ -5998,10 +6003,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 len(report.errors),
                 len(new_report.errors),
             )
-            return merged, new_report, response.get("metering", {}), True, decision
+            return merged, new_report, metering, True, decision
         except Exception as e:  # noqa: BLE001 - escalation is best-effort
             logger.warning("Simple-mode escalation failed: %s", e)
-            return extracted_fields, report, {}, False, _escalation_failure_reason(e)
+            return (
+                extracted_fields,
+                report,
+                metering,
+                False,
+                _escalation_failure_reason(e),
+            )
 
     def _validate_and_maybe_escalate(
         self,
@@ -6165,6 +6176,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             + full_report.agent_feedback()
         )
 
+        # Bound before the call so the failure handler below can return the usage
+        # of a re-extraction that completed before a later step raised.
+        metering: dict[str, Any] = {}
         try:
             if scope == "field-subset":
                 # Nullable leaves for the same reason as the primary transport model
@@ -6317,7 +6331,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 extracted_fields,
                 structured_data,
                 full_report,
-                {},
+                metering,
                 scope,
                 False,
                 _escalation_failure_reason(e),
