@@ -9,52 +9,33 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
+from idp_common.regional_models import AGENT_MODEL_ID, regional_default, stack_region
+
 logger = logging.getLogger(__name__)
-
-
-#: Cross-region inference-profile prefixes that bind a model to one geography. A
-#: fallback served through one of them cannot be invoked from a stack outside it.
-_GEOGRAPHIC_PROFILE_PREFIXES = ("us", "eu", "apac", "ca", "jp", "au")
 
 
 def _default_agent_model_id() -> str:
     """The model an agent falls back to when its configured model cannot be read.
 
-    Read out of ``ChatCompanionConfig.model_id``'s declared default rather than
-    written here, because this value has to stay alive and a second copy of a
-    model id is a second thing to retire. Seven agent modules each held their own
-    literal, and every one of them still named a model Bedrock had already
-    end-of-lifed: the configured path had been repointed, the fallback path had
-    not, so the fallback turned a recoverable configuration error into a
-    ``ResourceNotFoundException`` that names the wrong problem.
+    The chat companion's shipped model (``ChatCompanionConfig.model_id``, which
+    ``tests/unit/agents/test_common_config.py`` holds equal to
+    :data:`~idp_common.regional_models.AGENT_MODEL_ID`), translated to the stack's
+    Region the way the deploy-time swap translates a stored configuration: an EU
+    stack gets the ``eu.`` profile, a US stack the ``us.`` one, and a Canada stack
+    what the swap gives it. A stored configuration is rewritten by the
+    ``update_configuration`` function at deploy time; a code default is not, and a
+    ``us.`` fallback cannot be invoked from an EU stack on the one path that runs
+    because configuration could not be read. A ``global.`` profile could be, but
+    it can route an EU stack's requests outside the EU, where the swap keeps them in.
 
-    ⚠️ The model is the field default's, but the profile is ``global.``. The field
-    default equals what ``base-agents.yaml`` ships, a ``us.`` profile, and a stored
-    configuration naming it is remapped to the stack's own geography at deploy
-    time by the ``update_configuration`` function. Nothing remaps a code default,
-    so a ``us.`` fallback could not be invoked from an EU or Canadian stack — on
-    the one path that runs because configuration could not be read.
-
-    The import is local and guarded. This runs on an error path — often *because*
-    configuration could not be loaded — and it must not be the thing that raises.
-    The literal below is the last resort and is covered by the same gate that
-    covers every other model surface, so it cannot silently go stale either.
+    :mod:`idp_common.regional_models` is standard library only, so this cannot
+    raise on the error path it serves.
     """
-    try:
-        from idp_common.config.models import ChatCompanionConfig
-
-        default = ChatCompanionConfig.model_fields["model_id"].default
-        if isinstance(default, str) and default:
-            prefix, _, rest = default.partition(".")
-            if prefix in _GEOGRAPHIC_PROFILE_PREFIXES and rest:
-                return f"global.{rest}"
-            return default
-    except Exception:  # pragma: no cover - defensive, see docstring
-        pass
-    return "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    return regional_default(AGENT_MODEL_ID, stack_region())
 
 
-#: Fallback model for agents whose configured model id cannot be resolved.
+#: Fallback model for agents whose configured model id cannot be resolved,
+#: resolved for the Region the process starts in.
 DEFAULT_AGENT_MODEL_ID = _default_agent_model_id()
 
 

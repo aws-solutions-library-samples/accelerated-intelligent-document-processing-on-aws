@@ -658,10 +658,13 @@ and the Bedrock client adapts them per model as it does for the other steps:
 models that reject sampling parameters do not get `temperature`, `top_p` or
 `top_k`.
 
-⚠️ **Evaluation does not apply `reasoning_effort`.** The editor shows a
-Reasoning effort setting under `llm_method` for models with an effort control,
-but no effort is sent with evaluation comparisons, whatever it is set to, so
-such a model runs at its own default effort.
+`reasoning_effort` is sent with each comparison too, and only a model with an
+effort control receives it (Claude Sonnet 4.6 and Sonnet 5, xAI Grok, OpenAI GPT-6
+Astra and GPT-5.x, for example); other models ignore it.
+It is not in the shipped file above, but every stored configuration holds its
+default, `medium`, so an evaluation on such a model sends `medium` unless you set
+another value under `llm_method`. A higher effort can cost more and take longer for
+each comparison. The shipped model, Nova 2 Lite, has no effort control.
 
 A prompt you leave out uses the shipped one; an empty
 `system_prompt` or `task_prompt` is refused: every section whose class has an
@@ -678,6 +681,15 @@ whitespace are matched without a call and cost nothing. Comparisons made by an
 attempt of the Evaluation step that is cut off (a Lambda timeout or crash) are
 not reported: the workflow continues with the document as it was before that
 attempt, so if a retry then succeeds, only the retry's comparisons appear.
+
+**Cost of the Evaluation step's Lambda.** Like the OCR, classification,
+extraction, assessment and summarization steps, the Evaluation step adds its own
+Lambda invocation to the document's metering, as
+`Evaluation/lambda/requests` and `Evaluation/lambda/duration` (GB-seconds). It does
+so whether the document was evaluated, the evaluation reported errors, no baseline
+was found, or evaluation was switched off. An attempt that is cut off, or that
+raises an unexpected error, adds nothing. These keys are priced by the shipped
+`lambda/requests` and `lambda/duration` entries.
 
 **Benefits of Configuration-Based Control:**
 - Enable/disable evaluation without stack redeployment

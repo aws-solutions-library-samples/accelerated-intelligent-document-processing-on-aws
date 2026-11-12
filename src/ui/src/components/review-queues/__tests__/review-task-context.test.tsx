@@ -12,7 +12,8 @@
 
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import userEvent from '@testing-library/user-event';
 
@@ -34,7 +35,7 @@ const detail = (stored: number, total: number) =>
     checklist: [],
   }) as unknown as ReviewItemDetail;
 
-const renderPanel = (stored: number, total: number) => render(<ReviewTaskContext detail={detail(stored, total)} />);
+const renderPanel = (stored: number, total: number) => renderWithIntl(<ReviewTaskContext detail={detail(stored, total)} />);
 
 const shownReasons = () => screen.queryAllByRole('button', { name: /^Low confidence: Field \d+/ });
 // The yellow chip inside a reason's button (Cloudscape marks a badge's colour in its class).
@@ -42,7 +43,9 @@ const chipBadge = (button: HTMLElement) => createWrapper(button).findBadge();
 
 describe('ReviewTaskContext reasons', () => {
   it('is headed Review Reason and shows no checklist', () => {
-    render(<ReviewTaskContext detail={{ ...detail(3, 3), checklist: ['Check every highlighted field'] } as unknown as ReviewItemDetail} />);
+    renderWithIntl(
+      <ReviewTaskContext detail={{ ...detail(3, 3), checklist: ['Check every highlighted field'] } as unknown as ReviewItemDetail} />,
+    );
     expect(screen.getByRole('heading', { name: /Review Reason/ })).toBeInTheDocument();
     expect(screen.queryByText('Check every highlighted field')).toBeNull();
     expect(screen.queryByRole('checkbox')).toBeNull();
@@ -88,14 +91,14 @@ describe('ReviewTaskContext reasons', () => {
 
   it('moves to a reason’s field when its chip is chosen', async () => {
     const onReasonClick = vi.fn();
-    render(<ReviewTaskContext detail={detail(3, 3)} onReasonClick={onReasonClick} />);
+    renderWithIntl(<ReviewTaskContext detail={detail(3, 3)} onReasonClick={onReasonClick} />);
     await userEvent.click(screen.getByRole('button', { name: /^Low confidence: Field 1/ }));
     expect(onReasonClick).toHaveBeenCalledWith(expect.objectContaining({ sectionId: '1', field: 'field_1' }));
   });
 
   it('moves to a reason’s field from the keyboard', async () => {
     const onReasonClick = vi.fn();
-    render(<ReviewTaskContext detail={detail(3, 3)} onReasonClick={onReasonClick} />);
+    renderWithIntl(<ReviewTaskContext detail={detail(3, 3)} onReasonClick={onReasonClick} />);
     screen.getByRole('button', { name: /^Low confidence: Field 2/ }).focus();
     await userEvent.keyboard('{Enter}');
     expect(onReasonClick).toHaveBeenCalledWith(expect.objectContaining({ field: 'field_2' }));
@@ -103,7 +106,7 @@ describe('ReviewTaskContext reasons', () => {
 
   it('steps through every stored reason in order with Next alert, then starts again', async () => {
     const onReasonClick = vi.fn();
-    render(<ReviewTaskContext detail={detail(3, 3)} onReasonClick={onReasonClick} />);
+    renderWithIntl(<ReviewTaskContext detail={detail(3, 3)} onReasonClick={onReasonClick} />);
     const next = screen.getByRole('button', { name: 'Next alert' });
     for (let i = 0; i < 4; i += 1) await userEvent.click(next);
     expect(onReasonClick.mock.calls.map(([r]) => (r as { field: string }).field)).toEqual(['field_0', 'field_1', 'field_2', 'field_0']);
@@ -121,11 +124,33 @@ describe('ReviewTaskContext reasons', () => {
       item: { reasons: [missing, reason(0)], reasonCount: 2, escalated: false },
       checklist: [],
     } as unknown as ReviewItemDetail;
-    render(<ReviewTaskContext detail={withMissing} onReasonClick={onReasonClick} />);
+    renderWithIntl(<ReviewTaskContext detail={withMissing} onReasonClick={onReasonClick} />);
     const chip = screen.getByRole('button', { name: 'Missing required: Employer name' });
     expect(screen.queryByText(/0\.00 < 0\.80/)).toBeNull();
     expect(chipBadge(chip)!.getElement().className).toMatch(/severity-medium/);
     await userEvent.click(chip);
     expect(onReasonClick).toHaveBeenCalledWith(expect.objectContaining({ sectionId: '2', field: 'employer_name' }));
+  });
+});
+
+describe('ReviewTaskContext sent to review', () => {
+  it('shows why and by whom a document was sent to review', () => {
+    const sent = {
+      item: {
+        reasons: [],
+        reasonCount: 0,
+        escalated: false,
+        sentToReview: {
+          reason: 'Spot check',
+          note: 'customer asked',
+          requestedBy: 'admin@example.com',
+          requestedAt: '2026-11-01T00:00:00Z',
+        },
+      },
+      checklist: [],
+    } as unknown as ReviewItemDetail;
+    renderWithIntl(<ReviewTaskContext detail={sent} />);
+    expect(screen.getByText('Sent to review: Spot check')).toBeInTheDocument();
+    expect(screen.getByText(/By admin@example.com — customer asked/)).toBeInTheDocument();
   });
 });

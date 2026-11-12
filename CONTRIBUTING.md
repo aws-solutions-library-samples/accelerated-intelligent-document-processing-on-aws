@@ -420,7 +420,7 @@ now a **named list of individual files** rather than a directory. Any file you
 add, anywhere in the repository, is linted and format-checked from the moment it
 exists. The files that are skipped are the ones that already carried findings
 when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 71 files
-holding 174 pre-existing findings, and `[format] exclude` names 161 files that
+holding 174 pre-existing findings, and `[format] exclude` names 158 files that
 `ruff format` has never been run over. Both counts fall as files are paid off, and
 `scripts/tests/test_contributing_doc.py` reads them out of
 `scripts/lint_debt.json` and fails if the right figure appears nowhere on this page.
@@ -804,7 +804,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make lint` | Everything: ruff, format, ARN partitions, filtered scans, data-plane tags, buildspec, `cfn-lint`, UI lint, codegen check |
 | `make fastlint` | `lint` without `cfn-lint`, UI lint, or codegen check |
 | `make check-lint-debt` | Re-measure `ruff.toml`'s per-file exclusions against the tree (part of `lint`, `fastlint` and `lint-cicd`) |
-| `make check-ui-i18n-catalog` | Fail if the UI's committed English message catalog (`src/ui/src/i18n/en.json`) is stale against its `defineMessages` calls, or a translation catalog would fail the UI build; check-only, `make ui-i18n-extract` rewrites (part of `lint`, `fastlint` and `lint-cicd`). Off CI it prints a visible skip, never a pass, when `src/ui/node_modules` is absent or the installed FormatJS CLI has no native binary for your machine; CI measures the tree either way |
+| `make check-ui-i18n-catalog` | Fail if the UI's committed English message catalog (`src/ui/src/i18n/en.json`) is stale against its `defineMessages` calls, or a translation catalog would fail the UI build; check-only, `make ui-i18n-extract` rewrites (part of `lint`, `fastlint` and `lint-cicd`). Off CI it prints a visible skip, never a pass, when `npm ci` has not been run in `src/ui/` or the installed FormatJS CLI has no native binary for your machine; CI measures the tree either way |
 | `make check-ui-string-debt` | Ratchet the UI's hardcoded user-facing strings against `scripts/ui_string_debt.json`: a file may not gain one, an unlisted file may not have any, and the baseline may not be stale (part of `lint`, `fastlint` and `lint-cicd`) |
 | `make lint-cicd` | `lint`'s set plus `ui-build-only`, which `lint` does not run — what both CIs run. Check-only for Python and the UI linter, but `codegen-check` regenerates `src/ui/src/graphql/generated/` and leaves it regenerated outside CI |
 | `make ruff-lint` | Ruff lint with auto-fix |

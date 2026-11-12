@@ -17,14 +17,11 @@ import logging
 import re
 from typing import Any, Optional
 
+from .statuses import QUEUE_MANAGED_MESSAGE as QUEUE_MANAGED_MESSAGE  # re-export
 from .statuses import normalize_hitl_status
 
 logger = logging.getLogger(__name__)
 
-#: The refusal, in the ``CODE: message`` shape the UI reads (``reviewErrorCode``).
-QUEUE_MANAGED_MESSAGE = (
-    "QUEUE_MANAGED: this document is in a review queue; work it from Review Queues"
-)
 
 _SECTION_RESULT = re.compile(
     r"(?P<document>.+)/sections/(?P<section>[^/]+)/result\.json"

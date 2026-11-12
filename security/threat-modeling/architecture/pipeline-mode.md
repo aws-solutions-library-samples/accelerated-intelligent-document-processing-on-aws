@@ -87,6 +87,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | High |
 | **Affected Components** | Classification Lambda, Extraction Lambda, Assessment Lambda |
 | **Mitigations** | Input sanitization, prompt engineering with guardrails, output validation, Bedrock Guardrails configuration, assessment step as verification layer |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T02: OCR Manipulation / Adversarial Documents
 
@@ -101,6 +102,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | Medium |
 | **Affected Components** | OCR Lambda, Amazon Textract |
 | **Mitigations** | Document format validation, image quality checks, confidence score thresholds, multi-pass OCR comparison |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T03: Model Output Manipulation
 
@@ -115,6 +117,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | High |
 | **Affected Components** | Classification Lambda, Extraction Lambda, Assessment Lambda |
 | **Mitigations** | Output schema validation (JSON Schema), confidence thresholds, evaluation against ground truth, human review for high-value documents |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T04: Cross-Step Data Poisoning
 
@@ -129,6 +132,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | High |
 | **Affected Components** | S3 intermediate outputs, all pipeline Lambdas |
 | **Mitigations** | S3 versioning, server-side encryption, IAM role separation per Lambda, Step Functions state validation |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T05: Textract Service Dependency
 
@@ -143,6 +147,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | Medium |
 | **Affected Components** | OCR Lambda, Amazon Textract |
 | **Mitigations** | Retry logic with exponential backoff, SQS dead letter queue, CloudWatch alarms on Textract errors, capacity planning with service quotas |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T06: Configuration Tampering
 
@@ -157,6 +162,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | Critical |
 | **Affected Components** | Configuration S3 bucket, DynamoDB config table, configuration resolver Lambdas (REST API) |
 | **Mitigations** | RBAC (only Admin/Author can modify config), configuration versioning, JSON Schema validation, audit logging, configuration change alerts |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T07: Few-Shot Example Poisoning
 
@@ -171,6 +177,7 @@ Each step is independently configurable via the YAML configuration:
 | **Severity** | Medium |
 | **Affected Components** | Few-shot examples S3 storage, Classification Lambda, Extraction Lambda |
 | **Mitigations** | RBAC on example management (Admin/Author only), example validation, evaluation framework to detect accuracy degradation |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T08: Document Content Sent to a Non-Anthropic Model Family (OpenAI via `bedrock-mantle`)
 
@@ -186,6 +193,7 @@ Each step is independently configurable via the YAML configuration:
 | **Affected Components** | `idp_common/bedrock/openai_responses.py`, model config enums, config UI model dropdowns, pricing/limits tables |
 | **Mitigations** | All traffic stays **within Amazon Bedrock in the customer's own account** — this is a Bedrock-served model, not a call out to OpenAI's own API, so it does not leave the AWS trust boundary (TB4) and is covered by the same TLS/IAM controls and no-training posture. Model selection requires the **Admin/Author** group and is config-versioned and audit-logged, so a change is attributable and reversible (PM.T06 controls apply). Bedrock model access must be explicitly requested/enabled per model in the account, giving a second account-level gate outside the application. Region availability is enforced by Bedrock itself — an unavailable model fails loudly rather than silently rerouting. GovCloud deployments **cannot** select GPT-5.6 at all. Agentic extraction, Discovery, and Policy Discovery reject these models at `config-validate` and at runtime. |
 | **Residual risk / recommendation** | The application does not implement an allow-list restricting *which* Bedrock models a deployment may select — any model in the enum is choosable by an Author. Deployments with vendor constraints should (1) restrict model access at the **Bedrock account level** (the effective control), and (2) treat the model fields in a config version as security-relevant in change review. Consider a stack parameter constraining the selectable model set for regulated deployments. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### PM.T09: Weaponized Document Exploits a File Parser on the Processing Path
 
@@ -201,6 +209,7 @@ Each step is independently configurable via the YAML configuration:
 | **Affected Components** | OCR, Classification, Extraction, Assessment and Discovery Lambdas, `BatchPreProcessor`, the PII Anonymizer hook, `idp_common` image and PDF utilities |
 | **Mitigations** | **Optional ingest gate** on GuardDuty Malware Protection for S3 (`MalwareScanning` = `GATE_ONLY` or `CREATE_PLAN`, default `DISABLED`): the queue sender records an upload as `MALWARE_SCANNING` and does not enqueue it until GuardDuty's verdict arrives through EventBridge; `THREATS_FOUND` becomes `QUARANTINED` and every other verdict, including an unknown one, becomes `MALWARE_SCAN_FAILED` unless both the configuration and the `AllowUnscannableDocuments` stack ceiling admit unscannable files. Neither refused status starts a workflow, and reprocess is refused for all three gate statuses in the resolver and the SDK, failing closed when the status cannot be read. Alarms cover a detection, a run of unscannable refusals, an undeliverable verdict, a verdict not applied, and documents held with no verdict for an hour. Independently of the gate: dependencies are pinned and `make dep-audit` gates HIGH-and-above advisories in both CI systems; each Lambda has its own execution role; and Lambda memory and timeout limits bound a decoding run. |
 | **Residual risk / recommendation** | The gate is **off by default**, and with it on the scan is signature, YARA and ML based with no behavioural analysis, so a novel exploit is reported clean. It is asynchronous: the object sits in the Input bucket, presignable, between upload and verdict. The plan protects the **Input** bucket only, so a `.zip` in the Staging bucket is opened by the batch pre-processor unscanned — its extracted members do pass the gate when written to the Input bucket, but the archive decoder itself is outside it. `make dep-audit` does not read the six `feature-platform/*/feature-ui` lockfiles. Enabling the gate is the recommendation for any deployment that accepts documents from outside its own organisation. |
+| **Evidence** | `make dep-audit`; UNVERIFIED: the citations have not been matched to each listed mitigation |
 
 ## 4. Pipeline Mode Security Controls Summary
 

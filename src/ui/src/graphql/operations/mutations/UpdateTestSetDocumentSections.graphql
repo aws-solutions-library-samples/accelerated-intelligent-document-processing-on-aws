@@ -6,6 +6,7 @@ mutation UpdateTestSetDocumentSections($input: UpdateTestSetDocumentSectionsInpu
       sectionId
       documentClass
       pageIndices
+      extractedAsClass
     }
   }
 }

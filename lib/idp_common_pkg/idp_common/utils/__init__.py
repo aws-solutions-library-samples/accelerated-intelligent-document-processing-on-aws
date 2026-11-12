@@ -20,7 +20,9 @@ from .lambda_metering import calculate_lambda_metering
 
 # Metering-map helpers (stdlib-only leaf, so hermetic Lambda tests can load it by
 # path without the rest of this package)
+from .metering import attach_failure_metering as attach_failure_metering
 from .metering import cumulative_metering as cumulative_metering
+from .metering import failure_metering as failure_metering
 from .metering import merge_metering_data as merge_metering_data
 
 # Import settings helper utilities

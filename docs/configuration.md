@@ -625,6 +625,26 @@ How the settings apply:
 For how platform components post messages, see the
 [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
+## Bulk Skip All Reviews Limit
+
+[Bulk Skip All Reviews](human-review.md#skip-all-reviews-for-many-documents) runs at
+once for up to `hitl.bulk_skip_sync_limit` documents, and as a background job (Home ›
+Jobs) above it. It is shown in the configuration editor as **Bulk skip synchronous
+limit** in the **Human-in-the-Loop (HITL) Review (Optional)** section:
+
+```yaml
+hitl:
+  bulk_skip_sync_limit: 50  # 1-100: documents a bulk Skip All Reviews runs at once
+```
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `hitl.bulk_skip_sync_limit` | 50 | 1–100 | Documents a bulk Skip All Reviews request handles immediately. A stored value outside the range is clamped to it, never rejected, and no value can raise the immediate path above 100. |
+
+Like the Inbox settings, it is read from the **active** configuration profile, cached
+for about 60 seconds, applies whether or not `hitl.enabled` is set, and falls back to
+the default if the configuration cannot be read.
+
 ## Stack Parameters
 
 Key parameters that can be configured during CloudFormation deployment:
@@ -648,7 +668,7 @@ Key parameters that can be configured during CloudFormation deployment:
 
 ### Integration and Tracing Parameters
 - `EnableXRayTracing`: Enable X-Ray tracing for Lambda functions and Step Functions (default: true). Provides distributed tracing capabilities for debugging and performance analysis. It covers every traced Lambda function in the main stack, the unified pattern and the nested feature-platform stack, plus both state machines — so setting it to `false` turns tracing off, and stops the associated X-Ray charges, for everything the main stack creates. On `false` those functions run in `PassThrough` mode: they record nothing of their own and continue a trace only if a caller already sampled the request. It does **not** reach an extension you install from the Extensions catalog: each is a separate stack with its own parameters and traces unconditionally, and for those of its functions whose execution role can write a trace segment that means real X-Ray charges. See [monitoring.md](./monitoring.md#installed-extensions-trace-unconditionally).
-- `EnableMCP`: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway (default: true). See [mcp-server.md](mcp-server.md) for details.
+- `EnableMCP`: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway (default: false). See [mcp-server.md](mcp-server.md) for details.
 - `EnableECRImageScanning`: Enable automatic vulnerability scanning for the pattern stack's Lambda container images in ECR (default: false). Recommended for production deployments but may impact deployment reliability. See [troubleshooting.md](troubleshooting.md) for guidance.
 
 ### Processing Parameters
@@ -1362,7 +1382,7 @@ same setting would give different answers for different documents in one run.
 
 ## Prompt Preview
 
-The Configuration page includes a **Prompt Preview** tab that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `combined` it offers one classification step, and under `split_then_classify` it offers a splitting step and a section classification step instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
+The Configuration page's **Preview prompts** button opens a prompt preview that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `combined` it offers one classification step, and under `split_then_classify` it offers a splitting step and a section classification step instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
 
 ## A `%` in a prompt is literal text
 

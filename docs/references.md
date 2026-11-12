@@ -29,7 +29,7 @@ its capabilities.
   *(Dec 2025)* — Introduces the Analytics Agent, which lets non-technical users
   query processed document data in natural language. Built on Strands Agents, it
   autonomously explores database schemas, generates and runs Athena SQL, executes
-  Python in a secure AgentCore Code Interpreter sandbox, and returns
+  Python in an AgentCore Code Interpreter sandbox, and returns
   visualizations. See also [Agent Analysis](./agent-analysis.md).
 
 - **[Automate schema generation for intelligent document processing](https://aws.amazon.com/blogs/machine-learning/automate-schema-generation-for-intelligent-document-processing/)**

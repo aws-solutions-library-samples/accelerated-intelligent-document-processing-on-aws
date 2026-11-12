@@ -1269,14 +1269,17 @@ dep_audit:
 # create the schedule in Build -> Pipeline schedules. Read the cost note above
 # first — a daily sweep of 10 MRs is the case that gets expensive.
 #
-# Requires two CI variables:
+# Requires three CI variables:
 #   GITLAB_REVIEW_TOKEN  project access token, `api` scope, MASKED. The review is
 #                        posted as this token's identity. CI_JOB_TOKEN cannot
 #                        create notes, so there is no fallback — without this the
 #                        job prints SKIPPED and exits 0.
-#   AWS credentials      the same ones integration_tests uses, plus
-#                        bedrock:InvokeModel. See the script's --help for how to
-#                        scope this job down to a Bedrock-only role.
+#   AI_REVIEW_GITLAB_ROLE_ARN
+#                        the ARN of idp-sdlc-GitLabReview (the GitLabReviewRole
+#                        output of the credential-vendor stack), MASKED. The job
+#                        passes it to the runner fleet's credential vendor as
+#                        AWS_CREDS_TARGET_ROLE, so this job holds a Bedrock-only
+#                        role rather than the integration-test one.
 ai_mr_review:
   stage: fast_checks
   interruptible: true
@@ -1315,6 +1318,18 @@ ai_mr_review:
     # Full history: the review diffs the MR head against its merge base with
     # develop, which a shallow clone does not have.
     GIT_DEPTH: 0
+    # The Bedrock-only review role, idp-sdlc-GitLabReview in
+    # scripts/sdlc/cfn/credential-vendor.yml, which the runner fleet vends for
+    # this job in place of the integration-test role. Its ARN embeds an account
+    # id, which scripts/check_account_ids.py refuses in this public tree, so it
+    # lives in the masked project variable AI_REVIEW_GITLAB_ROLE_ARN. The script
+    # asks STS which role it holds and refuses to review on any other, so an
+    # unset variable, or a project-level AWS_CREDS_TARGET_ROLE that overrides
+    # this job-level one, fails the job instead of reviewing on the wider role.
+    AWS_CREDS_TARGET_ROLE: $AI_REVIEW_GITLAB_ROLE_ARN
+    REVIEW_ROLE_NAME: "idp-sdlc-GitLabReview"
+    REVIEW_HARNESS_DIR: "/tmp/review-harness"
+    REVIEW_HARNESS: "scripts/sdlc/ai_mr_review.py scripts/ux_runner/__init__.py scripts/ux_runner/redact.py scripts/hooks/check_commit_text.py"
 
   before_script:
     - apt-get update -y
@@ -1345,44 +1360,55 @@ ai_mr_review:
     - claude --version
 
   script:
-    # ⚠️ PIN THE HARNESS TO THE TARGET BRANCH BEFORE RUNNING IT.
+    # ⚠️ STAGE THE HARNESS FROM THE TARGET BRANCH, OUTSIDE THE CHECKOUT, RUN IT
+    # ISOLATED, AND FAIL CLOSED.
     #
-    # This checkout is the MR head, so without this the reviewer is the MR's own
-    # copy of itself: the permission mode, both tool lists, the secret-stripping
-    # list and the prompt are all author-controlled, and the script's internal
-    # pinning of instruction files runs too late to matter because the code doing
-    # the pinning is also the MR's. The blast radius is this job's environment,
-    # which holds an AWS credential and GITLAB_REVIEW_TOKEN.
+    # This checkout is the MR head, so its copy of the reviewer (the permission
+    # mode, both tool lists, the secret-stripping list, the posting check and the
+    # prompt) is author-controlled. So the harness comes from the target branch and
+    # only the DIFF comes from the MR. `git archive` into a fresh directory rather
+    # than `git checkout FETCH_HEAD -- ...` in place, because an in-place checkout
+    # leaves MR-added files beside the pinned ones and Python resolves imports
+    # from the script's own directory first; and `python3 -I`, so neither the
+    # current directory nor PYTHON* variables reach the import path either. The
+    # path list is REVIEW_HARNESS_PATHS in ai_mr_review.py, asserted equal to this
+    # one by test_ai_mr_review.py. The fetch names refs/heads/ so a tag called
+    # like the branch cannot stand in for it.
     #
-    # So the harness comes from the target branch and only the DIFF comes from the
-    # MR. The tradeoff is explicit: an MR that improves the reviewer is not
-    # exercised by its own pipeline — it takes effect once merged. That is the same
-    # trade the instruction-file pinning makes, for the same reason.
-    #
-    # The `||` arm covers the first landing, when the target branch has no copy
-    # yet. It says so loudly rather than proceeding silently, because "no pinned
-    # copy" and "pinned successfully" must not look alike in a log.
+    # An MR that improves the reviewer is not exercised by its own pipeline; it
+    # takes effect once merged. A target branch without the harness REFUSES rather
+    # than running the MR's own copy, the same trade ai_ux_test makes.
     - |
       TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
-      git fetch -q origin "$TARGET"
-      HARNESS="scripts/sdlc/ai_mr_review.py .claude/skills/pr-review.md .claude/skills/pr-review-ci.md CLAUDE.md"
-      if git checkout FETCH_HEAD -- $HARNESS 2>/dev/null; then
-        echo "Harness pinned to origin/$TARGET: $HARNESS"
+      git fetch -q origin "refs/heads/$TARGET"
+      rm -rf "$REVIEW_HARNESS_DIR" && mkdir -p "$REVIEW_HARNESS_DIR"
+      if git archive --format=tar -o /tmp/review-harness.tar FETCH_HEAD -- $REVIEW_HARNESS && tar -xf /tmp/review-harness.tar -C "$REVIEW_HARNESS_DIR" && chmod -R go-w "$REVIEW_HARNESS_DIR"; then
+        echo "Review harness staged from origin/$TARGET in $REVIEW_HARNESS_DIR: $REVIEW_HARNESS"
       else
-        echo "⚠️  Could not pin the harness to origin/$TARGET — it does not carry"
-        echo "    all of: $HARNESS"
-        echo "    Running the MR's own copy. Expected only on the MR that adds this."
+        echo "❌ Could not stage the review harness from origin/$TARGET — it does not"
+        echo "   carry all of: $REVIEW_HARNESS"
+        echo "   REFUSING to run this checkout's own copy: in an MR pipeline that would"
+        echo "   make the reviewer the MR's own copy of the reviewer."
+        exit 1
       fi
+    # A target branch whose reviewer predates --checkout and --require-aws-role
+    # cannot run this way; say so instead of failing on an argument error.
     - |
+      if ! grep -q -- "--require-aws-role" "$REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py"; then
+        echo "❌ The target branch's reviewer predates the staged, role-checked run, so"
+        echo "   it cannot review this MR. Reviews resume once the target carries it."
+        exit 1
+      fi
+      REVIEW="python3 -I $REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py --checkout $CI_PROJECT_DIR --require-aws-role $REVIEW_ROLE_NAME"
       if [ -n "$CI_MERGE_REQUEST_IID" ]; then
-        python3 scripts/sdlc/ai_mr_review.py --mr "$CI_MERGE_REQUEST_IID"
+        $REVIEW --mr "$CI_MERGE_REQUEST_IID"
       else
         # --max-mrs 3, not the script's default of 10: at --timeout 1200 a batch of
         # ten has a 200-minute worst case against this job's 45m timeout, so the
         # sweep's own bound would never be the one that fires and the job would
         # truncate the batch silently. Three fits. (Unreachable today — no schedule
         # rule exists, so CI always takes the --mr branch above.)
-        python3 scripts/sdlc/ai_mr_review.py --all-open --max-mrs 3
+        $REVIEW --all-open --max-mrs 3
       fi
 
   artifacts:
@@ -1575,7 +1601,7 @@ ai_ux_test:
     # whatever the variables say. A merge request whose .gitlab-ci.yml predates
     # this setup runs this job as it was then, naming the harness in its own script
     # where no variable reaches it and setting neither; ai_ux_test.py runs for it.
-    UX_HARNESS: "scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/check_markdown_links.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
+    UX_HARNESS: "scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/hooks/check_commit_text.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/check_markdown_links.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
     UX_ENTRY: "scripts/sdlc/ai_ux_test.py"
     UX_MODE_ARGS: "--mr $CI_MERGE_REQUEST_IID"
     UX_ARTIFACTS: "ux-tests"
@@ -1617,8 +1643,7 @@ ai_ux_test:
     # runs from $UX_HARNESS_DIR, the toolchain install from inside it, and Python
     # runs it with -B, so no bytecode is written into it for root to read back;
     # nothing runs from the checkout. The MR that adds this job cannot exercise
-    # it, which is the same trade ai_mr_review makes, except that this one
-    # refuses rather than warns.
+    # it, which is the same trade ai_mr_review makes.
     - |
       TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
       git fetch -q origin "refs/heads/$TARGET"
@@ -1737,7 +1762,7 @@ ai_ux_test_stories:
     # The MR's story inputs diff against its merge base with develop.
     GIT_DEPTH: 0
     UX_HARNESS_DIR: "/tmp/ux-harness"
-    UX_HARNESS: &ux_story_harness "scripts/sdlc/ai_ux_test_stories.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_story_mcp.py scripts/ux_stories.toml scripts/check_markdown_links.py docs-site/setup.sh .claude/skills/ux-test-stories.md .claude/skills/ux-test-stories-ci.md"
+    UX_HARNESS: &ux_story_harness "scripts/sdlc/ai_ux_test_stories.py scripts/sdlc/ai_mr_review.py scripts/hooks/check_commit_text.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_story_mcp.py scripts/ux_stories.toml scripts/check_markdown_links.py docs-site/setup.sh .claude/skills/ux-test-stories.md .claude/skills/ux-test-stories-ci.md"
     UX_ENTRY: "scripts/sdlc/ai_ux_test_stories.py"
     # Posting is opt-in: this flag is what lets the precheck's one-line replies
     # and the run's reply reach the MR, and no other story job carries it.

@@ -137,6 +137,8 @@ COMMIT_VERBS: tuple[str, ...] = (
     "approve",
     "accept",
     "reject",
+    "revoke",
+    "rotate",
     "mark",
     "label",
     "claim",
@@ -175,6 +177,8 @@ COMMIT_VERBS: tuple[str, ...] = (
     "deploy",
     "use as",
     "cancel subscription",
+    # Home › Jobs: stops a bulk Skip All Reviews job (a bare Cancel only dismisses).
+    "cancel job",
 )
 #: Refused only inside a dialog. Outside one, a control named so opens a form or a
 #: confirmation ("Create queue", "Assign to…", "Move…"), or rearranges something on

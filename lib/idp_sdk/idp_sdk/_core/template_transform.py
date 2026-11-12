@@ -276,6 +276,23 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "AgentCoreMCPHandlerLogGroup",
             "MCPConnectorClient",
             "MCPResourceServer",
+            "McpIdentityInterceptorFunction",
+            "McpIdentityInterceptorLogGroup",
+            "McpCallerSigningSecret",
+            "McpGatewayInterceptorAttachment",
+            "McpInterceptorAttachFunction",
+            "McpInterceptorAttachLogGroup",
+            "McpCredentialsTable",
+            "McpConnectorClientSecret",
+            "McpUserClientSecret",
+            "McpDefaultCredential",
+            "McpDefaultCredentialFunction",
+            "McpDefaultCredentialLogGroup",
+            "McpCredentialManagerFunction",
+            "McpCredentialManagerLogGroup",
+            "McpCredentialSweepSchedule",
+            "McpCredentialsCleanup",
+            "McpCredentialSweepPermission",
         }
 
         self.hitl_resources: Set[str] = {
@@ -443,7 +460,7 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "PrivateWorkteamArn",
             "MCPServerEndpoint",
             "MCPClientId",
-            "MCPClientSecret",
+            "MCPClientSecretArn",
             "MCPUserPool",
             "MCPTokenURL",
             "MCPAuthorizationURL",
@@ -451,7 +468,7 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "DynamoDBAgentTableConsoleURL",
             "ExternalMCPAgentsSecretConsoleURL",
             "MCPConnectorClientId",
-            "MCPConnectorClientSecret",
+            "MCPConnectorClientSecretArn",
             "S3DiscoveryBucketName",
             "S3DiscoveryBucketConsoleURL",
             # UI-API DNS helper output (named for the former AppSync endpoint).
@@ -1188,6 +1205,12 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
         if "ShouldUseDocumentKnowledgeBase" in settings_kvp:
             settings_kvp["ShouldUseDocumentKnowledgeBase"] = False
             logger.debug("Set ShouldUseDocumentKnowledgeBase to False")
+
+        # The MCP Configuration page's settings name the gateway and the Cognito
+        # domain, both removed here; a headless stack has no MCP and no UI.
+        for key in ("McpServerEndpoint", "McpTokenUrl", "McpUserClientId"):
+            if key in settings_kvp:
+                del settings_kvp[key]
 
         if "AllowedSignUpEmailDomains" in settings_kvp:
             del settings_kvp["AllowedSignUpEmailDomains"]

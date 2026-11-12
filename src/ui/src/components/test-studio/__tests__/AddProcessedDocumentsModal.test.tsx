@@ -7,11 +7,16 @@
  * the target set, documents without ground truth are named before submitting,
  * a labeled target set gets a warning that it will read as unlabeled, and a
  * failure stays in the dialog.
+ *
+ * Opened from the Document List the dialog runs the other way round: the
+ * documents arrive preselected and a test-set picker replaces the fixed target.
+ * Those cases are in the second describe block.
  */
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const graphql = vi.fn();
@@ -22,7 +27,13 @@ vi.mock('../../../graphql/generated', () => ({
   listDocuments: 'listDocuments',
 }));
 
-import AddProcessedDocumentsModal from '../AddProcessedDocumentsModal';
+import AddProcessedDocumentsModal, { type PreselectedDocument } from '../AddProcessedDocumentsModal';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const doc = (key: string, evaluation: string, status = 'COMPLETED', at = '2026-09-20T10:00:00Z') => ({
   ObjectKey: key,
@@ -87,7 +98,7 @@ const select = (key: string) => {
 const target = { id: 'invoices', name: 'Invoices' };
 
 const renderModal = (onSubmitted = vi.fn()) => {
-  render(<AddProcessedDocumentsModal visible testSet={target} onDismiss={vi.fn()} onSubmitted={onSubmitted} />);
+  render(<AddProcessedDocumentsModal visible testSet={target} onDismiss={vi.fn()} onSubmitted={onSubmitted} />, { wrapper: English });
   return onSubmitted;
 };
 
@@ -200,5 +211,138 @@ describe('AddProcessedDocumentsModal', () => {
 
     expect(await screen.findByText(/not in COMPLETED status/)).toBeInTheDocument();
     expect(onSubmitted).not.toHaveBeenCalled();
+  });
+});
+
+const picked = (objectKey: string, evaluationStatus: string, objectStatus = 'COMPLETED'): PreselectedDocument => ({
+  objectKey,
+  objectStatus,
+  evaluationStatus,
+  submitted: '2026-09-20T10:00:00Z',
+  configVersion: 'lending',
+});
+
+const testSetsAnswer = (sets: Record<string, unknown>[], add?: () => unknown) => {
+  graphql.mockImplementation(async ({ query }: { query: string }) => {
+    if (query === 'getTestSets') return { data: { getTestSets: sets } };
+    if (query === 'addDocumentsToTestSetByKey') {
+      if (add) return add();
+      return { data: { addDocumentsToTestSetByKey: { id: 'invoices', fileCount: 41, status: 'UPDATING' } } };
+    }
+    throw new Error(`unexpected ${query}`);
+  });
+};
+
+const SETS = [
+  { id: 'invoices', name: 'Invoice Samples', status: 'COMPLETED', fileCount: 40, labelState: 'labeled' },
+  { id: 'busy', name: 'Busy Set', status: 'UPDATING', fileCount: 3, labelState: 'unlabeled' },
+];
+
+const picker = () => {
+  const found = createWrapper(createWrapper(document.body).findModal()!.getElement()).findSelect();
+  if (!found) throw new Error('test set picker not rendered');
+  return found;
+};
+
+const renderPicker = (preselected: PreselectedDocument[], onSubmitted = vi.fn()) => {
+  render(<AddProcessedDocumentsModal visible testSet={null} preselected={preselected} onDismiss={vi.fn()} onSubmitted={onSubmitted} />, {
+    wrapper: English,
+  });
+  return onSubmitted;
+};
+
+describe('AddProcessedDocumentsModal opened with a preselection', () => {
+  beforeEach(() => {
+    graphql.mockReset();
+  });
+
+  it('offers the preselected finished documents, all selected, and lists nothing from the API', async () => {
+    testSetsAnswer(SETS);
+    renderPicker([picked('labeled.pdf', 'BASELINE_AVAILABLE'), picked('fresh.pdf', 'NOT_EVALUATED'), picked('running.pdf', '', 'RUNNING')]);
+
+    expect(screen.getByText('Add documents to a test set')).toBeInTheDocument();
+    expect(screen.getByText('Selected documents')).toBeInTheDocument();
+    expect(screen.getByText(/draft-labeled in Test Studio afterwards/)).toBeInTheDocument();
+    expect(screen.queryByText(/Pick documents that have finished processing/)).toBeNull();
+    expect(rowTexts()).toHaveLength(2);
+    expect(rowTexts().join(' ')).not.toContain('running.pdf');
+    expect(screen.getByText('1 selected document is not included')).toBeInTheDocument();
+    expect(table().findSelectedRows()).toHaveLength(2);
+    await waitFor(() => expect(graphql).toHaveBeenCalledWith(expect.objectContaining({ query: 'getTestSets' })));
+    expect(graphql.mock.calls.some((c) => (c[0] as { query: string }).query === 'listDocuments')).toBe(false);
+  });
+
+  it('cannot submit until a test set is picked, and only a COMPLETED set can be picked', async () => {
+    testSetsAnswer(SETS);
+    renderPicker([picked('labeled.pdf', 'BASELINE_AVAILABLE')]);
+    expect(screen.getByRole('button', { name: 'Add 1 document' })).toBeDisabled();
+
+    picker().openDropdown();
+    await waitFor(() => expect(picker().findDropdown().findOptions()).toHaveLength(2));
+    const options = picker().findDropdown().findOptions();
+    expect(options[0].getElement()).toHaveTextContent('Invoice Samples');
+    expect(options[0].getElement()).toHaveTextContent('40 documents');
+    expect(options[1].getElement()).toHaveTextContent('Unavailable while its status is UPDATING');
+    picker().selectOptionByValue('busy');
+    expect(screen.getByRole('button', { name: 'Add 1 document' })).toBeDisabled();
+
+    // A disabled option does not close the dropdown, so it is still open here.
+    picker().selectOptionByValue('invoices');
+    expect(screen.getByRole('button', { name: 'Add 1 document' })).toBeEnabled();
+  });
+
+  it('sends the preselected keys to the picked set and reports it by name', async () => {
+    testSetsAnswer(SETS);
+    const onSubmitted = renderPicker([picked('labeled.pdf', 'BASELINE_AVAILABLE'), picked('fresh.pdf', 'NOT_EVALUATED')]);
+    picker().openDropdown();
+    await waitFor(() => expect(picker().findDropdown().findOptions()).toHaveLength(2));
+    picker().selectOptionByValue('invoices');
+    fireEvent.click(screen.getByRole('button', { name: 'Add 2 documents' }));
+
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1));
+    const addCall = graphql.mock.calls.find((c) => (c[0] as { query: string }).query === 'addDocumentsToTestSetByKey');
+    const variables = (addCall?.[0] as { variables: { testSetId: string; objectKeys: string[] } }).variables;
+    expect(variables.testSetId).toBe('invoices');
+    expect([...variables.objectKeys].sort()).toEqual(['fresh.pdf', 'labeled.pdf']);
+    const result = onSubmitted.mock.calls[0][0];
+    expect(result.testSet).toEqual({ id: 'invoices', status: 'UPDATING', fileCount: 41 });
+    expect(result.message).toContain('Adding 2 documents to test set "Invoice Samples".');
+    expect(result.message).toContain('1 has no ground truth');
+  });
+
+  it('sends only the documents still selected when one is unticked', async () => {
+    testSetsAnswer(SETS);
+    renderPicker([picked('labeled.pdf', 'BASELINE_AVAILABLE'), picked('fresh.pdf', 'NOT_EVALUATED')]);
+    select('fresh.pdf');
+    picker().openDropdown();
+    await waitFor(() => expect(picker().findDropdown().findOptions()).toHaveLength(2));
+    picker().selectOptionByValue('invoices');
+    fireEvent.click(screen.getByRole('button', { name: 'Add 1 document' }));
+
+    await waitFor(() =>
+      expect(graphql.mock.calls.some((c) => (c[0] as { query: string }).query === 'addDocumentsToTestSetByKey')).toBe(true),
+    );
+    const addCall = graphql.mock.calls.find((c) => (c[0] as { query: string }).query === 'addDocumentsToTestSetByKey');
+    expect((addCall?.[0] as { variables: { objectKeys: string[] } }).variables.objectKeys).toEqual(['labeled.pdf']);
+  });
+
+  it("warns against the picked set's label state", async () => {
+    testSetsAnswer(SETS);
+    renderPicker([picked('fresh.pdf', 'NOT_EVALUATED')]);
+    expect(await screen.findByText('1 of 1 has no ground truth yet')).toBeInTheDocument();
+
+    picker().openDropdown();
+    await waitFor(() => expect(picker().findDropdown().findOptions()).toHaveLength(2));
+    picker().selectOptionByValue('invoices');
+    expect(await screen.findByText('"Invoice Samples" will read as unlabeled')).toBeInTheDocument();
+  });
+
+  it('shows a failure to load the test sets in the picker', async () => {
+    graphql.mockImplementation(async () => {
+      throw new Error('Unauthorized');
+    });
+    renderPicker([picked('labeled.pdf', 'BASELINE_AVAILABLE')]);
+    picker().openDropdown();
+    expect(await screen.findByText('Could not load test sets: Unauthorized')).toBeInTheDocument();
   });
 });

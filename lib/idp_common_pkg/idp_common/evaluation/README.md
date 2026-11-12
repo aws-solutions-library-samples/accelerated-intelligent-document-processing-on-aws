@@ -486,16 +486,18 @@ laid on top of `evaluation.llm_method`, so it changes only what it names. When
 `system_defaults/base-evaluation.yaml` ships; it carries no model ID or prompt
 text of its own.
 
-`model`, `temperature`, `top_k`, `top_p`, `max_tokens` and the two prompts
-reach `bedrock.invoke_model`, and the client applies its usual per-model handling
-(where `max_tokens` is carried, which models reject sampling parameters).
-`reasoning_effort` does **not**: `LLMComparator` ignores it, so no effort is sent
-for an `LLM` field. Every stored profile holds the field's default (`medium`),
-dumped into the stored item and indistinguishable from a value a user chose, so
-forwarding it would start sending an effort on every stack whose evaluation
-model has an effort control. `compare_llm` called directly forwards a
-`reasoning_effort` only when its `llm_config` holds one, with no default. A setting that is absent, `None` or, for the numeric ones, an empty
-string takes the `EvaluationLLMMethodConfig` default, so `max_tokens: ""`
+`model`, `temperature`, `top_k`, `top_p`, `max_tokens`, `reasoning_effort` and
+the two prompts reach `bedrock.invoke_model`, and the client applies its usual
+per-model handling (where `max_tokens` is carried, which models reject sampling
+parameters, which models take an effort and through which field). Only a model
+with an effort control receives `reasoning_effort` (effort-capable Claude models,
+Grok, GPT-6 Astra and GPT-5.x); Nova 2 Lite, the shipped model, does not.
+Because a value is always supplied, `BEDROCK_MANTLE_REASONING_EFFORT` no longer
+applies to evaluation on GPT-5.x. Every stored profile holds the field's default (`medium`),
+because the full model dump is stored, so an evaluation on an effort-capable
+model sends `medium` unless the profile sets another value. A setting that is
+absent, `None` or, for the numeric ones and `reasoning_effort`, an empty string
+takes the `EvaluationLLMMethodConfig` default, so `max_tokens: ""`
 requests the model's maximum output. An **empty** `system_prompt` or
 `task_prompt` is refused rather than sent, as summarization and
 classification's combined page prompt refuse one (these prompts have always
@@ -507,7 +509,7 @@ failed (`failure_type: schema_configuration_error`, score 0), its non-`LLM`
 fields included. `compare_llm` called directly returns `(False, 0.0, <reason>)`
 without calling Bedrock. For `compare_llm` itself only an absent or `None`
 setting takes the default; an empty string is passed to the client, which
-treats an empty `top_p` or `max_tokens` as unset.
+treats an empty `top_p`, `max_tokens` or `reasoning_effort` as unset.
 
 Identical values (after case and whitespace normalization) short-circuit to a
 match with **no** Bedrock call, and repeated `(expected, actual)` pairs are

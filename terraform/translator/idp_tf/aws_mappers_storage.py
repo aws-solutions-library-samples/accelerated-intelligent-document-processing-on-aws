@@ -539,6 +539,12 @@ EVENT_SOURCE_MAPPING = SpecMapper(
         "MaximumRetryAttempts": ("attr", "maximum_retry_attempts"),
         "BisectBatchOnFunctionError": ("attr", "bisect_batch_on_function_error"),
         "ParallelizationFactor": ("attr", "parallelization_factor"),
+        # An SQS source's cap on concurrent invocations (2 to 1000).
+        "ScalingConfig": (
+            "block",
+            "scaling_config",
+            {"MaximumConcurrency": ("attr", "maximum_concurrency")},
+        ),
     },
 )
 

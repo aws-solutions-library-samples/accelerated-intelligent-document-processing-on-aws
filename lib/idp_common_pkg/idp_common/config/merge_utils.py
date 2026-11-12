@@ -90,6 +90,57 @@ def deep_update(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any
     return target
 
 
+def overlay_pricing_rows(
+    default_rows: List[Dict[str, Any]], custom_rows: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Lay saved pricing rows over the default rows, per model and per unit.
+
+    The effective pricing table is the defaults with every saved row applied
+    on top of them:
+
+    - a saved unit replaces the default unit of the same name on the same entry;
+    - a saved unit the default entry lacks is added to that entry;
+    - a saved entry the defaults lack is appended;
+    - a default entry or unit the saved table does not mention is kept, so a
+      model a later release adds to the defaults is priced on a stack that saved
+      earlier, and a default row deleted in the editor reappears.
+
+    Entries are matched on ``name`` and units on ``name`` within an entry, the
+    keys the cost readers price by. Those readers build a name-keyed dict, so of
+    two rows with the same name the **last** one prices; a saved row is therefore
+    applied to the last default entry, and the last unit within it, of that name.
+    Saved rows are applied in order, so when a name repeats in them the later row
+    wins for each unit it names. A saved entry the defaults lack is added once.
+
+    Neither argument is modified; the stored records keep their shape, because
+    only the reader changes.
+    """
+    merged = deepcopy(default_rows)
+    by_name: Dict[Any, Dict[str, Any]] = {}
+    for entry in merged:
+        by_name[entry.get("name")] = entry  # the last of a repeated name
+
+    for custom_entry in custom_rows:
+        name = custom_entry.get("name")
+        target = by_name.get(name)
+        if target is None:
+            added = deepcopy(custom_entry)
+            merged.append(added)
+            by_name[name] = added
+            continue
+        units = target.setdefault("units", [])
+        for custom_unit in custom_entry.get("units") or []:
+            unit_name = custom_unit.get("name")
+            # The last unit of that name, the one the readers price by.
+            for index in range(len(units) - 1, -1, -1):
+                if units[index].get("name") == unit_name:
+                    units[index] = deepcopy(custom_unit)
+                    break
+            else:
+                units.append(deepcopy(custom_unit))
+    return merged
+
+
 def apply_delta_with_deletions(
     target: Dict[str, Any], delta: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -857,6 +908,7 @@ def validate_config(
     # only inside a comment must not count. The stored text is not changed.
     sent_prompts = strip_prompt_comments_in_config(merged)
     _validate_task_prompt_placeholders(sent_prompts, result)
+    _validate_confidence_prompt_as_sent(validated, merged, result)
     _validate_schema_fields(config.get("classes", []), result)
     # The extraction path is decided by the validated model, never by re-reading the
     # merged dict: `reconcile_mode_and_agentic` makes `extraction.mode` authoritative,
@@ -1584,6 +1636,84 @@ def _modality_supplies_content(modality: Dict[str, Any]) -> bool:
     )
 
 
+def _confidence_pass_can_run(merged_config: Dict[str, Any]) -> bool:
+    """False only when the confidence block turns scoring off.
+
+    Read through ``ConfidenceConfig`` rather than by re-reading ``mode`` and
+    ``enabled`` here: the model is what the runtime reads, and it folds the legacy
+    ``enabled: false`` into ``mode: off``. ``integrated`` still counts as able to run,
+    because simple extraction scores a class with list fields in the separate pass
+    even then. ``validate_config`` calls this only after ``IDPConfig`` has accepted
+    the merged configuration, so the block validates here.
+    """
+    from idp_common.config.models import ConfidenceConfig
+
+    return ConfidenceConfig.model_validate(
+        _dict_at(merged_config, "extraction", "confidence")
+    ).enabled
+
+
+def _validate_confidence_prompt_as_sent(
+    validated: Any, merged_config: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Refuse a confidence prompt ``AssessmentService`` would refuse on every document.
+
+    The prompt judged is the one the separate confidence pass sends: built the way
+    the runtime builds it, from the validated configuration with prompt comments
+    removed (``without_prompt_comments``), through ``select_confidence_task_prompt``,
+    which appends ``extraction.geometry.task_prompt_bbox`` in the LLM-box geometry
+    modes. The service refuses an empty prompt ("task_prompt is required"), and
+    this does too: the placeholder check above skips an empty one, so an explicit
+    ``""`` used to pass. When the prompt carries ``{DOCUMENT_IMAGE}`` the service applies
+    ``document_image_placeholder_error`` to it, and this applies the same rule.
+
+    Classification and extraction are not checked for this, because they do not
+    refuse a repeated ``{DOCUMENT_IMAGE}``: they log a warning and fall back.
+    Classification's context-pages and packet prompts then send the images after
+    the text; extraction and classification's page prompt send the text without the
+    images.
+
+    Skipped when the confidence block turns scoring off, as the placeholder check
+    above is, because the prompt is then never sent.
+    """
+    if not _confidence_pass_can_run(merged_config):
+        return
+
+    from idp_common.config import without_prompt_comments
+    from idp_common.extraction.prompt_assembly import (
+        DOCUMENT_IMAGE_PLACEHOLDER,
+        document_image_placeholder_error,
+        geometry_requires_llm_boxes,
+        select_confidence_task_prompt,
+    )
+
+    extraction = without_prompt_comments(validated, as_model=True).extraction
+    prompt = select_confidence_task_prompt(extraction)
+    path = "extraction.confidence.task_prompt"
+    if geometry_requires_llm_boxes(extraction.geometry.mode):
+        path += " (with extraction.geometry.task_prompt_bbox appended)"
+
+    if not prompt:
+        # The service's own test (``if not prompt_template``), so an empty prompt,
+        # or one holding nothing but a comment, is refused and whitespace is left
+        # to the placeholder check above. An absent prompt never reaches here: the
+        # merge fills it from the system defaults.
+        result["valid"] = False
+        result["errors"].append(
+            f"{path} is empty, and the confidence pass refuses a document when "
+            "it has no prompt. Remove the key to use the system default prompt."
+        )
+        return
+
+    if DOCUMENT_IMAGE_PLACEHOLDER in prompt:
+        error = document_image_placeholder_error(prompt)
+        if error:
+            result["valid"] = False
+            result["errors"].append(
+                f"{path}: {error} The confidence pass refuses a document otherwise."
+            )
+
+
 def _validate_task_prompt_placeholders(
     merged_config: Dict[str, Any], result: Dict[str, Any]
 ) -> None:
@@ -1593,70 +1723,90 @@ def _validate_task_prompt_placeholders(
     Checks for missing required placeholders that would cause silent failures
     when custom task_prompts are provided.
 
-    Required placeholders by section:
-    - ocr: {DOCUMENT_IMAGE}
+    Required placeholders by prompt:
+    - ocr.task_prompt: {DOCUMENT_IMAGE}
     - classification: {DOCUMENT_TEXT} or {DOCUMENT_IMAGE}
-    - extraction: {DOCUMENT_TEXT} or {DOCUMENT_IMAGE}
-    - assessment: {DOCUMENT_IMAGE}, {OCR_TEXT_CONFIDENCE}, {EXTRACTION_RESULTS}
-    - summarization: {DOCUMENT_TEXT}, {EXTRACTION_RESULTS}
+    - extraction.task_prompt: {DOCUMENT_TEXT} or {DOCUMENT_IMAGE}
+    - extraction.confidence.task_prompt: {EXTRACTION_RESULTS}, and at least one of
+      {DOCUMENT_TEXT}, {OCR_TEXT_CONFIDENCE} or {DOCUMENT_IMAGE}
+    - summarization.task_prompt: {DOCUMENT_TEXT}, {EXTRACTION_RESULTS}
+
+    The confidence prompt lives at ``extraction.confidence.task_prompt``. A pre-0.6
+    ``assessment.task_prompt`` is not read here: ``validate_config`` checks the
+    merged configuration, and the merge runs the migration chain, which moves that
+    block under ``extraction.confidence`` and leaves no top-level ``assessment``.
+    {DOCUMENT_IMAGE} alone is not required of it, because removing that placeholder
+    is the documented way to make the confidence pass text-only (the assessment
+    service attaches page images only when the prompt asks for them).
     """
-    # Validation rules: section -> (required_placeholders, require_all_flag)
-    # require_all_flag: True = ALL placeholders required, False = ANY one required
-    validation_rules = {
-        "ocr": (
+    # Validation rules: (section, prompt path, ALL of these, at least ONE of these
+    # (empty = no such requirement), message).
+    validation_rules = [
+        (
+            "ocr",
+            ("ocr",),
             ["{DOCUMENT_IMAGE}"],
-            True,  # Must have DOCUMENT_IMAGE
+            [],
             "ocr.task_prompt must include {DOCUMENT_IMAGE} placeholder. "
             "Without this placeholder, the OCR model will not receive the document image, "
             "resulting in OCR failures. "
             "Either add the required placeholder or remove task_prompt to use system defaults.",
         ),
-        "classification": (
+        (
+            "classification",
+            ("classification",),
+            [],
             ["{DOCUMENT_TEXT}", "{DOCUMENT_IMAGE}"],
-            False,  # Must have at least one
             "{path} must include {DOCUMENT_TEXT} or {DOCUMENT_IMAGE} placeholder. "
             "Without these placeholders, the classification model will not receive document content, "
             "resulting in classification failures. "
             "Either add at least one required placeholder or remove task_prompt to use system defaults.",
         ),
-        "extraction": (
+        (
+            "extraction",
+            ("extraction",),
+            [],
             ["{DOCUMENT_TEXT}", "{DOCUMENT_IMAGE}"],
-            False,  # Must have at least one
             "extraction.task_prompt must include {DOCUMENT_TEXT} or {DOCUMENT_IMAGE} placeholder. "
             "Without these placeholders, the LLM will not receive document content from OCR, "
             "resulting in silent extraction failures. "
             "Either add at least one required placeholder or remove task_prompt to use system defaults.",
         ),
-        "assessment": (
-            ["{DOCUMENT_IMAGE}", "{OCR_TEXT_CONFIDENCE}", "{EXTRACTION_RESULTS}"],
-            True,  # Must have all three
-            "assessment.task_prompt must include {DOCUMENT_IMAGE}, {OCR_TEXT_CONFIDENCE}, and {EXTRACTION_RESULTS} placeholders. "
-            "Without these placeholders, the assessment model cannot evaluate extraction quality or provide bounding boxes. "
-            "Either add all required placeholders or remove task_prompt to use system defaults.",
+        (
+            "confidence",
+            ("extraction", "confidence"),
+            ["{EXTRACTION_RESULTS}"],
+            ["{DOCUMENT_TEXT}", "{OCR_TEXT_CONFIDENCE}", "{DOCUMENT_IMAGE}"],
+            "extraction.confidence.task_prompt must include {EXTRACTION_RESULTS} and at least one of "
+            "{DOCUMENT_TEXT}, {OCR_TEXT_CONFIDENCE} or {DOCUMENT_IMAGE}. "
+            "Without them, the confidence model is not shown the values it is asked to score "
+            "or the document to score them against. "
+            "Either add the required placeholders or remove task_prompt to use system defaults.",
         ),
-        "summarization": (
+        (
+            "summarization",
+            ("summarization",),
             ["{DOCUMENT_TEXT}", "{EXTRACTION_RESULTS}"],
-            True,  # Must have both
+            [],
             "summarization.task_prompt must include {DOCUMENT_TEXT} and {EXTRACTION_RESULTS} placeholders. "
             "Without these placeholders, the summarization model cannot generate accurate summaries. "
             "Either add all required placeholders or remove task_prompt to use system defaults.",
         ),
-    }
+    ]
 
-    # Check each section that has validation rules
-    for section_name, (
-        required_placeholders,
-        require_all,
-        error_message,
-    ) in validation_rules.items():
-        section = merged_config.get(section_name, {})
+    for section_name, prompt_path, all_of, any_of, error_message in validation_rules:
+        section = _dict_at(merged_config, *prompt_path)
         if section_name == "classification":
             # One prompt per call the active strategy makes; see
             # `_classification_task_prompts`.
             prompts = _classification_task_prompts(merged_config)
         else:
             prompts = [
-                (f"{section_name}.task_prompt", section.get("task_prompt", ""), {})
+                (
+                    ".".join(prompt_path + ("task_prompt",)),
+                    section.get("task_prompt", ""),
+                    {},
+                )
             ]
 
         # Special case: OCR task_prompt is only used when backend is 'bedrock'
@@ -1666,11 +1816,11 @@ def _validate_task_prompt_placeholders(
                 # Skip OCR validation for non-bedrock backends (Textract doesn't use prompts)
                 continue
 
-        # Skip validation for disabled sections (assessment, summarization)
-        if section_name in ["assessment", "summarization"]:
-            if not section.get("enabled", True):
-                # Section is explicitly disabled, skip validation
-                continue
+        # Skip validation when the prompt is never sent.
+        if section_name == "confidence" and not _confidence_pass_can_run(merged_config):
+            continue
+        if section_name == "summarization" and not section.get("enabled", True):
+            continue
 
         for path, task_prompt, modality in prompts:
             if not task_prompt:
@@ -1680,22 +1830,9 @@ def _validate_task_prompt_placeholders(
                 # asks for it or not, and the service normalises the prompt to
                 # match. See `_classification_task_prompts`.
                 continue
-            # Check which placeholders are present
-            present_placeholders = [
-                placeholder
-                for placeholder in required_placeholders
-                if placeholder in task_prompt
-            ]
-
-            # Determine if validation passes
-            if require_all:
-                # ALL placeholders must be present
-                validation_passed = len(present_placeholders) == len(
-                    required_placeholders
-                )
-            else:
-                # At least ONE placeholder must be present
-                validation_passed = len(present_placeholders) > 0
+            validation_passed = all(p in task_prompt for p in all_of) and (
+                not any_of or any(p in task_prompt for p in any_of)
+            )
 
             if not validation_passed:
                 result["valid"] = False

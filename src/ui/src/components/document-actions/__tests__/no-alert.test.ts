@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 
 const COMPONENTS = join(__dirname, '..', '..');
 const ACTIONS = join(COMPONENTS, 'document-actions');
+const BULK = join(COMPONENTS, 'review-bulk');
 
 const FILES = [
   join(COMPONENTS, 'document-panel', 'DocumentPanel.tsx'),
@@ -21,9 +22,13 @@ const FILES = [
   join(COMPONENTS, 'sections-panel', 'SectionsPanel.tsx'),
   join(COMPONENTS, 'pages-panel', 'PagesPanel.tsx'),
   join(COMPONENTS, 'pages-panel', 'PageTextEditorModal.tsx'),
+  join(COMPONENTS, 'document-list', 'DocumentList.tsx'),
   ...readdirSync(ACTIONS)
     .filter((f) => /\.tsx?$/.test(f))
     .map((f) => join(ACTIONS, f)),
+  ...readdirSync(BULK)
+    .filter((f) => /\.tsx?$/.test(f))
+    .map((f) => join(BULK, f)),
 ];
 
 describe('the document page reports results through the notifications', () => {
