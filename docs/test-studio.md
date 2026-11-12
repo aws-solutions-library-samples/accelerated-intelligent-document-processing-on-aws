@@ -362,7 +362,7 @@ The UI reaches every backend operation below through the REST API, as
 #### TestSetFileCopier Lambda
 - **Location**: `src/lambda/test_set_file_copier/index.py`
 - **Purpose**: Copies files from source buckets to the test set bucket
-- **Features**: Pattern-based file matching, baseline validation, Input Bucket documents without a baseline added unlabeled, time-based file filtering, file count recount, supports both create and append modes
+- **Features**: Pattern-based file matching, baseline validation, Input Bucket documents without a baseline added unlabeled, documents already in the set skipped, time-based file filtering, file count recount, supports both create and append modes
 
 #### TestSetZipExtractor Lambda
 - **Location**: `src/lambda/test_set_zip_extractor/index.py`
@@ -637,8 +637,12 @@ bucket is added **unlabeled**, as it is from every other source: its input is co
 and it waits for [draft labels](#draft-labeling-unlabeled-documents--ground-truth).
 A broad pattern therefore brings in every file it matches, labeled or not, and
 one unlabeled document makes the whole set read as `unlabeled` until it is
-draft-labeled. A pattern re-applied when adding documents leaves the set's existing
-unlabeled documents as they are. A set whose every match is unlabeled is created as an unlabeled set.
+draft-labeled. A pattern re-applied when adding documents leaves every document
+already in the set as it is, labeled or not, so labels drafted or reviewed in the set
+are never replaced by the copy in the bucket. A set whose every match is unlabeled is created as an unlabeled set.
+From the input bucket a `.zip` the pattern matches is left out, because a `.zip`
+written into a set's folder is read as a test-set upload; a pattern that matches
+only `.zip` files fails with that reason. Every other matching file is copied.
 Patterns match the full
 object key: `*` matches within one folder level, `**` matches across folders, `?`
 matches a single character. The folder path before the first wildcard must be typed
@@ -737,9 +741,9 @@ On the table, the set shows an "Updating..." status while files are being added 
 
 **Key behaviors:**
 - **Documents without ground truth arrive unlabeled**: From the Input Bucket, by pattern or **From processed documents**, a file with no matching baseline data in the evaluation bucket is added without labels rather than skipped. Adding one to a labeled or draft-labeled set makes the set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. From the Test Set Bucket, every matching file must still have a baseline folder, or the add fails.
-- **Idempotent**: Adding a document that already exists overwrites it. File counts are always recounted from S3 for accuracy.
+- **Existing documents are kept**: Adding from a bucket or from processed documents skips a document already in the set, so labels drafted or reviewed in the set are never overwritten by the copy in the bucket. A zip upload still writes over the input and baseline files it contains. To take a newer copy of a document's ground truth from the evaluation baseline bucket, remove the document from the set and add it again. File counts are always recounted from S3 for accuracy.
 - **Prepopulated file pattern**: The file pattern field is pre-filled with the pattern used to create the test set, so you can reuse or adjust it.
-- **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns.
+- **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns. It picks up documents new to the set only: a document already in the set keeps its copy even if its ground truth was reviewed again since.
 
 ### File Structure Requirements
 ```
@@ -998,9 +1002,14 @@ above; **Process Changes** flips the label to *Reviewed*.
 **Saved changes are drafts until Process Changes.** A draft is stored under
 `<set>/drafts/` in the TestSetBucket, outside `baseline/`, so it is not part of a
 published version or a test run, and the label, the queue's progress and the
-confidence curve are unchanged until it is applied. Drafts survive **Re-extract**,
-**Clear draft labels** and **Reset labels**, move with their sections on **Edit Page
-Class**, and are deleted with the document when it is removed from the set. Once enough of the set is
+confidence curve are unchanged until it is applied. **Re-extract** deletes the draft
+of each section whose fields it writes back, because the draft's edits were made over
+the fields it replaces: those edits are lost, and the section opens with the
+re-extracted values. A section the re-extract does not write — another section of the
+packet, or authored ground truth, whose values it keeps — keeps its draft. Drafts
+survive **Generate draft labels**, **Clear draft labels** and **Reset labels**, move
+with their sections on **Edit Page Class**, and are deleted with the document when it
+is removed from the set. Once enough of the set is
 reviewed, publish a version to freeze it as a benchmark.
 
 **A field you edit stops carrying the model's confidence.** The score describes
@@ -1342,9 +1351,8 @@ reload: the save records the class the fields were extracted under on the sectio
 ground truth (`extractedAsClass` in its `result.json`, and in its draft if it has one),
 and the editor reads it when it opens the section. Re-extracting the section, or a
 **Generate draft labels** run that rewrites it, removes it from the section and from its
-draft once the new fields are written. A draft is kept through a re-extract, so a
-section with a draft still opens with the draft's edited values rather than the
-re-extracted ones. For a section of
+draft once the new fields are written; a re-extract deletes that section's draft
+instead, so the section opens with the re-extracted values. For a section of
 authored ground truth, whose values a re-extract keeps, the record goes when the
 re-extract corrects the class. Saving or confirming the section's labels keeps it, because the
 values are still the ones extracted under the earlier class. A class change saved

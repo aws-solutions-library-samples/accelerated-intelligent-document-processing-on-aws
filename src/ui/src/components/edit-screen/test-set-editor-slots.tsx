@@ -77,8 +77,11 @@ export interface TestSetEditorSlotsOptions {
   openSectionId: string | null;
   /** The open section's working copy, from the editor. */
   openData: Record<string, unknown> | null;
-  /** Section ids, classes or labels moved on the server: the caller re-reads its refs. */
-  onChanged: () => void;
+  /**
+   * Section ids, classes or labels moved on the server: the caller re-reads its refs. A
+   * returned promise settles once they are re-read.
+   */
+  onChanged: () => void | Promise<unknown>;
   /**
    * Where Edit Page Grouping is: `external` (the default) is the edit page's More Actions;
    * `structure` is a button beside the section selector. Only the pages field's
@@ -346,6 +349,9 @@ export const useTestSetEditorSlots = ({
         });
         return;
       }
+      // The write-back deleted the section's draft, so the caller's refs still name an
+      // object that is gone: re-read them before the section is read again.
+      await onChanged();
       setReloadToken((token) => token + 1);
       // Only the re-extracted section's fields now match its class; every other section's
       // still reflect the class they were extracted under.
@@ -366,7 +372,6 @@ export const useTestSetEditorSlots = ({
               sectionId,
             },
       );
-      onChanged();
     } catch (err) {
       logger.error('Re-extraction failed:', err);
       setError(`Could not re-extract this ${target ? 'section' : 'document'}: ${getErrorMessage(err)}`);
