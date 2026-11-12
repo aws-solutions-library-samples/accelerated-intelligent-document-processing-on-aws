@@ -260,7 +260,7 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-168 operations. 158 of them require Cognito group membership and 2
+174 operations. 164 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
 principals, rejecting every Cognito caller. 27 of those accept any assigned group
 rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
@@ -459,21 +459,21 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 363 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 369 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more
 resources in the parent.
 
-**Durable state.** All thirteen S3 buckets have versioning enabled. Thirteen of the fifteen
+**Durable state.** All thirteen S3 buckets have versioning enabled. Fourteen of the sixteen
 DynamoDB tables a default deployment creates have point-in-time recovery enabled. Those
-fifteen are thirteen in `template.yaml`, one in `patterns/unified/template.yaml` and one in
+sixteen are fourteen in `template.yaml`, one in `patterns/unified/template.yaml` and one in
 `nested/api-resolvers/template.yaml`. Both exceptions are deliberate and both hold
 ephemeral state: `ConcurrencyTable` holds a single admission counter that is reconciled
 from the true running-execution count rather than restored, and
 `ChatDocumentSessionsTable` holds the document-chat ownership records written before
 `ChatSessionOwnersTable` existed, under a short TTL, and is no longer written. Counting the
-optional `feature-platform/` extensions raises the total to twenty-two tables; all seven
+optional `feature-platform/` extensions raises the total to twenty-three tables; all seven
 extension tables have point-in-time recovery enabled.
 
 ### Review checklist
@@ -496,7 +496,7 @@ constitute one, because nothing in the stack replicates data across regions.
 
 - **Durable, versioned storage**: all S3 buckets have versioning enabled, so objects
   survive accidental overwrite or deletion and prior versions can be recovered.
-- **Point-in-Time Recovery**: thirteen of the fifteen DynamoDB tables a default deployment
+- **Point-in-Time Recovery**: fourteen of the sixteen DynamoDB tables a default deployment
   creates can be restored to any second within the retention window. The two without it are
   `ConcurrencyTable`, whose admission counter is reconciled from the true
   running-execution count rather than restored, and `ChatDocumentSessionsTable`, whose

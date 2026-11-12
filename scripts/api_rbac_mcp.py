@@ -396,3 +396,148 @@ def run_mcp_suite(
                 f"connector call failed: {exc}",
             )
     return len(results) - before
+
+
+def operation_result(body: str, field: str) -> dict:
+    """The object a REST operation returned. ``/op/<field>`` answers with the
+    resolver's result itself; a GraphQL-shaped ``{"data": {field: ...}}`` body is
+    read too, so the cells do not depend on which of the two a stack serves."""
+    try:
+        parsed = json.loads(body)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    data = parsed.get("data")
+    if isinstance(data, dict) and isinstance(data.get(field), dict):
+        return data[field]
+    return parsed
+
+
+def run_credential_cells(
+    ctx,
+    record,
+    results,
+    admin_id_token,
+    call_body,
+    *,
+    scope_version,
+    live_object_key=None,
+):
+    """A Viewer service credential, created and revoked through the REST API.
+
+    Asserts, per the MCP credential design: the credential reads, cannot write,
+    cannot read a document outside its scope, and is refused on the first request
+    after it is revoked. The credential is always revoked, so a failed run leaves
+    no working credential behind (the revoked row stays, as every revoked one does).
+    """
+    mcp = resolve_mcp(ctx)
+    if mcp is None:
+        record(
+            results,
+            "mcp:credential",
+            "-",
+            None,
+            None,
+            "MCP is not enabled",
+            outcome="SKIP",
+        )
+        return
+    status, body = call_body(
+        ctx["api_base"],
+        "createMcpCredential",
+        {
+            "name": "rbac-test-viewer",
+            "role": "Viewer",
+            "allowedConfigVersions": [scope_version],
+            "expiresInDays": 1,
+        },
+        admin_id_token,
+    )
+    issued = operation_result(body, "createMcpCredential")
+    client_id = issued.get("clientId")
+    if status != 200 or not client_id or not issued.get("clientSecret"):
+        if client_id:
+            # Something was made; never leave it working.
+            call_body(
+                ctx["api_base"],
+                "revokeMcpCredential",
+                {"clientId": client_id},
+                admin_id_token,
+            )
+        # The body of a successful create carries the secret, so name its fields
+        # rather than quoting it.
+        record(
+            results,
+            "mcp:credential",
+            "Admin",
+            status,
+            False,
+            "could not create a test credential (response fields: "
+            f"{sorted(issued) or 'none'})",
+        )
+        return
+    try:
+        token = service_token(mcp, client_id, issued["clientSecret"])
+        status, text = call_text(mcp, token, "status", INERT_TOOL_ARGS["status"])
+        record(
+            results,
+            "mcp:credential-read",
+            "viewer-credential",
+            status,
+            not role_refused(text) and "not permitted" not in text,
+            "admitted to read",
+            message=text[:300],
+        )
+        status, text = call_text(mcp, token, "process", {})
+        record(
+            results,
+            "mcp:credential-write",
+            "viewer-credential",
+            status,
+            role_refused(text),
+            "refused process" if role_refused(text) else "NOT refused process",
+            message=text[:300],
+        )
+        if live_object_key:
+            status, text = call_text(
+                mcp, token, "get_results", {"document_id": live_object_key}
+            )
+            record(
+                results,
+                "mcp:credential-scope",
+                "viewer-credential",
+                status,
+                SCOPE_REFUSAL in text,
+                "out-of-scope document refused"
+                if SCOPE_REFUSAL in text
+                else "out-of-scope document served",
+                message=text[:300],
+            )
+        status, _ = call_body(
+            ctx["api_base"],
+            "revokeMcpCredential",
+            {"clientId": client_id},
+            admin_id_token,
+        )
+        revoked = status == 200
+        status, text = call_text(mcp, token, "status", INERT_TOOL_ARGS["status"])
+        refused = "revoked" in text or status in (401, 403)
+        record(
+            results,
+            "mcp:credential-revoked",
+            "viewer-credential",
+            status,
+            revoked and refused,
+            "refused on the next request"
+            if refused
+            else "a revoked credential's token was still served",
+            message=text[:300],
+        )
+    finally:
+        call_body(
+            ctx["api_base"],
+            "revokeMcpCredential",
+            {"clientId": client_id},
+            admin_id_token,
+        )

@@ -89,3 +89,24 @@ def test_a_served_result_is_read_through_the_nested_body():
     text = json.dumps({"statusCode": 200, "body": json.dumps({"success": True})})
     assert api_rbac_mcp.tool_body(text) == {"success": True}
     assert api_rbac_mcp.tool_body("not json") == {}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"clientId": "c1", "clientSecret": "s"}',
+        '{"data": {"createMcpCredential": {"clientId": "c1", "clientSecret": "s"}}}',
+    ],
+    ids=["rest", "graphql-shaped"],
+)
+def test_the_credential_cells_read_the_operation_result(body):
+    """``/op/<field>`` returns the resolver's result itself; reading only a
+    ``data`` wrapper found no client id, so the cell reported a failed create and
+    never revoked the credential it had made."""
+    got = api_rbac_mcp.operation_result(body, "createMcpCredential")
+    assert got["clientId"] == "c1"
+
+
+@pytest.mark.parametrize("body", ["", "not json", "[1, 2]"])
+def test_an_unreadable_operation_result_is_empty(body):
+    assert api_rbac_mcp.operation_result(body, "createMcpCredential") == {}

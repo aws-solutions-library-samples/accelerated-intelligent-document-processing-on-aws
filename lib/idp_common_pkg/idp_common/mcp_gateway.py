@@ -12,16 +12,18 @@ writes back every field it has, with only the intended field altered, and the li
 of fields comes from the client's own service model so a field the API gains is not
 cleared by the next update.
 
-The caller-interceptor custom resource uses it to attach the interceptor and, on
-Delete, to detach it, so a rollback or a downgrade never leaves the gateway naming
-an interceptor function that no longer exists.
+Two writers use it. The caller-interceptor custom resource attaches the
+interceptor and, on Delete, detaches it, so a rollback or a downgrade never leaves
+the gateway naming an interceptor function that no longer exists. The MCP
+credential manager adds and removes the client-credentials apps the gateway's JWT
+authorizer admits.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -139,3 +141,58 @@ def detach_interceptor(control_client: Any, gateway_id: str, interceptor_arn: st
     )
     wait_until_ready(control_client, gateway_id)
     return True
+
+
+def update_allowed_clients(
+    control_client: Any,
+    gateway_id: str,
+    *,
+    add: Iterable[str] = (),
+    remove: Iterable[str] = (),
+    attempts: int = 3,
+) -> List[str]:
+    """Add and remove client ids on the gateway's JWT authorizer, keeping every
+    other field. Returns the resulting list. A no-op when nothing changes.
+
+    Read-modify-write on a whole configuration can lose a concurrent writer's
+    change, so after each update the gateway is read again and the update retried
+    until this call's own additions are present and its removals absent.
+
+    The interceptor stays authoritative: a client the registry disables is refused
+    there at once, whether or not this update has happened yet."""
+    to_add = [c for c in add if c]
+    to_remove = {c for c in remove if c}
+    for _ in range(attempts):
+        gateway = wait_until_ready(control_client, gateway_id)
+        authorizer = dict(gateway.get("authorizerConfiguration") or {})
+        jwt = dict(authorizer.get("customJWTAuthorizer") or {})
+        if not jwt:
+            raise RuntimeError(f"gateway {gateway_id} has no custom JWT authorizer")
+        current = list(jwt.get("allowedClients") or [])
+        desired = [c for c in current if c not in to_remove]
+        desired += [c for c in to_add if c not in desired]
+        if desired == current:
+            return current
+        if not desired:
+            raise ValueError("refusing to leave the gateway with no allowed clients")
+        jwt["allowedClients"] = desired
+        authorizer["customJWTAuthorizer"] = jwt
+        control_client.update_gateway(
+            **full_update_request(
+                gateway,
+                gateway_update_fields(control_client),
+                authorizerConfiguration=authorizer,
+            )
+        )
+        after = wait_until_ready(control_client, gateway_id)
+        landed = list(
+            (
+                (after.get("authorizerConfiguration") or {}).get("customJWTAuthorizer")
+                or {}
+            ).get("allowedClients")
+            or []
+        )
+        if all(c in landed for c in to_add) and not to_remove & set(landed):
+            return landed
+        logger.warning("Gateway client list changed concurrently; retrying")
+    raise RuntimeError(f"could not update the allowed clients of gateway {gateway_id}")

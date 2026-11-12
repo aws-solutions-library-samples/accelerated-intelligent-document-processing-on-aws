@@ -469,6 +469,64 @@ document in the batch, each with `document_id`, `status`, `duration_seconds` and
 }
 ```
 
+## Service credentials
+
+People sign in to the MCP server as themselves, through the user-authentication
+client (`MCPClientId`), and get their own role and configuration profiles. A client
+that signs in as a service instead uses a **service credential**: a Cognito app
+client that allows only the client-credentials flow, with its own role,
+configuration profiles, expiry and secret.
+
+Admins manage them on the **MCP Configuration** page (Configuration › MCP
+Configuration, shown when MCP is enabled), with `idp-cli mcp credentials`, or with
+`IDPClient.mcp`.
+
+- **Create.** Choose a name, a role (Viewer, Reviewer, Author; Admin only when
+  `TenantIsolationMode=Off` and `TenantGrantSource=Manual`), the configuration
+  profiles it may see (required under tenant isolation, and within one tenant), whether
+  it may use the write tools `process` and `reprocess` (Admin and Author only), and an
+  expiry (90 days by default; never is allowed). The client ID and secret are shown
+  **once**, with a ready-made Amazon Quick service-to-service block and an MCP
+  Connector settings entry. The secret is also stored in Secrets Manager as
+  `<stack>/mcp/credentials/<clientId>`, encrypted with the stack's key, where an
+  operator with access to that secret can read it.
+- **Use.** Exchange the client ID and secret at the token URL (`MCPTokenURL`) for an
+  access token that lasts one hour, and call the MCP server with it. The gateway's
+  interceptor reads the credential on every call, so its role and profiles apply as
+  they would to a user's.
+- **Rotate.** Issues a replacement with the same access and shows its secret once;
+  the old one keeps working for up to seven days so callers can move across. The
+  access is checked again first, so a credential the stack's tenant settings no
+  longer allow (an Admin credential after tenant isolation was turned on, say)
+  cannot be rotated and has to be replaced with one that fits.
+- **Revoke.** Refused from the next request, even while one of its tokens is still
+  valid; its app client is deleted and its secret scheduled for deletion.
+- **Expiry.** A daily sweep revokes expired credentials and sends the Admin who
+  created one an Inbox message two weeks before it expires.
+- **Audit.** Every change is logged with the acting Admin, the credential's id,
+  name and new access, never its secret; the credential also records who created
+  and last changed it, and when it was last used (to the hour).
+
+Under `TenantGrantSource=Api` an entitlement system grants a credential its tenant,
+as it does a user's, with `setMcpCredentialTenant` (or `idp-cli mcp credentials
+set-tenant`); until then the credential sees no documents.
+
+Who can manage which credentials:
+
+- **An Admin with configuration profiles of their own** (a scoped Admin) sees,
+  grants and changes only credentials inside those profiles, can grant only a tenant
+  whose profile pattern is inside them, and cannot create an Admin credential or one
+  with no profiles. Under `TenantGrantSource=Api` every new credential starts with no
+  profiles, so there only an unscoped Admin can create one.
+- **`idp-cli` and the SDK** act with the AWS credentials they are run with, not a
+  sign-in, so whoever can invoke them has the authority of an unscoped Admin.
+
+⚠️ **Removing the credential registry revokes every credential.** Deleting the
+stack, setting `EnableMCP` to `false`, or downgrading to a release without service
+credentials removes each credential's app client, schedules its secret for deletion
+and takes it off the gateway. They are not restored if the stack is later upgraded
+or MCP is switched back on; create them again.
+
 ## Important Notes
 
 ### Pagination

@@ -519,8 +519,14 @@ def resolve_caller(
     dynamodb: Any,
     scope_cache: Optional[dict] = None,
     environ: Optional[Mapping[str, str]] = None,
+    credential_row: Optional[Any] = None,
 ) -> Caller:
     """Route a validated token to the resolver for its client, or refuse it.
+
+    ``credential_row(client_id)`` returns the MCP credential registry row for a
+    client, or ``None``; a client-credentials token from any client other than the
+    stack's own is resolved from it (``idp_common.mcp_credentials``), read on every
+    call so a revoked credential is refused on the next request.
 
     A token is a user token only when it comes from a user-authentication client
     AND names a user; a service token only when it comes from a known
@@ -541,6 +547,10 @@ def resolve_caller(
         )
     if client_id in set(stack_service_client_ids) and not has_user:
         return resolve_stack_service_caller(claims, environ=environ)
+    if credential_row is not None and not has_user and client_id:
+        from idp_common.mcp_credentials import caller_from_row
+
+        return caller_from_row(credential_row(client_id), environ=environ)
     raise refusal("this client is not permitted to use the MCP server.")
 
 

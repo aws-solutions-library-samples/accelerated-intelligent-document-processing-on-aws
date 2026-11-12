@@ -997,6 +997,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# Cognito, DynamoDB and Secrets Manager; the gateway is a model-validated fake.
 	cd src/lambda/mcp_identity_interceptor && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/mcp_interceptor_attach && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# MCP credential manager: Admin-only routing, the scoped-Admin rule, the sweep.
+	cd src/lambda/mcp_credential_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/test_file_copier && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/update_configuration && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/user_management && $(PYTEST_HERMETIC) -q -p no:cacheprovider

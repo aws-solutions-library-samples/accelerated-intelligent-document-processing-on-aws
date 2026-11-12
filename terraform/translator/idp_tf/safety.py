@@ -65,6 +65,9 @@ STATEFUL_TYPES: dict[str, str] = {
     "Custom::InvokeCreateOSSIndexLambdaFunction": (
         "the OpenSearch Serverless vector index"
     ),
+    "Custom::McpCredentialsCleanup": (
+        "every MCP service credential, which its Delete revokes"
+    ),
 }
 
 #: Types a reader might expect in STATEFUL_TYPES, with the reason each is not.

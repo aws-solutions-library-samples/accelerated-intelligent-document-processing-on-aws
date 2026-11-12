@@ -559,3 +559,47 @@ def test_a_cached_user_expires(world, monkeypatch):
     now[0] += world.mod.USER_CACHE_SECONDS + 1
     world.mod.handler(_status(token), _context())
     assert calls == ["open", "open"]
+
+
+def test_a_registry_credential_is_refused_on_the_next_request_after_revocation(
+    world, monkeypatch
+):
+    """Service credentials are read from the registry on every call and never
+    cached, so a revocation applies to the very next request with the same token."""
+    ddb = boto3.resource("dynamodb", region_name=REGION)
+    table = ddb.create_table(
+        TableName="creds",
+        KeySchema=[{"AttributeName": "clientId", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "clientId", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    table.put_item(
+        Item={
+            "clientId": "cred-1",
+            "name": "nightly",
+            "role": "Viewer",
+            "allowedConfigVersions": ["acme-*"],
+            "enabled": True,
+            "status": "active",
+        }
+    )
+    monkeypatch.setenv("MCP_CREDENTIALS_TABLE", "creds")
+    token = service_token(world, client="cred-1")
+    event = _event(_call("IDPTools___status", {"batch_id": "b"}), token)
+    caller = ma.verify_caller(
+        forwarded_args(world.mod.handler(event, _context()))["_caller"],
+        key=world.key,
+        request_id=REQUEST_ID,
+    )
+    assert (caller.kind, caller.roles, caller.scope) == (
+        "service",
+        ["Viewer"],
+        ["acme-*"],
+    )
+    table.update_item(
+        Key={"clientId": "cred-1"},
+        UpdateExpression="SET enabled = :f, #s = :r",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":f": False, ":r": "revoked"},
+    )
+    assert "revoked" in refusal_text(world.mod.handler(event, _context()))

@@ -2177,19 +2177,20 @@ def run_group_matrix(ops, ctx, tokens, results, skip_fields=frozenset()):
                 )
                 print(f"  {field:28s} SKIP (circuit breaker disabled)")
                 continue
-        if cond == "feature_platform":
+        if cond in ("feature_platform", "mcp"):
             st, et, *_ = call(ctx["api_base"], field, o["args"], tokens["Admin"])
             if _is_feature_absent_404(st, et):
+                what = "feature platform" if cond == "feature_platform" else "MCP"
                 _record(
                     results,
                     field,
                     "*",
                     "SKIP",
                     False,
-                    "feature platform disabled (404 for all)",
+                    f"{what} disabled (404 for all)",
                     outcome="SKIP",
                 )
-                print(f"  {field:28s} SKIP (feature platform disabled)")
+                print(f"  {field:28s} SKIP ({what} disabled)")
                 continue
 
         cells = [field]
@@ -2985,6 +2986,15 @@ def _run_mcp_suite(ctx, tokens, results):
         TEST_PW,
         live_object_key=resolve_document_object_key(ctx, tokens),
         scoped_principal=SCOPED,
+    )
+    api_rbac_mcp.run_credential_cells(
+        ctx,
+        _record,
+        results,
+        tokens["Admin"],
+        call_body,
+        scope_version=SCOPE_VERSION,
+        live_object_key=resolve_document_object_key(ctx, tokens),
     )
 
 

@@ -684,7 +684,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 131 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 137 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 27 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -1243,8 +1243,15 @@ the same roles and configuration scope as UI users.
   in their token and the `allowedConfigVersions` the UI would apply to them; a token
   from the stack-created client-credentials client (`MCPConnectorClientId`) is an
   Author with no configuration scope, refused under `TenantIsolationMode=Strict` or
-  an external `TenantGrantSource`. The interceptor passes the result to the MCP
-  handler in a block signed with a key only the two functions can read and bound to
+  an external `TenantGrantSource`; a token from a
+  [service credential](./mcp-server.md#service-credentials) an Admin created has that
+  credential's role and configuration profiles, read on every call, so a revoked or
+  expired credential is refused at once. The credential operations
+  (`listMcpCredentials`, `createMcpCredential`, `updateMcpCredential`,
+  `rotateMcpCredential`, `revokeMcpCredential`, `setMcpCredentialTenant`) are Admin
+  only. A scoped Admin can grant only profiles inside their own scope, and only a
+  tenant whose profile pattern is inside it. The interceptor passes the result to
+  the MCP handler in a block signed with a key only the two functions can read and bound to
   one gateway request, and the handler refuses any call whose block it cannot
   verify.
 - **Which tools a role may call.** Each tool admits the roles of the REST operation

@@ -328,6 +328,10 @@ Parameters:
     Type: String
     Default: ""
     Description: ARN of UserManagementFunction from main template.
+  McpCredentialManagerFunctionArn:
+    Type: String
+    Default: ""
+    Description: ARN of the MCP credential manager from the main template (empty when MCP is disabled).
   FinetuningJobsResolverFunctionArn:
     Type: String
     Default: ""
@@ -3726,6 +3730,7 @@ Resources:
             "uploadDocument": "${UploadResolverFunction}",
             "claimReview": "${CompleteSectionReviewFunctionArn}",
             "createUser": "${UserManagementFunctionArn}",
+            "listMcpCredentials": "${McpCredentialManagerFunctionArn}",
             "createFinetuningJob": "${FinetuningJobsResolverFunctionArn}",
             "calculateCapacity": "${CalculateCapacityResolverFunctionArn}",
             "getLatestPublishedVersion": "${VersionCheckResolverFunctionArn}",
