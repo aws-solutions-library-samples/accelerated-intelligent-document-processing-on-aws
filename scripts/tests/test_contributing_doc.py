@@ -429,7 +429,8 @@ def test_build_artifact_exemptions_are_ignored_and_still_named() -> None:
     """Each build-artifact exemption is an ignored, untracked path the document names.
 
     ``gate_premises.vcs_ignored_build_output`` is the premise, evaluated per member:
-    an ignore rule must cover the path and git must track nothing under it, so the
+    an ignore rule must cover the path (probed both as a directory and as the file
+    itself) and git must track nothing under it, so the
     exemption cannot come to hide a file that ships. A member the document no longer
     names is stale and fails too, rather than pre-exempting whatever is next written
     at that path. The emptiness assertion is there because a loop over nothing passes.
@@ -441,6 +442,16 @@ def test_build_artifact_exemptions_are_ignored_and_still_named() -> None:
         holds, why = gate_premises.vcs_ignored_build_output(path)
         if not holds:
             problems.append(f"{path}: {why}")
+        # The predicate probes with a trailing slash because it is written for
+        # directories, so a directory-only rule (``.checksum/``) satisfies it while
+        # leaving the FILE unignored. Members here are files, so ask about the bare
+        # path as well.
+        bare = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "check-ignore", "-q", "--no-index", path],
+            check=False,
+        )
+        if bare.returncode != 0:
+            problems.append(f"{path}: no ignore rule covers the file itself")
         if path not in documented:
             problems.append(
                 f"{path}: no longer named by CONTRIBUTING.md, so the exemption is stale"
