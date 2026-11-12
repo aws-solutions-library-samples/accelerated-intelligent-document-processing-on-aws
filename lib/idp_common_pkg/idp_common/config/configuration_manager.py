@@ -1937,7 +1937,13 @@ class ConfigurationManager:
 
     def get_merged_pricing(self) -> Optional[PricingConfig]:
         """
-        Get the merged pricing configuration (DefaultPricing + CustomPricing deltas).
+        Get the effective pricing configuration (DefaultPricing, or CustomPricing).
+
+        CustomPricing is applied with ``deep_update``, which assigns lists, so a
+        CustomPricing record replaces DefaultPricing's ``pricing`` list wholesale
+        rather than merging row by row. The Pricing page saves the full table, so
+        a stack that has saved it does not see later corrections or additions to
+        the defaults until the record is deleted (``delete_custom_pricing``).
 
         Returns:
             Merged PricingConfig with custom overrides applied, or None if not found
@@ -1971,13 +1977,13 @@ class ConfigurationManager:
         merged_dict = deepcopy(default_dict)
         deep_update(merged_dict, custom_dict)
 
-        logger.info("Merged DefaultPricing with CustomPricing deltas")
+        logger.info("Applied CustomPricing over DefaultPricing")
         return PricingConfig(**merged_dict)
 
     def save_custom_pricing(
         self, pricing_deltas: Union[PricingConfig, Dict[str, Any]]
     ) -> bool:
-        """Save custom pricing overrides to DynamoDB."""
+        """Save the custom pricing table to DynamoDB; it replaces the default list."""
         if isinstance(pricing_deltas, dict):
             pricing_deltas = PricingConfig(**pricing_deltas)
         self.save_configuration(CONFIG_TYPE_CUSTOM_PRICING, pricing_deltas)
@@ -2002,10 +2008,10 @@ class ConfigurationManager:
         """
         Get the effective model config limits (Custom if present, else Default).
 
-        Unlike pricing, Custom is a FULL replacement list rather than deltas:
-        model_limits is an ordered first-match-wins list, so deep_update (which
-        wholesale-replaces lists anyway) cannot express a partial merge that
-        preserves ordering intent.
+        Custom is a FULL replacement list rather than deltas, and deliberately
+        so: model_limits is an ordered first-match-wins list, so a partial merge
+        could not preserve ordering intent. (Pricing ends up replaced wholesale
+        too, but only because deep_update assigns lists; see get_merged_pricing.)
 
         Returns:
             Effective ModelConfigLimitsConfig, or None if no Default is seeded

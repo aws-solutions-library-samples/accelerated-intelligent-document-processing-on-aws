@@ -2,6 +2,9 @@
 title: "Bounding Box Integration in Assessment Service"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Bounding Box Integration in Assessment Service
 
 > **This guide has moved.** Extraction, confidence, and geometry documentation

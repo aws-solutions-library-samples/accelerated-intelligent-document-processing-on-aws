@@ -2,6 +2,9 @@
 title: "Error Analyzer (Troubleshooting Tool) - PREVIEW"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Error Analyzer (Troubleshooting Tool) - PREVIEW
 
 ## Overview

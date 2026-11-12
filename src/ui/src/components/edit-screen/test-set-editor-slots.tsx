@@ -98,8 +98,10 @@ export interface TestSetEditorSlots {
   classSlot: EditorSlot;
   emptyFieldsSlot: EditorSlot;
   board: EditBoard;
-  /** There is a grouping to edit: the board has pages and sections to show. */
+  /** There is a grouping to edit: the board has pages and sections, and the refs are not behind a save. */
   canRegroup: boolean;
+  /** The last saved grouping has not been re-read yet: section ids on the page may be stale. */
+  refsPending: boolean;
 }
 
 export const useTestSetEditorSlots = ({
@@ -182,7 +184,6 @@ export const useTestSetEditorSlots = ({
 
   /** Pages for the board, in the 1-based page-id space. */
   const boardPages = useMemo(() => pages.map((page) => ({ id: Number(page.Id), imageUri: page.ImageUri })), [pages]);
-  const canRegroup = boardPages.length > 0 && sections.length > 0;
   /**
    * Which Re-extract this document gets. A whole-document re-extract forces one class
    * onto every page as one section, so on a document with several sections it would
@@ -202,6 +203,9 @@ export const useTestSetEditorSlots = ({
   // waits for them.
   const refsPending = savedSectionCount !== null;
   useEffect(() => setSavedSectionCount(null), [sections]);
+  // The board is built from the refs, so while they lag a save it would send ids that now
+  // name other sections on the server, and the save would move their fields (#1895).
+  const canRegroup = boardPages.length > 0 && sections.length > 0 && !refsPending;
 
   /**
    * Every section's grouping, in the board's 1-based page-id space, from the queue's
@@ -252,8 +256,8 @@ export const useTestSetEditorSlots = ({
     // the one recorded when an earlier save first changed it, if one did — they have not
     // been re-extracted since, so a second change (Invoice → W2 → Payslip) still names
     // Invoice — and otherwise the section's class before this save. A section the reviewer
-    // added under an id no ref has has no fields, so no class to name; one that reuses a
-    // deleted section's id gets that section's fields from the server, so it names their class.
+    // added has no fields, so no class to name: the board never gives it an id a ref has,
+    // even one deleted in the same edit (#1895).
     const sentByPages = new Map(payload.map((sec) => [JSON.stringify(sec.pageIndices), sec]));
     const refById = new Map(sections.map((sec) => [sec.sectionId, sec]));
     const refByFirstPage = new Map(sections.map((sec) => [sec.pageIndices?.[0], sec]));
@@ -530,5 +534,6 @@ export const useTestSetEditorSlots = ({
     emptyFieldsSlot,
     board,
     canRegroup,
+    refsPending,
   };
 };

@@ -2,6 +2,9 @@
 title: "IDP CLI - Command Line Interface for Batch Document Processing"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # IDP CLI - Command Line Interface for Batch Document Processing
 
 A command-line tool for batch document processing with the GenAI IDP Accelerator.

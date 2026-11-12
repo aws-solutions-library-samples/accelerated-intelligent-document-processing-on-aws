@@ -453,7 +453,14 @@ Configuration is stored in DynamoDB with two record types:
 
 The same Default/Custom pattern is used for auxiliary records:
 - **`DefaultPricing` / `CustomPricing`** (`PricingConfig`) — service pricing for
-  cost estimation; Custom is deep-merged over Default (`get_merged_pricing`).
+  cost estimation, read through `get_merged_pricing`. ⚠️ Despite the method's
+  name, Custom **replaces** Default's `pricing` list wholesale rather than merging
+  row by row: `deep_update` merges dicts and assigns lists, and the whole table is
+  one list. The Pricing page saves the full table, so a stack that has saved it
+  keeps its saved rates and gets no price for a model added in a later release
+  until the record is deleted (`delete_custom_pricing`, the page's **Restore
+  default (All)**). `test_a_partial_custom_list_replaces_the_default_list_wholesale`
+  pins this.
 - **`DefaultModelConfigLimits` / `CustomModelConfigLimits`**
   (`ModelConfigLimitsConfig`) — the ordered, first-match-wins list of per-model
   token limits, seeded from `config_library/model_config_limits.yaml`. Because

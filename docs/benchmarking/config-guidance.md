@@ -2,6 +2,9 @@
 title: "Configuration Guidance"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 > **This is the evergreen "which configuration should I pick?" paper** — a cross-config
 > comparison at the current release. For **release-over-release** comparisons (is the
 > upgrade safe / cheaper / faster?), see the [Release Benchmark Audit Trail](releases/).
@@ -110,7 +113,7 @@ Appendix A lists the exact directory behind every section.
 ## Abstract
 
 We benchmark the GenAI IDP accelerator across a controlled matrix of **configuration
-options** (OCR backend, extraction mode, assessment mode, the v0.7 feature arms, the
+options** (OCR backend, extraction mode, assessment mode, the feature-option arms, the
 extraction, classification and confidence **models**, and the
 classification **granularity, modality and strategy**) and **document types and sizes**
 (synthetic documents with exact ground truth, plus three real labelled corpora). We quantify
@@ -213,7 +216,7 @@ See `benchmarks/matrices/METHODOLOGY.md` for the full protocol. In brief:
   `benchmarks/harness/run_classification_bench.py` and scored per page and per section
   against its labels (§5.6).
 - **Config matrix:** 19 curated *core* cells — the OCR × mode × assessment decision space
-  plus the v0.7 feature arms (enforcement, forcing, schema restatement, section splitting) —
+  plus the feature-option arms (enforcement, forcing, schema restatement, section splitting) —
   a two-cell scaling series, a repeated-measures cost suite, the two hazard re-verification
   suites (`intconf`, `advverify`), the feature A/B suites for the knobs named in the scope
   table, and the model sweeps. Control arms live in a separate `control_cells:` block and
@@ -295,7 +298,7 @@ edition** (for example 0.9990 → 0.9927 on `core-tt-simple-sep`, lower on every
 at 1.000. It is measured and not attributed: the run does not record why the confidence model
 scored the same correct values lower. It moves no cell across the 0.9 alert threshold.
 
-### 2b. Configurations testing v0.7 features
+### 2b. Feature-option arms: enforcement, forcing, schema restatement, section splitting
 
 All are Textract TABLES + `separate`; `restate-*` are advanced, the rest simple. `sections`
 is the total across the 7 documents, where the ground truth is **7** (one per document).
@@ -621,8 +624,8 @@ there would say the grader was certain of nothing.
 
 `mean conf` reads **`not measurable`** in four OCR-benchmark cells —
 `core-tl-simple-sep`, `core-bda-simple-sep`, `enforce-escalate` and `split-disabled` — and
-that needs the cause spelled out, because a confidence is a probability and these cells
-previously published values above 1.0.
+that needs the cause spelled out, because a confidence is a probability and the v0.6.8
+grid's means for these cells are above 1.0 (1.29–1.63 in `benchmarks/results/v0.6.8/core/`).
 
 - **The arithmetic is correct; one input was off scale.** A single grader leaf answered on
   a 0–100 scale where the scale is 0.0–1.0, and the row mean is taken over all fifteen
@@ -1366,8 +1369,12 @@ the faster) and Opus 5.5 is the slower in advanced (170 s against 150 s), means 
 ran in a parallel lane, so wall-clock here carries load and does not settle which is faster; the
 cost and accuracy figures are unaffected by load.
 
-Both arms resolve to the same `reasoning_effort` in the committed cell configuration (`low` on
-all four cells), so the pair is matched on that axis as it ran.
+Both arms ran at the same `reasoning_effort`, `low`: no cell names the axis, so all four inherit
+`default_cell`'s value, and `rows[].resolved.reasoning_effort` is `low` on all 40 rows of
+`opus55value/summary.json` (and on all 133 rows of each `coresynth` Opus arm in §5.1). The
+pair is therefore matched on effort, and the models' own defaults (`medium` for Opus 5.5 and
+`high` for Opus 5, per the model cards) do not apply. `low` is also the shipped extraction
+default, so this is the comparison a user who changes only the model gets.
 
 #### Sonnet 5 compared with GPT-6 Astra: does the larger context window extract more?
 
@@ -1457,9 +1464,9 @@ and $21.89), and is still dearer than default-shard Sonnet 5 on every run.
 
 ### 5.3 Classification model
 
-The v0.6.7 edition recommended Claude Haiku 4.5 for classification because Nova 2 Lite
-over-split every document 2–3×. That was a prompt defect, fixed in #817, and the axis has been
-re-measured with the fixed prompt ever since. On v0.6.14 the axis is **Nova 2 Lite · Claude Haiku
+At v0.6.7 Nova 2 Lite over-split every document 2–3×, which made Claude Haiku 4.5 the
+better classifier on that release. That was a prompt defect, fixed in #817, and the axis has
+been measured with the fixed prompt ever since. On v0.6.14 the axis is **Nova 2 Lite · Claude Haiku
 5.5 · Claude Sonnet 5**, each over the full 19-cell × 7-document `coresynth` grid at the control
 extraction model (Sonnet 4.6), 133 runs per arm, with one section the truth for every document.
 
@@ -2083,7 +2090,7 @@ classification driver's `summary.json`, keyed by variant with a `per_doc` list.
 
 | Section | Directory (under `benchmarks/results/v0.6.14/`) | Suite / overrides |
 |---|---|---|
-| §2, §2b | `core/` — synthetic slice | `core` at the control model, 133 synthetic runs with exact ground truth. The v0.7 feature arms of §2b are cells of this same grid (`enforce-*`, `force-*`, `restate-*`, `split-*`) |
+| §2, §2b | `core/` — synthetic slice | `core` at the control model, 133 synthetic runs with exact ground truth. The feature-option arms of §2b are cells of this same grid (`enforce-*`, `force-*`, `restate-*`, `split-*`) |
 | §2c | `core/` — reference slice | the same run's two reference corpora, 760 documents, all scored. **ONE arm only:** the control model |
 | §2.1, §6 | `intconf/`, `advverify__extraction-model-sonnet5/` | 8 runs each (suite default, 4 repeats per arm); both standing hazards closed, 8/8 |
 | §3 | `scaling/` | 14 runs, 25 → 3,200 rows, **1 repeat** (suite default), at the control model |
