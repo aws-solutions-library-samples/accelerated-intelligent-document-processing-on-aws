@@ -1531,9 +1531,9 @@ Configure agentic extraction in your configuration file:
 
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   model: "us.anthropic.claude-sonnet-5"  # Anthropic Claude recommended for agentic
   agentic:
-    enabled: true
     max_concurrent_batches: 1  # Parallel processing (2-10 for very large docs)
     table_parsing:
       enabled: true  # Enable deterministic table parser tool
@@ -1546,7 +1546,9 @@ extraction:
     enabled: false             # see "Schema-Constraint Validation" below
 ```
 
-> **Every `agentic.*` sub-option only takes effect when `agentic.enabled: true`**
+> **Every `agentic.*` sub-option only takes effect when `agentic.enabled` resolves
+> to `true`** (that is, `extraction.mode: advanced`; `mode` is authoritative and
+> overwrites `agentic.enabled` whenever it is set)
 > — `table_parsing`, `validation`, and `max_concurrent_batches` are all ignored
 > for non-agentic extraction. In the **Configuration UI** these options are
 > progressively disclosed: they appear only after you enable Agentic Extraction,
@@ -1786,8 +1788,8 @@ Key behaviors:
 ```yaml
 # Enable sharded concurrent extraction (up to 4 shards in parallel)
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   agentic:
-    enabled: true
     max_concurrent_batches: 4
     shard_token_budget: 8000    # default; lower if shards still overflow, raise for 1M-context models
     max_pages_per_shard: 5      # default; page ceiling so large docs always shard (0 = disable)
@@ -1796,8 +1798,9 @@ extraction:
 ```
 
 **Document-size guidance.** The defaults above are tuned to work without
-hand-tuning on large documents (validated at scale on 100- and 200-page
-single- and multi-table PDFs). For very large documents (100+ pages) prefer the
+hand-tuning on large documents. The largest document the benchmark suite has
+measured is 66 pages and 3,200 rows (`docs/benchmarking/config-guidance.md`);
+larger documents have not been measured. For very large documents (100+ pages) prefer the
 Step Functions Distributed Map runtime (`runtime: step_functions`) so each shard
 runs in its own Lambda and the section is not bound by the single-Lambda 15-min
 ceiling; the in-process runtime still shards correctly but a 200-page section may
@@ -1869,6 +1872,7 @@ separate downstream step, controlled by `extraction.confidence.mode`:
 
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   confidence:
     enabled: true                     # master on/off — false disables confidence entirely
     mode: separate                    # off | "separate" (default) | "integrated"
@@ -1879,7 +1883,6 @@ extraction:
                                       # ('llm' also accepted, but discouraged: same
                                       #  prompt and cost as llm_grounded, no grounding)
   agentic:
-    enabled: true
     max_concurrent_batches: 4         # sharded; confidence scoring runs per-shard
 hitl:
   enabled: false                      # route low-confidence fields to human review
@@ -2017,8 +2020,7 @@ validation still fails.
 
 ```yaml
 extraction:
-  agentic:
-    enabled: true
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   validation:                 # sibling of `agentic`
     enabled: false            # Off by default (no behavior change on upgrade)
     check_formats: true       # Enforce JSON-Schema 'format' keywords
@@ -2185,9 +2187,9 @@ When OCR confidence data is unavailable, the tool relies on `parse_success_rate`
 ```yaml
 # config.yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   model: "us.anthropic.claude-sonnet-5"
   agentic:
-    enabled: true
     table_parsing:
       enabled: true
       max_empty_line_gap: 5  # Handle multi-page statements

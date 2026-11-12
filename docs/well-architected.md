@@ -349,8 +349,8 @@ runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
 here. Counting across the eleven templates that make up the solution and its optional
-extensions, 130 IAM policy statements are written against `Resource: "*"` — 54 in
-`template.yaml`, 40 in `patterns/unified/template.yaml`, 8 in
+extensions, 129 IAM policy statements are written against `Resource: "*"` — 54 in
+`template.yaml`, 39 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
 API being called accepts no resource ARN: `cloudwatch:PutMetricData` alone accounts for 29
@@ -459,7 +459,7 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 374 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 375 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more

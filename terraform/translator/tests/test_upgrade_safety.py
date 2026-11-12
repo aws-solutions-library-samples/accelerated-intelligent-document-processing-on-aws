@@ -6,13 +6,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 from idp_tf import completeness, moved, safety, translate
-from idp_tf.awscc_schema import AwsccSchema
+from idp_tf.awscc_schema import AwsccSchema, awscc_type_name
 from idp_tf.cli import VENDORED_SCHEMA, main, render_tree, tree_checks, tree_resources
 from idp_tf.translate import Translator
 
@@ -664,3 +665,161 @@ def test_a_hand_mapper_force_new_path_counts_as_create_only(schema, monkeypatch)
 
     monkeypatch.setattr(aws_mappers_storage.DynamoDbTableMapper, "force_new", ())
     assert safety.custom_output_edges(translated(t, schema)) == []
+
+
+def _pool_and_user() -> dict:
+    return {
+        "Resources": {
+            "Pool": {
+                "Type": "AWS::Cognito::UserPool",
+                "Properties": {
+                    "UserPoolName": "p",
+                    "UsernameConfiguration": {"CaseSensitive": False},
+                },
+            },
+            "Admin": {
+                "Type": "AWS::Cognito::UserPoolUser",
+                "Properties": {
+                    "UserPoolId": {"Ref": "Pool"},
+                    "Username": "a@example.com",
+                    "UserAttributes": [{"Name": "email", "Value": "a@example.com"}],
+                    "DesiredDeliveryMediums": ["EMAIL"],
+                },
+            },
+        }
+    }
+
+
+def test_a_user_pool_keeps_the_username_configuration_it_was_created_with(schema):
+    # Cognito cannot change UsernameConfiguration after creation, so the only
+    # thing a difference can do is replace the pool and delete every user in it.
+    # A pool adopted with `import` (created case sensitive) must not be replaced.
+    tr = translated(_pool_and_user(), schema)
+    pool = tr.emitted["Pool"]
+    assert "case_sensitive = false" in pool
+    assert "ignore_changes = [username_configuration]" in pool
+    assert completeness.check(tr)[0] == []
+
+
+def test_a_pool_user_is_never_rewritten_after_creation(schema):
+    # Every UserPoolUser property is create-only under CloudFormation. Cognito
+    # adds attributes the template does not name (email_verified, sub); treating
+    # them as drift would strip them from an adopted user.
+    tr = translated(_pool_and_user(), schema)
+    user = tr.emitted["Admin"]
+    assert (
+        "ignore_changes = [attributes, desired_delivery_mediums, message_action]"
+        in user
+    )
+    assert completeness.check(tr)[0] == []
+
+
+def _all_mappers() -> dict:
+    from idp_tf.aws_mappers import MAPPERS
+    from idp_tf.aws_mappers_storage import STORAGE_MAPPERS
+
+    return {**MAPPERS, **STORAGE_MAPPERS}
+
+
+#: Every mapper that ignores a difference in an argument the template sets. Each
+#: member is registered, with its own reason, in scripts/tests/gate_exemptions.json
+#: under ``terraform/translator/idp_tf/aws_mappers.py::ignore_changes``.
+PINNED_IGNORE_CHANGES = {
+    "AWS::Cognito::UserPool": ("username_configuration",),
+    "AWS::Cognito::UserPoolUser": (
+        "attributes",
+        "desired_delivery_mediums",
+        "message_action",
+    ),
+}
+
+
+def test_the_mappers_that_ignore_changes_are_pinned():
+    """A hand mapper's ``ignore_changes`` stops Terraform acting on a property,
+    so each one is a deliberate difference from CloudFormation and is registered
+    in ``scripts/tests/gate_exemptions.json``. The set is pinned here: adding one
+    fails this test until it is audited and the pinned set updated with it. Every
+    mapper is read, not only SpecMapper instances, and
+    ``test_every_ignore_changes_the_translator_emits_is_declared`` is what makes
+    a lifecycle block written inline in a mapper's emit fail too."""
+    found = {
+        cfn_type: tuple(getattr(mapper, "ignore_changes", ()))
+        for cfn_type, mapper in _all_mappers().items()
+        if getattr(mapper, "ignore_changes", ())
+    }
+    assert found == PINNED_IGNORE_CHANGES
+
+
+RESOURCE_HEADER = re.compile(r'^resource "([^"]+)" "[^"]+" \{$', re.M)
+IGNORE_CHANGES = re.compile(r"ignore_changes = \[([^\]]*)\]")
+
+
+def _emitted_ignore_changes(root: Path) -> dict[str, set[str]]:
+    """Every argument named in an ``ignore_changes`` under ``root``, by the
+    resource type of the block it sits in."""
+    found: dict[str, set[str]] = {}
+    for path in sorted(root.rglob("*.tf")):
+        text = path.read_text()
+        heads = list(RESOURCE_HEADER.finditer(text))
+        assert (
+            len(IGNORE_CHANGES.findall(text[: heads[0].start()] if heads else text))
+            == 0
+        ), path
+        for i, head in enumerate(heads):
+            end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+            for m in IGNORE_CHANGES.finditer(text, head.end(), end):
+                names = {a.strip() for a in m.group(1).split(",") if a.strip()}
+                found.setdefault(head.group(1), set()).update(names)
+    return found
+
+
+def _translate_owned_ignores(schema: AwsccSchema) -> dict[str, set[str]]:
+    """The arguments translate.py's own tables ignore, by awscc type. They are
+    accounted for there (each entry carries its reason, and a stale one fails the
+    translation), so they are excluded from the mapper pin, not counted twice."""
+    owned: dict[str, set[str]] = {}
+    for (cfn_type, _), (attrs, _) in translate.LIFECYCLE_OVERRIDES.items():
+        owned.setdefault(awscc_type_name(cfn_type), set()).update(attrs)
+    for cfn_type, _, prop in translate.STABLE_CUSTOM_OUTPUTS:
+        found = schema.hint(cfn_type).attr(prop)
+        assert found is not None, (cfn_type, prop)
+        owned.setdefault(awscc_type_name(cfn_type), set()).add(found[0])
+    return owned
+
+
+@pytest.fixture(scope="module")
+def standard_tree(tmp_path_factory) -> Path:
+    out = tmp_path_factory.mktemp("std") / "m"
+    args = [str(REPO / "template.yaml"), "--offline", "--out", str(out)]
+    args += ["--label-template", str(REPO / "template.yaml"), "--version", "0.0.0"]
+    assert main(args) == 0
+    return out
+
+
+#: The argument kept when the translator, not the template, chose a resource's
+#: name (GENERATED_NAME_LIFECYCLE and GENERATED_NAME_ROLE_LIFECYCLE). The template
+#: sets nothing there, so no difference it declares is ignored; renaming would
+#: replace the resource, which test_offline_templates and test_translate cover.
+GENERATED_NAME_KEPT = {
+    "aws_dynamodb_table": {"name"},
+    "aws_iam_role": {"name", "name_prefix"},
+    "aws_s3_bucket": {"bucket_prefix"},
+}
+
+
+def test_every_ignore_changes_the_translator_emits_is_declared(standard_tree, schema):
+    """Scan the generated HCL of the standard template, so an ``ignore_changes``
+    a mapper writes inline, without declaring it, fails here rather than
+    escaping the pin above. Three sources account for every one: a mapper's
+    ``ignore_changes`` (pinned above and registered), a name the translator
+    generated (``GENERATED_NAME_KEPT``), and translate.py's ``LIFECYCLE_OVERRIDES``
+    and ``STABLE_CUSTOM_OUTPUTS``, which carry their own reasons and staleness
+    check and so are kept out of the mapper pin rather than counted twice."""
+    mappers = _all_mappers()
+    expected: dict[str, set[str]] = {k: set(v) for k, v in GENERATED_NAME_KEPT.items()}
+    for cfn_type, attrs in PINNED_IGNORE_CHANGES.items():
+        expected.setdefault(mappers[cfn_type].tf_type, set()).update(attrs)
+    owned = _translate_owned_ignores(schema)
+    assert not set(owned) & set(expected), "a type would be counted twice"
+    expected.update(owned)
+    assert _emitted_ignore_changes(standard_tree) == expected

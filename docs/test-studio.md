@@ -2,6 +2,9 @@
 title: "Test Studio"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Test Studio
 
 The Test Studio provides a comprehensive interface for managing test sets, running tests, and analyzing results directly from the web UI.
@@ -147,7 +150,7 @@ Use with: `config_library/unified/ocr-benchmark/config.yaml`
 
 ### Common Features
 
-Both datasets share these deployment characteristics:
+The pre-deployed datasets share these deployment characteristics:
 
 - **Fully Automatic**: Complete deployment during stack creation with zero user effort
 - **Version Control**: Dataset version pinned in CloudFormation, updateable via parameter
@@ -331,9 +334,8 @@ Use with: `config_library/unified/fake-w2/config.yaml`
 
 ---
 
-### Common Features
+### Choosing a dataset
 
-All datasets share these deployment characteristics:
 **OmniAI-OCR-Benchmark** is ideal for:
 - Testing classification across diverse document types
 - Evaluating extraction on complex nested schemas
@@ -347,15 +349,14 @@ All datasets share these deployment characteristics:
 
 ---
 
-### Common Features
-
-All datasets share these deployment characteristics:
-
 ### Backend Components
+
+The UI reaches every backend operation below through the REST API, as
+`POST /op/<operation>` on the API Gateway dispatcher, not through GraphQL.
 
 #### TestSetResolver Lambda
 - **Location**: `nested/api-resolvers/src/lambda/test_set_resolver/index.py`
-- **Purpose**: Handles GraphQL operations for test set management
+- **Purpose**: Handles the test set management operations
 - **Features**: Creates test sets, scans TestSetBucket for direct uploads, validates file matching, manages test set status
 
 #### TestSetFileCopier Lambda
@@ -380,11 +381,11 @@ All datasets share these deployment characteristics:
 
 #### TestResultsResolver Lambda
 - **Location**: `nested/api-resolvers/src/lambda/test_results_resolver/index.py`
-- **Purpose**: Handles GraphQL queries for test results and comparisons, plus asynchronous cache updates
+- **Purpose**: Handles the test results and comparison operations, plus asynchronous cache updates
 - **Features**: 
   - Result retrieval with cached metrics
   - Comparison logic and metrics aggregation
-  - Dual event handling (GraphQL + SQS)
+  - Dual event handling (API operations from the dispatcher, and SQS messages)
   - Asynchronous cache update processing
   - Progress-aware status updates
 
@@ -396,8 +397,8 @@ All datasets share these deployment characteristics:
   - 15-minute visibility timeout for long-running calculations
   - Automatic retry handling
 
-### GraphQL Schema
-- **Location**: `nested/api-resolvers/src/api/schema.graphql`
+### API Operations
+- **Contract**: `nested/api-resolvers/src/api/schema.graphql`. No GraphQL service evaluates it; it is the typed contract the UI's types and the dispatcher's argument validation are generated from (see [architecture.md](./architecture.md))
 - **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `addDocumentsToTestSet`, `addDocumentsToTestSetByKey`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
 
 ### Frontend Components
@@ -439,7 +440,7 @@ Test Studio has two subsystems: **test-set management** (creating, updating,
 and validating the folder of documents you run against) and **test-run
 management** (starting a run, tracking it, and aggregating its metrics).
 Each has an **online** path (the user is in the UI and the UI drives every
-transition through GraphQL) and an **offline** path (something happens
+transition through the REST API) and an **offline** path (something happens
 outside the UI — a direct S3 edit, or a CLI command — and the workflow has
 to catch up later).
 
@@ -1326,7 +1327,15 @@ section says **Fields still reflect the previous class** and offers **Re-extract
 which re-runs that document and waits for the new labels before returning, so you
 are never left looking at fields from the previous class. On a document with one
 section it re-extracts the whole document; on a document with several it re-extracts
-only the section you are looking at (see below).
+only the section you are looking at (see below). The note names the class the fields
+were extracted under, so a section changed twice before it is re-extracted (Invoice to
+W2, then to Payslip) still says Invoice, and a section changed back to that class shows
+no note. The note stays with its section when a later save moves pages and renumbers
+the sections, and when a different section is re-extracted. It lasts for the page visit
+only: saving a new class overwrites the class in the section's ground truth, and nothing
+the editor loads records the class the fields were extracted under, so after a reload
+the note is not shown, though the fields still belong to the earlier class until the
+section is re-extracted.
 
 The corrected class is sent into the re-run itself, not merely written onto the
 existing labels: the document is re-processed with classification **skipped** and
@@ -1456,6 +1465,15 @@ A few rules the board enforces, all for the same reason — a packet split is a
   delete it.
 - A page the split had dropped entirely **can** be added. That is precisely the defect
   a reviewer is here to fix, so it is allowed in.
+- A section you add starts with no field values, even when you deleted another section
+  in the same edit: the board never gives an added section the number of a section the
+  document already had, because a save keeps each section's fields under the number it
+  is sent with.
+- After a save, **Edit Page Grouping** is unavailable, with the reason *Loading the saved
+  grouping…*, until the editor has re-read the saved sections. The save renumbers them,
+  so a grouping opened from the sections shown before the re-read would name the wrong
+  ones. If the re-read fails, the reason says so instead; choose **Refresh** to load
+  the saved grouping.
 
 Sections are renumbered so their ids follow page order. Several consumers take a
 section's group index from its position in a list, and nothing otherwise guarantees
@@ -1860,7 +1878,7 @@ class is corrected — see
 
 ### Field-Level Metrics
 
-Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns (Stickler v0.4.0+):
+Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns:
 
 **Displayed Columns:**
 1. **Field Name**: The name of the extracted field (hierarchical with expand/collapse)
@@ -1886,7 +1904,7 @@ happened to get, and the point estimate alone cannot distinguish 100% measured o
 observations from 100% measured on 300. The two justify completely different decisions.
 
 This matters more per field than it does overall. A run's overall accuracy firms up
-quickly — within roughly the first hundred documents — because every document contributes
+much faster than any single field's, because every field of every document contributes
 to it. A field that appears once per document gains one observation per document, so a
 badly-broken field can sit inside a healthy-looking overall score until the set is large
 enough to expose it. At a measured 90% accuracy:

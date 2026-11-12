@@ -113,7 +113,7 @@ embedding = client.generate_embedding(
 
 ## Prompt Caching with CachePoint
 
-Prompt caching is a powerful feature in Amazon Bedrock that significantly reduces response latency for workloads with repetitive contexts. The Bedrock client provides built-in support for this via the `<<CACHEPOINT>>` tag.
+Prompt caching in Amazon Bedrock bills a repeated prompt prefix at a reduced cache-read rate. On most Claude models a read is 0.1× the input price (0.05× on Sonnet 5.5 and Opus 5.5) and a write 1.25×, so a prefix written and not read again within five minutes costs more than no caching, and a prefix below the model's minimum is never cached (see the minimum-token note below and `docs/benchmarking/studies/prompt-caching.md`). No benchmark in this repository has measured its effect on latency. The Bedrock client provides built-in support for this via the `<<CACHEPOINT>>` tag.
 
 ### Supported Models
 

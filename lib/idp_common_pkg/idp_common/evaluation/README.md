@@ -475,9 +475,63 @@ per-field `x-aws-stickler-comparator-config` channel the model config uses, and
 > idea what field it was grading. Scores produced by the `LLM` method before this
 > fix are context-free and not comparable with scores produced after it.
 
+#### Which model and prompts judge an `LLM` field
+
+Every `LLM`-method field is judged with the service's `evaluation.llm_method`
+model, prompts and parameters. A field that also carries an
+`x-aws-idp-evaluation-method-config` (for example a `threshold`) has those keys
+laid on top of `evaluation.llm_method`, so it changes only what it names. When
+`LLMComparator` is given no model, or an empty one, or no prompt, it uses the
+`EvaluationLLMMethodConfig` field default, the same value
+`system_defaults/base-evaluation.yaml` ships; it carries no model ID or prompt
+text of its own.
+
+`model`, `temperature`, `top_k`, `top_p`, `max_tokens` and the two prompts
+reach `bedrock.invoke_model`, and the client applies its usual per-model handling
+(where `max_tokens` is carried, which models reject sampling parameters).
+`reasoning_effort` does **not**: `LLMComparator` ignores it, so no effort is sent
+for an `LLM` field. Every stored profile holds the field's default (`medium`),
+dumped into the stored item and indistinguishable from a value a user chose, so
+forwarding it would start sending an effort on every stack whose evaluation
+model has an effort control. `compare_llm` called directly forwards a
+`reasoning_effort` only when its `llm_config` holds one, with no default. A setting that is absent, `None` or, for the numeric ones, an empty
+string takes the `EvaluationLLMMethodConfig` default, so `max_tokens: ""`
+requests the model's maximum output. An **empty** `system_prompt` or
+`task_prompt` is refused rather than sent, as summarization and
+classification's combined page prompt refuse one (these prompts have always
+shipped, so an empty one is a broken configuration rather than an old stored
+profile): `LLMComparator` raises `ValueError`, which Stickler reports as a
+configuration error for the field. Because that happens while the section's
+Stickler model is built, `EvaluationService` records the **whole section** as
+failed (`failure_type: schema_configuration_error`, score 0), its non-`LLM`
+fields included. `compare_llm` called directly returns `(False, 0.0, <reason>)`
+without calling Bedrock. For `compare_llm` itself only an absent or `None`
+setting takes the default; an empty string is passed to the client, which
+treats an empty `top_p` or `max_tokens` as unset.
+
 Identical values (after case and whitespace normalization) short-circuit to a
 match with **no** Bedrock call, and repeated `(expected, actual)` pairs are
 memoized per comparator instance.
+
+#### Metering of `LLM` comparisons
+
+Every Bedrock call `compare_llm` makes is metered under the `Evaluation`
+context, so its keys read `Evaluation/bedrock/<model>`. `evaluate_document` runs
+the whole evaluation inside `collect_evaluation_metering()` and adds what was
+collected to `actual_document.metering` when it returns, including when the
+evaluation failed, because the calls were billed either way. A call is recorded
+before its answer is parsed, so an answer that cannot be parsed is still
+counted. A pair that needs no call (both values null, equal after
+case and whitespace folding, or already in the comparator's verdict cache)
+adds nothing.
+
+The collector lives in a `ContextVar`, because comparator instances are shared
+across documents and Stickler's comparator protocol carries nothing per
+document. A `ContextVar` does not reach a `ThreadPoolExecutor` worker by itself,
+so `evaluate_document` submits each section through
+`contextvars.copy_context().run`. A new fan-out that runs comparisons must do
+the same, or its calls are billed and recorded nowhere. `compare_llm` called
+outside any `collect_evaluation_metering()` block records nothing.
 
 #### DATE method configuration
 

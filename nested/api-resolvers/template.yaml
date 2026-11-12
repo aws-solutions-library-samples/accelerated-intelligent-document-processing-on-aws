@@ -4436,6 +4436,29 @@ Resources:
       ResourceArn: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${HttpApi}/stages/${HttpApiStage}"
       WebACLArn: !GetAtt ApiWafWebACL.Arn
 
+  # The web ACL's request log: every request it allows or blocks. WAF accepts
+  # only a CloudWatch Logs destination whose name starts "aws-waf-logs-", and
+  # adds the delivery permission to the account's CloudWatch Logs resource
+  # policy itself when the logging configuration is created.
+  ApiWafLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsWafEnabled
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "aws-waf-logs-${StackName}-api"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+
+  ApiWafLoggingConfiguration:
+    Type: AWS::WAFv2::LoggingConfiguration
+    Condition: IsWafEnabled
+    Properties:
+      ResourceArn: !GetAtt ApiWafWebACL.Arn
+      # The bare log-group ARN: !GetAtt ApiWafLogGroup.Arn ends in ":*", which
+      # WAF rejects as a destination.
+      LogDestinationConfigs:
+        - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ApiWafLogGroup}"
+
 
 Outputs:
   HttpApiEndpoint:

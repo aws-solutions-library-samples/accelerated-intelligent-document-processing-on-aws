@@ -4778,12 +4778,13 @@ Resources:
                   - s3:GetObjectVersion
                   - s3:GetBucketLocation
                   - s3:ListBucket
+              # The build logs to DockerBuildLogGroup (LogsConfig below), which
+              # the stack creates first. No logs:CreateLogGroup: a build must not
+              # be able to recreate a deleted group with no retention or key.
               - Resource:
-                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
-                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*:*"
+                  - !GetAtt DockerBuildLogGroup.Arn
                 Effect: Allow
                 Action:
-                  - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
               - Resource:
@@ -4842,6 +4843,17 @@ Resources:
                       ec2:AuthorizedService: !Sub "codebuild.${AWS::URLSuffix}"
                 - !Ref AWS::NoValue
 
+  # The image build's logs. Without LogsConfig CodeBuild creates
+  # /aws/codebuild/<project> itself, with no retention and no key, and the
+  # stack never deletes it.
+  DockerBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/codebuild/DockerBuildProject"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+
   DockerBuildProject:
     Type: AWS::CodeBuild::Project
     # cdk-nag suppress: AwsSolutions-CB5 - Privileged mode required for Docker image builds
@@ -4865,6 +4877,10 @@ Resources:
         Location: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactPrefix}/${SourceZipfile}"
         Type: S3
         BuildSpec: patterns/unified/buildspec.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref DockerBuildLogGroup
       Environment:
         ComputeType: BUILD_GENERAL1_LARGE
         Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
@@ -5279,12 +5295,11 @@ Resources:
               - kms:GenerateDataKey*
               - kms:DescribeKey
             Resource: !Ref CustomerManagedEncryptionKeyArn
-          - Effect: Allow
-            Action:
-              - ssm:GetParameter
-              - ssm:PutParameter
-              - ssm:GetParametersByPath
-            Resource: '*'
+          # No SSM grant: ssm:GetParameter/PutParameter/GetParametersByPath on
+          # "*" came with the removed SageMaker A2I flow. Neither this handler
+          # nor any idp_common module it imports calls SSM, and it has no
+          # SETTINGS_PARAMETER; scripts/tests/test_template_security_hardening.py
+          # holds both.
           - Effect: Allow
             Action:
               - bedrock:GetDataAutomationProject

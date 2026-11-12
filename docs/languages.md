@@ -58,7 +58,7 @@ flowchart TD
 
 First, verify if your documents' language is supported by Amazon Bedrock Data Automation (BDA). If your language is supported by BDA, begin with BDA mode.
 
-At the time of writing (Sep 19, 2025) BDA supports the following languages:
+BDA's supported languages are listed in the [BDA documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/bda-limits.html), which is the authority because the list changes. When this page was last checked against it (2025-09-19), the list was:
 
 - English
 - Portuguese
@@ -138,10 +138,13 @@ The choice of OCR backend significantly impacts performance for different langua
 
 #### Textract Backend Language Limitations
 
-Amazon Textract provides robust OCR capabilities with confidence scoring, but has explicit language constraints that must be considered during backend selection. Textract can detect printed text and handwriting from the Standard English alphabet and ASCII symbols.
-At the time of writing (Sep 19, 2025) Textract supports English, German, French, Spanish, Italian, and Portuguese.
+Amazon Textract provides robust OCR capabilities with confidence scoring, but its language support depends on which Textract operation runs, so check it against the OCR features you configure. AWS publishes the mapping on the [Textract supported languages](https://docs.aws.amazon.com/textract/latest/dg/supported-languages.html) page, grouped into three categories:
 
-For languages outside this supported set, Textract's accuracy degrades significantly, making it unsuitable for production workloads.
+- **English only** — `DetectDocumentText`, which the OCR service calls when `ocr.features` is empty and always for images embedded in Office documents, and `AnalyzeDocument` Queries.
+- **English, Spanish, Italian, Portuguese, French and German** — `AnalyzeDocument` Forms (the `FORMS` feature).
+- **The broadest set**, which adds languages such as Arabic, Chinese, Japanese, Korean, Hindi and most European languages — `AnalyzeDocument` Tables, Layout and Signatures, which is what the default `ocr.features` (`TABLES`, `LAYOUT`, `SIGNATURES`) calls.
+
+Handwriting recognition is English only. When you combine features in one call, plan for the narrowest category among them. For a language outside the category your features fall in, Textract's output is not reliable enough for production workloads; use the Bedrock backend described next.
 
 #### Bedrock Backend for Low-Resource Languages
 

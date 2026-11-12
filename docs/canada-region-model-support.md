@@ -164,8 +164,8 @@ alternative is offered in the region before selecting it. See [Document Knowledg
 - **ca-west-1 is handled, but the model lists are derived from ca-central-1.**
   A `ca-west-1` stack resolves to the same `ca` region type and gets the same
   picklists, swaps and Knowledge Base default, which is validated for
-  ca-central-1 only. Checked live on 2026-10-13: of the 47 ids the Canada
-  picklists offer, four cannot be called from ca-west-1 —
+  ca-central-1 only. Checked live on 2026-10-13: of the ids the Canada
+  picklists offered then, four could not be called from ca-west-1 —
   `global.xai.grok-4.6`, `us.anthropic.claude-haiku-4-5-20251001-v1:0`,
   `us.anthropic.claude-opus-4-5-20251101-v1:0` and
   `us.anthropic.claude-sonnet-4-5-20250929-v1:0` — and
@@ -194,8 +194,7 @@ a Launch Stack button in the [Deployment Guide](./deployment.md) and a plain
 `idp-cli deploy --region ca-central-1` resolves the published template without
 your having to name one. ⚠️ **0.6.11 and every release before it have no
 ca-central-1 artifacts** — Canada joined the published set in 0.6.12, so both
-routes work only from that release on, and until it is published the Launch
-Stack button answers 404. To deploy an earlier release, or unreleased code,
+routes work only from that release on. To deploy an earlier release, or unreleased code,
 supply the template yourself in one of two forms:
 
 ```bash

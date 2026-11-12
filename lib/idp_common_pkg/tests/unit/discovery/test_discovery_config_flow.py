@@ -377,7 +377,9 @@ discovery:
         self.assertEqual(without_gt_config.model_id, "test-model")
 
         # Missing fields should have IDPConfig defaults
-        self.assertEqual(without_gt_config.temperature, 1.0)
+        # The field default is the value base-discovery.yaml ships
+        # (test_system_defaults_value_parity.py holds the two equal).
+        self.assertEqual(without_gt_config.temperature, 0.0)
         self.assertEqual(without_gt_config.top_p, 0.1)
         # max_tokens now defaults to None (unset) => the Bedrock client resolves
         # the model's maximum output limit at request time.

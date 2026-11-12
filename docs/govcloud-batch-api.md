@@ -2,6 +2,9 @@
 title: "GovCloud Batch Jobs REST API"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # GovCloud Batch Jobs REST API
 
 This document covers the Batch Jobs REST API available in GovCloud deployments that include the [Jobs REST API](./govcloud-deployment.md#option-b-no-ui---headless--jobs-rest-api-all-lambdas-in-vpc) deployment option (`EnableJobsApi=true`).

@@ -114,6 +114,24 @@ documentation, testing, code-review).
   - Config schemas under `config_library/`
   - GraphQL schema and generated types in `src/ui/src/graphql/generated/`
   - Lambda handler event/response contracts
+- Quick Start still works? It is a new user's first experience, and it calls
+  surfaces other pages own, so it breaks with no failing test. If the PR changes
+  the agent chat route or stream, configuration profile creation or activation,
+  the discovery upload resolvers, schema authoring or the class catalog, the
+  Welcome page, side navigation or tour, the Test Set Generator extension, the
+  groups a role holds, or the stack wiring Quick Start reads (the
+  `EnableQuickStartWidget` parameter and the installed-features SSM parameter),
+  check in the diff that Quick Start still handles any contract it changes. If it
+  renames a page, navigation item or product term, check that the Quick Start
+  agent's prompt (`lib/idp_common_pkg/idp_common/agents/quick_start/agent.py`),
+  `docs/quick-start.md` and its stories in `scripts/ux_stories.toml` still match.
+  A change the diff shows Quick Start's side cannot handle (a field it reads
+  renamed or removed, a requirement it does not meet) is 🔴; a backward-compatible
+  change needs nothing; one that may break it, or a prompt, page or story that no
+  longer matches, is 🟡. Where the PR description or commit messages are available,
+  also note whether they say how the Quick Start journey was exercised: open it,
+  describe a document, approve the drafted fields, profile created and activated.
+  The paths are in `.claude/rules/quick-start.md`
 - No obvious race conditions, unbounded loops, or missing pagination
 - Error handling uses explicit exceptions (no bare `except:`), with `exc_info=True`
 - No removal of observability (X-Ray `patch_all`, structured logging)
@@ -141,9 +159,13 @@ runtime code that looks resources up through CloudFormation.
   `scripts/refresh_create_only.py`), with a translator test. Flag an entry
   added to `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES`,
   `STABLE_CUSTOM_OUTPUTS`, `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS`
-  in `translate.py`, or to `completeness.NOT_APPLICABLE`, without a written
-  reason and a test: each one is a place where Terraform deliberately differs
-  from CloudFormation.
+  in `translate.py`, to a hand mapper's `ignore_changes` (`SpecMapper` in
+  `aws_mappers.py`, or a lifecycle block a mapper class emits itself), or to
+  `completeness.NOT_APPLICABLE`, without a written reason and a test: each one
+  is a place where Terraform deliberately differs from CloudFormation. A
+  mapper's `ignore_changes` is right only for a property the service cannot
+  change after creation, or one CloudFormation never updates; anywhere else it
+  hides a real change.
 - **A property value that does not reach the Terraform.** The completeness check
   (`idp_tf/completeness.py`) fails when a value in the template appears nowhere
   in the HCL emitted for its resource, which is how a hardening setting is lost
@@ -379,8 +401,8 @@ Flag these immediately when seen in any diff:
   create-only property of one with nothing said about upgrading existing
   Terraform deployments
 - A new `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES`, `STABLE_CUSTOM_OUTPUTS`,
-  `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS` entry, or a
-  `completeness.NOT_APPLICABLE` or `scripts/terraform_scan_baseline.json` entry,
-  without a reason and a test
+  `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS` entry, a hand mapper's
+  `ignore_changes`, or a `completeness.NOT_APPLICABLE` or
+  `scripts/terraform_scan_baseline.json` entry, without a reason and a test
 - Runtime code that walks the stack through CloudFormation APIs or the
   `aws:cloudformation:stack-name` tag without the Terraform resource-directory path
