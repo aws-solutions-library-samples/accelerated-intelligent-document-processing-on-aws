@@ -1793,6 +1793,14 @@ class Run:
         ]
         if self.s.assume_role_arn:
             args += ["--terraform-assume-role-arn", self.s.assume_role_arn]
+        if self.s.upstream_permissions_boundary_arn:
+            # The new deployment's roles need the run's boundary too: the deploy
+            # role creates a role only when it carries that boundary, and the
+            # module attaches PermissionsBoundaryArn to every role it creates.
+            args += [
+                "--parameters",
+                f"PermissionsBoundaryArn={self.s.upstream_permissions_boundary_arn}",
+            ]
         if self.s.state_mirror:
             # Before the command's own `init`, so the new state is in the bucket
             # from its first write.

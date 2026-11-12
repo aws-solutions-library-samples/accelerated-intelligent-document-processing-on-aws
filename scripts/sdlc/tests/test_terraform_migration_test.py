@@ -1460,3 +1460,38 @@ def test_a_run_that_created_something_and_failed_keeps_its_mirror(tmp_path):
     run._boto_cache.update(s3=s3, sts=_FakeSts())
     run.execute()
     assert run.ctx.get("created") and s3.deleted == []
+
+
+@pytest.mark.parametrize("boundary", [BOUNDARY, None])
+def test_the_new_deployment_gets_the_runs_boundary(tmp_path, monkeypatch, boundary):
+    """The deploy role creates only roles carrying the run's boundary, so the new
+    deployment, whose module attaches PermissionsBoundaryArn to every role, is
+    planned with it. A run given no boundary (by hand, as an administrator)
+    passes none."""
+    kw = (
+        dict(upstream_iam_path=PATH_, upstream_permissions_boundary_arn=boundary)
+        if boundary
+        else {}
+    )
+    run = tmt.Run(_settings(tmp_path, **kw))
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def migrate(command, *args):
+        seen["args"] = list(args)
+        raise _Stop()
+
+    monkeypatch.setattr(run, "terraform_capture", lambda *a: "{}")
+    monkeypatch.setattr(run, "secrets", lambda: {"users": [{"username": "a@b"}]})
+    monkeypatch.setattr(run, "migrate", migrate)
+    with pytest.raises(_Stop):
+        run.phase_migrate_plan()
+    args = seen["args"]
+    if boundary:
+        assert (
+            args[args.index("--parameters") + 1] == f"PermissionsBoundaryArn={boundary}"
+        )
+    else:
+        assert "--parameters" not in args
