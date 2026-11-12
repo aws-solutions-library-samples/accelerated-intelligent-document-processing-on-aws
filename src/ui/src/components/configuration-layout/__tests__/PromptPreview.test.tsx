@@ -230,14 +230,22 @@ describe('schemaDivergenceFor', () => {
     expect(schemaDivergenceFor({}, {}, 'extraction').probe).toBe(false);
   });
 
-  it('reports the probe on Simple mode only, because agentic skips it', () => {
-    // _build_wire_schema returns the schema untouched when agentic.enabled, so
-    // claiming the probe in Advanced mode warned about something never sent.
+  it('reports the probe in BOTH modes, because Advanced probes its single-agent call', () => {
+    // Simple adds it in _build_wire_schema; Advanced adds it to the transport model
+    // of the unsharded agent call in _agentic_probe_model (#772). Hiding it in
+    // Advanced mode told the user no probe was sent when one was.
     expect(
       schemaDivergenceFor({ extraction: { mode: 'simple', multi_instance_detection: { enabled: true } } }, {}, 'extraction').probe,
     ).toBe(true);
     expect(
       schemaDivergenceFor({ extraction: { mode: 'advanced', multi_instance_detection: { enabled: true } } }, {}, 'extraction').probe,
+    ).toBe(true);
+    expect(
+      schemaDivergenceFor({ extraction: { agentic: { enabled: true }, multi_instance_detection: { enabled: true } } }, {}, 'extraction')
+        .probe,
+    ).toBe(true);
+    expect(
+      schemaDivergenceFor({ extraction: { mode: 'advanced', multi_instance_detection: { enabled: true } } }, {}, 'confidence').probe,
     ).toBe(false);
   });
 
