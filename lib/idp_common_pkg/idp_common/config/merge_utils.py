@@ -90,6 +90,57 @@ def deep_update(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any
     return target
 
 
+def overlay_pricing_rows(
+    default_rows: List[Dict[str, Any]], custom_rows: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Lay saved pricing rows over the default rows, per model and per unit.
+
+    The effective pricing table is the defaults with every saved row applied
+    on top of them:
+
+    - a saved unit replaces the default unit of the same name on the same entry;
+    - a saved unit the default entry lacks is added to that entry;
+    - a saved entry the defaults lack is appended;
+    - a default entry or unit the saved table does not mention is kept, so a
+      model a later release adds to the defaults is priced on a stack that saved
+      earlier, and a default row deleted in the editor reappears.
+
+    Entries are matched on ``name`` and units on ``name`` within an entry, the
+    keys the cost readers price by. Those readers build a name-keyed dict, so of
+    two rows with the same name the **last** one prices; a saved row is therefore
+    applied to the last default entry, and the last unit within it, of that name.
+    Saved rows are applied in order, so when a name repeats in them the later row
+    wins for each unit it names. A saved entry the defaults lack is added once.
+
+    Neither argument is modified; the stored records keep their shape, because
+    only the reader changes.
+    """
+    merged = deepcopy(default_rows)
+    by_name: Dict[Any, Dict[str, Any]] = {}
+    for entry in merged:
+        by_name[entry.get("name")] = entry  # the last of a repeated name
+
+    for custom_entry in custom_rows:
+        name = custom_entry.get("name")
+        target = by_name.get(name)
+        if target is None:
+            added = deepcopy(custom_entry)
+            merged.append(added)
+            by_name[name] = added
+            continue
+        units = target.setdefault("units", [])
+        for custom_unit in custom_entry.get("units") or []:
+            unit_name = custom_unit.get("name")
+            # The last unit of that name, the one the readers price by.
+            for index in range(len(units) - 1, -1, -1):
+                if units[index].get("name") == unit_name:
+                    units[index] = deepcopy(custom_unit)
+                    break
+            else:
+                units.append(deepcopy(custom_unit))
+    return merged
+
+
 def apply_delta_with_deletions(
     target: Dict[str, Any], delta: Dict[str, Any]
 ) -> Dict[str, Any]:
