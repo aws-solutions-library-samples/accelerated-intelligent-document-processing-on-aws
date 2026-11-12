@@ -849,7 +849,7 @@ classes:
               "RecipientName": "The Honorable Wendell H. Ford",
               "Date": "10/31/1995",
               "Subject": null
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
       - x-aws-idp-class-prompt: "This is an example of the class 'Letter'"
         name: "Letter2"
         x-aws-idp-attributes-prompt: |
@@ -859,7 +859,7 @@ classes:
               "RecipientName": "Mr. Addison Y. Yeaman",
               "Date": "10/14/1970",
               "Subject": "Invitation to the Twelfth Annual Meeting of the TGIC"
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter2.png"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter2.png"
 ```
 
 ### Example Fields Explained
@@ -884,12 +884,12 @@ The `x-aws-idp-image-path` field supports multiple formats:
 
 **Single Image File:**
 ```yaml
-x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
 ```
 
 **Local Directory with Multiple Images:**
 ```yaml
-x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/"
+x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/"
 ```
 
 **S3 Prefix with Multiple Images:**
@@ -1260,8 +1260,8 @@ Each configuration contains these essential components:
 ocr: [OCR method and parameters]
 classes: [Document type definitions]
 classification: [Classification prompts and parameters]
-extraction: [Extraction prompts and parameters]
-assessment: [Assessment prompts and parameters]
+extraction: [Extraction prompts and parameters, including confidence assessment under extraction.confidence]
+hitl: [Human review settings, including the confidence threshold]
 evaluation: [Evaluation prompts and parameters]
 summarization: [Summarization prompts and parameters]
 pricing: [Cost calculation parameters]
@@ -1542,7 +1542,7 @@ classes:
         type: string
         description: Name of the vendor
         x-aws-idp-evaluation-method: FUZZY  # Use fuzzy matching
-        x-aws-idp-confidence-threshold: 0.8  # Minimum similarity threshold
+        x-aws-idp-evaluation-threshold: 0.8  # Minimum similarity threshold
 ```
 
 ### Supported Evaluation Methods
@@ -1559,12 +1559,22 @@ The framework supports multiple comparison methods:
 ### Baseline Data Configuration
 
 #### Baseline Bucket Structure Configuration
+
+Each document's baseline is a directory named after the document's key, holding
+one `result.json` per section, in the same layout the solution writes to the
+output bucket (see [evaluation.md](./evaluation.md#method-2-create-baseline-data-manually)):
+
 ```
 baseline-bucket/
-├── document1.pdf.json    # Baseline for document1.pdf
-├── document2.pdf.json    # Baseline for document2.pdf
+├── document1.pdf/
+│   └── sections/
+│       └── 1/
+│           └── result.json    # Baseline for section 1 of document1.pdf
 └── subfolder/
-    └── document3.pdf.json  # Baseline for subfolder/document3.pdf
+    └── document3.pdf/
+        └── sections/
+            └── 1/
+                └── result.json  # Baseline for subfolder/document3.pdf
 ```
 
 ### Aggregate Evaluation Analytics Configuration
@@ -1933,8 +1943,8 @@ ocr:
 
 classes: [Document type definitions with examples]
 classification: [Classification configuration with few-shot]
-extraction: [Extraction configuration with few-shot]
-assessment: [Assessment configuration]
+extraction: [Extraction configuration with few-shot, and confidence assessment under extraction.confidence]
+hitl: [Human review configuration]
 evaluation: [Evaluation configuration]
 summarization: [Summarization configuration]
 pricing: [Cost calculation parameters]

@@ -708,7 +708,7 @@ classes:
         type: string
         description: Name of the vendor
         x-aws-idp-evaluation-method: FUZZY  # Use fuzzy matching
-        x-aws-idp-confidence-threshold: 0.8  # Minimum similarity threshold
+        x-aws-idp-evaluation-threshold: 0.8  # Minimum similarity threshold
 ```
 
 ### Group Attributes
@@ -730,17 +730,17 @@ classes:
             type: string
             description: "House or building number"
             x-aws-idp-evaluation-method: FUZZY
-            x-aws-idp-confidence-threshold: 0.9
+            x-aws-idp-evaluation-threshold: 0.9
           Street Name:
             type: string
             description: "Name of the street"
             x-aws-idp-evaluation-method: FUZZY
-            x-aws-idp-confidence-threshold: 0.8
+            x-aws-idp-evaluation-threshold: 0.8
           City:
             type: string
             description: "City name"
             x-aws-idp-evaluation-method: FUZZY
-            x-aws-idp-confidence-threshold: 0.9
+            x-aws-idp-evaluation-threshold: 0.9
           State:
             type: string
             description: "State abbreviation (e.g., CA, NY)"

@@ -458,7 +458,7 @@ Few shot examples work by including reference documents with known classificatio
 
 ### Configuration
 
-Few shot examples are configured using JSON Schema format in the configuration files in the `config_library/unified/` directory. The `few_shot_example` configuration demonstrates how to set up examples:
+Few shot examples are configured using JSON Schema format in the configuration files in the `config_library/unified/` directory. The `rvl-cdip-with-few-shot-examples` preset demonstrates how to set up examples:
 
 ```yaml
 classes:
@@ -479,7 +479,7 @@ classes:
               "SenderName": "Will E. Clark",
               "SenderAddress": "206 Maple Street P.O. Box 1056 Murray Kentucky 42071-1056",
               "RecipientName": "The Honorable Wendell H. Ford"
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
   - $schema: "https://json-schema.org/draft/2020-12/schema"
     $id: Email
     x-aws-idp-document-type: Email
@@ -493,7 +493,7 @@ classes:
              "FromAddress": "Kelahan, Ben",
              "ToAddress": "TI New York: 'TI Minnesota",
              "Subject": "FW: Morning Team Notes 4/20"
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/email1.jpg"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/email1.jpg"
 ```
 
 ### Benefits
@@ -599,7 +599,7 @@ Pattern 2 supports several placeholders for building dynamic prompts:
 
 To use few shot examples in your deployment:
 
-1. **Use the example configuration**: Deploy with `ConfigurationDefaultS3Uri` pointing to `config_library/unified/few_shot_example/config.yaml`
+1. **Use the example configuration**: Deploy with the `ConfigurationPreset` stack parameter set to `rvl-cdip-with-few-shot-examples`, or upload a copy of `config_library/unified/rvl-cdip-with-few-shot-examples/config.yaml` to S3 and set `CustomConfigPath` to its S3 URI
 2. **Create custom examples**: Copy the example configuration and modify it with your own document examples
 3. **Provide example images**: Place example document images in the appropriate directory and reference them in the `x-aws-idp-image-path` field
 
