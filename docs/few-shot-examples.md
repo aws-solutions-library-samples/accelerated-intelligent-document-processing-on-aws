@@ -540,7 +540,7 @@ task_prompt: |
 ```
 
 **Without caching**: Pay full token cost (static + dynamic) for every document
-**With caching**: Pay full cost once, then only dynamic portion for subsequent documents
+**With caching**: Pay the static portion once at a write premium (1.25× its input price on Claude models), then the cache-read price for it on documents that follow within five minutes, plus full cost for the dynamic portion
 
 ### Performance Benefits
 
@@ -712,7 +712,7 @@ text only, so compare the number of image items with the images you expect.
 - **Reduced Prompt Engineering**: Less time spent fine-tuning text descriptions
 - **Consistent Outputs**: Examples establish clear formatting standards
 - **Better Edge Case Handling**: Visual and textual examples help with ambiguous documents
-- **Cost Efficiency with Caching**: Cached prompt prefixes are billed at a reduced cache-read rate, provided the prefix reaches the model's minimum cacheable size ([prompt-caching study](./benchmarking/studies/prompt-caching.md))
+- **Cost Efficiency with Caching**: Prompt caching bills a cached prefix (examples included) at a tenth of the input price on Claude models when it is read again within five minutes. A prefix below the model's minimum is never cached, and a cached prefix that is not read again is billed at about 25% more than uncached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
 
 ### Trade-offs
 - **Increased Initial Token Usage**: Examples add to prompt length, increasing initial processing costs

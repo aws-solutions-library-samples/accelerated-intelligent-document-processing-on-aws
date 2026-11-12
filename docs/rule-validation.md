@@ -693,7 +693,7 @@ Rule validation costs depend on:
 - Prompt caching effectiveness
 
 **Cost Optimization Tips**:
-1. Use prompt caching (can reduce costs by 50-90%)
+1. Use prompt caching on busy stacks: a cached prefix that is read again within five minutes is billed at a tenth of the input price on Claude models, but one that is never read again is billed at about 25% more than uncached, and a prefix below the model's minimum is never cached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
 2. Choose appropriate model (Haiku for simple rules, Sonnet for complex)
 3. Minimize rule redundancy
 4. Optimize chunk sizes to reduce API calls

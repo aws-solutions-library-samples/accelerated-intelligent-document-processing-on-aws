@@ -41,13 +41,15 @@ They combine freely. The tables below give pros/cons and a recommendation; the r
 | | **Simple** (non-agentic) — *default* | **Advanced** (agentic) |
 |---|---|---|
 | **How it works** | One Bedrock inference returns the structured result | Strands agent with a structured-output tool; can shard large sections, validate against the schema, and self-correct |
-| **Pros** | Cheapest & fastest; fewest moving parts; works with every model incl. OpenAI GPT-5.x | Highest accuracy on complex/nested schemas; guaranteed schema compliance; deterministic **table parsing** for big tables; **sharding** for long docs; model **escalation** on validation failure |
-| **Cons** | No built-in validation/retry; a single huge section must fit one inference (context-overflow / read-timeout risk); weaker on deeply nested structures | More inferences → higher per-doc cost & latency; requires a model that reliably emits tool use (no OpenAI GPT-5.x, and not Amazon Nova Lite — see below); still in **preview** |
-| **Choose when** | Most documents; small–medium size; simple/flat schemas; lowest cost matters | Complex/nested schemas, strict validation needs, **large documents or big multi-row tables**, business-critical accuracy |
+| **Pros** | Cheaper on real-world forms (about half the cost, measured); fewest moving parts; works with every model incl. OpenAI GPT-5.x | Complete on long lists where Simple truncates; guaranteed schema compliance; deterministic **table parsing** for big tables; **sharding** for long docs; model **escalation** on validation failure |
+| **Cons** | No built-in validation/retry; a single huge section must fit one inference (context-overflow / read-timeout risk); returns part of a long list on some runs (see the warning below) | More inferences → about twice the per-doc cost on real-world forms (measured); requires a model that reliably emits tool use (no OpenAI GPT-5.x, and not Amazon Nova Lite — see below); still in **preview** |
+| **Choose when** | Most documents, including real-world forms; sections whose lists stay under about 400 rows | Sections that can hold **more than about 400 list rows**, very large documents, strict schema-validation needs |
 
 > ⚠️ **Simple mode can return part of a long list and still report `COMPLETED`.** On the v0.6.14 benchmark grid, with the shipped default extraction model (Claude Sonnet 5), Simple mode returned every row of each of the three 400-row, 9-page statements on every run. On the 800-row, 17-page statement it returned the whole list on only **5 of 13** runs and **43 to 190 rows** on the other 8, and every one of those runs reported `COMPLETED` ([config-guidance §5.5](./benchmarking/config-guidance.md#55-recommendations-by-document-profile)). No size between 400 and 800 rows was measured, so **treat about 400 list rows per section (9 pages on those statements) as the Simple-mode limit, and use Advanced mode above it**. In Advanced mode all seven models in that grid returned 800 of 800 rows on every run. The limit also depends on the model: Claude Sonnet 5.5 lost most of a 400-row list on 15 of its 133 runs, and both Amazon Nova models return about half of a list or less above 100 rows ([config-guidance §5.1](./benchmarking/config-guidance.md#51-extraction-model--the-full-grid)). Check completeness, not completion status. When a list comes back with fewer than half the rows the section's OCR tables of the same width show (and those tables hold at least 30 rows), the section carries the `extraction_rows_below_ocr_estimate` processing issue, a warning by default; all 8 short runs above carry it. A smaller loss of 30 or more rows is reported as `extraction_partial_row_shortfall` (up to 29 rows can go missing unreported), and a list with no matching OCR table may be reported by nothing ([Detecting a truncated list](#detecting-a-truncated-list)). [`extraction.row_shortfall_action: fail`](#making-a-materially-incomplete-list-fail-the-section--extractionrow_shortfall_action) makes a section carrying the first of those fail instead, but it can also fail correct extractions of small 2- or 3-property arrays, including the default preset's `Bank-Statement.account_summary`, so check [the shapes it misjudges](#why-fail-is-opt-in-and-what-to-check-before-turning-it-on) first. Read [`minItems` in Simple vs Advanced mode](#minitems-on-a-list-field--a-warning-in-simple-mode-a-hard-floor-in-advanced) before adding a row floor, because the two modes treat it differently.
 
 > **Rule of thumb:** start Simple. Move to Advanced when a section can hold a list of more than about 400 rows (see the warning above), when you hit nested-schema accuracy limits, when you need schema-format validation, or when a section is too large for one inference to hold.
+
+> **What the v0.6.14 benchmark measured about the trade.** On real labelled forms (RealKIE-FCC-Verified, 20 documents, at the study's control extraction model, Claude Sonnet 4.6) the matched Textract TABLES + `separate` pair scored **0.798 weighted accuracy in Simple mode at $0.1428 per document against 0.774 in Advanced mode at $0.2825**. Four cells running the identical Simple configuration spanned 0.771–0.799, so the accuracy difference is inside one draw's noise; the cost difference is not, and Advanced mode was not measurably more accurate on these forms in three consecutive editions ([config-guidance §2c](./benchmarking/config-guidance.md#2c-real-corpus-accuracy-realkie-fcc-verified-omniai-ocr-benchmark)). Advanced mode earns its cost on long lists: at the shipped default (Claude Sonnet 5) it returned 800 of 800 rows on every run of the 17-page statement, and on a 400-row statement it cost **$0.508 against Simple's $0.534**, inside its own run-to-run spread ([§4](./benchmarking/config-guidance.md#4-cost-and-its-run-to-run-variation-5-repeats-of-one-400-row-document)). At the control model the Advanced premium shrank with size and inverted at 800 rows ($1.3260 against $1.6192, [§3](./benchmarking/config-guidance.md#3-scaling-limits-by-document-size)).
 
 ### Confidence mode: separate vs integrated vs off
 
@@ -55,15 +57,21 @@ They combine freely. The tables below give pros/cons and a recommendation; the r
 |---|---|---|---|
 | **How it works** | A dedicated confidence inference (Simple: the standalone Assessment step; Advanced: one pass **inside each shard**) | Confidence rides on the extraction inference — no separate pass. **Simple** uses **1S-TopK** (the model returns top-K guesses + probabilities per field); **Advanced** has the agent emit confidence via its tools | No confidence produced |
 | **Inferences added** | +1 (Simple) / +1 per shard (Advanced) | 0 (Simple, single-shot) / 0–1 (Advanced) | 0 |
-| **Pros** | Best-calibrated (a fresh look at finalized values); can use a **cheaper model** than extraction (default Nova Lite); large lists batched reliably | Fewest inferences → lowest confidence cost; one round-trip on the simple path | Zero confidence cost |
-| **Cons** | Extra inference(s) → more cost/latency than `integrated` | On the **Simple** path everything (context + values + all confidence) must fit **one** response → truncation risk on large docs/tables; can't use a separate cheaper model | No confidence → no HITL routing, no UI confidence/threshold signals |
-| **Choose when** | **Default for almost everyone** — the calibration and cheap-model economics usually win | Small documents where one inference comfortably holds values **and** confidence, and you want to minimize round-trips | Confidence genuinely not needed (no HITL, no reliability signal) |
+| **Pros** | Can use a **cheaper model** than extraction (default Nova Lite); large lists batched reliably; on the Advanced path, far cheaper than `integrated` (see below) | Fewest inferences; one round-trip on the simple path for scalar-only classes | The only mode that measurably saves money |
+| **Cons** | Extra inference(s) → extra latency | On the **Simple** path everything (context + values + all confidence) must fit **one** response → truncation risk on large docs/tables; can't use a separate cheaper model; on the **Advanced** path, the most expensive configuration measured | No confidence → no HITL routing, no UI confidence/threshold signals |
+| **Choose when** | **Default for almost everyone** | Simple mode, scalar-only classes, small documents where one inference comfortably holds values **and** confidence, and you want to minimize round-trips. Not on the Advanced path | Confidence genuinely not needed (no HITL, no reliability signal) |
 
 > **Recommended defaults:** **Simple + `separate`** for most workloads; **Advanced + `separate`** for complex or large documents. Reach for `integrated` only on small docs where minimizing inferences matters, and `off` only when you don't consume confidence at all.
 
+> ⚠️ **`integrated` is not the cheap option; only `off` is.** Measured on the v0.6.14 benchmark ([config-guidance §2a](./benchmarking/config-guidance.md#2a-ocr-backend-extraction-mode-and-confidence-mode), [§2.1](./benchmarking/config-guidance.md#21-integrated-confidence-with-simple-mode-list-truncation-fixed-in-v068), [§4](./benchmarking/config-guidance.md#4-cost-and-its-run-to-run-variation-5-repeats-of-one-400-row-document)):
+>
+> - **Simple mode:** `integrated` cost the same as `separate` ($0.5554 against $0.5238 per document over seven statements at the control model, inside the spread of four identically configured cells), because a list-bearing class is scored in the separate pass regardless (see the next note).
+> - **Advanced mode:** `integrated` cost more. At the shipped default (Claude Sonnet 5) it was **about 42% dearer** on a 100-row statement ($0.3528 against $0.2477) and $0.684 against $0.508 on a 400-row one, where its confidence work did not land at all (`assessment_incomplete` on 5 of 5 runs). At the control model (Claude Sonnet 4.6) it was **4.8× `separate`** over the seven statements ($2.9081 against $0.6103) and 5.7× on the 400-row one, because the agent overran its output budget emitting inline assessment and retried.
+> - **`off`:** $0.4006 against `separate`'s $0.5238 per document over the same seven statements in Simple mode at the control model.
+
 > **Simple + `integrated` uses 1S-TopK.** On the Simple path, `integrated` mode asks the model for its **top-K guesses with probabilities** per field (`G1/P1` … `GK/PK`) in one call; the top guess becomes the value and its probability the confidence. Enumerating alternatives yields better-calibrated, less-overconfident scores than a single value + a single confidence number (Tian et al., *"Just Ask for Calibration"*, EMNLP 2023). The output `result.json` is identical in shape to `separate` mode (same `inference_result` + `explainability_info`), so HITL, evaluation, reporting, and the UI are unchanged, and the standalone Assessment step auto-skips — for scalar-only classes; a list-bearing class is scored separately regardless (see the warning below). A field whose top guess comes back with no usable probability is scored 0.0, so it still raises a confidence alert, and its `confidence_reason` in `result.json` says the 0.0 is a stand-in rather than the model's confidence. The prompt is editable in the UI ("Task prompt (1-Stage TopK extraction + confidence — simple)") / `extraction.task_prompt_extraction_with_confidence_topk`. See the [reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) and the [extraction library README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/extraction/README.md#1s-topk-single-stage-extraction--confidence-simple-mode).
 
-> ⚠️ **Simple + `integrated` is automatically scored in a separate pass for list-bearing classes.** On a class that declares any list field (including every multi-instance class, whose `instances` array is a list), a Simple-mode section ignores `integrated` and runs the standalone Assessment step instead. Its cost relative to the single inference is model-dependent: at the shipped default model (Claude Sonnet 5) a 100-row statement cost about **2.5×** ($0.608 vs $0.247, batched list scoring), while at Claude Sonnet 4.6 the same cell was cheaper than the integrated call in the 2026-09-09 live pass ($0.131 vs $0.171). Either way the result is complete: Simple + `integrated` returned **10 of 100 rows** while Simple + `separate` returned 100 of 100 in every repeat. The mechanism is output volume: the TopK envelope costs several guesses *per cell*, so a list that fits comfortably in a plain extraction can exceed what the model will emit in one response, and it stops emitting rows rather than erroring. Two changes reduce it — list cells are asked for a **single** guess (`G1/P1` only) instead of four, and the prompt no longer tells the model to make each guess *"as short as possible"* (which also shortened *values*) — but the single-response limit remains. Scalar-only classes keep the single-inference saving, and Advanced extraction is unchanged (sharding keeps each call small). Two per-class opt-outs keep a list-bearing class on 1S-TopK: its own `x-aws-idp-extraction-task-prompt` (the downgrade works by swapping the prompt, so a user-controlled prompt is never half-applied), or the explicit `x-aws-idp-allow-integrated-lists: true` flag for a class whose lists you have **verified come back complete on your own documents** — the [1S-TopK reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) sets it on its `Invoice` class for that reason. Where you see the decision: `idp-cli config-validate` (and the SDK validate operation) warns and names the affected classes — the web UI does **not** validate on save, but its **Prompt Preview** pane shows, per class, that the plain prompt is sent; per section, `metadata.confidence_mode_effective: separate` and the **Processing Flow** in the Processing Report record it. It is deliberately *not* a Processing Issue, because that flag is severity-blind and would badge every document. See [config-guidance](./benchmarking/config-guidance.md) for the measured comparison.
+> ⚠️ **Simple + `integrated` is automatically scored in a separate pass for list-bearing classes.** On a class that declares any list field (including every multi-instance class, whose `instances` array is a list), a Simple-mode section ignores `integrated` and runs the standalone Assessment step instead. Because it is the same pass, it costs what `separate` costs: on the v0.6.14 benchmark's 100-row statement the two Simple cells cost **$0.2251 and $0.2252** at the shipped default (Claude Sonnet 5, at its published rates; `benchmarks/results/v0.6.14/coresynth__extraction-model-sonnet5/`) and $0.2053 against $0.2054 over four repeats at the control model, Claude Sonnet 4.6 ([config-guidance §2.1](./benchmarking/config-guidance.md#21-integrated-confidence-with-simple-mode-list-truncation-fixed-in-v068)). The single 1S-TopK inference it replaces looked cheaper only because it did less work, and its result was not complete: Simple + `integrated` returned **10 of 100 rows** while Simple + `separate` returned 100 of 100 in every repeat. The mechanism is output volume: the TopK envelope costs several guesses *per cell*, so a list that fits comfortably in a plain extraction can exceed what the model will emit in one response, and it stops emitting rows rather than erroring. Two changes reduce it — list cells are asked for a **single** guess (`G1/P1` only) instead of four, and the prompt no longer tells the model to make each guess *"as short as possible"* (which also shortened *values*) — but the single-response limit remains. Scalar-only classes keep the single-inference saving, and Advanced extraction is unchanged (sharding keeps each call small). Two per-class opt-outs keep a list-bearing class on 1S-TopK: its own `x-aws-idp-extraction-task-prompt` (the downgrade works by swapping the prompt, so a user-controlled prompt is never half-applied), or the explicit `x-aws-idp-allow-integrated-lists: true` flag for a class whose lists you have **verified come back complete on your own documents** — the [1S-TopK reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) sets it on its `Invoice` class for that reason. Where you see the decision: `idp-cli config-validate` (and the SDK validate operation) warns and names the affected classes — the web UI does **not** validate on save, but its **Prompt Preview** pane shows, per class, that the plain prompt is sent; per section, `metadata.confidence_mode_effective: separate` and the **Processing Flow** in the Processing Report record it. It is deliberately *not* a Processing Issue, because that flag is severity-blind and would badge every document. See [config-guidance](./benchmarking/config-guidance.md) for the measured comparison.
 
 > **Large lists & truncation are handled on every path.** Whichever combination you pick, long list fields are assessed in sequential batches (`list_batch_size`), and if the confidence model truncates a batch at its output-token ceiling the batch is **recursively split until it fits** — so you get complete per-cell coverage without tuning. See [Large-list batching](#large-list-batching-list_batch_size). For documents that are large because of a *very large single section* (not just a long list), prefer **Advanced sharding** — see [Large-Document Guidance](#8-large-document-guidance).
 
@@ -652,7 +660,7 @@ classes:
 ```yaml
 extraction:
   agentic:
-    enabled: true            # Advanced mode recommended for production
+    enabled: true            # Advanced mode: for lists above ~400 rows (see §0)
   model: anthropic.claude-sonnet-4-5-20250929-v1:0
   temperature: 0.0           # Keep low for consistency
   top_p: 0.1
@@ -1662,10 +1670,11 @@ extraction:
 > Any legacy `granular.*` keys still validate but are ignored — no config edit is
 > required. See [Granular Assessment Retirement](migration-granular-retirement.md).
 
-> **For very large or complex documents**, prefer **Advanced (agentic)
-> extraction** — it shards both extraction and assessment and produced the
-> best-calibrated confidence in A/B testing. Simple + separate remains fully
-> viable for large lists via the batching above. See
+> **For sections that can hold more than about 400 list rows, and for very large
+> documents**, prefer **Advanced (agentic) extraction** — it shards both extraction
+> and assessment, and it was the mode that returned every row with every row
+> confidence-scored at every size measured at the benchmark's control model ([config-guidance §3](./benchmarking/config-guidance.md#3-scaling-limits-by-document-size)).
+> Simple + separate scores long lists via the batching above. See
 > [Large-Document Guidance](#8-large-document-guidance).
 
 ---
@@ -2193,10 +2202,22 @@ StateTaxes[0]:
   └── Period: 8.43 [Confidence: 83.2% / Threshold: 80.0% - GREEN]
 ```
 
-**Threshold best practices.** Set higher thresholds (0.90+) for critical
-financial or personal data; use per-attribute thresholds for different data
-types; establish reasonable global defaults (0.75–0.85); start conservative and
-tune based on accuracy analysis. Route below-threshold extractions to
+**Threshold best practices.** Choose the confidence model and the threshold
+together, because with the default confidence model a threshold in the usual
+0.75–0.9 range rarely triggers. On the v0.6.14 benchmark grid the default (Amazon
+Nova Lite) scored **0 of 119,937** confidence leaves below 0.9, including on the
+one configuration whose extraction got about 0.5% of values wrong, where it
+flagged 0 of 6,664 leaves
+([config-guidance §5.4](./benchmarking/config-guidance.md#54-confidence-model)).
+The default score is well calibrated but does not rank the wrong values below the
+right ones ([confidence calibration study](./benchmarking/studies/confidence-calibration.md)),
+so lowering or raising a threshold moves few fields in or out of review. Claude
+Sonnet 5 as the confidence model scored about 638 of 119,960 leaves below 0.9,
+and 173 of 6,668 on that error-bearing configuration, at **$160.70 against
+$90.33** for the whole grid. No measurement here supports a particular threshold
+value: measure how many wrong values fall below a candidate threshold on a
+labelled sample of your own documents, use per-attribute thresholds where data
+types differ, and route below-threshold extractions to
 [Human Review](human-review.md).
 
 ---
@@ -2430,7 +2451,7 @@ logged. For complete examples see `notebooks/examples/demo-lambda/README.md` and
 
 For large documents and big tables:
 
-- **Advanced (agentic) extraction is generally the better fit.** It shards both extraction **and** confidence assessment into token-/page-budgeted ranges, bounding each inference's context and preventing read-timeout / context-overflow failures. It produced the **best-calibrated confidence** in A/B testing. For 100+ page documents prefer `runtime: step_functions` and raise `max_concurrent_batches` (e.g. 10). For large tables specifically, enable **table parsing** (§1) when OCR emits Markdown tables.
+- **Advanced (agentic) extraction is the better fit above about 400 list rows.** It shards both extraction **and** confidence assessment into token-/page-budgeted ranges, bounding each inference's context and preventing read-timeout / context-overflow failures, and it returned every row with every row confidence-scored at every size measured, up to 3,200 rows, at the benchmark's control model ([config-guidance §3](./benchmarking/config-guidance.md#3-scaling-limits-by-document-size)). For 100+ page documents prefer `runtime: step_functions` and raise `max_concurrent_batches` (e.g. 10). For large tables specifically, enable **table parsing** (§1) when OCR emits Markdown tables.
 - **Simple + `separate` confidence still handles large lists** via [large-list batching](#large-list-batching-list_batch_size) (`list_batch_size`) — full per-cell confidence and geometry with no extra configuration. This is the direct replacement for the retired granular assessment.
 - **Rule of thumb:** a document that is large only because it contains a long *list* (e.g. a 300-row bank statement) is well served by Simple + separate + batching. A document with a **very large single section** (dense multi-page narrative or multiple large tables) is better served by **Advanced sharding**, which also splits the extraction work, not just the confidence pass.
 
@@ -2830,7 +2851,7 @@ that abbreviates on its own reports a clean stop, which is why the estimates abo
 still carry the rest of the work.
 
 For corpora where large tables are expected — in practice anything beyond ~400 rows
-or ~10 pages per document — use **Advanced** mode, which holds recall 1.000 through
+or ~9 pages per section — use **Advanced** mode, which holds recall 1.000 through
 3,200 rows by sharding. Simple mode deliberately does not shard: that is the capability
 that distinguishes the two modes. When a Simple-mode section is too large to fit the
 model's input window at all, the run **fails** (Bedrock's *Input is too long for
@@ -2957,7 +2978,7 @@ the system automatically adds `confidence_threshold` from configuration.
 
 **Extraction**
 
-1. **Prefer Advanced (agentic) for production** and for complex/nested schemas, strict validation, and large documents/tables.
+1. **Choose the mode by list size, not by environment.** Use Advanced (agentic) for sections that can hold more than about 400 list rows, for very large documents, and where you need strict schema validation; use Simple otherwise. On real labelled forms Simple was as accurate at about half the cost ([§0](#extraction-mode-simple-vs-advanced)).
 2. **Write clear attribute descriptions** — detail where and how information appears; more specific descriptions yield better extraction (and, in agentic mode, stronger Pydantic validation).
 3. **Balance precision vs recall** based on whether false positives or false negatives hurt more for your use case.
 4. **Optimize few-shot examples** — diverse, representative examples covering common variations and edge cases.
@@ -2965,14 +2986,14 @@ the system automatically adds `confidence_threshold` from configuration.
 6. **Optimize image dimensions** — original resolution for forms/tables; smaller for simple text at high volume.
 7. **Separate classes for very different layouts** of the same document type.
 8. **Test end-to-end** with the full OCR → classification → extraction pipeline.
-9. **Choose models by task** — Nova Pro for complex few-shot extraction; Claude Haiku for balanced cost; Claude Sonnet for agentic and highest accuracy.
+9. **Choose models by measurement** — the shipped default (Claude Sonnet 5) returned every row in Advanced mode at every document size tested, up to 3,200 rows; Claude Opus 5.5 was complete and exact on the whole benchmark grid in both modes for 63% more. Amazon Nova Lite and Nova Pro completed every Simple-mode run but returned about half of the rows (mean recall 0.4980 and 0.5035), and neither completes Advanced mode, so use them only for short forms of about one page ([config-guidance §5.1](./benchmarking/config-guidance.md#51-extraction-model--the-full-grid), [§5.5](./benchmarking/config-guidance.md#55-recommendations-by-document-profile)).
 
 **Confidence & geometry**
 
 1. **Be specific about high vs low confidence** in prompts; include reasoning examples.
 2. **Cost management** — disable confidence for non-critical classes (`enabled: false`); start text-only before adding images; monitor token usage.
-3. **Model selection** — Claude Haiku/Sonnet class models with `temperature: 0` for deterministic scoring.
-4. **Risk-based thresholds** — 0.90+ for critical data, 0.75–0.85 global defaults, per-attribute overrides where needed.
+3. **Model selection** — keep the default (Amazon Nova Lite) unless the score gates human review on documents that produce wrong values; Claude Sonnet 5 is the only measured confidence model that lowered its score on wrong values, at 1.78× the grid cost ([config-guidance §5.4](./benchmarking/config-guidance.md#54-confidence-model)). Use `temperature: 0` for deterministic scoring.
+4. **Risk-based thresholds** — set them with the confidence model in mind and check them on labelled documents; with the default model a 0.9 threshold flagged nothing on the benchmark grid (see the threshold best practices in [§6](#6-confidence-thresholds)). Use per-attribute overrides where needed.
 5. **Keep `ocr_only` geometry** (the default) unless you have a specific reason — it is cheaper and more accurate than LLM boxes.
 6. **Lower `list_batch_size`** for large lists only if a chunk under-enumerates — it is a ceiling on a derived size, so raising it does not cut the inference count.
 7. **Route below-threshold fields to [Human Review](human-review.md).**
