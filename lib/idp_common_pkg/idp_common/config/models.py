@@ -1032,7 +1032,7 @@ class ConfidenceConfig(BaseModel):
         ),
     )
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
-    top_p: float = Field(default=0.1, ge=0.0, le=1.0)
+    top_p: float = Field(default=0.0, ge=0.0, le=1.0)
     top_k: float = Field(default=5.0, ge=0.0)
     reasoning_effort: str = Field(
         default="medium",
@@ -1298,7 +1298,7 @@ class ExtractionConfig(BaseModel):
         ),
     )
     model: str = Field(
-        default="us.amazon.nova-pro-v1:0",
+        default="us.anthropic.claude-sonnet-5",
         description="Bedrock model ID for extraction. Use 'LambdaHook' to invoke a custom Lambda function instead of Bedrock.",
     )
     prompt_cache: Literal["auto", "off"] = Field(
@@ -1422,10 +1422,10 @@ class ExtractionConfig(BaseModel):
     # and the bounding-box block at extraction.geometry.task_prompt_bbox — each with its
     # own section. Only the extraction-only and integrated templates are top-level here.
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
-    top_p: float = Field(default=0.1, ge=0.0, le=1.0)
+    top_p: float = Field(default=0.0, ge=0.0, le=1.0)
     top_k: float = Field(default=5.0, ge=0.0)
     reasoning_effort: str = Field(
-        default="medium",
+        default="low",
         description=(
             "Reasoning effort for reasoning-capable models. Claude Sonnet 5 / "
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
@@ -2694,14 +2694,13 @@ class SummarizationConfig(BaseModel):
         description="Pipeline hooks invoked after summarization (Feature Platform)",
     )
     enabled: bool = Field(default=True, description="Enable summarization")
-    # Nova Pro, not Nova Premier. Premier reached end of life on 2026-09-14 and
-    # every call to it now fails, so it was the one default in this file that
-    # made a stack fail out of the box: no config preset under config_library/
-    # sets summarization.model, so this default is what most deployments run.
-    # Pro is the highest-tier Nova still Active and is already the default for
-    # classification and discovery below.
+    # The model base-summarization.yaml ships. A deployment runs the system
+    # defaults merged under its profile, so that file is what an unset
+    # summarization.model resolves to; this field default is what a configuration
+    # built without that merge gets, and the two are held equal by
+    # tests/unit/config/test_system_defaults_value_parity.py.
     model: str = Field(
-        default="us.amazon.nova-pro-v1:0",
+        default="us.anthropic.claude-sonnet-5:1m",
         description="Bedrock model ID for summarization. Use 'LambdaHook' to invoke a custom Lambda function instead of Bedrock.",
     )
     model_lambda_hook_arn: Optional[str] = Field(
@@ -2715,7 +2714,7 @@ class SummarizationConfig(BaseModel):
         default="", description="Task prompt template for summarization"
     )
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
-    top_p: float = Field(default=0.1, ge=0.0, le=1.0)
+    top_p: float = Field(default=0.0, ge=0.0, le=1.0)
     top_k: float = Field(default=5.0, ge=0.0)
     reasoning_effort: str = Field(
         default="medium",
@@ -3263,7 +3262,7 @@ class ChatCompanionConfig(BaseModel):
     """Chat companion agent configuration"""
 
     model_id: str = Field(
-        default="global.anthropic.claude-sonnet-4-6",
+        default="us.anthropic.claude-haiku-4-5-20251001-v1:0",
         description="Bedrock model ID for chat companion",
     )
 
@@ -3501,6 +3500,70 @@ class AgentsConfig(BaseModel):
     )
 
 
+# The one form a stored price may take: a non-negative decimal, optionally with an
+# exponent. It is the intersection of what Python's ``float()`` (the cost reports)
+# and JavaScript's ``Number()`` (the Pricing page and the document cost panel) both
+# read as the same finite value. Each parser accepts forms the other rejects or
+# reads differently -- ``Number()`` takes ``0x10`` and reads ``''`` as 0, ``float()``
+# takes ``1_000``, ``nan`` and ``inf`` -- so a price written in one of those forms
+# looked priced on one side and unpriced (or NaN, or infinite) on the other. The
+# Pricing page enforces the same pattern in
+# ``src/ui/src/components/pricing-layout/price-format.ts``.
+# ``[0-9]`` rather than ``\d``: in a ``str`` pattern ``\d`` matches every Unicode
+# decimal digit, and ``float()`` reads them, while JavaScript's ``\d`` and
+# ``Number()`` do not.
+PRICE_PATTERN = re.compile(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+
+# Validation context that marks a PricingConfig as read back from storage rather
+# than being written. Under it an invalid price is reported and kept, so a record
+# saved before prices were validated still loads; everywhere else it is refused.
+STORED_PRICING_CONTEXT: Dict[str, Any] = {"pricing_source": "stored"}
+
+
+def parse_price(value: Any) -> Optional[float]:
+    """Return a price string's value, or None when it is not a valid price.
+
+    This is the rule a price is SAVED by; a stored price is read by ``read_price``.
+
+    Valid means a ``str`` matching ``PRICE_PATTERN`` in full, with no surrounding
+    whitespace, whose value is finite (``1e999`` matches the pattern and is
+    infinite). Anything else is unpriced, never zero.
+    """
+    if not isinstance(value, str) or PRICE_PATTERN.fullmatch(value) is None:
+        return None
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) else None
+
+
+# The characters both earlier readers ignored around a number: ``float()`` and
+# JavaScript's ``Number()`` each skip surrounding whitespace, by different Unicode
+# sets, and this is their intersection -- ASCII whitespace plus the eighteen space
+# separators both treat as space (U+00A0, as pasted from a web page, among them).
+# Not ``str.strip()`` with no argument, which also strips U+001C-U+001F (neither
+# reader skips them) and U+0085 (``Number()`` does not), and not ``trim()``, which
+# also strips U+FEFF (``float()`` does not). The web UI's ``PRICE_WHITESPACE`` is the same list, and
+# ``price-cases.json`` pins both readers to one table of cases.
+PRICE_WHITESPACE = (
+    " \t\n\r\f\v\u00a0\u1680"
+    + "".join(chr(c) for c in range(0x2000, 0x200B))
+    + "\u2028\u2029\u202f\u205f\u3000"
+)
+
+
+def read_price(value: Any) -> Optional[float]:
+    """Return a stored price's value, or None when it is unpriced.
+
+    ``parse_price`` with surrounding ``PRICE_WHITESPACE`` tolerated. The Pricing page
+    saved a table cell exactly as typed before prices were checked, so a stored
+    ``'0.0015 '`` exists, and ``float()`` and ``Number()`` both read it as 0.0015;
+    so does this. It is still refused on save. Every cost reader uses this, and the
+    web UI's ``readPrice`` (``pricing-layout/price-format.ts``) mirrors it.
+    """
+    if isinstance(value, str):
+        value = value.strip(PRICE_WHITESPACE)
+    return parse_price(value)
+
+
 class PricingUnit(BaseModel):
     """Individual pricing unit within a service/API"""
 
@@ -3583,6 +3646,49 @@ class PricingConfig(BaseModel):
         """
         log_ignored_config_keys(data, cls)
         return data
+
+    @model_validator(mode="after")
+    def _check_prices(self, info: ValidationInfo) -> Self:
+        """Refuse a price the cost reports and the Pricing page would read differently.
+
+        The check lives here rather than on ``PricingUnit`` because ``IDPConfig``
+        carries ``PricingEntry`` rows too, and a processing configuration must not
+        stop loading over a price. Every writer constructs this model -- the
+        configuration resolver, ``ConfigurationManager.save_custom_pricing`` and
+        ``update_configuration`` at deploy time -- so every writer that saves a table is checked.
+
+        A record read back from storage is validated under
+        ``STORED_PRICING_CONTEXT``: an invalid price there is logged and kept, so a
+        stack holding one saved before this check still loads and the Pricing page
+        shows the value for correction. The cost readers value it by
+        ``read_price``: unpriced, unless only surrounding whitespace was wrong.
+
+        One writer does not construct it: the fine-tuning deployment handler
+        appends a row to the stored record directly, and only ever with the
+        constant price ``"0.0"``.
+        """
+        invalid = [
+            f"{entry.name}/{unit.name}: {unit.price!r}"
+            for entry in self.pricing
+            for unit in entry.units
+            if parse_price(unit.price) is None
+        ]
+        if not invalid:
+            return self
+        context = info.context if isinstance(info.context, dict) else {}
+        if context.get("pricing_source") == STORED_PRICING_CONTEXT["pricing_source"]:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Stored pricing holds %d price(s) a save would refuse: %s",
+                len(invalid),
+                "; ".join(invalid),
+            )
+            return self
+        raise ValueError(
+            "Invalid price(s); a price must be a non-negative decimal number such "
+            "as 0.0015 or 6.0E-8: " + "; ".join(invalid)
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to a mutable dictionary."""
@@ -3700,7 +3806,7 @@ class FactExtractionConfig(BaseModel):
     )
     task_prompt: str = Field(default="", description="Task prompt for fact extraction")
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
-    top_p: float = Field(default=0.01, ge=0.0, le=1.0)
+    top_p: float = Field(default=0.0, ge=0.0, le=1.0)
     top_k: float = Field(default=20.0, ge=0.0)
     max_tokens: Optional[int] = Field(
         default=None,
@@ -3735,7 +3841,7 @@ class RuleValidationOrchestratorConfig(BaseModel):
     )
     task_prompt: str = Field(default="", description="Task prompt for summarization")
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
-    top_p: float = Field(default=0.01, ge=0.0, le=1.0)
+    top_p: float = Field(default=0.0, ge=0.0, le=1.0)
     top_k: float = Field(default=20.0, ge=0.0)
     max_tokens: Optional[int] = Field(
         default=None,
@@ -3864,7 +3970,7 @@ class RuleValidationConfig(BaseModel):
 class EvaluationLLMMethodConfig(BaseModel):
     """Evaluation LLM method configuration"""
 
-    top_p: float = Field(default=0.1, ge=0.0, le=1.0)
+    top_p: float = Field(default=0.0, ge=0.0, le=1.0)
     max_tokens: Optional[int] = Field(
         default=None,
         gt=0,
@@ -3885,39 +3991,36 @@ class EvaluationLLMMethodConfig(BaseModel):
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
     )
+    # The text base-evaluation.yaml ships, character for character. That file
+    # writes it as a folded (`>-`) scalar, so its line breaks are spaces except
+    # inside the more-indented JSON example, and this copy reproduces the folded
+    # result rather than the layout the file appears to have.
     task_prompt: str = Field(
-        default="""
-        I need to evaluate attribute extraction for a document of class: {DOCUMENT_CLASS}.
-        For the attribute named "{ATTRIBUTE_NAME}" described as "{ATTRIBUTE_DESCRIPTION}":
-        - Expected value: {EXPECTED_VALUE}
-        - Actual value: {ACTUAL_VALUE}
-
-        Do these values match in meaning, taking into account formatting differences, word order, abbreviations, and semantic equivalence?
-        Provide your assessment as a JSON with three fields:
-
-            - "match": boolean (true if they match, false if not)
-
-            - "score": number between 0 and 1 representing the confidence/similarity score
-
-            - "reason": brief explanation of your decision
-
-
-        Respond ONLY with the JSON and nothing else. Here's the exact format:
-
-        {
-            "match": true or false,
-            "score": 0.0 to 1.0,
-            "reason": "Your explanation here"
-        }""",
+        default=(
+            "I need to evaluate attribute extraction for a document of class: "
+            '{DOCUMENT_CLASS}. For the attribute named "{ATTRIBUTE_NAME}" '
+            'described as "{ATTRIBUTE_DESCRIPTION}": - Expected value: '
+            "{EXPECTED_VALUE} - Actual value: {ACTUAL_VALUE} Do these values match "
+            "in meaning, taking into account formatting differences, word order, "
+            "abbreviations, and semantic equivalence? Provide your assessment as a "
+            'JSON with three fields: - "match": boolean (true if they match, '
+            'false if not) - "score": number between 0 and 1 representing the '
+            'confidence/similarity score - "reason": brief explanation of your '
+            "decision Respond ONLY with the JSON and nothing else. Here's the exact "
+            "format: {\n"
+            '  "match": true or false,\n'
+            '  "score": 0.0 to 1.0,\n'
+            '  "reason": "Your explanation here"\n'
+            "}"
+        ),
         description="Task prompt for evaluation",
     )
 
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
-    # Claude Haiku 4.5, not Claude 3 Haiku. The latter reached end of life, so
-    # LLM-based evaluation ran a dead model out of the box; this is the current
-    # Haiku-class model and keeps the same cost/latency intent.
+    # The model base-evaluation.yaml ships, so an evaluation configuration built
+    # without the system-defaults merge runs the same judge a deployment does.
     model: str = Field(
-        default="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        default="us.amazon.nova-2-lite-v1:0",
         description="Bedrock model ID for evaluation",
     )
     system_prompt: str = Field(
@@ -3955,7 +4058,7 @@ class DiscoveryModelConfig(BaseModel):
         default="us.amazon.nova-pro-v1:0", description="Bedrock model ID for discovery"
     )
     system_prompt: str = Field(default="", description="System prompt for discovery")
-    temperature: float = Field(default=1.0, ge=0.0, le=1.0)
+    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
     top_p: float = Field(default=0.1, ge=0.0, le=1.0)
     max_tokens: Optional[int] = Field(
         default=None,
@@ -3977,6 +4080,22 @@ class DiscoveryModelConfig(BaseModel):
     def parse_int(cls, v: Any) -> Optional[int]:
         """Parse optional max_tokens (empty/0 -> None = use model max)."""
         return _parse_optional_max_tokens(v)
+
+
+class AutoSplitModelConfig(DiscoveryModelConfig):
+    """``discovery.auto_split``: a ``DiscoveryModelConfig`` with its own model.
+
+    Section-boundary detection ships a different model from the two class-discovery
+    calls (``base-discovery.yaml``), and the default belongs to the field rather than
+    to the parent's ``default_factory``: a factory only answers for a block that is
+    absent altogether, so an ``auto_split`` block that sets anything else would
+    otherwise take the class-discovery model.
+    """
+
+    model_id: str = Field(
+        default="us.anthropic.claude-opus-4-6-v1:1m",
+        description="Bedrock model ID for section-boundary detection",
+    )
 
 
 class MultiDocumentDiscoveryConfig(BaseModel):
@@ -4139,8 +4258,8 @@ class DiscoveryConfig(BaseModel):
         default_factory=DiscoveryModelConfig,
         description="Configuration for discovery with ground truth",
     )
-    auto_split: DiscoveryModelConfig = Field(
-        default_factory=DiscoveryModelConfig,
+    auto_split: AutoSplitModelConfig = Field(
+        default_factory=AutoSplitModelConfig,
         description="Configuration for auto-detecting document section boundaries in multi-page packages",
     )
     multi_document: MultiDocumentDiscoveryConfig = Field(
@@ -4796,7 +4915,7 @@ class IDPConfig(BaseModel):
         description="Human-in-the-Loop review configuration (v0.6, top-level)",
     )
     summarization: SummarizationConfig = Field(
-        default_factory=lambda: SummarizationConfig(model="us.amazon.nova-pro-v1:0"),
+        default_factory=SummarizationConfig,
         description="Summarization configuration",
     )
     chat: ChatConfig = Field(
@@ -5491,20 +5610,28 @@ class ConfigurationRecord(BaseModel):
             )
             config_data.pop("pricing", None)
 
-        # Parse into appropriate config type - Pydantic discriminator handles this automatically
+        # Parse into appropriate config type - Pydantic discriminator handles this
+        # automatically. Both steps run under STORED_PRICING_CONTEXT: this is a read,
+        # and a pricing record saved before prices were validated must still load
+        # (PricingConfig._check_prices). The second step re-runs that check on the
+        # instance, so it needs the context as much as the first.
         config = cls.model_validate(
-            {"configuration_type": config_type, "config": config_data}
+            {"configuration_type": config_type, "config": config_data},
+            context=STORED_PRICING_CONTEXT,
         ).config
 
-        return cls(
-            configuration_type=config_type,
-            version=version,
-            is_active=item.get("IsActive"),
-            description=item.get("Description"),
-            config=config,
-            metadata=ConfigMetadata(
-                created_at=item.get("CreatedAt"), updated_at=item.get("UpdatedAt")
-            ),
+        return cls.model_validate(
+            {
+                "configuration_type": config_type,
+                "version": version,
+                "is_active": item.get("IsActive"),
+                "description": item.get("Description"),
+                "config": config,
+                "metadata": ConfigMetadata(
+                    created_at=item.get("CreatedAt"), updated_at=item.get("UpdatedAt")
+                ),
+            },
+            context=STORED_PRICING_CONTEXT,
         )
 
     @staticmethod

@@ -2,6 +2,9 @@
 title: "AppSync → REST API Migration"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Migrating off AWS AppSync: how the new transport mirrors GraphQL
 
 This document is the reference for the UI ⇄ backend transport. It explains

@@ -258,7 +258,7 @@ via `cacheReadInputTokens` / `cacheWriteInputTokens`.
 
 | Capability | Supported? | Why / what happens |
 |---|---|---|
-| **Agentic extraction** (`extraction.agentic.enabled: true`) | ❌ | The agentic path uses the Strands framework over the Converse API, which GPT-5.x doesn't support. This combination is a **hard error** in `idp-cli config-validate` and **raises at runtime**. |
+| **Agentic extraction** (`extraction.mode: advanced`, or `extraction.agentic.enabled: true` in a configuration that sets no `mode`) | ❌ | The agentic path uses the Strands framework over the Converse API, which GPT-5.x doesn't support. This combination is a **hard error** in `idp-cli config-validate` and **raises at runtime**. The same applies to a GPT-5.x **escalation model** (`extraction.validation.escalation_model` or a class's `x-aws-idp-extraction-escalation-model`) when `fail_action` is `escalate`, because agentic escalation runs through the same agent loop; under Simple extraction a GPT-5.x escalation model works. |
 | **Discovery** (classes / without- & with-ground-truth / auto-split) | ❌ | Discovery ingests whole PDFs as Converse `document` blocks, which the Responses API cannot accept (text + image only). Rejected by `config-validate` and **guarded at runtime**. |
 | **Policy / Rule Discovery** | ❌ | Same PDF-document-block limitation; agentic rule discovery also uses Strands. Rejected by `config-validate` and guarded at runtime. |
 | PDF `document` input blocks | ❌ | The Responses API accepts text and images only. Pipelines that need whole-PDF ingestion should use a Claude or Nova model. |

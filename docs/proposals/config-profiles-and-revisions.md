@@ -1,3 +1,6 @@
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Proposal: Configuration Profiles and Revisions
 
 **Status:** Phases 0, 1 and 2 implemented (see §10 for where the implementation

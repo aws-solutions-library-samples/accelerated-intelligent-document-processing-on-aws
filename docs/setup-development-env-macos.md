@@ -2,6 +2,9 @@
 title: "Development Environment Setup Guide on MacOS"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Development Environment Setup Guide on MacOS
 # Introduction
 This guide configures a comprehensive local development environment on macOS systems for the GenAI IDP accelerator.  

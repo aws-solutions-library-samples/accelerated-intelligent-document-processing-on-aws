@@ -9,6 +9,7 @@ import { describePromptCache, summarizeCacheUsage } from '../common/promptCacheM
 import type { PromptCacheDescription } from '../common/promptCacheModel';
 import { priceMetering } from './metering-cost';
 import type { PricingLookup } from './pricing';
+import { toPricingLookup } from '../pricing-layout/price-format';
 
 const logger = new ConsoleLogger('MeteringTable');
 
@@ -71,20 +72,10 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
   // We no longer use a default unit cost, showing "None" instead
 
   useEffect(() => {
-    if (pricing && (pricing as PricingData).pricing) {
-      // Convert pricing array to lookup object for easier access
-      const pricingLookup: PricingLookup = {};
-      (pricing as PricingData).pricing.forEach((item) => {
-        if (item.name && item.units) {
-          pricingLookup[item.name] = {};
-          item.units.forEach((unitItem) => {
-            if (unitItem.name && unitItem.price !== undefined) {
-              // Ensure price is stored as a number
-              pricingLookup[item.name][unitItem.name] = Number(unitItem.price);
-            }
-          });
-        }
-      });
+    // The one lookup the cost panels share (see price-format.ts): a price the cost
+    // reports cannot read is left out, so the unit reads as unpriced here too.
+    const pricingLookup = toPricingLookup(pricing);
+    if (pricingLookup) {
       setPricingData(pricingLookup);
       logger.debug('Pricing data initialized:', pricingLookup);
     }

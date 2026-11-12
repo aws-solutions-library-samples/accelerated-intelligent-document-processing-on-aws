@@ -15,6 +15,7 @@
 // assignee works the document; an Admin or Author may too. An Annotator listed on the
 // set's queue can open any document read-only, and Claim an unassigned one to work it.
 import React, { useCallback, useState } from 'react';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { Box, Button, Link } from '@cloudscape-design/components';
 
@@ -59,6 +60,21 @@ export const testSetReviewHistory = (doc: {
     ? [{ at: doc.assignedAt, event: 'assigned', actor: null, details: JSON.stringify({ note: `Assigned to ${doc.assignedTo}` }) }]
     : [];
 
+const messages = defineMessages<{ regroupPending: NoMessageValues; regroupRereadFailed: NoMessageValues }>({
+  regroupPending: {
+    id: 'testStudio.itemEdit.regroupPending',
+    defaultMessage: 'Loading the saved grouping…',
+    description:
+      'Why Edit Page Grouping is unavailable: a page grouping was just saved and the document editor is still re-reading the saved sections.',
+  },
+  regroupRereadFailed: {
+    id: 'testStudio.itemEdit.regroupRereadFailed',
+    defaultMessage: 'The saved grouping could not be re-read. Choose Refresh to load it.',
+    description:
+      'Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page.',
+  },
+});
+
 /** The toast after Save: a draft, which Process Changes later writes as reviewed ground truth. */
 export const savedDraftMessage = (name: string): string =>
   `Saved your changes to ${name} as a draft. ${PROCESS_CHANGES_LABEL} writes them as reviewed ground truth.`;
@@ -83,6 +99,7 @@ const FAILED_ACTION: Record<EditAction, string> = {
 };
 
 export const useTestSetItemEditModel = (testSetId: string, objectKey: string, session: EditorSession): EditModel => {
+  const intl = useIntl();
   const adapter = useTestSetItemEdit(testSetId, objectKey);
   const { doc, draft, queue, loading, loadError, reload } = adapter;
   const { settings } = useSettingsContext();
@@ -328,7 +345,12 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
         showRefresh: true,
         refreshDisabledReason: saving ? 'Saving your changes…' : loading ? 'Loading…' : undefined,
         showRegroup: true,
-        regroupDisabledReason: regroupReason,
+        // While the refs lag a save the board would send stale section ids. A failed re-read
+        // leaves them lagging, and the page shows that error nowhere else while a document
+        // is loaded, so the reason says so rather than claiming a load is under way.
+        regroupDisabledReason:
+          regroupReason ??
+          (slots.refsPending ? intl.formatMessage(loadError ? messages.regroupRereadFailed : messages.regroupPending) : undefined),
         showClaim: canClaim,
         offerHistory: true,
       },

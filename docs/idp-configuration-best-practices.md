@@ -2,10 +2,10 @@
 title: "IDP Configuration Best Practices Guide"
 ---
 
-# IDP Configuration Best Practices Guide
-
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
+
+# IDP Configuration Best Practices Guide
 
 ## Table of Contents
 
@@ -819,7 +819,7 @@ Few-shot learning enhances AI model performance by providing concrete examples a
 - **🚫 Fewer made-up values**: Examples showing the expected output can discourage invented classification or attribute values
 - **🔧 Domain Adaptation**: Examples help models understand domain-specific terminology and conventions
 - **💡 Better Edge Case Handling**: Visual examples clarify ambiguous cases that text descriptions might miss
-- **💰 Cost Effectiveness with Caching**: Using prompt caching with few-shot examples can significantly reduce costs for repeated processing
+- **💰 Cost Effectiveness with Caching**: Examples placed before `<<CACHEPOINT>>` are billed at the cache-read price when the prefix is read again within five minutes; see Cost Benefits below for when caching costs more instead
 
 ### Configuration Structure
 
@@ -976,7 +976,7 @@ extraction:
 
 4. **Leverage Prompt Caching**
    - Always include `<<CACHEPOINT>>` to separate static examples from dynamic content
-   - Place all examples before the cache point for maximum cost savings
+   - Place all examples before the cache point so they are part of the cached prefix
 
 ## Cache Checkpoint Strategy
 
@@ -1026,9 +1026,17 @@ task_prompt: >-
 ### Cost Benefits
 
 For models supporting cache checkpoints:
-- **Initial Request**: Full token cost
-- **Subsequent Requests**: Cache read cost (typically 10x cheaper) + new content cost
-- **Savings**: depend on how much of each request is a cacheable prefix, and need the prefix to reach the model's minimum cacheable size ([prompt-caching study](./benchmarking/studies/prompt-caching.md))
+- **Initial Request**: Full token cost, plus a write premium on the cached prefix (1.25× its input price on Claude models)
+- **Subsequent Requests**: Cache read cost (a tenth of the input price on most Claude models, a twentieth on Claude Sonnet 5.5 and Opus 5.5) + new content cost
+- **What it saves depends on the workload, and it can cost more.** Only the prefix
+  before `<<CACHEPOINT>>` is cached, and on the `ocr-benchmark` documents that was
+  about 1,000–2,900 of about 7,800 input tokens per request. A prefix shorter than the
+  model's minimum (1,024 tokens on Claude Sonnet 5) is never cached and raises no
+  error, and a prefix that is written but not read again within the five-minute
+  cache lifetime is billed at **about 25% more** than with no cache point (1.25× on
+  the cached prefix only, so a smaller share of the whole request)
+  ([prompt caching study](./benchmarking/studies/prompt-caching.md)). No end-to-end
+  saving for repeated processing has been measured here.
 
 ## LLM Inference Parameters
 
@@ -1429,7 +1437,7 @@ For documents with multiple pages, the system provides comprehensive image suppo
 
 ### Overview
 
-As of **config v0.6**, per-field **confidence** and **geometry** are **outputs of
+As of **config format 0.6**, per-field **confidence** and **geometry** are **outputs of
 extraction**, configured under `extraction.confidence.*` and
 `extraction.geometry.*` (there is no top-level `assessment.{model, geometry_mode,
 ...}` block anymore). Confidence assessment analyzes extraction outputs against
@@ -1504,7 +1512,7 @@ Confidence results automatically appear in the web interface with color-coded di
 ### Best Practices for Confidence Configuration
 
 1. **Enable Selectively**: Disable confidence (`enabled: false` or `mode: off`) for non-critical document types to control costs
-2. **Use Advanced (agentic) for Complex Documents**: For very large documents and big tables, prefer agentic extraction — it shards both extraction and confidence assessment and yields the best-calibrated confidence
+2. **Use Advanced (agentic) for Large Lists**: For sections that can hold more than about 400 list rows, and for very large documents, use agentic extraction — it shards both extraction and confidence assessment, and in the v0.6.14 benchmark it was the only mode that returned every row with every row confidence-scored at 1,200 rows and above (at the study's control extraction model). On real-world forms Simple mode was as accurate at about half the cost, so do not switch for forms ([config-guidance §2c, §3](./benchmarking/config-guidance.md#3-scaling-limits-by-document-size))
 3. **Lower `list_batch_size` for Large Lists** if a chunk under-enumerates. It is a ceiling on a derived size, so raising it does not cut the inference count
 4. **Configure Appropriate Image Dimensions**: Use original resolution for maximum accuracy
 5. **Monitor Resource Usage**: Track processing time and costs when using confidence features
@@ -1640,7 +1648,7 @@ ocr:
 |---|---|
 | `textract` | Amazon Textract (the default) |
 | `bedrock` | LLM-based OCR through the model in `ocr.model_id`, as configured above |
-| `bda` | Amazon Bedrock Data Automation, which is the backend to prefer for table-heavy documents |
+| `bda` | Amazon Bedrock Data Automation. On the table-heavy statements of the v0.6.14 benchmark it tied Textract `TABLES` and `LAYOUT` on accuracy (every row and every value right) and was not measurably cheaper ([config-guidance §2a](./benchmarking/config-guidance.md#2a-ocr-backend-extraction-mode-and-confidence-mode), [§4](./benchmarking/config-guidance.md#4-cost-and-its-run-to-run-variation-5-repeats-of-one-400-row-document)) |
 | `none` | No text extraction; page images only |
 
 > ⚠️ **The value is not validated when the config is saved.** A misspelled
@@ -1661,19 +1669,38 @@ what had happened to the list this paragraph replaced.
 
 Commonly used choices:
 
-- `us.amazon.nova-lite-v1:0` — cheapest; adequate for clean, text-heavy scans
-- `us.amazon.nova-pro-v1:0` — better on mixed layouts
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0` — fast Claude option
-- `us.anthropic.claude-sonnet-4-6` — strongest on handwriting and dense tables
-- `qwen.qwen3-vl-235b-a22b` — vision-language alternative
+- `us.amazon.nova-2-lite-v1:0` — the default `ocr.model_id` (used only when the
+  backend is `bedrock`), and the one the v0.6.14 benchmark measured (below)
+- `us.amazon.nova-lite-v1:0`, `us.amazon.nova-pro-v1:0` — Amazon Nova
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0`, `us.anthropic.claude-sonnet-4-6` —
+  Anthropic Claude
+- `qwen.qwen3-vl-235b-a22b` — Qwen vision-language model
+
+No benchmark in this repository compares OCR models with one another, so this list
+says nothing about which is more accurate on a given kind of document. Compare
+candidates on a sample of your own documents, and compare their per-token prices in
+`config_library/pricing.yaml`.
 
 Select `LambdaHook` instead of a model to route OCR to your own Lambda function.
 
 #### When to Configure Bedrock OCR
 
+> ⚠️ **Bedrock OCR is the one backend measured to get values wrong.** On the v0.6.14
+> benchmark (typed synthetic bank statements, the default OCR model Amazon Nova 2
+> Lite) it returned every row, but at cell accuracy **0.990** where Textract
+> `TABLES`, Textract `LAYOUT` and BDA were all at 1.000, and it perturbed fixed-width
+> identifiers such as account numbers. It was also the cheapest backend: $0.3821
+> per document against $0.5238 for Textract `TABLES`, and about $0.004 per page for
+> OCR against `TABLES`' $0.015 (the per-page figures are the OCR phase of
+> `benchmarks/results/v0.6.14/core/summary.json`). Do not use it where identifiers
+> or amounts matter ([config-guidance §2a, finding 4](./benchmarking/config-guidance.md#2a-ocr-backend-extraction-mode-and-confidence-mode)).
+> Handwritten and low-quality documents were not measured, so the list below is
+> not a measured result.
+
 Configure Bedrock OCR for:
 - **Complex layouts** or mixed content types
-- **Handwritten or low-quality documents** where Textract struggles
+- **Handwritten or low-quality documents** where Textract struggles (not measured;
+  test on your own documents)
 - **Domain-specific documents** requiring contextual understanding
 - **Unified processing** across the entire pipeline
 - **Experimental or specialized use cases** requiring prompt customization
@@ -1798,8 +1825,11 @@ extraction:
                        # quote it — bare `off` is YAML's boolean false and is rejected
 ```
 
-`integrated` is the usual answer when cost is the concern but you still want
-confidence; `"off"` when you do not. Unlike most of the settings on this page,
+`integrated` does not save money: in Simple mode it cost the same as `separate`,
+and in Advanced mode it cost more — about 42% more at the shipped default on a
+100-row statement, and 4.8× at the benchmark's control model over seven statements
+([config-guidance §2a, §2.1](./benchmarking/config-guidance.md#2a-ocr-backend-extraction-mode-and-confidence-mode)).
+`"off"` is the setting that saves money, when you do not need confidence. Unlike most of the settings on this page,
 `mode` *is* validated: a value other than `off`, `separate` or `integrated` is
 rejected when the config is saved. If you only need confidence on *some*
 document types, run them through a separate stack rather than trying to express

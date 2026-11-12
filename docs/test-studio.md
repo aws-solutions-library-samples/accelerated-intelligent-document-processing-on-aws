@@ -2,6 +2,9 @@
 title: "Test Studio"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Test Studio
 
 The Test Studio provides a comprehensive interface for managing test sets, running tests, and analyzing results directly from the web UI.
@@ -1462,6 +1465,15 @@ A few rules the board enforces, all for the same reason — a packet split is a
   delete it.
 - A page the split had dropped entirely **can** be added. That is precisely the defect
   a reviewer is here to fix, so it is allowed in.
+- A section you add starts with no field values, even when you deleted another section
+  in the same edit: the board never gives an added section the number of a section the
+  document already had, because a save keeps each section's fields under the number it
+  is sent with.
+- After a save, **Edit Page Grouping** is unavailable, with the reason *Loading the saved
+  grouping…*, until the editor has re-read the saved sections. The save renumbers them,
+  so a grouping opened from the sections shown before the re-read would name the wrong
+  ones. If the re-read fails, the reason says so instead; choose **Refresh** to load
+  the saved grouping.
 
 Sections are renumbered so their ids follow page order. Several consumers take a
 section's group index from its position in a list, and nothing otherwise guarantees
@@ -1866,7 +1878,7 @@ class is corrected — see
 
 ### Field-Level Metrics
 
-Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns (Stickler v0.4.0+):
+Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns:
 
 **Displayed Columns:**
 1. **Field Name**: The name of the extracted field (hierarchical with expand/collapse)

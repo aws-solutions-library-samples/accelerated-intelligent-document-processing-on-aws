@@ -311,7 +311,7 @@ The full default task prompt also defines the JSON output format the LLM must re
 
 ### API Integration
 
-**GraphQL Mutation:**
+**API operation** (`POST /op/uploadDiscoveryDocument`; the shape below is the contract in `schema.graphql`):
 ```graphql
 mutation UploadDiscoveryDocument($fileName: String!, $discoveryType: String, $version: String) {
   uploadDiscoveryDocument(
@@ -483,5 +483,5 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
   - **Traditional:** the model's stop reason is checked directly. A truncated response is retried, and if every attempt truncates the job fails rather than saving what was recovered.
   - **Agentic:** Strands fails hard on a truncated response (`MaxTokensReachedException`) before any result is returned, so there is no partial ruleset to save. That error is translated into the same actionable message as the traditional path.
 
-  If a job fails with a truncation message, split the document by chapter, or clear `discovery.rules.max_tokens` if you set a lower cap.
+  If a job fails with a truncation message, split the document by chapter, or set `discovery.rules.model` to a model with a larger output limit. `discovery.rules.max_tokens` ships empty, which already requests the model's full output limit, so it helps only if you set a lower cap, in which case clear it. The message says which case applies.
 - **Validation-question phrasing depends on prompt.** Rule descriptions are only as good as the `task_prompt`'s instruction to phrase them as yes/no questions. Customize the prompt if the default phrasing doesn't match your validator's expectations.

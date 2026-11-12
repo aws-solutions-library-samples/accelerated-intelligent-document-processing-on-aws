@@ -400,3 +400,25 @@ def test_simple_escalation_failure_records_a_bounded_reason():
         "escalation call failed: RuntimeError: throttled"
     )
     assert "\n" not in meta["escalation_decision"]
+
+
+def test_an_unreadable_escalation_answer_is_not_reported_as_no_answer():
+    """#1911 review: the escalation model answered (and was billed) but its text
+    was not JSON, which reaches the same failure reason as a call that raised. The
+    issue must not claim the model produced nothing, only that nothing was kept."""
+    svc = _svc(enabled=True, fail_action="escalate", escalation_model="us.big-model")
+    original = {"invoice_number": "INV-1", "amount": 10.0, "due_date": "March 15th"}
+    with patch(
+        "idp_common.bedrock.invoke_model",
+        return_value=_escalation_response("I could not find those fields."),
+    ):
+        fields, meta, _ok = _validate(svc, dict(original), metering={})
+    assert meta["escalation_decision"].startswith("escalation call failed: ")
+    issues = svc._build_extraction_issues(
+        extracted_fields=fields, metadata={"validation": meta}, section_id="1"
+    )
+    issue = next(i for i in issues if i.code == "extraction_validation_failed")
+    assert "Escalation to us.big-model failed (" in issue.message
+    assert "nothing from it was kept" in issue.message
+    assert "before producing" not in issue.message
+    assert "did not resolve" not in issue.message

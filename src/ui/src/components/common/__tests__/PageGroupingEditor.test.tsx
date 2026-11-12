@@ -180,6 +180,29 @@ describe('PageGroupingEditor', () => {
     expect(saved.find((s) => s.sectionId === '3')?.pageIds).toEqual([4]);
   });
 
+  it('never gives an added section the id of one deleted in the same edit, even if the caller re-renders without it (#1895)', async () => {
+    // A save keeps each sent section's stored fields under its id, so a reused id would
+    // hand the deleted section's fields to the new one.
+    const { rerender } = renderEditor();
+    await movePageTo(3, '1');
+    await movePageTo(4, '1');
+    await userEvent.click(screen.getByRole('button', { name: /Delete section 2/i }));
+    // The caller's sections change while the board is open, and no longer hold section 2.
+    rerender(
+      <PageGroupingEditor
+        pages={PAGES}
+        sections={[{ sectionId: '1', documentClass: 'FieldTicket', pageIds: [1, 2, 3, 4] }]}
+        classOptions={[{ label: 'FieldTicket', value: 'FieldTicket' }]}
+        consequence="Saving keeps the field values."
+        onSave={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Add section/i }));
+    expect(screen.queryByText('Section 2')).not.toBeInTheDocument();
+    expect(screen.getByText('Section 3')).toBeInTheDocument();
+  });
+
   it('does not offer Save until something has actually changed', () => {
     renderEditor();
 
