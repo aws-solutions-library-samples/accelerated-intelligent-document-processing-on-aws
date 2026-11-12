@@ -27,6 +27,7 @@ from idp_common import image
 from idp_common.bedrock.client import BedrockClient
 from idp_common.discovery.clustering_service import ClusteringService, ClusterResult
 from idp_common.discovery.discovered_text import clean_report, clean_schema_text
+from idp_common.discovery.regional_defaults import default_analysis_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +319,7 @@ class DiscoveryAgent:
 
     def __init__(
         self,
-        analysis_model_id: str = "us.anthropic.claude-sonnet-4-6",
+        analysis_model_id: Optional[str] = None,
         bedrock_client: Optional[BedrockClient] = None,
         max_sample_size: int = 5,
         max_workers: int = 3,
@@ -329,19 +330,23 @@ class DiscoveryAgent:
         Initialize the discovery agent.
 
         Args:
-            analysis_model_id: Bedrock model ID for schema generation agent
+            analysis_model_id: Bedrock model ID for schema generation agent.
+                Defaults to the cluster-analysis default callable from ``region``
+                (see :mod:`idp_common.regional_models`).
             bedrock_client: Optional BedrockClient (used for region info)
             max_sample_size: Maximum documents to sample per cluster
             max_workers: Maximum parallel cluster analysis workers
             system_prompt: Optional custom system prompt (overrides template)
             region: AWS region for Strands BedrockModel
         """
-        self.analysis_model_id = analysis_model_id
         self.bedrock_client = bedrock_client
         self.max_sample_size = max_sample_size
         self.max_workers = max_workers
         self.custom_system_prompt = system_prompt
         self.region = region or (bedrock_client.region if bedrock_client else None)
+        self.analysis_model_id = analysis_model_id or default_analysis_model_id(
+            self.region
+        )
 
     def _load_system_prompt(self) -> str:
         """Load and render the extraction prompt template."""

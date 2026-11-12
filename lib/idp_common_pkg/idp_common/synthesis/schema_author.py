@@ -233,9 +233,10 @@ def author_class_schema(
     suitable for schema design when ``model_id`` is not given.
     """
     from idp_common import bedrock
+    from idp_common.regional_models import SONNET_4_6_MODEL_ID, regional_default
 
     client = bedrock_client or bedrock.BedrockClient(region=region)
-    model = model_id or "us.anthropic.claude-sonnet-4-6"
+    model = model_id or regional_default(SONNET_4_6_MODEL_ID, region)
     system_prompt = (
         "You are an expert in document understanding and JSON Schema design. "
         "You produce precise, well-named extraction schemas."
