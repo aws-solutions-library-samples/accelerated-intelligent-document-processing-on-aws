@@ -157,6 +157,9 @@ def test_every_action_the_gitlab_role_holds_was_audited_into_this_test():
         ("BedrockInvokeForMrReview", "bedrock:InvokeModelWithResponseStream"),
         ("PollySynthesizeForUxTest", "polly:SynthesizeSpeech"),
         ("S3PutObjectPolicy", "s3:PutObject"),
+        # Reads back the build's own summary (deploy/summaries/ only; pinned by
+        # test_the_summary_read_reaches_the_summaries_only below).
+        ("S3PutObjectPolicy", "s3:GetObject"),
         ("CodePipelineMonitorPolicy", "codepipeline:GetPipelineState"),
         ("CodePipelineMonitorPolicy", "codepipeline:GetPipeline"),
         ("CodePipelineMonitorPolicy", "codepipeline:GetPipelineExecution"),
@@ -202,3 +205,17 @@ def test_nothing_attaches_actions_to_the_gitlab_role_outside_its_inline_policies
         in ("AWS::IAM::Policy", "AWS::IAM::ManagedPolicy", "AWS::IAM::RolePolicy")
     )
     assert not attaching, f"these resources can attach actions to roles: {attaching}"
+
+
+def test_the_summary_read_reaches_the_summaries_only():
+    """The GitLab role may read objects back only from deploy/summaries/: not the
+    source zip, not Terraform state, nothing else in the source buckets."""
+    (s3,) = [p for p in _policies() if p["PolicyName"] == "S3PutObjectPolicy"]
+    reads = [
+        st
+        for st in s3["PolicyDocument"]["Statement"]
+        if "s3:GetObject" in str(st["Action"])
+    ]
+    assert len(reads) == 1
+    resources = [str(r) for r in reads[0]["Resource"]]
+    assert resources and all(r.endswith("/deploy/summaries/*") for r in resources)

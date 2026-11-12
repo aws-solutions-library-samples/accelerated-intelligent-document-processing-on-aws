@@ -1222,7 +1222,10 @@ def _ensure_boundary_policy(iam_client, account_id, policy_name):
 
 
 def create_iam_resources(
-    stack_name, shared_boundary=False, terraform_deployer_arn=None
+    stack_name,
+    shared_boundary=False,
+    terraform_deployer_arn=None,
+    terraform_migration=False,
 ):
     """Create the permissions boundary, then the CFN service role that requires it.
 
@@ -1293,7 +1296,11 @@ def create_iam_resources(
         ]
         output_key = "ServiceRoleArn"
         if terraform_deployer_arn:
-            template_body = json.dumps(terraform_deploy_role_template(template_body))
+            template_body = json.dumps(
+                terraform_deploy_role_template(
+                    template_body, terraform_migration=terraform_migration
+                )
+            )
             parameters.append(
                 {
                     "ParameterKey": "TerraformDeployerPrincipalArn",
@@ -4748,7 +4755,23 @@ def _cfn_long_form(loader, suffix, node):
 _CfnLongFormLoader.add_multi_constructor("!", _cfn_long_form)
 
 
-def terraform_deploy_role_template(service_role_template_text: str) -> dict:
+#: What a Terraform-migration run's deploy role holds beyond a nightly's: the
+#: driver's preflight reads the account's IAM role count against its quota
+#: (iam:GetAccountSummary, which takes no resource but "*") before two
+#: deployments holding several hundred roles between them are started. Read-only.
+TERRAFORM_MIGRATION_ROLE_ADDITIONS = (
+    {
+        "Sid": "TerraformMigrationRoleQuotaRead",
+        "Effect": "Allow",
+        "Action": ["iam:GetAccountSummary"],
+        "Resource": "*",
+    },
+)
+
+
+def terraform_deploy_role_template(
+    service_role_template_text: str, terraform_migration: bool = False
+) -> dict:
     """The CI pre-stack for a Terraform run: the customer service-role template
     plus a sibling role Terraform assumes.
 
@@ -4809,6 +4832,11 @@ def terraform_deploy_role_template(service_role_template_text: str) -> dict:
                         "Action": ["cloudcontrol:*"],
                         "Resource": "*",
                     },
+                    *(
+                        copy.deepcopy(list(TERRAFORM_MIGRATION_ROLE_ADDITIONS))
+                        if terraform_migration
+                        else []
+                    ),
                     deny_self,
                 ],
             },
@@ -11316,6 +11344,10 @@ def send_failure_notification(subject, summary_text):
 # ---------------------------------------------------------------------------
 
 TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
+#: The line the GitLab job's after_script reads the build's summary from (its
+#: `sed -n '/<marker>/,$p'` over the CodeBuild log, in .gitlab-ci.yml). Every
+#: path that ends a build with a summary prints it first.
+DEPLOYMENT_SUMMARY_LOG_MARKER = "🤖 Generating deployment summary with Bedrock..."
 #: Heads the summary and marks the failure email on a migration run, so its result
 #: is never read as a nightly's.
 TERRAFORM_MIGRATION_RUN_LABEL = "WEEKLY TERRAFORM MIGRATION RUN"
@@ -11529,6 +11561,62 @@ def terraform_migration_budget(
     return max(left - TERRAFORM_MIGRATION_RESERVE_SECONDS, 0), max(left - 300, 0)
 
 
+#: How much of the driver's newest logs a failure analysis reads: the failing
+#: phase's command output ends there, as a Terraform apply's error does.
+TERRAFORM_MIGRATION_ANALYSIS_LOGS = 3
+TERRAFORM_MIGRATION_ANALYSIS_LOG_LINES = 150
+
+
+def migration_failure_evidence(work_dir: str) -> str:
+    """The tails of the driver's most recently written logs, newest first.
+
+    The driver writes one log per command under ``<work dir>/logs``, so the
+    newest ones belong to the phase that failed and to the teardown after it."""
+    logs = sorted(
+        (p for p in Path(work_dir, "logs").glob("*") if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[:TERRAFORM_MIGRATION_ANALYSIS_LOGS]
+    parts = []
+    for path in logs:
+        lines = path.read_text(errors="replace").splitlines()
+        tail = "\n".join(lines[-TERRAFORM_MIGRATION_ANALYSIS_LOG_LINES:])
+        parts.append(
+            f"--- {path.name} (last {len(lines[-TERRAFORM_MIGRATION_ANALYSIS_LOG_LINES:])} lines) ---\n{tail}"
+        )
+    return "\n\n".join(parts) or "(the driver wrote no logs)"
+
+
+def generate_migration_failure_summary(summary_text: str, evidence: str) -> str:
+    """An AI analysis of a failed migration run, from the driver's own summary
+    (which names the failing phase) and the tails of its newest logs. Never
+    raises: a failed analysis is reported in place of one."""
+    try:
+        prompt = dedent(f"""
+        The weekly Terraform-migration integration test of the IDP accelerator
+        failed. It deploys a pinned awslabs/genai-idp-terraform release, migrates
+        it in place onto this repository's Terraform module with every phase of
+        `idp-cli terraform migrate-from-genai-idp-terraform`, verifies, and
+        destroys both deployments. Identify the failing phase and its root cause.
+
+        Driver summary:
+        {summary_text}
+
+        Newest driver logs:
+        {evidence}
+
+        Respond with bullet points, each under 75 characters, under these headings:
+
+        🔍 Failing phase and root cause:
+        🧹 Was teardown complete (any leftovers named)?
+        💡 Fix: the specific change to make, naming the file, resource or
+           permission involved. If an IAM permission is missing, name it exactly.
+        """)
+        return "🤖 AI FAILURE ANALYSIS\n\n" + _invoke_bedrock(prompt)
+    except Exception as e:  # noqa: BLE001 - the run's result must still be sent
+        return f"⚠️ Failed to generate the migration failure analysis: {e}"
+
+
 def run_terraform_migration(stack_name, module_url, terraform_bin, started=None):
     """Run the migration driver under this run's TFDeployRole. Returns
     ``(success, summary_text)``; never raises. ``started`` is the build's
@@ -11541,7 +11629,9 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
     success = False
     try:
         role_arn, boundary_arn = create_iam_resources(
-            new_name, terraform_deployer_arn=_caller_principal_arn()
+            new_name,
+            terraform_deployer_arn=_caller_principal_arn(),
+            terraform_migration=True,
         )
         if not role_arn or not boundary_arn or not _wait_until_assumable(role_arn):
             return False, f"❌ the run's TFDeployRole for {new_name} was not usable"
@@ -11619,6 +11709,11 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
     finally:
         for finding in cleanup_iam_resources(new_name):
             summary += f"\n⚠️ IAM cleanup: {finding}"
+    if not success:
+        analysis = generate_migration_failure_summary(
+            summary, migration_failure_evidence(work_dir)
+        )
+        summary += f"\n\n{analysis}"
     return success, summary
 
 
@@ -11987,10 +12082,19 @@ def main():
                 started=main_started,
             )
         else:
+            # The publish analysis main() already ran (generate_publish_failure_
+            # summary) is the only diagnosis this run gets; keep it.
             ok, migration_summary = False, f"❌ publish failed: {failure_reason}"
+            if ai_summary:
+                migration_summary += f"\n\n{ai_summary}"
         text = label_ci_run(
             ("✅ PASSED\n\n" if ok else "❌ FAILED\n\n") + migration_summary
         )
+        # The GitLab job reads the summary from deploy/summaries/, and from the
+        # log from this marker on when that read fails; without the line a failed
+        # read leaves the job and both Slack posts reporting "no deployment
+        # summary" for a run that wrote one.
+        print(DEPLOYMENT_SUMMARY_LOG_MARKER)
         print(text)
         publish_summary_to_s3(text)
         if not ok:
@@ -12370,7 +12474,7 @@ def main():
         )
     print(f"\n{consolidated}\n")
 
-    print("\n🤖 Generating deployment summary with Bedrock...")
+    print(f"\n{DEPLOYMENT_SUMMARY_LOG_MARKER}")
     full_summary = consolidated
     if ai_summary:
         print(ai_summary)
