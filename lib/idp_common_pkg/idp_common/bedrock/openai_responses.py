@@ -257,6 +257,12 @@ def is_openai_responses_model(model_id: Optional[str]) -> bool:
 
     Handles a defensive region prefix even though these IDs carry none today.
 
+    The ID is matched as written: no whitespace is stripped and case is not
+    folded. ``BedrockClient.invoke_model`` routes on this predicate and then
+    sends the ID on with nothing removed but the region prefix, so normalising
+    here alone would send an unnormalised ID to bedrock-mantle rather than make
+    it valid.
+
     Args:
         model_id: Bedrock model ID (e.g., ``openai.gpt-5.4``).
 

@@ -4374,3 +4374,43 @@ class TestStackNameTag:
             IDP_TF_RESOURCE_DIRECTORY="s3://b/terraform/cfn-resource-directory.json"
         )
         assert module._STACK_NAME_TAG == "idp:stack-name"
+
+
+@pytest.mark.unit
+def test_bedrock_pricing_load_skips_a_price_the_pricing_page_reads_differently():
+    """The rollup prices by the rule the save path enforces (#1903).
+
+    ``float()`` read ``nan`` as NaN and ``1_000`` as 1000.0, so a stored price the
+    Pricing page shows as unpriced (``Number('1_000')`` is NaN) was priced here.
+    A model whose only units are invalid is left out, as one with no units is.
+    """
+    from idp_common.config.models import STORED_PRICING_CONTEXT, PricingConfig
+
+    module = _load_with_env(CONFIGURATION_TABLE_NAME="t")
+    merged = PricingConfig.model_validate(
+        {
+            "pricing": [
+                {
+                    "name": "bedrock/m",
+                    "units": [
+                        {"name": "inputTokens", "price": "nan"},
+                        {"name": "outputTokens", "price": "2.0E-6"},
+                        {"name": "cacheReadInputTokens", "price": "1_000"},
+                        {"name": "cacheWriteInputTokens", "price": " 3.0E-6 "},
+                    ],
+                },
+                {
+                    "name": "bedrock/bad",
+                    "units": [{"name": "inputTokens", "price": "inf"}],
+                },
+            ]
+        },
+        context=STORED_PRICING_CONTEXT,
+    )
+    manager = MagicMock()
+    manager.get_merged_pricing.return_value = merged
+    with patch("idp_common.config.ConfigurationManager", return_value=manager):
+        loaded = module._load_bedrock_pricing_from_config()
+    assert loaded == {
+        "bedrock/m": {"outputTokens": 2.0e-6, "cacheWriteInputTokens": 3.0e-6}
+    }

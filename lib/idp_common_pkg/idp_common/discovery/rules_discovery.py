@@ -109,6 +109,31 @@ def _is_max_tokens_error(exc: Exception) -> bool:
     return is_max_tokens_agent_error(exc)
 
 
+def truncation_remedy(max_tokens: Optional[int]) -> str:
+    """What a user can do about a ruleset truncated at the output-token limit.
+
+    ``discovery.rules.max_tokens`` ships empty, which requests the selected model's
+    maximum output, and a value above that maximum is refused. So "raise
+    ``max_tokens``" is an action only for a configuration that set a cap; for every
+    other one the call already had the whole output budget the model offers, and
+    what is left is a smaller document or a model with a larger output limit.
+    """
+    split = (
+        "Split the policy document into smaller uploads (e.g. by chapter), or set "
+        "discovery.rules.model to a model with a larger output limit"
+    )
+    if max_tokens:
+        return (
+            f"{split}. discovery.rules.max_tokens is set to {max_tokens}, which caps "
+            "the response below the model's maximum; clearing it lets the call use "
+            "the model's full output limit."
+        )
+    return (
+        f"{split}. discovery.rules.max_tokens is already empty, so the call "
+        "already requested the model's full output limit."
+    )
+
+
 class RulesTruncatedError(Exception):
     """Rule extraction was truncated at the model's output token limit.
 
@@ -116,8 +141,8 @@ class RulesTruncatedError(Exception):
     A rule missing from a compliance validation set fails silently — the
     document is validated against a subset of the policy and reported as
     compliant — so a failed job is the better outcome. The message carries the
-    remediation (split the document, or raise ``discovery.rules.max_tokens``)
-    and reaches the UI via the discovery job's status message.
+    remediation (:func:`truncation_remedy`) and reaches the UI via the discovery
+    job's status message.
     """
 
 
@@ -452,20 +477,20 @@ class RulesDiscovery:
                     logger.warning(
                         "Rules extraction hit the output token limit on attempt %d "
                         "(~%d rule(s) recovered, ruleset INCOMPLETE). Retrying. If "
-                        "this persists, split the policy document by chapter or "
-                        "raise discovery.rules.max_tokens.",
+                        "this persists: %s",
                         attempt + 1,
                         partial_count,
+                        truncation_remedy(max_tokens),
                     )
                     if attempt == max_retries - 1:
                         logger.error(
                             "Rules extraction truncated at the output token limit "
                             "on all %d attempts. Refusing to persist a partial "
                             "ruleset — %d of an unknown total rule(s) were "
-                            "recovered. Split the policy document into smaller "
-                            "uploads or raise discovery.rules.max_tokens.",
+                            "recovered. %s",
                             max_retries,
                             partial_count,
+                            truncation_remedy(max_tokens),
                         )
                         raise RulesTruncatedError(
                             f"The model's response was truncated at its output token "
@@ -473,9 +498,8 @@ class RulesDiscovery:
                             f"ruleset is incomplete "
                             f"(~{partial_count} rule(s) recovered). "
                             f"A partial ruleset is not saved, because rules missing "
-                            f"from a compliance validation set fail silently. Split "
-                            f"the policy document into smaller uploads (e.g. by "
-                            f"chapter), or raise discovery.rules.max_tokens."
+                            f"from a compliance validation set fail silently. "
+                            f"{truncation_remedy(max_tokens)}"
                         )
                     continue
 
@@ -532,7 +556,7 @@ class RulesDiscovery:
         model_id: str,
         system_prompt: str,
         user_prompt: str,
-        max_tokens: int,
+        max_tokens: Optional[int],
     ) -> Optional[List[Dict[str, Any]]]:
         """
         Extract rules using the agentic approach with Strands Agent.
@@ -651,9 +675,7 @@ class RulesDiscovery:
                     f"so the extracted ruleset is incomplete "
                     f"(~{total_individual_rules} rule(s) recovered). A partial ruleset "
                     f"is not saved, because rules missing from a compliance "
-                    f"validation set fail silently. Split the policy document into "
-                    f"smaller uploads (e.g. by chapter), or raise "
-                    f"discovery.rules.max_tokens."
+                    f"validation set fail silently. {truncation_remedy(max_tokens)}"
                 )
 
             # Log metering info
@@ -686,9 +708,8 @@ class RulesDiscovery:
                     "The model's response was truncated at its output token "
                     "limit, so the extracted ruleset is incomplete. A partial "
                     "ruleset is not saved, because rules missing from a "
-                    "compliance validation set fail silently. Split the policy "
-                    "document into smaller uploads (e.g. by chapter), or raise "
-                    f"discovery.rules.max_tokens. (underlying error: {e})"
+                    "compliance validation set fail silently. "
+                    f"{truncation_remedy(max_tokens)} (underlying error: {e})"
                 ) from e
             logger.error(f"Agentic rule discovery failed: {e}", exc_info=True)
             raise

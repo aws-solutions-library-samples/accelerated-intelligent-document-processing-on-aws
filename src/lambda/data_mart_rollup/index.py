@@ -3887,6 +3887,7 @@ def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
         return _bedrock_pricing_map
     try:
         from idp_common.config import ConfigurationManager
+        from idp_common.config.models import read_price
 
         manager = ConfigurationManager(table_name=CONFIGURATION_TABLE_NAME)
         merged = manager.get_merged_pricing()
@@ -3894,10 +3895,10 @@ def _load_bedrock_pricing_from_config() -> Dict[str, Dict[str, float]]:
         for service in getattr(merged, "pricing", None) or []:
             units: Dict[str, float] = {}
             for unit in getattr(service, "units", None) or []:
-                try:
-                    units[unit.name] = float(unit.price)
-                except (TypeError, ValueError):
-                    continue
+                # The rule every cost reader shares; see idp_common read_price.
+                price = read_price(getattr(unit, "price", None))
+                if price is not None:
+                    units[unit.name] = price
             if units:
                 loaded[service.name] = units
         # ONLY cache on success WITH content — if the DynamoDB read

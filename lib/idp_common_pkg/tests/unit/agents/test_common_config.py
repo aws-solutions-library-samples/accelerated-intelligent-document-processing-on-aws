@@ -6,14 +6,18 @@ Unit tests for the agents common configuration module.
 """
 
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from idp_common.agents.common.config import (
+    DEFAULT_AGENT_MODEL_ID,
     get_environment_config,
     validate_aws_credentials,
 )
+from idp_common.config.models import ChatCompanionConfig
 
 
 @pytest.mark.unit
@@ -91,3 +95,29 @@ class TestValidateAwsCredentials:
         with patch.dict(os.environ, {}, clear=True):
             # Should return True assuming default credential chain
             assert validate_aws_credentials() is True
+
+
+_PRICING = Path(__file__).resolve().parents[5] / "config_library" / "pricing.yaml"
+
+
+@pytest.mark.unit
+class TestDefaultAgentModelId:
+    """The fallback an agent uses when its configured model cannot be read."""
+
+    def test_the_fallback_can_be_invoked_from_any_region(self):
+        """A ``us.`` profile cannot be invoked from an EU or Canadian stack, and
+        nothing remaps a code default the way a stored configuration is remapped."""
+        assert DEFAULT_AGENT_MODEL_ID.startswith("global."), DEFAULT_AGENT_MODEL_ID
+
+    def test_the_fallback_is_the_shipped_chat_companion_model(self):
+        shipped = ChatCompanionConfig().model_id
+        assert DEFAULT_AGENT_MODEL_ID.partition(".")[2] == shipped.partition(".")[2]
+
+    def test_the_fallback_is_an_offered_model(self):
+        """The ``global.`` profile has to exist; the pricing table lists the IDs
+        the solution offers, so a profile absent from it is not one it can run."""
+        names = {
+            entry.get("name")
+            for entry in yaml.safe_load(_PRICING.read_text())["pricing"]
+        }
+        assert f"bedrock/{DEFAULT_AGENT_MODEL_ID}" in names

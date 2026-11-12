@@ -624,16 +624,22 @@ Measured on 2026-11-11 with `checkov` 3.4.0 on the standard template:
 
 | Class of failed Terraform check | Findings |
 |---|---|
-| the CloudFormation side fails or skips the same check, or its counterpart, on the same resource | 455 |
+| the CloudFormation side fails or skips the same check, or its counterpart, on the same resource | 453 |
 | softer than CloudFormation (an explained entry, below) | 1 |
 | on the custom-resource bridge the translator adds | 20 (5 checks, on each of 4 bridges) |
 | no counterpart | 0 |
 | on a conditional resource the CloudFormation scan skipped | 26 |
-| on a check with no CloudFormation counterpart (ratcheted, 17 checks) | 369 |
+| on a check with no CloudFormation counterpart (ratcheted, 14 checks) | 358 |
 
-The custom-resource bridge's log group is encrypted with the key the template's own
-log groups use, and its bucket sends server access logs to the template's logging
-bucket, under `cfn-bridge-logs/<stack_name>/`. Nested templates have no logging
+The custom-resource bridge's log group and its bucket are encrypted with the key the
+template's own log groups use (the bucket SSE-KMS with an S3 bucket key; without a
+key it stays SSE-S3), and its bucket sends server access logs to the template's
+logging bucket, under `cfn-bridge-logs/<stack_name>/`. S3 uses the key with the
+caller's own permissions, so the bridge role, and the one function that reads the
+resource directory, may use it through S3; the principal running `terraform apply`
+needs `kms:GenerateDataKey` and `kms:Decrypt` on it, because it writes the label
+stack's template into the bucket and CloudFormation reads that template with the
+same principal's credentials. Nested templates have no logging
 bucket of their own, so the root passes both down to every module through two
 variables the translator adds (`cfn_bridge_kms_key_arn` and
 `cfn_bridge_access_log_bucket`). At the root the stack's key waits on
@@ -653,12 +659,11 @@ It is not a translation difference: checkov evaluates the CloudFormation policy'
 `!If [DeployInVPC, ...]` at its default and drops the statement, while the Terraform
 side holds the same statement in a policy whose `count` checkov does not evaluate.
 
-Several Terraform-only checks are known gaps in the templates rather than in the
-translation, and their entries say so: no WAF logging on the API's web ACL, no
-`LogsConfig` on the CodeBuild projects, `PrivilegedMode` on the UI build, wildcard
-resources in a few IAM statements that could be scoped, Lambda functions without
-conditional tracing, no noncurrent-version expiry on the web UI bucket, and SSE-S3
-rather than the stack key on the bridge buckets.
+Each remaining Terraform-only check is accepted rather than a known gap, and its
+entry says why per resource: Lambda tracing is left optional on purpose (the
+`EnableXRayTracing` parameter governs the functions that opt in), and each IAM
+statement with `Resource: "*"` that checkov calls restrictable carries a recorded
+reason on the CloudFormation side, which the entry cites.
 
 ### Replay over past releases
 

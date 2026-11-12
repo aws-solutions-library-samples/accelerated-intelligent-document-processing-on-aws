@@ -59,6 +59,7 @@ with no overrides, i.e. on the committed `default_cell`.
 | `v<RELEASE>/corefast/` | The release-vs-release A/B grid backing `docs/benchmarking/releases/v<RELEASE>.md`. **One per release**, never overwritten. |
 | `baseline.json` | The PREV release's `corefast` grid, which `aggregate.py --compare` defaults to. See below: it is **not** a byte-identical copy of the committed `v<PREV>/corefast/summary.json`, and must not be assumed to be one. |
 | `v<PREV>-rvprev/corefast/` | The PREV side of a release A/B, re-run on the same stack before the in-place upgrade (`v0.6.10-rvprev/` onwards). It is the `--baseline` the release page compares against, so it is kept for as long as that page is: deleting it leaves a published comparison citing a path that no longer exists. One per release; it is the like-for-like reference, not a variant. |
+| `v0.6.11/corefast-prev0610/` | A `corefast` grid of the published v0.6.10 on a separate stack (`meta.stack` `IDP0610Sec`, `meta.stack_version` `0.6.10`), predating the same-stack `v0.6.10-rvprev/` re-run. It is an exception to step 4 below, kept only because the Reproduce blocks of `docs/benchmarking/releases/v0.6.11.md` and `docs/release-validation/v0.6.11.md` name it as their `--baseline`; no release after v0.6.11 writes one. |
 | `v0.6.8/enforcement-kvform/` | The **only** retained evidence that `typed_accuracy` is ever measured. See below. |
 
 ### One kept slice is not a release grid — `v0.6.8/enforcement-kvform/`

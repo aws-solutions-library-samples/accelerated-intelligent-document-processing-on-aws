@@ -337,6 +337,10 @@ def test_every_bridge_takes_the_stack_key_and_logs_to_the_logging_bucket(
         assert kms, f"{where}: the bridge log group is not encrypted"
         target = re.search(r"^\s*target_bucket\s*=\s*(\S+)$", text, re.M)
         assert target, f"{where}: the bridge bucket has no access logging"
+        # The bridge bucket takes the same key as the bridge log group.
+        bucket_key = re.search(r"^\s*kms_master_key_id\s*=\s*(\S+)$", text, re.M)
+        assert bucket_key, f"{where}: the bridge bucket is not encrypted with a key"
+        assert bucket_key.group(1) == kms.group(1), where
         if bridge.parent == standard_module:
             assert kms.group(1) == root_key
             assert target.group(1) == "aws_s3_bucket.logging_bucket.id"
@@ -344,6 +348,16 @@ def test_every_bridge_takes_the_stack_key_and_logs_to_the_logging_bucket(
             assert kms.group(1).startswith("var."), (where, kms.group(1))
             assert target.group(1) == "var.cfn_bridge_access_log_bucket"
     main_tf = (standard_module / "main.tf").read_text()
+    # The resource directory is in the bridge bucket, so a function that reads
+    # it must be able to decrypt it.
+    readers = re.findall(
+        r'resource "aws_iam_role_policy" "\w+_tf_directory" \{(.*?)\n\}\n',
+        main_tf,
+        re.S,
+    )
+    assert readers
+    for body in readers:
+        assert '"kms:Decrypt"' in body and root_key in body, body
     for name in ("cfn_bridge_kms_key_arn", "cfn_bridge_access_log_bucket"):
         assert re.search(rf"^\s*{name} = (?!null)", main_tf, re.M), name
     key = re.search(

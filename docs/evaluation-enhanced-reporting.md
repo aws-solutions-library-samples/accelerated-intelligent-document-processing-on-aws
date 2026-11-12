@@ -2,6 +2,9 @@
 title: "Enhanced Evaluation Reporting"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Enhanced Evaluation Reporting
 
 This document describes the enhanced evaluation reporting features surfaced
@@ -169,25 +172,16 @@ for section in result_doc.evaluation_result.section_results:
 
 ## Viewing Interactive Reports
 
-### GitHub
-GitHub's markdown renderer supports HTML, so the interactive controls will work when viewing the report in:
-- Pull requests
-- Issue comments
-- Repository files
+The **Unmatched Items** and **Expand Details** buttons belong to the Web UI's report
+viewer (see [Interactive Markdown Reports](#2-interactive-markdown-reports)), so they
+are available only there. The report file carries no script, so no other viewer —
+GitHub, an editor preview, a notebook — shows the buttons.
 
-### VS Code
-Install a markdown extension that supports HTML:
-- **Markdown Preview Enhanced** (recommended)
-- **Markdown All in One**
+Outside the Web UI the report still reads correctly as Markdown. Where the renderer
+allows embedded HTML, as GitHub's does, each `<details>` block collapses and expands
+on click, so the nested comparisons can be opened one at a time. To read a report in a
+notebook:
 
-### Web Browser
-Open the `.md` file directly in a browser:
-```bash
-open test_evaluation_report.md
-```
-
-### Jupyter Notebooks
-Use `IPython.display.Markdown`:
 ```python
 from IPython.display import Markdown, display
 
@@ -197,7 +191,7 @@ with open('evaluation/report.md', 'r') as f:
 
 ## Configuration
 
-No additional configuration required! The enhancement automatically activates when using stickler-eval v0.1.4+.
+No additional configuration is required: the pinned `stickler-eval` release provides the field comparison details, so the reports include them by default.
 
 The feature is enabled in `lib/idp_common_pkg/idp_common/evaluation/service.py`:
 
@@ -287,11 +281,3 @@ comparison details). Run:
 ```bash
 cd lib/idp_common_pkg && python -m pytest tests/unit/evaluation/test_golden_fixture_stickler.py -v
 ```
-
-## Future Enhancements
-
-Potential future improvements:
-- Export to CSV with nested details flattened
-- Comparison history tracking across runs
-- Threshold recommendations based on field mismatch patterns
-- Visual diff viewer for nested structures

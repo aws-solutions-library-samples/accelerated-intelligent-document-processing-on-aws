@@ -55,7 +55,7 @@ a budget set without separating them will be wrong in one direction or the other
 
 | | What it is | How it scales |
 |---|---|---|
-| **Per-document** | Bedrock inference (classification, extraction, assessment, summarization), Textract or BDA, the Lambda and Step Functions work around them | Linear in documents × pages, and **dominated by Bedrock inference**. Retries multiply it: a document that retries a Bedrock call several times pays for each attempt |
+| **Per-document** | Bedrock inference (classification, extraction, assessment, summarization, and the `LLM` comparisons of [evaluation](evaluation.md) when it is enabled), Textract or BDA, the Lambda and Step Functions work around them | Linear in documents × pages, and **dominated by Bedrock inference**. Retries multiply it: a document that retries a Bedrock call several times pays for each attempt |
 | **Always-on** | S3 and DynamoDB storage, CloudWatch logs and metrics, Cognito monthly active users, the API Gateway requests the UI's polling makes, and — if enabled — a Bedrock Knowledge Base vector store | Roughly flat per month. Independent of how many documents you process, including when you process none |
 
 Two consequences. First, a deployment that processes nothing still costs money,
@@ -82,7 +82,8 @@ as long as it is running.
    - Select processing options based on document requirements
 
 3. **Implement prompt caching**:
-   - The solution supports prompt caching to significantly reduce costs when processing similar documents
+   - The solution supports prompt caching, which bills a cached prompt prefix at a tenth of the input price on most Claude models (a twentieth on Claude Sonnet 5.5 and Opus 5.5) when it is read again within five minutes
+   - It can also cost more: a cached prefix that is not read again within that window is billed at about 25% more than with no cache point (on the prefix only, not the whole request), and a prefix below the model's minimum (1,024 tokens on Claude Sonnet 5) is never cached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
    - Especially effective when using few-shot examples, as these can be cached across invocations
 
 4. **Optimize document preprocessing**:
@@ -113,6 +114,40 @@ The GenAI IDP Accelerator solution includes a built-in cost estimation feature i
 - Uses service pricing from the solution configuration, which can be modified to reflect any pricing variations or special agreements
 
 This real-time cost tracking helps you monitor actual usage patterns and optimize costs based on real-world usage.
+
+#### Editing the pricing table
+
+Administrators change prices on the **Pricing** page. The shipped rates come from
+`config_library/pricing.yaml` and are stored at deployment as the stack's default
+pricing; what you save is stored separately as custom pricing.
+
+A price is a non-negative decimal number, optionally with an exponent: `0.0015`,
+`6.0E-8` and `.5` are prices. Hexadecimal (`0x10`), `Infinity`, `NaN` and digit
+separators (`1_000`) are not, because the cost reports and the web UI read them
+differently. A sign and surrounding spaces are not accepted either, so that every
+saved price has one form. The Pricing page marks an invalid value and will not save
+the table until it is corrected, and the backend refuses to store one.
+
+A custom table saved by an earlier release can still hold such a value. It still
+loads, and the page lists the value for correction. A value whose only problem is
+surrounding spaces is still priced, because the reports and the web UI both read it.
+Any other invalid value is reported as unpriced until it is corrected.
+
+⚠️ **Saving the Pricing page stores the whole table, and a saved table replaces the
+default table in full.** It is not merged over the defaults row by row. Two things
+follow for a stack that has ever saved the page, however small the edit:
+
+- A rate a later release corrects in `pricing.yaml` does not reach it, because the
+  saved table still carries the old rate.
+- A model a later release adds has no price on it. Its usage is reported as
+  unpriced (`NULL` in the reporting `metering` table) rather than costed.
+
+To pick up the current defaults, choose **Restore default (All)** on the Pricing
+page, which discards the saved table, and then re-apply your own changes. The button
+is enabled whenever the table on the page differs from the defaults: a price that
+differs by any amount (the same value in a different notation, such as `2.2E-6` and
+`0.0000022`, does not count), a row the defaults do not have, or a default row you
+deleted.
 
 ### What the estimate cannot express: prices that change with request size
 
@@ -238,10 +273,17 @@ your filter actually returns your spend before you trust a budget built on it.
 
 There is no single recommended amount, because per-document cost across the
 configurations this solution supports spans roughly two orders of magnitude.
-Measured figures from the benchmark suite bracket it: the OCR benchmark corpus
-costs **$0.02–0.05 per document** in simple mode, while large multi-page
-documents through advanced (agentic) mode measured **$1.22–$2.65 per document**
-across Sonnet 4.6, Sonnet 5, Opus 5 and GPT-6 Astra on the v0.6.11 grid. See
+Measured figures from the v0.6.14 benchmark bracket it. The OCR benchmark corpus
+(20 real documents, extracted with Claude Sonnet 4.6) cost **$0.02–0.04 per
+document** in simple mode, as the mean of each configuration (single documents
+reached $0.07). On the synthetic grid
+of seven synthetic bank statements (from a one-page, 5-row form to 17 pages
+and 800 rows), advanced (agentic)
+mode averaged **$0.60 per document** with the shipped default (Claude Sonnet 5),
+**$0.92** with Claude Opus 5.5 and **$1.17** with Claude Opus 5; GPT-6 Astra
+cost at least $2.22, a lower bound because its long-context pricing band is not
+modelled. A 66-page, 3,200-row statement cost $3.76–4.20 in advanced mode with
+the shipped default. See
 [the configuration guidance](benchmarking/config-guidance.md) for the full
 matrix. Pick from your own arm of that range rather than averaging it.
 

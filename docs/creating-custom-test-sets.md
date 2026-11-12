@@ -67,8 +67,8 @@ see [How much review is enough?](./test-studio.md#how-much-review-is-enough).
 
 ### How much data
 
-Your overall accuracy score firms up quickly, within roughly the first hundred documents.
-The accuracy of an individual *field* does not, because a field appearing once per
+Your overall accuracy score firms up much faster than the accuracy of any single field,
+because every field of every document contributes to it. A field appearing once per
 document gives you one observation per document — so a badly failing field can hide inside
 a healthy-looking overall score. Fields that repeat within a document (invoice line items)
 need fewer documents; fields appearing once per document drive the requirement.
@@ -263,7 +263,7 @@ This establishes your baseline — it should show near-perfect accuracy since th
 
 Create and test alternative configurations to find the best cost/accuracy balance:
 
-1. Create a new configuration profile with a cheaper model (e.g., Nova Lite)
+1. Create a new configuration profile with a cheaper model. Expect the comparison to show losses: on the v0.6.14 benchmark Amazon Nova Lite and Nova Pro matched the default extraction model only on one-page forms and returned about half the rows of longer lists, with mean recall 0.4980 and 0.5035 ([config-guidance §5.1](./benchmarking/config-guidance.md#51-extraction-model--the-full-grid))
 2. Run a test execution against the same test set using the new configuration
 3. Use the **comparison view** to analyze the results side-by-side
 

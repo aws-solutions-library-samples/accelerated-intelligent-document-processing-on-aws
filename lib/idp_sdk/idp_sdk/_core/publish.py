@@ -1175,6 +1175,20 @@ STDERR:
         """Package UI source code"""
         _, zipfile_path = self.ui_changed()
 
+        # The pseudo-locale marker (src/ui/src/i18n/README.md) travels in this zip on
+        # purpose, so a CodeBuild build of it ships the en-XA pseudo-locale. It is
+        # gitignored and a developer removes it by hand after a test deploy; say so
+        # here, where a forgotten one would otherwise ride into the next stack
+        # unannounced. Said whether or not the zip is rebuilt: its name carries the
+        # marker's hash, so an existing zip for a flagged tree is flagged too.
+        marker = os.path.join("src", "ui", ".pseudo-locale")
+        if os.path.exists(marker):
+            self.console.print(
+                f"[yellow]NOTE: {marker} is present, so this UI build includes the "
+                f"en-XA pseudo-locale (for test stacks). Remove the marker before "
+                f"publishing a production build.[/yellow]"
+            )
+
         if not os.path.exists(zipfile_path):
             os.makedirs(".aws-sam", exist_ok=True)
             with zipfile.ZipFile(zipfile_path, "w", zipfile.ZIP_DEFLATED) as zipf:

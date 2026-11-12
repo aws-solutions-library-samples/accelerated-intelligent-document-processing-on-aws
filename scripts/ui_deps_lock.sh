@@ -5,9 +5,11 @@
 # Run one shell command from src/ui while holding an exclusive lock on this
 # checkout's src/ui/node_modules.
 #
-# WHY. Six make targets reinstall src/ui/node_modules with `npm ci`, and `npm ci`
-# deletes the tree before rebuilding it — by design. Every one of those targets
-# then runs a node tool out of that same tree. Two of them at once in ONE checkout
+# WHY. Every make target whose recipe runs `$(NPM_CI)` reinstalls src/ui/node_modules,
+# and `npm ci` deletes the tree before rebuilding it — by design. Every one of those
+# targets then runs a node tool out of that same tree, and so do the targets that only
+# read it (the set is UI_TARGETS in scripts/tests/test_ui_deps_lock.py, which fails
+# when a target joins or leaves it). Two of them at once in ONE checkout
 # therefore corrupt each other, and the failure does not look like contention: the
 # lane that loses reports a missing or half-removed module from whatever package
 # the other lane happened to be unpacking. Measured once as three red gates in
@@ -15,10 +17,10 @@
 # a missing eslint formatter, and `ENOTEMPTY ... rmdir .../argparse` — all three
 # green on an uncontended re-run (issue #1447).
 #
-# `make lint-cicd` performs three of those targets itself (ui-lint, ui-build-only,
-# codegen-check), so `lint-cicd` plus any ONE other UI target is enough to collide.
-# "Lint in one lane, UI tests in another" is the realistic composition, and it
-# looks like two unrelated things.
+# `make lint-cicd` performs several of those targets itself (TARGETS_LINT_CICD_PERFORMS
+# in the same test is the pinned list), so `lint-cicd` plus any ONE other UI target is
+# enough to collide. "Lint in one lane, UI tests in another" is the realistic
+# composition, and it looks like two unrelated things.
 #
 # The lock covers the whole command rather than just the `npm ci`, because the
 # reader half is equally exposed: a wipe-and-rebuild under a running eslint is how
@@ -44,8 +46,8 @@
 # bound is an error rather than a fall-through: on timeout nothing runs and the
 # exit status is 1, because running anyway is the corruption this exists to stop.
 #
-# IT CANNOT DEADLOCK AGAINST ITSELF. `lint-cicd` does not hold the lock; its three
-# sub-makes take and release it one at a time. Nesting is nonetheless made safe
+# IT CANNOT DEADLOCK AGAINST ITSELF. `lint-cicd` does not hold the lock; each of its
+# UI sub-makes takes and releases it on its own. Nesting is nonetheless made safe
 # rather than merely avoided: the holder exports UI_DEPS_LOCK_HELD, and a nested
 # invocation that sees it runs the command directly instead of waiting on a lock
 # its own ancestor holds.
