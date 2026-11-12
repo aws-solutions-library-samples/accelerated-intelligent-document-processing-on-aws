@@ -18,7 +18,7 @@ https://github.com/user-attachments/assets/991b4112-0fc9-4e4d-98ab-ef4e3cbae04a
 
 1. **Document Processing & Indexing**
    - Processed documents are automatically indexed in a vector database
-   - Documents are chunked into semantic segments for efficient retrieval
+   - Documents are split into fixed-size chunks of up to 8,192 tokens, with roughly 15% overlap between consecutive chunks. The main template selects fixed-size chunking and the token limit, and the overlap is the knowledge-base nested stack's default; none of these is a stack parameter, and the chunking strategy cannot be changed after the knowledge base has been created
    - Each chunk maintains reference to its source document
    - **Ingestion Schedule**: Documents are ingested into the knowledge base every 30 minutes, so newly processed documents may not be immediately available for querying
 
