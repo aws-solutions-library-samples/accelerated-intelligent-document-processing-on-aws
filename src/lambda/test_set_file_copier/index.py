@@ -125,38 +125,47 @@ def handler(event, context):
                         missing_baselines.append(file_key)
 
                 except Exception as e:
-                    if by_key:
+                    # From the input bucket a missing baseline means "add unlabeled",
+                    # so a failed check must not be read as one: that would add a
+                    # labeled document without its labels.
+                    if bucket_type == "input":
                         raise
                     logger.error(f"Error checking baseline folder {file_key}: {e}")
                     missing_baselines.append(file_key)
 
             # Handle missing baselines based on bucket type
             total_matched = len(matching_files)
-            if missing_baselines and by_key:
-                files_to_copy = matching_files
-                logger.info(
-                    f"{len(missing_baselines)} of {total_matched} selected documents have no baseline; adding them unlabeled"
+            if missing_baselines and bucket_type != "input":
+                # Test set bucket: strict validation
+                raise ValueError(
+                    f"Missing baseline folders for: {', '.join(missing_baselines)}"
                 )
-            elif missing_baselines:
-                if bucket_type == "input":
-                    # Input bucket: skip files without baselines (partial ground truth is expected)
-                    files_to_copy = [
-                        f for f in matching_files if f not in set(missing_baselines)
+            # From the input bucket, by key or by pattern, a document without a
+            # baseline is added unlabeled: its input is copied and no baseline/
+            # folder is written, which is how every other route into a set
+            # represents one. Draft labeling fills it in afterwards.
+            files_to_copy = matching_files
+            if missing_baselines and not by_key:
+                # A pattern re-applied on append matches the set's own unlabeled
+                # members again. Their input stays as it is: labels may have been
+                # drafted or reviewed in the set against it. (The by-key path has
+                # already set every existing member aside.)
+                _, unlabeled_members = _split_existing_members(
+                    test_set_id, missing_baselines
+                )
+                if unlabeled_members:
+                    member_set = set(unlabeled_members)
+                    files_to_copy = [f for f in matching_files if f not in member_set]
+                    missing_baselines = [
+                        f for f in missing_baselines if f not in member_set
                     ]
-                    if not files_to_copy:
-                        raise ValueError(
-                            f"None of the {total_matched} matching files have baseline data"
-                        )
                     logger.info(
-                        f"Skipping {len(missing_baselines)} files without baselines, copying {len(files_to_copy)} files"
+                        f"{len(unlabeled_members)} unlabeled matches are already in the set; leaving them as they are"
                     )
-                else:
-                    # Test set bucket: strict validation
-                    raise ValueError(
-                        f"Missing baseline folders for: {', '.join(missing_baselines)}"
-                    )
-            else:
-                files_to_copy = matching_files
+            if missing_baselines:
+                logger.info(
+                    f"{len(missing_baselines)} of {total_matched} documents have no baseline; adding them unlabeled"
+                )
 
             # Update status to COPYING before starting file operations
             if mode == "create":
@@ -184,18 +193,20 @@ def handler(event, context):
             file_count = _count_test_set_files(test_set_id)
 
             # Build result message
-            skipped_count = len(missing_baselines)
+            unlabeled_count = len(missing_baselines)
             last_add_result = None
             if by_key:
                 last_add_result = _selected_documents_result(
                     len(files_to_copy),
-                    skipped_count,
+                    unlabeled_count,
                     len(missing_keys),
                     len(already_members),
                 )
-            elif skipped_count > 0:
+            elif unlabeled_count > 0:
                 action = "Added" if mode == "append" else "Created with"
-                last_add_result = f"{action} {len(files_to_copy)} of {total_matched} files ({skipped_count} excluded - no baseline data)"
+                last_add_result = (
+                    f"{action} {len(files_to_copy)} files ({unlabeled_count} unlabeled)"
+                )
             elif mode == "append":
                 last_add_result = f"Added {len(files_to_copy)} files"
 
