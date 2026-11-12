@@ -320,6 +320,56 @@ class TestThroughTheManager:
             manager.save_custom_pricing(_one(None))
         assert manager.get_configuration(CONFIG_TYPE_CUSTOM_PRICING) is None
 
+    def test_a_saved_row_that_leaves_an_entry_with_no_valid_price_is_unpriced(
+        self, monkeypatch
+    ):
+        """Through the per-row merge: the merged entry still matches its key.
+
+        The saved row replaces the default's only unit with an invalid one, so the
+        merged entry holds no valid price. The cost report must leave the unit
+        unpriced, as the web UI does, and not price it from the shorter
+        ``GENAIIDP-hook`` key the suffix walk would otherwise reach.
+        """
+        manager = _manager(monkeypatch)
+        manager.save_configuration(
+            CONFIG_TYPE_DEFAULT_PRICING,
+            PricingConfig(
+                pricing=[
+                    {
+                        "name": "lambda_hook/GENAIIDP-hook",
+                        "units": [{"name": "pages", "price": "0.02"}],
+                    },
+                    {
+                        "name": "GENAIIDP-hook",
+                        "units": [{"name": "pages", "price": "0.01"}],
+                    },
+                ]
+            ),
+        )
+        # Written the way an older release wrote it: no model check.
+        boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE).put_item(
+            Item={
+                "Configuration": CONFIG_TYPE_CUSTOM_PRICING,
+                "pricing": [
+                    {
+                        "name": "lambda_hook/GENAIIDP-hook",
+                        "units": [{"name": "pages", "price": "0x10"}],
+                    }
+                ],
+            }
+        )
+
+        merged = manager.get_merged_pricing()
+        assert merged is not None
+        rows = {e.name: [(u.name, u.price) for u in e.units] for e in merged.pricing}
+        assert rows["lambda_hook/GENAIIDP-hook"] == [("pages", "0x10")]
+
+        config = IDPConfig()
+        config.pricing = merged.pricing
+        reporter = SaveReportingData("test-bucket", config=config)
+        assert reporter._get_unit_cost("lambda_hook/GENAIIDP-hook", "pages") is None
+        assert reporter._get_unit_cost("GENAIIDP-hook", "pages") == 0.01
+
     def test_a_legacy_invalid_custom_price_loads_and_is_unpriced(self, monkeypatch):
         """A CustomPricing row saved before the check existed must not break the
         stack: it loads, the Pricing page gets it back for correction, and the
