@@ -2167,6 +2167,24 @@ result = client.discovery.run_batch(
 
 ---
 
+## MCP Operations
+
+MCP service credentials — the operations behind `idp-cli mcp credentials` and the MCP
+Configuration page. See [MCP Server](mcp-server.md#service-credentials).
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `mcp.list_credentials()` | `list[McpCredential]` | Every credential; never a secret |
+| `mcp.create_credential(name, role, *, allowed_config_versions=None, write_tools=False, expires_in_days=None)` | `McpCredentialIssued` | Create one. The result is the only time `client_secret` is returned; it is also stored in Secrets Manager at `secret_arn`. Raises `IDPValidationError` on the same refusals as the page |
+| `mcp.update_credential(client_id, *, role=None, allowed_config_versions=None, clear_scope=False, write_tools=None, enabled=None)` | `McpCredential` | Change role, profiles, write tools or enabled |
+| `mcp.rotate_credential(client_id, *, overlap_days=7)` | `McpCredentialIssued` | A replacement with the same access; the old one keeps working for `overlap_days` (0 to 7) |
+| `mcp.revoke_credential(client_id)` | `McpCredential` | Refused from its next request; app client and secret deleted |
+| `mcp.set_credential_tenant(client_id, tenant_id)` | `McpCredential` | Grant one tenant, or none; only under `TenantGrantSource=Api` |
+
+The settings these use (gateway, token URL, stack key, isolation mode) are read from
+the stack's credential manager function, so a credential made here is configured
+exactly as one made on the page.
+
 ## Tenancy Operations
 
 Tenant declarations and isolation checks — the operations behind `idp-cli tenancy`.
