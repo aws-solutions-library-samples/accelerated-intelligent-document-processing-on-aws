@@ -2,10 +2,10 @@
 title: "Review Queues"
 ---
 
-# Review Queues
-
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
+
+# Review Queues
 
 ## Table of Contents
 

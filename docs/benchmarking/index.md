@@ -2,6 +2,9 @@
 title: "Benchmarking Guide"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Benchmarking Guide — How the IDP Benchmark Suite Works
 
 The benchmark suite (`benchmarks/` in the repo) is a repeatable, scientific harness

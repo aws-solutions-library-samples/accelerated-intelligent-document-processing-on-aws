@@ -2,6 +2,9 @@
 title: "Configuration Guidance"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 > **This is the evergreen "which configuration should I pick?" paper** — a cross-config
 > comparison at the current release. For **release-over-release** comparisons (is the
 > upgrade safe / cheaper / faster?), see the [Release Benchmark Audit Trail](releases/).

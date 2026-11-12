@@ -1,3 +1,6 @@
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Plan: Retire granular assessment safely (+ unify extraction/confidence docs)
 
 **Author:** design, 2026-07-03

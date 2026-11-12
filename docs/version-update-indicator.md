@@ -3,6 +3,9 @@ title: Version Update Indicator
 description: How the Web UI surfaces an "Update available" badge when a newer published template is available on the public artifacts bucket.
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Version Update Indicator
 
 The Web UI's **Deployment Info** side-nav section can surface a small
