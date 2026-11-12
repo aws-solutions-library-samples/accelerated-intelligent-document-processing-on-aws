@@ -14,12 +14,36 @@ echo "📝 Adding frontmatter to documentation files..."
 count=0
 skipped=0
 
+BOM=$'\xef\xbb\xbf'
+
+# True when the file's first non-blank line is "---". A leading byte-order mark,
+# leading blank lines and surrounding whitespace are ignored, which is the rule
+# scripts/tests/test_docs_license_header.py applies when it reads the same pages
+# (strip the BOM, strip leading whitespace, compare the first line to "---").
+# Checking only line 1 would prepend a second frontmatter block to a page that
+# opens with a blank line.
+has_frontmatter() {
+    local line first=1
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$first" = 1 ]; then
+            line=${line#"$BOM"}
+            first=0
+        fi
+        # Trim leading and trailing whitespace (including a CR from CRLF).
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        if [ -n "$line" ]; then
+            [ "$line" = "---" ]
+            return
+        fi
+    done < "$1"
+    return 1
+}
+
 for md_file in "$DOCS_DIR"/*.md; do
     filename=$(basename "$md_file")
     
-    # Check if file already has frontmatter (starts with ---)
-    first_line=$(head -n 1 "$md_file")
-    if [ "$first_line" = "---" ]; then
+    if has_frontmatter "$md_file"; then
         echo "   ⏭️  $filename (already has frontmatter)"
         skipped=$((skipped + 1))
         continue

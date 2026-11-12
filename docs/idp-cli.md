@@ -2,6 +2,9 @@
 title: "IDP CLI - Command Line Interface for Batch Document Processing"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # IDP CLI - Command Line Interface for Batch Document Processing
 
 A command-line tool for batch document processing with the GenAI IDP Accelerator.
@@ -45,6 +48,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
   - [stop-workflows](#stop-workflows)
   - [load-test](#load-test)
   - [tenancy](#tenancy)
+  - [terraform migrate-from-genai-idp-terraform](#terraform-migrate-from-genai-idp-terraform)
   - [discover](#discover)
   - [discover-multidoc](#discover-multidoc)
   - [remove-deleted-stack-resources](#remove-deleted-stack-resources)
@@ -334,7 +338,7 @@ idp-cli deploy [OPTIONS]
 - `--admin-email`: Admin user email
 
 **Optional Parameters:**
-- `--from-code`: Deploy from local code by building and publishing artifacts (path to project root)
+- `--from-code`: Deploy from local code by building and publishing artifacts (path to project root). With `--terraform`, it also publishes the Terraform module from that checkout and deploys it
 - `--template-url`: URL to CloudFormation template in S3 (optional, auto-selected based on region)
 - `--template-file`: Local path to a pre-built CloudFormation template (from a previous `publish`)
 - `--custom-config`: Path to local config file or S3 URI
@@ -375,7 +379,7 @@ idp-cli deploy [OPTIONS]
 - `--clean-build`: Force full rebuild by deleting checksum files (used with `--from-code`)
 - `--no-validate-template`: Skip CloudFormation template validation
 - `--terraform` (experimental): Deploy with Terraform instead of CloudFormation. See [Terraform deployments](#terraform-deployments) below and the [Terraform Deployment](./terraform.md) guide.
-- `--terraform-module-url`: Terraform module source URL (used with `--terraform`; default: the latest published module for the region)
+- `--terraform-module-url`: Terraform module source URL (used with `--terraform`; default: the latest published module for the region; not with `--from-code`, which publishes its own)
 - `--terraform-dir`: Directory for the generated root configuration and local state (used with `--terraform`; default: `./idp-terraform/<stack-name>`)
 - `--terraform-bin`: `terraform` or `tofu` (used with `--terraform`)
 - `--terraform-assume-role-arn`: IAM role both Terraform providers assume (used with `--terraform`; refused without it)
@@ -881,7 +885,13 @@ Proceeding with stack deletion...
 idp-cli deploy --terraform --stack-name my-idp --admin-email user@example.com \
     --region us-west-2 --parameters "MaxConcurrentWorkflows=50"
 idp-cli delete --terraform --stack-name my-idp --region us-west-2 --force
+
+# Build and deploy with Terraform from a local checkout
+idp-cli deploy --terraform --from-code . --stack-name my-idp \
+    --admin-email user@example.com --region us-west-2
 ```
+
+With `--from-code`, `deploy --terraform` first builds and publishes the templates and the Terraform module from that checkout (as `publish --source-dir <dir> --terraform` does, honouring `--bucket-basename`, `--prefix`, `--public`, `--build-max-workers`, `--clean-build` and `--no-validate-template`), then deploys that module. With `--headless` or `--govcloud` it builds and deploys that variant's module. It cannot be combined with `--terraform-module-url`.
 
 `deploy --terraform` options: `--stack-name` (at most 25 characters; it names the deployment's CloudFormation label stack, so no CloudFormation stack may already use it), `--admin-email` (required on the first deploy), `--parameters` (CloudFormation parameter names, mapped to module variables through the module's `idp-terraform.json`; an unknown name is an error, `Number` values become numbers and list-typed values are split on commas), `--terraform-module-url` (default: the `moduleUrl` in `<prefix>/terraform/idp-terraform-latest.json` beside the region's default template), `--terraform-dir` (default `./idp-terraform/<stack-name>`), `--terraform-bin`, `--terraform-assume-role-arn` (an IAM role both the `aws` and `awscc` providers assume, written into each provider block of `main.tf` in that provider's own `assume_role` syntax; the resources are then created as that role, and you need `sts:AssumeRole` on it), `--terraform-allow-replace-stateful` (see below; `--terraform-allow-replace-retained` is the earlier name), `--headless` or `--govcloud` (deploy the latest module of that variant, from `idp-terraform-<variant>-latest.json`; the two cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless`, whose module has no Cognito), and `--region`. `--wait` is accepted and always implied. CloudFormation-only options (`--from-code`, `--template-url`, `--template-file`, `--tags`, `--custom-config` and the like) are refused with `--terraform`.
 
@@ -892,6 +902,66 @@ The command writes `main.tf` (the aws and awscc providers in the region and `mod
 `delete --terraform` (options `--stack-name`, `--terraform-dir`, `--terraform-bin`, `--terraform-assume-role-arn`, `--region`, `--force`) uses the role the deploy wrote into `main.tf`, or, with `--terraform-assume-role-arn`, rewrites the two provider blocks to assume that one first; then it runs `init`, empties every bucket in the state that `destroy` will delete, removes the resources CloudFormation would retain (the module's `retainedAddresses`, under `module.idp.`) from the state so they stay, then runs `destroy -auto-approve`, and lists what was retained. `--force-delete-all` does not apply.
 
 Plain `deploy` and `delete` (without `--terraform`) refuse a Terraform deployment's label stack.
+
+---
+
+### `terraform migrate-from-genai-idp-terraform`
+
+Moves a deployment of the separate
+[`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform)
+implementation onto this repository's Terraform module **in place**: a new deployment
+adopts the old one's buckets, tables, KMS key and Cognito user pool, so documents,
+configuration, users and passwords stay, and recreates everything else. It applies
+only to that implementation; it is not a CloudFormation or a configuration migration.
+The procedure, what each phase checks and how to back out of it are in
+[Migrating from genai-idp-terraform](./terraform-migration.md).
+
+Run the phases in this order. Each takes `--stack-name` (the **new** deployment's
+name), `--region`, `--terraform-dir` (the new deployment's root configuration
+directory, default `./idp-terraform/<stack-name>`) and `--json` (the phase's result
+as JSON on stdout; progress and the human-readable report go to stderr). A phase that
+changes something only lists the changes unless given `--apply`, and every phase exits
+1 when it finds something that blocks the next step.
+
+| Phase | Changes | Options |
+|---|---|---|
+| `plan` | Local files only: `main.tf`, `terraform.tfvars`, `adopt.tf` and `genai-idp-terraform-migration/`; runs `terraform init` | `--old-state` (the old `terraform.tfstate` or `terraform state pull` output), `--admin-email` (an existing user of exactly this name in the old pool is adopted), `--parameters`, `--terraform-module-url` (default: the region's latest module), `--terraform-bin`, `--terraform-assume-role-arn` |
+| `check-retention` | Nothing (lists every object, and every object version of a versioned bucket, in each kept bucket) | `--accept-expiry KIND` (repeatable) |
+| `freeze` | Disables the old deployment's EventBridge upload rule | `--apply`, `--wait`, `--timeout` (seconds, default 1800), `--ignore-document KEY` (repeatable) |
+| `fix-config` | Backs up, then removes `LatestRevision` and `PublishedRevision` from the old `Config#` rows | `--apply`, `--restore <backup>` |
+| `adopt-user-pool` | `terraform import` of the user pool, then a backed-up rewrite of its `schema` in the new state | `--apply`, `--terraform-bin` |
+| `apply` | Applies the checked adoption plan | `--apply`, `--accept-expiry KIND`, `--accept-change ADDRESS:RULE`, `--ignore-document KEY` (all repeatable), `--terraform-bin` |
+| `restore-config` | Restores, as a new revision, each kept configuration profile the first deploy replaced with the module preset | `--apply` |
+| `detach` | Backs up the old state, then removes the adopted and kept resources from it | `--old-terraform-dir` (required), `--apply`, `--terraform-bin` |
+| `check-destroy` | Nothing | `--destroy-plan` (`terraform show -json` of the old deployment's `terraform plan -destroy -out=<file>`) |
+
+```bash
+idp-cli terraform migrate-from-genai-idp-terraform plan --stack-name my-idp \
+    --region us-west-2 --old-state old-idp.tfstate --admin-email admin@example.com
+idp-cli terraform migrate-from-genai-idp-terraform check-retention --stack-name my-idp --region us-west-2
+idp-cli terraform migrate-from-genai-idp-terraform freeze --stack-name my-idp --region us-west-2 --apply --wait
+idp-cli terraform migrate-from-genai-idp-terraform fix-config --stack-name my-idp --region us-west-2 --apply
+idp-cli terraform migrate-from-genai-idp-terraform adopt-user-pool --stack-name my-idp --region us-west-2 --apply
+idp-cli terraform migrate-from-genai-idp-terraform apply --stack-name my-idp --region us-west-2 --apply
+idp-cli terraform migrate-from-genai-idp-terraform detach --stack-name my-idp --region us-west-2 \
+    --old-terraform-dir ./old-idp --apply
+idp-cli terraform migrate-from-genai-idp-terraform check-destroy --stack-name my-idp \
+    --region us-west-2 --destroy-plan destroy-plan.json
+```
+
+`plan` refuses, writing no adoption files, when the old state holds a resource that
+holds data and has no verdict, or a resource of a type it does not know is safe to
+destroy, and names each one. `apply` re-checks the earlier phases, then refuses a plan
+in which any adopted resource is not imported in place, the user pool is not yet in
+state or would lose a schema item, anything at all is replaced, destroyed or
+forgotten, or an adopted resource (or a setting on a kept bucket) would lose a
+protection such as point-in-time recovery, versioning or its KMS key. It lists every
+other in-place change to those resources for you to read. `check-destroy` refuses
+anything but the old deployment's destroy plan.
+
+When `plan` was given `--terraform-assume-role-arn`, every later phase's own AWS calls
+assume the same role (read back from the providers in `main.tf`), so they act in the
+account Terraform deploys to.
 
 ---
 
@@ -2572,7 +2642,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
 **Validation Checks:**
 - **YAML/JSON Syntax** - Ensures file is well-formed
 - **Schema Validation** - Validates against Pydantic models
-- **Model IDs** - Verifies Bedrock model IDs are valid (checked against pricing.yaml)
+- **Model IDs** - Verifies every Bedrock model ID the configuration names is in `config_library/pricing.yaml`: each section's model, the confidence, escalation, review-agent, chat, agent, discovery, rule-validation and evaluation models, the per-class `x-aws-idp-extraction-model`, `x-aws-idp-extraction-escalation-model` and `x-aws-idp-confidence-escalation-model` overrides, and the `model` in the `x-aws-idp-evaluation-method-config` of any field evaluated with `LLM`. `config-upload` runs the same check unless given `--no-validate`. An ID is compared as written, so one with surrounding spaces or in upper case is reported like any other typo. Embedding-model fields are not checked, because `pricing.yaml` prices no embedding model. A model named by an ARN whose underlying model cannot be determined offline is a warning rather than an error
 - **Placeholder Validation** - Ensures required placeholders are present in custom task_prompts:
   - `ocr.task_prompt` (bedrock only): Requires `{DOCUMENT_IMAGE}`
   - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
@@ -2587,7 +2657,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
   boundary detection is converted to `sectionSplitting: disabled`, after which a
   short packet becomes one section where it used to be split. Both
   are warnings, not errors — the file is valid and will run.
-- **OpenAI GPT-5.x compatibility** - Errors if an `openai.gpt-5.*` model is paired with **agentic extraction** (`extraction.agentic.enabled: true`, including per-class `x-aws-idp-extraction-model` overrides) or used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`). These models run on the `bedrock-mantle` Responses API and cannot accept the Strands agent loop or whole-PDF document blocks. See [OpenAI GPT-5.x Models](openai-models.md).
+- **OpenAI GPT-5.x compatibility** - Errors if an `openai.gpt-5.*` model is paired with **agentic extraction**, either as `extraction.model` or as a per-class `x-aws-idp-extraction-model` override. The escalation model is checked the same way — `extraction.validation.escalation_model` or a per-class `x-aws-idp-extraction-escalation-model` — when escalation can run, meaning validation is enabled and `extraction.validation.fail_action` is `escalate`. Extraction is agentic when `extraction.mode` is `advanced`, or, in a configuration that sets no `mode`, when `extraction.agentic.enabled` is `true`; `mode` wins when both are set. It also errors if one is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`). These models run on the `bedrock-mantle` Responses API and cannot accept the Strands agent loop or whole-PDF document blocks. See [OpenAI GPT-5.x Models](openai-models.md).
 - **xAI Grok compatibility** - Errors if `us.xai.grok-4.6` / `global.xai.grok-4.6` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Grok rejects whole-PDF `document` blocks. Unlike GPT-5.x, Grok **is** valid for agentic extraction — it reaches Converse and supports tool use, so that pairing is deliberately allowed. See [xAI Grok Models](grok-models.md).
 - **OpenAI GPT-6 Astra compatibility** - Errors if `us.openai.gpt-6-astra` / `global.openai.gpt-6-astra` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Astra rejects whole-PDF `document` blocks. Like Grok — and unlike its GPT-5.x stablemates — Astra **is** valid for agentic extraction, since it reaches Converse and emits `toolUse`. The agentic check keys on the bedrock-mantle route rather than the `openai.` prefix, so one OpenAI model passes it and the others do not. See [OpenAI Models](openai-models.md#gpt-6-astra-converse).
 

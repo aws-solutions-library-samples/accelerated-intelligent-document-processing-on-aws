@@ -1406,7 +1406,7 @@ def _build_model_config(
     if is_openai_responses_model(model_id):
         raise ValueError(
             f"OpenAI Responses-API models ({model_id}) do not support agentic/"
-            "Strands extraction. Use standard extraction (agentic.enabled=false)."
+            "Strands extraction. Use simple extraction (extraction.mode: simple)."
         )
 
     # Configure retry behavior and timeouts using boto3 Config.

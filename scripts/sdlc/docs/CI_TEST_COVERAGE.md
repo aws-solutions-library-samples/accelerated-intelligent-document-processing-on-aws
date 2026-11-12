@@ -106,7 +106,7 @@ nightly schedule or on request.
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
-| **fast_checks** | Eight **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `terraform_checks` (offline Terraform translation, then `init`/`validate` under each pinned Terraform and OpenTofu), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
+| **fast_checks** | Eight **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `terraform_checks` (offline Terraform translation, then `init`/`validate` under each pinned Terraform and OpenTofu, then the `checkov` scan diff against the CloudFormation templates, `make terraform-scan-diff`), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack**. The deployment-variant probes run here only on the **weekly variant-probe schedule** — see below. | Yes (deploys) | ~1 hour; longer with the probes |
 | **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/`; `ai_ux_test_stories` (advisory first-time-user stories)⁴, only on non-Draft MRs to `develop` that change `CHANGELOG.md` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only; the stories job stops at its precheck in about a minute on most CHANGELOG MRs, and otherwise keeps to the catalogue's deadline inside a 60-minute job |
@@ -474,6 +474,168 @@ directory sweep does not delete (queues, log groups, Cognito pools, KMS keys and
 on), named in the finding but not removed. A dead run's destroy needs its `-iam`
 pre-stack's role, which the stack sweep keeps only while the state prefix exists.
 
+### Weekly Terraform-migration run: genai-idp-terraform onto the built-in module
+
+A weekly schedule carrying `IDP_RUN_TERRAFORM_MIGRATION=true` runs
+`scripts/sdlc/terraform_migration_test.py` (`make stacktest-terraform-migration`)
+**instead of** the primary suite. The driver deploys the separate
+[`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform)
+implementation at the tag and commit it pins, seeds it, migrates it in place onto the
+Terraform module the build just published with every phase of `idp-cli terraform
+migrate-from-genai-idp-terraform`, verifies, and destroys both deployments. What it
+proves is in [docs/testing.md](../../../docs/testing.md) (the live-stack tiers) and in
+tier J of `.claude/skills/release-validation.md`.
+
+| Pipeline | `IDP_RUN_TERRAFORM_MIGRATION` | Runs |
+|---|---|---|
+| Every other pipeline, buttons included | not set, or ignored off a schedule | as before |
+| Weekly Terraform-migration schedule | `true` | the migration driver only: no primary suite, no headless check, no probes; labelled `WEEKLY TERRAFORM MIGRATION RUN` in the summary, the failure email and both Slack posts; leaves the UX review stack and the nightly story jobs alone |
+
+How it is kept apart, the same way as the other schedules:
+
+- **Inactive until created.** Nothing in `.gitlab-ci.yml` turns it on. It runs only
+  once a pipeline schedule on `develop` carrying the variable exists and is active in
+  the GitLab project.
+- **Schedule-only.** `terraform_migration_requested` in
+  `scripts/sdlc/integration_test_deployment.py` honours the variable on a scheduled
+  pipeline only, and refuses it beside `IDP_RUN_PROBES`, `IDP_TEST_REGION` or
+  `IDP_IAC=terraform`, because the run replaces the primary suite. The choice reaches
+  the build as `terraform_migration` in `ci_run_options.json`, and
+  `terraform_migration_mode` in `codebuild_deployment.py` reads it.
+- **Not a merge gate.** It is a scheduled run of `integration_tests`, which is a gate
+  on nothing (footnote ¹ below), and no shared gate names it
+  (`scripts/tests/test_ci_gate_parity.py`'s `SHARED_GATES`). Its job is
+  `integration_tests` itself, so it holds the `integration_deploy` resource group and
+  serialises with the nightly runs.
+- **Labelled.** `label_terraform_migration_run` heads the summary, `failure_subject`
+  names it, and both Slack posts prefix `🔀 WEEKLY TERRAFORM MIGRATION RUN`.
+
+**Credentials.** The run uses the per-run model of a Terraform nightly: the build
+creates the run's `-iam` pre-stack with `create_iam_resources(...,
+terraform_deployer_arn=<the build's role>)`, whose `TFDeployRole` trusts only this
+build, and deletes it afterwards with `cleanup_iam_resources`. The driver and every
+process it starts (upstream's Terraform, the `aws` commands upstream's provisioners
+run, `idp-cli`) use one AWS profile that assumes that role with
+`credential_source = EcsContainer`, so the SDKs refresh it for the whole run; the new
+deployment's providers also receive it as `--terraform-assume-role-arn`. The names
+are derived from the build's stack name (`terraform_migration_names`). The new
+deployment *is* the run's stack name (`idp-MMDD-HHMMSS`), so its pre-stack role
+matches the CodeBuild role's grant on `role/idp-*-TFDeployRole` and the startup
+sweeps recognise its leftovers. The old one is `idpo<MMDDHHMM>`: it starts with the
+`ManagedStackNamePrefix` the role requires, but it cannot also be a run-prefix name,
+because upstream's longest IAM role name is its prefix plus 51 characters and IAM
+allows 64, so the prefix can be at most 13 characters. The driver's own sweep never
+touches the `<new>-iam` pre-stack or its roles; `cleanup_iam_resources` does.
+
+**Upstream's IAM under that role.** The role comes from
+`iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml`, which
+allows IAM writes only on roles whose ARN starts with `role/<ManagedStackNamePrefix>`
+(`idp`) and, for role creation and policy changes, only when the role carries the
+run's permissions boundary (`iam:PermissionsBoundary` equal to
+`CreatedRolePermissionsBoundaryArn`). Upstream meets neither as published: it has no
+permissions-boundary variable and sets a boundary on none of its roles, and it names
+many roles and policies from fixed strings (`ConfigurationResolverRole…`,
+`UploadResolverS3Policy…`) rather than from its `prefix`.
+
+So the driver adds two attributes to every `aws_iam_role` and `aws_iam_policy` the
+example loads, through Terraform override files (`upstream_iam_overrides`, written as
+`zz_idp_ci_iam_override.tf` beside each module's own files; upstream's files are not
+edited): the run's boundary on each role, and the IAM path `/<run>-upstream/`
+(`terraform_migration_upstream_iam_path`) on each role and policy. The path starts
+with the prefix, so `role/<path><name>` falls inside the role's existing grant
+whatever upstream calls the role. **No IAM permission is widened and no role is
+added**: the run uses the same per-run `TFDeployRole` as a Terraform nightly, and its
+boundary condition still confines it to roles carrying this run's boundary, so
+another deployment's roles — the same names without the path, or another run's
+boundary — stay out of reach. `scripts/sdlc/tests/test_weekly_terraform_migration.py`
+holds the derived role's statements to that, and the driver's own tests hold the
+override generation to every role and policy the example loads.
+
+Neither attribute changes what is migrated. Upstream builds no role or policy ARN
+from a name, and the migration adopts no IAM resource: every IAM type is in
+`RECREATE_SAFE_TYPES` in `lib/idp_sdk/idp_sdk/_core/terraform_migrate.py`, so the old
+deployment's roles are destroyed with it and the new deployment creates its own. The
+boundary is the CI's `Allow *` boundary, which changes no role's effective
+permissions. A run without `--upstream-iam-path`, such as one started by hand with
+an administrator's credentials, deploys upstream as published.
+
+**The time limit.** Measured on a live run (the passing one), the driver took 166
+minutes end to end: about 20 to deploy and seed the upstream deployment, 76 waiting on
+DynamoDB (it refuses to turn the agent-jobs table's time-to-live off until about an
+hour after upstream enabled it at creation, and refuses the module's new
+time-to-live setting until about an hour after that), 33 for the adoption apply, and
+27 to destroy both deployments and sweep. With publish and the `-iam` pre-stack in
+front of it, the run needs the CodeBuild project's `TimeoutInMinutes: 240`
+(`scripts/sdlc/cfn/codepipeline-s3.yml`, `TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES`
+in `codebuild_deployment.py`). The value is the project's, so it applies to every
+run; for the others it is a backstop they finish well inside. The pipeline monitor
+watches a migration run longer than any other (`MIGRATION_RUN_MONITOR_*` in
+`integration_test_deployment.py`), and the GitLab job's `4h30m` sits above that.
+
+So that running out of time still leaves nothing behind, the build gives the driver a
+deadline (`terraform_migration_budget`): what is left of the build's own timeout, read
+from CodeBuild, less `TERRAFORM_MIGRATION_RESERVE_SECONDS` (45 minutes, the measured
+teardown plus the `-iam` cleanup). After it the driver starts no forward phase,
+refuses a TTL wait that would run past it, and tears down; the hard stop is five
+minutes short of the limit. Because the deadline is read from the build rather than
+from a constant, changing the project's timeout moves it too.
+
+⚠️ **Order: update the `genaiic-sdlc-codepipeline` stack, then run the schedule.** A
+build whose timeout is below 240 minutes is refused before publish
+(`terraform_migration_timeout_shortfall`), naming the stack to update, rather than
+running into its deadline hours later.
+
+Check the IAM role
+count too: the two deployments hold several hundred roles between them.
+
+**What a dead build leaves, and what reaps it.** The driver tears down in a
+`finally` and within its deadline, but a build that dies outright (a lost container)
+runs no `finally`, and its work directory goes with the container. So the run keeps
+what a teardown needs outside it, under
+`terraform-migration-runs/<run>/` in the CI state bucket
+(`TERRAFORM_MIGRATION_STATE_PREFIX`, a prefix of its own beside the nightly's
+`terraform-runs/`):
+
+- `run.json`, written by the build before the driver starts: both names, the region,
+  the run's `TFDeployRole` and boundary, the upstream IAM path, the module URL and
+  the account;
+- both Terraform states, through S3 backends the driver writes into each root before
+  its first `init` (`--state-mirror`);
+- the driver's context and the new root's configuration, copied at the end of every
+  phase. Its secrets file never is: a teardown needs the run's names, not its
+  passwords.
+
+The driver's preflight writes that mirror before anything is created and fails if it
+cannot, so a run that could not be torn down by a later build creates nothing. The
+prefix is removed only after a leftover check that found nothing; a teardown that
+left something keeps it.
+
+`cleanup_stale_terraform_migrations`, a fatal Step 0 sweep in every build, finds a
+prefix older than the stack sweep's age gate (`IDP_STACK_STALE_AGE_SECONDS`, well
+above the driver's longest phase, the hour-long time-to-live wait, between two of
+which the mirror is rewritten) and runs the driver's own `--resume --teardown-only`
+in a scratch work directory, as the run's `TFDeployRole`, with the names `run.json`
+records. The driver rebuilds what its teardown reads — the pinned upstream clone
+with the run's tfvars, IAM overrides, backend and provider lock, and the new root
+from the mirror — and then tears down exactly as a failed run does, under every
+check it already applies: the names and account must match the stored context, and
+the run must have created something. The `-iam` pre-stack is deleted after a clean
+teardown, and the stack sweep keeps it while the prefix stands. Failures are counted
+beside the state and abandoned to a note for a person after
+`TERRAFORM_REAP_MAX_ATTEMPTS`, as for a Terraform nightly; the note names the prefix
+and the command to finish it by hand.
+
+⚠️ **What is still unprotected.** A build that dies after the `-iam` pre-stack exists
+but before `run.json` is written leaves the pre-stack to the name-based sweeps, which
+already remove it; one that dies after `run.json` but before the driver's preflight
+has created nothing, and its reap finds nothing to do. A reap runs inside another
+build's Step 0, so a teardown needing something that build's environment lacks (the
+upstream release host, the registry, the Docker daemon upstream's image builds use)
+fails there, is counted, and is retried by the next build. If the state listing
+itself fails, the stack sweep keeps every Terraform-labelled run, and a migration
+run whose new deployment never reached its label stack is not among those, so its
+`-iam` pre-stack can be reaped by name before its teardown has run.
+
 ### Why fast_checks is eight jobs
 
 It was one `static_checks` job that ran lint, typecheck and every pytest suite in
@@ -643,6 +805,7 @@ GitHub's own Merge button runs no code from this tree.
 | **Weekly variant-probe schedule** | ✅ | — | ✅ auto | ✅ auto¹, plus the probes | — | — | — |
 | **Weekly region schedule** (eu-central-1, ca-central-1) | ✅ | — | ✅ auto | ✅ auto¹, in that region | — | — | — |
 | **Nightly Terraform schedule** (`IDP_IAC=terraform`) | ✅ | — | ✅ auto | ✅ auto¹, against a Terraform deployment | — | — | — |
+| **Weekly Terraform-migration schedule** (`IDP_RUN_TERRAFORM_MIGRATION=true`) | ✅ | — | ✅ auto | ✅ auto¹, the migration driver instead of the primary suite | — | — | — |
 
 ¹ ⚠️ **THE DEPLOY IS NO LONGER A MERGE GATE.** This is the central trade in the
 current pipeline shape and it has to be read before a green MR pipeline is relied
@@ -1427,10 +1590,12 @@ Notes:
 
 ## Test Execution Strategy
 
-### Parallel Execution (Steps 3-11, 13, 14, 15)
-- **12 tests run concurrently** to minimize pipeline runtime (Step 13, the
-  read-only permissions-boundary check, Step 14, the pipeline-hook test, and
-  Step 15, the config-prefix-mapping routing check, join the parallel pool)
+### Parallel Execution
+- **Every step in `PARALLEL_TEST_STEPS`** (`scripts/sdlc/codebuild_deployment.py`)
+  runs concurrently to minimize pipeline runtime. Read that list for the current
+  set: Step 13, the read-only permissions-boundary check, Step 14, the
+  pipeline-hook test, Step 15, the config-prefix-mapping routing check, and Step
+  16, the Quick Start bootstrap, join Steps 3–11 there
 - **Fail-fast enabled**: If any test fails, remaining tests are cancelled and cleanup begins
 - **Expected runtime**: ~25-35 minutes (vs 60+ minutes sequential)
 
@@ -1866,6 +2031,34 @@ without an upload tag.
   profile, which is a guard the feature adds and this cleanup respects rather than
   fights. Dropping the mappings first also stops a `reject` rule catching an
   unrelated upload while the rest of the cleanup runs.
+
+
+### Step 16: Quick Start Bootstrap ⚡ *Parallel*
+**What it tests**: that [Quick Start](../../../docs/quick-start.md)'s headless
+path, `idp-cli bootstrap`, authors a document-class schema from a description and
+saves it as a configuration profile on a deployed stack.
+- **Why it exists**: the Quick Start agent's tools and `idp-cli bootstrap` share
+  the schema authoring and the profile write in `idp_common.synthesis`. The step
+  names no starting profile, so the catalog is empty and the catalog match over
+  existing profiles is not exercised. The web UI's first-time-user stories stop
+  before a Quick Start message is sent, because the agent would change the shared
+  review stack's configuration, so this is the only live check that the Bedrock
+  authoring and the Configuration table write still compose.
+- **Verification**: bootstrap reports saving `integration-quick-start`; the
+  downloaded profile holds class `IntegrationPaystub`, with at least one leaf field
+  per `--field-hint`, nested or not. Field names are the model's choice, so only
+  their count is held. Bootstrap is retried once if it fails, because authoring is
+  one model call and a failure in the parallel pool fails the whole suite.
+- **Model**: `--model-id` is the CLI's default authoring model, swapped for an EU
+  or CA build by the product's `swap_model_ids`, as every config the suite uploads
+  is, so the weekly region runs call a model their region can reach.
+- **Isolation**: saves its own profile and never activates it, so the other steps'
+  profiles and the active configuration are unaffected. The CI build does not
+  install the document generator, so no test set is generated; `--count 1` bounds
+  the run if one is ever installed.
+- **Implementation**: `test_step16_quick_start_bootstrap` in
+  `scripts/sdlc/codebuild_deployment.py`, offline tests in
+  `scripts/sdlc/tests/test_quick_start_bootstrap_step.py`.
 
 ---
 

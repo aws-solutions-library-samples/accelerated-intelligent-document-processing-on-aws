@@ -198,12 +198,14 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
+              # The build logs to DockerBuildLogGroup (LogsConfig below), which
+              # the stack creates first. No logs:CreateLogGroup: a build must not
+              # be able to recreate a deleted group with no retention or key.
               - Effect: Allow
                 Action:
-                  - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
+                Resource: !GetAtt DockerBuildLogGroup.Arn
               - Effect: Allow
                 Action:
                   - ecr:GetAuthorizationToken
@@ -271,6 +273,17 @@ Resources:
                   Resource: !Ref ArtifactsBucketKmsKeyArn
                 - !Ref AWS::NoValue
 
+  # The image build's logs. Without LogsConfig CodeBuild creates
+  # /aws/codebuild/<project> itself, with no retention and no key, and the
+  # stack never deletes it.
+  DockerBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/codebuild/DockerBuildProject"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+
   DockerBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -286,6 +299,10 @@ Resources:
           - !Ref AWS::NoValue
       Artifacts:
         Type: NO_ARTIFACTS
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref DockerBuildLogGroup
       Environment:
         ComputeType: BUILD_GENERAL1_MEDIUM
         Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0

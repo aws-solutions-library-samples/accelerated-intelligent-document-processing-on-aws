@@ -2,6 +2,9 @@
 title: "Error Analyzer (Troubleshooting Tool) - PREVIEW"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Error Analyzer (Troubleshooting Tool) - PREVIEW
 
 ## Overview
@@ -1367,15 +1370,6 @@ The analyzer will automatically discover and search these logs.
 2. **Special Characters**: Some Unicode in logs may cause parsing issues
 3. **High Volume**: Systems with >1000 errors/hour may hit throttling
 4. **Multi-Region**: Analyzer only searches current region
-
-### Future Enhancements
-
-- **Multi-language Support**: Non-English log analysis
-- **Custom Patterns**: User-defined error patterns
-- **Trend Analysis**: Historical error pattern tracking
-- **Predictive Alerts**: Proactive failure prediction
-- **Export Features**: PDF/JSON report generation
-- **Integration**: Slack/Teams notifications
 
 ## Summary
 

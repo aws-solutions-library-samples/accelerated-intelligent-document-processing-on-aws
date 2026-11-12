@@ -17,8 +17,9 @@ listed under [Differences from CloudFormation and current limitations](#differen
 
 If you deploy the accelerator today with the separate `awslabs/genai-idp-terraform`
 repository, read [Migrating from genai-idp-terraform](./terraform-migration.md) as
-well. That repository is a different implementation, and its state cannot be moved
-onto this module.
+well. That repository is a different implementation, so its state cannot simply be
+moved onto this module; a new deployment of the module adopts its buckets, tables,
+KMS key and user pool instead, with `idp-cli terraform migrate-from-genai-idp-terraform`.
 
 ## What it is
 
@@ -59,7 +60,11 @@ You need the following before you deploy:
   `DeleteResource`, `ListResources` and `GetResourceRequestStatus`) in addition to the
   permissions of the underlying services. The module also creates one CloudFormation
   stack (the label stack described below), which needs `cloudformation:CreateStack`
-  and its related actions unless you turn the label off. A deploying role that is
+  and its related actions unless you turn the label off. When the deployment uses a
+  customer-managed KMS key, the credentials also need `kms:Decrypt` and
+  `kms:GenerateDataKey` on that key: the label stack's template is stored in the
+  custom-resource bridge's bucket, which is encrypted with the key, and CloudFormation
+  reads it with the caller's credentials. A deploying role that is
   scoped rather than administrator-level is described under
   [Deploying with a scoped role](#deploying-with-a-scoped-role).
 - Terraform 1.7 or later, or OpenTofu 1.7 or later, on your path.
@@ -269,6 +274,17 @@ idp-cli deploy --terraform \
     --parameters "MaxConcurrentWorkflows=50,LogLevel=INFO"
 ```
 
+To deploy from your own checkout instead of a published release, add `--from-code .`:
+it builds and publishes the templates and the Terraform module to your artifact bucket
+first, exactly as `idp-cli publish --source-dir . --terraform` does, then deploys that
+module.
+
+```bash
+idp-cli deploy --terraform --from-code . \
+    --stack-name idp-tf \
+    --admin-email admin@example.com
+```
+
 The command writes a directory, `./idp-terraform/<stack-name>` by default, containing
 a `main.tf` with the `aws` and `awscc` providers configured for the Region and a
 `module "idp"` block, plus a `terraform.tfvars` holding your settings and an
@@ -304,6 +320,7 @@ The options are:
 | `--admin-email` | the administrator's email address, which becomes `admin_email` |
 | `--parameters "K=V,K2=V2"` | settings by their CloudFormation parameter names, as on the CloudFormation path; an unknown name is an error |
 | `--terraform-module-url URL` | the module source URL; by default the CLI uses the latest published module for the Region, chosen the same way the CloudFormation deploy chooses its default template |
+| `--from-code DIR` | build the templates from a local checkout, publish them with the Terraform module (`idp-cli publish --terraform`), and deploy that module. The build options `--bucket-basename`, `--prefix`, `--public`, `--build-max-workers`, `--clean-build` and `--no-validate-template` apply as on the CloudFormation path. With `--headless` or `--govcloud` it builds and deploys that variant's module. It cannot be combined with `--terraform-module-url` |
 | `--headless` / `--govcloud` | use the latest headless or GovCloud module instead of the standard one; they cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless` |
 | `--terraform-dir DIR` | the directory to write, instead of `./idp-terraform/<stack-name>` |
 | `--terraform-bin` | `terraform` or `tofu` |
@@ -533,7 +550,7 @@ reading it, so three independent checks look at different things:
 | Check | When it runs | What it shows |
 |---|---|---|
 | The translator's own checks and `terraform validate` on every pinned Terraform and OpenTofu release | every pull request | every type, property and value in the templates is translated and reaches the Terraform; no data-holding resource depends on a value Terraform cannot know at plan time without a declared reason; the module loads and type-checks |
-| A static security scan of both, compared resource by resource | every pull request | no Terraform resource fails a security rule that its CloudFormation source passes, beyond a short list of explained exceptions (all on the custom-resource bridge the module adds) |
+| A static security scan of both, compared resource by resource | every pull request | no Terraform resource fails a security rule that its CloudFormation source passes, beyond a short list of explained exceptions (mostly on the custom-resource bridge the module adds); findings on rules only the Terraform scanner has are pinned per rule, so a new one fails too. The repository's SRT scan does not cover the generated module, which is never committed; this scan is what covers it |
 | A property comparison of a Terraform deployment with a CloudFormation deployment of the same release and parameters, every resource of both read back from AWS | release validation | the two deployments store the same configuration, beyond explained differences |
 
 None of the three plans or applies on a pull request. The full stack has been

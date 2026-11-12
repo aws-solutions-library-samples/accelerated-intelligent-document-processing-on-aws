@@ -57,7 +57,7 @@ help: ## Show this help message
 	@echo ""
 	@awk 'BEGIN {FS = ":.*##"; section=""} \
 		/^##@/ { section=substr($$0, 5); next } \
-		/^[a-zA-Z_-]+:.*?## / { \
+		/^[a-zA-Z0-9_-]+:.*?## / { \
 			if (section != "" && section != last_section) { \
 				printf "\n  \033[1m%s\033[0m\n", section; \
 				last_section = section \
@@ -200,8 +200,8 @@ setup-venv: lock-constraints ## Create .venv and install all packages into it, c
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint check-ui-i18n-catalog check-ui-string-debt codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, then the UI message catalog and string debt, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint: lint without ui-lint, cfn-lint and codegen-check. The two UI i18n gates still run when src/ui/node_modules exists; without it they print a visible SKIP (not a pass)
 
 # Pin the linter, for the same reason spelled out at CFN_LINT_VERSION below: an
 # UNPINNED tool on a blocking gate is the one realistic way this red-lines the
@@ -285,6 +285,18 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 	@# cache, since iteration latency is what it was added for.
 	@if ! make ui-lint UI_LINT_NO_SKIP=1; then \
 		echo -e "$(RED)ERROR: UI lint failed$(NC)"; \
+		exit 1; \
+	fi
+	@# After ui-lint, which installed src/ui/node_modules: the extraction it replays
+	@# needs them, and in CI their absence is an error rather than a skip.
+	@if ! make check-ui-i18n-catalog; then \
+		echo -e "$(RED)ERROR: UI message catalog check failed (see issue #1770)$(NC)"; \
+		exit 1; \
+	fi
+	@# Same node_modules, same CI rule: the string-debt ratchet counts the UI's
+	@# hardcoded user-facing strings per file and fails when a file gains one.
+	@if ! make check-ui-string-debt; then \
+		echo -e "$(RED)ERROR: UI string-debt ratchet failed: a file gained a hardcoded user-facing string (see issue #1770)$(NC)"; \
 		exit 1; \
 	fi
 
@@ -421,6 +433,24 @@ check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file
 	@# quietly accumulate more. Regenerate with --write after fixing findings.
 	@$(PYTHON) scripts/check_lint_debt.py || \
 		(echo -e "$(RED)ERROR: ruff exclusion baseline is out of date (see issue #975)$(NC)" && exit 1)
+
+check-ui-i18n-catalog: ## Fail if src/ui/src/i18n/en.json is stale against the UI's messages, or a translation catalog would fail the UI build (issue #1770)
+	@# Check-only: re-extracts into a temp file and diffs; `make ui-i18n-extract` is
+	@# the writer. Off CI without src/ui/node_modules it prints a SKIP (not a pass);
+	@# in CI that is an error. It runs a node tool out of src/ui/node_modules, so it
+	@# takes the same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/check_ui_i18n_catalog.py' || \
+		(echo -e "$(RED)ERROR: UI message catalog check failed (see issue #1770)$(NC)" && exit 1)
+
+check-ui-string-debt: ## Ratchet the UI's hardcoded user-facing strings: fail if a file gains one, an unlisted file has any, or the baseline is stale (issue #1770)
+	@# src/ui/eslint.i18n.config.js is the counting rule (eslint-plugin-i18next, kept
+	@# out of the UI's lint script); scripts/ui_string_debt.json pins the count per
+	@# file and may only shrink — `python3 scripts/check_ui_string_debt.py --write`
+	@# re-records it after a file is converted. Off CI without src/ui/node_modules it
+	@# prints a SKIP (not a pass); in CI that is an error. It runs eslint out of
+	@# src/ui/node_modules, so it takes the same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/check_ui_string_debt.py' || \
+		(echo -e "$(RED)ERROR: UI string-debt ratchet failed (see issue #1770)$(NC)" && exit 1)
 
 check-account-ids: ## Fail if a private AWS account id is committed in a tracked file's contents (issue #1067)
 	@# The PreToolUse hook scripts/hooks/check_commit_text.py inspects the COMMAND
@@ -1393,19 +1423,54 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 	@echo "It deploys a FROM release, update-stacks to a TO release, and watches"
 	@echo "the UpdateDefaultConfig custom resource. Follow that skill's steps."
 
+# In-place migration of an awslabs/genai-idp-terraform deployment onto this
+# repository's Terraform module: deploys the pinned upstream tag as OLD_NAME, seeds
+# it (documents, users, a config edit, a baseline and test set), runs every phase of
+# `idp-cli terraform migrate-from-genai-idp-terraform` with --apply onto a new
+# deployment NEW_NAME of TERRAFORM_MODULE_URL, verifies nothing was lost and the old
+# passwords still sign in, then destroys both and sweeps what they retained. Measured
+# at 166 minutes, 76 of them waiting on DynamoDB's TTL intervals. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>; RESUME=1
+# continues a stopped or failed run from WORK_DIR. See docs/testing.md and
+# .claude/skills/release-validation.md (tier J).
+#   make stacktest-terraform-migration OLD_NAME=gitf2 NEW_NAME=gitfnew2 \
+#       TERRAFORM_MODULE_URL=https://.../idp-terraform-<version>.zip
+_TFMIG_ARGS = --old-name $(OLD_NAME) --new-name $(NEW_NAME) \
+	--terraform-module-url $(TERRAFORM_MODULE_URL) \
+	$(if $(REGION),--region $(REGION),) \
+	$(if $(WORK_DIR),--work-dir $(WORK_DIR),) \
+	$(if $(TERRAFORM_BIN),--terraform-bin $(TERRAFORM_BIN),) \
+	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
+	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
+	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
+
+stacktest-terraform-migration: ## Migrate a live genai-idp-terraform deployment onto the built-in module in place, verify, tear both down (OLD_NAME= NEW_NAME= TERRAFORM_MODULE_URL=)
+ifndef OLD_NAME
+	$(error OLD_NAME is not set. Usage: make stacktest-terraform-migration OLD_NAME=<prefix> NEW_NAME=<stack> TERRAFORM_MODULE_URL=<zip url>)
+endif
+ifndef NEW_NAME
+	$(error NEW_NAME is not set. Usage: make stacktest-terraform-migration OLD_NAME=<prefix> NEW_NAME=<stack> TERRAFORM_MODULE_URL=<zip url>)
+endif
+ifndef TERRAFORM_MODULE_URL
+	$(error TERRAFORM_MODULE_URL is not set: the module zip `idp-cli publish --terraform` prints)
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/terraform_migration_test.py $(_TFMIG_ARGS)
+
 ##@ UI Development
 
-# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND SIX OF THEM
-# WIPE IT. `npm ci` deletes node_modules before rebuilding it, by design. Each of
-# those targets then runs a node tool out of that same tree. So two UI targets at
-# once in ONE checkout corrupt each other, and the loser does not report
-# contention — it reports a missing or half-deleted module from whatever package
-# the other lane was unpacking (issue #1447).
+# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND EVERY ONE WHOSE
+# RECIPE RUNS $(NPM_CI) WIPES IT. `npm ci` deletes node_modules before rebuilding it,
+# by design. Each of those targets then runs a node tool out of that same tree. So
+# two UI targets at once in ONE checkout corrupt each other, and the loser does not
+# report contention — it reports a missing or half-deleted module from whatever
+# package the other lane was unpacking (issue #1447). The set of targets is pinned
+# by UI_TARGETS in scripts/tests/test_ui_deps_lock.py, which fails when one joins or
+# leaves; no count is written here for that reason.
 #
-# `make lint-cicd` performs three of them itself (ui-lint, ui-build-only,
-# codegen-check), so lint-cicd PLUS ANY ONE UI TARGET is enough to collide. The
-# realistic composition is "lint in one lane, UI tests in another", which looks
-# like two unrelated things and is not.
+# `make lint-cicd` performs some of them itself (ui-lint, check-ui-i18n-catalog,
+# check-ui-string-debt, ui-build-only, codegen-check — pinned as
+# TARGETS_LINT_CICD_PERFORMS in the same test), so lint-cicd PLUS ANY ONE UI TARGET
+# is enough to collide. The realistic composition is "lint in one lane, UI tests in
+# another", which looks like two unrelated things and is not.
 #
 # $(UI_DEPS_LOCK) is why that is now safe rather than merely documented: it holds
 # an exclusive lock for the whole command, so a second UI target waits instead of
@@ -1552,6 +1617,29 @@ ui-build-only: ## Vite production build ONLY (no lint/typecheck) — for CI, whe
 ui-test: ## Run UI unit tests (Vitest, jsdom — no browser required)
 	@echo "Running UI unit tests..."
 	$(UI_DEPS_LOCK) '$(NPM_CI) && npx vitest run'
+
+# THE WRITER for `make check-ui-i18n-catalog`, which is check-only by design (the
+# `codegen-check` auto-update is the shape CONTRIBUTING documents as a wart).
+ui-i18n-extract: ## Re-extract the UI's English message catalog into src/ui/src/i18n/en.json (then commit it)
+	@echo "Extracting UI messages into src/ui/src/i18n/en.json..."
+	$(UI_DEPS_LOCK) '$(NPM_CI) && npm run i18n:extract'
+	@echo -e "$(GREEN)✅ src/ui/src/i18n/en.json re-extracted. Commit it if it changed.$(NC)"
+
+# ADVISORY BY DESIGN (decision D17 of #1770): this target never fails, so it is
+# not a prerequisite of `lint` or `fastlint`, is not in the `lint-cicd` recipe, and
+# its name matches none of the check shapes test_ci_gate_parity.py classifies by.
+# A missing or stale translation is an English fallback on screen, not a broken
+# build; this report makes it visible without turning every English-only string
+# into a red gate. Invalid entries are enforced by `check-ui-i18n-catalog` and the
+# UI build, and only listed here. Flags go through UI_I18N_COVERAGE_ARGS, e.g.
+# `make ui-i18n-coverage UI_I18N_COVERAGE_ARGS=--json` (nothing else is printed,
+# so the output is the JSON) or `UI_I18N_COVERAGE_ARGS="--locale fr-CA"`.
+UI_I18N_COVERAGE_ARGS ?=
+ui-i18n-coverage: ## Report translation coverage for each locale catalog present in src/ui/src/i18n: missing, stale (English changed since translation) and invalid entries; advisory, never fails (issue #1770)
+	@# It runs node out of src/ui/node_modules, so it takes the same lock as the UI
+	@# targets (issue #1447). Off CI without node_modules it prints a SKIP (not a
+	@# report); in CI that is an error. Exit 2 only when no report could be made.
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_coverage.py $(UI_I18N_COVERAGE_ARGS)'
 
 ##@ Code Generation
 codegen: ## Regenerate GraphQL types and operations
