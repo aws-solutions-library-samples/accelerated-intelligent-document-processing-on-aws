@@ -137,3 +137,20 @@ class TestAuthoredSchemaBridges:
         after = schema_bridge.leaf_field_paths(gen)
         assert before == after
         assert before == {"EmployeeName", "GrossPay", "NetPay"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("region", "expected"),
+    [
+        ("us-east-1", "us.anthropic.claude-sonnet-4-6"),
+        ("eu-west-1", "eu.anthropic.claude-sonnet-4-6"),
+        ("ca-central-1", "us.anthropic.claude-sonnet-4-6"),
+    ],
+)
+def test_the_default_model_is_callable_from_the_region(region, expected):
+    """With no model given, the call goes to the model the deploy-time swap would
+    write for ``region``: a us. profile is not callable from an EU Region."""
+    client = _mock_bedrock_returning(VALID_SCHEMA_TEXT)
+    schema_author.author_class_schema("a paystub", region=region, bedrock_client=client)
+    assert client.invoke_model.call_args.kwargs["model_id"] == expected

@@ -238,6 +238,7 @@
         "idp_common/ocr/results.py": 100.0,
         "idp_common/ocr/service.py": 99.9,
         "idp_common/prompt_comments.py": 100.0,
+        "idp_common/regional_models.py": 100.0,
         "idp_common/reporting/__init__.py": 100.0,
         "idp_common/reporting/save_reporting_data.py": 88.83,
         "idp_common/review_queues/__init__.py": 71.43,

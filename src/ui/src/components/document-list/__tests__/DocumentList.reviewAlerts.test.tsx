@@ -9,6 +9,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -60,6 +61,13 @@ vi.mock('../../../contexts/documents', () => ({
 
 import DocumentList from '../DocumentList';
 
+// The toolbar's Add to test set action (shown to this Admin) is a react-intl component.
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const doc = (ObjectKey: string, over: Record<string, unknown> = {}) => ({
   ObjectKey,
   ObjectStatus: 'COMPLETED',
@@ -93,7 +101,7 @@ describe('DocumentList review alerts', () => {
   it('shows the refusal for Start Review and does not open the document', async () => {
     documentsRef.current = [doc('owed.pdf')];
     graphqlMock.mockImplementation(() => refused('NO_REVIEW_PENDING: this document has no review waiting, so there is nothing to start'));
-    render(<DocumentList />);
+    render(<DocumentList />, { wrapper: English });
     selectRow(1);
     fireEvent.click(screen.getByRole('button', { name: 'Start Review' }));
 
@@ -107,7 +115,7 @@ describe('DocumentList review alerts', () => {
     graphqlMock.mockResolvedValue({
       data: { claimReview: { HITLReviewOwner: 'admin', HITLReviewOwnerEmail: 'a@example.com', HITLStatus: 'InProgress' } },
     });
-    render(<DocumentList />);
+    render(<DocumentList />, { wrapper: English });
     selectRow(1);
     fireEvent.click(screen.getByRole('button', { name: 'Start Review' }));
 
@@ -122,7 +130,7 @@ describe('DocumentList review alerts', () => {
       doc('finished.pdf', { HITLReviewOwner: 'rev', HITLStatus: 'Completed' }),
     ];
     graphqlMock.mockImplementation(() => refused('REVIEW_FINISHED: this review is already finished, so there is nothing to release'));
-    render(<DocumentList />);
+    render(<DocumentList />, { wrapper: English });
     [1, 2, 3].forEach(selectRow);
     fireEvent.click(screen.getByRole('button', { name: 'Release Review' }));
 
@@ -134,7 +142,7 @@ describe('DocumentList review alerts', () => {
   it('shows no alert when every release succeeds', async () => {
     documentsRef.current = [doc('claimed.pdf', { HITLReviewOwner: 'rev', HITLStatus: 'InProgress' })];
     graphqlMock.mockResolvedValue({ data: { releaseReview: { HITLStatus: 'Review Pending' } } });
-    render(<DocumentList />);
+    render(<DocumentList />, { wrapper: English });
     selectRow(1);
     fireEvent.click(screen.getByRole('button', { name: 'Release Review' }));
 
@@ -156,7 +164,7 @@ describe('DocumentList review alerts', () => {
         ? Promise.resolve({ data: { releaseReview: { HITLStatus: 'Review Pending' } } })
         : refused('NO_REVIEW_PENDING: this document has no review waiting, so there is nothing to start'),
     );
-    render(<DocumentList />);
+    render(<DocumentList />, { wrapper: English });
     selectRow(1);
     fireEvent.click(screen.getByRole('button', { name: 'Start Review' }));
     await waitFor(() => expect(alertText()).toContain('Start Review was refused'));

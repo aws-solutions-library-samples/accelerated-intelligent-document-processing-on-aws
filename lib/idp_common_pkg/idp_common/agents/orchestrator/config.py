@@ -74,8 +74,8 @@ def get_chat_companion_model_id() -> str:
         # function had such a literal and it named Claude Sonnet 4.
         #
         # DEFAULT_AGENT_MODEL_ID is the model base-agents.yaml ships for the chat
-        # companion (the field default equals it), served through its global.
-        # cross-region profile so the fallback can be invoked from any region.
+        # companion (the field default equals it), translated to the stack's
+        # Region the way the deploy-time swap translates a stored configuration.
         default_model_id = DEFAULT_AGENT_MODEL_ID
         logger.info(f"Using default chat companion model ID: {default_model_id}")
         return default_model_id

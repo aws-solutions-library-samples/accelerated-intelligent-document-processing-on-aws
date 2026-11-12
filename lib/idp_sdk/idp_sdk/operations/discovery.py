@@ -343,6 +343,7 @@ class DiscoveryOperation:
             from idp_common import bedrock
             from idp_common.config.merge_utils import load_system_defaults
             from idp_common.prompt_comments import strip_prompt_comments_in_config
+            from idp_common.regional_models import NOVA_PRO_MODEL_ID, regional_default
 
             # Shipped defaults may document prompts in {# ... #} comments; this
             # path sends them without the runtime config reader, so strip here.
@@ -352,8 +353,14 @@ class DiscoveryOperation:
             discovery_cfg = defaults.get("discovery", {})
             auto_cfg = discovery_cfg.get("auto_split", {})
 
-            # Caller override wins over system default
-            model_id = model_id or auto_cfg.get("model_id", "us.amazon.nova-pro-v1:0")
+            region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
+
+            # Caller override wins over system default. The last resort goes
+            # through the Region translation: this path never runs the deploy-time
+            # swap, and a us. profile is not callable from an EU or Canada Region.
+            model_id = model_id or auto_cfg.get(
+                "model_id", regional_default(NOVA_PRO_MODEL_ID, region)
+            )
 
             # Grok, GPT-5.x and GPT-6 Astra cannot accept the `document` content
             # block built below (text + image input only), and would silently drop
@@ -400,7 +407,6 @@ class DiscoveryOperation:
                 {"text": user_prompt},
             ]
 
-            region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
             bedrock_client = bedrock.BedrockClient(region=region)
 
             response = bedrock_client.invoke_model(
@@ -545,6 +551,7 @@ class DiscoveryOperation:
             from idp_common import bedrock, image
             from idp_common.config.merge_utils import load_system_defaults
             from idp_common.prompt_comments import strip_prompt_comments_in_config
+            from idp_common.regional_models import NOVA_PRO_MODEL_ID, regional_default
 
             # If a page range is specified and the file is a PDF, extract only those pages
             file_extension = doc_path.suffix.lower().lstrip(".")
@@ -569,8 +576,14 @@ class DiscoveryOperation:
                 else discovery_cfg.get("without_ground_truth", {})
             )
 
-            # Caller override wins over system default
-            model_id = model_id or mode_cfg.get("model_id", "us.amazon.nova-pro-v1:0")
+            region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
+
+            # Caller override wins over system default. The last resort goes
+            # through the Region translation: this path never runs the deploy-time
+            # swap, and a us. profile is not callable from an EU or Canada Region.
+            model_id = model_id or mode_cfg.get(
+                "model_id", regional_default(NOVA_PRO_MODEL_ID, region)
+            )
 
             # Grok, GPT-5.x and GPT-6 Astra cannot accept the `document` content
             # block built below (text + image input only), and would silently drop
@@ -628,7 +641,6 @@ class DiscoveryOperation:
                 content = [image.prepare_bedrock_image_attachment(file_bytes)]
 
             # Call Bedrock with retry/validation loop
-            region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
             bedrock_client = bedrock.BedrockClient(region=region)
 
             validation_feedback = ""

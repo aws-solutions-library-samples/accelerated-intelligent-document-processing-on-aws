@@ -1,4 +1,16 @@
 {
+  "documents.list.addToTestSet.disabledHint": {
+    "defaultMessage": "Select at least one document that has finished processing",
+    "description": "Tooltip of the Add to test set button when no selected document can be added."
+  },
+  "documents.list.addToTestSet.enabledHint": {
+    "defaultMessage": "Add the selected documents to a test set",
+    "description": "Tooltip of the Add to test set button when it can be used."
+  },
+  "documents.list.addToTestSet.label": {
+    "defaultMessage": "Add to test set",
+    "description": "Document List toolbar button that adds the selected documents to a Test Studio test set."
+  },
   "i18n.switcher.ariaLabel": {
     "defaultMessage": "Language, currently {language}",
     "description": "Screen-reader label of the language menu button. {language} is the current language by its own name, e.g. \"English\"."
@@ -22,6 +34,58 @@
   "pricing.layout.invalidPricesHeader": {
     "defaultMessage": "Invalid prices",
     "description": "Header of the warning that lists every price on the Pricing page that cannot be saved."
+  },
+  "testStudio.addProcessedDocuments.notCompletedBody": {
+    "defaultMessage": "Only documents that finished processing can be added to a test set.",
+    "description": "Body of the notice about selected documents that are left out."
+  },
+  "testStudio.addProcessedDocuments.notCompletedHeader": {
+    "defaultMessage": "{count, plural, one {# selected document is not included} other {# selected documents are not included}}",
+    "description": "Header of a notice listing selected documents that are left out because they have not finished processing."
+  },
+  "testStudio.addProcessedDocuments.pickerHeader": {
+    "defaultMessage": "Add documents to a test set",
+    "description": "Header of the add-to-test-set dialog opened from the Document List, before a test set is chosen."
+  },
+  "testStudio.addProcessedDocuments.pickerIntro": {
+    "defaultMessage": "Each selected document is copied into the test set together with any ground truth already saved for it. One without ground truth is added unlabeled, so it can be draft-labeled in Test Studio afterwards. Documents already in the set are skipped, so labels reviewed there are kept.",
+    "description": "Introduction of the add-to-test-set dialog opened from the Document List, where the documents are already chosen."
+  },
+  "testStudio.addProcessedDocuments.selectedHeader": {
+    "defaultMessage": "Selected documents",
+    "description": "Header of the table listing the documents chosen on the Document List."
+  },
+  "testStudio.addProcessedDocuments.testSetDescription": {
+    "defaultMessage": "The documents are added to an existing test set. To start a new set, create it in Test Studio first.",
+    "description": "Help text under the test set field in the add-to-test-set dialog."
+  },
+  "testStudio.addProcessedDocuments.testSetDocumentCount": {
+    "defaultMessage": "{count, plural, one {# document} other {# documents}}",
+    "description": "Description of a test set option: how many documents the set already holds."
+  },
+  "testStudio.addProcessedDocuments.testSetLabel": {
+    "defaultMessage": "Test set",
+    "description": "Label of the field that chooses which test set the selected documents are added to."
+  },
+  "testStudio.addProcessedDocuments.testSetPlaceholder": {
+    "defaultMessage": "Choose a test set",
+    "description": "Placeholder of the test set field before one is chosen."
+  },
+  "testStudio.addProcessedDocuments.testSetUnavailable": {
+    "defaultMessage": "Unavailable while its status is {status}",
+    "description": "Why a test set option cannot be chosen. {status} is the test set status, such as UPDATING."
+  },
+  "testStudio.addProcessedDocuments.testSetsEmpty": {
+    "defaultMessage": "There are no test sets yet. Create one in Test Studio first.",
+    "description": "Shown in the test set field when no test set exists."
+  },
+  "testStudio.addProcessedDocuments.testSetsLoadError": {
+    "defaultMessage": "Could not load test sets: {error}",
+    "description": "Error shown when the list of test sets fails to load. {error} is the error message from the server."
+  },
+  "testStudio.addProcessedDocuments.testSetsLoading": {
+    "defaultMessage": "Loading test sets",
+    "description": "Shown in the test set field while the list of test sets loads."
   },
   "testStudio.itemEdit.regroupPending": {
     "defaultMessage": "Loading the saved grouping…",

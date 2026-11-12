@@ -85,3 +85,33 @@ def test_the_embedding_service_default_follows_its_clients_region():
     assert (
         EmbeddingService(bedrock_client=client).model_id == DEFAULT_EMBEDDING_MODEL_ID
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("region", "expected"),
+    [
+        ("us-east-1", DEFAULT_ANALYSIS_MODEL_ID),
+        ("eu-central-1", "eu.anthropic.claude-sonnet-4-6"),
+        ("ca-central-1", DEFAULT_ANALYSIS_MODEL_ID),
+    ],
+)
+def test_the_discovery_agent_default_follows_the_region(region, expected):
+    """The save handler builds its reflection agent with no model, so the
+    parameter default is what an EU stack calls."""
+    from idp_common.discovery.discovery_agent import DiscoveryAgent
+
+    assert DiscoveryAgent(region=region).analysis_model_id == expected
+    client = MagicMock()
+    client.region = region
+    assert DiscoveryAgent(bedrock_client=client).analysis_model_id == expected
+
+
+@pytest.mark.unit
+def test_the_discovery_agent_keeps_a_configured_model():
+    from idp_common.discovery.discovery_agent import DiscoveryAgent
+
+    agent = DiscoveryAgent(
+        analysis_model_id="eu.anthropic.claude-haiku-5-5", region="us-east-1"
+    )
+    assert agent.analysis_model_id == "eu.anthropic.claude-haiku-5-5"

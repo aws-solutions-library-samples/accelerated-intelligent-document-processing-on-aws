@@ -2262,9 +2262,9 @@ Resources:
               multi_instance_detection:
                 type: object
                 sectionLabel: Multi-instance Section Detection
-                description: "Detects a section that turned out to hold SEVERAL separate instances (records) of the same class when extraction returned only one of them, and raises a warning naming both counts. It asks the model, in the same extraction call, how many instances the pages contain - one extra integer of output, no second inference. Detection only: it never changes the extracted data, never fails a section, and never turns on a schema flag for you. To actually extract every instance, set 'Multi-instance Sections' on the class in the Document Schema editor. Applies to Simple extraction only, so this is shown only when Extraction mode is 'simple'."
+                description: "Detects a section that turned out to hold SEVERAL separate instances (records) of the same class when extraction returned only one of them, and raises a warning naming both counts. It asks the model, in the same extraction call, how many instances the pages contain - one extra integer of output, no second inference. Detection only: it never changes the extracted data, never fails a section, and never turns on a schema flag for you. To actually extract every instance, set 'Multi-instance Sections' on the class in the Document Schema editor. Applies to Simple extraction and to Advanced extraction, except where an Advanced section is split into page-range shards or resumed from a validated checkpoint; those are not checked."
                 order: 4.08
-                dependsOn: { field: "extraction.mode", value: "simple" }
+                dependsOn: { field: "extraction.mode", values: ["simple", "advanced"] }
                 properties:
                   enabled:
                     type: boolean
