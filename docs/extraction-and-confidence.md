@@ -2244,7 +2244,8 @@ types differ, and route below-threshold extractions to
 Both extraction and confidence prompts support precise control over where
 document images appear, using the `{DOCUMENT_IMAGE}` placeholder.
 
-- **Without the placeholder**: images are automatically appended after the text content.
+- **Without the placeholder**: no page images are attached to the prompt, which is
+  sent as text only. This holds for extraction and confidence prompts alike.
 - **With the placeholder**: images are inserted exactly where `{DOCUMENT_IMAGE}` appears.
 
 ```yaml

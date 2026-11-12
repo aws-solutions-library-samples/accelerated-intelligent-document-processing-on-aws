@@ -281,7 +281,7 @@ paper's sections are computed from; each result set goes under
 
 | Paper section | Suite(s) | What it establishes |
 |---|---|---|
-| §2 configuration matrix | `coresynth` (19 cells × 7 synthetic docs) | the cross-config grid: OCR × mode × assessment, the v0.7 feature arms |
+| §2 configuration matrix | `coresynth` (19 cells × 7 synthetic docs) | the cross-config grid: OCR × mode × assessment, plus the §2b feature-option arms (enforcement, forcing, schema restatement, section splitting) |
 | §2 real-world accuracy | `core` (= `coresynth` + the RealKIE and OCR-benchmark reference corpora) — run `core` *instead of* `coresynth` when budget allows, it is a superset; also `detection-real-corpora` and `forcing-real-corpus` if those studies are cited | labelled-corpus accuracy, not just synthetic exact-GT |
 | §2.1 / §6 standing hazards | `intconf`, `advverify` (`--set extraction_model=sonnet5`) | the two silent list-loss hazards, with repeats — the paper must say whether each is still open |
 | §3 scaling | `scaling` (simple vs advanced across 100→3,200 rows) — expect simple-mode cells above the single-response limit to fail; that *is* the finding | where each mode's completeness cliff sits on this release |

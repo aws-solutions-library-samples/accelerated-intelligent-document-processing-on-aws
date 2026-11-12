@@ -317,6 +317,85 @@ def test_a_nonexistent_path_is_not_a_pass(tmp_path, mod) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# A missing basedpyright is named, on the stream the rest of the run uses.
+# --------------------------------------------------------------------------- #
+
+
+def _without_basedpyright(monkeypatch, mod) -> None:
+    real_which = shutil.which
+
+    def which(name, *args, **kwargs):
+        return None if name == "basedpyright" else real_which(name, *args, **kwargs)
+
+    def no_subprocess(*_args, **_kwargs):
+        raise AssertionError("basedpyright was invoked although it is not on PATH")
+
+    monkeypatch.setattr(mod.shutil, "which", which)
+    monkeypatch.setattr(mod.subprocess, "run", no_subprocess)
+
+
+@pytest.mark.unit
+def test_a_missing_basedpyright_is_named_on_stdout(monkeypatch, capsys, mod) -> None:
+    """The remedy must reach a reader who sees only stdout.
+
+    It used to go to stderr, and every other line of the run goes to stdout, so a
+    caller reading stdout saw a failure with no explanation. The assertion is on
+    ``out`` alone for that reason.
+    """
+    _without_basedpyright(monkeypatch, mod)
+
+    code = mod.run_type_check(["scripts/sdlc/typecheck_pr_changes.py"])
+
+    out = capsys.readouterr().out
+    assert code == mod.TOOL_MISSING_EXIT, "a run that checked nothing must not pass"
+    assert mod.TOOL_MISSING_EXIT not in mod.INTERPRETABLE_EXIT_CODES
+    assert "basedpyright is not on PATH" in out
+    assert "npm install -g basedpyright" in out
+
+
+@pytest.mark.unit
+def test_main_does_not_blame_type_errors_when_the_tool_is_missing(
+    monkeypatch, capsys, mod
+) -> None:
+    """``main`` must say no check ran, not "fix the errors above" over no errors."""
+    _without_basedpyright(monkeypatch, mod)
+    monkeypatch.setattr(
+        mod,
+        "get_changed_files",
+        lambda _branch: ["scripts/sdlc/typecheck_pr_changes.py"],
+    )
+    monkeypatch.setattr(sys, "argv", ["typecheck_pr_changes.py", "develop"])
+
+    code = mod.main()
+
+    out = capsys.readouterr().out
+    assert code == mod.TOOL_MISSING_EXIT
+    assert "errors above" not in out
+    assert "basedpyright is not installed" in out
+
+
+@pytest.mark.unit
+def test_main_still_blames_type_errors_when_the_check_found_some(
+    monkeypatch, capsys, mod
+) -> None:
+    """The tool-missing summary must not replace the one for a real failing check."""
+    monkeypatch.setattr(
+        mod,
+        "get_changed_files",
+        lambda _branch: ["scripts/sdlc/typecheck_pr_changes.py"],
+    )
+    monkeypatch.setattr(mod, "run_type_check", lambda _files: 1)
+    monkeypatch.setattr(sys, "argv", ["typecheck_pr_changes.py", "develop"])
+
+    code = mod.main()
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "errors above" in out
+    assert "not installed" not in out
+
+
+# --------------------------------------------------------------------------- #
 # It is documented as a developer command, not a gate.
 # --------------------------------------------------------------------------- #
 

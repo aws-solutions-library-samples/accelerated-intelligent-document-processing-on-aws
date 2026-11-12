@@ -8,7 +8,6 @@ SPDX-License-Identifier: MIT-0
 # Reporting SQL Layer — rollup tables on top of `metering`
 
 **Status:** Shipped (Phase 1).
-**Owner:** Taniya Mathur.
 
 ## 1. Overview
 
