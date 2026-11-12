@@ -6,5 +6,13 @@
   "i18n.switcher.label": {
     "defaultMessage": "Language",
     "description": "Tooltip of the language menu button in the top navigation. The button itself shows the current language by its own name (English, Français (Canada))."
+  },
+  "testStudio.itemEdit.regroupPending": {
+    "defaultMessage": "Loading the saved grouping…",
+    "description": "Why Edit Page Grouping is unavailable: a page grouping was just saved and the document editor is still re-reading the saved sections."
+  },
+  "testStudio.itemEdit.regroupRereadFailed": {
+    "defaultMessage": "The saved grouping could not be re-read. Choose Refresh to load it.",
+    "description": "Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page."
   }
 }
