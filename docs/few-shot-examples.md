@@ -30,7 +30,7 @@ Few-shot learning enhances AI model performance by providing concrete examples a
 - **🚫 Fewer made-up values**: Examples showing the expected output can discourage invented classification or attribute values
 - **🔧 Domain Adaptation**: Examples help models understand domain-specific terminology and conventions
 - **💡 Better Edge Case Handling**: Visual examples clarify ambiguous cases that text descriptions might miss
-- **💰 Cost Effectiveness with Caching**: Using prompt caching with few-shot examples can significantly reduce costs for repeated processing
+- **💰 Cost with Caching**: Prompt caching can lower the cost of the examples when its prefix is read again within five minutes, as it can be when documents with the same configuration are processed close together, and on Claude models raises it when the prefix is written and not read again ([Prompt Caching with Few-Shot Examples](#prompt-caching-with-few-shot-examples))
 
 ## When to Use Few-Shot Examples
 
@@ -491,7 +491,7 @@ extraction:
     Extract as JSON:
 ```
 
-**Important**: The `<<CACHEPOINT>>` delimiter separates the static portion of your prompt (classes, few-shot examples) from the dynamic portion (document content). This enables Bedrock prompt caching, significantly reducing costs when processing multiple documents with the same configuration.
+**Important**: The `<<CACHEPOINT>>` delimiter separates the static portion of your prompt (classes, few-shot examples) from the dynamic portion (document content). This lets Bedrock cache the static portion. On Claude models a cached prefix that is read again within five minutes is billed at a tenth of the input price (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but a prefix below the model's minimum is never cached, and a prefix that is written and not read again costs about 25% more than an uncached one ([prompt caching study](./benchmarking/studies/prompt-caching.md)).
 
 ### Step 5: Configure Path Resolution (If Using Images)
 
@@ -509,7 +509,7 @@ export CONFIGURATION_BUCKET=your-config-bucket-name
 
 ## Prompt Caching with Few-Shot Examples
 
-Using prompt caching with few-shot examples provides significant cost and performance benefits:
+Prompt caching can lower the cost of the static part of a prompt that carries few-shot examples. Whether it does depends on the conditions below.
 
 ### How Prompt Caching Works
 
@@ -521,7 +521,7 @@ The static portion is cached by Bedrock and reused across multiple document proc
 
 ### Cost Benefits
 
-With few-shot examples adding significant token count to prompts, caching becomes essential:
+Few-shot examples make the static portion of the prompt larger, and the static portion is the only part caching can discount. How much of the bill that is depends on its size relative to the document text and images after the cache point: on the `ocr-benchmark` corpus the prefix was about 1,000–2,900 of roughly 7,800 input tokens per document ([prompt caching study §6](./benchmarking/studies/prompt-caching.md#6-end-to-end-effect-on-cost)).
 
 ```yaml
 # Example prompt structure for cost optimization
@@ -540,20 +540,20 @@ task_prompt: |
 ```
 
 **Without caching**: Pay full token cost (static + dynamic) for every document
-**With caching**: Pay the static portion once at a write premium (1.25× its input price on Claude models), then the cache-read price for it on documents that follow within five minutes, plus full cost for the dynamic portion
+**With caching**: Pay the static portion once at a write premium (1.25× its input price on Claude models), then the cache-read price for it on documents that follow within five minutes, plus full cost for the dynamic portion. On Claude models a prefix that is written and not read again inside those five minutes is billed at about 25% more than it would be without caching; how much that adds to a document depends on the prefix's share of its input tokens ([prompt caching study §3](./benchmarking/studies/prompt-caching.md#3-the-cache-write-premium-on-a-document-processed-once))
 
-### Performance Benefits
+**Below the minimum, nothing is cached**: Anthropic publishes a per-model minimum cacheable prefix (1,024 tokens for Claude Sonnet 5 and Sonnet 4.6, 4,096 for Claude Haiku 4.5). A shorter prefix is billed entirely at the full input price, and no error or warning is raised ([prompt caching study §1](./benchmarking/studies/prompt-caching.md#1-the-minimum-cacheable-prefix))
 
-- **Faster Processing**: Cached static content doesn't need to be reprocessed
-- **Reduced Latency**: Less time spent on prompt parsing and understanding
-- **Better Consistency**: Same cached context ensures consistent interpretation
+### Latency and output
+
+Caching changes how the static portion is billed; it does not change the prompt the model receives. No benchmark in this repository has measured its effect on latency, so measure that on your own workload if it matters.
 
 ### Cache Optimization Tips
 
 1. **Group similar documents**: Process documents of the same class together to maximize cache hits
 2. **Stable configurations**: Avoid changing class definitions or examples frequently during processing batches
 3. **Strategic placement**: Put all static content (examples, instructions) before the CACHEPOINT
-4. **Monitor cache effectiveness**: Track cost reductions to verify caching is working
+4. **Monitor cache effectiveness**: Check `cacheReadInputTokens` in the run's token usage. A class whose prefix is below the model's minimum shows 0 on every request
 
 ## Best Practices
 
@@ -712,7 +712,7 @@ text only, so compare the number of image items with the images you expect.
 - **Reduced Prompt Engineering**: Less time spent fine-tuning text descriptions
 - **Consistent Outputs**: Examples establish clear formatting standards
 - **Better Edge Case Handling**: Visual and textual examples help with ambiguous documents
-- **Cost Efficiency with Caching**: Prompt caching bills a cached prefix (examples included) at a tenth of the input price on Claude models when it is read again within five minutes. A prefix below the model's minimum is never cached, and a cached prefix that is not read again is billed at about 25% more than uncached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
+- **Cost Efficiency with Caching**: Prompt caching bills a cached prefix (examples included) at a tenth of the input price on most Claude models (a twentieth on Claude Sonnet 5.5 and Opus 5.5) when it is read again within five minutes. A prefix below the model's minimum is never cached, and a cached prefix that is not read again is billed at about 25% more than uncached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
 
 ### Trade-offs
 - **Increased Initial Token Usage**: Examples add to prompt length, increasing initial processing costs
@@ -722,7 +722,7 @@ text only, so compare the number of image items with the images you expect.
 
 ### Cost Optimization Strategies
 
-1. **Use prompt caching**: Always include `<<CACHEPOINT>>` in prompts when using few-shot examples
+1. **Use prompt caching when documents arrive together**: Include `<<CACHEPOINT>>` in prompts that carry few-shot examples when documents with the same configuration are processed within five minutes of each other. On Claude models a prefix that is written and not read again within five minutes pays the write premium for nothing
 2. **Strategic example selection**: Focus on document classes where accuracy improvements justify the cost
 3. **Consider text-only examples**: When images aren't essential, text-only examples reduce processing time
 4. **Optimize image sizes**: If using images, use the smallest size that maintains clarity
@@ -735,7 +735,7 @@ text only, so compare the number of image items with the images you expect.
 Monitor these metrics to ensure optimal cache usage:
 - **Cache hit rate**: Percentage of requests using cached content
 - **Cost reduction**: Compare costs with and without caching
-- **Processing latency**: Time savings from cached static content
+- **Processing latency**: not measured with and without caching in this repository; compare on your own workload
 - **Token usage patterns**: Distribution of static vs. dynamic tokens
 
 ## Troubleshooting
@@ -773,9 +773,10 @@ Monitor these metrics to ensure optimal cache usage:
 - Ensure `<<CACHEPOINT>>` is properly placed in task prompts
 - Verify static content is before CACHEPOINT and dynamic content is after
 - Check that you're using supported Bedrock models with caching enabled
+- Check that the prefix before CACHEPOINT is longer than the model's minimum cacheable prefix; a shorter one is never cached and raises no error
 
 **High Costs Despite Caching**
-- Verify cache hit rates are high (>80% for batch processing)
+- Compare `cacheReadInputTokens` with `cacheWriteInputTokens`: on Claude models a write that is not read again within five minutes costs more than no caching
 - Ensure you're not changing static content frequently
 - Check that CACHEPOINT placement is optimal
 
@@ -964,4 +965,4 @@ The few-shot examples feature continues to evolve with planned enhancements:
 - **Hybrid Examples**: Better integration of text and image content within examples
 - **Enhanced Multi-Image Support**: Advanced algorithms for optimal image selection from directories
 
-Few-shot examples with prompt caching represent a significant step forward in making pipeline mode more accurate, cost-effective, and easier to configure for diverse document processing scenarios. The flexibility to use images, text, or both, combined with support for multiple images per example, provides comprehensive options for different security, privacy, and performance requirements.
+Few-shot examples give pipeline mode concrete examples of each class, and prompt caching can lower the cost of carrying them when documents with the same configuration are processed close together. The flexibility to use images, text, or both, combined with support for multiple images per example, provides comprehensive options for different security, privacy, and performance requirements.

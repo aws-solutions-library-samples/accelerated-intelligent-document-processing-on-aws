@@ -515,7 +515,7 @@ task_prompt: |
   </user_history>
 ```
 
-This caches the static instructions and only processes the dynamic document content, reducing costs.
+This caches the static instructions ahead of the dynamic document content. Whether that lowers cost depends on the prefix clearing the model's minimum and being read again within five minutes; see the [prompt caching study](./benchmarking/studies/prompt-caching.md).
 
 ### Chunking Configuration
 
@@ -693,7 +693,7 @@ Rule validation costs depend on:
 - Prompt caching effectiveness
 
 **Cost Optimization Tips**:
-1. Use prompt caching on busy stacks: a cached prefix that is read again within five minutes is billed at a tenth of the input price on Claude models, but one that is never read again is billed at about 25% more than uncached, and a prefix below the model's minimum is never cached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
+1. Use prompt caching on busy stacks: a cached prefix that is read again within five minutes is billed at a tenth of the input price on most Claude models (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but one that is never read again is billed at about 25% more than uncached, and a prefix below the model's minimum is never cached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
 2. Choose appropriate model (Haiku for simple rules, Sonnet for complex)
 3. Minimize rule redundancy
 4. Optimize chunk sizes to reduce API calls

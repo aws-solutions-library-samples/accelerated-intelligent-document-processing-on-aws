@@ -680,7 +680,7 @@ If a document is "too large for chat context window" — i.e. Bedrock returns an
 
 ### Chat history
 
-Your chat history is preserved while you remain on the Document Detail screen; leaving and returning erases it. Prompt caching is used for the document contents across successive turns on the same document to reduce latency and cost.
+Your chat history is preserved while you remain on the Document Detail screen; leaving and returning erases it. Prompt caching is applied to the document contents across successive turns on the same document, so a turn that follows within five minutes can read them at the cache-read rate instead of the full input price. Its effect on latency has not been measured.
 
 ### Streaming & live status
 
