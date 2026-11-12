@@ -216,13 +216,16 @@ The evaluation service stores confidence scores from extraction results alongsid
      reports its cost and timing, with no accuracy figures and an explanation on the
      results page in place of them. Note the status is written over by promoting a
      document to an evaluation baseline, which uses the same attribute
-   - Generates detailed markdown reports using AI analysis
+   - Writes a markdown report built directly from the comparison results. No model
+     is called to write the report. Model calls in evaluation come only from the
+     comparisons themselves: an `LLM`-method field calls a Bedrock model, and a
+     `SEMANTIC`-method field calls a Bedrock embedding model
 
 3. **Evaluation Reports**
    - Compare section classification accuracy
-   - Analyze extracted field differences 
-   - Identify patterns in discrepancies
-   - Assess severity of differences (cosmetic vs. substantial)
+   - Show each extracted field's expected and actual value, the comparison method,
+     its score and, where the method gives one, its reason
+   - Aggregate the field results into section and document metrics
 
 ## Dynamic Schema Generation
 
@@ -536,7 +539,7 @@ Weighted Overall Score = (2.0 + 0.8 + 0.3) / (2.0 + 1.0 + 0.5) = 3.1 / 3.5 = 0.8
 
 ### Best Practices
 
-1. **Weight Critical Fields Higher**: Invoice amounts, dates, IDs should have weights ≥ 1.5
+1. **Weight Critical Fields Higher**: Give fields such as invoice amounts, dates and IDs a weight above 1.0. A weight states relative business importance; no particular value has been measured to be better than another
 2. **Use Default Weight for Standard Fields**: Most fields should use weight=1.0 (or omit for default)
 3. **Reduce Weight for Optional Fields**: Notes, descriptions can use weight=0.5
 4. **Test Different Weightings**: Adjust weights based on business feedback and error impact analysis
@@ -640,7 +643,7 @@ Control evaluation behavior through the configuration file (no stack redeploymen
 evaluation:
   enabled: true  # Set to false to disable evaluation processing
   llm_method:
-    model: "us.anthropic.claude-haiku-4-5-20251001-v1:0"  # Model for evaluation reports
+    model: "us.anthropic.claude-haiku-4-5-20251001-v1:0"  # Model for the LLM comparison method
     temperature: "0.0"
     top_p: "0.0"
     max_tokens: "4096"
@@ -705,7 +708,7 @@ classes:
         type: string
         description: Name of the vendor
         x-aws-idp-evaluation-method: FUZZY  # Use fuzzy matching
-        x-aws-idp-confidence-threshold: 0.8  # Minimum similarity threshold
+        x-aws-idp-evaluation-threshold: 0.8  # Minimum similarity threshold
 ```
 
 ### Group Attributes
@@ -727,17 +730,17 @@ classes:
             type: string
             description: "House or building number"
             x-aws-idp-evaluation-method: FUZZY
-            x-aws-idp-confidence-threshold: 0.9
+            x-aws-idp-evaluation-threshold: 0.9
           Street Name:
             type: string
             description: "Name of the street"
             x-aws-idp-evaluation-method: FUZZY
-            x-aws-idp-confidence-threshold: 0.8
+            x-aws-idp-evaluation-threshold: 0.8
           City:
             type: string
             description: "City name"
             x-aws-idp-evaluation-method: FUZZY
-            x-aws-idp-confidence-threshold: 0.9
+            x-aws-idp-evaluation-threshold: 0.9
           State:
             type: string
             description: "State abbreviation (e.g., CA, NY)"
@@ -754,6 +757,15 @@ Arrays of items where each item's attributes are evaluated individually across a
 
 **Important**: Structured arrays (arrays of objects) use **HUNGARIAN matching** with a special `match-threshold` parameter that applies to the entire list, not individual fields.
 
+You do not need to set `x-aws-idp-evaluation-method` on the array itself, and the
+examples below do not. Hungarian matching is always what pairs the rows, so
+`HUNGARIAN` there is accepted and changes nothing, and any other method there is
+ignored: a method meant for scalar fields (`EXACT`, `FUZZY`, `LEVENSHTEIN`,
+`SEMANTIC`, `NUMERIC_EXACT`, `DATE`) is logged at `ERROR` and removed, and `LLM` is
+logged as a warning (see
+[Do not use `LLM` on a field inside a list](#️-do-not-use-llm-on-a-field-inside-a-list)).
+Set methods on the item fields.
+
 ```yaml
 classes:
   - $schema: "https://json-schema.org/draft/2020-12/schema"
@@ -765,7 +777,6 @@ classes:
         type: array
         description: "List of all transactions in the statement period"
         x-aws-idp-list-item-description: "Individual transaction record"
-        x-aws-idp-evaluation-method: HUNGARIAN  # Required for List[Object]
         x-aws-idp-evaluation-match-threshold: 0.8  # Threshold for item matching
         items:
           type: object
@@ -815,7 +826,6 @@ Use `x-aws-idp-evaluation-match-threshold` to control item pairing:
 ```yaml
 CityTaxes:
   type: array
-  x-aws-idp-evaluation-method: HUNGARIAN
   x-aws-idp-evaluation-match-threshold: 0.8  # 80% match for optimal pairing
   items:
     type: object
@@ -861,7 +871,7 @@ Different evaluation methods work with different field types:
 | LEVENSHTEIN | String | `evaluation-threshold` (optional) |
 | SEMANTIC | String, Object | `evaluation-threshold` (optional) |
 | DATE | String | `evaluation-threshold` (optional); tune with `evaluation-method-config` |
-| LLM | String, Object, Array | `evaluation-threshold` (optional) |
+| LLM | String, Object. On a structured array it is ignored, with a warning, and on a field inside one it is downgraded to the field's type default unless `x-aws-idp-evaluation-allow-llm-in-list: true` is set | `evaluation-threshold` (optional) |
 | HUNGARIAN | Array[Object] ONLY | `evaluation-match-threshold` (optional; defaults to 0.8) |
 
 Every threshold above is optional. Omitting one is accepted and the comparator
@@ -1134,12 +1144,12 @@ For doc split metrics to be calculated, each section's result JSON must include:
 
 Creating accurate baseline data is the foundation of the evaluation framework. There are two main approaches:
 
-### Method 1: Use Existing Processing Results (Using Copy to Baseline Feature)
+### Method 1: Use Existing Processing Results (Using Use As Evaluation Baseline)
 
 1. Process documents through the GenAIIDP solution
 2. Review the output in the web UI
 3. Make any necessary corrections
-4. For documents with satisfactory results, click "Copy to Baseline"
+4. For documents with satisfactory results, choose **Use As Evaluation Baseline** in the document page's **More Actions** menu
 5. The system will asynchronously copy all processing results to the baseline bucket
 6. The document status will update to indicate baseline availability:
    - BASELINE_COPYING: Copy operation in progress
@@ -1169,7 +1179,7 @@ The easiest way to create accurate baseline files is to start with processed res
 2. **Option B: Use the Solution UI**
    - Process your document through the GenAIIDP solution
    - In the Web UI, navigate to the processed document
-   - Click "View / Edit data" to review the extracted results
+   - Choose **Edit Data** in a section row's **⋮** menu to review the extracted results
    - Correct any errors directly in the UI
    - Export or copy the corrected data to create your baseline
    - This ensures your baseline matches the exact structure expected by the evaluation framework
@@ -1281,7 +1291,7 @@ Once documents are processed with baselines:
 The evaluation framework automatically discovers and evaluates fields that exist in the data but are not defined in the configuration:
 
 - Detects fields present in actual results, expected results, or both
-- Uses LLM evaluation method by default for discovered fields
+- A field with no `x-aws-idp-evaluation-method` gets its comparator from Stickler's type and field-name inference (see [Comparator Inference Rules](#comparator-inference-rules)), never from the `LLM` method
 - Clearly marks discovered fields in the report
 - Handles cases where fields are missing from either actual or expected results
 
@@ -1306,17 +1316,18 @@ The framework offers two approaches for semantic evaluation:
   - Better at handling implicit/explicit information differences
   - More nuanced understanding of semantic equivalence
   - Ideal for cases where understanding the rationale is important
-  - Used as the default method for attributes discovered in the data but not in the configuration
 
 ## Metrics and Monitoring
 
-The evaluation framework includes comprehensive monitoring through CloudWatch metrics:
-
-- **Evaluation Success/Failure Rates**: Track evaluation completion and error rates
-- **Baseline Data Availability**: Monitor percentage of documents with baseline data for comparison
-- **Report Generation Performance**: Track time to generate evaluation reports
-- **Model Usage Metrics**: Monitor token consumption and API calls for evaluation models
-- **Accuracy Trends**: Historical tracking of processing accuracy over time
+The evaluation function publishes no accuracy metrics to CloudWatch, and the stack
+defines no accuracy alarms. (Its CloudWatch metrics are the Bedrock request and token
+metrics every Bedrock call publishes, made by fields using the `LLM` method.) Each
+document's evaluation outcome is recorded as its
+`EvaluationStatus` (listed below), the evaluation Lambda's log goes to CloudWatch
+Logs, and the accuracy figures are written to the reporting bucket and queried
+through the ReportingDatabase (see
+[Aggregate Evaluation Analytics and Reporting](#aggregate-evaluation-analytics-and-reporting)),
+which is where accuracy over time is tracked.
 
 The framework calculates the following detailed metrics for each document and section:
 
@@ -1349,6 +1360,7 @@ The evaluation also tracks different evaluation statuses:
 - **FAILED**: Evaluation encountered errors
 - **TIMED_OUT**: Evaluation could not finish within the evaluation Lambda's time limit
 - **NO_BASELINE**: No baseline data available for comparison
+- **DISABLED**: Evaluation is switched off (`evaluation.enabled: false`) in the configuration the document was processed with, so no comparison was attempted
 - **BASELINE_COPYING**: Process of copying document to baseline is in progress
 - **BASELINE_AVAILABLE**: Document is available in the baseline
 - **BASELINE_ERROR**: Error occurred during the baseline copy operation
@@ -1489,7 +1501,7 @@ ORDER BY eval_day DESC;
 
 ### Analytics Notebook
 
-The solution includes a comprehensive Jupyter notebook (`notebooks/evaluation_reporting_analytics.ipynb`) that provides:
+The solution includes a comprehensive Jupyter notebook (`notebooks/misc/evaluation_reporting_analytics.ipynb`) that provides:
 
 - **Automated Data Loading**: Connects to Athena and automatically loads partitions for all evaluation tables
 - **Table Testing**: Validates connectivity and shows content summaries for document, section, and attribute evaluation tables
@@ -1543,7 +1555,7 @@ The solution includes a comprehensive Jupyter notebook (`notebooks/evaluation_re
 2. **Threshold Tuning**: Adjust accuracy thresholds based on your use case requirements
 3. **Pattern Recognition**: Look for patterns in low-performing document types or sections
 4. **Comparative Analysis**: Compare performance across different prompt configurations
-5. **Automated Alerts**: Set up CloudWatch alarms based on accuracy metrics stored in the database
+5. **Automated Alerts**: No accuracy metric reaches CloudWatch, so an alert has to start from a scheduled query against the ReportingDatabase
 
 ## Evaluation Engine
 
@@ -1738,7 +1750,7 @@ Common issues and resolutions:
 2. **Evaluation Failures**
    - Check Lambda function logs for error details
    - Verify that the evaluation model is available in your region
-   - Increase Lambda timeout if needed for complex documents
+   - The evaluation Lambda already runs with Lambda's maximum timeout of 15 minutes, so a timeout cannot be fixed by raising it. Reduce the work instead; the usual cause is fields using the `LLM` method, each of which makes a model call
 
 3. **Low Accuracy Scores**
    - Review document quality and OCR results

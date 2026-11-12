@@ -3960,7 +3960,7 @@ class EvaluationLLMMethodConfig(BaseModel):
         description="Bedrock model ID for evaluation",
     )
     system_prompt: str = Field(
-        default="ou are an evaluator that helps determine if the predicted and expected values match for document attribute extraction. You will consider the context and meaning rather than just exact string matching.",
+        default="You are an evaluator that helps determine if the predicted and expected values match for document attribute extraction. You will consider the context and meaning rather than just exact string matching.",
         description="System prompt for evaluation",
     )
 

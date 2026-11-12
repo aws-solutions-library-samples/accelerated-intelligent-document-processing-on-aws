@@ -1825,8 +1825,9 @@ extraction:
 ```
 
 **Document-size guidance.** The defaults above are tuned to work without
-hand-tuning on large documents (validated at scale on 100- and 200-page
-single- and multi-table PDFs). For very large documents (100+ pages) prefer the
+hand-tuning on large documents. The largest document the benchmark suite has
+measured is 66 pages and 3,200 rows (`docs/benchmarking/config-guidance.md`);
+larger documents have not been measured. For very large documents (100+ pages) prefer the
 Step Functions Distributed Map runtime (`runtime: step_functions`) so each shard
 runs in its own Lambda and the section is not bound by the single-Lambda 15-min
 ceiling; the in-process runtime still shards correctly but a 200-page section may

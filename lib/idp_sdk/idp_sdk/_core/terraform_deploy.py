@@ -1057,6 +1057,10 @@ def retained_report(state: Dict[str, Any], removed: Iterable[str]) -> Dict[str, 
 # ---------------------------------------------------------------------------
 
 
+#: What ``terraform state list`` (and OpenTofu's) prints when no state exists yet.
+NO_STATE_MESSAGE = "No state file was found"
+
+
 class TerraformRunner:
     """Runs ``terraform`` or ``tofu`` in a root configuration directory.
 
@@ -1128,7 +1132,18 @@ class TerraformRunner:
         self.run("destroy", "-auto-approve", "-input=false")
 
     def state_list(self) -> List[str]:
-        text = self.capture("state", "list")
+        """The addresses in state; empty when there is no state yet.
+
+        ``terraform state list`` exits 1 with "No state file was found!" in a
+        directory that has been initialised but never applied or imported into,
+        which is where a migration's ``adopt-user-pool`` phase first asks.
+        """
+        try:
+            text = self.capture("state", "list")
+        except IDPStackError as e:
+            if NO_STATE_MESSAGE in str(e):
+                return []
+            raise
         return [line.strip() for line in text.splitlines() if line.strip()]
 
     def show_state(self) -> Dict[str, Any]:

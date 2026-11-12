@@ -43,6 +43,11 @@ SUB_KINDS = {
     "stuck": "no_route",
 }
 GROUPS = {"platform-admin": "Admin", "team-lead": "Viewer", "new-analyst": "Author"}
+TITLES = {
+    "route-folder-to-profile": "Make one input folder use one configuration",
+    "find-extraction-model": "Find which model reads the fields out of your documents",
+    "tell-production-from-test": "Tell production documents from test runs",
+}
 
 
 def _codebuild_deployment() -> ModuleType:
@@ -203,7 +208,7 @@ HEADER = (
         ),
         (
             f"{HEADER}\n  ✅ Updated in place to tonight's template — UPDATE_COMPLETE in 1.0 min\n{HEADER}\n  ⚪ Not reported\n",
-            "updated",
+            "not_reported",
         ),
         (
             "🌙 UX review stack\n  ✅ Already on tonight's template — nothing to update\n",
@@ -211,10 +216,107 @@ HEADER = (
         ),
     ],
 )
-def test_classify_reads_only_the_first_row_under_the_header(
+def test_classify_reads_only_the_first_row_under_the_last_header(
     text: str, state: str
 ) -> None:
     assert story_digest.classify_stack_state(text) == state
+
+
+def _updated_table() -> str:
+    """The consolidated summary as the build renders it, the stack updated tonight."""
+    return _codebuild_deployment().build_consolidated_summary(
+        "idp-ci-x",
+        {"success": True},
+        [],
+        True,
+        ux_nightly_update=_outcome("updated", status="UPDATE_COMPLETE", minutes=24.6),
+    )
+
+
+EARLIER_ROW = (
+    f"{HEADER}\n  ⚠️ Still updating when the run ended — 3.0 min so far; "
+    "CloudFormation carries on"
+)
+ECHOED_ROWS = (
+    f"{HEADER}\n  ✅ Already on tonight's template — nothing to update",
+    f"{HEADER}\n  ✅ The review stack looks healthy tonight",
+)
+
+
+def _build_log(*after_marker: str, table: str | None = None) -> str:
+    """A build log: steps, an earlier header, the table, the marker, the narrative."""
+    return "\n".join(
+        [
+            "[Container] 2026/11/06 03:12:00 Entering phase BUILD",
+            *(f"step output line {n}" for n in range(200)),
+            EARLIER_ROW,
+            *(f"more output {n}" for n in range(50)),
+            "",
+            table if table is not None else _updated_table(),
+            "",
+            "",
+            story_digest.NARRATIVE_MARKER,
+            "🚀 DEPLOYMENT RESULTS — ✅ PASS",
+            *after_marker,
+        ]
+    )
+
+
+@pytest.mark.unit
+def test_classify_reads_the_table_the_build_prints_near_the_end_of_its_log() -> None:
+    """The build's log carries the consolidated summary once, between the steps'
+    output and the Bedrock narrative; an earlier header is not tonight's last word,
+    so the last one before the narrative decides."""
+    table = _updated_table()
+    assert story_digest.classify_stack_state(table) == "updated"
+    assert story_digest.classify_stack_state(_build_log()) == "updated"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("echo", ECHOED_ROWS)
+def test_a_header_the_narrative_echoes_after_the_marker_is_never_read(
+    echo: str,
+) -> None:
+    """The narrative is model output printed after the marker, and a prompt built
+    from the build's own log can lead it to echo a header-shaped line; what follows
+    the last marker is left out, so the real row before it decides."""
+    assert story_digest.classify_stack_state(_build_log(echo)) == "updated"
+    twice = "\n".join(
+        [
+            EARLIER_ROW,
+            story_digest.NARRATIVE_MARKER,
+            "an earlier narrative",
+            _updated_table(),
+            story_digest.NARRATIVE_MARKER,
+            echo,
+        ]
+    )
+    assert story_digest.classify_stack_state(twice) == "updated"
+
+
+@pytest.mark.unit
+def test_text_with_no_marker_is_read_whole_and_text_after_it_alone_has_no_row() -> None:
+    """A summary uploaded to S3, or a fixture, has no marker and its last header
+    decides; the job's fallback summary starts at the marker, so it has no row."""
+    table = _updated_table()
+    assert story_digest.classify_stack_state(f"{table}\n{EARLIER_ROW}\n") == "running"
+    assert story_digest.classify_stack_state(f"{EARLIER_ROW}\n{table}\n") == "updated"
+    fallback = "\n".join([story_digest.NARRATIVE_MARKER, ECHOED_ROWS[0]])
+    assert story_digest.classify_stack_state(fallback) == "missing"
+    assert (
+        story_digest.classify_stack_state(
+            f"{HEADER}\n{story_digest.NARRATIVE_MARKER}\n  ⚪ Not reported"
+        )
+        == "unrecognised"
+    )
+
+
+@pytest.mark.unit
+def test_the_marker_is_the_line_the_build_prints_before_its_narrative() -> None:
+    build = _codebuild_deployment()
+    source = Path(build.__file__).read_text(encoding="utf-8")
+    assert build.DEPLOYMENT_SUMMARY_LOG_MARKER == story_digest.NARRATIVE_MARKER
+    assert 'print(f"\\n{DEPLOYMENT_SUMMARY_LOG_MARKER}")' in source
 
 
 def _digest_of(night: Night, **overrides: Any) -> dict[str, Any]:
@@ -591,21 +693,32 @@ def test_an_unconfirmed_regression_says_so_in_the_digest_and_on_slack() -> None:
         f"- `{KEY}` — stuck, unconfirmed tonight, as its confirming re-run did not "
         "fit; good on 4 of the last 4 comparable nights (completion)"
     ) in _section_of(text, "## Regressions")
-    payload = story_digest.slack_payload(digest, job_url="")
-    assert payload["status"] == "🧭 UX STORIES · ❌ REGRESSIONS"
-    assert (
-        f"Regressions: {KEY} (completion, stuck, unconfirmed, good 4 of 4)."
-        in payload["summary"]
+    facts = story_digest.SlackFacts(
+        results=results, run=run, history=history, titles=TITLES
     )
-    assert "Confirming re-runs not run: 1." in payload["summary"]
+    payload = story_digest.slack_payload(digest, job_url="", facts=facts)
+    assert payload["status"] == "⚠️ 0 of 1 passed"
+    assert (
+        "❌ Make one input folder use one configuration (platform admin): got stuck, "
+        "found no way to do it (possibly a regression, its re-run did not fit: good "
+        "on 4 of its last 4 compared nights)"
+    ) in payload["summary"].splitlines()
+    assert "Confirming re-runs that did not fit: 1." in payload["summary"]
+    assert (
+        "Compared with 4 earlier nights: 1 possible regression whose re-run did not "
+        "fit."
+    ) in payload["summary"].splitlines()
     confirmed = {**digest, "flows": [{**digest["flows"][0], "state": "confirmed"}]}
     assert "confirmed tonight;" in story_digest.compose_digest_md(
         confirmed, results, run, uncovered=[]
     )
+    payload = story_digest.slack_payload(confirmed, job_url="", facts=facts)
+    assert payload["status"] == "❌ 1 regression"
     assert (
-        "(completion, stuck, good 4 of 4)"
-        in (story_digest.slack_payload(confirmed, job_url="")["summary"])
-    )
+        "❌ Make one input folder use one configuration (platform admin): got stuck, "
+        "found no way to do it (a regression: good on 4 of its last 4 compared "
+        "nights)"
+    ) in payload["summary"].splitlines()
 
 
 @pytest.mark.unit
@@ -1220,128 +1333,586 @@ def test_the_digest_markdown_shows_no_model_prose_and_says_when_nothing_compared
     )
 
 
-SLACK_STATUSES = {
-    "regressions": "🧭 UX STORIES · ❌ REGRESSIONS",
-    "degraded": "🧭 UX STORIES · ⚠️ DEGRADED",
-    "no_run": "🧭 UX STORIES · ⏭️ NOT RUN",
-    "clean": "🧭 UX STORIES · ✅ CLEAN",
-}
+INTRO = (
+    "Each story is a first-time user doing one task from the docs alone, in a real "
+    "browser."
+)
+HEAD = "develop 1a2b3c4d · idp-ux-nightly v0.6.12.dev1"
+ANALYST = "tell-production-from-test@new-analyst"
+REFUSED = "route-folder-to-profile@new-analyst"
+
+
+def _good_history(*keys: str, nights: int = 13, gaps: Sequence[int] = ()) -> History:
+    """Earlier comparable nights, newest first, on which every one of ``keys`` passed."""
+    return History(
+        nights=tuple(
+            _night(TONIGHT - 1 - n, *(_flow("done", key=key) for key in keys))
+            for n in range(nights)
+        ),
+        gaps=tuple(gaps),
+    )
+
+
+def _slack_night(
+    *attempts: story_verdict.FlowResult,
+    history: History | None = None,
+    stack_state: str = "updated",
+    mid_run: bool = False,
+    rerun_did_not_fit: Sequence[str] = (),
+    injections: int = 0,
+) -> tuple[dict[str, Any], story_digest.SlackFacts]:
+    """digest.json and the Slack facts for one night, as digest_main makes them."""
+    results = _results(*attempts)
+    run = {
+        **_run(
+            *(_context(item.key, attempt=item.attempt) for item in attempts),
+            stack_state=stack_state,
+            mid_run=mid_run,
+        ),
+        "reruns_not_run": [{"key": key, "reason": "time"} for key in rerun_did_not_fit],
+    }
+    night = story_digest.night_from_results(
+        results, run, pipeline_id=TONIGHT, develop_sha=DEVELOP
+    )
+    known = history if history is not None else History((), ())
+    found = story_digest.regressions(
+        night, known, rerun_did_not_fit=set(rerun_did_not_fit)
+    )
+    digest = story_digest.digest_document(
+        night,
+        known,
+        found,
+        story_digest.fixed(night, known),
+        spend_usd=5.64,
+        injections=injections,
+        shards_ran=5,
+        reruns_not_run=len(rerun_did_not_fit),
+    )
+    facts = story_digest.SlackFacts(
+        results=results, run=run, history=history, titles=TITLES, cap_usd=50.0
+    )
+    return digest, facts
+
+
+def _clean_attempts() -> list[story_verdict.FlowResult]:
+    return [
+        _result(KEY, actions_used=17, budget=40, confusion=["a", "b"]),
+        _result(OTHER_KEY, actions_used=7, budget=40, dead_end=["c"]),
+        _result(REFUSED, verdict="refused_as_expected"),
+    ]
+
+
+def _summary_lines(payload: Mapping[str, str]) -> list[str]:
+    return payload["summary"].split("\n")
 
 
 @pytest.mark.unit
-def test_the_slack_payload_has_four_plain_text_keys() -> None:
-    digest, _, _ = _digest_fixture()
-    payload = story_digest.slack_payload(
-        digest, job_url="https://gitlab.invalid/-/jobs/1\n"
+def test_a_clean_night_says_every_story_passed_and_lists_each_by_its_title() -> None:
+    digest, facts = _slack_night(
+        *_clean_attempts(), history=_good_history(KEY, OTHER_KEY, REFUSED)
     )
-    assert sorted(payload) == ["commit", "job_url", "status", "summary"]
-    assert all(isinstance(value, str) for value in payload.values())
-    assert payload["status"] == "🧭 UX STORIES · ❌ REGRESSIONS"
-    assert payload["commit"] == "1a2b3c4d"
-    assert payload["job_url"] == "https://gitlab.invalid/-/jobs/1"
-    assert f"Regressions: {KEY} (completion, stuck, good 3 of 4)." in payload["summary"]
-    assert "Fixed: judge-field-accuracy@new-analyst." in payload["summary"]
-    assert "History gaps: 1 night(s)." in payload["summary"]
-    assert "Spend: $18.40." in payload["summary"]
+    payload = story_digest.slack_payload(
+        digest, job_url="https://gitlab.invalid/-/jobs/1\n", facts=facts
+    )
+    assert payload == {
+        "status": "✅ 3 of 3 passed",
+        "commit": "1a2b3c4d",
+        "job_url": "https://gitlab.invalid/-/jobs/1",
+        "summary": "\n".join(
+            [
+                HEAD,
+                INTRO,
+                "",
+                "✅ Find which model reads the fields out of your documents "
+                "(team lead), 7 of 40 steps",
+                "✅ Make one input folder use one configuration (platform admin), "
+                "17 of 40",
+                "🚫 Make one input folder use one configuration (new analyst): "
+                "refused, as the docs say",
+                "",
+                "Compared with 13 earlier nights: no regressions.",
+                "Friction: 2 hesitations, 1 dead end.",
+                "Spend: $5.64 of $50.00",
+            ]
+        ),
+    }
+    assert story_digest.SLACK_INTRO == INTRO
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("night", "reason"),
+    [
+        (
+            {"stack_state": None},
+            "Not compared with earlier nights: the review stack's update could not "
+            "be confirmed.",
+        ),
+        (
+            {"stack_state": "failed"},
+            "Not compared with earlier nights: the review stack's update failed.",
+        ),
+        (
+            {"mid_run": True},
+            "Not compared with earlier nights: the review stack changed during the "
+            "run.",
+        ),
+        (
+            {"history": None},
+            "Not compared with earlier nights: they could not be read.",
+        ),
+    ],
+)
+def test_a_night_that_cannot_be_compared_still_passes_and_says_why_in_words(
+    night: dict[str, Any], reason: str
+) -> None:
+    """Every story passed, so the status says so; not being comparable is a line
+    of the summary, not a warning in the status."""
+    options: dict[str, Any] = {"history": _good_history(KEY, OTHER_KEY, REFUSED)}
+    options.update(night)
+    digest, facts = _slack_night(*_clean_attempts(), **options)
+    payload = story_digest.slack_payload(digest, job_url="", facts=facts)
+    assert payload["status"] == "✅ 3 of 3 passed"
+    lines = _summary_lines(payload)
+    assert lines[-4:] == [
+        "",
+        reason,
+        "Friction: 2 hesitations, 1 dead end.",
+        "Spend: $5.64 of $50.00",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("history", "line"),
+    [
+        (
+            _good_history(KEY, nights=2),
+            "Compared with 2 earlier nights: too few yet to flag a regression "
+            "(4 needed).",
+        ),
+        (
+            _good_history(KEY, nights=1, gaps=[880]),
+            "Compared with 1 earlier night (1 could not be read): too few yet to "
+            "flag a regression (4 needed).",
+        ),
+        (
+            History((_night(TONIGHT - 1, _flow("done"), comparable=False),), (880,)),
+            "Not compared: no earlier night was comparable (1 could not be read).",
+        ),
+        (
+            _good_history(KEY, nights=5, gaps=[880, 881]),
+            "Compared with 5 earlier nights (2 could not be read): no regressions.",
+        ),
+    ],
+)
+def test_the_comparison_line_counts_the_comparable_nights_and_the_unreadable_ones(
+    history: History, line: str
+) -> None:
+    digest, facts = _slack_night(_result(KEY), history=history)
+    assert line in _summary_lines(
+        story_digest.slack_payload(digest, job_url="", facts=facts)
+    )
+
+
+@pytest.mark.unit
+def test_confirmed_regressions_lead_the_summary_and_name_the_status() -> None:
+    digest, facts = _slack_night(
+        _result(ANALYST, verdict="gave_up"),
+        _result(KEY, verdict="stuck"),
+        _result(KEY, attempt=2, verdict="stuck"),
+        _result(OTHER_KEY, verdict="not_refused"),
+        _result(OTHER_KEY, attempt=2, verdict="not_refused"),
+        _result(REFUSED, verdict="done", actions_used=12, budget=50),
+        history=_good_history(KEY, OTHER_KEY, REFUSED),
+    )
+    payload = story_digest.slack_payload(digest, job_url="", facts=facts)
+    assert payload["status"] == "❌ 2 regressions"
+    assert _summary_lines(payload)[3:] == [
+        "❌ Find which model reads the fields out of your documents (team lead): "
+        "not refused, did what the docs say this role cannot (a regression: good "
+        "on its last compared night)",
+        "❌ Make one input folder use one configuration (platform admin): got "
+        "stuck, found no way to do it (a regression: good on 4 of its last 4 "
+        "compared nights)",
+        "⚠️ Tell production documents from test runs (new analyst): gave up, hit "
+        "the turn limit",
+        "✅ Make one input folder use one configuration (new analyst), 12 of 50 steps",
+        "",
+        "Compared with 13 earlier nights: 2 regressions.",
+        "Friction: 0 hesitations, 0 dead ends.",
+        "Spend: $5.64 of $50.00",
+    ]
+    one = {**digest, "regressions": digest["regressions"][:1]}
+    assert story_digest.slack_payload(one, job_url="")["status"] == "❌ 1 regression"
+
+
+@pytest.mark.unit
+def test_a_failure_that_is_no_confirmed_regression_is_a_partial_pass_saying_why() -> (
+    None
+):
+    digest, facts = _slack_night(
+        _result(KEY, verdict="stuck"),
+        _result(OTHER_KEY, verdict="stuck", sub_kind="wrong_outcome"),
+        _result(ANALYST, verdict="not_run", sub_kind="time", audit="not_run"),
+        _result(REFUSED, verdict="refused_as_expected"),
+        history=_good_history(KEY, OTHER_KEY),
+        rerun_did_not_fit=[OTHER_KEY],
+    )
+    payload = story_digest.slack_payload(digest, job_url="", facts=facts)
+    assert payload["status"] == "⚠️ 1 of 4 passed"
+    assert _summary_lines(payload)[3:] == [
+        "❌ Find which model reads the fields out of your documents (team lead): "
+        "got stuck, the result was wrong (possibly a regression, its re-run did "
+        "not fit: good on 4 of its last 4 compared nights)",
+        "❌ Make one input folder use one configuration (platform admin): got "
+        "stuck, found no way to do it (unconfirmed)",
+        "⏭️ Tell production documents from test runs (new analyst): not run, the "
+        "night ran out of time",
+        "🚫 Make one input folder use one configuration (new analyst): refused, as "
+        "the docs say",
+        "",
+        "Compared with 13 earlier nights: 1 possible regression whose re-run did "
+        "not fit.",
+        "Confirming re-runs that did not fit: 1.",
+        "Friction: 0 hesitations, 0 dead ends.",
+        "Spend: $5.64 of $50.00",
+    ]
+
+
+@pytest.mark.unit
+def test_a_mixed_or_twice_seen_failure_says_how_its_rerun_went() -> None:
+    digest, facts = _slack_night(
+        _result(KEY, verdict="stuck"),
+        _result(KEY, attempt=2, verdict="done"),
+        _result(OTHER_KEY, verdict="offered"),
+        _result(OTHER_KEY, attempt=2, verdict="offered"),
+    )
+    lines = _summary_lines(story_digest.slack_payload(digest, job_url="", facts=facts))
+    assert (
+        "❌ Find which model reads the fields out of your documents (team lead): "
+        "offered a control the docs say this role lacks (confirmed by a re-run)"
+    ) in lines
+    assert (
+        "❌ Make one input folder use one configuration (platform admin): got "
+        "stuck, found no way to do it (a re-run disagreed)"
+    ) in lines
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("attempts", "status", "line"),
+    [
+        (
+            [_result(KEY, verdict="error"), _result(OTHER_KEY)],
+            "⚠️ harness problem",
+            "🛠️ Make one input folder use one configuration (platform admin): "
+            "harness error, no usable journal",
+        ),
+        (
+            [_result(KEY, audit="unavailable"), _result(OTHER_KEY)],
+            "⚠️ harness problem",
+            "Not compared with earlier nights: a browser audit was not clean.",
+        ),
+        (
+            [
+                _result(KEY, verdict="stuck"),
+                _result(KEY, attempt=2, verdict="stuck"),
+                _result(OTHER_KEY, verdict="error", sub_kind="sign_in"),
+            ],
+            "❌ 1 regression",
+            "🛠️ Find which model reads the fields out of your documents (team "
+            "lead): harness error, signing in failed",
+        ),
+    ],
+)
+def test_a_harness_error_or_an_unclean_audit_is_a_harness_problem_below_a_regression(
+    attempts: list[story_verdict.FlowResult], status: str, line: str
+) -> None:
+    digest, facts = _slack_night(*attempts, history=_good_history(KEY, OTHER_KEY))
+    payload = story_digest.slack_payload(digest, job_url="", facts=facts)
+    assert payload["status"] == status
+    assert line in _summary_lines(payload)
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("overrides", "status"),
     [
-        ({"regressions": []}, "degraded"),
-        ({"regressions": [], "flows": []}, "no_run"),
-        (
-            {
-                "regressions": [],
-                "flows": [
-                    {
-                        "key": KEY,
-                        "series": SERIES,
-                        "verdict": "not_run",
-                        "state": "single",
-                        "regressed": False,
-                    }
-                ],
-            },
-            "no_run",
-        ),
-        (
-            {
-                "regressions": [],
-                "flows": [
-                    {
-                        "key": KEY,
-                        "series": SERIES,
-                        "verdict": "done",
-                        "state": "single",
-                        "regressed": False,
-                    }
-                ],
-            },
-            "clean",
-        ),
-        (
-            {
-                "regressions": [],
-                "flows": [
-                    {
-                        "key": KEY,
-                        "series": SERIES,
-                        "verdict": "done",
-                        "state": "single",
-                        "regressed": False,
-                    }
-                ],
-                "comparable": False,
-            },
-            "degraded",
-        ),
-        (
-            {
-                "regressions": [],
-                "flows": [
-                    {
-                        "key": KEY,
-                        "series": SERIES,
-                        "verdict": "done",
-                        "state": "single",
-                        "regressed": False,
-                    }
-                ],
-                "audits_clean": False,
-            },
-            "degraded",
-        ),
+        ({"flows": []}, "⏭️ not run"),
+        ({"shards_ran": 0}, "⏭️ not run"),
+        ({"audits_clean": False}, "⚠️ harness problem"),
+        ({"comparable": False, "stack_state": "missing"}, "✅ 3 of 3 passed"),
     ],
 )
-def test_the_slack_status_says_regressions_clean_degraded_or_no_run(
+def test_the_slack_status_is_one_of_five_plain_answers(
     overrides: dict[str, Any], status: str
 ) -> None:
-    digest, _, _ = _digest_fixture()
+    digest, facts = _slack_night(*_clean_attempts())
     assert (
-        story_digest.slack_payload({**digest, **overrides}, job_url="")["status"]
-        == SLACK_STATUSES[status]
+        story_digest.slack_payload({**digest, **overrides}, job_url="", facts=facts)[
+            "status"
+        ]
+        == status
+    )
+
+
+def _uncompared(pipeline_id: int, *, audits_clean: bool = True) -> Night:
+    return _night(
+        pipeline_id,
+        _flow("done"),
+        comparable=False,
+        stack_state="missing",
+        audits_clean=audits_clean,
+    )
+
+
+def _earlier(*nights: Night, gaps: Sequence[int] = ()) -> History:
+    """Earlier nights as given, then six comparable good ones before them."""
+    oldest = min([night.pipeline_id for night in nights] + list(gaps) + [TONIGHT])
+    good = tuple(_night(oldest - 1 - n, _flow("done")) for n in range(6))
+    return History(nights=(*nights, *good), gaps=tuple(gaps))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("history", "status"),
+    [
+        (
+            _earlier(_uncompared(TONIGHT - 1), _uncompared(TONIGHT - 2)),
+            "✅ 3 of 3 passed",
+        ),
+        (
+            _earlier(
+                _uncompared(TONIGHT - 1),
+                _uncompared(TONIGHT - 2),
+                _uncompared(TONIGHT - 3),
+            ),
+            "⚠️ 3 of 3 passed, not compared for 4 nights",
+        ),
+        (
+            _earlier(_uncompared(TONIGHT - 1), gaps=[TONIGHT - 2, TONIGHT - 3]),
+            "⚠️ 3 of 3 passed, not compared for 4 nights",
+        ),
+        (
+            _earlier(
+                _uncompared(TONIGHT - 1),
+                _night(TONIGHT - 2, _flow("done"), audits_clean=False),
+                _uncompared(TONIGHT - 3),
+            ),
+            "⚠️ 3 of 3 passed, not compared for 4 nights",
+        ),
+        (
+            _earlier(
+                _uncompared(TONIGHT - 1),
+                _uncompared(TONIGHT - 2),
+                _night(TONIGHT - 3, _flow("done")),
+                _uncompared(TONIGHT - 4),
+            ),
+            "✅ 3 of 3 passed",
+        ),
+        (
+            History(
+                nights=tuple(_uncompared(TONIGHT - 1 - n) for n in range(13)),
+                gaps=(),
+            ),
+            "⚠️ 3 of 3 passed, not compared for 14 nights",
+        ),
+        (
+            _earlier(
+                _uncompared(TONIGHT + 3),
+                _uncompared(TONIGHT),
+                _uncompared(TONIGHT - 1),
+                _uncompared(TONIGHT - 2),
+            ),
+            "✅ 3 of 3 passed",
+        ),
+        (None, "✅ 3 of 3 passed"),
+    ],
+    ids=[
+        "three-nights",
+        "four-nights",
+        "gaps-count",
+        "unclean-audit-counts",
+        "a-compared-night-ends-it",
+        "the-whole-history",
+        "later-pipelines-ignored",
+        "no-history",
+    ],
+)
+def test_a_run_of_nights_with_no_comparison_shows_in_the_status_from_four_on(
+    history: History | None, status: str
+) -> None:
+    """One night that cannot be compared leaves a clean status alone; four in a
+    row, tonight among them, is a run in which no regression can be flagged."""
+    digest, facts = _slack_night(*_clean_attempts(), history=history, stack_state=None)
+    payload = story_digest.slack_payload(digest, job_url="", facts=facts)
+    assert payload["status"] == status
+    assert (
+        "Not compared with earlier nights: the review stack's update could not be "
+        "confirmed."
+    ) in _summary_lines(payload)
+    shuffled = (
+        None
+        if history is None
+        else History(
+            nights=tuple(reversed(history.nights)), gaps=tuple(reversed(history.gaps))
+        )
+    )
+    shuffled_facts = dataclasses.replace(facts, history=shuffled)
+    assert (
+        story_digest.slack_payload(digest, job_url="", facts=shuffled_facts)["status"]
+        == status
     )
 
 
 @pytest.mark.unit
-def test_the_slack_summary_bounds_its_lists_and_is_built_from_closed_values_only() -> (
+def test_a_regression_a_harness_problem_or_a_failure_keeps_its_place_in_a_long_run() -> (
     None
 ):
-    digest, _, _ = _digest_fixture()
-    many = [
-        {
-            "key": f"story-{n}@persona-{n}",
-            "series": SERIES,
-            "kind": "completion",
-            "verdict": "stuck",
-            "good": 3,
-            "counted": 4,
-        }
-        for n in range(400)
+    history = _earlier(
+        _uncompared(TONIGHT - 1), _uncompared(TONIGHT - 2), _uncompared(TONIGHT - 3)
+    )
+    digest, facts = _slack_night(
+        _result(KEY),
+        _result(OTHER_KEY, verdict="stuck"),
+        _result(OTHER_KEY, attempt=2, verdict="stuck"),
+        history=history,
+        stack_state=None,
+    )
+    assert story_digest.slack_payload(digest, job_url="", facts=facts)["status"] == (
+        "⚠️ 1 of 2 passed, not compared for 4 nights"
+    )
+    regressed = {
+        **digest,
+        "regressions": [
+            {
+                "key": OTHER_KEY,
+                "series": SERIES,
+                "kind": "completion",
+                "verdict": "stuck",
+                "good": 4,
+                "counted": 4,
+            }
+        ],
+    }
+    assert story_digest.slack_payload(regressed, job_url="", facts=facts)["status"] == (
+        "❌ 1 regression"
+    )
+    digest, facts = _slack_night(
+        _result(KEY, audit="unavailable"), history=history, stack_state=None
+    )
+    assert story_digest.slack_payload(digest, job_url="", facts=facts)["status"] == (
+        "⚠️ harness problem"
+    )
+    digest, facts = _slack_night(
+        _result(KEY, verdict="error"),
+        _result(OTHER_KEY),
+        history=history,
+        stack_state=None,
+    )
+    assert story_digest.slack_payload(digest, job_url="", facts=facts)["status"] == (
+        "⚠️ harness problem"
+    )
+
+
+@pytest.mark.unit
+def test_a_night_whose_flows_never_started_is_not_run_and_lists_why() -> None:
+    digest, facts = _slack_night(
+        _result(KEY, verdict="not_run", sub_kind="sign_in_refused", audit="not_run"),
+        _result(OTHER_KEY, verdict="not_run", sub_kind="persona", audit="not_run"),
+    )
+    payload = story_digest.slack_payload(digest, job_url="", facts=facts)
+    assert payload["status"] == "⏭️ not run"
+    assert _summary_lines(payload)[3:5] == [
+        "⏭️ Find which model reads the fields out of your documents (team lead): "
+        "not run, no account for this role",
+        "⏭️ Make one input folder use one configuration (platform admin): not run, "
+        "its sign-in was refused",
     ]
-    hostile = {
+
+
+@pytest.mark.unit
+def test_without_results_or_titles_each_flow_is_still_named_and_nothing_is_guessed() -> (
+    None
+):
+    digest, facts = _slack_night(*_clean_attempts())
+    for bare in (
+        story_digest.SlackFacts(),
+        dataclasses.replace(facts, results={"schema": "something/else"}, titles={}),
+    ):
+        lines = _summary_lines(
+            story_digest.slack_payload(digest, job_url="", facts=bare)
+        )
+        assert lines[3:6] == [
+            "✅ Find extraction model (team lead)",
+            "✅ Route folder to profile (platform admin)",
+            "🚫 Route folder to profile (new analyst): refused, as the docs say",
+        ]
+        assert not [line for line in lines if line.startswith("Friction:")]
+    assert _summary_lines(story_digest.slack_payload(digest, job_url=""))[0] == (
+        "develop 1a2b3c4d"
+    )
+
+
+@pytest.mark.unit
+def test_a_long_night_cuts_passes_before_any_failure_line() -> None:
+    long_title = "A first-time user finds the way through a rather long task title"
+    titles = {f"story-{n:02d}": f"{long_title} {n}" for n in range(60)}
+    failing = [_result(f"story-{n:02d}@new-analyst", verdict="stuck") for n in range(3)]
+    passing = [
+        _result(f"story-{n:02d}@new-analyst", actions_used=9, budget=30)
+        for n in range(3, 60)
+    ]
+    digest, facts = _slack_night(*failing, *passing)
+    facts = dataclasses.replace(facts, titles=titles)
+    summary = story_digest.slack_payload(digest, job_url="", facts=facts)["summary"]
+    lines = summary.split("\n")
+    assert len(summary) <= story_digest.SLACK_SUMMARY_CHARS
+    assert [line for line in lines if line.startswith("❌")] == [
+        f"❌ {long_title} {n} (new analyst): got stuck, found no way to do it "
+        "(unconfirmed)"
+        for n in range(3)
+    ]
+    shown = [line for line in lines if line.startswith("✅")]
+    assert shown[0].endswith(", 9 of 30 steps") and shown[1].endswith(", 9 of 30")
+    (more,) = [line for line in lines if line.startswith("and ")]
+    assert more == f"and {57 - len(shown)} more passed"
+    assert lines[-1] == "Spend: $5.64 of $50.00"
+
+    failing = [
+        _result(f"story-{n:02d}@new-analyst", verdict="stuck") for n in range(40)
+    ]
+    later = [
+        _result(f"story-{n:02d}@new-analyst", actions_used=9, budget=30)
+        for n in range(40, 45)
+    ]
+    digest, facts = _slack_night(*failing, *later)
+    facts = dataclasses.replace(facts, titles=titles)
+    summary = story_digest.slack_payload(digest, job_url="", facts=facts)["summary"]
+    lines = summary.split("\n")
+    assert len(summary) <= story_digest.SLACK_SUMMARY_CHARS
+    kept = [line for line in lines if line.startswith("❌")]
+    assert kept and not [line for line in lines if line.startswith("✅")]
+    assert f"and {40 - len(kept)} more did not pass" in lines
+    assert "and 5 more passed" in lines
+    assert lines[-1] == "Spend: $5.64 of $50.00"
+    assert story_digest._fit(["head"], ["x"], ["y"], ["a long foot"], 12) == "head\n…"
+
+
+@pytest.mark.unit
+def test_the_slack_summary_holds_nothing_slack_would_act_on() -> None:
+    """Titles reach Slack reduced to letters, digits and plain punctuation, and every
+    other value is a closed one, so neither a mention nor a link survives."""
+    hostile = (
+        "<!channel> @here *now* `x` <https://evil.invalid|look> _i_ ~s~ #general &"
+    )
+    digest, facts = _slack_night(*_clean_attempts())
+    run = {**dict(facts.run or {}), "stack": {"name": "idp <!here>", "version": "1"}}
+    facts = dataclasses.replace(
+        facts, run=run, titles={**TITLES, "route-folder-to-profile": hostile}
+    )
+    rogue = {
         "key": "@all <!channel>",
         "series": SERIES,
         "kind": "completion",
@@ -1349,42 +1920,74 @@ def test_the_slack_summary_bounds_its_lists_and_is_built_from_closed_values_only
         "good": 3,
         "counted": 4,
     }
-    payload = story_digest.slack_payload(
-        {**digest, "regressions": [hostile, *many]}, job_url="x"
-    )
+    absent = {**rogue, "key": "judge-field-accuracy@new-analyst"}
+    digest = {
+        **digest,
+        "regressions": [rogue, absent],
+        "flows": [*digest["flows"], {**digest["flows"][0], "key": "@here x"}],
+        "fixed": ["<!channel>", "judge-field-accuracy@new-analyst"],
+        "develop_sha": "nope",
+    }
+    payload = story_digest.slack_payload(digest, job_url="", facts=facts)
     summary = payload["summary"]
-    assert "story-9@persona-9" in summary and "story-10@persona-10" not in summary
-    assert "; and 390 more." in summary
-    assert "Stack updated; comparable; audits clean." in summary
-    assert "@all" not in summary and "<!channel>" not in summary
+    lines = summary.split("\n")
+    assert payload["commit"] == ""
+    assert lines[0] == "develop unknown"
     assert (
-        story_digest.slack_payload({**digest, "develop_sha": "nope"}, job_url="")[
-            "commit"
-        ]
-        == ""
+        "✅ channel here now x https: evil invalid look i s general (platform admin), "
+        "17 of 40"
+    ) in lines
+    assert (
+        "❌ Judge field accuracy (new analyst): got stuck (a regression: good on 3 of "
+        "its last 4 compared nights)"
+    ) in lines
+    assert "Fixed after an earlier regression: Judge field accuracy (new analyst)." in (
+        lines
     )
+    for text in (summary, payload["status"]):
+        for mark in (
+            "<",
+            ">",
+            "@",
+            "*",
+            "`",
+            "|",
+            "~",
+            "#",
+            "&",
+            "://",
+            "evil.invalid",
+        ):
+            assert mark not in text, mark
 
 
 @pytest.mark.unit
-def test_the_slack_summary_is_cut_at_its_character_cap() -> None:
-    digest, _, _ = _digest_fixture()
-    long_id = "a" + "-b" * 29
-    regressions = [
-        {
-            "key": f"{long_id}@{long_id}",
-            "series": SERIES,
-            "kind": "completion",
-            "verdict": "stuck",
-            "good": 3,
-            "counted": 4,
-        }
-    ] * 10
-    fixed = [f"{long_id}@{long_id}"] * 10
-    payload = story_digest.slack_payload(
-        {**digest, "regressions": regressions, "fixed": fixed}, job_url=""
+def test_every_verdict_cause_and_stack_state_has_its_plain_words() -> None:
+    causes = {
+        (verdict, cause)
+        for verdict, kinds in (
+            ("stuck", story_verdict.BLOCKED_KINDS),
+            ("gave_up", story_verdict.GAVE_UP_CAUSES),
+            ("not_run", story_verdict.NOT_RUN_REASONS),
+            ("error", story_verdict.ERROR_CAUSES),
+        )
+        for cause in kinds
+    }
+    assert set(story_digest.SLACK_WHY_BY_CAUSE) == causes
+    assert set(story_digest.SLACK_ICONS) == set(story_verdict.VERDICT_ORDER)
+    assert set(story_digest.SLACK_WHY) == (
+        set(story_verdict.VERDICT_ORDER) - story_verdict.GOOD_VERDICTS
     )
-    assert len(payload["summary"]) <= story_digest.SLACK_SUMMARY_CHARS
-    assert payload["summary"].endswith("…")
+    assert set(story_digest.SLACK_STACK_REASONS) == (
+        set(story_digest.STACK_STATES) - story_digest.COMPARABLE_STACK_STATES
+    )
+    phrases = [
+        *story_digest.SLACK_WHY.values(),
+        *story_digest.SLACK_WHY_BY_CAUSE.values(),
+        *story_digest.SLACK_STACK_REASONS.values(),
+    ]
+    for phrase in phrases:
+        assert story_digest._slack_text(phrase, 500) == phrase, phrase
 
 
 @pytest.mark.unit
@@ -1406,7 +2009,8 @@ def test_injection_notes_and_unrun_reruns_reach_the_digest_and_slack() -> None:
     ) in _section_of(text, "## Coverage")
     summary = story_digest.slack_payload(digest, job_url="")["summary"]
     assert "Injection attempts noted: 3." in summary
-    assert "Confirming re-runs not run: 1." in summary
+    assert "Confirming re-runs that did not fit: 1." in summary
+    assert "Spend: $4.00" in summary.split("\n")
 
 
 @pytest.mark.unit
@@ -1446,9 +2050,11 @@ def test_a_night_no_shard_ran_says_so_and_is_a_gap_to_the_nights_after() -> None
     assert "No shard ran a flow tonight" in text
     assert "- `shard-1`: skipped — " in text and "<!--" not in text
     payload = story_digest.slack_payload(digest, job_url="")
-    assert payload["status"] == "🧭 UX STORIES · ⏭️ NOT RUN"
-    assert "No shard ran tonight; the stack's state is not known." in payload["summary"]
-    assert "audits" not in payload["summary"]
+    assert payload["status"] == "⏭️ not run"
+    assert payload["summary"] == (
+        "develop 1a2b3c4d\nNo shard ran tonight, so no story was tried and nothing "
+        "was compared."
+    )
     with pytest.raises(ValueError):
         story_digest.idle_digest_document(
             pipeline_id=TONIGHT, develop_sha="nope", history=History((), ())
