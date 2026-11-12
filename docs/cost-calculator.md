@@ -55,7 +55,7 @@ a budget set without separating them will be wrong in one direction or the other
 
 | | What it is | How it scales |
 |---|---|---|
-| **Per-document** | Bedrock inference (classification, extraction, assessment, summarization), Textract or BDA, the Lambda and Step Functions work around them | Linear in documents × pages, and **dominated by Bedrock inference**. Retries multiply it: a document that retries a Bedrock call several times pays for each attempt |
+| **Per-document** | Bedrock inference (classification, extraction, assessment, summarization, and the `LLM` comparisons of [evaluation](evaluation.md) when it is enabled), Textract or BDA, the Lambda and Step Functions work around them | Linear in documents × pages, and **dominated by Bedrock inference**. Retries multiply it: a document that retries a Bedrock call several times pays for each attempt |
 | **Always-on** | S3 and DynamoDB storage, CloudWatch logs and metrics, Cognito monthly active users, the API Gateway requests the UI's polling makes, and — if enabled — a Bedrock Knowledge Base vector store | Roughly flat per month. Independent of how many documents you process, including when you process none |
 
 Two consequences. First, a deployment that processes nothing still costs money,

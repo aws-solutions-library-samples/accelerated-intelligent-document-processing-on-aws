@@ -513,6 +513,26 @@ Identical values (after case and whitespace normalization) short-circuit to a
 match with **no** Bedrock call, and repeated `(expected, actual)` pairs are
 memoized per comparator instance.
 
+#### Metering of `LLM` comparisons
+
+Every Bedrock call `compare_llm` makes is metered under the `Evaluation`
+context, so its keys read `Evaluation/bedrock/<model>`. `evaluate_document` runs
+the whole evaluation inside `collect_evaluation_metering()` and adds what was
+collected to `actual_document.metering` when it returns, including when the
+evaluation failed, because the calls were billed either way. A call is recorded
+before its answer is parsed, so an answer that cannot be parsed is still
+counted. A pair that needs no call (both values null, equal after
+case and whitespace folding, or already in the comparator's verdict cache)
+adds nothing.
+
+The collector lives in a `ContextVar`, because comparator instances are shared
+across documents and Stickler's comparator protocol carries nothing per
+document. A `ContextVar` does not reach a `ThreadPoolExecutor` worker by itself,
+so `evaluate_document` submits each section through
+`contextvars.copy_context().run`. A new fan-out that runs comparisons must do
+the same, or its calls are billed and recorded nowhere. `compare_llm` called
+outside any `collect_evaluation_metering()` block records nothing.
+
 #### DATE method configuration
 
 The `DATE` method accepts an optional `x-aws-idp-evaluation-method-config` object that is passed through to Stickler's `DateComparator`:

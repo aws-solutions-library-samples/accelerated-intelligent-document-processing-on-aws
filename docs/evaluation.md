@@ -668,6 +668,17 @@ A prompt you leave out uses the shipped one; an empty
 `LLM` field is reported as a failed evaluation with a configuration error naming
 the setting, and none of that section's fields are scored.
 
+**Cost of LLM comparisons.** Each comparison the `LLM` method sends to Bedrock
+is added to the document's metering under the `Evaluation` context, so it
+appears in the document's cost and in the reporting `metering` table with
+`context = 'Evaluation'`, beside the processing steps. A comparison is counted
+even when the model's answer cannot be read, and an evaluation that fails still
+reports the comparisons it made. Values that are equal after ignoring case and
+whitespace are matched without a call and cost nothing. Comparisons made by an
+attempt of the Evaluation step that is cut off (a Lambda timeout or crash) are
+not reported: the workflow continues with the document as it was before that
+attempt, so if a retry then succeeds, only the retry's comparisons appear.
+
 **Benefits of Configuration-Based Control:**
 - Enable/disable evaluation without stack redeployment
 - Runtime control similar to summarization and assessment features
