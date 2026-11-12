@@ -31,8 +31,9 @@ permissions:
   contents: read
 
 # GitLab's `interruptible: true`, which every gate job there carries. Without it a
-# push to a pull request leaves the previous head's run going to completion — about
-# 40 minutes for the slowest job — on a runner the new head's jobs are queued
+# push to a pull request leaves the previous head's run going to completion — the
+# "Unit Tests (idp_common)" job took 41 minutes at the median over 40 runs on
+# 2026-11-12 — on a runner the new head's jobs are queued
 # behind. Measured on 2026-11-12 over 40 runs: the median job started within six
 # seconds, but one in ten waited ten minutes or more for a runner, and the longest
 # waited 18.
