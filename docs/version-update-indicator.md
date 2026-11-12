@@ -30,8 +30,8 @@ flowchart LR
   Nav -- "Compare to settings.Version" --> Nav
 ```
 
-1. On Web UI load, a single `getLatestPublishedVersion` GraphQL query
-   is issued by `useLatestVersion()` (`src/ui/src/hooks/use-latest-version.ts`).
+1. On Web UI load, a single `getLatestPublishedVersion` request
+   (`POST /op/getLatestPublishedVersion`) is issued by `useLatestVersion()` (`src/ui/src/hooks/use-latest-version.ts`).
 2. The resolver Lambda (`src/lambda/version_check_resolver/index.py`)
    lists the public bucket's prefix for keys matching
    `<prefix>/idp-main_<version>.yaml`, picks the highest semver, and

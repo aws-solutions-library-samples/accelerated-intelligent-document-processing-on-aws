@@ -8,18 +8,17 @@ SPDX-License-Identifier: MIT-0
 # Extraction & Confidence
 
 Information extraction transforms unstructured document content into structured
-data. As of **config v0.6**, per-field **confidence** and **geometry (bounding
+data. As of **config format 0.6**, per-field **confidence** and **geometry (bounding
 boxes)** are treated as **outputs of extraction**, not a separate downstream
 stage. Their settings live under `extraction.confidence.*` and
 `extraction.geometry.*`; human-in-the-loop review is configured under the
 top-level `hitl.*` block.
 
-This guide consolidates what used to live across three separate documents
-(Customizing Extraction, the Assessment Feature, and Bounding Box Integration)
-into one place, reflecting the v0.6 model where extraction produces the value,
+This guide covers customizing extraction, confidence assessment and bounding
+boxes in one place, because in the current model extraction produces the value,
 its confidence, and its location together.
 
-> **Config v0.6 at a glance**
+> **Config format 0.6 at a glance**
 >
 > - `extraction.confidence.{enabled, mode, model, list_batch_size, image, system_prompt, task_prompt, ...}` — confidence scoring (formerly the top-level `assessment` block).
 > - `extraction.geometry.{mode, task_prompt_bbox}` — field bounding boxes (formerly `assessment.geometry_mode` / `assessment.ground_geometry_in_ocr`).
@@ -368,9 +367,8 @@ which makes the previewed saving a floor, not a ceiling.
 > **How agentic uses your configuration:** Agentic extraction automatically
 > converts your document class configuration (classes, attributes, descriptions,
 > types) into Pydantic models internally. Improving your configuration directly
-> improves extraction accuracy. A future enhancement will let you define custom
-> Pydantic models with validators, custom types, and business logic — including
-> **MCP server integration** for real-time external lookups.
+> improves extraction accuracy. The configuration has no way to supply custom
+> Pydantic models (your own validators, types or business logic).
 
 #### Automatic retry handling
 
@@ -906,7 +904,7 @@ section beside the rest of its report. The report names the extraction modes
 
 ![The document editor's Processing report dialog for a payslip section: extraction outcome, schema validation, the processing path and prompt-cache use](../images/extraction-processing-report.png)
 
-> **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
+> **Moved in config format 0.7.** This block was `extraction.agentic.validation`. Stored
 > configurations are migrated automatically on read — no action required.
 
 ### Forced tool use (`extraction.forced_tool`) — experimental, off by default
@@ -2749,7 +2747,7 @@ difference decides how you should pick the number:
 | | Simple (`extraction.mode: simple`) | Advanced (`extraction.mode: advanced`) |
 |---|---|---|
 | Where the floor is checked | after extraction, on the returned result | **inside** the extraction loop, at the agent's tool boundary — and **per shard** when the section shards |
-| A list under the floor | raises `extraction_list_truncated` (**warning**) and, when `extraction.validation.enabled` is on (the default since v0.7), a schema violation in `metadata.validation` / `extraction_validation_failed` | is **rejected**; the agent gets a bounded number of correction rounds, and if it still cannot reach the floor the extraction **fails** |
+| A list under the floor | raises `extraction_list_truncated` (**warning**) and, when `extraction.validation.enabled` is on (the default since config format 0.7), a schema violation in `metadata.validation` / `extraction_validation_failed` | is **rejected**; the agent gets a bounded number of correction rounds, and if it still cannot reach the floor the extraction **fails** |
 | The rows that were extracted | kept, and visible in the section result | **discarded** — a failed extraction writes no `inference_result` |
 | Document status | unchanged: `COMPLETED` | the section fails, so the document fails |
 
@@ -2856,7 +2854,7 @@ that one, and an empty sibling may be genuinely absent.
 in particular it is *not* behind `extraction.validation.enabled` — a guard against
 silent data loss that has to be switched on protects nobody who did not already
 know to look. (That argument is also why `extraction.validation.enabled` itself now
-defaults to **on** as of v0.7; this check stays ungated regardless, so explicitly
+defaults to **on** as of config format 0.7; this check stays ungated regardless, so explicitly
 turning validation off does not also disable a guard whose whole effect is to ask
 the model to try again.) Its only effect is one more agent turn — which is billed,
 so the worst case is one wasted turn on a document that genuinely has no rows inside

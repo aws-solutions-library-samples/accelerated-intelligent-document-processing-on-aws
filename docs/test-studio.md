@@ -2,6 +2,9 @@
 title: "Test Studio"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Test Studio
 
 The Test Studio provides a comprehensive interface for managing test sets, running tests, and analyzing results directly from the web UI.
@@ -1866,7 +1869,7 @@ class is corrected — see
 
 ### Field-Level Metrics
 
-Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns (Stickler v0.4.0+):
+Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns:
 
 **Displayed Columns:**
 1. **Field Name**: The name of the extracted field (hierarchical with expand/collapse)

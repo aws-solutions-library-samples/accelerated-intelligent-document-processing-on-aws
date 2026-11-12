@@ -162,8 +162,9 @@ Reach for Grok 4.6 when you want:
 
 - **A very large context window** (500K) with a genuinely large shard budget —
   useful for long documents you would rather not split finely.
-- **Agentic extraction with a non-Anthropic model.** Grok is currently the only
-  non-Claude/non-Nova option that supports the Strands tool-use loop.
+- **Agentic extraction with a non-Anthropic model.** Grok supports the Strands
+  tool-use loop, as does OpenAI GPT-6 Astra (GPT-5.x does not); Astra's advanced-mode results are in
+  [config-guidance](./benchmarking/config-guidance.md).
 - **Low cost per token** — $2.00 / $6.00 per 1M input / output tokens on the
   global profile (`config_library/pricing.yaml`). Its extraction accuracy has not
   been measured: Grok is not in any benchmark sweep
