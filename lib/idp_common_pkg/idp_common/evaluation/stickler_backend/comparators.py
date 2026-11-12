@@ -26,9 +26,21 @@ import threading
 from collections import OrderedDict
 from typing import Any, Optional, Tuple
 
+from idp_common.config.models import EvaluationLLMMethodConfig
 from idp_common.evaluation.contract import _is_match_true
 
 logger = logging.getLogger(__name__)
+
+
+# The comparator's fallbacks for a config that omits the model or a prompt are
+# the `evaluation.llm_method` field defaults, read from the model rather than
+# spelled out here, so this module cannot drift from what a resolved
+# configuration carries (which base-evaluation.yaml also ships, and
+# tests/unit/config/test_system_defaults_value_parity.py pins).
+_LLM_METHOD_FIELDS = EvaluationLLMMethodConfig.model_fields
+_DEFAULT_MODEL: str = _LLM_METHOD_FIELDS["model"].default
+_DEFAULT_SYSTEM_PROMPT: str = _LLM_METHOD_FIELDS["system_prompt"].default
+_DEFAULT_TASK_PROMPT: str = _LLM_METHOD_FIELDS["task_prompt"].default
 
 
 # Cap on a comparator instance's memo table. Instances are cached per
@@ -161,7 +173,7 @@ class LLMComparator(BaseComparator):
             return int(val) if isinstance(val, str) else val
 
         self.llm_config = {
-            "model": model or "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "model": model or _DEFAULT_MODEL,
             "temperature": to_float(temperature if temperature is not None else 0.0),
             "top_k": to_int(top_k if top_k is not None else 5),
         }
@@ -319,7 +331,7 @@ def create_llm_comparator_from_config(config: dict) -> LLMComparator:
         Configured LLMComparator instance
     """
     return LLMComparator(
-        model=config.get("model", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+        model=config.get("model", _DEFAULT_MODEL),
         temperature=config.get("temperature", 0.0),
         top_k=config.get("top_k", 5),
         top_p=config.get("top_p"),
@@ -371,39 +383,15 @@ def compare_llm(
 
         # Default LLM configuration if not provided
         config = llm_config or {}
-        model = config.get("model", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+        # An empty model is treated as missing, as LLMComparator treats it.
+        model = config.get("model") or _DEFAULT_MODEL
         temperature = config.get("temperature", 0.0)
         top_k = config.get("top_k", 5)
         reasoning_effort = config.get("reasoning_effort")
 
         # Get system and task prompts from config or use defaults
-        system_prompt = config.get(
-            "system_prompt",
-            """You are an evaluator that helps determine if the predicted and expected values match for document attribute extraction. You will consider the context and meaning rather than just exact string matching.""",
-        )
-
-        task_prompt_template = config.get(
-            "task_prompt",
-            """I need to evaluate attribute extraction for a document of class: {DOCUMENT_CLASS}.
-
-For the attribute named "{ATTRIBUTE_NAME}" described as "{ATTRIBUTE_DESCRIPTION}":
-- Expected value: {EXPECTED_VALUE}
-- Actual value: {ACTUAL_VALUE}
-
-Do these values match in meaning, taking into account formatting differences, word order, abbreviations, and semantic equivalence?
-Provide your assessment as a JSON with three fields:
-- "match": boolean (true if they match, false if not)
-- "score": number between 0 and 1 representing the confidence/similarity score
-- "reason": brief explanation of your decision
-
-Respond ONLY with the JSON and nothing else.  Here's the exact format:
-{
-  "match": true or false,
-  "score": 0.0 to 1.0,
-  "reason": "Your explanation here"
-}
-""",
-        )
+        system_prompt = config.get("system_prompt", _DEFAULT_SYSTEM_PROMPT)
+        task_prompt_template = config.get("task_prompt", _DEFAULT_TASK_PROMPT)
 
         # Log for debugging
         logger.debug(f"LLM evaluation starting for attribute: {name}")
