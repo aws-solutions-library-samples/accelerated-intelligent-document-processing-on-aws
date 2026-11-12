@@ -2193,6 +2193,17 @@
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_contributing_doc.py"
     },
+    "scripts/tests/test_contributing_doc.py::PATHS_EXEMPT_AS_BUILD_ARTIFACTS": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "the 'every path the document names exists' check in test_documented_paths_exist, for a generated file CONTRIBUTING.md names that exists only after a local build",
+      "premise": [
+        "vcs_ignored_build_output"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/tests/test_contributing_doc.py",
+      "reason": "src/ui/.checksum is written by `make ui-lint` and is absent from a fresh clone, so whether it exists says nothing about whether the sentence naming it is right, and neither direction can be asserted. The premise is computed for the one member by test_build_artifact_exemptions_are_ignored_and_still_named: an ignore rule must cover the path and git must track nothing there, so the exemption cannot come to hide a file that ships. The same test fails when CONTRIBUTING.md no longer names the path, which is the stale case that would otherwise pre-exempt whatever is next written there."
+    },
     "scripts/tests/test_coverage_debt.py::COVERAGE_UNREACHABLE_FILES_EXEMPT": {
       "kind": "exemption",
       "memberKind": "path",
