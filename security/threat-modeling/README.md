@@ -35,8 +35,8 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 | High risk (6–7) | 32 |
 | Medium risk (3–5) | 50 |
 | Low risk (1–2) | 18 |
-| Mitigated | 68 (62%) |
-| Partially mitigated | 36 (33%) |
+| Mitigated | 67 (61%) |
+| Partially mitigated | 37 (34%) |
 | Open (real gap, needs work) | **1 (1%)** |
 | Accepted risk | 4 (4%) |
 

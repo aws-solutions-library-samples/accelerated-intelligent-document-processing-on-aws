@@ -71,6 +71,7 @@ flowchart TD
 | **Severity** | Critical |
 | **Affected Components** | Custom MCP Lambdas, MCP Gateway Lambda, external services |
 | **Mitigations** | Under `TenantIsolationMode=Strict` or an external `TenantGrantSource` the MCP handler refuses every tool, and refuses them too when the mode cannot be read (`agentcore_mcp_handler/index.py`), because no tool can be confined to one tenant (TEN.T01). Customer-managed MCP Lambda security review, IAM least-privilege for MCP Lambdas, network-level egress controls (VPC), audit logging of all MCP tool invocations, data classification awareness in agent prompts |
+| **Evidence** | `src/lambda/mcp_identity_interceptor/test_index.py::test_the_stack_service_client_is_refused_under_strict`; UNVERIFIED: the citations have not been matched to each listed mitigation |
 
 ### MCP.T02: Malicious Tool Injection
 
@@ -85,6 +86,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | MCP configuration, Agent Processor Lambda |
 | **Mitigations** | MCP tool definitions stored in IaC (CloudFormation), not user-configurable at runtime; Admin-only deployment of new MCP agents; tool allowlisting |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### MCP.T03: MCP Response Injection
 
@@ -99,6 +101,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | MCP Gateway Lambda, Agent Processor Lambda, Amazon Bedrock |
 | **Mitigations** | Tool output sanitization, response size limits, tool output content validation, system prompt instructions to treat tool output as untrusted data |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### MCP.T04: Unauthorized External Service Access
 
@@ -113,6 +116,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Custom MCP Lambdas, external services |
 | **Mitigations** | Input validation in MCP Lambda functions, parameter schema enforcement, least-privilege credentials for external services, separate IAM roles per MCP Lambda |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### MCP.T05: External MCP Client Abuse
 
@@ -127,6 +131,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | AgentCore Gateway, MCP handler Lambda, Agent Processor Lambda |
 | **Mitigations** | Cognito authentication required for all external clients (dedicated `idp-mcp-connector` resource server with a `client_credentials` app client, separate from the Web UI app client), Lambda concurrency limits, RBAC-based capability restrictions, CloudWatch alarms on usage patterns |
+| **Evidence** | `lib/idp_common_pkg/tests/unit/test_mcp_access.py::test_each_role_may_call_exactly_its_tools`; `lib/idp_common_pkg/tests/unit/lambdas/test_agentcore_mcp_handler_scope.py::test_no_verified_caller_is_refused_before_the_tool`; `src/lambda/mcp_identity_interceptor/test_index.py::test_a_client_supplied_caller_is_replaced`; UNVERIFIED: the citations cover per-role tool restrictions and caller verification; concurrency limits and usage alarms are not covered |
 
 ### MCP.T06: AgentCore Gateway Lifecycle Attacks
 
@@ -141,6 +146,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | AgentCore Gateway Manager Lambda, Bedrock AgentCore |
 | **Mitigations** | IAM restrictions on gateway management operations: since 0.6.14 the manager's role holds `bedrock-agentcore:*` for the gateway and target lifecycle, the two delivery deletes, `logs:DeleteLogGroup` on the gateway's vended log-group path only, and `iam:PassRole` on the single `AgentCoreGatewayExecutionRole`, where it previously also held `bedrock-agent:*`, Cognito read, log-group create and delivery-create grants and an account-wide log-group delete (`template.yaml`). CloudWatch alarms on gateway status changes, gateway health monitoring |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ## 4. Security Controls Summary
 

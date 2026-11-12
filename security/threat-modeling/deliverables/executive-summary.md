@@ -65,8 +65,8 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| **Mitigated** | 68 | 62% |
-| **Partially Mitigated** | 36 | 33% |
+| **Mitigated** | 67 | 61% |
+| **Partially Mitigated** | 37 | 34% |
 | **Open** (real gap, needs work) | **1** | **1%** |
 | **Accepted** | 4 | 4% |
 
