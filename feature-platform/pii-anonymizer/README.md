@@ -77,6 +77,9 @@ Redaction adds a detection pass per page **before** processing. PDFs use the
 image path (Textract + vision per page), so `redactcopy_and_continue` on scanned
 docs runs ~2× the whole pipeline. Claude Haiku is the default detection model
 (large output budget for dense forms); Nova Lite is cheaper but can truncate.
+A hook configuration that names no `model_id` uses Claude Haiku 4.5 through the
+stack's own region family: `eu.anthropic.claude-haiku-4-5-20251001-v1:0` in an EU
+region, the `us.` profile elsewhere, as the deploy-time model mapping does.
 
 ## Formats (v1)
 
