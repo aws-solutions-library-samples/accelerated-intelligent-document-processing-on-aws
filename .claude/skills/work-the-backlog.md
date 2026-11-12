@@ -1243,9 +1243,10 @@ The list is the workflows' own, and it is longer than the battery a merge agent 
 make lint-cicd            # cfn-lint, validate-buildspec, check-arn-partitions, scans
 make typecheck            # whole tree
 make test-cicd -C lib/idp_common_pkg
+make coverage-all-cicd    # the only run of the scripts, idp_sdk and idp_cli suites
 make test-packages-cicd
 make api-test-static
-make check-coverage-debt
+make check-coverage-debt-cicd
 ( cd src/ui && npm ci && npm run build )
 CI=1 make srt-scan        # SRT; CI=1 or it can hang headlessly with no timeout
 python3 scripts/security/dep_audit.py

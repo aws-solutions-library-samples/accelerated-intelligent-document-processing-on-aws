@@ -54,15 +54,16 @@ cd lib/idp_common_pkg && make test-unit     # one root, isolated
 make test-integration-all                   # only the integration-marked tests (needs AWS)
 ```
 
-**`make test` itself runs in neither CI.** CI runs the same suites through two other
-targets — `make test-cicd -C lib/idp_common_pkg` and `make test-packages-cicd` — and
-the second of those is a hand-enumerated recipe, so a suite that `make test`
+**`make test` itself runs in neither CI.** CI runs the same suites through three other
+targets — `make test-cicd -C lib/idp_common_pkg`, `make coverage-all-cicd`, which runs
+every suite a coverage tree measures, and `make test-packages-cicd` for the rest — and
+the last of those is a hand-enumerated recipe, so a suite that `make test`
 discovers but nobody adds to it runs locally and on no pull request. 22 registered
 roots holding 506 tests were in exactly that state, including the resolver suites
 covering the download allow-list and the discovery upload target.
 `scripts/tests/test_src_lambda_tests_in_ci.py` now closes that by deriving both
 sides — every directory holding a tracked `test_*.py`, against the paths the two
-recipes actually run pytest against — so a root that is in neither is a test failure
+recipes run pytest against plus the directories the coverage trees measure — so a root that is in neither is a test failure
 rather than a gap somebody finds by hand months later. A suite that genuinely cannot
 run in the shared gate goes in the excluded registry [below](#suites-make-test-does-not-run)
 with a reason.

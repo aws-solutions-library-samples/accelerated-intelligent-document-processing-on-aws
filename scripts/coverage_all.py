@@ -586,13 +586,9 @@ def run(
         except Exception:  # pragma: no cover - malformed report
             total = None
     output = (result.stdout or "") + (result.stderr or "") if capture else ""
-    # 5 == no tests collected for the marker, which is not a failure of this script.
-    return (
-        tree.name,
-        (0 if result.returncode in (0, 5) else result.returncode),
-        total,
-        output,
-    )
+    # 5 == no tests collected. Returned as-is: whether that is a failure depends on
+    # whether this run is the gate (`--fail-on-empty`), which only `main` knows.
+    return (tree.name, result.returncode, total, output)
 
 
 def main() -> int:
@@ -635,6 +631,17 @@ def main() -> int:
         "--serial",
         action="store_true",
         help="do not pass -n auto for ANY tree (trees that declare serial are always serial)",
+    )
+    parser.add_argument(
+        "--fail-on-empty",
+        action="store_true",
+        help=(
+            "treat a tree that collects no tests (pytest exit 5) as failed. "
+            "`make coverage-all-cicd` passes it: in CI this script is the only run of "
+            "most of these suites, so a tree that silently stops collecting must fail "
+            "rather than pass with a vacuous report. Without it, exit 5 is tolerated, "
+            "for a local run whose marker filter legitimately selects nothing."
+        ),
     )
     args = parser.parse_args()
 
@@ -751,6 +758,8 @@ def main() -> int:
         name, code, total, output = run(
             tree, python, parallel=parallel, workers=workers, capture=jobs > 1
         )
+        if code == 5 and not args.fail_on_empty:
+            code = 0
         with lock:
             if jobs > 1:
                 # Printed as one block per tree, under the lock. Several trees' pytest

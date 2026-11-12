@@ -3,12 +3,14 @@
 
 """Assert that every test directory in this repository is actually run by CI.
 
-Two recipes run this repository's offline suites on a pull request, and between them
-they are the whole of it: ``make test-packages-cicd`` at the repository root, and
-``make test-cicd`` in ``lib/idp_common_pkg``. Both are invoked by
-``.github/workflows/developer-tests.yml`` and by ``.gitlab-ci.yml``. Both enumerate
-paths by hand, so a test directory that nobody adds to one of them is never run by
-CI — silently, and with a green pipeline.
+Three targets run this repository's offline suites on a pull request, and between
+them they are the whole of it: ``make test-packages-cicd`` at the repository root,
+``make test-cicd`` in ``lib/idp_common_pkg``, and ``make coverage-all-cicd``, which
+runs every suite a coverage tree in ``scripts/check_coverage_debt.py`` measures. All
+three are invoked by ``.github/workflows/developer-tests.yml`` and by
+``.gitlab-ci.yml``. The two recipes enumerate paths by hand, so a test directory that
+nobody adds to one of them, and that no coverage tree measures, is never run by CI —
+silently, and with a green pipeline.
 
 ``scripts/tests/test_ci_gate_parity.py`` cannot see this: it compares gate *names*
 between the two CI configs, so a suite missing from **both** sides is invisible to
@@ -18,7 +20,8 @@ it backs ``make test``, which runs in neither CI — so its registry proves a su
 
 Both sides are DERIVED, never listed here. The universe comes from ``git ls-files``
 (via ``repo_files.tracked_paths``) and the covered set comes from parsing the two
-recipes. A guard that enumerated the directories it knows about would reproduce the
+recipes plus the coverage registry's trees (:func:`_coverage_tree_dirs`), less any
+the Makefile's ``COVERAGE_CICD_SKIP`` leaves out of CI. A guard that enumerated the directories it knows about would reproduce the
 defect it exists to prevent — and one that walked the filesystem instead of asking
 git would report findings against build output and sibling agent worktrees, which is
 its own recurring defect here (see ``repo_files``' module docstring).
@@ -332,8 +335,9 @@ def _uncovered(root: Path, covered: set[str], quarantined: set[str]) -> list[str
     pytest mis-collects. Under prefix matching that one sentence would exempt
     ``scripts/tests`` (2,382 tests, including this file), ``scripts/sdlc/tests``,
     ``scripts/srt/tests`` and ``scripts/security/tests``, all four of which are in
-    ``RUN_ROOTS``: deleting their four recipe lines would leave this suite green while
-    the repository's entire gate layer ran on no pull request. That is one
+    ``RUN_ROOTS``: removing the ``scripts`` tree from the coverage registry (their only
+    CI run) would leave this suite green while the repository's entire gate layer ran
+    on no pull request. That is one
     justification attached to a set where the justification is a property of a single
     member, which is the defect class ``CLAUDE.md`` records as recurring here.
     ``test_a_quarantined_parent_does_not_exempt_its_children`` pins it.
@@ -421,10 +425,10 @@ def test_a_quarantined_parent_does_not_exempt_its_children(tmp_path: Path):
     harness pytest mis-collects. Matched as a prefix it would also exempt
     ``scripts/tests``, ``scripts/sdlc/tests``, ``scripts/srt/tests`` and
     ``scripts/security/tests``, which is this repository's whole gate layer and 2,382
-    tests including this file; their four recipe lines could then be deleted with this
-    suite still green. Nothing in the coverage assertion would notice, because every
-    root involved is genuinely in the recipe today — which is why the rule needs its own
-    probe rather than being left to the live tree to demonstrate.
+    tests including this file; the ``scripts`` coverage tree, their only CI run, could
+    then be removed with this suite still green. Nothing in the coverage assertion would
+    notice, because every root involved is genuinely run today — which is why the rule
+    needs its own probe rather than being left to the live tree to demonstrate.
     """
     (tmp_path / "scripts" / "tests").mkdir(parents=True)
     (tmp_path / "scripts" / "tests" / "test_gate.py").write_text("def test_g(): pass\n")
@@ -492,7 +496,9 @@ def test_every_test_dir_is_run_by_a_ci_recipe():
         + " — the only targets either CI uses to run this repository's offline "
         "suites — so their tests run in NEITHER CI:\n  "
         + "\n  ".join(missing)
-        + "\n\nAdd each to the test-packages-cicd recipe in the root Makefile. Give "
+        + "\n\nAdd each to the test-packages-cicd recipe in the root Makefile, unless it "
+        "belongs to a coverage tree in scripts/check_coverage_debt.py, which "
+        "coverage-all-cicd then runs. Give "
         "each its own `cd <dir> && $(PYTEST_HERMETIC) ...` line if it defines a "
         "module named `index` or ships its own conftest, because a combined "
         "invocation fails collection on the basename collision. Every invocation "

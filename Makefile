@@ -398,7 +398,7 @@ coverage-all: ## Measure EVERY tree the registry names and print each one's figu
 COVERAGE_CICD_JOBS ?= 4
 COVERAGE_CICD_SKIP ?= --skip idp_common
 coverage-all-cicd: ## Produce a coverage report for every tree except those an earlier step measured, trees run concurrently
-	@python3 scripts/coverage_all.py --jobs $(COVERAGE_CICD_JOBS) $(COVERAGE_CICD_SKIP) $(COVERAGE_ARGS)
+	@python3 scripts/coverage_all.py --jobs $(COVERAGE_CICD_JOBS) --fail-on-empty $(COVERAGE_CICD_SKIP) $(COVERAGE_ARGS)
 
 coverage-summary: ## Print the recorded per-tree figures, without measuring anything
 	@python3 scripts/check_coverage_debt.py --summary
@@ -903,20 +903,15 @@ typecheck-pr: ## Fast local type check of only the files changed vs TARGET_BRANC
 #     make test-packages-cicd PYTEST_XDIST="-n 4"
 #     make test-cicd -C lib/idp_common_pkg PYTEST_PARALLEL="-n 4"
 #
-# Measured in GitLab CI (size:2xlarge arm64), the two suites that dominate the
-# target:
-#
-#     scripts/tests      3858 tests, serial  640s   ->  83s parallel (7.7x)
-#     lib/idp_sdk        2663 tests, serial  441s
-#
-# These suites shell out to ruff, basedpyright, cfn-lint and git, so they are
-# near-perfectly parallel and the win is close to the core count.
+# The two suites that once dominated this target, `scripts/tests` and `lib/idp_sdk`,
+# no longer run in it: `coverage-all-cicd` is their one CI run, and its worker share
+# comes from `coverage_all.worker_share`, never from this variable.
 #
 # ⚠️ Applied PER-SUITE rather than to every invocation, because xdist is not free:
 # spinning up N workers costs a second or two before the first test runs, which is
 # longer than most of these invocations take — a majority finish in under a second.
-# The rule is **above 20s measured in CI**, which selects the nine that carry
-# $(PYTEST_XDIST) today. Re-derive it by TIMING, not by counting tests: the test
+# The rule is **above 20s measured in CI**; grep the recipe for $(PYTEST_XDIST) to
+# see which invocations carry it today. Re-derive it by TIMING, not by counting tests: the test
 # count is a poor proxy here, `benchmarks/tests` runs 454 tests in 5s while
 # `src/lambda/complete_section_review` takes 7x longer for 115.
 #

@@ -250,6 +250,31 @@ class TestFailuresAreDistinguishableFromCleanRuns:
         assert cov_all.main() == 0
         assert "tests failed" not in capsys.readouterr().out
 
+    def test_an_empty_tree_fails_when_this_run_is_the_gate(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Under ``--fail-on-empty`` a tree that collects nothing is a named failure.
+
+        In CI this script is the only run of most of these suites, so a tree whose
+        collection silently empties (a renamed directory, a marker that stops matching)
+        would otherwise pass with a report that measured nothing.
+        """
+        tree = _fake_tree(tmp_path, "alpha")
+        _install(monkeypatch, tmp_path, [tree], _Recorder(returncode=5))
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--fail-on-empty"])
+        assert cov_all.main() == 1
+        assert "tests failed in: alpha" in capsys.readouterr().out
+
+    def test_the_ci_target_is_the_gate(self):
+        """``make coverage-all-cicd`` is the CI producer, so it must pass the flag."""
+        makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+        recipe = makefile.split("\ncoverage-all-cicd:", 1)[1].split("\n\n", 1)[0]
+        assert "scripts/coverage_all.py" in recipe
+        assert "--fail-on-empty" in recipe, (
+            "coverage-all-cicd no longer passes --fail-on-empty, so a suite that "
+            "collects nothing passes the only CI run it has"
+        )
+
     def test_a_real_test_failure_exits_one_and_names_the_tree(
         self, monkeypatch, tmp_path, capsys
     ):

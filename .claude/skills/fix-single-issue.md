@@ -148,8 +148,9 @@ And a long suite exceeds the 120-second Bash timeout, which **backgrounds** rath
 kills it — so run it as `timeout N cmd > log 2>&1` and read the log, where **a log with
 no `N passed` summary line did not run**, whatever the exit status said.
 
-Add these when they apply: `make test-packages-cicd PYTEST_XDIST="-n 4"` if you touched
-`scripts/`, a `Makefile`, `ruff.toml`, `pyrightconfig.json` or any gate; `make cfn-lint`
+Add these when they apply: `python3 scripts/coverage_all.py --only scripts --workers 4`
+if you touched `scripts/`, a `Makefile`, `ruff.toml`, `pyrightconfig.json` or any gate
+(`make test-packages-cicd` does not run the `scripts` suites); `make cfn-lint`
 and `make check-arn-partitions` if you touched a CloudFormation template; `make
 test-hooks` if you touched `scripts/hooks/`.
 
