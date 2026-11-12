@@ -848,7 +848,7 @@ every document is one section and that scaffolding is gone. Three things follow:
    rows on some runs of four of the seven extraction models while reporting `COMPLETED`, the
    shipped default among them (8 of its 13 runs). The single long response is what varies,
    and which side of the limit a run lands on moves with the model and with the input text.
-   **Treat ~400 rows / ~10 pages as the comfortable simple-mode envelope and 800 as the edge
+   **Treat ~400 rows / ~9 pages as the comfortable simple-mode envelope and 800 as the edge
    of it**; use advanced mode above that.
 2. **Above the envelope, simple mode returns the rows without all of the confidence, then
    stops being available.** At 1,200 and 1,600 rows the extraction is complete and 5% and 20%
@@ -1131,8 +1131,9 @@ Nova Pro's 0.9225 cell accuracy is computed over 7,858 cells against the control
 is "92% accurate on the rows it chose to return", not 92% accurate. On the three documents of
 100 rows or fewer Nova Pro returns every row but not every value (cell accuracy 0.881 on
 `small_narrow`, 0.987 on `longdesc_100`), and Nova Lite returns 89% of `small_narrow`'s rows
-at 0.828 accuracy and 0.847 on `longdesc_100`. Above 100 rows both return between none and 45%
-of the list, `COMPLETED` every time.
+at 0.828 accuracy and 0.847 on `longdesc_100`. Above 100 rows both return about half of the
+list at best — per-document mean recall from 0.000 to 0.445, and no single run above recall
+0.5025 (201 of 400 rows, Nova Pro on `wide_400`) — `COMPLETED` every time.
 
 ⚠️ **And the confidence signal does not catch it.** Nova Lite flags **0.549%** of its
 confidence leaves and Nova Pro **0.025%**, on arms that returned about half the rows. There is

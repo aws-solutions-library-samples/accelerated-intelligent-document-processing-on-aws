@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT-0
 
 ## Overview
 
-Pipeline mode supports few-shot example prompting, a powerful feature that allows you to provide concrete document examples with expected outputs to significantly improve model accuracy, consistency, and reduce hallucination for both document classification and attribute extraction tasks.
+Pipeline mode supports few-shot example prompting, a feature that lets you provide concrete document examples with expected outputs, for both document classification and attribute extraction tasks. Examples are meant to make the model's output more accurate and consistent; the size of that effect has not been measured in this repository's benchmarks, so A/B test it on your own documents (see [Performance Considerations](#performance-considerations)).
 
 Few-shot examples apply to **pipeline mode only** — the processing mode that runs
 Amazon Textract or LLM-based OCR, then classification and extraction as separate
@@ -25,9 +25,9 @@ Few-shot learning enhances AI model performance by providing concrete examples a
 
 ## Key Benefits
 
-- **🎯 Improved Accuracy**: Models understand document patterns and expected formats better through concrete examples
+- **🎯 Accuracy**: Concrete examples can help a model recognise document patterns and expected formats
 - **📏 Consistent Output**: Examples establish exact JSON structure and formatting standards
-- **🚫 Reduced Hallucination**: Examples reduce likelihood of made-up classification or attribute values
+- **🚫 Fewer made-up values**: Examples showing the expected output can discourage invented classification or attribute values
 - **🔧 Domain Adaptation**: Examples help models understand domain-specific terminology and conventions
 - **💡 Better Edge Case Handling**: Visual examples clarify ambiguous cases that text descriptions might miss
 - **💰 Cost Effectiveness with Caching**: Using prompt caching with few-shot examples can significantly reduce costs for repeated processing
@@ -206,7 +206,7 @@ Few-shot examples support both multimodal and text-only approaches:
 - Include sample document text (OCR output) within `x-aws-idp-class-prompt` or `x-aws-idp-attributes-prompt`
 - Useful when images are not available or for privacy-sensitive scenarios
 - Can demonstrate text patterns and content structure
-- Still provide significant accuracy improvements over no examples
+- Can still help where no images are available
 
 **Example with OCR Text Content**:
 ```yaml
@@ -540,7 +540,7 @@ task_prompt: |
 ```
 
 **Without caching**: Pay full token cost (static + dynamic) for every document
-**With caching**: Pay full cost once, then only dynamic portion for subsequent documents
+**With caching**: Pay the static portion once at a write premium (1.25× its input price on Claude models), then the cache-read price for it on documents that follow within five minutes, plus full cost for the dynamic portion
 
 ### Performance Benefits
 
@@ -708,11 +708,11 @@ text only, so compare the number of image items with the images you expect.
 ## Performance Considerations
 
 ### Benefits
-- **Higher Accuracy**: Well-crafted examples typically improve accuracy by 10-30%
+- **Accuracy**: Well-crafted examples can improve accuracy. No benchmark in this repository has measured by how much, so compare with and without examples on your own documents
 - **Reduced Prompt Engineering**: Less time spent fine-tuning text descriptions
 - **Consistent Outputs**: Examples establish clear formatting standards
 - **Better Edge Case Handling**: Visual and textual examples help with ambiguous documents
-- **Cost Efficiency with Caching**: Prompt caching can reduce costs by 50-90% for repeated processing
+- **Cost Efficiency with Caching**: Prompt caching bills a cached prefix (examples included) at a tenth of the input price on Claude models when it is read again within five minutes. A prefix below the model's minimum is never cached, and a cached prefix that is not read again is billed at about 25% more than uncached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
 
 ### Trade-offs
 - **Increased Initial Token Usage**: Examples add to prompt length, increasing initial processing costs

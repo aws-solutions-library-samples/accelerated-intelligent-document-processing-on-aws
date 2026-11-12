@@ -139,9 +139,11 @@ classification* as `SectionClassification/…`. The combined strategy stays unde
   Each call carries up to 2k+1 pages: ×3 at k=1 and ×5 at k=2, in both text and
   image tokens.
 - **`strategy: split_then_classify` drops the class vocabulary from every splitting call
-  and classifies once per section instead of once per page.** A clear win on
-  long documents with few sections; roughly a wash on single-page documents, where it
-  adds a second call to save a prefix that was only paid once. Each call can use
+  and classifies once per section instead of once per page.** By call count it
+  should favour long documents with few sections, though long sections have not been
+  benchmarked; on single-page documents it adds a second call to save a prefix that was
+  only paid once. On 5–20-page packets it measured as a boundary gain and a label loss
+  ([The split-then-classify strategy](#the-split-then-classify-strategy)). Each call can use
   its own model, so splitting can run on a cheap model and classification on a
   stronger one.
 - **A declared document shape skips the boundary work.** Under
@@ -1522,8 +1524,14 @@ The durable reasons to pick split-then-classify are not the prefix:
 - **One classification call per *section* instead of per page.** This is the one
   that scales, and it is the opposite of the regime measured above: on a 40-page
   statement, the combined strategy makes 40 classification calls to produce one answer
-  and split-then-classify makes one splitting pass plus one classification call. The
-  longer your sections, the better split-then-classify looks.
+  and split-then-classify makes one splitting pass plus one classification call. That
+  is call arithmetic, not a measurement: long sections have not been benchmarked. On
+  the 5–20-page packets of the v0.6.14 classification benchmark, split-then-classify at
+  packet granularity cost 72% of the default's classification spend per page, placed
+  more section boundaries correctly (0.688 against the default's 0.509), labelled fewer
+  of them correctly (0.854 against 0.926), and reported a confidence that barely
+  separates right pages from wrong ones; at page granularity it cost the same as the
+  default ([config-guidance §5.6](./benchmarking/config-guidance.md#56-classification-granularity-modality-and-strategy)).
 - **A different model per call.** Splitting and classification are
   different problems and the cheapest model that is good at one is often not the
   other. The combined strategy has a single model field for both.
@@ -1546,7 +1554,8 @@ Measure on your own corpus. The two calls are metered separately
 | Confidence unit | Per page | Per segment |
 | Parallelism | Pages run concurrently | Windows run in sequence |
 | Large packets | No practical limit | Windowed; `window_pages: 0` is limited by context |
-| Packets of same-class sections | Excellent (per-page `start` verdict) | Good, and improving with a packet view |
+| Packets of same-class sections | Separated two back-to-back statements correctly, but split a single statement with a reprinted header into one section per page ([measured below](#page-versus-packet-granularity-opposite-failure-modes)) | Kept the single statement whole, but merged the two back-to-back statements into one |
+| Section boundaries on real packets | 0.509 of true sections reproduced (the default: text and images, `combined`) | 0.600–0.710 under the `combined` strategy, at 29–59% of the default's classification cost per page; 19 packets, one run each, so a direction rather than a ranking ([config-guidance §5.6](./benchmarking/config-guidance.md#56-classification-granularity-modality-and-strategy)) |
 
 ## Customizing Classification in Pipeline Mode
 
@@ -2167,9 +2176,9 @@ classification:
 
 ### Token Efficiency Benefits
 
-YAML format provides significant token savings:
+YAML usually needs fewer tokens than the equivalent JSON, though the saving has
+not been measured here and depends on the shape of your data:
 
-- **10-30% fewer tokens** than equivalent JSON
 - No quotes required around keys
 - More compact syntax for nested structures
 - Natural support for multiline content

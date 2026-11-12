@@ -82,7 +82,8 @@ as long as it is running.
    - Select processing options based on document requirements
 
 3. **Implement prompt caching**:
-   - The solution supports prompt caching to significantly reduce costs when processing similar documents
+   - The solution supports prompt caching, which bills a cached prompt prefix at a tenth of the input price on Claude models when it is read again within five minutes
+   - It can also cost more: a cached prefix that is not read again within that window is billed at about 25% more than with no cache point (on the prefix only, not the whole request), and a prefix below the model's minimum (1,024 tokens on Claude Sonnet 5) is never cached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
    - Especially effective when using few-shot examples, as these can be cached across invocations
 
 4. **Optimize document preprocessing**:
