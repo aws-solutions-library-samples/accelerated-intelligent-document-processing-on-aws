@@ -1745,7 +1745,9 @@ class OcrService:
             raw_ocr_data: Raw Textract API response
 
         Returns:
-            Text confidence data as markdown table with ~80-90% token reduction
+            Text confidence data as a markdown table of text and confidence (plus
+            handwriting markers and a signature-detection summary), much smaller
+            than the raw response
         """
         # Start building the markdown table with explicit left alignment
         markdown_lines = ["| Text | Confidence |", "|:-----|:-----------|"]

@@ -108,6 +108,16 @@ DOCUMENT_BLOCK_REFUSED = [
 ]
 
 
+#: Region -> the Nova Pro fallback callable there: what the deploy-time swap in
+#: `src/lambda/update_configuration` makes of `us.amazon.nova-pro-v1:0`. Canada has
+#: no Nova Pro profile, `global.` included, so the swap moves it to Nova 2 Lite.
+REGIONAL_NOVA_PRO_FALLBACK = [
+    ("us-west-2", "us.amazon.nova-pro-v1:0"),
+    ("eu-central-1", "eu.amazon.nova-pro-v1:0"),
+    ("ca-central-1", "us.amazon.nova-2-lite-v1:0"),
+]
+
+
 @pytest.fixture
 def discovery_env(monkeypatch):
     """Contain `CONFIGURATION_TABLE_NAME`, which the stack workers export.
@@ -795,6 +805,28 @@ class TestRunLocal:
         assert "{ground_truth_json}" not in prompt
         assert '"InvoiceNumber": "INV-42"' in prompt
 
+    @pytest.mark.parametrize(("region", "expected"), REGIONAL_NOVA_PRO_FALLBACK)
+    def test_the_fallback_model_is_callable_from_the_region(
+        self, tmp_path, region, expected
+    ):
+        """This path never runs the deploy-time swap, so the literal fallback
+        must already be the model that swap would write for the Region."""
+        document = tmp_path / "a.pdf"
+        document.write_bytes(_pdf(1))
+        client = _bedrock(_converse_response(_fenced(VALID_SCHEMA)))
+
+        with (
+            patch("idp_common.bedrock.BedrockClient", return_value=client),
+            patch(
+                "idp_common.config.merge_utils.load_system_defaults",
+                return_value={},
+            ),
+        ):
+            result = IDPClient(region=region).discovery.run(str(document))
+
+        assert result.status == "SUCCESS"
+        assert client.invoke_model.call_args.kwargs["model_id"] == expected
+
     def test_defaults_carrying_no_prompts_fall_back_to_the_built_in_ones(
         self, tmp_path
     ):
@@ -815,7 +847,7 @@ class TestRunLocal:
                 return_value={},
             ),
         ):
-            result = IDPClient().discovery.run(str(document))
+            result = IDPClient(region="us-west-2").discovery.run(str(document))
 
         assert result.status == "SUCCESS"
         sent = client.invoke_model.call_args.kwargs
@@ -1147,6 +1179,28 @@ class TestAutoDetectLocal:
         assert sent["content"][0]["document"]["source"]["bytes"] == content
         assert sent["content"][1]["text"] == expected["user_prompt"]
 
+    @pytest.mark.parametrize(("region", "expected"), REGIONAL_NOVA_PRO_FALLBACK)
+    def test_the_fallback_model_is_callable_from_the_region(
+        self, tmp_path, region, expected
+    ):
+        document = tmp_path / "packet.pdf"
+        document.write_bytes(_pdf(2))
+        client = _bedrock(_converse_response(json.dumps([{"start": 1, "end": 1}])))
+
+        with (
+            patch("idp_common.bedrock.BedrockClient", return_value=client),
+            patch(
+                "idp_common.config.merge_utils.load_system_defaults",
+                return_value={},
+            ),
+        ):
+            result = IDPClient(region=region).discovery.auto_detect_sections(
+                str(document)
+            )
+
+        assert result.status == "SUCCESS"
+        assert client.invoke_model.call_args.kwargs["model_id"] == expected
+
     def test_defaults_carrying_no_auto_split_block_fall_back(self, tmp_path):
         document = tmp_path / "packet.pdf"
         document.write_bytes(_pdf(2))
@@ -1159,7 +1213,9 @@ class TestAutoDetectLocal:
                 return_value={},
             ),
         ):
-            result = IDPClient().discovery.auto_detect_sections(str(document))
+            result = IDPClient(region="us-west-2").discovery.auto_detect_sections(
+                str(document)
+            )
 
         assert result.status == "SUCCESS"
         sent = client.invoke_model.call_args.kwargs

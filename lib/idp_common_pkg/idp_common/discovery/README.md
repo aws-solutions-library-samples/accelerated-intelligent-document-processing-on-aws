@@ -254,6 +254,24 @@ silently dropped rather than reported.** `without_ground_truth`,
 `model` and `task_prompt`. `discovery.rules.model_id` and
 `discovery.without_ground_truth.model` are both unread keys.
 
+### Models written in code follow the Region
+
+A model written in code is not rewritten at deploy time, so a code fallback names
+its US model and passes it through `idp_common.regional_models.regional_default`,
+which returns what the deploy-time swap would have written for the Region:
+`DiscoveryAgent` built with no `analysis_model_id` (as the save step's reflection
+report is) uses `eu.anthropic.claude-sonnet-4-6` in an EU Region, and the SDK's
+local discovery falls back to `eu.amazon.nova-pro-v1:0` in an EU Region and
+`us.amazon.nova-2-lite-v1:0` in Canada when the system defaults name no model.
+⚠️ The models the shipped system defaults name are not translated on the SDK's
+local path, which never runs the deploy-time swap, so an EU or Canada caller of
+local discovery gets the `us.` ids in `base-discovery.yaml` unless it passes a
+model.
+Every id passed to it must be in `regional_models.FALLBACK_MODEL_IDS`, and
+`src/lambda/update_configuration/test_eu_region.py` checks each against the swap
+tables. `tests/unit/test_geographic_fallbacks.py` reads every code fallback in the
+tree and fails on one naming a geographic profile directly.
+
 ## Integration with IDP SDK
 
 The discovery module is also accessible through the IDP SDK:

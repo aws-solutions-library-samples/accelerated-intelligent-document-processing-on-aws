@@ -476,7 +476,8 @@ const CreateTestSetWizard = ({
           </SpaceBetween>
           {bucket.value === 'input' && (
             <Alert type="info">
-              Documents without ground truth in the evaluation baseline bucket are skipped rather than failing, so a broad pattern is safe.
+              Documents without ground truth in the evaluation baseline bucket are added unlabeled, so a broad pattern brings in every file
+              it matches. One unlabeled document makes the set read as unlabeled until it is draft-labeled.
             </Alert>
           )}
         </>

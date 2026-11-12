@@ -69,6 +69,7 @@ from idp_common.utils.bedrock_utils import (
     async_exponential_backoff_retry,
     is_max_tokens_agent_error,
 )
+from idp_common.utils.metering import attach_failure_metering
 from idp_common.utils.strands_agent_tools.todo_list import (
     create_todo_list,
     update_todo,
@@ -1283,6 +1284,40 @@ def _accumulate_token_usage(response: Any, token_usage: dict[str, int]) -> None:
             token_usage[key] += response.metrics.accumulated_usage.get(key, 0)
 
 
+def _agent_run_metering(
+    agent: Any, context: str, model_id: str
+) -> dict[str, "BedrockUsage"]:
+    """The metering of every model call ``agent`` has completed, or ``{}``.
+
+    Read from ``agent.event_loop_metrics.accumulated_usage``. Strands adds a model
+    call's usage there as soon as the response has been received, before it
+    inspects the stop reason, so a call that ended in ``max_tokens`` is in it. The
+    total spans every ``invoke_async`` on the agent: a new invocation appends an
+    ``AgentInvocation`` record but does not reset the accumulated total. So one
+    reading covers every feedback round and every resumed retry, and it is read
+    exactly once per run — adding readings together would count earlier calls
+    twice. A call that raised before returning a response recorded nothing, and
+    nothing is invented for it.
+
+    This is the same total the success path reads off the ``AgentResult``, whose
+    ``metrics`` is this same ``EventLoopMetrics`` object, and it is keyed the same
+    way, so a run's usage reads identically whether or not it produced an
+    extraction.
+    """
+    metrics = getattr(agent, "event_loop_metrics", None)
+    usage = getattr(metrics, "accumulated_usage", None)
+    if not isinstance(usage, dict):
+        return {}
+    token_usage = _initialize_token_usage()
+    for key in token_usage:
+        token_usage[key] += usage.get(key, 0) or 0
+    if not any(token_usage.values()):
+        return {}
+    return {
+        f"{context}/bedrock/{metering_model_id(model_id)}": BedrockUsage(**token_usage)
+    }
+
+
 def _build_system_prompt(
     base_prompt: str,
     custom_instruction: str | None,
@@ -1405,7 +1440,7 @@ def _build_model_config(
     if is_openai_responses_model(model_id):
         raise ValueError(
             f"OpenAI Responses-API models ({model_id}) do not support agentic/"
-            "Strands extraction. Use standard extraction (agentic.enabled=false)."
+            "Strands extraction. Use simple extraction (extraction.mode: simple)."
         )
 
     # Configure retry behavior and timeouts using boto3 Config.
@@ -2606,14 +2641,21 @@ async def structured_output_async(
             extra={"buffer_summary": buffer_summary},
         )
 
-    response, result = await _invoke_agent_for_extraction(
-        agent=agent,
-        prompt_content=prompt_content,
-        data_format=data_format,
-        max_extraction_retries=3,
-        schema_validator=schema_validator,
-        model_id=model_id,
-    )
+    try:
+        response, result = await _invoke_agent_for_extraction(
+            agent=agent,
+            prompt_content=prompt_content,
+            data_format=data_format,
+            max_extraction_retries=3,
+            schema_validator=schema_validator,
+            model_id=model_id,
+        )
+    except Exception as e:
+        # Throttle exhaustion, an invalid tool-use sequence, a context overflow, an
+        # unsalvageable max_tokens stop: every one of them can come after turns the
+        # model already answered and Bedrock already billed (#1923).
+        attach_failure_metering(e, _agent_run_metering(agent, context, model_id))
+        raise
 
     # Accumulate token usage
     _accumulate_token_usage(response, token_usage)
@@ -2708,7 +2750,10 @@ async def structured_output_async(
         "Failed to extract structured data",
         extra={"data_format": data_format.__name__},
     )
-    raise ValueError("Failed to generate valid structured output.")
+    raise attach_failure_metering(
+        ValueError("Failed to generate valid structured output."),
+        _agent_run_metering(agent, context, model_id),
+    )
 
 
 def structured_output(

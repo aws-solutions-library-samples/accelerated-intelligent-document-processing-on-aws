@@ -15,7 +15,7 @@ import os
 import sys
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
 
@@ -835,7 +835,7 @@ def validate_config(
     try:
         from idp_common.config.models import IDPConfig
 
-        IDPConfig.model_validate(merged)
+        validated = IDPConfig.model_validate(merged)
     except ImportError:
         raise
     except Exception as e:
@@ -858,7 +858,19 @@ def validate_config(
     sent_prompts = strip_prompt_comments_in_config(merged)
     _validate_task_prompt_placeholders(sent_prompts, result)
     _validate_schema_fields(config.get("classes", []), result)
-    _validate_agentic_openai(merged, result)
+    # The extraction path is decided by the validated model, never by re-reading the
+    # merged dict: `reconcile_mode_and_agentic` makes `extraction.mode` authoritative,
+    # and the runtime reads `config.extraction.agentic.enabled` off this same model.
+    # Escalation is read off the same model, which is what the runtime reads,
+    # including a pre-0.7 `extraction.agentic.validation` block once migrated.
+    vcfg = validated.extraction.validation
+    _validate_agentic_openai(
+        merged,
+        result,
+        agentic=validated.extraction.agentic.enabled,
+        escalates=vcfg.enabled and vcfg.fail_action == "escalate",
+        escalation_model=vcfg.escalation_model,
+    )
     _validate_simple_integrated_lists(merged, result)
     _validate_prompt_cache_prefix(sent_prompts, result)
     _validate_discovery_openai(merged, result)
@@ -1030,11 +1042,56 @@ def _load_valid_bedrock_models() -> set:
         return set()
 
 
+# Every model-ID field outside classification that names a Bedrock model
+# ``config_library/pricing.yaml`` prices, as a dotted path into the merged config.
+# Classification is read per call by ``_classification_calls``, and the per-class
+# overrides are read in ``_validate_model_ids``. Three model fields are deliberately
+# absent, each for its own reason:
+#
+# - ``classification.split_then_classify.section_classification.embeddings.model``
+#   and ``discovery.multi_document.embedding_model_id`` name embedding models,
+#   and pricing.yaml prices none: the shipped default ``us.cohere.embed-v4:0`` is
+#   not in it, so checking either would refuse the default configuration.
+# - The per-class ``x-aws-idp-evaluation-model-name`` is the name of the Stickler
+#   model class the evaluator builds, not a Bedrock model.
+#
+# ``tests/unit/config/test_model_id_catalog_coverage.py`` walks ``IDPConfig`` and
+# fails on a model field that is in neither this tuple nor its list of the above.
+_CATALOG_MODEL_FIELDS: Tuple[str, ...] = (
+    "ocr.model_id",
+    "extraction.model",
+    "extraction.agentic.review_agent_model",
+    "extraction.confidence.model",
+    "extraction.confidence.escalation_model",
+    "extraction.validation.escalation_model",
+    "summarization.model",
+    "chat.model",
+    "rule_validation.fact_extraction.model",
+    "rule_validation.rule_validation_orchestrator.model",
+    "rule_validation.z3_rule_translator.model",
+    "rule_validation.z3_value_extraction.model",
+    "agents.error_analyzer.model_id",
+    "agents.chat_companion.model_id",
+    "discovery.without_ground_truth.model_id",
+    "discovery.with_ground_truth.model_id",
+    "discovery.auto_split.model_id",
+    "discovery.multi_document.analysis_model_id",
+    "discovery.rules.model",
+    "discovery.rules.agentic.review_agent_model",
+    "evaluation.llm_method.model",
+)
+
+
 def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -> None:
     """
     Validate Bedrock model IDs against pricing.yaml.
 
-    Checks that model IDs in config are valid and recognized.
+    Checks every model ID the config names: each classification call the active
+    strategy makes, every path in ``_CATALOG_MODEL_FIELDS``, the per-class
+    extraction, extraction-escalation and confidence-escalation overrides, and the
+    ``model`` of any field's LLM-comparator method-config. An ID
+    is compared as written, so surrounding whitespace or upper case is reported
+    like any other typo — the Bedrock client sends it on unchanged.
 
     A model may be named by ARN rather than by bare model ID — GovCloud
     requires an account-scoped inference-profile ARN, and provisioned-throughput
@@ -1068,35 +1125,70 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
         # Can't validate - skip silently
         return
 
-    sections_with_models = {
-        "ocr": "model_id",
-        "classification": "model",
-        "extraction": "model",
-        "assessment": "model",
-        "summarization": "model",
-    }
+    from idp_common.config.schema_constants import (
+        EVALUATION_METHOD_LLM,
+        X_AWS_IDP_CONFIDENCE_ESCALATION_MODEL,
+        X_AWS_IDP_DOCUMENT_TYPE,
+        X_AWS_IDP_EVALUATION_METHOD,
+        X_AWS_IDP_EVALUATION_METHOD_CONFIG,
+        X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
+        X_AWS_IDP_EXTRACTION_MODEL,
+    )
 
-    targets: List[tuple] = []
-    for section_name, model_field in sections_with_models.items():
-        if section_name not in merged_config:
-            continue
-        if section_name == "classification":
-            # One model per call the active strategy makes.
-            targets.extend(
-                (path, "model", call.get("model"))
-                for path, call in _classification_calls(merged_config)
-            )
-        else:
+    def llm_judge_models(node: Any, field_path: str, class_name: str) -> None:
+        """A field judged by the LLM comparator may name its own model.
+
+        The Stickler mapper lays a field's method-config over
+        ``evaluation.llm_method``, so a ``model`` there chooses the judge.
+        """
+        if isinstance(node, list):
+            for item in node:
+                llm_judge_models(item, field_path, class_name)
+            return
+        if not isinstance(node, dict):
+            return
+        method_config = node.get(X_AWS_IDP_EVALUATION_METHOD_CONFIG)
+        if node.get(X_AWS_IDP_EVALUATION_METHOD) == EVALUATION_METHOD_LLM and (
+            isinstance(method_config, dict)
+        ):
             targets.append(
                 (
-                    section_name,
-                    model_field,
-                    merged_config[section_name].get(model_field),
+                    f"Class '{class_name}' field '{field_path or '<root>'}' "
+                    f"{X_AWS_IDP_EVALUATION_METHOD_CONFIG}.model",
+                    method_config.get("model"),
                 )
             )
+        for key, value in node.items():
+            if key == "properties" and isinstance(value, dict):
+                for name, child in value.items():
+                    child_path = f"{field_path}.{name}" if field_path else name
+                    llm_judge_models(child, child_path, class_name)
+            elif key != X_AWS_IDP_EVALUATION_METHOD_CONFIG:
+                llm_judge_models(value, field_path, class_name)
 
-    for section, field_name, model_id in targets:
-        if not model_id:
+    # (label, value) per model ID the config names. Classification has one model
+    # per call the active strategy makes; every other field is a fixed path.
+    targets: List[tuple] = [
+        (f"{path}.model", call.get("model"))
+        for path, call in _classification_calls(merged_config)
+    ]
+    for path in _CATALOG_MODEL_FIELDS:
+        *parents, leaf = path.split(".")
+        targets.append((path, _dict_at(merged_config, *parents).get(leaf)))
+    for cls in merged_config.get("classes", []) or []:
+        if not isinstance(cls, dict):
+            continue
+        class_name = cls.get(X_AWS_IDP_DOCUMENT_TYPE, "<unnamed>")
+        for key in (
+            X_AWS_IDP_EXTRACTION_MODEL,
+            X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
+            X_AWS_IDP_CONFIDENCE_ESCALATION_MODEL,
+        ):
+            targets.append((f"Class '{class_name}' {key}", cls.get(key)))
+        llm_judge_models(cls, "", class_name)
+
+    for label, model_id in targets:
+        if not model_id or not isinstance(model_id, str):
             continue
 
         resolved = resolve_model_id_from_arn(model_id)
@@ -1113,7 +1205,7 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
         if retirement is not None:
             result["valid"] = False
             result["errors"].append(
-                f"{section}.{field_name} has invalid model ID: {model_id} reached "
+                f"{label} has invalid model ID: {model_id} reached "
                 f"end of life on {retirement['eol']} and is no longer available in "
                 f"any region — every call returns ResourceNotFoundException. "
                 f"Choose a current model. Verify with: {retirement['verify']}"
@@ -1143,14 +1235,14 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
                 # (has family.name shape) but doesn't match — treat as a typo.
                 result["valid"] = False
                 result["errors"].append(
-                    f"{section}.{field_name} names a Bedrock ARN whose resolved "
+                    f"{label} names a Bedrock ARN whose resolved "
                     f"model ID ({resolved!r}) is not a known Bedrock model. This is "
                     f"most likely a typo in the ARN's resource-id, partition, or "
                     f"account. Full ARN: {model_id}"
                 )
                 continue
             result["warnings"].append(
-                f"{section}.{field_name} names a Bedrock ARN whose underlying "
+                f"{label} names a Bedrock ARN whose underlying "
                 f"model can't be determined offline: {model_id}. Cost reporting "
                 f"needs a matching entry in config_library/pricing.yaml."
             )
@@ -1158,7 +1250,7 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
 
         result["valid"] = False
         result["errors"].append(
-            f"{section}.{field_name} has invalid model ID: {model_id}. "
+            f"{label} has invalid model ID: {model_id}. "
             f"Verify the model name is correct and ensure it's enabled in the Bedrock console. "
             f"Check config_library/pricing.yaml for valid model IDs."
         )
@@ -1179,7 +1271,12 @@ def _looks_like_uuid(value: str) -> bool:
 
 
 def _validate_agentic_openai(
-    merged_config: Dict[str, Any], result: Dict[str, Any]
+    merged_config: Dict[str, Any],
+    result: Dict[str, Any],
+    *,
+    agentic: bool,
+    escalates: bool,
+    escalation_model: Optional[str],
 ) -> None:
     """Error when an OpenAI GPT-5.x model is paired with agentic extraction.
 
@@ -1189,24 +1286,40 @@ def _validate_agentic_openai(
     runtime fallback) so the misconfiguration surfaces at config time instead
     of failing obscurely mid-processing.
 
+    ``agentic`` is whether extraction will actually run the agentic path, and the
+    caller takes it from the validated ``IDPConfig`` — the value the runtime reads.
+    It is a parameter rather than something read here because the merged dict
+    cannot answer it: ``extraction.mode`` decides the path and overrides
+    ``extraction.agentic.enabled`` whenever it is set, so ``mode: advanced`` with
+    no ``agentic`` block is agentic, and ``mode: simple`` with
+    ``agentic.enabled: true`` is not. Reading the raw flag got both wrong.
+
     NOTE this gate is about the ROUTE, not the vendor: ``openai.gpt-6-astra``
     reaches Converse and emits ``toolUse``, so it is allowed for agentic
     extraction. The predicate is ``is_openai_responses_model`` precisely so it
     tracks the mantle route rather than the "openai." prefix.
+
+    The escalation model is held to the same rule, because agentic escalation
+    (``ExtractionService._escalate_failing_fields``) calls the same Strands
+    ``structured_output`` with it. ``escalates`` is whether that call can happen at
+    all — validation enabled and ``fail_action: escalate`` — and is taken from the
+    validated model for the same reason ``agentic`` is. Simple-mode escalation is a
+    plain ``bedrock.invoke_model`` call, which routes GPT-5.x through the Responses
+    API, so nothing is refused there. An unset escalation model falls back to the
+    extraction model, which the checks above already cover. Without this check the
+    runtime caught the Strands ``ValueError``, kept the unescalated result and
+    recorded the reason only in the section's metadata.
     """
     from idp_common.bedrock.openai_responses import is_openai_responses_model
-    from idp_common.config.schema_constants import X_AWS_IDP_EXTRACTION_MODEL
+    from idp_common.config.schema_constants import (
+        X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
+        X_AWS_IDP_EXTRACTION_MODEL,
+    )
 
+    if not agentic:
+        return
     extraction = merged_config.get("extraction", {})
     if not isinstance(extraction, dict):
-        return
-
-    # NOTE: reads the raw merged dict, where `agentic.enabled` may disagree with
-    # `mode` (reconcile_mode_and_agentic makes `mode` authoritative in IDPConfig).
-    # Behaviour deliberately unchanged here; see _extraction_is_simple for the
-    # mode-first rule.
-    agentic_enabled = bool(extraction.get("agentic", {}).get("enabled"))
-    if not agentic_enabled:
         return
 
     # Global extraction model
@@ -1215,9 +1328,9 @@ def _validate_agentic_openai(
         result["valid"] = False
         result["errors"].append(
             f"extraction.model '{global_model}' is an OpenAI Responses model, which "
-            "is NOT compatible with agentic extraction (extraction.agentic.enabled=true). "
-            "Set agentic.enabled=false or choose a Converse model — Claude, Amazon "
-            "Nova Pro (not Nova Lite, which fails mid-stream on this path; "
+            "is NOT compatible with agentic extraction (extraction.mode: advanced). "
+            "Set extraction.mode to 'simple' or choose a Converse model — Claude, "
+            "Amazon Nova Pro (not Nova Lite, which fails mid-stream on this path; "
             "see docs/extraction-and-confidence.md), xAI Grok, or OpenAI GPT-6 "
             "Astra support agentic extraction."
         )
@@ -1233,11 +1346,41 @@ def _validate_agentic_openai(
             result["errors"].append(
                 f"Class '{class_name}' overrides extraction with OpenAI Responses "
                 f"model '{override}', which is NOT compatible with agentic extraction "
-                "(extraction.agentic.enabled=true). Set agentic.enabled=false or "
+                "(extraction.mode: advanced). Set extraction.mode to 'simple' or "
                 "choose a Converse model for this class — Claude, Amazon Nova "
                 "Premier/Pro (not Nova Lite, which fails mid-stream on this path; "
                 "see docs/extraction-and-confidence.md), xAI Grok, or OpenAI GPT-6 "
                 "Astra support agentic extraction."
+            )
+
+    if not escalates:
+        return
+    escalation_remedy = (
+        "Escalation in agentic extraction (extraction.mode: advanced) runs the "
+        "same agent loop. Choose a Converse escalation model — Claude, Amazon Nova "
+        "Premier/Pro, xAI Grok or OpenAI GPT-6 Astra — or set "
+        "extraction.validation.fail_action to 'warn' or 'reject', or set "
+        "extraction.mode to 'simple', where escalation is a plain model call that "
+        "OpenAI GPT-5.x supports."
+    )
+    if escalation_model and is_openai_responses_model(escalation_model):
+        result["valid"] = False
+        result["errors"].append(
+            f"extraction.validation.escalation_model '{escalation_model}' is an "
+            "OpenAI Responses model, which is NOT compatible with agentic "
+            f"extraction. {escalation_remedy}"
+        )
+    for cls in merged_config.get("classes", []) or []:
+        if not isinstance(cls, dict):
+            continue
+        override = cls.get(X_AWS_IDP_EXTRACTION_ESCALATION_MODEL)
+        if override and is_openai_responses_model(override):
+            class_name = cls.get("x-aws-idp-document-type", "<unnamed>")
+            result["valid"] = False
+            result["errors"].append(
+                f"Class '{class_name}' overrides the extraction escalation model "
+                f"with OpenAI Responses model '{override}', which is NOT compatible "
+                f"with agentic extraction. {escalation_remedy}"
             )
 
 
@@ -1441,6 +1584,23 @@ def _modality_supplies_content(modality: Dict[str, Any]) -> bool:
     )
 
 
+def _confidence_pass_can_run(merged_config: Dict[str, Any]) -> bool:
+    """False only when the confidence block turns scoring off.
+
+    Read through ``ConfidenceConfig`` rather than by re-reading ``mode`` and
+    ``enabled`` here: the model is what the runtime reads, and it folds the legacy
+    ``enabled: false`` into ``mode: off``. ``integrated`` still counts as able to run,
+    because simple extraction scores a class with list fields in the separate pass
+    even then. ``validate_config`` calls this only after ``IDPConfig`` has accepted
+    the merged configuration, so the block validates here.
+    """
+    from idp_common.config.models import ConfidenceConfig
+
+    return ConfidenceConfig.model_validate(
+        _dict_at(merged_config, "extraction", "confidence")
+    ).enabled
+
+
 def _validate_task_prompt_placeholders(
     merged_config: Dict[str, Any], result: Dict[str, Any]
 ) -> None:
@@ -1450,70 +1610,90 @@ def _validate_task_prompt_placeholders(
     Checks for missing required placeholders that would cause silent failures
     when custom task_prompts are provided.
 
-    Required placeholders by section:
-    - ocr: {DOCUMENT_IMAGE}
+    Required placeholders by prompt:
+    - ocr.task_prompt: {DOCUMENT_IMAGE}
     - classification: {DOCUMENT_TEXT} or {DOCUMENT_IMAGE}
-    - extraction: {DOCUMENT_TEXT} or {DOCUMENT_IMAGE}
-    - assessment: {DOCUMENT_IMAGE}, {OCR_TEXT_CONFIDENCE}, {EXTRACTION_RESULTS}
-    - summarization: {DOCUMENT_TEXT}, {EXTRACTION_RESULTS}
+    - extraction.task_prompt: {DOCUMENT_TEXT} or {DOCUMENT_IMAGE}
+    - extraction.confidence.task_prompt: {EXTRACTION_RESULTS}, and at least one of
+      {DOCUMENT_TEXT}, {OCR_TEXT_CONFIDENCE} or {DOCUMENT_IMAGE}
+    - summarization.task_prompt: {DOCUMENT_TEXT}, {EXTRACTION_RESULTS}
+
+    The confidence prompt lives at ``extraction.confidence.task_prompt``. A pre-0.6
+    ``assessment.task_prompt`` is not read here: ``validate_config`` checks the
+    merged configuration, and the merge runs the migration chain, which moves that
+    block under ``extraction.confidence`` and leaves no top-level ``assessment``.
+    {DOCUMENT_IMAGE} alone is not required of it, because removing that placeholder
+    is the documented way to make the confidence pass text-only (the assessment
+    service attaches page images only when the prompt asks for them).
     """
-    # Validation rules: section -> (required_placeholders, require_all_flag)
-    # require_all_flag: True = ALL placeholders required, False = ANY one required
-    validation_rules = {
-        "ocr": (
+    # Validation rules: (section, prompt path, ALL of these, at least ONE of these
+    # (empty = no such requirement), message).
+    validation_rules = [
+        (
+            "ocr",
+            ("ocr",),
             ["{DOCUMENT_IMAGE}"],
-            True,  # Must have DOCUMENT_IMAGE
+            [],
             "ocr.task_prompt must include {DOCUMENT_IMAGE} placeholder. "
             "Without this placeholder, the OCR model will not receive the document image, "
             "resulting in OCR failures. "
             "Either add the required placeholder or remove task_prompt to use system defaults.",
         ),
-        "classification": (
+        (
+            "classification",
+            ("classification",),
+            [],
             ["{DOCUMENT_TEXT}", "{DOCUMENT_IMAGE}"],
-            False,  # Must have at least one
             "{path} must include {DOCUMENT_TEXT} or {DOCUMENT_IMAGE} placeholder. "
             "Without these placeholders, the classification model will not receive document content, "
             "resulting in classification failures. "
             "Either add at least one required placeholder or remove task_prompt to use system defaults.",
         ),
-        "extraction": (
+        (
+            "extraction",
+            ("extraction",),
+            [],
             ["{DOCUMENT_TEXT}", "{DOCUMENT_IMAGE}"],
-            False,  # Must have at least one
             "extraction.task_prompt must include {DOCUMENT_TEXT} or {DOCUMENT_IMAGE} placeholder. "
             "Without these placeholders, the LLM will not receive document content from OCR, "
             "resulting in silent extraction failures. "
             "Either add at least one required placeholder or remove task_prompt to use system defaults.",
         ),
-        "assessment": (
-            ["{DOCUMENT_IMAGE}", "{OCR_TEXT_CONFIDENCE}", "{EXTRACTION_RESULTS}"],
-            True,  # Must have all three
-            "assessment.task_prompt must include {DOCUMENT_IMAGE}, {OCR_TEXT_CONFIDENCE}, and {EXTRACTION_RESULTS} placeholders. "
-            "Without these placeholders, the assessment model cannot evaluate extraction quality or provide bounding boxes. "
-            "Either add all required placeholders or remove task_prompt to use system defaults.",
+        (
+            "confidence",
+            ("extraction", "confidence"),
+            ["{EXTRACTION_RESULTS}"],
+            ["{DOCUMENT_TEXT}", "{OCR_TEXT_CONFIDENCE}", "{DOCUMENT_IMAGE}"],
+            "extraction.confidence.task_prompt must include {EXTRACTION_RESULTS} and at least one of "
+            "{DOCUMENT_TEXT}, {OCR_TEXT_CONFIDENCE} or {DOCUMENT_IMAGE}. "
+            "Without them, the confidence model is not shown the values it is asked to score "
+            "or the document to score them against. "
+            "Either add the required placeholders or remove task_prompt to use system defaults.",
         ),
-        "summarization": (
+        (
+            "summarization",
+            ("summarization",),
             ["{DOCUMENT_TEXT}", "{EXTRACTION_RESULTS}"],
-            True,  # Must have both
+            [],
             "summarization.task_prompt must include {DOCUMENT_TEXT} and {EXTRACTION_RESULTS} placeholders. "
             "Without these placeholders, the summarization model cannot generate accurate summaries. "
             "Either add all required placeholders or remove task_prompt to use system defaults.",
         ),
-    }
+    ]
 
-    # Check each section that has validation rules
-    for section_name, (
-        required_placeholders,
-        require_all,
-        error_message,
-    ) in validation_rules.items():
-        section = merged_config.get(section_name, {})
+    for section_name, prompt_path, all_of, any_of, error_message in validation_rules:
+        section = _dict_at(merged_config, *prompt_path)
         if section_name == "classification":
             # One prompt per call the active strategy makes; see
             # `_classification_task_prompts`.
             prompts = _classification_task_prompts(merged_config)
         else:
             prompts = [
-                (f"{section_name}.task_prompt", section.get("task_prompt", ""), {})
+                (
+                    ".".join(prompt_path + ("task_prompt",)),
+                    section.get("task_prompt", ""),
+                    {},
+                )
             ]
 
         # Special case: OCR task_prompt is only used when backend is 'bedrock'
@@ -1523,11 +1703,11 @@ def _validate_task_prompt_placeholders(
                 # Skip OCR validation for non-bedrock backends (Textract doesn't use prompts)
                 continue
 
-        # Skip validation for disabled sections (assessment, summarization)
-        if section_name in ["assessment", "summarization"]:
-            if not section.get("enabled", True):
-                # Section is explicitly disabled, skip validation
-                continue
+        # Skip validation when the prompt is never sent.
+        if section_name == "confidence" and not _confidence_pass_can_run(merged_config):
+            continue
+        if section_name == "summarization" and not section.get("enabled", True):
+            continue
 
         for path, task_prompt, modality in prompts:
             if not task_prompt:
@@ -1537,22 +1717,9 @@ def _validate_task_prompt_placeholders(
                 # asks for it or not, and the service normalises the prompt to
                 # match. See `_classification_task_prompts`.
                 continue
-            # Check which placeholders are present
-            present_placeholders = [
-                placeholder
-                for placeholder in required_placeholders
-                if placeholder in task_prompt
-            ]
-
-            # Determine if validation passes
-            if require_all:
-                # ALL placeholders must be present
-                validation_passed = len(present_placeholders) == len(
-                    required_placeholders
-                )
-            else:
-                # At least ONE placeholder must be present
-                validation_passed = len(present_placeholders) > 0
+            validation_passed = all(p in task_prompt for p in all_of) and (
+                not any_of or any(p in task_prompt for p in any_of)
+            )
 
             if not validation_passed:
                 result["valid"] = False

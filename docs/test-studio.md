@@ -2,6 +2,9 @@
 title: "Test Studio"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Test Studio
 
 The Test Studio provides a comprehensive interface for managing test sets, running tests, and analyzing results directly from the web UI.
@@ -359,7 +362,7 @@ The UI reaches every backend operation below through the REST API, as
 #### TestSetFileCopier Lambda
 - **Location**: `src/lambda/test_set_file_copier/index.py`
 - **Purpose**: Copies files from source buckets to the test set bucket
-- **Features**: Pattern-based file matching, baseline validation, automatic baseline filtering for Input Bucket sources, time-based file filtering, file count recount, supports both create and append modes
+- **Features**: Pattern-based file matching, baseline validation, Input Bucket documents without a baseline added unlabeled, time-based file filtering, file count recount, supports both create and append modes
 
 #### TestSetZipExtractor Lambda
 - **Location**: `src/lambda/test_set_zip_extractor/index.py`
@@ -629,8 +632,14 @@ The **From files already in a bucket** step adds a **Modified after** filter —
 a preset (last hour, 24 hours, 7 days, …) or a custom date and time, which makes
 it easy to pick up only recently reviewed documents — and a **Check matching
 files** button that reports the match count before you commit. When reading from
-the input bucket, documents with no ground truth in the evaluation baseline bucket
-are skipped rather than failing, so a broad pattern is safe. Patterns match the full
+the input bucket, a matching document with no ground truth in the evaluation baseline
+bucket is added **unlabeled**, as it is from every other source: its input is copied
+and it waits for [draft labels](#draft-labeling-unlabeled-documents--ground-truth).
+A broad pattern therefore brings in every file it matches, labeled or not, and
+one unlabeled document makes the whole set read as `unlabeled` until it is
+draft-labeled. A pattern re-applied when adding documents leaves the set's existing
+unlabeled documents as they are. A set whose every match is unlabeled is created as an unlabeled set.
+Patterns match the full
 object key: `*` matches within one folder level, `**` matches across folders, `?`
 matches a single character. The folder path before the first wildcard must be typed
 as it exists in the bucket; everything after it is matched regardless of case.
@@ -720,14 +729,14 @@ The same **Add documents** menu is available in two places: on the Test Sets tab
 
 - **From files in a bucket** (Admin only): Select a bucket, enter a file pattern, and optionally filter by modification time. Matching a pattern searches the whole bucket, so this source is not offered to Authors
 - **From a zip upload**: Upload a zip file containing new documents and, optionally, their baselines. A zip with only `input/` adds unlabeled documents; a set that was fully labeled then shows as unlabeled until those documents are draft-labeled or reviewed
-- **From processed documents**: Pick documents that have finished processing from a list of completed Production documents, newest first, with their configuration profile, a filter, and **Load older documents** for earlier ones. Each is copied into the set with any ground truth already saved for it in the evaluation baseline bucket. A document with **no** ground truth is added **unlabeled** rather than skipped, and the dialog names those documents before you confirm. If the set is labeled or draft-labeled, the dialog instead warns that one unlabeled document is enough to make the whole set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. A document already in the set is skipped rather than copied again, so labels reviewed in the set are never overwritten. Available to Admins and Authors. Every selected document is checked on the server before anything is copied: it must have finished processing under a configuration profile the caller may access, so a user scoped to certain profiles cannot add documents outside them. If any selected document fails that check, the whole request is refused with one message that does not say which document or why.
+- **From processed documents**: Pick documents that have finished processing from a list of completed Production documents, newest first, with their configuration profile, a filter, and **Load older documents** for earlier ones. Each is copied into the set with any ground truth already saved for it in the evaluation baseline bucket. A document with **no** ground truth is added **unlabeled** rather than skipped, and the dialog names those documents before you confirm. If the set is labeled or draft-labeled, the dialog instead warns that one unlabeled document is enough to make the whole set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. A document already in the set is skipped rather than copied again, so labels reviewed in the set are never overwritten. Available to Admins and Authors. Every selected document is checked on the server before anything is copied: it must have finished processing under a configuration profile the caller may access, so a user scoped to certain profiles cannot add documents outside them. If any selected document fails that check, the whole request is refused with one message that does not say which document or why. Admins can also open this dialog from the Document List: select documents there and choose **Add to test set**, then pick the set (see [Adding documents to a test set](web-ui.md#adding-documents-to-a-test-set)).
 - **Generate synthetic documents**: Opens the generator already pointed at this set (requires the synthetic data generator extension)
 
 
 On the table, the set shows an "Updating..." status while files are being added and the file count updates when it completes. On the set's page, a notice reports that documents are arriving and the list refreshes when they land; for generation it follows the job and refreshes when the job completes.
 
 **Key behaviors:**
-- **Automatic baseline filtering** (Input Bucket pattern import only): Files without matching baseline data in the evaluation bucket are automatically excluded rather than failing. Documents added **From processed documents** are never excluded for this reason; they arrive unlabeled instead. A result message reports the counts (e.g., "Added 8 of 12 files (4 excluded - no baseline data)").
+- **Documents without ground truth arrive unlabeled**: From the Input Bucket, by pattern or **From processed documents**, a file with no matching baseline data in the evaluation bucket is added without labels rather than skipped. Adding one to a labeled or draft-labeled set makes the set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. From the Test Set Bucket, every matching file must still have a baseline folder, or the add fails.
 - **Idempotent**: Adding a document that already exists overwrites it. File counts are always recounted from S3 for accuracy.
 - **Prepopulated file pattern**: The file pattern field is pre-filled with the pattern used to create the test set, so you can reuse or adjust it.
 - **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns.
@@ -754,7 +763,7 @@ my-test-set/
   A *partially* labeled set (baselines for some documents but not others) is
   still a validation error, since that indicates an incomplete upload rather
   than a deliberate label-later workflow.
-- When using Input Bucket as source, files without baselines are automatically excluded (not treated as an error)
+- When using Input Bucket as source, files without baselines are added unlabeled (not treated as an error), so the set can be partially labeled; it reads as `unlabeled` until those documents are draft-labeled
 - Status: COMPLETED (valid), FAILED (validation errors), QUEUED/COPYING (creating), UPDATING (adding documents)
 - These rules apply to a zip upload exactly as they do to folders found in the bucket: the
   zip extractor accepts an archive with no `baseline/` folder as an unlabeled set and still
@@ -1462,6 +1471,15 @@ A few rules the board enforces, all for the same reason — a packet split is a
   delete it.
 - A page the split had dropped entirely **can** be added. That is precisely the defect
   a reviewer is here to fix, so it is allowed in.
+- A section you add starts with no field values, even when you deleted another section
+  in the same edit: the board never gives an added section the number of a section the
+  document already had, because a save keeps each section's fields under the number it
+  is sent with.
+- After a save, **Edit Page Grouping** is unavailable, with the reason *Loading the saved
+  grouping…*, until the editor has re-read the saved sections. The save renumbers them,
+  so a grouping opened from the sections shown before the re-read would name the wrong
+  ones. If the re-read fails, the reason says so instead; choose **Refresh** to load
+  the saved grouping.
 
 Sections are renumbered so their ids follow page order. Several consumers take a
 section's group index from its position in a list, and nothing otherwise guarantees
@@ -1866,7 +1884,7 @@ class is corrected — see
 
 ### Field-Level Metrics
 
-Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns (Stickler v0.4.0+):
+Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns:
 
 **Displayed Columns:**
 1. **Field Name**: The name of the extracted field (hierarchical with expand/collapse)

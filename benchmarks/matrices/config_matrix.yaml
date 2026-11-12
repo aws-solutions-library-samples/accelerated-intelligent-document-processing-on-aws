@@ -197,11 +197,12 @@ axes:
     #
     # Two behaviours differ from Opus 5 and both are visible in a benchmark run:
     #   * thinking cannot be disabled, so `reasoning_effort` is the only spend lever
-    #     and its DEFAULT is medium, not high (per the Bedrock model card; a default
-    #     is not observable from a response, so this is cited rather than measured)
-    #     — a cell that leaves effort unset is
-    #     not the same cell it is on Opus 5. Pair with the `reasoning_effort` sweep
-    #     before reading a cost delta as a model difference.
+    #     and its model DEFAULT is medium, not high (per the Bedrock model card; a
+    #     default is not observable from a response, so this is cited rather than
+    #     measured). That default never applies in this harness: every cell inherits
+    #     `default_cell.reasoning_effort: low` unless it names the axis, so an Opus 5
+    #     and an Opus 5.5 cell run at the same effort. Use the `reasoning_effort`
+    #     axis to compare them at another level.
     #   * a forced `toolChoice` is rejected, so the `forcing` axis cannot be `on`
     #     here: forced-tool extraction falls back to the prose schema and records
     #     the reason. Do not build a `forcing` A/B on this model — both arms would
@@ -231,10 +232,11 @@ axes:
     #
     # Four things about this model that change how its cells read:
     #   * It takes `reasoning_effort` — the FIRST Haiku that does; Haiku 4.5 rejects
-    #     it with a 400. Its default is medium (model card), so a cell that leaves
-    #     effort unset is not comparable to a Haiku 4.5 cell. Pair with the
-    #     `reasoning_effort` sweep before reading a cost delta as a model difference,
-    #     for the same reason the opus55 arm says so.
+    #     it with a 400. Its model default is medium (model card), but no cell here
+    #     leaves effort unset: every cell inherits `default_cell`'s `low`. A Haiku 5.5
+    #     cell therefore runs at `low` while a Haiku 4.5 cell runs with no effort at
+    #     all (the client sends none to a model without the control), so pair with the
+    #     `reasoning_effort` axis before reading a cost delta as a model difference.
     #   * Unlike Opus 5.5, a forced `toolChoice` IS accepted (measured on Converse,
     #     2026-10-08), so a `forcing` A/B is valid here and both arms are real.
     #   * Its prompt-cache minimum is 512 tokens against Haiku 4.5's 4,096, so
@@ -417,10 +419,11 @@ core_cells:
 # coresynth from 133 to 182 runs and corefast (the release gate) from 171 to 234 —
 # a 37% cost rise nobody asked for.
 #
-# They would also have injected GUARANTEED FAILURES: `coresynth` includes
-# large_narrow (17 pages, ~203K estimated input) and `sonnet5-simple-sep` cannot
-# take that in one request. A release grid whose baseline contains expected
-# failures cannot be read as a regression gate.
+# They would also have injected EXPECTED SHORTFALLS: `coresynth` includes
+# large_narrow (17 pages, ~203K estimated input), where Sonnet 5 in simple mode
+# returns a partial list on most runs while reporting COMPLETED (5 of 13 complete on
+# v0.6.14, config-guidance.md section 5.1). A release grid whose baseline contains
+# expected shortfalls cannot be read as a regression gate.
 #
 # The model question is answered two ways instead, both deliberate:
 #   * `astravalue` / `astracap` — the dedicated head-to-head, on documents chosen
@@ -809,8 +812,9 @@ suites:
   #                      cost-per-correct-field here, the suite is broken.
   #   med_narrow    9pp  still inside both windows, at 3x the size: guards against
   #                      crediting Astra with a capacity win it did not need.
-  #   large_narrow 17pp  the first cell Sonnet 5 CANNOT do in one request while
-  #                      Astra can — capability, not accuracy.
+  #   large_narrow 17pp  the first cell where Sonnet 5 in one request returns a
+  #                      partial list on some runs (4 of 5 complete in this suite on
+  #                      v0.6.14) and Astra the whole list — capability, not accuracy.
   #   dense_250    26pp  Astra-only AND maximally difficult (8 columns, 4 interleaved
   #                      lists, long descriptions, 15% OCR noise, typed value truth).
   #                      Where the premium has to show up if it shows up anywhere.
@@ -880,13 +884,11 @@ suites:
   # input and output; anything the run reports beyond that is the "fewer tokens"
   # claim, and anything short of it is worth explaining before publishing.
   #
-  # ⚠️ Read the effort caveat on the `opus55` axis value before attributing a cost
-  # delta to the model. Opus 5.5 defaults to `medium` effort where Opus 5 defaults
-  # to `high`, and NEITHER cell here sets `reasoning_effort`, so the two arms differ
-  # by model AND by default effort. That is deliberate — it is what a user who
-  # switches model and changes nothing else actually gets, which is the decision the
-  # guide has to inform — but it means this suite measures the SWITCH, not the
-  # model. To separate them, re-run with `--set reasoning_effort=high` on both arms.
+  # Effort is matched: no cell here names `reasoning_effort`, so all four inherit
+  # `default_cell`'s `low` (the v0.6.14 run records `resolved.reasoning_effort: low`
+  # on all 40 rows), which is also the shipped extraction default. The models' own
+  # defaults (medium for Opus 5.5, high for Opus 5) therefore do not apply. To
+  # compare the pair at a higher effort, re-run with `--set reasoning_effort=high`.
   opus55value:
     cells:
     - opus5-simple-sep

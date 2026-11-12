@@ -1062,6 +1062,16 @@ def ci_region(environ: dict | None = None) -> str:
     return env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or PRIMARY_CI_REGION
 
 
+def _region_type(environ: dict | None = None) -> str | None:
+    """``eu`` or ``ca`` for a build the model swap covers, else None."""
+    region = ci_region(environ)
+    if region.startswith("eu-"):
+        return "eu"
+    if region.startswith("ca-"):
+        return "ca"
+    return None
+
+
 def _model_swapper():
     """The product's own `swap_model_ids`, from the UpdateConfiguration Lambda.
 
@@ -1092,9 +1102,7 @@ def regional_config_file(config_path: str, environ: dict | None = None) -> str:
     import yaml
 
     region = ci_region(environ)
-    region_type = (
-        "eu" if region.startswith("eu-") else "ca" if region.startswith("ca-") else None
-    )
+    region_type = _region_type(environ)
     if region_type is None:
         return config_path
     with open(config_path, "rb") as f:
@@ -2375,6 +2383,140 @@ def test_step10_multi_doc_discovery(stack_name):
         return {
             "success": False,
             "error": f"Multi-document discovery test failed: {str(e)}",
+        }
+
+
+QUICK_START_PROFILE = "integration-quick-start"
+QUICK_START_CLASS = "IntegrationPaystub"
+QUICK_START_PROMPT = (
+    "Employee paystubs that list the employer, the pay period end date, "
+    "the gross pay and the net pay"
+)
+QUICK_START_FIELD_HINTS = ("employer name", "pay period end date", "net pay")
+QUICK_START_MODEL = "us.anthropic.claude-sonnet-4-6"
+QUICK_START_ATTEMPTS = 2
+
+
+def quick_start_model(environ: dict | None = None) -> str:
+    """The authoring model, swapped for an EU or CA build as an uploaded config is."""
+    region_type = _region_type(environ)
+    if region_type is None:
+        return QUICK_START_MODEL
+    return _model_swapper()({"model": QUICK_START_MODEL}, region_type)["model"]
+
+
+def quick_start_bootstrap_command(stack_name, environ: dict | None = None):
+    hints = " ".join(f'--field-hint "{hint}"' for hint in QUICK_START_FIELD_HINTS)
+    return (
+        f"idp-cli bootstrap --stack-name {stack_name} "
+        f'--prompt "{QUICK_START_PROMPT}" --class-name {QUICK_START_CLASS} '
+        f"--target-profile {QUICK_START_PROFILE} {hints} "
+        f"--model-id {quick_start_model(environ)} --count 1"
+    )
+
+
+def quick_start_profile_problem(config_data):
+    """Why a downloaded Quick Start profile is not the one bootstrap was asked for.
+
+    Returns ``None`` when the profile holds the requested class with at least one
+    leaf field per hint, nested or not. Field names are the model's choice, so only
+    the count is held.
+    """
+    from idp_common.synthesis.schema_bridge import leaf_field_paths
+
+    classes = (config_data or {}).get("classes") or []
+    target = next(
+        (
+            c
+            for c in classes
+            if QUICK_START_CLASS in (c.get("$id"), c.get("x-aws-idp-document-type"))
+        ),
+        None,
+    )
+    if target is None:
+        found = [c.get("$id") for c in classes]
+        return f"class {QUICK_START_CLASS} not in profile {QUICK_START_PROFILE} (found {found})"
+    fields = leaf_field_paths(target)
+    if len(fields) < len(QUICK_START_FIELD_HINTS):
+        return (
+            f"class {QUICK_START_CLASS} has {len(fields)} field(s), fewer than the "
+            f"{len(QUICK_START_FIELD_HINTS)} it was asked for"
+        )
+    return None
+
+
+def run_quick_start_bootstrap(stack_name):
+    """Run `idp-cli bootstrap`, once more if it fails; return the last problem.
+
+    Authoring is one model call that must return a valid schema, and a failure in
+    the parallel pool fails the whole suite, so one retry keeps a single bad
+    response from costing the run. A suite that has already failed fast is not
+    retried. Returns None once a run reports saving the profile.
+    """
+    saved = f"Config profile: {QUICK_START_PROFILE}"
+    problem = None
+    for attempt in range(1, QUICK_START_ATTEMPTS + 1):
+        try:
+            result = run_command(quick_start_bootstrap_command(stack_name), timeout=600)
+        except Exception as e:
+            if ABORT_TESTS.is_set():
+                raise
+            problem = str(e)
+        else:
+            if saved in (result.stdout or ""):
+                return None
+            problem = (
+                f"idp-cli bootstrap did not report saving profile {QUICK_START_PROFILE}"
+            )
+        print(f"  ⚠️ Bootstrap attempt {attempt} of {QUICK_START_ATTEMPTS}: {problem}")
+    return problem
+
+
+def test_step16_quick_start_bootstrap(stack_name):
+    """Step 16: Quick Start's headless path authors a schema and saves a profile.
+
+    `idp-cli bootstrap` shares the schema authoring and profile write the Quick
+    Start agent's tools use. It names no starting profile, so the catalog is empty
+    and the catalog match does not run. It saves its own profile and never activates
+    it, so it is safe in the parallel pool.
+    """
+    print("Step 16: Testing Quick Start bootstrap (idp-cli bootstrap)...")
+
+    try:
+        problem = run_quick_start_bootstrap(stack_name)
+        if problem:
+            return {
+                "success": False,
+                "error": f"Quick Start bootstrap test failed: {problem}",
+            }
+
+        config_file = "/tmp/quick-start-bootstrap-config.yaml"  # nosec B108
+        cmd = (
+            f"idp-cli config-download --stack-name {stack_name} "
+            f"--config-version {QUICK_START_PROFILE} --output {config_file}"
+        )
+        run_command(cmd, check=True)
+
+        import yaml
+
+        with open(config_file, "r") as f:
+            problem = quick_start_profile_problem(yaml.safe_load(f))
+        if problem:
+            print(f"❌ {problem}")
+            return {
+                "success": False,
+                "error": f"Quick Start bootstrap test failed: {problem}",
+            }
+
+        print(f"  ✓ Profile {QUICK_START_PROFILE} holds class {QUICK_START_CLASS}")
+        print("✅ Quick Start bootstrap test completed")
+        return {"success": True}
+
+    except Exception as e:
+        print(f"❌ Quick Start bootstrap test failed: {e}")
+        return {
+            "success": False,
+            "error": f"Quick Start bootstrap test failed: {str(e)}",
         }
 
 
@@ -4378,6 +4520,12 @@ PARALLEL_TEST_STEPS = [
         "Step 14",
         "Pipeline hooks",
         "Pipeline hooks end-to-end (preprocessing + postprocessing, mutation persisted)",
+    ),
+    (
+        test_step16_quick_start_bootstrap,
+        "Step 16",
+        "Quick Start bootstrap",
+        "Quick Start schema authoring saves a profile (idp-cli bootstrap)",
     ),
 ]
 # Step 12 stays sequential: its dynamic RBAC harness temporarily flips
@@ -11479,7 +11627,6 @@ def terraform_migration_driver_command(
     old_name,
     new_name,
     module_url,
-    role_arn,
     terraform_bin,
     work_dir,
     region,
@@ -11487,6 +11634,11 @@ def terraform_migration_driver_command(
     boundary_arn,
     state_mirror=None,
 ):
+    """The driver's argv. No ``--terraform-assume-role-arn``: the driver and every
+    process it starts already run as the run's TFDeployRole through the AWS
+    profile (render_migration_aws_config), and that role's trust admits only the
+    build's principal, so asking it to assume itself is refused — by the SDK's
+    own lookups in ``migrate plan`` and by the new root's providers alike."""
     mirror = ["--state-mirror", state_mirror] if state_mirror else []
     return [
         sys.executable,
@@ -11503,8 +11655,6 @@ def terraform_migration_driver_command(
         terraform_bin,
         "--terraform-module-url",
         module_url,
-        "--terraform-assume-role-arn",
-        role_arn,
         "--expected-account",
         account,
         "--upstream-iam-path",
@@ -11673,7 +11823,6 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
             old_name,
             new_name,
             module_url,
-            role_arn,
             terraform_bin,
             work_dir,
             region,
@@ -11717,6 +11866,35 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
     return success, summary
 
 
+#: The driver's context beside run.json in a migration run's mirror
+#: (MIRROR_CONTEXT in terraform_migration_test.py).
+TERRAFORM_MIGRATION_CONTEXT_KEY = "context.json"
+
+
+def _migration_run_created_anything(client, bucket, prefix, keys) -> bool:
+    """Whether the mirrored context says the run created something. No context,
+    or one that cannot be read, counts as created: the reap then runs, and the
+    driver's own checks decide."""
+    key = prefix + TERRAFORM_MIGRATION_CONTEXT_KEY
+    if key not in keys:
+        return True
+    try:
+        context = json.loads(client.get_object(Bucket=bucket, Key=key)["Body"].read())
+    except Exception:  # noqa: BLE001
+        return True
+    return bool(context.get("created"))
+
+
+def _remove_s3_prefix(client, bucket, prefix) -> None:
+    """Delete every object version and delete marker under ``prefix``."""
+    paginator = client.get_paginator("list_object_versions")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for item in page.get("Versions", []) + page.get("DeleteMarkers", []):
+            client.delete_object(
+                Bucket=bucket, Key=item["Key"], VersionId=item["VersionId"]
+            )
+
+
 def _reap_terraform_migration(new_name, bucket, keys, s3=None):
     """Tear down one dead migration run from its mirror: the driver's own
     ``--resume --teardown-only``, in a scratch work directory it rebuilds from the
@@ -11740,6 +11918,16 @@ def _reap_terraform_migration(new_name, bucket, keys, s3=None):
             "Body"
         ].read()
     )
+    if not _migration_run_created_anything(client, bucket, prefix, keys):
+        # Refused before it created anything (a preflight that failed, say): the
+        # build already removed its `-iam` pre-stack, so there is no role to
+        # assume and nothing to destroy. Read with this build's own credentials.
+        print(f"[{new_name}] the dead run created nothing; removing its mirror")
+        _remove_s3_prefix(client, bucket, prefix)
+        return {
+            "findings": [f"{new_name}: {f}" for f in cleanup_iam_resources(new_name)],
+            "timed_out": False,
+        }
     with tempfile.TemporaryDirectory(prefix="idp-tfmig-reap-") as tmp:
         config_path = os.path.join(tmp, "aws-config")
         with open(config_path, "w") as f:
@@ -11756,7 +11944,6 @@ def _reap_terraform_migration(new_name, bucket, keys, s3=None):
             record["old_name"],
             new_name,
             record["module_url"],
-            record["role_arn"],
             ensure_terraform_binary(),
             os.path.join(tmp, "work"),
             record["region"],

@@ -628,12 +628,16 @@ export const simpleIntegratedDowngraded = (
  *
  * - `wrapped` applies to BOTH stages: `ExtractionService._get_class_schema` and
  *   `AssessmentService._get_class_schema` each wrap independently from config.
- * - `probe` applies to the EXTRACTION step ONLY, and to Simple mode only. It is
- *   added in `ExtractionService._build_wire_schema`, which returns the schema
- *   untouched when `agentic.enabled` — so claiming it in Advanced mode, or on the
- *   confidence step (assessment wraps but never augments), made this alert state
- *   something false. It applies to every class when detection is on, not just a
- *   flagged one, which is why it comes from the config rather than the class.
+ * - `probe` applies to the EXTRACTION step ONLY, in BOTH modes. Simple mode adds
+ *   it in `ExtractionService._build_wire_schema`; Advanced mode adds it to the
+ *   transport model of the single-agent call in
+ *   `ExtractionService._agentic_probe_model` (#772). Advanced does NOT add it to a
+ *   section split into page-range shards, and the preview cannot know whether a
+ *   section will be sharded (that depends on its page count), so the bullet says
+ *   so rather than the flag being dropped. Claiming it on the confidence step
+ *   (assessment wraps but never augments) would state something false. It applies
+ *   to every class when detection is on, not just a flagged one, which is why it
+ *   comes from the config rather than the class.
  * - `forcedTool` is Simple-only: the forced toolConfig is built in the non-agentic
  *   branch of `_invoke_extraction_model`, and Advanced already sends the schema as
  *   the Strands tool. Assessment never sends a forced tool at all. It is ALSO
@@ -751,7 +755,7 @@ export const schemaDivergenceFor = (
   const isExtraction = selectedStep === 'extraction';
   return {
     wrapped: Boolean(selectedClass?.[X_AWS_IDP_MULTI_INSTANCE]),
-    probe: boolish(detection.enabled, false) && mode === 'simple' && isExtraction,
+    probe: boolish(detection.enabled, false) && isExtraction,
     forcedTool: sendsForcedTool && mode === 'simple' && isExtraction && modelCanBeForced(extraction.model),
     restatesSchema: boolish(agentic.restate_schema_in_system_prompt, true) && mode === 'advanced' && isExtraction,
   };
@@ -1505,8 +1509,9 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
             {schemaDivergence.probe && (
               <span>
                 <strong>Multi-instance Section Detection</strong> is on, so one extra property (<code>IDPDocumentInstanceCount</code>) is
-                added to the schema sent for every class, asking the model how many instances the pages contain. It is stripped from the
-                result and never appears in your extracted data.
+                added to the schema sent for every class, asking the model how many instances the pages contain. In Advanced mode it is not
+                added when a section is split into page-range shards. It is stripped from the result and never appears in your extracted
+                data.
               </span>
             )}
             <span>The section&apos;s stored metadata is the authoritative record of what was sent.</span>

@@ -59,6 +59,14 @@ Test Studio submits its documents through the same pipeline as ordinary uploads 
 
 The two views are mutually exclusive by design — there is no combined view. On a stack that uses Test Studio regularly the test documents outnumber real uploads by an order of magnitude, so merging them would bury the uploads. The selection is not remembered between visits, so the list always opens on Production.
 
+### Adding documents to a test set
+
+Admins can send processed documents straight to a [Test Studio](test-studio.md) test set from the Production view. Select the documents and choose **Add to test set**. The button is enabled once at least one selected document has finished processing.
+
+It opens the same dialog as Test Studio's **Add documents → From processed documents**, with your selection already chosen and a **Test set** field in place of a fixed set. Pick an existing set; a set that is not ready (still being created or updated, or failed) is listed but cannot be picked, and a new set is created in Test Studio first. Selected documents that have not finished processing are left out, and the dialog says how many. Everything else works as it does in Test Studio: a document with no ground truth is added unlabeled and named before you confirm, the dialog warns when that would make a labeled set read as unlabeled, and a document already in the set is skipped. A notice above the table confirms the add once it is queued. See [Adding documents to existing test sets](test-studio.md#adding-documents-to-existing-test-sets).
+
+The action is not shown in the Test Studio view, whose documents are copies made by test runs, or to users who are not Admins. Authors can still add processed documents from Test Studio.
+
 ### Deleting documents
 
 Select one or more rows and use **Delete**. The confirmation modal applies to the whole
@@ -680,7 +688,7 @@ If a document is "too large for chat context window" — i.e. Bedrock returns an
 
 ### Chat history
 
-Your chat history is preserved while you remain on the Document Detail screen; leaving and returning erases it. Prompt caching is used for the document contents across successive turns on the same document to reduce latency and cost.
+Your chat history is preserved while you remain on the Document Detail screen; leaving and returning erases it. Prompt caching is applied to the document contents across successive turns on the same document, so a turn that follows within five minutes can read them at the cache-read rate instead of the full input price. Its effect on latency has not been measured.
 
 ### Streaming & live status
 
@@ -852,19 +860,18 @@ the cap is reached, the oldest read messages are removed first. Administrators s
 both in the configuration — see
 [Inbox message retention](configuration.md#inbox-message-retention).
 
-**What arrives in the Inbox.** HITL review queues post three kinds of message to the
-Annotator concerned, for production items and Test Studio documents alike:
+**What arrives in the Inbox.** HITL review queues post four kinds of message, for
+production items and Test Studio documents alike:
 
 | Type (Inbox settings) | Sent when |
 |---|---|
 | **Review item assigned to you** | An Admin assigns an item or document to you. |
 | **Your review claim was released** | An item you hold is unassigned, reassigned or moved by an Admin, or an Admin completes, rejects or removes it from review. |
 | **Task reminder** | An item or document assigned to you is still open after its queue's time limit; one reminder per assignment. |
+| **Review queue items waiting** | A document enters a review queue. Sent to the queue's members rather than to one Annotator, at most once per queue every 10 minutes. |
 
-Inbox settings also list **Review queue items waiting**, **Review claim expiring** and
-**Review claim expired**. This release does not send them: arrivals in a queue are
-announced to nobody (Admins see waiting work in Review Management), and assignments do
-not expire. See [Review queues](review-queues.md) for the queue workflow. Developers
+Inbox settings also list **Review claim expiring** and **Review claim expired**. The
+accelerator does not send them, because assignments do not expire. See [Review queues](review-queues.md) for the queue workflow. Developers
 posting messages should read the
 [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 

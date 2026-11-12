@@ -1040,6 +1040,29 @@ cannot be edited.
 
 ### 2b/2c. The nested adversarial review, and iteration
 
+**Tier the review by what the PR changes.** Every review costs a full agent, and in one
+run the reviews were the slowest step in the loop: most took 15 to 40 minutes, one took
+7.4 hours, and another ran for more than 2 hours before it was asked to report. So match
+the review to the risk:
+
+| PR changes | Review |
+|---|---|
+| Docs, comments, or config data only (no executable change) | None. The doc gate tier (link check plus doc tests) is the whole gate. |
+| Small code change in one module (roughly under 50 production lines) | One reviewer: revert-red plus adversarial mutations. Seeded random sampling is not required. |
+| Anything else | As below: full adversarial review, and a second round if the changes after review are substantial. |
+
+⚠️ **Time-box every reviewer at 45 minutes.** At that point the reviewer reports what it
+has, marking which claims it measured and which it did not. A review that is still
+running after an hour is costing more than it is likely to find. A partial report that
+says so is worth more than a complete one that arrives after the PR has merged, which
+happened here.
+
+**Run the full suite once per fixer, at the final head.** Use targeted tests until then.
+A reviewer runs targeted tests and its mutations, not the full suite. The batch gate in
+section 4 is what sees cross-module effects. This run's fixers often ran the full
+`idp_common` suite two or three times each (before review, after review, after a rebase),
+at 5 to 7 minutes a run.
+
 Tell the agent, in its own brief:
 
 > When your PR is open and your gates are green, **spawn a fresh subagent to
@@ -1064,6 +1087,11 @@ Tell the agent, in its own brief:
 > but if the rest of the change turns out not to be worth finishing, that sentence
 > is the difference between landing the valuable part and throwing the whole branch
 > away, and you are the only one who can write it cheaply.
+>
+> **Write the whole report to `scratch/backlog/reports/<issue>.md` as well as sending
+> it.** In one run, four final reports never reached the coordinator, and each one cost
+> a status-check round trip before the work could merge. A report on disk can be read
+> without one.
 >
 > **End your report with these four lines exactly, and nothing after them:**
 >
@@ -1228,12 +1256,30 @@ the ones in section 0b.
 
 ### Promotion
 
-When the integration agent reports the batch green, open **one** PR from
-`backlog/staging` to `develop`. **The gate is the full battery run locally on the
-merge commit, not the PR's checks.** Run every gate the `Developer Tests` and
-`Security Checks` workflows run, on that commit, record each one's numbers against
-the merge SHA, and merge on that evidence. Leave the PR's checks running and read
-them within the hour; they are corroboration, not the gate.
+⚠️ **One gate per batch, not two.** In one run, each batch paid for the full battery
+twice: once in the integration run on the frozen staging commit, and again on the
+promotion merge commit. Measured, the local battery takes about 72 minutes sequentially
+(4,350 s on one promotion). Both promotion re-runs that run made validated the same 7
+files `develop` had brought in, all in `scripts/sdlc/` and `terraform/translator/`, which
+three of the fifteen gates cover. Meanwhile the promotion PR's own CI, which runs its
+jobs in parallel, passed all 14 checks on #1908 and was never used as the gate. So:
+
+1. **Open the promotion PR directly** from a branch cut at the staging tip, with `develop`
+   merged in. Do not run a separate integration battery first.
+2. **Gate on that PR's CI** when it starts promptly. Merge when every required context
+   is green, SRT included.
+3. **Fall back to the local battery below only if CI has not started within about 20
+   minutes**, which is the queue stall recorded further down, or if a check fails for
+   an environment reason the local run can rule out.
+4. **If you do run the battery locally, run only what changed.** When
+   `git diff <last-green-sha> <merge-sha>` is empty, the earlier result stands. When it
+   is not empty, run only the gates that cover the changed paths, plus SRT and the
+   dependency audit, which always run.
+
+The integration agent described below is the fallback for step 3, not a step of its own.
+
+When the local battery is the gate, it is the full list below, run on the merge commit.
+Record each gate's numbers against the merge SHA and merge on that evidence.
 
 The list is the workflows' own, and it is longer than the battery a merge agent runs:
 
@@ -1518,7 +1564,29 @@ single biggest saving in coordinator context: resolving a conflict means reading
 a diff, and running the battery means reading a 10,000-line log, and doing either
 yourself is how the loop runs out of context before it runs out of backlog.
 
-Dispatch one merge agent per PR (or reuse the same one by name across the
+**First decide whether the merge needs a battery at all. Usually it does not.** Compare
+the files staging changed since the PR's base with the files the PR changes:
+
+```bash
+B=$(git merge-base github/backlog/staging github/<branch>)
+comm -12 <(git diff --name-only $B github/backlog/staging | sort) \
+         <(git diff --name-only $B github/<branch> | sort)
+```
+
+- **No shared files, or `CHANGELOG.md` only, and GitHub reports the PR `MERGEABLE`:**
+  merge directly, with no merge agent and no re-run. The fixer's gates on its own head
+  still describe the code, and the batch gate in section 4 is what sees interactions
+  between PRs. For a `CHANGELOG.md` conflict, resolve it keep-both, check that no
+  conflict markers or duplicate bullets remain, and push the merge commit. For a
+  docs-only PR, also run `make check-markdown-links` on the merge result, which takes
+  seconds.
+- **Shared files other than `CHANGELOG.md`, or a real conflict:** dispatch the merge
+  agent below and run its battery on the merge result.
+
+Measured in one run: re-running the affected suites at every merge cost 3 to 7 minutes
+per PR, and none of those re-runs found anything the batch gate would not have.
+
+When a merge agent is needed, dispatch one per PR (or reuse the same one by name across the
 sequence, which keeps its accumulated knowledge of the conflict shapes). Its
 brief:
 

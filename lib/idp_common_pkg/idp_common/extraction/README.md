@@ -1143,6 +1143,45 @@ The ExtractionService has built-in error handling:
 3. All errors are logged for debugging
 4. Few-shot example loading errors are handled gracefully with fallback to standard prompts
 
+### A failed agent run is still metered — `idp_common.utils.metering.failure_metering`
+
+`structured_output_async` returns its metering only when it returns. When the agent
+loop raises (throttle exhaustion, `ModelInvalidToolUseSequence`, a context overflow,
+a `max_tokens` stop `_salvage_truncated_extraction` cannot recover) or ends without a
+valid extraction, the usage of every model call the agent completed is attached to
+the exception with `attach_failure_metering`, under the same
+`<context>/bedrock/<model>` key the success path uses. The exception keeps its class,
+because Step Functions retries and the service's own handlers match on it.
+
+The usage is read once, from `agent.event_loop_metrics.accumulated_usage`. In the
+pinned `strands-agents` that total is added to as soon as a model response arrives
+(so a `max_tokens` turn is in it) and is never reset by a later `invoke_async` on the
+same agent, so one reading covers every feedback round and every resumed retry. Do
+not add readings together: each is cumulative. A call that raised before a response
+arrived recorded no usage, and none is invented for it. Strands' own
+conversation-summarization call goes to the model directly rather than through the
+event loop, so it is not in this total on either path.
+
+Two callers read it with `failure_metering(e)`, and only from the exception they
+caught, never from its `__cause__`:
+
+* `_escalate_failing_fields` adds it to the escalation metering it returns, so a
+  failed escalation, which keeps the original result, still reports the calls it
+  made.
+* `process_document_section` adds it to `document.metering` before re-raising, so
+  the document the caller holds carries it. The extraction Lambda then fails, and a
+  failed workflow saves no metering to the reports, so on that path the usage is on
+  the in-memory document and goes no further.
+
+In the in-process sharded path the failing shard's exception carries that shard's
+usage only. Shards that finished are not added to it. On the Step Functions
+Distributed Map route each shard runs in its own Lambda, and nothing there reads
+the attached usage: a shard that fails fails its iteration, and its usage goes
+nowhere.
+
+Tests: `tests/unit/extraction/test_agentic_failure_metering.py`, which runs the real
+agent with only `converse_stream` scripted.
+
 ### A raising failure still reaches the section's record — `idp_common.extraction.failure`
 
 Every extraction failure raises: `ExtractionInputTooLarge`,
@@ -1587,9 +1626,9 @@ Configure agentic extraction in your configuration file:
 
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   model: "us.anthropic.claude-sonnet-5"  # Anthropic Claude recommended for agentic
   agentic:
-    enabled: true
     max_concurrent_batches: 1  # Parallel processing (2-10 for very large docs)
     table_parsing:
       enabled: true  # Enable deterministic table parser tool
@@ -1602,7 +1641,9 @@ extraction:
     enabled: false             # see "Schema-Constraint Validation" below
 ```
 
-> **Every `agentic.*` sub-option only takes effect when `agentic.enabled: true`**
+> **Every `agentic.*` sub-option only takes effect when `agentic.enabled` resolves
+> to `true`** (that is, `extraction.mode: advanced`; `mode` is authoritative and
+> overwrites `agentic.enabled` whenever it is set)
 > — `table_parsing`, `validation`, and `max_concurrent_batches` are all ignored
 > for non-agentic extraction. In the **Configuration UI** these options are
 > progressively disclosed: they appear only after you enable Agentic Extraction,
@@ -1842,8 +1883,8 @@ Key behaviors:
 ```yaml
 # Enable sharded concurrent extraction (up to 4 shards in parallel)
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   agentic:
-    enabled: true
     max_concurrent_batches: 4
     shard_token_budget: 8000    # default; lower if shards still overflow, raise for 1M-context models
     max_pages_per_shard: 5      # default; page ceiling so large docs always shard (0 = disable)
@@ -1926,6 +1967,7 @@ separate downstream step, controlled by `extraction.confidence.mode`:
 
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   confidence:
     enabled: true                     # master on/off — false disables confidence entirely
     mode: separate                    # off | "separate" (default) | "integrated"
@@ -1936,7 +1978,6 @@ extraction:
                                       # ('llm' also accepted, but discouraged: same
                                       #  prompt and cost as llm_grounded, no grounding)
   agentic:
-    enabled: true
     max_concurrent_batches: 4         # sharded; confidence scoring runs per-shard
 hitl:
   enabled: false                      # route low-confidence fields to human review
@@ -2074,8 +2115,7 @@ validation still fails.
 
 ```yaml
 extraction:
-  agentic:
-    enabled: true
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   validation:                 # sibling of `agentic`
     enabled: false            # Off by default (no behavior change on upgrade)
     check_formats: true       # Enforce JSON-Schema 'format' keywords
@@ -2242,9 +2282,9 @@ When OCR confidence data is unavailable, the tool relies on `parse_success_rate`
 ```yaml
 # config.yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   model: "us.anthropic.claude-sonnet-5"
   agentic:
-    enabled: true
     table_parsing:
       enabled: true
       max_empty_line_gap: 5  # Handle multi-page statements
