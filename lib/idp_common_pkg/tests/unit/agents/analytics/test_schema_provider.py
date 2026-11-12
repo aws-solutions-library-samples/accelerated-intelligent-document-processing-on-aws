@@ -81,20 +81,22 @@ class TestMeteringHourlyColumnsInPrompt:
             "prompt stopped listing its columns or this pattern has drifted "
             f"from the markdown again:\n{section[:300]}"
         )
-        if m:
-            columns_phrase = m.group(1)
-            assert "n_docs" not in columns_phrase, (
-                f"metering_hourly Columns: phrase still lists n_docs: "
-                f"{columns_phrase!r}"
-            )
-            assert "sum_pages" not in columns_phrase, (
-                f"metering_hourly Columns: phrase still lists sum_pages: "
-                f"{columns_phrase!r}"
-            )
-            assert "n_runs" not in columns_phrase, (
-                f"metering_hourly Columns: phrase lists n_runs, which lives "
-                f"on metering_docs_hourly: {columns_phrase!r}"
-            )
+        # ⚠️ NOT behind an `if m:`. These assertions spent their whole life
+        # inside one, against a pattern that matched nothing, so none of them
+        # ever ran. The `assert m` above now makes a non-match a failure —
+        # leaving the body conditional as well would let a future pattern
+        # change re-enter exactly the state the assert was added to prevent.
+        columns_phrase = m.group(1)
+        assert "n_docs" not in columns_phrase, (
+            f"metering_hourly Columns: phrase still lists n_docs: {columns_phrase!r}"
+        )
+        assert "sum_pages" not in columns_phrase, (
+            f"metering_hourly Columns: phrase still lists sum_pages: {columns_phrase!r}"
+        )
+        assert "n_runs" not in columns_phrase, (
+            f"metering_hourly Columns: phrase lists n_runs, which lives "
+            f"on metering_docs_hourly: {columns_phrase!r}"
+        )
 
     def test_metering_hourly_partitioning_mentions_hour(self):
         """The prompt must describe the partition as ``date`` + ``hour``.

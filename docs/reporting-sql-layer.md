@@ -81,18 +81,21 @@ a run belongs to exactly **one** `(hour, config_version, document_class)`
 cell, so `SUM(n_runs)` over any set of rows — any range, any grain, either
 table — is the exact run count for that set. `SUM(n_docs)` is only ever an
 upper bound on distinct documents, because a document that spans cells is
-counted once in each. Measured against raw `metering` on a live stack,
-`SUM(n_runs)` reconciles exactly while `SUM(n_docs)` runs 50 cells high.
-Re-measure rather than reading a figure here — a stack that is still
-processing moves the totals, though the gap comes from reprocessing and
-multi-hour documents, not from volume.
+counted once in each. The shape of that error is exact even though its size
+is not: `SUM(n_docs)` over-counts a document by one for every extra cell it
+occupies — each additional hour, configuration version or class it ran
+under — while `SUM(n_runs)` reconciles with raw `metering` exactly. So the
+gap is a function of how much a stack reprocesses, not of how much it
+processes, and the only figure worth having is the one you measure on the
+stack in front of you.
 
 ⚠️ The hourly `n_runs` is a `COUNT(DISTINCT timestamp)` taken **per
 document and then summed**, never at cell level. A batch upload stamps
 several documents with the same instant, so a cell-level distinct count
-collapses them and loses a run for every pair that ties — 89 runs short,
-measured on the same table. Both spellings compile and both return a
-plausible number.
+collapses them and loses one run for every pair of documents that share a
+timestamp — which on a stack fed by batch uploads is most of them. Both
+spellings compile and both return a plausible number, so the difference is
+only visible by reconciling against raw `metering`.
 
 **Where status/timing data actually lives** — NOT on `metering`.
 `metering` carries only cost primitives: `document_id`, `context`,

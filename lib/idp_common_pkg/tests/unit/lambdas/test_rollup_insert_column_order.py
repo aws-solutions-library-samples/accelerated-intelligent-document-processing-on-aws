@@ -326,10 +326,12 @@ class TestRunsAreCountedPerDocumentNotPerCell:
         ignores NULLs, so a day whose hourly cells are PARTLY pre-bump returns
         an ordinary-looking number that is low by whatever those hours held.
 
-        The migration window's lower bound is hour-aligned rather than
-        day-aligned, so the day it lands on is exactly that case — and it is
-        the oldest day history is available for, which is the one an operator
-        reaches for first. A wholly-unrecorded day reads NULL and is visibly
+        A routine migration does not produce such a day: the window's low end
+        is truncated to top-of-day so every day in range gets 24 hours of
+        coverage. The mixed day comes from a chunk that failed partway, an
+        operator backfilling a narrowed hour range by hand, or ``Days`` being
+        raised later so an older day is re-aggregated from hours of which only
+        some were replayed. A wholly-unrecorded day reads NULL and is visibly
         unknown; this makes a half-recorded one read the same way.
         """
         sql = " ".join(_sql_for(rollup, "metering_docs_daily").split())

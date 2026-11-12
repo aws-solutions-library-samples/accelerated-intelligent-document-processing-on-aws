@@ -1557,13 +1557,18 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         #
         # ⚠️ It is NOT a bare SUM, and that is the point. Rows written before
         # the column existed carry no value for it, and Athena's SUM ignores
-        # NULLs — so a day whose hourly cells are PARTLY pre-bump would return
-        # a perfectly ordinary number that is low by whatever those hours held.
-        # That is not a hypothetical day: the migration window's lower bound is
-        # hour-aligned, not day-aligned, so the day it lands on is partly
-        # replayed and partly not, and it is the oldest day an operator looking
-        # for history will reach for. A wholly-unrecorded day reads NULL and is
+        # NULLs — so a day whose hourly cells are only PARTLY recorded would
+        # return a perfectly ordinary number that is low by whatever the
+        # unrecorded hours held. A wholly-unrecorded day reads NULL and is
         # obviously unknown; a half-recorded one would not be.
+        #
+        # A routine migration does not produce such a day: ``_plan_migration_
+        # chunks`` truncates the window's low end to top-of-day precisely so
+        # every day in range gets 24 hours of coverage. The mixed day arrives
+        # by other routes — a chunk that fails partway and leaves the rest of
+        # its day unreplayed, an operator backfilling a narrowed hour range by
+        # hand, or ``Days`` being raised later so an older day is re-aggregated
+        # from hours of which only some were replayed under the current version.
         #
         # So the gap is propagated: a group yields its SUM only when every
         # hourly cell in it carries a value, and NULL otherwise. Both kinds of
