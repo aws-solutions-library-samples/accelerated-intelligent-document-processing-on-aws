@@ -61,6 +61,7 @@ def handler(event, context):
 
             missing_keys = []
             already_members = []
+            not_documents = []
             if by_key:
                 if bucket_type != "input":
                     raise ValueError(
@@ -91,6 +92,14 @@ def handler(event, context):
 
                 if not matching_files:
                     raise ValueError(f"No files found matching pattern: {file_pattern}")
+                if bucket_type == "input":
+                    matching_files, not_documents = _split_documents(matching_files)
+                    if not matching_files:
+                        raise ValueError(
+                            f"No documents found matching pattern: {file_pattern} "
+                            f"({len(not_documents)} matching files are not a "
+                            "supported document type)"
+                        )
 
                 # As on the by-key path, a document already in the set is never
                 # copied again, from either bucket and labeled or not: the append
@@ -195,7 +204,11 @@ def handler(event, context):
                 )
             else:
                 last_add_result = _pattern_result(
-                    mode, len(files_to_copy), unlabeled_count, len(already_members)
+                    mode,
+                    len(files_to_copy),
+                    unlabeled_count,
+                    len(already_members),
+                    len(not_documents),
                 )
 
             # Update test set record with completion status and file count
@@ -292,6 +305,39 @@ def _split_existing_members(test_set_id, object_keys):
     return new, members
 
 
+#: The file types a document upload accepts: ``SUPPORTED_UPLOAD_EXTENSIONS`` in
+#: ``src/ui/src/components/common/constants.ts``, which a unit test holds this equal
+#: to. Lower case, compared against the key's lower-cased extension.
+DOCUMENT_EXTENSIONS = frozenset(
+    {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".xlsx", ".xls", ".csv"}
+    | {".docx", ".txt"}
+)
+
+
+def _split_documents(matching_files):
+    """Split Input-bucket matches into documents and everything else.
+
+    A pattern searches the whole bucket, which also holds objects that are not
+    documents. Copied into the set's ``input/`` folder, a ``.zip`` starts the
+    test-set zip extractor, which fails the set; anything else would be run as a
+    document by every test run. So only the file types a document upload accepts
+    are copied, and the rest are counted and left out.
+    """
+    documents = []
+    others = []
+    for file_key in matching_files:
+        _, dot, extension = file_key.rpartition("/")[-1].rpartition(".")
+        if dot and f".{extension.lower()}" in DOCUMENT_EXTENSIONS:
+            documents.append(file_key)
+        else:
+            others.append(file_key)
+    if others:
+        logger.info(
+            f"{len(others)} matches are not a supported document type; leaving them out"
+        )
+    return documents, others
+
+
 def _set_member_name(bucket_type, file_key):
     """The key a matched file lands under in the set's ``input/`` folder, as
     ``_copy_input_files_from_*`` writes it."""
@@ -329,12 +375,14 @@ def _split_pattern_members(test_set_id, bucket_type, matching_files):
     return new, already
 
 
-def _pattern_result(mode, added, unlabeled, already_members):
+def _pattern_result(mode, added, unlabeled, already_members, not_documents=0):
     parts = []
     if unlabeled:
         parts.append(f"{unlabeled} unlabeled")
     if already_members:
         parts.append(f"{already_members} already in the set")
+    if not_documents:
+        parts.append(f"{not_documents} not a document")
     if not parts and mode != "append":
         return None
     action = "Added" if mode == "append" else "Created with"

@@ -640,6 +640,10 @@ one unlabeled document makes the whole set read as `unlabeled` until it is
 draft-labeled. A pattern re-applied when adding documents leaves every document
 already in the set as it is, labeled or not, so labels drafted or reviewed in the set
 are never replaced by the copy in the bucket. A set whose every match is unlabeled is created as an unlabeled set.
+From the input bucket only the file types the document upload accepts are copied
+(PDF, PNG, JPEG, TIFF, XLSX, XLS, CSV, DOCX and TXT); anything else the pattern
+matches, such as a `.zip`, is left out, and a pattern that matches nothing else fails
+with that reason.
 Patterns match the full
 object key: `*` matches within one folder level, `**` matches across folders, `?`
 matches a single character. The folder path before the first wildcard must be typed

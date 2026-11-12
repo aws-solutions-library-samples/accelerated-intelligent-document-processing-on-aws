@@ -357,6 +357,66 @@ class TestPatternNeverOverwritesAMember:
 
 
 @pytest.mark.unit
+class TestInputBucketPatternCopiesDocumentsOnly:
+    """A pattern searches the whole Input bucket. A ``.zip`` copied into a set's
+    ``input/`` folder starts the test-set zip extractor, which fails the set, so
+    only the file types a document upload accepts are copied."""
+
+    def test_a_zip_among_the_matches_is_left_out(self, env, caplog):
+        copier, s3 = env
+        _put_input(s3, "a.pdf")
+        s3.put_object(Bucket=INPUT, Key="batch.zip", Body=b"PK")
+        s3.put_object(Bucket=INPUT, Key="notes", Body=b"x")
+
+        with caplog.at_level("INFO"):
+            row = _run(copier, mode="append", filePattern="*")
+
+        assert row["status"] == "COMPLETED", row.get("error")
+        assert row["fileCount"] == 1
+        assert _keys(s3, "my-set/") == ["input/a.pdf"]
+        assert "Added 1 files (1 unlabeled, 2 not a document)" in caplog.text
+
+    def test_extensions_are_compared_regardless_of_case(self, env):
+        copier, s3 = env
+        _put_input(s3, "scan.TIFF")
+        _put_input(s3, "sheet.Xlsx")
+
+        row = _run(copier, filePattern="*")
+
+        assert row["status"] == "COMPLETED", row.get("error")
+        assert _keys(s3, "my-set/") == ["input/scan.TIFF", "input/sheet.Xlsx"]
+
+    def test_matching_only_non_documents_fails_with_a_reason(self, env):
+        copier, s3 = env
+        s3.put_object(Bucket=INPUT, Key="batch.zip", Body=b"PK")
+
+        row = _run(copier, filePattern="*")
+
+        assert row["status"] == "FAILED"
+        assert "No documents found matching pattern" in row["error"]
+        assert "not a supported document type" in row["error"]
+        assert _keys(s3, "my-set/") == []
+
+    def test_the_list_is_the_document_upload_list(self, env):
+        """Held equal to the upload dialog's list rather than written out twice."""
+        import re
+
+        copier, _s3 = env
+        constants = next(
+            parent / "src" / "ui" / "src" / "components" / "common" / "constants.ts"
+            for parent in Path(__file__).resolve().parents
+            if (parent / "src" / "ui" / "src" / "components" / "common").is_dir()
+        )
+        match = re.search(
+            r"SUPPORTED_UPLOAD_EXTENSIONS\s*=\s*'([^']+)'", constants.read_text()
+        )
+        assert match, "SUPPORTED_UPLOAD_EXTENSIONS not found"
+        upload = {e.strip().lower() for e in match.group(1).split(",") if e.strip()}
+        assert upload, "the upload list parsed empty"
+        assert copier.DOCUMENT_EXTENSIONS == upload
+
+
+@pytest.mark.unit
 def test_pattern_result_wording():
     import importlib.util as iu
 
