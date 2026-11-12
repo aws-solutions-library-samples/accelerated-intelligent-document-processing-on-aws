@@ -346,9 +346,17 @@ def test_role_creation_still_requires_the_runs_boundary():
     }
 
 
-def _run_migration_with_fakes(monkeypatch, tmp_path):
-    """run_terraform_migration against fakes; returns what it called."""
-    seen = {}
+def _run_migration_with_fakes(monkeypatch, tmp_path, returncode=0, logs=None):
+    """run_terraform_migration against fakes; returns what it called. ``logs``
+    ({name: text}) are written into the driver's log directory by the fake
+    driver; Bedrock is faked and records its prompt."""
+    seen = {"prompts": []}
+
+    def fake_bedrock(prompt):
+        seen["prompts"].append(prompt)
+        return "• the analysis"
+
+    monkeypatch.setattr(cbd, "_invoke_bedrock", fake_bedrock)
     monkeypatch.setattr(cbd, "ci_region", lambda: "us-east-1")
     monkeypatch.setattr(cbd, "terraform_work_directory", lambda n: str(tmp_path / n))
     monkeypatch.setattr(cbd, "_caller_principal_arn", lambda: "arn:cb")
@@ -377,15 +385,83 @@ def _run_migration_with_fakes(monkeypatch, tmp_path):
     def fake_run(cmd, **kwargs):
         seen["cmd"] = cmd
         events.append(("driver",))
+        work = Path(cmd[cmd.index("--work-dir") + 1])
+        for name, text in (logs or {}).items():
+            (work / "logs").mkdir(parents=True, exist_ok=True)
+            (work / "logs" / name).write_text(text)
+        (work / "summary.txt").write_text("❌ phase upstream-deploy failed")
 
         class _P:
-            returncode = 0
+            pass
 
+        _P.returncode = returncode
         return _P()
 
     monkeypatch.setattr(cbd.subprocess, "run", fake_run)
-    cbd.run_terraform_migration("idp-1111-235959", "https://m.zip", "terraform")
+    seen["result"] = cbd.run_terraform_migration(
+        "idp-1111-235959", "https://m.zip", "terraform"
+    )
     return seen
+
+
+def test_a_failed_migration_run_carries_an_ai_analysis_of_its_logs(
+    monkeypatch, tmp_path
+):
+    """The analysis reads the driver's own summary and the tail of its newest
+    log, which is where a failing Terraform command prints its error."""
+    seen = _run_migration_with_fakes(
+        monkeypatch,
+        tmp_path,
+        returncode=1,
+        logs={"old-apply.log": "line\n" * 500 + "Error: AccessDenied iam:CreateRole"},
+    )
+    ok, summary = seen["result"]
+    assert not ok
+    assert "AI FAILURE ANALYSIS" in summary and "• the analysis" in summary
+    (prompt,) = seen["prompts"]
+    assert "phase upstream-deploy failed" in prompt
+    assert "Error: AccessDenied iam:CreateRole" in prompt
+    assert prompt.count("line\n") <= cbd.TERRAFORM_MIGRATION_ANALYSIS_LOG_LINES
+
+
+def test_a_passing_migration_run_asks_for_no_analysis(monkeypatch, tmp_path):
+    seen = _run_migration_with_fakes(monkeypatch, tmp_path, returncode=0)
+    ok, summary = seen["result"]
+    assert ok and seen["prompts"] == [] and "AI FAILURE ANALYSIS" not in summary
+
+
+def test_a_failed_analysis_is_reported_not_raised(monkeypatch):
+    def broken(prompt):
+        raise RuntimeError("throttled")
+
+    monkeypatch.setattr(cbd, "_invoke_bedrock", broken)
+    text = cbd.generate_migration_failure_summary("❌ x", "(no logs)")
+    assert "Failed to generate the migration failure analysis" in text
+    assert "throttled" in text
+
+
+def test_the_evidence_is_the_newest_logs_first(tmp_path):
+    import os
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    for i, name in enumerate(["a.log", "b.log", "c.log", "d.log"]):
+        (logs / name).write_text(name)
+        os.utime(logs / name, (1000 + i, 1000 + i))
+    evidence = cbd.migration_failure_evidence(str(tmp_path))
+    shown = [n for n in ("d.log", "c.log", "b.log", "a.log") if f"--- {n}" in evidence]
+    assert shown == ["d.log", "c.log", "b.log"][: cbd.TERRAFORM_MIGRATION_ANALYSIS_LOGS]
+    assert evidence.index("--- d.log") < evidence.index("--- c.log")
+
+
+def test_a_publish_failure_keeps_the_publish_analysis():
+    """On a migration run main() returns before the ordinary summary, so the
+    publish analysis it already generated has to be put into the run's own."""
+    source = (REPO_ROOT / "scripts" / "sdlc" / "codebuild_deployment.py").read_text()
+    branch = source.split("# A weekly Terraform-migration run ends here", 1)[1]
+    branch = branch.split("os._exit(", 1)[0]
+    assert "if ai_summary:" in branch
+    assert 'migration_summary += f"\\n\\n{ai_summary}"' in branch
 
 
 def test_the_build_passes_the_boundary_it_created(monkeypatch, tmp_path):
@@ -698,3 +774,17 @@ def test_main_hands_the_migration_runs_to_the_stack_sweep(monkeypatch):
     with pytest.raises(_Stop):
         cbd.main()
     assert seen == {"terraform_runs": {DEAD}}
+
+
+def test_the_job_finds_the_summary_of_a_migration_run():
+    """The GitLab job cannot read deploy/summaries/, so it reads the summary from
+    the log, from the marker on. A migration run returns before the ordinary
+    summary prints it, so it prints the marker itself."""
+    ci = CI_CONFIG.read_text(encoding="utf-8")
+    assert f"sed -n '/{cbd.DEPLOYMENT_SUMMARY_LOG_MARKER}/,$p'" in ci
+    source = (REPO_ROOT / "scripts" / "sdlc" / "codebuild_deployment.py").read_text()
+    branch = source.split("# A weekly Terraform-migration run ends here", 1)[1]
+    branch = branch.split("os._exit(", 1)[0]
+    assert branch.index("print(DEPLOYMENT_SUMMARY_LOG_MARKER)") < branch.index(
+        "print(text)"
+    )
