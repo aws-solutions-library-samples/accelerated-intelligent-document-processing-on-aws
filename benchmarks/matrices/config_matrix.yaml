@@ -407,10 +407,11 @@ core_cells:
 # coresynth from 133 to 182 runs and corefast (the release gate) from 171 to 234 —
 # a 37% cost rise nobody asked for.
 #
-# They would also have injected GUARANTEED FAILURES: `coresynth` includes
-# large_narrow (17 pages, ~203K estimated input) and `sonnet5-simple-sep` cannot
-# take that in one request. A release grid whose baseline contains expected
-# failures cannot be read as a regression gate.
+# They would also have injected EXPECTED SHORTFALLS: `coresynth` includes
+# large_narrow (17 pages, ~203K estimated input), where Sonnet 5 in simple mode
+# returns a partial list on most runs while reporting COMPLETED (5 of 13 complete on
+# v0.6.14, config-guidance.md section 5.1). A release grid whose baseline contains
+# expected shortfalls cannot be read as a regression gate.
 #
 # The model question is answered two ways instead, both deliberate:
 #   * `astravalue` / `astracap` — the dedicated head-to-head, on documents chosen
@@ -799,8 +800,9 @@ suites:
   #                      cost-per-correct-field here, the suite is broken.
   #   med_narrow    9pp  still inside both windows, at 3x the size: guards against
   #                      crediting Astra with a capacity win it did not need.
-  #   large_narrow 17pp  the first cell Sonnet 5 CANNOT do in one request while
-  #                      Astra can — capability, not accuracy.
+  #   large_narrow 17pp  the first cell where Sonnet 5 in one request returns a
+  #                      partial list on some runs (4 of 5 complete in this suite on
+  #                      v0.6.14) and Astra the whole list — capability, not accuracy.
   #   dense_250    26pp  Astra-only AND maximally difficult (8 columns, 4 interleaved
   #                      lists, long descriptions, 15% OCR noise, typed value truth).
   #                      Where the premium has to show up if it shows up anywhere.

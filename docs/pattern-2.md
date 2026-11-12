@@ -301,9 +301,18 @@ To use Bedrock OCR:
 - **Advanced Reasoning**: Can handle challenging cases like handwritten text, poor quality scans, or complex layouts
 - **Unified Processing**: Same models used for OCR, classification, and extraction provide consistency
 
+> ⚠️ **Measured, Bedrock OCR is the one backend that gets values wrong.** On the
+> v0.6.14 benchmark (typed synthetic bank statements, the default OCR model Amazon
+> Nova 2 Lite) it returned every row at cell accuracy **0.990**, where Textract
+> `TABLES`, Textract `LAYOUT` and BDA were all at 1.000, and it perturbed fixed-width
+> identifiers such as account numbers. Do not use it where identifiers or amounts
+> matter ([config-guidance §2a, finding 4](./benchmarking/config-guidance.md#2a-ocr-backend-extraction-mode-and-confidence-mode)).
+> Handwritten and low-quality documents were not measured.
+
 **When to Use Bedrock OCR:**
 - Documents with complex layouts or mixed content types
-- Handwritten or low-quality documents where Textract struggles
+- Handwritten or low-quality documents where Textract struggles (not measured; test
+  on your own documents first)
 - Domain-specific documents requiring contextual understanding
 - When you want unified processing across the entire pipeline
 - For experimental or specialized use cases requiring prompt customization
@@ -312,7 +321,12 @@ To use Bedrock OCR:
 
 **Bedrock OCR Pricing:**
 - Charged per input/output token rather than per page
-- Typically higher cost per page than Textract for standard documents
+- Not necessarily dearer than Textract: on the v0.6.14 benchmark statements the
+  default OCR model (Amazon Nova 2 Lite) cost about $0.004 per page for OCR, the same
+  as Textract `LAYOUT` and about a quarter of Textract `TABLES`' $0.015, and the
+  Bedrock OCR configuration was the cheapest whole-document cell of the grid
+  ($0.3821 against $0.5238 for `TABLES`). The per-page figures are the OCR phase of
+  `benchmarks/results/v0.6.14/core/summary.json`
 - Cost varies significantly by model (Nova Lite < Nova Pro < Claude models)
 - Image tokens are more expensive than text tokens
 
@@ -734,10 +748,16 @@ raise it to reduce the number of inference calls.
 
 ### For large documents, prefer Advanced (agentic) extraction
 
-For very large or complex documents, prefer **Advanced (agentic) extraction** —
-it shards both extraction and confidence assessment and produced the
-best-calibrated confidence in testing. Simple + `separate` remains fully viable
-for large lists via the batching above.
+For sections that can hold more than about 400 list rows, and for very large
+documents, prefer **Advanced (agentic) extraction** — it shards both extraction and
+confidence assessment. On the v0.6.14 benchmark, at the study's control extraction
+model, it returned every row with every row confidence-scored at every size from 25
+to 3,200 rows, where Simple mode left 5–20% of rows unscored at 1,200–1,600 rows; at
+the shipped default model, Simple mode returned part of an 800-row list on 8 of 13
+runs and Advanced mode all of it on 6 of 6
+([config-guidance §3](./benchmarking/config-guidance.md#3-scaling-limits-by-document-size),
+[§5.5](./benchmarking/config-guidance.md#55-recommendations-by-document-profile)).
+On real-world forms Simple mode was as accurate at about half the cost.
 
 ### Comprehensive Documentation
 

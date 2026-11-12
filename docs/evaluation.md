@@ -1283,7 +1283,7 @@ Once documents are processed with baselines:
 ### Configuration Best Practices
 
 - **Choose appropriate evaluation methods**: Match methods to your data types (EXACT for IDs, FUZZY for names, SEMANTIC for descriptions)
-- **Set realistic thresholds**: Start with strict thresholds (0.9+) and adjust based on your accuracy requirements
+- **Set realistic thresholds**: Start from the defaults (0.7 for `FUZZY`, and the per-type defaults in [Comparator Inference Rules](#comparator-inference-rules)) and raise a field's threshold only where a near-match should count as wrong; no measurement in this repository supports a stricter starting value such as 0.9
 - **Configure confidence tracking**: Leave `extraction.confidence.mode` at `separate` or `integrated` (not `off`) to get confidence scores in evaluation reports
 
 ## Automatic Field Discovery
