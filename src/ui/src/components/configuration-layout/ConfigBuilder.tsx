@@ -1716,6 +1716,15 @@ const ConfigBuilder = ({
       displayValue = property.default;
     }
 
+    // The same for a dropdown. With no value the Select rendered an empty choice,
+    // although the backend applies the schema default — so `schema_enforcement.mode`
+    // read as blank rather than "Off" whenever the profile and the defaults lacked
+    // the key (a stack mid-upgrade serves exactly that). Display only, like the
+    // boolean case: nothing is written until the user picks.
+    if (property.enum && property.default !== undefined && (value === undefined || value === null || value === '')) {
+      displayValue = property.default;
+    }
+
     // Dependencies are now checked in the main renderField function
 
     // If this is an object type, it should be rendered as an object field, not an input field

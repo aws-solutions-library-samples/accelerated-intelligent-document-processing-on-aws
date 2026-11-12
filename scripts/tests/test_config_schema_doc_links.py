@@ -42,10 +42,10 @@ LINKS = _template_doc_links()
 
 
 def test_the_scan_finds_the_configuration_help_links():
-    # Non-vacuity: the classification settings and the structured-outputs setting
+    # Non-vacuity: the classification settings and the schema-enforcement setting
     # both carry anchored links.
     pages = {p for _, p, a in LINKS if a}
-    assert {"classification", "extraction-and-confidence"} <= pages, LINKS
+    assert {"classification", "schema-enforcement"} <= pages, LINKS
 
 
 @pytest.fixture(scope="module")

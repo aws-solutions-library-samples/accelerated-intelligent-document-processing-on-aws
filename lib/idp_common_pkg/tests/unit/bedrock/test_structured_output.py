@@ -564,17 +564,22 @@ class TestCapabilityGate:
         with patch.object(client_mod, "_OUTPUT_CONFIG_IN_BOTOCORE", None):
             assert client_mod._botocore_supports_output_config() is True
 
-    def test_the_config_ui_lists_exactly_the_supported_models(self):
-        """The Web UI's setting description names the models it works with, so a
-        user can tell from the editor whether their extraction model qualifies.
-        Derived from the gate's own allowlist in both directions: a model added to
-        the gate but not the description, or named in the description but not
-        allowed by the gate, fails here."""
+    def test_the_docs_list_exactly_the_supported_models(self):
+        """The Schema Enforcement page's "Supported models" table — where the
+        configuration editor links for this — names the Claude models structured
+        outputs works with. Derived from the gate's own allowlist in both
+        directions: a model added to the gate but not the table, or named in the
+        table's structured-outputs rows but not allowed by the gate, fails here."""
         import re
 
-        text = _TEMPLATE.read_text()
-        start = text.index("sectionLabel: Schema Enforcement (experimental)")
-        block = text[start : text.index("multi_instance_detection:", start)]
+        page = (_REPO / "docs" / "schema-enforcement.md").read_text()
+        table = page.split("## Supported models", 1)[1].split("\n## ", 1)[0]
+        # Only the rows whose structured-outputs cell is a tick.
+        block = "\n".join(
+            row
+            for row in table.splitlines()
+            if row.startswith("|") and row.split("|")[2].strip() == "✅"
+        )
         assert block
 
         def human(base: str) -> str:

@@ -66,6 +66,29 @@ const widgetKinds = (label: string): { toggles: number; textareas: number; input
 };
 
 describe('ConfigBuilder widget selection', () => {
+  it('shows a dropdown its schema default when the value is absent, rather than a blank', () => {
+    renderConfig(
+      sectionWith('mode', {
+        type: 'string',
+        enum: ['off', 'auto'],
+        enumLabels: { off: 'Off (default)', auto: 'Auto' },
+        default: 'off',
+      }),
+      { extraction: {} },
+    );
+    const field = screen.getByText('Mode').closest('.compact-form-field');
+    expect(field?.textContent).toContain('Off (default)');
+  });
+
+  it('shows the stored dropdown value over the default', () => {
+    renderConfig(sectionWith('mode', { type: 'string', enum: ['off', 'auto'], enumLabels: { off: 'Off', auto: 'Auto' }, default: 'off' }), {
+      extraction: { mode: 'auto' },
+    });
+    const field = screen.getByText('Mode').closest('.compact-form-field');
+    expect(field?.textContent).toContain('Auto');
+    expect(field?.textContent).not.toContain('Off');
+  });
+
   it('renders fallback_to_prompt as a toggle, not a text box', () => {
     renderConfig(
       sectionWith('fallback_to_prompt', {
