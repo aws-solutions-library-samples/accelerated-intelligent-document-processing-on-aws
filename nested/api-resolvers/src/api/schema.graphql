@@ -1887,6 +1887,15 @@ type ReviewItem @aws_cognito_user_pools {
   disposedAt: AWSDateTime
   rejectReason: String
   version: Int!
+  # Set on an item created by Send to review: why, and by whom.
+  sentToReview: ReviewSendInfo
+}
+
+type ReviewSendInfo @aws_cognito_user_pools {
+  reason: String!
+  note: String
+  requestedBy: String!
+  requestedAt: AWSDateTime!
 }
 
 type ReviewItemPage @aws_cognito_user_pools {
@@ -1898,6 +1907,89 @@ type MyReviewQueues @aws_cognito_user_pools {
   queues: [ReviewQueueSummary!]!
   myClaimCount: Int!
   items: ReviewItemPage!
+  # Whether the Default review queue exists and is enabled (Send to review needs it).
+  defaultQueueEnabled: Boolean!
+  # The bulk Skip All Reviews inline limit in force (hitl.bulk_skip_sync_limit).
+  bulkSkipSyncLimit: Int!
+}
+
+# Bulk Skip All Reviews (BulkReviewResolverFunction). mode is SELECTED (objectKeys)
+# or PROFILE (profile + submittedFrom/submittedTo, UTC ISO-8601, at most 365 days).
+input BulkSkipAllReviewsInput {
+  mode: String!
+  objectKeys: [String!]
+  profile: String
+  submittedFrom: String
+  submittedTo: String
+  reason: String!
+  note: String
+  resubmit: Boolean
+  dryRun: Boolean
+  clientRequestId: String
+}
+
+type BulkOutcomeCount @aws_cognito_user_pools {
+  outcome: String!
+  count: Int!
+}
+
+type BulkDocumentOutcome @aws_cognito_user_pools {
+  objectKey: String!
+  outcome: String!
+  kind: String!
+  detail: String
+}
+
+type BulkSkipAllReviewsResult @aws_cognito_user_pools {
+  dryRun: Boolean!
+  runMode: String!
+  syncLimit: Int!
+  approximate: Boolean!
+  eligibleCount: Int!
+  limitReached: Boolean!
+  counts: [BulkOutcomeCount!]!
+  results: [BulkDocumentOutcome!]!
+  jobId: String
+}
+
+type BulkReviewJob @aws_cognito_user_pools {
+  jobId: String!
+  jobType: String!
+  kind: String!
+  status: String!
+  mode: String!
+  profile: String
+  submittedFrom: String
+  submittedTo: String
+  reason: String!
+  note: String
+  resubmit: Boolean!
+  requestedBy: String!
+  total: Int!
+  processed: Int!
+  counts: [BulkOutcomeCount!]!
+  limitReached: Boolean!
+  stalled: Boolean!
+  error: String
+  createdAt: String!
+  startedAt: String
+  finishedAt: String
+}
+
+type BulkReviewJobResults @aws_cognito_user_pools {
+  job: BulkReviewJob!
+  results: [BulkDocumentOutcome!]!
+  nextToken: String
+}
+
+type BulkReviewJobPage @aws_cognito_user_pools {
+  jobs: [BulkReviewJob!]!
+  nextToken: String
+}
+
+type SendToReviewResult @aws_cognito_user_pools {
+  counts: [BulkOutcomeCount!]!
+  results: [BulkDocumentOutcome!]!
 }
 
 type ReviewSectionDetail @aws_cognito_user_pools {
@@ -2344,7 +2436,18 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
   completeSectionReview(objectKey: String!, sectionId: String!, editedData: AWSJSON): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
-  skipAllSectionsReview(objectKey: String!, reason: String!, note: String): Document
+  skipAllSectionsReview(objectKey: String!, reason: String!, note: String, resubmit: Boolean): Document
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  # Bulk Skip All Reviews and Send to review (BulkReviewResolverFunction).
+  bulkSkipAllReviews(input: BulkSkipAllReviewsInput!): BulkSkipAllReviewsResult
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  sendToReview(objectKeys: [String!]!, reason: String!, note: String): SendToReviewResult
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  # A queued or running bulk job stops before its next page (the requester's own, or
+  # any for an Admin); a finished one is deleted.
+  cancelBulkReviewJob(jobId: String!): BulkReviewJob
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  deleteBulkReviewJob(jobId: String!): Boolean
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
   # Save a reviewer's edits to one section without completing its review: the
   # review stays In Progress until processChanges or skipAllSectionsReview.
@@ -2875,6 +2978,12 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
     )
+  # Bulk Skip All Reviews jobs (BulkReviewResolverFunction): the requester's own,
+  # or any for an Admin.
+  getBulkReviewJob(jobId: String!, outcome: String, limit: Int, nextToken: String): BulkReviewJobResults
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  listBulkReviewJobs(limit: Int, nextToken: String): BulkReviewJobPage
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
   # HITL review queues (ReviewQueuesResolverFunction).
   getMyReviewQueues(itemLimit: Int): MyReviewQueues
     @aws_cognito_user_pools(

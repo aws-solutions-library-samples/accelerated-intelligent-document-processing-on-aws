@@ -35,10 +35,18 @@
       "Admin",
       "Author"
     ],
+    "bulkSkipAllReviews": [
+      "Admin",
+      "Reviewer"
+    ],
     "calculateCapacity": [
       "Admin",
       "Author",
       "Viewer"
+    ],
+    "cancelBulkReviewJob": [
+      "Admin",
+      "Reviewer"
     ],
     "checkFeatureEntitlement": "ANY",
     "claimNextReviewItem": [
@@ -115,6 +123,10 @@
       "Author",
       "Reviewer",
       "Viewer"
+    ],
+    "deleteBulkReviewJob": [
+      "Admin",
+      "Reviewer"
     ],
     "deleteChatSession": [
       "Admin",
@@ -196,6 +208,10 @@
       "Admin",
       "Annotator",
       "Author"
+    ],
+    "getBulkReviewJob": [
+      "Admin",
+      "Reviewer"
     ],
     "getChatMessages": [
       "Admin",
@@ -379,6 +395,10 @@
     ],
     "listBucketFiles": [
       "Admin"
+    ],
+    "listBulkReviewJobs": [
+      "Admin",
+      "Reviewer"
     ],
     "listCatalogFeatures": "ANY",
     "listChatSessions": "ANY",
@@ -616,6 +636,10 @@
     "sendTestRunToReview": [
       "Admin",
       "Author"
+    ],
+    "sendToReview": [
+      "Admin",
+      "Reviewer"
     ],
     "setActiveVersion": [
       "Admin",

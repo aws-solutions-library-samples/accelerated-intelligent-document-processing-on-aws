@@ -54,6 +54,13 @@ PLATFORM_TYPES: tuple[NotificationType, ...] = (
         description="A document assigned to you is still open after its time limit.",
         default_severity="info",
     ),
+    # Bulk Skip All Reviews jobs (idp_common.review_queues.notify.bulk_job_finished).
+    NotificationType(
+        id="review.bulk_job_finished",
+        display_name="Bulk review job finished",
+        description="A bulk Skip All Reviews job you started has finished.",
+        default_severity="info",
+    ),
 )
 
 _lock = threading.Lock()

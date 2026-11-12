@@ -21,7 +21,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | **Amazon DynamoDB** | Tracks document processing, manages configurations and concurrency, stores each user's [Inbox](./web-ui.md#inbox) messages (`NotificationsTable`), and holds HITL review queues, assignments and Test Studio queue summaries (`HITLTable`) | ✓ | ✓ |
 | **AWS Lambda** | Executes document processing functions and business logic | ✓ | ✓ |
 | **AWS Step Functions** | Orchestrates document processing workflows and the data-mart rollup schema-migration (`DataMartMigrationStateMachine`, retry-safe/chunked/resumable — see [reporting-sql-layer.md](./reporting-sql-layer.md) §Track A and [data-mart-migration-runbook.md](./data-mart-migration-runbook.md)) | ✓ | ✓ |
-| **Amazon SQS** | Queues documents for processing and handles throttling | ✓ | ✓ |
+| **Amazon SQS** | Queues documents for processing and handles throttling; carries bulk Skip All Reviews jobs (`BulkReviewJobQueue` and its dead-letter queue, in the API resolvers stack) | ✓ | ✓ |
 | **Amazon EventBridge** | Triggers document processing workflows when files are uploaded | ✓ | ✓ |
 | **Amazon CloudFront** | Delivers the web UI with global distribution (default hosting mode) | ✓ | ✓ |
 | **Amazon API Gateway** | Backs the web UI's data API — a REST API with a Cognito User Pools authorizer in front of a dispatcher Lambda, which is how every UI query and mutation reaches the backend (see [AppSync → REST API Migration](./migration-appsync-to-rest.md)). Can alternatively serve the web UI itself (S3 proxy) for VPC-based deployments (see [API Gateway Hosting](./apigateway-hosting.md)) | ✓ | ✓ |
@@ -260,6 +260,22 @@ The solution creates various IAM roles to run different components of the system
 * **Notifications Resolver Role** (API resolver Lambda that serves each user's own [Inbox](./web-ui.md#inbox)):
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem` on `NotificationsTable` and its `UnreadIndex`. Deletes go through `BatchWriteItem`; there is no `DeleteItem`, Cognito or configuration access
   * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
+
+* **Review Queues Resolver Role** (API resolver Lambda for the review queue operations: queue lists, claims, drafts, dispositions and the Admin supervisor actions):
+  * `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`, `BatchGetItem`, `BatchWriteItem`, `ConditionCheckItem` on `HITLTable` and its indexes, and the Inbox producer set on `NotificationsTable`
+  * `dynamodb:GetItem`, `Query`, `UpdateItem` on the Tracking table; `Scan`, `GetItem`, `Query` on the Configuration table; `GetItem`, `Query` on the Users table
+  * `sqs:SendMessage` on the DocumentQueue (finalize runs); S3 read/write of `review/` objects in the Output bucket and writes to the Working bucket
+  * `cognito-idp:ListUsersInGroup`, `ListUsers`, `AdminListGroupsForUser` on the user pool; the customer-managed key; `cloudwatch:PutMetricData` in the stack's namespace
+
+* **Bulk Review Resolver Role** (API resolver Lambda for `bulkSkipAllReviews`, `getBulkReviewJob`, `listBulkReviewJobs`, `cancelBulkReviewJob`, `deleteBulkReviewJob` and `sendToReview`):
+  * The Review Queues Resolver's grants (the skips go through the same review queue service)
+  * `dynamodb:BatchGetItem` and `Query` on the Tracking table and its `TypeDateIndex` (selection by configuration profile and date)
+  * `sqs:SendMessage` on `BulkReviewJobQueue` (requests above `hitl.bulk_skip_sync_limit`), and `sqs:GetQueueAttributes` on the DocumentQueue
+
+* **Bulk Review Worker Role** (SQS-triggered Lambda that advances bulk Skip All Reviews jobs):
+  * The Bulk Review Resolver's DynamoDB, S3, KMS, Inbox and metric grants
+  * `sqs:ReceiveMessage`, `DeleteMessage`, `GetQueueAttributes`, `ChangeMessageVisibility` and `SendMessage` on `BulkReviewJobQueue` and its dead-letter queue (continuations, and failing a dead-lettered job)
+  * `sqs:SendMessage` and `GetQueueAttributes` on the DocumentQueue (resubmissions, paced by its depth)
 
 * **Upload Resolver Role** (API resolver Lambda for `uploadDocument`, `listSampleDocuments` and `uploadSampleDocument`):
   * SAM `S3WritePolicy` on the Input, Configuration, Output, Evaluation Baseline and Test Set buckets (the write targets an upload's presigned POST may name), and `S3ReadPolicy` on the Configuration bucket (the bundled samples)

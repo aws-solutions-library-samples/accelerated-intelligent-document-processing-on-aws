@@ -1,4 +1,316 @@
 {
+  "common.dateRangeFields.bothDatesRequired": {
+    "defaultMessage": "Both start and end dates are required.",
+    "description": "Validation error of a UTC date range when the start or end date is empty."
+  },
+  "common.dateRangeFields.chooseEndDate": {
+    "defaultMessage": "Choose end date",
+    "description": "Screen-reader label of the calendar button of the end date field, when no date is selected."
+  },
+  "common.dateRangeFields.chooseEndDateSelected": {
+    "defaultMessage": "Choose end date, selected date is {selectedDate}",
+    "description": "Screen-reader label of the calendar button of the end date field. {selectedDate} is the selected date as the date picker reads it."
+  },
+  "common.dateRangeFields.chooseStartDate": {
+    "defaultMessage": "Choose start date",
+    "description": "Screen-reader label of the calendar button of the start date field, when no date is selected."
+  },
+  "common.dateRangeFields.chooseStartDateSelected": {
+    "defaultMessage": "Choose start date, selected date is {selectedDate}",
+    "description": "Screen-reader label of the calendar button of the start date field. {selectedDate} is the selected date as the date picker reads it."
+  },
+  "common.dateRangeFields.endDate": {
+    "defaultMessage": "End date",
+    "description": "Label of the end date field of a date range."
+  },
+  "common.dateRangeFields.endTime": {
+    "defaultMessage": "End time (UTC)",
+    "description": "Label of the end time field of a date range; times are in UTC."
+  },
+  "common.dateRangeFields.rangeTooLong": {
+    "defaultMessage": "Date range cannot exceed {maxDays} days. Please select a shorter range.",
+    "description": "Validation error of a UTC date range that is too long. {maxDays} is the maximum number of days (365)."
+  },
+  "common.dateRangeFields.startBeforeEnd": {
+    "defaultMessage": "Start date/time must be before end date/time.",
+    "description": "Validation error of a UTC date range whose start is not before its end."
+  },
+  "common.dateRangeFields.startDate": {
+    "defaultMessage": "Start date",
+    "description": "Label of the start date field of a date range."
+  },
+  "common.dateRangeFields.startTime": {
+    "defaultMessage": "Start time (UTC)",
+    "description": "Label of the start time field of a date range; times are in UTC."
+  },
+  "common.dateRangeFields.timeConstraint": {
+    "defaultMessage": "HH:mm:ss",
+    "description": "Format hint under a time field: hours, minutes and seconds, 24-hour clock."
+  },
+  "common.learnMoreLinks.heading": {
+    "defaultMessage": "Learn more",
+    "description": "Heading of the footer of an info (help) panel, above a list of links into the product documentation."
+  },
+  "configuration.layout.previewPrompts": {
+    "defaultMessage": "Preview prompts",
+    "description": "Configuration page: label of the button that opens a dialog showing what each processing step's prompt includes, and the header of that dialog."
+  },
+  "configuration.layout.previewPromptsClose": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the \"Preview prompts\" dialog of the Configuration page."
+  },
+  "configuration.layout.previewPromptsDisabledReason": {
+    "defaultMessage": "Open a configuration profile first",
+    "description": "Tooltip on the disabled \"Preview prompts\" button of the Configuration page, shown while no configuration profile is open."
+  },
+  "configuration.toolsPanel.editingTabsAndPreview": {
+    "defaultMessage": "The <strong>Processing Settings</strong> tab holds the processing steps' settings (OCR, classification, extraction, assessment, summarization, HITL and the rest). Use the <strong>Document Schema</strong> and <strong>Policy Schema</strong> tabs to edit document classes and validation rules, and the <strong>Preview prompts</strong> button to see what each step's prompt includes, with your configuration values filled in. The preview shows which placeholders a step carries and which it leaves empty; it is not the exact bytes of the request.",
+    "description": "Configuration info panel, \"Editing\" list item. Each <strong> phrase is the label of a tab or button on the Configuration page, shown in bold."
+  },
+  "documentActions.moreActions.sendToReview": {
+    "defaultMessage": "Send to review",
+    "description": "Item of the document page's More Actions menu that sends a finished document to a review queue."
+  },
+  "documentActions.sendToReview.failed": {
+    "defaultMessage": "Could not send {name} to review: {outcome}.",
+    "description": "Error notification when Send to review did not send the document. {name} is the document name; {outcome} is the reason shown for the outcome, e.g. \"Not permitted\"."
+  },
+  "documentActions.sendToReview.sent": {
+    "defaultMessage": "Sent {name} to review.",
+    "description": "Success notification after Send to review. {name} is the document name."
+  },
+  "documentActions.skipAllReviews.resubmitDescription": {
+    "defaultMessage": "Re-runs Summarization and Evaluation on the unedited results and fires the post-processing hook.",
+    "description": "Help text under the Resubmit checkbox in the Skip All Section Reviews dialog."
+  },
+  "documentActions.skipAllReviews.resubmitLabel": {
+    "defaultMessage": "Resubmit for downstream processing (Summarization, Evaluation, post-processing hook)",
+    "description": "Checkbox label in the Skip All Section Reviews dialog: whether skipping re-runs the downstream steps."
+  },
+  "documents.list.bulkSkipJobStarted": {
+    "defaultMessage": "Skip All Reviews is running as a background job.",
+    "description": "Success notification when bulk Skip All Reviews is too large to run at once and starts as a background job."
+  },
+  "documents.list.bulkSkipResults": {
+    "defaultMessage": "Skip All Reviews results",
+    "description": "Title of the results dialog of a bulk Skip All Reviews run from the Document List."
+  },
+  "documents.list.downloadFailed": {
+    "defaultMessage": "Download failed: {error}",
+    "description": "Error notification when the bulk document export fails. {error} is the error message."
+  },
+  "documents.list.sendToReviewResults": {
+    "defaultMessage": "Send to review results",
+    "description": "Title of the results dialog of Send to review from the Document List."
+  },
+  "documents.list.unknownError": {
+    "defaultMessage": "Unknown error",
+    "description": "Used as the error of a failed bulk document export when there is no error message."
+  },
+  "editScreen.reviewActivity.job": {
+    "defaultMessage": "Job {jobId}",
+    "description": "Part of a Review Activity note: the bulk job that made the review event. {jobId} is the job id."
+  },
+  "editScreen.reviewActivity.notResubmitted": {
+    "defaultMessage": "Not resubmitted for downstream processing",
+    "description": "Part of a Review Activity note: Skip All Reviews ran without re-running Summarization, Evaluation and the post-processing hook."
+  },
+  "editScreen.reviewActivity.section": {
+    "defaultMessage": "Section {sectionId}",
+    "description": "Part of a Review Activity note in the edit page History: the section the review event was for. {sectionId} is the section id, e.g. \"2\"."
+  },
+  "home.toolsPanels.goodToKnow": {
+    "defaultMessage": "Good to know",
+    "description": "Sub-heading in a Home info panel, above a list of notes and limits."
+  },
+  "home.toolsPanels.inboxIntro": {
+    "defaultMessage": "Messages for you, or for a group you belong to, from the platform: review work waiting, assignments, claims about to expire or released, and finished bulk review jobs.",
+    "description": "Opening paragraph of the Inbox info panel: what the Inbox holds."
+  },
+  "home.toolsPanels.inboxLinkInbox": {
+    "defaultMessage": "Inbox",
+    "description": "Label of a \"Learn more\" link to the Inbox section of the web UI documentation."
+  },
+  "home.toolsPanels.inboxLinkRetention": {
+    "defaultMessage": "Inbox message retention",
+    "description": "Label of a \"Learn more\" link to the documentation of how long Inbox messages are kept."
+  },
+  "home.toolsPanels.inboxLookingAhead": {
+    "defaultMessage": "Looking ahead",
+    "description": "Sub-heading in the Inbox info panel, above a paragraph on planned capabilities."
+  },
+  "home.toolsPanels.inboxLookingAheadText": {
+    "defaultMessage": "The Inbox is planned to become the general notification channel for the platform. As new capabilities are added, it will also carry updates from background jobs, the outcome of asynchronous requests, and reminders when a task is due.",
+    "description": "Inbox info panel, paragraph under \"Looking ahead\"."
+  },
+  "home.toolsPanels.inboxMark": {
+    "defaultMessage": "Mark messages read or unread, or delete them. <b>More actions</b> marks all as read or clears the read ones.",
+    "description": "Inbox info panel, \"On this page\" item. <b>More actions</b> is the label of a menu button, shown in bold."
+  },
+  "home.toolsPanels.inboxOpen": {
+    "defaultMessage": "Open a message to read it; <b>Open</b> goes to the page it is about.",
+    "description": "Inbox info panel, \"On this page\" item. <b>Open</b> is the label of a button, shown in bold."
+  },
+  "home.toolsPanels.inboxRetention": {
+    "defaultMessage": "Messages are kept for a limited time and up to a per-user cap (Configuration › Processing Settings › HITL › Inbox messages).",
+    "description": "Inbox info panel, \"Good to know\" item. The parenthesis is the navigation path to the setting."
+  },
+  "home.toolsPanels.inboxSettings": {
+    "defaultMessage": "The settings icon chooses which message types you receive.",
+    "description": "Inbox info panel, \"On this page\" item about the settings (gear) icon."
+  },
+  "home.toolsPanels.inboxTitle": {
+    "defaultMessage": "Inbox",
+    "description": "Title of the info panel of the Home › Inbox page (the messages the platform sends the user)."
+  },
+  "home.toolsPanels.inboxWho": {
+    "defaultMessage": "Every user. The bell in the top bar and Home › Inbox show the unread count.",
+    "description": "Inbox info panel, \"Who uses it\" item. \"Home › Inbox\" is the navigation path to the page."
+  },
+  "home.toolsPanels.jobIntro": {
+    "defaultMessage": "One bulk Skip All Reviews run: what was asked, its progress, and what happened to each document.",
+    "description": "Opening paragraph of the Job info panel."
+  },
+  "home.toolsPanels.jobOutcomeLeftAlone": {
+    "defaultMessage": "<b>Held by another reviewer</b>, <b>Already finished</b>, <b>Not pending</b>, <b>Test Studio excluded</b> and <b>Not permitted</b>: left alone.",
+    "description": "Job info panel, outcome item. Each bold phrase is an outcome name shown in the results table."
+  },
+  "home.toolsPanels.jobOutcomeRetry": {
+    "defaultMessage": "<b>Resubmit failed</b>: skipped, but its downstream run could not be queued. <b>Failed</b> and <b>Not attempted</b>: try again.",
+    "description": "Job info panel, outcome item. Each bold phrase is an outcome name shown in the results table."
+  },
+  "home.toolsPanels.jobOutcomeSkipped": {
+    "defaultMessage": "<b>Skipped</b>: the review was finished without anyone checking it, recorded with the reason in the document's review history.",
+    "description": "Job info panel, outcome item. <b>Skipped</b> is an outcome name shown in the results table, in bold."
+  },
+  "home.toolsPanels.jobOutcomes": {
+    "defaultMessage": "Outcomes",
+    "description": "Sub-heading in the Job info panel, above the list of per-document outcome names and their meaning."
+  },
+  "home.toolsPanels.jobProgress": {
+    "defaultMessage": "Progress and the count per outcome, refreshed while the job is queued or running.",
+    "description": "Job info panel, \"On this page\" item."
+  },
+  "home.toolsPanels.jobRequest": {
+    "defaultMessage": "The request: mode (selected documents or by profile), profile and submitted-date range, reason, note and whether documents are resubmitted.",
+    "description": "Job info panel, \"On this page\" item describing the request summary."
+  },
+  "home.toolsPanels.jobResults": {
+    "defaultMessage": "The results table: filter by outcome, open a document, or export to Excel.",
+    "description": "Job info panel, \"On this page\" item."
+  },
+  "home.toolsPanels.jobTitle": {
+    "defaultMessage": "Job",
+    "description": "Title of the info panel of the page of one job (a single bulk Skip All Reviews run)."
+  },
+  "home.toolsPanels.jobsColumns": {
+    "defaultMessage": "Each job's type, status, mode, profile, when it was created and finished, and how many documents it processed and skipped.",
+    "description": "Jobs info panel, \"On this page\" item listing the columns of the jobs table."
+  },
+  "home.toolsPanels.jobsIntro": {
+    "defaultMessage": "Every bulk Skip All Reviews run: those that ran at once and those that ran as a background job.",
+    "description": "Opening paragraph of the Jobs info panel. \"Skip All Reviews\" is the name of an action."
+  },
+  "home.toolsPanels.jobsLinkLimit": {
+    "defaultMessage": "Bulk skip synchronous limit",
+    "description": "Label of a \"Learn more\" link to the documentation of the setting that caps how many documents a bulk skip handles at once."
+  },
+  "home.toolsPanels.jobsLinkSkipAll": {
+    "defaultMessage": "Skip All Reviews for many documents",
+    "description": "Label of a \"Learn more\" link to the documentation of bulk Skip All Reviews."
+  },
+  "home.toolsPanels.jobsOneAtATime": {
+    "defaultMessage": "One background job runs at a time per stack; others wait as Queued.",
+    "description": "Jobs info panel, \"Good to know\" item. \"Queued\" is a job status name."
+  },
+  "home.toolsPanels.jobsOpen": {
+    "defaultMessage": "Open a job to see its progress and per-document results. The list refreshes while a job is queued or running.",
+    "description": "Jobs info panel, \"On this page\" item."
+  },
+  "home.toolsPanels.jobsRetention": {
+    "defaultMessage": "Jobs are kept for 30 days, or for the stack's data retention if that is shorter. The Inbox tells you when a background job finishes.",
+    "description": "Jobs info panel, \"Good to know\" item about how long jobs are kept."
+  },
+  "home.toolsPanels.jobsTitle": {
+    "defaultMessage": "Jobs",
+    "description": "Title of the info panel of the Home › Jobs page (bulk Skip All Reviews runs)."
+  },
+  "home.toolsPanels.jobsWhoRoles": {
+    "defaultMessage": "Admins (every user's jobs) and Reviewers (their own).",
+    "description": "Jobs info panel, \"Who uses it\" item. Admins and Reviewers are user roles."
+  },
+  "home.toolsPanels.jobsWhoStarted": {
+    "defaultMessage": "Runs are started from the Document List (<b>Review › Skip All Reviews</b>) or a production queue's page.",
+    "description": "Jobs info panel, \"Who uses it\" item. <b>Review › Skip All Reviews</b> is a menu path, shown in bold."
+  },
+  "home.toolsPanels.linkHumanReview": {
+    "defaultMessage": "Human review",
+    "description": "Label of a \"Learn more\" link to the Human review documentation page."
+  },
+  "home.toolsPanels.linkReviewQueues": {
+    "defaultMessage": "Review queues",
+    "description": "Label of a \"Learn more\" link to the Review queues documentation page."
+  },
+  "home.toolsPanels.linkTestStudio": {
+    "defaultMessage": "Test Studio",
+    "description": "Label of a \"Learn more\" link to the Test Studio documentation page. Test Studio is a product area name."
+  },
+  "home.toolsPanels.onThisPage": {
+    "defaultMessage": "On this page",
+    "description": "Sub-heading in a Home info panel, above the list of what the page shows and does."
+  },
+  "home.toolsPanels.queuesClaim": {
+    "defaultMessage": "On a queue's page, claim an item (or choose <b>Next item</b>) to work it in Home › Tasks.",
+    "description": "Queues info panel, \"On this page\" item. <b>Next item</b> is the label of a button, shown in bold."
+  },
+  "home.toolsPanels.queuesCounts": {
+    "defaultMessage": "Each queue with its pending and claimed counts. Open a queue to see its items.",
+    "description": "Queues info panel, \"On this page\" item."
+  },
+  "home.toolsPanels.queuesIntro": {
+    "defaultMessage": "The review queues you work: every Production queue for a Reviewer, and the queues (Production or Test Studio) that list you as an Annotator.",
+    "description": "Opening paragraph of the Queues info panel. Reviewer and Annotator are user roles; Production and Test Studio are kinds of queue."
+  },
+  "home.toolsPanels.queuesSkipAll": {
+    "defaultMessage": "Reviewers can also finish waiting items without reviewing them with <b>Skip All Reviews</b> on a queue's page.",
+    "description": "Queues info panel, \"On this page\" item. <b>Skip All Reviews</b> is the label of a button, shown in bold."
+  },
+  "home.toolsPanels.queuesTitle": {
+    "defaultMessage": "Queues",
+    "description": "Title of the info panel of the Home › Queues page (the review queues the user works)."
+  },
+  "home.toolsPanels.queuesWho": {
+    "defaultMessage": "Annotators and Reviewers. Admins manage queues in Review Studio › Review Management.",
+    "description": "Queues info panel, \"Who uses it\" item. \"Review Studio › Review Management\" is a navigation path."
+  },
+  "home.toolsPanels.tasksClaimMore": {
+    "defaultMessage": "Claim more work from Home › Queues.",
+    "description": "Tasks info panel, \"On this page\" item. \"Home › Queues\" is the navigation path to a page."
+  },
+  "home.toolsPanels.tasksIntro": {
+    "defaultMessage": "The review work you hold: production queue items you claimed or an Admin assigned to you, and Test Studio documents to annotate.",
+    "description": "Opening paragraph of the Tasks info panel. \"Admin\" is a user role."
+  },
+  "home.toolsPanels.tasksOpen": {
+    "defaultMessage": "Open an item to review or annotate it in the edit page.",
+    "description": "Tasks info panel, \"On this page\" item."
+  },
+  "home.toolsPanels.tasksSkip": {
+    "defaultMessage": "<b>Skip</b> on an item hands it back to its queue unfinished; your saved work is kept.",
+    "description": "Tasks info panel, \"On this page\" item. <b>Skip</b> is the label of a button, shown in bold."
+  },
+  "home.toolsPanels.tasksTitle": {
+    "defaultMessage": "Tasks",
+    "description": "Title of the info panel of the Home › Tasks page (review work the user holds)."
+  },
+  "home.toolsPanels.tasksWho": {
+    "defaultMessage": "Annotators and Reviewers. The badge on Home › Tasks counts the items assigned to you.",
+    "description": "Tasks info panel, \"Who uses it\" item. Annotators and Reviewers are user roles."
+  },
+  "home.toolsPanels.whoUsesIt": {
+    "defaultMessage": "Who uses it",
+    "description": "Sub-heading in a Home info panel, above the list of roles that use the page."
+  },
   "i18n.switcher.ariaLabel": {
     "defaultMessage": "Language, currently {language}",
     "description": "Screen-reader label of the language menu button. {language} is the current language by its own name, e.g. \"English\"."
@@ -6,6 +318,10 @@
   "i18n.switcher.label": {
     "defaultMessage": "Language",
     "description": "Tooltip of the language menu button in the top navigation. The button itself shows the current language by its own name (English, Français (Canada))."
+  },
+  "navigation.home.jobs": {
+    "defaultMessage": "Jobs",
+    "description": "Side-navigation link under Home to the list of bulk Skip All Reviews jobs (Admins and Reviewers)."
   },
   "pricing.layout.cannotSaveInvalidPrices": {
     "defaultMessage": "Cannot save: {count, plural, one {# price is} other {# prices are}} not valid. Correct the prices listed under Invalid prices and save again.",
@@ -22,6 +338,582 @@
   "pricing.layout.invalidPricesHeader": {
     "defaultMessage": "Invalid prices",
     "description": "Header of the warning that lists every price on the Pricing page that cannot be saved."
+  },
+  "reviewBulk.bulkResultsModal.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the results dialog of a bulk Skip All Reviews run or of Send to review."
+  },
+  "reviewBulk.bulkResultsTable.allOutcomes": {
+    "defaultMessage": "All outcomes",
+    "description": "Option of the outcome filter of the bulk results table that shows every outcome."
+  },
+  "reviewBulk.bulkResultsTable.detailColumn": {
+    "defaultMessage": "Detail",
+    "description": "Column header of the bulk results table: extra detail about the outcome."
+  },
+  "reviewBulk.bulkResultsTable.documentColumn": {
+    "defaultMessage": "Document",
+    "description": "Column header of the bulk results table: the document name."
+  },
+  "reviewBulk.bulkResultsTable.documents": {
+    "defaultMessage": "Documents",
+    "description": "Default heading of the per-document results table of a bulk Skip All Reviews run or of Send to review."
+  },
+  "reviewBulk.bulkResultsTable.emptyDescription": {
+    "defaultMessage": "Results appear here as documents are processed.",
+    "description": "Description of the empty state of the bulk results table."
+  },
+  "reviewBulk.bulkResultsTable.emptyTitle": {
+    "defaultMessage": "No documents",
+    "description": "Title of the empty state of the bulk results table."
+  },
+  "reviewBulk.bulkResultsTable.exportToExcel": {
+    "defaultMessage": "Export to Excel",
+    "description": "Button that downloads the rows shown in the bulk results table as an Excel file."
+  },
+  "reviewBulk.bulkResultsTable.findDocument": {
+    "defaultMessage": "Find a document",
+    "description": "Placeholder and screen-reader label of the text filter of the bulk results table (matches the document name)."
+  },
+  "reviewBulk.bulkResultsTable.loading": {
+    "defaultMessage": "Loading results",
+    "description": "Loading text of the bulk results table."
+  },
+  "reviewBulk.bulkResultsTable.matches": {
+    "defaultMessage": "{count, plural, one {# match} other {# matches}}",
+    "description": "Count next to the text filter of the bulk results table. {count} is the number of matching rows."
+  },
+  "reviewBulk.bulkResultsTable.noMatchDescription": {
+    "defaultMessage": "No document matches the filter.",
+    "description": "Description shown in the bulk results table when no row matches the text filter."
+  },
+  "reviewBulk.bulkResultsTable.noMatchTitle": {
+    "defaultMessage": "No matches",
+    "description": "Title shown in the bulk results table when no row matches the text filter."
+  },
+  "reviewBulk.bulkResultsTable.outcomeColumn": {
+    "defaultMessage": "Outcome",
+    "description": "Column header of the bulk results table: what happened to the document (e.g. Skipped)."
+  },
+  "reviewBulk.bulkResultsTable.outcomeFilter": {
+    "defaultMessage": "Outcome",
+    "description": "Screen-reader label of the outcome filter of the bulk results table."
+  },
+  "reviewBulk.bulkSkipModal.chooseProfile": {
+    "defaultMessage": "Choose a configuration profile",
+    "description": "Why the Skip All Reviews confirm button is disabled: no configuration profile is chosen yet."
+  },
+  "reviewBulk.bulkSkipModal.confirm": {
+    "defaultMessage": "Skip All Reviews",
+    "description": "Confirm button of the bulk Skip All Reviews dialog."
+  },
+  "reviewBulk.bulkSkipModal.countFailed": {
+    "defaultMessage": "Could not count pending reviews: {error}",
+    "description": "Error when the dry run of bulk Skip All Reviews fails. {error} is the error message from the server."
+  },
+  "reviewBulk.bulkSkipModal.counting": {
+    "defaultMessage": "Counting pending reviews…",
+    "description": "Shown (and used as the disabled reason of the confirm button) while the dry run of bulk Skip All Reviews counts the pending reviews."
+  },
+  "reviewBulk.bulkSkipModal.headerProfile": {
+    "defaultMessage": "Skip All Reviews by profile",
+    "description": "Title of the bulk Skip All Reviews dialog that chooses documents by configuration profile and submitted dates."
+  },
+  "reviewBulk.bulkSkipModal.headerSelected": {
+    "defaultMessage": "Skip All Reviews ({count} selected)",
+    "description": "Title of the bulk Skip All Reviews dialog for selected documents. {count} is the number of selected documents it applies to."
+  },
+  "reviewBulk.bulkSkipModal.limitReached": {
+    "defaultMessage": "More than 10,000 documents match; only the first 10,000 are processed. Narrow the date range.",
+    "description": "Warning in the bulk Skip All Reviews dry run when the match limit of 10,000 documents is reached."
+  },
+  "reviewBulk.bulkSkipModal.noneForProfile": {
+    "defaultMessage": "No pending production reviews for this profile and range. Try a wider range or another profile.",
+    "description": "Dry-run result of bulk Skip All Reviews by profile when nothing would be skipped."
+  },
+  "reviewBulk.bulkSkipModal.noneSelected": {
+    "defaultMessage": "None of the selected documents has a pending production review.",
+    "description": "Dry-run result of bulk Skip All Reviews for selected documents when nothing would be skipped."
+  },
+  "reviewBulk.bulkSkipModal.notCounted": {
+    "defaultMessage": "The pending reviews could not be counted",
+    "description": "Why the Skip All Reviews confirm button is disabled: the dry run failed."
+  },
+  "reviewBulk.bulkSkipModal.nothingToSkip": {
+    "defaultMessage": "No pending production reviews to skip",
+    "description": "Why the Skip All Reviews confirm button is disabled: the dry run found no review to skip."
+  },
+  "reviewBulk.bulkSkipModal.profileDescription": {
+    "defaultMessage": "Documents processed with this profile.",
+    "description": "Description under the configuration profile select of bulk Skip All Reviews by profile."
+  },
+  "reviewBulk.bulkSkipModal.profileLabel": {
+    "defaultMessage": "Configuration profile",
+    "description": "Label (and screen-reader label) of the configuration profile select in the bulk Skip All Reviews by profile dialog."
+  },
+  "reviewBulk.bulkSkipModal.profilePlaceholder": {
+    "defaultMessage": "Choose a configuration profile",
+    "description": "Placeholder of the configuration profile select of bulk Skip All Reviews by profile."
+  },
+  "reviewBulk.bulkSkipModal.profilesEmpty": {
+    "defaultMessage": "No configuration profiles in your scope",
+    "description": "Shown in the configuration profile select when the user may use no profile."
+  },
+  "reviewBulk.bulkSkipModal.profilesLoading": {
+    "defaultMessage": "Loading profiles...",
+    "description": "Loading text of the configuration profile select of bulk Skip All Reviews by profile."
+  },
+  "reviewBulk.bulkSkipModal.resubmit": {
+    "defaultMessage": "Resubmit for downstream processing (Summarization, Evaluation, post-processing hook)",
+    "description": "Checkbox of bulk Skip All Reviews: run the downstream steps (named in parentheses) after skipping."
+  },
+  "reviewBulk.bulkSkipModal.resubmitDescription": {
+    "defaultMessage": "Applies to reviews outside a review queue; queue items always finish through their finalize run.",
+    "description": "Description of the Resubmit checkbox of bulk Skip All Reviews."
+  },
+  "reviewBulk.bulkSkipModal.runFailed": {
+    "defaultMessage": "Skip All Reviews failed: {error}",
+    "description": "Error when a bulk Skip All Reviews run fails. {error} is the error message from the server."
+  },
+  "reviewBulk.bulkSkipModal.runsAsJob": {
+    "defaultMessage": "Runs as a background job (results in Home › Jobs).",
+    "description": "Dry-run result of bulk Skip All Reviews: the run is large and becomes a background job. \"Home › Jobs\" is the navigation path of the Jobs page."
+  },
+  "reviewBulk.bulkSkipModal.runsNow": {
+    "defaultMessage": "Runs now.",
+    "description": "Dry-run result of bulk Skip All Reviews: the run is small enough to happen at once."
+  },
+  "reviewBulk.bulkSkipModal.skippedWarning": {
+    "defaultMessage": "Skipped reviews are finished without anyone checking them; each is recorded with your reason in the document's review history.",
+    "description": "Warning in the bulk Skip All Reviews dialog about what skipping a review means."
+  },
+  "reviewBulk.bulkSkipModal.submittedBetween": {
+    "defaultMessage": "Submitted between (UTC)",
+    "description": "Label of the submitted-date range of bulk Skip All Reviews by profile; times are in UTC."
+  },
+  "reviewBulk.bulkSkipModal.willBeSkipped": {
+    "defaultMessage": "{count, plural, one {<b>#{approximate}</b> pending review} other {<b>#{approximate}</b> pending reviews}} will be skipped.",
+    "description": "Dry-run result of bulk Skip All Reviews. {count} is the number of reviews that will be skipped, shown in bold; {approximate} is \"+\" when the count is a lower bound, otherwise empty."
+  },
+  "reviewBulk.jobActionModal.cancelBody": {
+    "defaultMessage": "The job finishes the page of up to 25 documents it is working on, then stops. Documents it has skipped stay skipped; the rest keep their pending reviews. The requester gets an Inbox message.",
+    "description": "Explanation in the Cancel job dialog of what cancelling a bulk Skip All Reviews job does. \"Inbox\" is the name of the message inbox."
+  },
+  "reviewBulk.jobActionModal.cancelConfirm": {
+    "defaultMessage": "Cancel job",
+    "description": "Confirm button of the Cancel job dialog."
+  },
+  "reviewBulk.jobActionModal.cancelHeader": {
+    "defaultMessage": "Cancel job",
+    "description": "Title of the dialog confirming that a queued or running bulk Skip All Reviews job is cancelled."
+  },
+  "reviewBulk.jobActionModal.deleteBody": {
+    "defaultMessage": "The job and its results are removed from Home › Jobs. Skipped documents stay skipped. This action cannot be undone.",
+    "description": "Explanation in the Delete job dialog. \"Home › Jobs\" is the navigation path of the Jobs page."
+  },
+  "reviewBulk.jobActionModal.deleteConfirm": {
+    "defaultMessage": "Delete job",
+    "description": "Confirm button of the Delete job dialog."
+  },
+  "reviewBulk.jobActionModal.deleteHeader": {
+    "defaultMessage": "Delete job",
+    "description": "Title of the dialog confirming that a finished bulk Skip All Reviews job is deleted."
+  },
+  "reviewBulk.jobActionModal.job": {
+    "defaultMessage": "Job <b>{jobId}</b>",
+    "description": "Names the job in the Cancel job or Delete job dialog. {jobId} is the job ID, shown in bold."
+  },
+  "reviewBulk.jobActionModal.keepJob": {
+    "defaultMessage": "Keep job",
+    "description": "Button that closes the Cancel job or Delete job dialog without acting."
+  },
+  "reviewBulk.jobDetailPage.created": {
+    "defaultMessage": "Created",
+    "description": "Label of the date and time the job was created, on the job detail page."
+  },
+  "reviewBulk.jobDetailPage.failedHeader": {
+    "defaultMessage": "The job failed",
+    "description": "Header of the error alert on the job detail page of a failed job; the body is the error."
+  },
+  "reviewBulk.jobDetailPage.finished": {
+    "defaultMessage": "Finished",
+    "description": "Label of the date and time the job finished, on the job detail page."
+  },
+  "reviewBulk.jobDetailPage.limitReached": {
+    "defaultMessage": "More than 10,000 documents matched; only the first 10,000 were processed. Narrow the date range and run again.",
+    "description": "Warning on the job detail page when the job reached the limit of 10,000 documents."
+  },
+  "reviewBulk.jobDetailPage.loadJobAction": {
+    "defaultMessage": "load the job",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the job detail cannot be loaded."
+  },
+  "reviewBulk.jobDetailPage.loadMore": {
+    "defaultMessage": "Load more",
+    "description": "Button under the job results table that loads the next page of per-document results."
+  },
+  "reviewBulk.jobDetailPage.loadMoreAction": {
+    "defaultMessage": "load more results",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when more job results cannot be loaded."
+  },
+  "reviewBulk.jobDetailPage.mode": {
+    "defaultMessage": "Mode",
+    "description": "Label of how the job chose documents (selected documents or by profile) on the job detail page."
+  },
+  "reviewBulk.jobDetailPage.no": {
+    "defaultMessage": "No",
+    "description": "Value of the Resubmit for downstream processing field: not resubmitted."
+  },
+  "reviewBulk.jobDetailPage.notFound": {
+    "defaultMessage": "Job not found, or not yours.",
+    "description": "Error on the job detail page when the job does not exist or belongs to another user."
+  },
+  "reviewBulk.jobDetailPage.note": {
+    "defaultMessage": "Note",
+    "description": "Label of the requester note on the job detail page."
+  },
+  "reviewBulk.jobDetailPage.profile": {
+    "defaultMessage": "Profile",
+    "description": "Label of the configuration profile of the job on the job detail page."
+  },
+  "reviewBulk.jobDetailPage.progress": {
+    "defaultMessage": "Progress",
+    "description": "Label of the progress bar on the job detail page."
+  },
+  "reviewBulk.jobDetailPage.progressDescription": {
+    "defaultMessage": "{processed, number} of {total, number} documents processed",
+    "description": "Under the job progress bar. {processed} is the number of documents done so far, {total} the number the job applies to."
+  },
+  "reviewBulk.jobDetailPage.reason": {
+    "defaultMessage": "Reason",
+    "description": "Label of the reason the requester gave for skipping the reviews, on the job detail page."
+  },
+  "reviewBulk.jobDetailPage.requestedBy": {
+    "defaultMessage": "Requested by",
+    "description": "Label of the user who started the job, on the job detail page."
+  },
+  "reviewBulk.jobDetailPage.resubmit": {
+    "defaultMessage": "Resubmit for downstream processing",
+    "description": "Label of whether skipped documents are resubmitted for downstream processing, on the job detail page."
+  },
+  "reviewBulk.jobDetailPage.resultCancelled": {
+    "defaultMessage": "Cancelled",
+    "description": "Result text of the job progress bar when the job was cancelled."
+  },
+  "reviewBulk.jobDetailPage.resultFailed": {
+    "defaultMessage": "Failed",
+    "description": "Result text of the job progress bar when the job failed and the server recorded no error."
+  },
+  "reviewBulk.jobDetailPage.resultFinished": {
+    "defaultMessage": "Finished",
+    "description": "Result text of the job progress bar when the job succeeded."
+  },
+  "reviewBulk.jobDetailPage.stalled": {
+    "defaultMessage": "This job has not reported progress for 30 minutes.",
+    "description": "Warning on the job detail page when a running job looks stuck."
+  },
+  "reviewBulk.jobDetailPage.status": {
+    "defaultMessage": "Status",
+    "description": "Label of the job status on the job detail page."
+  },
+  "reviewBulk.jobDetailPage.submittedBetween": {
+    "defaultMessage": "Submitted between (UTC)",
+    "description": "Label of the submitted-date range the job applied to, in UTC, on the job detail page."
+  },
+  "reviewBulk.jobDetailPage.submittedRange": {
+    "defaultMessage": "{from} → {to}",
+    "description": "The submitted-date range of a job. {from} and {to} are UTC ISO timestamps."
+  },
+  "reviewBulk.jobDetailPage.unknownError": {
+    "defaultMessage": "Unknown error",
+    "description": "Shown as the error of a failed job when the server recorded none."
+  },
+  "reviewBulk.jobDetailPage.yes": {
+    "defaultMessage": "Yes",
+    "description": "Value of the Resubmit for downstream processing field: resubmitted."
+  },
+  "reviewBulk.jobsPage.actionsFor": {
+    "defaultMessage": "Actions for {jobId}",
+    "description": "Screen-reader label of the row action menu of the Jobs table. {jobId} is the job ID."
+  },
+  "reviewBulk.jobsPage.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Row menu item of the Jobs table that cancels a queued or running job."
+  },
+  "reviewBulk.jobsPage.cancelJobAction": {
+    "defaultMessage": "cancel the job",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when a job cannot be cancelled."
+  },
+  "reviewBulk.jobsPage.cancelPreferences": {
+    "defaultMessage": "Cancel",
+    "description": "Cancel button of the Jobs table settings dialog."
+  },
+  "reviewBulk.jobsPage.cancelled": {
+    "defaultMessage": "Job {jobId} cancelled.",
+    "description": "Success notification after a job is cancelled. {jobId} is the job ID."
+  },
+  "reviewBulk.jobsPage.columnAction": {
+    "defaultMessage": "Action",
+    "description": "Column header (and column preference) of the Jobs table: the row action menu."
+  },
+  "reviewBulk.jobsPage.columnCreated": {
+    "defaultMessage": "Created",
+    "description": "Column header (and column preference) of the Jobs table: when the job was created."
+  },
+  "reviewBulk.jobsPage.columnFinished": {
+    "defaultMessage": "Finished",
+    "description": "Column header (and column preference) of the Jobs table: when the job finished."
+  },
+  "reviewBulk.jobsPage.columnJobId": {
+    "defaultMessage": "Job ID",
+    "description": "Column header (and column preference) of the Jobs table: the job ID."
+  },
+  "reviewBulk.jobsPage.columnMode": {
+    "defaultMessage": "Mode",
+    "description": "Column header (and column preference) of the Jobs table: how the job chose documents (selected documents or by profile)."
+  },
+  "reviewBulk.jobsPage.columnPreferences": {
+    "defaultMessage": "Column preferences",
+    "description": "Title of the column choice in the Jobs table settings."
+  },
+  "reviewBulk.jobsPage.columnProcessed": {
+    "defaultMessage": "Processed / Total",
+    "description": "Column header (and column preference) of the Jobs table: documents processed out of the total."
+  },
+  "reviewBulk.jobsPage.columnProfile": {
+    "defaultMessage": "Profile",
+    "description": "Column header (and column preference) of the Jobs table: the configuration profile."
+  },
+  "reviewBulk.jobsPage.columnRequestedBy": {
+    "defaultMessage": "Requested by",
+    "description": "Column header (and column preference) of the Jobs table: the user who started the job."
+  },
+  "reviewBulk.jobsPage.columnSkipped": {
+    "defaultMessage": "Skipped",
+    "description": "Column header (and column preference) of the Jobs table: number of reviews skipped."
+  },
+  "reviewBulk.jobsPage.columnStatus": {
+    "defaultMessage": "Status",
+    "description": "Column header (and column preference) of the Jobs table: the job status."
+  },
+  "reviewBulk.jobsPage.columnType": {
+    "defaultMessage": "Type",
+    "description": "Column header (and column preference) of the Jobs table: the kind of job (e.g. Skip All Reviews)."
+  },
+  "reviewBulk.jobsPage.confirm": {
+    "defaultMessage": "Confirm",
+    "description": "Confirm button of the Jobs table settings dialog."
+  },
+  "reviewBulk.jobsPage.delete": {
+    "defaultMessage": "Delete",
+    "description": "Row menu item of the Jobs table that deletes a finished job."
+  },
+  "reviewBulk.jobsPage.deleteDisabled": {
+    "defaultMessage": "Cancel the job, or wait for it to finish, before deleting it",
+    "description": "Why the Delete menu item of a queued or running job is disabled."
+  },
+  "reviewBulk.jobsPage.deleteJobAction": {
+    "defaultMessage": "delete the job",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when a job cannot be deleted."
+  },
+  "reviewBulk.jobsPage.deleted": {
+    "defaultMessage": "Job {jobId} deleted.",
+    "description": "Success notification after a job is deleted. {jobId} is the job ID."
+  },
+  "reviewBulk.jobsPage.descriptionAdmin": {
+    "defaultMessage": "Bulk Skip All Reviews runs by every user.",
+    "description": "Description under the Jobs heading for an Admin, who sees every user's jobs."
+  },
+  "reviewBulk.jobsPage.descriptionOwn": {
+    "defaultMessage": "Your bulk Skip All Reviews runs.",
+    "description": "Description under the Jobs heading for a Reviewer, who sees only their own jobs."
+  },
+  "reviewBulk.jobsPage.emptyDescription": {
+    "defaultMessage": "Bulk Skip All Reviews runs that go to the background appear here.",
+    "description": "Description of the empty state of the Jobs table."
+  },
+  "reviewBulk.jobsPage.emptyTitle": {
+    "defaultMessage": "No jobs yet",
+    "description": "Title of the empty state of the Jobs table."
+  },
+  "reviewBulk.jobsPage.find": {
+    "defaultMessage": "Find jobs",
+    "description": "Placeholder and screen-reader label of the text filter of the Jobs table."
+  },
+  "reviewBulk.jobsPage.loadFailed": {
+    "defaultMessage": "Could not load jobs",
+    "description": "Header of the error alert when the job list cannot be loaded."
+  },
+  "reviewBulk.jobsPage.loadJobsAction": {
+    "defaultMessage": "load jobs",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the job list cannot be loaded."
+  },
+  "reviewBulk.jobsPage.loading": {
+    "defaultMessage": "Loading jobs",
+    "description": "Loading text of the Jobs table."
+  },
+  "reviewBulk.jobsPage.pageSize": {
+    "defaultMessage": "Page size",
+    "description": "Title of the page size choice in the Jobs table settings."
+  },
+  "reviewBulk.jobsPage.pageSizeOption": {
+    "defaultMessage": "{count, plural, one {# job} other {# jobs}}",
+    "description": "A page size option in the Jobs table settings. {count} is the number of jobs per page."
+  },
+  "reviewBulk.jobsPage.preferences": {
+    "defaultMessage": "Preferences",
+    "description": "Title of the Jobs table settings dialog."
+  },
+  "reviewBulk.jobsPage.processedOfTotal": {
+    "defaultMessage": "{processed, number} / {total, number}",
+    "description": "Cell of the Processed / Total column. {processed} is the number of documents done, {total} the number the job applies to."
+  },
+  "reviewBulk.jobsPage.refresh": {
+    "defaultMessage": "Refresh jobs",
+    "description": "Screen-reader label of the refresh button of the Jobs table."
+  },
+  "reviewBulk.jobsPage.resourceName": {
+    "defaultMessage": "Job",
+    "description": "Name of one item of the Jobs table, used by its empty state."
+  },
+  "reviewBulk.jobsPage.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button in the error alert that loads the job list again."
+  },
+  "reviewBulk.jobsPage.stalled": {
+    "defaultMessage": "Stalled",
+    "description": "Status badge next to a job status when the job has not reported progress for 30 minutes."
+  },
+  "reviewBulk.jobsPage.title": {
+    "defaultMessage": "Jobs",
+    "description": "Heading of the Jobs page table."
+  },
+  "reviewBulk.outcomeCounts.count": {
+    "defaultMessage": "{label}: {count, number}",
+    "description": "One outcome count of a bulk Skip All Reviews run or Send to review. {label} is the outcome (e.g. \"Skipped\"), {count} the number of documents."
+  },
+  "reviewBulk.outcomeCounts.noDocuments": {
+    "defaultMessage": "No documents.",
+    "description": "Shown instead of the outcome counts of a bulk Skip All Reviews run or Send to review when no document has an outcome."
+  },
+  "reviewBulk.outcomeCounts.willBeSkipped": {
+    "defaultMessage": "Will be skipped",
+    "description": "Outcome label in the dry-run preview of bulk Skip All Reviews: the reviews that the run will skip."
+  },
+  "reviewBulk.reviewMenu.releaseReview": {
+    "defaultMessage": "Release Review",
+    "description": "Review menu item of the Document List (Admin) that releases the claims on the selected documents' reviews."
+  },
+  "reviewBulk.reviewMenu.releaseReviewDisabled": {
+    "defaultMessage": "Select documents with a claimed review",
+    "description": "Why the Release Review menu item is disabled: no selected document has a claimed review."
+  },
+  "reviewBulk.reviewMenu.sendSelected": {
+    "defaultMessage": "Send to review ({count} selected)",
+    "description": "Review menu item that sends the selected finished documents to the Default review queue. {count} is the number of selected documents it applies to."
+  },
+  "reviewBulk.reviewMenu.skipProfile": {
+    "defaultMessage": "Skip All Reviews by profile…",
+    "description": "Review menu item that opens bulk Skip All Reviews by configuration profile and submitted dates."
+  },
+  "reviewBulk.reviewMenu.skipSelected": {
+    "defaultMessage": "Skip All Reviews ({count} selected)",
+    "description": "Review menu item that skips the pending reviews of the selected documents. {count} is the number of selected documents it applies to."
+  },
+  "reviewBulk.reviewMenu.startReview": {
+    "defaultMessage": "Start Review",
+    "description": "Review menu item of the Document List that claims the selected documents' pending reviews."
+  },
+  "reviewBulk.reviewMenu.startReviewDisabled": {
+    "defaultMessage": "Select documents with an unclaimed pending review",
+    "description": "Why the Start Review menu item is disabled: no selected document has an unclaimed pending review."
+  },
+  "reviewBulk.sendToReviewModal.body": {
+    "defaultMessage": "{count, plural, one {This document} other {These # documents}} will be added to the Default review queue. Reviewers see your reason with the item; completing the review reprocesses the document with their edits.",
+    "description": "Explanation in the Send to review dialog. {count} is the number of documents being sent; \"Default review queue\" is the name of the queue."
+  },
+  "reviewBulk.sendToReviewModal.confirm": {
+    "defaultMessage": "Send to review",
+    "description": "Confirm button of the Send to review dialog."
+  },
+  "reviewBulk.sendToReviewModal.failed": {
+    "defaultMessage": "Send to review failed: {error}",
+    "description": "Error in the Send to review dialog when the request fails. {error} is the error message from the server."
+  },
+  "reviewBulk.sendToReviewModal.header": {
+    "defaultMessage": "Send to review",
+    "description": "Title of the dialog that puts finished documents into the Default review queue."
+  },
+  "reviewBulk.sendToReviewModal.noSelection": {
+    "defaultMessage": "Select finished documents that are not in review",
+    "description": "Why the Send to review confirm button is disabled: no selected document can be sent."
+  },
+  "reviewQueues.queuePage.adminDescription": {
+    "defaultMessage": "Select items to assign them to an Annotator or unassign them. More actions moves them to another queue, removes them from the queues or skips their reviews. Edit opens an item without changing its assignment.",
+    "description": "Description under the Items table header of a review queue, for an Admin. \"More actions\" and \"Edit\" name the table's menu and row action."
+  },
+  "reviewQueues.queuePage.moreActions": {
+    "defaultMessage": "More actions",
+    "description": "Menu button in the header of a review queue's Items table, holding the queue and skip actions for the selected items."
+  },
+  "reviewQueues.queuePage.move": {
+    "defaultMessage": "Move…",
+    "description": "More actions item that moves the selected items to another review queue (opens a dialog). The count of selected items is appended in parentheses."
+  },
+  "reviewQueues.queuePage.noOtherQueue": {
+    "defaultMessage": "There is no other queue",
+    "description": "Why the Move… item is disabled: there is no other review queue to move items to."
+  },
+  "reviewQueues.queuePage.queueGroup": {
+    "defaultMessage": "Queue",
+    "description": "Group heading in the More actions menu of a review queue: moving or removing the selected items."
+  },
+  "reviewQueues.queuePage.removeFromQueue": {
+    "defaultMessage": "Remove from queue…",
+    "description": "More actions item that takes the selected items out of the review queues (opens a dialog). The count of removable items is appended in parentheses."
+  },
+  "reviewQueues.queuePage.selectToMove": {
+    "defaultMessage": "Select items to move",
+    "description": "Why the Move… item is disabled: no item is selected."
+  },
+  "reviewQueues.queuePage.selectToRemove": {
+    "defaultMessage": "Select items waiting for review or assigned",
+    "description": "Why the Remove from queue… item is disabled: no selected item is waiting for review or assigned."
+  },
+  "reviewQueues.queuePage.skipAllReviews": {
+    "defaultMessage": "Skip All Reviews",
+    "description": "More actions item that skips all reviews of the selected items. The count of skippable items is appended in parentheses."
+  },
+  "reviewQueues.queuePage.skipByProfile": {
+    "defaultMessage": "Skip All Reviews by profile…",
+    "description": "More actions item that opens the dialog to skip all reviews of the documents matching a profile (filters)."
+  },
+  "reviewQueues.queuePage.skipGroup": {
+    "defaultMessage": "Skip reviews",
+    "description": "Group heading in the More actions menu of a review queue: skipping the reviews of documents."
+  },
+  "reviewQueues.queuePage.skipJobStarted": {
+    "defaultMessage": "Skip All Reviews is running as a background job.",
+    "description": "Success notification when a bulk Skip All Reviews started as a background job; the page then opens the job."
+  },
+  "reviewQueues.queuePage.skipResultsHeader": {
+    "defaultMessage": "Skip All Reviews results",
+    "description": "Header of the dialog listing the per-document outcomes of a bulk Skip All Reviews that ran inline."
+  },
+  "reviewQueues.taskContext.sentBy": {
+    "defaultMessage": "By {requestedBy}",
+    "description": "Body of the Sent to review alert. {requestedBy} is the user (e-mail) who sent the document to review."
+  },
+  "reviewQueues.taskContext.sentByWithNote": {
+    "defaultMessage": "By {requestedBy} — {note}",
+    "description": "Body of the Sent to review alert when the sender left a note. {requestedBy} is the user (e-mail) who sent it; {note} is their free-text note."
+  },
+  "reviewQueues.taskContext.sentToReview": {
+    "defaultMessage": "Sent to review: {reason}",
+    "description": "Header of the info alert on a review task whose document was sent to review by hand. {reason} is the reason chosen when sending it."
+  },
+  "routes.myWork.jobCrumb": {
+    "defaultMessage": "Job",
+    "description": "Last breadcrumb on the page of one bulk Skip All Reviews job, after Home › Jobs."
   },
   "testStudio.itemEdit.regroupPending": {
     "defaultMessage": "Loading the saved grouping…",

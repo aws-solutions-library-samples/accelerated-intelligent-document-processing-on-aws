@@ -36,7 +36,7 @@ from . import keys, status_object
 from .finalize import is_finalize_token
 from .models import ReviewReportingInfo, RunRef, TrackerReviewContext
 from .queue_defs import DEFAULT_QUEUE_ID
-from .statuses import QueueItemState, ReviewStatus
+from .statuses import MACHINE_RESULT_DISPOSITIONS, QueueItemState, ReviewStatus
 
 logger = logging.getLogger(__name__)
 
@@ -306,7 +306,9 @@ def after_completion(
         logger.info("event=review_finalize_run_failed status=%s", workflow_status)
         return
     rejected = ctx.outcome == "rejected"
-    removed = item.disposition == "removed"
+    # Removed from review or skipped: completes with the machine results, and the
+    # review status object is deleted.
+    removed = item.disposition in MACHINE_RESULT_DISPOSITIONS
     document_service.update_review_attributes(
         doc_key,
         {

@@ -65,3 +65,18 @@ def execution_arn_for(state_machine_arn: str, execution_name: str) -> str:
         state_machine_arn.replace(":stateMachine:", ":execution:", 1)
         + f":{execution_name}"
     )
+
+
+#: Message attribute carrying a resubmit idempotency token (``rsb-<32 hex>``).
+#: ``queue_processor`` names the execution after it, so re-sending the same
+#: resubmit (a retried bulk job step) collapses into ``ExecutionAlreadyExists``.
+#: It is honoured for naming only: unlike ``ReviewFinalizeToken`` it never marks
+#: the run as a review finalize run.
+RESUBMIT_TOKEN_ATTRIBUTE = "ResubmitIdempotencyToken"  # nosec B105 - attribute name
+RESUBMIT_TOKEN_RE = re.compile(r"^rsb-[0-9a-f]{32}$")
+
+
+def resubmit_token(*parts: str) -> str:
+    """Deterministic resubmit token for ``parts`` (e.g. a job id and a document key)."""
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+    return "rsb-" + digest[:32]

@@ -18,7 +18,8 @@
 
 import React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, fireEvent } from '@testing-library/react';
+import { act, screen, fireEvent } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import { MemoryRouter } from 'react-router-dom';
 
 interface ListedVersion {
@@ -171,7 +172,7 @@ afterEach(() => {
 describe('ConfigurationLayout — a scoped caller', () => {
   it('shows loading, not an error, while the in-scope list is loading', async () => {
     scopedTo(SCOPE);
-    render(page());
+    renderWithIntl(page());
     await settle();
 
     expect(screen.getByText('Loading configuration...')).toBeInTheDocument();
@@ -181,7 +182,7 @@ describe('ConfigurationLayout — a scoped caller', () => {
 
   it('opens the first in-scope profile when the active one is out of scope, and never asks for default', async () => {
     scopedTo(SCOPE);
-    const { rerender } = render(page());
+    const { rerender } = renderWithIntl(page());
     await settle();
     listAnswered(IN_SCOPE);
     rerender(page());
@@ -195,7 +196,7 @@ describe('ConfigurationLayout — a scoped caller', () => {
   it('opens the active profile when it is in scope', async () => {
     scopedTo(SCOPE);
     listAnswered([{ versionName: 'tenant-a_dev' }, { versionName: 'tenant-a_prod', isActive: true }]);
-    render(page());
+    renderWithIntl(page());
     await settle();
 
     expect(requestedProfiles()).toEqual(['tenant-a_prod']);
@@ -204,7 +205,7 @@ describe('ConfigurationLayout — a scoped caller', () => {
   it('still opens the profile the URL names straight away, before the list answers', async () => {
     scopedTo(SCOPE);
     window.location.hash = '#/documents/config?version=tenant-a_prod';
-    render(page());
+    renderWithIntl(page());
     await settle();
 
     expect(requestedProfiles()).toEqual(['tenant-a_prod']);
@@ -215,7 +216,7 @@ describe('ConfigurationLayout — a scope that holds no profile', () => {
   it('says so plainly instead of showing an error', async () => {
     scopedTo(SCOPE);
     listAnswered([]);
-    render(page());
+    renderWithIntl(page());
     await settle();
 
     expect(screen.getByText('No configuration profiles in your scope')).toBeInTheDocument();
@@ -226,7 +227,7 @@ describe('ConfigurationLayout — a scope that holds no profile', () => {
   it('reports a profile list that could not be read as that, with a retry', async () => {
     scopedTo(SCOPE);
     listAnswered([], 'Failed to fetch versions');
-    render(page());
+    renderWithIntl(page());
     await settle();
 
     expect(screen.getByText('Error loading configuration profiles')).toBeInTheDocument();
@@ -240,7 +241,7 @@ describe('ConfigurationLayout — a scope that holds no profile', () => {
 
 describe('ConfigurationLayout — an unscoped caller', () => {
   it('opens default while the list loads, then the active profile once it answers', async () => {
-    const { rerender } = render(page());
+    const { rerender } = renderWithIntl(page());
     await settle();
     expect(requestedProfiles()).toEqual(['default']);
 
@@ -252,7 +253,7 @@ describe('ConfigurationLayout — an unscoped caller', () => {
 
   it('still opens default when the list answers empty, and does not report an empty scope', async () => {
     listAnswered([]);
-    render(page());
+    renderWithIntl(page());
     await settle();
 
     expect(requestedProfiles()).toEqual(['default']);
@@ -261,7 +262,7 @@ describe('ConfigurationLayout — an unscoped caller', () => {
 
   it('asks for no profile until the scope of the caller has been read', async () => {
     state.role = { allowedConfigVersions: null, loading: true };
-    render(page());
+    renderWithIntl(page());
     await settle();
 
     expect(requestedProfiles()).toEqual([]);
@@ -273,7 +274,7 @@ describe('ConfigurationLayout — answers that arrive out of order', () => {
   it('gives the editor the active profile when default, asked for first, answers last', async () => {
     const release = holdEveryRequest();
     state.role = { allowedConfigVersions: null, loading: true };
-    const { rerender } = render(page());
+    const { rerender } = renderWithIntl(page());
     await settle();
     state.role = { allowedConfigVersions: null, loading: false };
     rerender(page());
@@ -291,7 +292,7 @@ describe('ConfigurationLayout — answers that arrive out of order', () => {
 
   it('does not report a refusal of default that lands after the in-scope profile was asked for', async () => {
     const release = holdEveryRequest();
-    const { rerender } = render(page());
+    const { rerender } = renderWithIntl(page());
     await settle();
     listAnswered(IN_SCOPE);
     rerender(page());
