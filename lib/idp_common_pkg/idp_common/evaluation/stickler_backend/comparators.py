@@ -32,8 +32,8 @@ from idp_common.evaluation.contract import _is_match_true
 logger = logging.getLogger(__name__)
 
 
-# The comparator's fallbacks for a config that omits the model or a prompt are
-# the `evaluation.llm_method` field defaults, read from the model rather than
+# The comparator's fallbacks for a config that omits a setting are the
+# `evaluation.llm_method` field defaults, read from the model rather than
 # spelled out here, so this module cannot drift from what a resolved
 # configuration carries (which base-evaluation.yaml also ships, and
 # tests/unit/config/test_system_defaults_value_parity.py pins).
@@ -41,6 +41,28 @@ _LLM_METHOD_FIELDS = EvaluationLLMMethodConfig.model_fields
 _DEFAULT_MODEL: str = _LLM_METHOD_FIELDS["model"].default
 _DEFAULT_SYSTEM_PROMPT: str = _LLM_METHOD_FIELDS["system_prompt"].default
 _DEFAULT_TASK_PROMPT: str = _LLM_METHOD_FIELDS["task_prompt"].default
+_DEFAULT_TEMPERATURE: float = _LLM_METHOD_FIELDS["temperature"].default
+_DEFAULT_TOP_K: float = _LLM_METHOD_FIELDS["top_k"].default
+_DEFAULT_TOP_P: float = _LLM_METHOD_FIELDS["top_p"].default
+_DEFAULT_MAX_TOKENS: Optional[int] = _LLM_METHOD_FIELDS["max_tokens"].default
+
+
+def _refuse_empty_prompts(system_prompt: Any, task_prompt: Any) -> None:
+    """Refuse a prompt that is present but empty.
+
+    An absent prompt falls back to the shipped default; an empty one is an
+    explicit setting with nothing in it, and is refused rather than sent. That
+    follows summarization, and classification's combined page prompt: these
+    prompts have always shipped, so an empty one is a broken configuration
+    rather than a stored profile predating the setting (the case classification
+    falls back for).
+    """
+    for key, value in (("system_prompt", system_prompt), ("task_prompt", task_prompt)):
+        if value is not None and not value:
+            raise ValueError(
+                f"evaluation.llm_method.{key} is empty; set a prompt or remove the "
+                "key to use the default"
+            )
 
 
 # Cap on a comparator instance's memo table. Instances are cached per
@@ -149,7 +171,8 @@ class LLMComparator(BaseComparator):
             temperature: Temperature for LLM generation (0.0-1.0)
             top_k: Top-k sampling parameter
             top_p: Top-p (nucleus) sampling parameter
-            max_tokens: Maximum tokens for LLM response
+            max_tokens: Maximum tokens for LLM response. ``None`` (or an empty
+                string) requests the model's maximum output, as everywhere else.
             system_prompt: Custom system prompt for LLM
             task_prompt: Custom task prompt template for LLM
             threshold: Minimum score to consider a match (0.0-1.0)
@@ -160,33 +183,49 @@ class LLMComparator(BaseComparator):
                 ``{ATTRIBUTE_DESCRIPTION}``. This is the one the judge most needs:
                 it is what makes a *semantic* decision possible instead of a guess
                 between two bare strings.
-            **kwargs: Additional parameters (ignored)
+            **kwargs: Additional parameters (ignored). This includes
+                ``evaluation.llm_method.reasoning_effort``: evaluation does not
+                apply it, so no effort is sent. Every stored profile carries the
+                field's default (``medium``), indistinguishable from a value a
+                user chose, so forwarding it would start sending an effort on
+                every stack whose evaluation model has an effort control.
+
+        Raises:
+            ValueError: If ``system_prompt`` or ``task_prompt`` is given but
+                empty. Stickler reports it as a configuration error for the
+                section, rather than every field being sent to Bedrock with no
+                prompt.
         """
         super().__init__()
 
-        # Helper to convert string to proper type (Stickler may forward YAML
-        # string values verbatim).
-        def to_float(val):
+        _refuse_empty_prompts(system_prompt, task_prompt)
+
+        # Helpers to convert strings to the proper type (Stickler may forward
+        # YAML string values verbatim). An empty string means "not set", as the
+        # config model reads it.
+        def to_float(val, default):
+            if val is None or val == "":
+                return default
             return float(val) if isinstance(val, str) else val
 
-        def to_int(val):
+        def to_int(val, default):
+            if val is None or val == "":
+                return default
             return int(val) if isinstance(val, str) else val
 
         self.llm_config = {
             "model": model or _DEFAULT_MODEL,
-            "temperature": to_float(temperature if temperature is not None else 0.0),
-            "top_k": to_int(top_k if top_k is not None else 5),
+            "temperature": to_float(temperature, _DEFAULT_TEMPERATURE),
+            "top_k": to_float(top_k, _DEFAULT_TOP_K),
+            "top_p": to_float(top_p, _DEFAULT_TOP_P),
+            "max_tokens": to_int(max_tokens, _DEFAULT_MAX_TOKENS),
         }
-        if top_p is not None:
-            self.llm_config["top_p"] = to_float(top_p)
-        if max_tokens is not None:
-            self.llm_config["max_tokens"] = to_int(max_tokens)
         if system_prompt is not None:
             self.llm_config["system_prompt"] = str(system_prompt)
         if task_prompt is not None:
             self.llm_config["task_prompt"] = str(task_prompt)
 
-        self.threshold = to_float(threshold if threshold is not None else 0.8)
+        self.threshold = to_float(threshold, 0.8)
 
         # Field context for the prompt's three context placeholders. Supplied
         # per-field by SticklerConfigMapper via
@@ -331,9 +370,9 @@ def create_llm_comparator_from_config(config: dict) -> LLMComparator:
         Configured LLMComparator instance
     """
     return LLMComparator(
-        model=config.get("model", _DEFAULT_MODEL),
-        temperature=config.get("temperature", 0.0),
-        top_k=config.get("top_k", 5),
+        model=config.get("model"),
+        temperature=config.get("temperature"),
+        top_k=config.get("top_k"),
         top_p=config.get("top_p"),
         max_tokens=config.get("max_tokens"),
         system_prompt=config.get("system_prompt"),
@@ -381,17 +420,30 @@ def compare_llm(
         name = attr_name if attr_name is not None else "attribute"
         desc = attr_description if attr_description is not None else ""
 
-        # Default LLM configuration if not provided
+        # Default LLM configuration if not provided. A key that is absent, or
+        # None, takes the evaluation.llm_method default.
         config = llm_config or {}
+
+        def setting(key: str, default: Any) -> Any:
+            value = config.get(key)
+            return default if value is None else value
+
         # An empty model is treated as missing, as LLMComparator treats it.
         model = config.get("model") or _DEFAULT_MODEL
-        temperature = config.get("temperature", 0.0)
-        top_k = config.get("top_k", 5)
+        temperature = setting("temperature", _DEFAULT_TEMPERATURE)
+        top_k = setting("top_k", _DEFAULT_TOP_K)
+        top_p = setting("top_p", _DEFAULT_TOP_P)
+        max_tokens = setting("max_tokens", _DEFAULT_MAX_TOKENS)
+        # Forwarded only when a direct caller puts it in llm_config, with no
+        # default; LLMComparator never does (see its **kwargs note).
         reasoning_effort = config.get("reasoning_effort")
 
-        # Get system and task prompts from config or use defaults
-        system_prompt = config.get("system_prompt", _DEFAULT_SYSTEM_PROMPT)
-        task_prompt_template = config.get("task_prompt", _DEFAULT_TASK_PROMPT)
+        # Absent prompts take the defaults; an empty one is refused before any
+        # Bedrock call (the outer handler turns it into this function's error
+        # result).
+        _refuse_empty_prompts(config.get("system_prompt"), config.get("task_prompt"))
+        system_prompt = setting("system_prompt", _DEFAULT_SYSTEM_PROMPT)
+        task_prompt_template = setting("task_prompt", _DEFAULT_TASK_PROMPT)
 
         # Log for debugging
         logger.debug(f"LLM evaluation starting for attribute: {name}")
@@ -508,6 +560,8 @@ def compare_llm(
             content=content,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
+            max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
         )
 
