@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         DocumentOperation,
         EvaluationOperation,
         ManifestOperation,
+        McpOperation,
         PublishOperation,
         SearchOperation,
         StackOperation,
@@ -110,6 +111,7 @@ class IDPClient:
         config: ConfigOperation - Pipeline configuration
         manifest: ManifestOperation - Document manifest management
         testing: TestingOperation - Load and performance testing
+        mcp: McpOperation - MCP service credentials (create, rotate, revoke)
         tenancy: TenancyOperation - Tenant declarations, access policies, audit
         terraform: TerraformOperation - Terraform-only operations (moving a
             genai-idp-terraform deployment onto the built-in module)
@@ -162,6 +164,7 @@ class IDPClient:
             DocumentOperation,
             EvaluationOperation,
             ManifestOperation,
+            McpOperation,
             PublishOperation,
             SearchOperation,
             StackOperation,
@@ -184,6 +187,7 @@ class IDPClient:
         self.publish: PublishOperation = PublishOperation(self)
         self.chat: ChatOperation = ChatOperation(self)
         self.tenancy: TenancyOperation = TenancyOperation(self)
+        self.mcp: McpOperation = McpOperation(self)
         self.terraform: TerraformOperation = TerraformOperation(self)
 
     @property

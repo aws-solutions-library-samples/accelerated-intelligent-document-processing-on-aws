@@ -53,6 +53,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Developer machines, IDP SDK/CLI |
 | **Mitigations** | Encourage environment variable-based credential passing, avoid shell history logging for sensitive commands, short-lived JWT tokens, credential helpers, documentation of secure usage patterns |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SDK.T02: Insecure Automation Pipelines
 
@@ -67,6 +68,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | CI/CD pipelines, IDP SDK |
 | **Mitigations** | Secret management (AWS Secrets Manager, CI/CD secrets), dedicated service accounts with minimal permissions (Reviewer/Viewer for read-only pipelines), credential rotation, pipeline log sanitization |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SDK.T03: SDK Supply Chain Attack
 
@@ -81,6 +83,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | IDP SDK package, Python package ecosystem |
 | **Mitigations** | Pin dependency versions, use dependency scanning tools, package integrity verification, install from trusted sources only |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SDK.T04: Batch Processing Abuse
 
@@ -95,6 +98,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | SQS queue, Step Functions, Lambda concurrency, Bedrock quotas |
 | **Mitigations** | Concurrency controls in Queue Processor Lambda, SQS message rate limiting, DynamoDB-based concurrency counter, CloudWatch alarms on queue depth and processing rates, per-user rate limits |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SDK.T05: Deployment Service Role Is Broad Enough to Reach Account Administrator
 
@@ -110,6 +114,7 @@ flowchart TD
 | **Affected Components** | `iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml`, `scripts/sdlc/validate_service_role_permissions.py` |
 | **Mitigations** | **In place today:** the role is an *optional* artefact — a deployment may use any role or an administrator directly, so its scope is a ceiling on the delegated case rather than a permission the product requires; `scripts/sdlc/validate_service_role_permissions.py` runs in both CI systems and checks the role against the permissions the stack actually needs, so the file is at least under review; the role must be explicitly passed to a stack operation and every use is a CloudTrail event attributable to the passing principal. **Pending — do not read as present:** removing the boundary-manipulation permissions, narrowing the service wildcards to the resources this stack creates, adding a permissions boundary to the role itself, and adding trust-policy conditions, is tracked in **issue #927**. Until that merges, treat granting `iam:PassRole` for this role as equivalent to granting account administrator, and scope who may do so accordingly. |
 | **Residual risk / recommendation** | A CloudFormation service role for a stack this broad will always be substantial — it creates IAM roles, KMS keys, buckets and Lambda functions. The realistic goal is that it cannot *escalate beyond* what deploying this stack requires, not that it be small. Document the role's true privilege level plainly wherever it is offered, so an operator does not adopt it believing it to be a containment measure. |
+| **Evidence** | `scripts/sdlc/validate_service_role_permissions.py`; UNVERIFIED: the citations have not been matched to each listed mitigation |
 
 ## 4. Security Controls Summary
 

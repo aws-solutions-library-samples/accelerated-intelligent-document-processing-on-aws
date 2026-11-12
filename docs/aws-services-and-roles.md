@@ -346,6 +346,12 @@ The solution creates various IAM roles to run different components of the system
   * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` (reporting/Athena results buckets)
   * `logs:*`
 
+* **Agent Roles** (the functions that run the analytics agent: `AgentChatProcessorFunction`, `ChatStreamProcessorFunction`, `AgentProcessorFunction`, and `AgentCoreMCPHandlerFunction` for the MCP `search` tool):
+  * `bedrock-agentcore:*CodeInterpreter*` session actions on the AWS-managed interpreter only (`arn:<partition>:bedrock-agentcore:*:aws:code-interpreter/*`)
+  * `lambda:InvokeFunction` on the document lookup function (`LookupFunction`) only
+  * On the reporting bucket, the three chat and agent processors hold read (`S3ReadPolicy`) plus `s3:PutObject` under `athena-results/` (where Athena writes query results with the caller's credentials); `ChatStreamProcessorFunction` also reads the output bucket and writes only `<document key>/summary/fulltext.txt` there, for Chat with Document
+  * Asserted, with the S3 object access each function declares, by `scripts/tests/test_analytics_role_grants.py`
+
 * **Save Reporting Data Role** (`SaveReportingDataFunctionV2`, writes each document's reporting Parquet):
   * Read and write on the reporting bucket (SAM `S3CrudPolicy`), read on the output bucket (`S3ReadPolicy`)
   * Read-only on the configuration table (`DynamoDBReadPolicy`)

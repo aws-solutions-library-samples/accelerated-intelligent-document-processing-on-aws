@@ -447,8 +447,11 @@ def test_required_arg_count_is_stable(spec):
     saveTestSetDocumentSectionDraft the 142nd, and the two tenant-declaration
     ops that take a required argument -- putTenant (tenantId, prefixes,
     profilePattern) and deleteTenant (tenantId) -- 143-144; listTenants takes none,
-    and setUserTenant (email) the 145th)."""
+    and setUserTenant (email) the 145th, and the five MCP credential ops that take
+    a required argument -- createMcpCredential (name, role), updateMcpCredential,
+    rotateMcpCredential, revokeMcpCredential and setMcpCredentialTenant (clientId)
+    -- 146-150; listMcpCredentials takes none)."""
     required = [
         f for f, v in spec["fields"].items() if any(a["non_null"] for a in v["args"])
     ]
-    assert len(required) == 145
+    assert len(required) == 150

@@ -996,7 +996,7 @@ class TestProcessorScopeFailsClosed:
             if r.levelname == "WARNING" and "scope NOT enforced" in r.getMessage()
         ]
         assert warnings, f"the stand-down must be logged; got {caplog.records}"
-        assert "GAP-07" in warnings[0]
+        assert "direct IAM invocation" in warnings[0]
 
     @pytest.mark.unit
     def test_lookup_helper_raises_rather_than_returning_none(self):
@@ -1330,8 +1330,8 @@ class TestProcessorExternalTenantGrants:
     """``TenantGrantSource`` IdpClaim or Api on a chat turn, with isolation Off.
 
     An unscoped caller is one nobody has granted a tenant yet, so it is denied
-    as under strict isolation. The unverified-transport path (GAP-07) is closed
-    as well: with tenants granted from outside, a turn with no verified caller
+    as under strict isolation. The identity-less path (a direct IAM invocation)
+    is closed as well: with tenants granted from outside, a turn with no verified caller
     cannot be confined to one tenant, so it is refused rather than served.
     """
 
@@ -1423,12 +1423,73 @@ class TestProcessorStrictTenantIsolation:
 
     @pytest.mark.unit
     def test_an_unverified_transport_is_denied_instead_of_standing_down(self):
-        """GAP-07: the Function URL path verifies no caller. Off mode serves it
-        unrestricted with a WARNING; strict mode refuses it."""
+        """A turn with no verified caller (a direct IAM invocation). Off mode
+        serves it unrestricted with a WARNING; strict mode refuses it."""
         result, _p, bedrock, users_table = self._strict(event_extra={"identity": None})
         assert result == {"ok": False, "reason": "scope_unavailable"}
         bedrock.converse_stream.assert_not_called()
         users_table.query.assert_not_called()
+
+
+class TestProcessorGuardrail:
+    """The configured Bedrock guardrail reaches the processor's own converse_stream.
+
+    This processor calls ``converse_stream`` directly rather than through
+    ``BedrockClient``, so the guardrail has to be attached here. The expected value
+    is the ``GuardrailStreamConfiguration`` members botocore's ``bedrock-runtime``
+    model declares, not a copy of the processor's own dict.
+    """
+
+    @staticmethod
+    def _stream_kwargs(monkeypatch, guardrail_env: str | None) -> dict:
+        import index
+
+        if guardrail_env is None:
+            monkeypatch.delenv("GUARDRAIL_ID_AND_VERSION", raising=False)
+        else:
+            monkeypatch.setenv("GUARDRAIL_ID_AND_VERSION", guardrail_env)
+        bedrock = MagicMock()
+        bedrock.converse_stream.return_value = {
+            "stream": iter(_make_stream_events(["ok"]))
+        }
+        _install_capture_sink(index, [])
+        with patch.object(index, "_get_bedrock_runtime", return_value=bedrock):
+            index._invoke_bedrock_stream_and_emit(
+                session_id="s-1",
+                selected_model_id="us.anthropic.claude-sonnet-4-6",
+                system_prompt="sys",
+                user_text="question",
+                temperature=0.0,
+                max_tokens=64,
+            )
+        assert bedrock.converse_stream.call_count == 1
+        return bedrock.converse_stream.call_args.kwargs
+
+    @pytest.mark.unit
+    def test_configured_guardrail_is_sent(self, monkeypatch):
+        import botocore.session
+
+        shape = (
+            botocore.session.get_session()
+            .get_service_model("bedrock-runtime")
+            .operation_model("ConverseStream")
+            .input_shape.members["guardrailConfig"]
+        )
+        kwargs = self._stream_kwargs(monkeypatch, "gr0abc123:3")
+
+        sent = kwargs["guardrailConfig"]
+        assert set(sent) <= set(shape.members)
+        assert sent["guardrailIdentifier"] == "gr0abc123"
+        assert sent["guardrailVersion"] == "3"
+        assert sent["trace"] in shape.members["trace"].enum
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("guardrail_env", [None, "", "no-version-separator"])
+    def test_no_guardrail_leaves_the_request_unchanged(self, monkeypatch, guardrail_env):
+        kwargs = self._stream_kwargs(monkeypatch, guardrail_env)
+
+        assert "guardrailConfig" not in kwargs
+        assert set(kwargs) == {"modelId", "messages", "inferenceConfig", "system"}
 
 
 @pytest.mark.unit

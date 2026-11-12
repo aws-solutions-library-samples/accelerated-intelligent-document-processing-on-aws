@@ -24,6 +24,11 @@ export const AgentChatProvider = ({ children, initialMode = 'chat' }: AgentChatP
     // Off by default: the Code Intelligence Agent sends repository context to a
     // third-party MCP service, so it must be an explicit user opt-in.
     enableCodeIntelligence: false,
+    // Off by default for the same reason: External MCP agents send their query
+    // to a server outside the deployment.
+    enableExternalMcpAgents: false,
+    sessionHoldsDataResults: false,
+    sessionNotice: null,
     inputValue: '',
     mode: initialMode,
   });
@@ -36,8 +41,9 @@ export const AgentChatProvider = ({ children, initialMode = 'chat' }: AgentChatP
     }));
   }, []);
 
-  // Function to reset agent chat state (new session)
-  const resetAgentChatState = useCallback(() => {
+  // Start a new, empty session. ``overrides`` are applied to the fresh state, so a
+  // caller can carry settings over (see startNewSessionForOptIn in use-agent-chat).
+  const startNewAgentChatSession = useCallback((overrides: Partial<AgentChatState> = {}) => {
     setAgentChatState((prevState) => ({
       messages: [],
       sessionId: uuidv4(),
@@ -47,10 +53,17 @@ export const AgentChatProvider = ({ children, initialMode = 'chat' }: AgentChatP
       expandedSections: new Set(),
       lastMessageCount: 0,
       enableCodeIntelligence: false,
+      enableExternalMcpAgents: false,
+      sessionHoldsDataResults: false,
+      sessionNotice: null,
       inputValue: '',
       mode: prevState.mode,
+      ...overrides,
     }));
   }, []);
+
+  // Function to reset agent chat state (new session)
+  const resetAgentChatState = useCallback(() => startNewAgentChatSession(), [startNewAgentChatSession]);
 
   // Function to load a specific session
   const loadAgentChatSession = useCallback((sessionId: string, messages: ChatMessage[]) => {
@@ -63,6 +76,9 @@ export const AgentChatProvider = ({ children, initialMode = 'chat' }: AgentChatP
       error: null,
       waitingForResponse: false,
       isLoading: false,
+      // Not known for a loaded session until the server reports it.
+      sessionHoldsDataResults: false,
+      sessionNotice: null,
     }));
   }, []);
 
@@ -87,11 +103,20 @@ export const AgentChatProvider = ({ children, initialMode = 'chat' }: AgentChatP
       agentChatState,
       updateAgentChatState,
       resetAgentChatState,
+      startNewAgentChatSession,
       loadAgentChatSession,
       addMessageToSession,
       updateMessages,
     }),
-    [agentChatState, updateAgentChatState, resetAgentChatState, loadAgentChatSession, addMessageToSession, updateMessages],
+    [
+      agentChatState,
+      updateAgentChatState,
+      resetAgentChatState,
+      startNewAgentChatSession,
+      loadAgentChatSession,
+      addMessageToSession,
+      updateMessages,
+    ],
   );
 
   return <AgentChatContext.Provider value={contextValue}>{children}</AgentChatContext.Provider>;

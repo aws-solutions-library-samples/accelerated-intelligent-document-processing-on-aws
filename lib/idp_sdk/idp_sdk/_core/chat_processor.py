@@ -24,6 +24,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Owner of the conversation memory the SDK's local chat writes and reads.
+SDK_MEMORY_OWNER = "sdk-local"
+
 
 class ChatProcessor:
     """Runs the agent orchestrator locally for chat interactions."""
@@ -114,6 +117,11 @@ class ChatProcessor:
             session_id=self._session_id,
             config=config,
             session=session,
+            # Memory is stored per user and session. This runs with the
+            # operator's own AWS credentials rather than as a signed-in web user,
+            # so its conversations get an owner of their own, which no Cognito
+            # sub (a UUID) can equal.
+            user_id=SDK_MEMORY_OWNER,
         )
 
     def send_message(

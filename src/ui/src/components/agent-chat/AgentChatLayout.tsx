@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import {
   Container,
   Alert,
@@ -42,6 +43,21 @@ import './AgentChatLayout.css';
 import type { ChatMessage } from '../../types/agent-chat';
 
 const logger = new ConsoleLogger('AgentChatLayout');
+
+const uiMessages = defineMessages<{ thirdPartyNotice: NoMessageValues; enableExternalMcpAgents: NoMessageValues }>({
+  thirdPartyNotice: {
+    id: 'agentChat.layout.thirdPartyNotice',
+    defaultMessage:
+      'Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.',
+    description:
+      'Notice beside the agent opt-in checkboxes under the Agent Chat input. Code Intelligence Agent and External MCP agents are the names of the two optional agents.',
+  },
+  enableExternalMcpAgents: {
+    id: 'agentChat.layout.enableExternalMcpAgents',
+    defaultMessage: 'Enable External MCP agents',
+    description: 'Checkbox under the Agent Chat input that lets the chat use agents served by external MCP servers.',
+  },
+});
 
 const sampleClient = generateClient();
 
@@ -110,20 +126,21 @@ const AgentChatLayout = ({
   customStyles = {},
   welcomeName,
 }: AgentChatLayoutProps): React.JSX.Element => {
+  const intl = useIntl();
   const [welcomeAnimated, setWelcomeAnimated] = useState(false);
   const [isLoadingSession, setIsLoadingSession] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const chatMessagesRef = useRef<HTMLDivElement>(null);
 
   const { agentChatState, updateAgentChatState } = useAgentChatContext();
-  const { inputValue, lastMessageCount, enableCodeIntelligence, mode } = agentChatState;
+  const { inputValue, lastMessageCount, enableCodeIntelligence, enableExternalMcpAgents, sessionNotice, mode } = agentChatState;
 
   const effectiveAgentConfig = useMemo(
     () => (mode === 'quick_start' ? { ...agentConfig, method: 'quick_start' } : { ...agentConfig, method: 'chat' }),
     [agentConfig, mode],
   );
 
-  const { messages, isLoading, waitingForResponse, error, sendMessage, clearError, clearChat, loadChatSession } = useAgentChat(
+  const { messages, isLoading, waitingForResponse, error, sendMessage, setOptIn, clearError, clearChat, loadChatSession } = useAgentChat(
     effectiveAgentConfig as Record<string, unknown>,
   );
   const { user } = useAppContext();
@@ -166,9 +183,9 @@ const AgentChatLayout = ({
           .then(() => fetchVersions())
           .catch((e) => logger.error('Failed to activate quickstart version:', e));
       }
-      sendMessage(summary, { enableCodeIntelligence });
+      sendMessage(summary, { enableCodeIntelligence, enableExternalMcpAgents });
     },
-    [sendMessage, enableCodeIntelligence, setActiveVersion, fetchVersions, versions],
+    [sendMessage, enableCodeIntelligence, enableExternalMcpAgents, setActiveVersion, fetchVersions, versions],
   );
 
   const handleUploadError = useCallback((message: string) => {
@@ -265,7 +282,7 @@ const AgentChatLayout = ({
 
     updateAgentChatState({ inputValue: '' });
     try {
-      await sendMessage(messageToSend, { enableCodeIntelligence });
+      await sendMessage(messageToSend, { enableCodeIntelligence, enableExternalMcpAgents });
       // Scroll to the latest user message after sending
       setTimeout(() => {
         if (chatMessagesRef.current) {
@@ -578,6 +595,11 @@ const AgentChatLayout = ({
             {error}
           </Alert>
         )}
+        {sessionNotice && (
+          <Alert type="info" dismissible onDismiss={() => updateAgentChatState({ sessionNotice: null })}>
+            {sessionNotice}
+          </Alert>
+        )}
 
         <div
           ref={chatMessagesRef}
@@ -752,14 +774,21 @@ const AgentChatLayout = ({
               ) : (
                 <SpaceBetween direction="horizontal" size="m" alignItems="center">
                   <Box {...({ fontSize: 'body-s', color: 'text-status-info', flex: '1' } as Record<string, unknown>)}>
-                    Avoid sharing sensitive information, the Code Intelligence Agent may use third-party services.
+                    {intl.formatMessage(uiMessages.thirdPartyNotice)}
                   </Box>
                   <Checkbox
                     checked={enableCodeIntelligence}
-                    onChange={({ detail }) => updateAgentChatState({ enableCodeIntelligence: detail.checked })}
+                    onChange={({ detail }) => setOptIn('enableCodeIntelligence', detail.checked)}
                     disabled={waitingForResponse}
                   >
                     <Box fontSize="body-s">Enable Code Intelligence Agent</Box>
+                  </Checkbox>
+                  <Checkbox
+                    checked={enableExternalMcpAgents}
+                    onChange={({ detail }) => setOptIn('enableExternalMcpAgents', detail.checked)}
+                    disabled={waitingForResponse}
+                  >
+                    <Box fontSize="body-s">{intl.formatMessage(uiMessages.enableExternalMcpAgents)}</Box>
                   </Checkbox>
                 </SpaceBetween>
               )}

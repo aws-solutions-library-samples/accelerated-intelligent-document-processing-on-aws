@@ -91,17 +91,22 @@ STATUS: dict[str, tuple[int, str]] = {
     "BDA.T05": (2, "Mitigated"),
     # Agents
     "AGT.T01": (6, "Mitigated"),
-    "AGT.T02": (4, "Mitigated"),
+    # "Partially Mitigated": the tool reads only the result of the query the agent
+    # ran, and code is checked before it is sent, but code in a session can still
+    # write that result to Amazon S3 in the session's region (the entry's residual,
+    # measured by `make stacktest-sandbox-network`), and the interpreter is the
+    # AWS-managed one with no VPC configuration.
+    "AGT.T02": (4, "Partially Mitigated"),
     "AGT.T03": (4, "Mitigated"),
     "AGT.T04": (2, "Mitigated"),
     "AGT.T05": (6, "Mitigated"),
     # Chat
     "CHAT.T01": (9, "Mitigated"),
     "CHAT.T02": (3, "Mitigated"),
-    "CHAT.T03": (6, "Open"),
+    "CHAT.T03": (6, "Mitigated"),
     "CHAT.T04": (3, "Mitigated"),
     "CHAT.T05": (4, "Partially Mitigated"),
-    "CHAT.T06": (3, "Open"),
+    "CHAT.T06": (3, "Mitigated"),
     # MCP
     "MCP.T01": (8, "Partially Mitigated"),
     "MCP.T02": (3, "Mitigated"),
@@ -138,7 +143,7 @@ STATUS: dict[str, tuple[int, str]] = {
     # (AUTH.T10, AUTH.T11) are. "Partially Mitigated" because the entry's own
     # Mitigations field closes the identity-precedence and input-shape halves but
     # leaves the group check unenforceable on the streaming transport (GAP-07).
-    "AUTH.T14": (3, "Partially Mitigated"),
+    "AUTH.T14": (3, "Mitigated"),
     "AUTH.T15": (4, "Partially Mitigated"),
     "AUTH.T16": (6, "Partially Mitigated"),
     # SDK / CLI

@@ -41,6 +41,10 @@ Parameters:
   
   ChatSessionsTableName:
     Type: String
+
+  ChatSessionOwnersTableName:
+    Type: String
+    Description: DynamoDB table recording which user each chat session id belongs to (keyed by sessionId)
   
   NotificationsTableName:
     Type: String
@@ -324,6 +328,10 @@ Parameters:
     Type: String
     Default: ""
     Description: ARN of UserManagementFunction from main template.
+  McpCredentialManagerFunctionArn:
+    Type: String
+    Default: ""
+    Description: ARN of the MCP credential manager from the main template (empty when MCP is disabled).
   FinetuningJobsResolverFunctionArn:
     Type: String
     Default: ""
@@ -400,7 +408,7 @@ Mappings:
   # quotes are correct as written — do NOT "fix" or escape them.
   WebUiSecurity:
     ContentSecurityPolicy:
-      Value: "'script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;'"
+      Value: "'script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; default-src 'self'; worker-src 'self' blob:; img-src 'self' data: blob: https://*.amazonaws.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/npm/; font-src 'self' data:; media-src 'self'; frame-src 'self' data: https://*.amazonaws.com; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;'"
 
 Conditions:
   HasHITLTable: !Not [!Equals [!Ref HITLTableName, ""]]
@@ -598,6 +606,7 @@ Resources:
           AGENT_CHAT_PROCESSOR_FUNCTION: !Ref AgentChatProcessorFunctionArn
           DATA_RETENTION_DAYS: !Ref DataRetentionInDays
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTableName
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
       LoggingConfig:
         LogGroup: !Ref AgentChatResolverLogGroup
       Policies:
@@ -609,6 +618,8 @@ Resources:
             TableName: !Ref ChatMessagesTableName
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatSessionsTableName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
         - LambdaInvokePolicy:
             FunctionName: !Ref AgentChatProcessorFunctionArn
         - Statement:
@@ -714,14 +725,23 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Read only: where this resolver recorded owners before
+          # ChatSessionOwnersTable existed.
           CHAT_DOCUMENT_SESSIONS_TABLE: !Ref ChatDocumentSessionsTable
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          # Read to tell an unused session id from one that already has history.
+          CHAT_MESSAGES_TABLE: !Ref ChatMessagesTableName
           CHAT_DOCUMENT_PROCESSOR_FUNCTION_ARN: !Ref ChatWithDocumentProcessorFunctionArn
           DATA_RETENTION_DAYS: !Ref DataRetentionInDays
       LoggingConfig:
         LogGroup: !Ref SendChatDocumentMessageResolverFunctionLogGroup
       Policies:
-        - DynamoDBCrudPolicy:
+        - DynamoDBReadPolicy:
             TableName: !Ref ChatDocumentSessionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
+        - DynamoDBReadPolicy:
+            TableName: !Ref ChatMessagesTableName
         - Statement:
             - Effect: Allow
               Action: lambda:InvokeFunction
@@ -1311,6 +1331,9 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           CHAT_MESSAGES_TABLE: !Ref ChatMessagesTableName
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTableName
+          # The delete checks the session's owner the way getChatMessages does.
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          DATA_RETENTION_DAYS: !Ref DataRetentionInDays
       LoggingConfig:
         LogGroup: !Ref DeleteAgentChatSessionFunctionLogGroup
       Policies:
@@ -1318,6 +1341,8 @@ Resources:
             TableName: !Ref ChatMessagesTableName
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatSessionsTableName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
         - Statement:
             - Effect: Allow
               Action:
@@ -1618,15 +1643,40 @@ Resources:
         Variables:
           LOG_LEVEL: !Ref LogLevel
           DISCOVERY_BUCKET: !Ref DiscoveryBucketName
+          # Multi-document discovery's source is scope-checked by bucket: Input
+          # bucket prefixes through the configuration prefix mappings. Not named
+          # INPUT_BUCKET, which s3_targets reads into the upload allow-list.
+          SCOPED_SOURCE_INPUT_BUCKET: !Ref InputBucketName
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTableName
           DISCOVERY_QUEUE_URL: !Ref DiscoveryQueueUrl
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           MULTI_DOC_DISCOVERY_STATE_MACHINE_ARN: !Ref MultiDocDiscoveryStateMachineArn
           S3_ENDPOINT_URL: !If [HasS3EndpointUrl, !Ref S3EndpointUrl, !Ref AWS::NoValue]
+          # The caller's allowedConfigVersions, checked against the profile each
+          # discovery operation names.
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          GUARDRAIL_ID_AND_VERSION:
+            !If [
+              HasGuardrail,
+              !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}",
+              "",
+            ]
       LoggingConfig:
         LogGroup: !Ref DiscoveryUploadResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions.
+        # The lookup fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - Statement:
             # Configuration-profile revision bodies (config_revisions/<profile>/).
             # This function saves profiles, and a save that cannot cut a revision
@@ -1682,6 +1732,12 @@ Resources:
                 - states:StartExecution
               Resource:
                 - !Ref MultiDocDiscoveryStateMachineArn
+            - !If
+              - HasGuardrail
+              - Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${BedrockGuardrailId}"
+              - !Ref AWS::NoValue
   GetAgentChatMessagesFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1729,6 +1785,10 @@ Resources:
           # the non-streaming (GovCloud) poll path, so it verifies ownership
           # against this table too.
           CHAT_DOCUMENT_SESSIONS_TABLE: !Ref ChatDocumentSessionsTable
+          # Who each session id belongs to; the ownership check reads it and
+          # registers an owner for a session written before it existed.
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          DATA_RETENTION_DAYS: !Ref DataRetentionInDays
           # Feature flag to disable ownership enforcement in case of legacy
           # session migration. Defaults to "true" (enforce). Customers should
           # only set this to "false" temporarily during data backfill.
@@ -1745,6 +1805,8 @@ Resources:
         # Same ownership check for document-chat sessions.
         - DynamoDBReadPolicy:
             TableName: !Ref ChatDocumentSessionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
         - Statement:
             - Effect: Allow
               Action:
@@ -3668,6 +3730,7 @@ Resources:
             "uploadDocument": "${UploadResolverFunction}",
             "claimReview": "${CompleteSectionReviewFunctionArn}",
             "createUser": "${UserManagementFunctionArn}",
+            "listMcpCredentials": "${McpCredentialManagerFunctionArn}",
             "createFinetuningJob": "${FinetuningJobsResolverFunctionArn}",
             "calculateCapacity": "${CalculateCapacityResolverFunctionArn}",
             "getLatestPublishedVersion": "${VersionCheckResolverFunctionArn}",

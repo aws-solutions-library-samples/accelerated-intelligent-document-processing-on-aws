@@ -224,6 +224,10 @@ RUN_ROOTS = [
     "src/lambda/finetuning_deployment_handler",
     "src/lambda/finetuning_job_creator/tests",
     "src/lambda/job_tracker",
+    "src/lambda/mcp_credential_manager",
+    "src/lambda/mcp_default_credential",
+    "src/lambda/mcp_identity_interceptor",
+    "src/lambda/mcp_interceptor_attach",
     "src/lambda/queue_processor",
     "src/lambda/queue_sender",
     # Review queue sweeper: the no-table path, the deadline and the wiring.

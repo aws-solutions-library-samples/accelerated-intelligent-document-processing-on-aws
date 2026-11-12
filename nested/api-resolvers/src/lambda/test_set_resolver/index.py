@@ -488,6 +488,10 @@ def _dispatch(event, context):
     elif field_name == "getTestSetVersions":
         return get_test_set_versions(event["arguments"])
     elif field_name == "generateDraftLabels":
+        input_data = event["arguments"].get("input", event["arguments"])
+        _assert_named_profile_in_scope(
+            event, input_data.get("configVersion"), input_data.get("testSetId")
+        )
         return generate_draft_labels(event["arguments"], event)
     elif field_name == "openTestSetAnnotationDraft":
         # Annotator-reachable: group membership alone would let one annotator open a
@@ -508,6 +512,9 @@ def _dispatch(event, context):
         input_data = event["arguments"].get("input", event["arguments"])
         _assert_set_access(event, input_data.get("testSetId") or "")
         _assert_assignee(event, input_data)
+        _assert_named_profile_in_scope(
+            event, input_data.get("configVersion"), input_data.get("testSetId")
+        )
         result = reextract_test_set_document(event["arguments"], event)
         _refresh_summary(input_data.get("testSetId"), input_data.get("objectKey"))
         return result
@@ -518,6 +525,11 @@ def _dispatch(event, context):
     elif field_name == "estimateReviewEffort":
         # Annotator-reachable: group membership alone would expose other sets.
         _assert_set_access(event, event["arguments"].get("testSetId") or "")
+        _assert_named_profile_in_scope(
+            event,
+            event["arguments"].get("configVersion"),
+            event["arguments"].get("testSetId"),
+        )
         return estimate_review_effort(event["arguments"])
     elif field_name == "getAnnotationQueue":
         return get_annotation_queue(event["arguments"], event)
@@ -951,13 +963,47 @@ def _caller_config_scope(event):
         )
     except ScopeLookupError as e:
         logger.error(
-            "Denying addDocumentsToTestSetByKey: configuration scope could not be "
-            "resolved: %s",
+            "Denying a test-set request: configuration scope could not be resolved: %s",
             e,
         )
         raise PermissionError(
             "Unauthorized: your configuration scope could not be verified"
         ) from e
+
+
+def _assert_named_profile_in_scope(event, config_version, test_set_id=None):
+    """Refuse a configuration profile the caller NAMES outside their scope.
+
+    ``generateDraftLabels``, ``reextractTestSetDocument`` and
+    ``estimateReviewEffort`` accept an optional ``configVersion``: the first two run
+    that profile's pipeline over the set's documents, the third reads that profile's
+    calibration curve. A named profile is held to the caller's
+    ``allowedConfigVersions`` as on ``startTestRun`` and ``updateConfiguration``.
+
+    The set's own profile is the exception, named or not: with no ``configVersion``
+    the operation uses it unchecked, because the set itself is governed by
+    ``allowedTestSets`` (``_assert_set_access``), and the web UI names it explicitly
+    on a re-extract. Refusing it when named and serving it when omitted would refuse
+    the UI's ordinary call for no difference in what runs. Only a profile OTHER than
+    the set's own is checked. Admins are not looked up.
+    """
+    if not config_version:
+        return
+    allowed = _caller_config_scope(event)
+    if scope_allows(allowed, config_version):
+        return
+    if test_set_id:
+        meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+        if meta and _resolve_set_config_version(test_set_id, meta)[0] == config_version:
+            return
+    logger.warning(
+        "Refusing a test-set operation: the named configuration profile is "
+        "outside the caller's scope"
+    )
+    raise ResourceAccessDenied(
+        f"Unauthorized: configuration profile '{config_version}' is not in your "
+        "allowed scope"
+    )
 
 
 def _document_rows(object_keys):

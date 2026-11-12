@@ -495,6 +495,45 @@
         }
       ]
     },
+    "createMcpCredential": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "name",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "role",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": true,
+          "name": "allowedConfigVersions",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "writeTools",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "expiresInDays",
+          "non_null": false,
+          "type": "Int"
+        }
+      ]
+    },
     "createReviewQueue": {
       "args": [
         {
@@ -1552,6 +1591,9 @@
     "listInstalledFeatures": {
       "args": []
     },
+    "listMcpCredentials": {
+      "args": []
+    },
     "listMyReviewWork": {
       "args": [
         {
@@ -2157,6 +2199,35 @@
         }
       ]
     },
+    "revokeMcpCredential": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "clientId",
+          "non_null": true,
+          "type": "ID"
+        }
+      ]
+    },
+    "rotateMcpCredential": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "clientId",
+          "non_null": true,
+          "type": "ID"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "overlapDays",
+          "non_null": false,
+          "type": "Int"
+        }
+      ]
+    },
     "saveReviewDraft": {
       "args": [
         {
@@ -2325,6 +2396,13 @@
         {
           "elem_non_null": false,
           "is_list": false,
+          "name": "enableExternalMcpAgents",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
           "name": "toolMetadata",
           "non_null": false,
           "type": "ToolMetadataInput"
@@ -2423,6 +2501,24 @@
           "is_list": false,
           "name": "versionName",
           "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "setMcpCredentialTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "clientId",
+          "non_null": true,
+          "type": "ID"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
+          "non_null": false,
           "type": "String"
         }
       ]
@@ -3021,6 +3117,52 @@
           "name": "mutedTypes",
           "non_null": true,
           "type": "String"
+        }
+      ]
+    },
+    "updateMcpCredential": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "clientId",
+          "non_null": true,
+          "type": "ID"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "role",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": true,
+          "name": "allowedConfigVersions",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "clearScope",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "writeTools",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "enabled",
+          "non_null": false,
+          "type": "Boolean"
         }
       ]
     },

@@ -104,6 +104,23 @@ make fastcommit         # fastlint (skip UI) + auto-commit + push
 - [ ] Input validation on all API endpoints
 - [ ] DOMPurify used for any HTML rendering in UI
 
+### Agent capability
+Apply when the change touches a tool, an agent, a prompt, a model call, an MCP tool
+or client, a markdown renderer, the web UI content policy, or the grants of a role
+that runs a model.
+- [ ] I can say, from the code, what the model can **read** (its tools, and the
+      credentials they run with), what **document-derived or external text** reaches
+      it, and where its **output** can go
+- [ ] Where all three hold (untrusted text in, private data readable, an external
+      channel out), each external channel is limited by code, not by a prompt
+      instruction
+- [ ] `scripts/tests/agent_capabilities.yaml` is updated to match: new surfaces have
+      an entry, changed `reads`/`inputs`/`outputs` are reflected, and every named
+      `control` and `test` still exists (`python3 -m pytest
+      scripts/tests/test_agent_capabilities.py scripts/tests/test_analytics_role_grants.py`)
+- [ ] A capability nothing limits yet is recorded as a `finding` in the manifest and
+      in `PENDING_CONTROL_FINDINGS`, not left out
+
 ## Documentation
 - [ ] New features documented in `docs/`
 - [ ] YAML frontmatter with `title` field

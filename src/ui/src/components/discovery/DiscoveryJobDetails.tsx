@@ -26,8 +26,7 @@ import {
   Link,
   Spinner,
 } from '@cloudscape-design/components';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import SafeMarkdown from '../common/SafeMarkdown';
 import { useParams, useNavigate } from 'react-router-dom';
 import { generateClient } from '../../api/client-shim';
 
@@ -552,7 +551,7 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
       {isMultiDoc && job.reflectionReport && (
         <Container header={<Header variant="h2">Quality Review Report</Header>}>
           <div style={{ maxHeight: '600px', overflow: 'auto', padding: '16px' }}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{job.reflectionReport}</ReactMarkdown>
+            <SafeMarkdown rawHtml={false}>{job.reflectionReport}</SafeMarkdown>
           </div>
         </Container>
       )}

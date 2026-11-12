@@ -20,6 +20,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from idp_common.mcp_access import Caller
+
+#: An unscoped Admin: these tests are about the tools' own behaviour, which the
+#: caller's scope does not change for an unscoped caller.
+ADMIN = Caller("user", "u", "u", ["Admin"], None, None, True)
+
 HANDLER_DIR = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__),
@@ -83,7 +89,7 @@ def test_search_returns_structured_error_without_strands(monkeypatch):
     _block_strands(monkeypatch)
     tools = importlib.import_module("tools")
 
-    result = tools.get_tool("search").execute(query="how many documents?")
+    result = tools.get_tool("search").execute(query="how many documents?", caller=ADMIN)
 
     assert result["success"] is False
     assert "dependencies are not installed" in result["error"]
@@ -93,7 +99,7 @@ def test_search_returns_structured_error_without_strands(monkeypatch):
 def test_get_results_requires_batch_or_document_id():
     tools = importlib.import_module("tools")
 
-    result = tools.get_tool("get_results").execute()
+    result = tools.get_tool("get_results").execute(caller=ADMIN)
 
     assert result["success"] is False
     assert result["error"] == "missing_identifier"
@@ -123,7 +129,7 @@ def test_get_results_by_document_id(monkeypatch):
     }
 
     result = tools.get_tool("get_results").execute(
-        document_id="s3://output-bucket/Borrowing_Notice_#3.pdf/"
+        caller=ADMIN, document_id="s3://output-bucket/Borrowing_Notice_#3.pdf/"
     )
 
     assert result["success"] is True
@@ -148,7 +154,7 @@ def test_get_results_by_batch_id_still_works(monkeypatch):
         "documents": [{"document_id": "a.pdf"}, {"document_id": "b.pdf"}],
     }
 
-    result = tools.get_tool("get_results").execute(batch_id="mcp-batch-1")
+    result = tools.get_tool("get_results").execute(batch_id="mcp-batch-1", caller=ADMIN)
 
     assert result["success"] is True
     assert result["count"] == 2

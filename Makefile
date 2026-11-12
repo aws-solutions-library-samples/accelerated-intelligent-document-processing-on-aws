@@ -547,8 +547,9 @@ validate-buildspec: ## Validate AWS CodeBuild buildspec files (all of them, disc
 # the commercial account?" — yes) confirmed it while it shielded 49 fixable
 # findings. Naming the lines makes the mismatch impossible to write down.
 #
-#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — two statements
-#     trust a named role in the commercial CI account that owns this pipeline.
+#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — three statements
+#     (two on GitLabRole, one on GitLabReviewRole) trust a named role in the
+#     commercial CI account that owns this pipeline.
 #     Cross-partition IAM trust does not exist, so `arn:${AWS::Partition}:` here
 #     would render an ARN naming a GovCloud account that is not the one meant.
 #
@@ -1021,6 +1022,15 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# (#1731). The toolkit is stubbed in sys.modules; the logs client is a real
 	@# botocore client behind a Stubber with an explicit region.
 	cd src/lambda/agentcore_gateway_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# MCP caller interceptor (token -> role and scope, signed caller block, listing
+	@# filters) and the custom resource that attaches it to the gateway. moto for
+	@# Cognito, DynamoDB and Secrets Manager; the gateway is a model-validated fake.
+	cd src/lambda/mcp_identity_interceptor && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/mcp_interceptor_attach && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# MCP credential manager: Admin-only routing, the scoped-Admin rule, the sweep.
+	cd src/lambda/mcp_credential_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# Registers the stack-created MCP client as "Default (stack-created)".
+	cd src/lambda/mcp_default_credential && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/test_file_copier && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/update_configuration && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/user_management && $(PYTEST_HERMETIC) -q -p no:cacheprovider
@@ -1143,11 +1153,12 @@ test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
-test-hooks: ## Run only the hook tests (commit/PR text, shared-branch, agent filing, loop liveness)
+test-hooks: ## Run only the hook tests (commit/PR text, shared-branch, agent filing, worktree reach, loop liveness)
 	@echo "Running Claude hook tests..."
 	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py \
 		scripts/tests/test_check_shared_branch.py \
 		scripts/tests/test_check_agent_filing.py \
+		scripts/tests/test_check_worktree_reach.py \
 		scripts/tests/test_check_loop_liveness.py -v
 
 test-capacity: ## Run only capacity planning tests
@@ -1391,6 +1402,16 @@ stacktest-seller: ## Seller Entitlement Service e2e: deploy throwaway stack, pro
 	    $(if $(STACK_NAME),--stack-name $(STACK_NAME)) \
 	    $(if $(REGION),--region $(REGION)) \
 	    $(if $(NO_TEARDOWN),--no-teardown)
+
+# Network reach of the analytics agent's Python interpreter. Needs no IDP stack:
+# it starts a session on the AWS-managed Bedrock AgentCore Code Interpreter the
+# analytics tool uses, runs a fixed probe program in it, and compares what it
+# reaches with the posture recorded in scripts/sdlc/sandbox_network_probe.py.
+# Creates and deletes its own throwaway bucket (ab-sandbox-probe-<random>).
+# Exit 0 = matches the recorded posture, 1 = differs, 2 = could not run.
+# Manual only: no CI job runs it (see .claude/skills/run-stack-tests.md).
+stacktest-sandbox-network: ## Analytics interpreter network reach: DNS, HTTPS, S3 presigned PUT, raw TCP, credential presence (no stack; [REGION=us-west-2])
+	$(RUN_FIRST_PARTY) scripts/sdlc/sandbox_network_probe.py --region $(if $(REGION),$(REGION),us-west-2) $(if $(JSON_OUT),--json-out $(JSON_OUT),)
 
 # Release-vs-release benchmark audit (alias to benchmark-release).
 stacktest-benchmark: benchmark-release ## Release benchmark audit (alias: benchmark-release)

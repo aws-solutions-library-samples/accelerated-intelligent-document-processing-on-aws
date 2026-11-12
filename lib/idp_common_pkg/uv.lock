@@ -868,6 +868,7 @@ agentic-extraction = [
 agents = [
     { name = "bedrock-agentcore" },
     { name = "jsonschema" },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "strands-agents" },
 ]
 all = [
@@ -882,6 +883,7 @@ all = [
     { name = "pandas" },
     { name = "pillow" },
     { name = "pyarrow" },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "pypdfium2" },
     { name = "python-docx" },
     { name = "requests" },
@@ -1077,6 +1079,8 @@ requires-dist = [
     { name = "pyarrow", marker = "extra == 'reporting'", specifier = "==23.0.1" },
     { name = "pyarrow", marker = "extra == 'test'", specifier = "==23.0.1" },
     { name = "pydantic", specifier = ">=2.12.0" },
+    { name = "pyjwt", extras = ["crypto"], marker = "extra == 'agents'", specifier = ">=2.10.1" },
+    { name = "pyjwt", extras = ["crypto"], marker = "extra == 'all'", specifier = ">=2.10.1" },
     { name = "pypdfium2", marker = "extra == 'agentic-extraction'", specifier = ">=5.5.0" },
     { name = "pypdfium2", marker = "extra == 'all'", specifier = ">=5.5.0" },
     { name = "pypdfium2", marker = "extra == 'image'", specifier = ">=5.5.0" },

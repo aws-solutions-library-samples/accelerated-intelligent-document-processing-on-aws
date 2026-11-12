@@ -1,4 +1,12 @@
 {
+  "agentChat.layout.enableExternalMcpAgents": {
+    "defaultMessage": "Enable External MCP agents",
+    "description": "Checkbox under the Agent Chat input that lets the chat use agents served by external MCP servers."
+  },
+  "agentChat.layout.thirdPartyNotice": {
+    "defaultMessage": "Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.",
+    "description": "Notice beside the agent opt-in checkboxes under the Agent Chat input. Code Intelligence Agent and External MCP agents are the names of the two optional agents."
+  },
   "documents.list.addToTestSet.disabledHint": {
     "defaultMessage": "Select at least one document that has finished processing",
     "description": "Tooltip of the Add to test set button when no selected document can be added."
@@ -18,6 +26,406 @@
   "i18n.switcher.label": {
     "defaultMessage": "Language",
     "description": "Tooltip of the language menu button in the top navigation. The button itself shows the current language by its own name (English, Français (Canada))."
+  },
+  "mcp.configuration.adminOnly": {
+    "defaultMessage": "MCP Configuration is available to Admin users only.",
+    "description": "Error shown on the MCP Configuration page to a user who is not an Admin."
+  },
+  "mcp.configuration.adminWarning": {
+    "defaultMessage": "An Admin credential can use every tool on every profile. Prefer a narrower role.",
+    "description": "Warning shown when the Admin role is chosen for a new credential."
+  },
+  "mcp.configuration.all": {
+    "defaultMessage": "All",
+    "description": "Table cell value for an Admin credential, which is not limited to configuration profiles."
+  },
+  "mcp.configuration.allProfiles": {
+    "defaultMessage": "All profiles",
+    "description": "Placeholder of the configuration profiles field, and the table cell value, when a credential is not limited to profiles."
+  },
+  "mcp.configuration.allowProcess": {
+    "defaultMessage": "Allow process and reprocess",
+    "description": "Checkbox under the Write tools field. process and reprocess are MCP tool names."
+  },
+  "mcp.configuration.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes a credential dialog without changes."
+  },
+  "mcp.configuration.chooseProfiles": {
+    "defaultMessage": "Choose profiles",
+    "description": "Placeholder of the configuration profiles field when choosing profiles is required."
+  },
+  "mcp.configuration.clientId": {
+    "defaultMessage": "Client ID",
+    "description": "Label of the OAuth client ID of an MCP credential, in the new-credential dialog and as a column header of the credentials table."
+  },
+  "mcp.configuration.clientIdCopied": {
+    "defaultMessage": "Client ID copied",
+    "description": "Confirmation after the client ID is copied to the clipboard."
+  },
+  "mcp.configuration.clientSecret": {
+    "defaultMessage": "Client secret",
+    "description": "Label of the OAuth client secret of a new MCP credential."
+  },
+  "mcp.configuration.clientSecretCopied": {
+    "defaultMessage": "Client secret copied",
+    "description": "Confirmation after the client secret is copied to the clipboard."
+  },
+  "mcp.configuration.connectorHelp": {
+    "defaultMessage": "An MCP client settings entry for the IDP MCP Connector (Cline, Kiro or another stdio MCP client).",
+    "description": "Instructions on the MCP Connector tab of the new-credential dialog. Cline and Kiro are product names."
+  },
+  "mcp.configuration.connectorTab": {
+    "defaultMessage": "MCP Connector",
+    "description": "Tab in the new-credential dialog with a settings entry for the IDP MCP Connector, a product component name."
+  },
+  "mcp.configuration.copied": {
+    "defaultMessage": "Copied",
+    "description": "Confirmation after a block of settings is copied to the clipboard."
+  },
+  "mcp.configuration.copyClientId": {
+    "defaultMessage": "Copy client ID",
+    "description": "Screen-reader label of the button that copies the client ID."
+  },
+  "mcp.configuration.copyClientSecret": {
+    "defaultMessage": "Copy client secret",
+    "description": "Screen-reader label of the button that copies the client secret."
+  },
+  "mcp.configuration.copyFields": {
+    "defaultMessage": "Copy fields",
+    "description": "Button that copies the Amazon Quick fields to the clipboard."
+  },
+  "mcp.configuration.copyItNow": {
+    "defaultMessage": "Copy it now. It is also stored in AWS Secrets Manager, where an operator with access to that secret can read it.",
+    "description": "Warning text in the new-credential dialog, under the header saying the secret will not be shown again."
+  },
+  "mcp.configuration.copySettings": {
+    "defaultMessage": "Copy settings",
+    "description": "Button that copies the MCP Connector settings entry to the clipboard."
+  },
+  "mcp.configuration.couldNotCopy": {
+    "defaultMessage": "Could not copy",
+    "description": "Error shown when copying a value to the clipboard fails."
+  },
+  "mcp.configuration.create": {
+    "defaultMessage": "Create",
+    "description": "Confirm button of the dialog that creates an MCP credential."
+  },
+  "mcp.configuration.createCredential": {
+    "defaultMessage": "Create credential",
+    "description": "Button that opens the dialog to create an MCP credential."
+  },
+  "mcp.configuration.createFailed": {
+    "defaultMessage": "Creating the credential failed: {error}",
+    "description": "Error shown when creating an MCP credential fails. {error} is the error text from the server."
+  },
+  "mcp.configuration.createHeader": {
+    "defaultMessage": "Create MCP credential",
+    "description": "Header of the dialog that creates an MCP credential."
+  },
+  "mcp.configuration.createdBy": {
+    "defaultMessage": "Created by",
+    "description": "Column header for who created the credential."
+  },
+  "mcp.configuration.credentialCreated": {
+    "defaultMessage": "Credential created",
+    "description": "Header of the dialog that shows a newly created or rotated MCP credential and its secret."
+  },
+  "mcp.configuration.days": {
+    "defaultMessage": "{days, plural, one {# day} other {# days}}",
+    "description": "An expiry or overlap period option for an MCP credential. {days} is the number of days."
+  },
+  "mcp.configuration.daysRecommended": {
+    "defaultMessage": "{days, plural, one {# day} other {# days}} (recommended)",
+    "description": "The recommended expiry period option for a new MCP credential. {days} is the number of days."
+  },
+  "mcp.configuration.edit": {
+    "defaultMessage": "Edit",
+    "description": "Button that opens the dialog to edit the selected credential."
+  },
+  "mcp.configuration.editHeader": {
+    "defaultMessage": "Edit {name}",
+    "description": "Header of the dialog that edits a credential. {name} is the credential name, or its client ID when it has none."
+  },
+  "mcp.configuration.emptyBody": {
+    "defaultMessage": "Create a credential for an MCP client that signs in as a service, such as a shared Amazon Quick workflow or the MCP Connector.",
+    "description": "Text shown in the credentials table when there are none."
+  },
+  "mcp.configuration.emptyTitle": {
+    "defaultMessage": "No MCP credentials",
+    "description": "Title shown in the credentials table when there are none."
+  },
+  "mcp.configuration.enabled": {
+    "defaultMessage": "Enabled",
+    "description": "Label of the setting that turns a credential on or off."
+  },
+  "mcp.configuration.enabledCheckbox": {
+    "defaultMessage": "Enabled",
+    "description": "Checkbox under the Enabled field."
+  },
+  "mcp.configuration.enabledDescription": {
+    "defaultMessage": "A disabled credential is refused until it is enabled again.",
+    "description": "Help under the Enabled field."
+  },
+  "mcp.configuration.expires": {
+    "defaultMessage": "Expires",
+    "description": "Label of the credential expiry, in the form and as a column header."
+  },
+  "mcp.configuration.expiresNever": {
+    "defaultMessage": "Never",
+    "description": "Table cell value for a credential that does not expire."
+  },
+  "mcp.configuration.expiryNever": {
+    "defaultMessage": "Never",
+    "description": "Expiry option for an MCP credential that does not expire."
+  },
+  "mcp.configuration.expiryNeverDescription": {
+    "defaultMessage": "The credential keeps working until it is revoked",
+    "description": "Description of the expiry option Never."
+  },
+  "mcp.configuration.findCredentials": {
+    "defaultMessage": "Find credentials",
+    "description": "Placeholder of the filter field above the credentials table."
+  },
+  "mcp.configuration.lastUsed": {
+    "defaultMessage": "Last used",
+    "description": "Column header for when the credential was last used."
+  },
+  "mcp.configuration.loadFailed": {
+    "defaultMessage": "Failed to load MCP credentials: {error}",
+    "description": "Error shown when the list of MCP credentials cannot be loaded. {error} is the error text from the server."
+  },
+  "mcp.configuration.loading": {
+    "defaultMessage": "Loading…",
+    "description": "Shown while the user role is being determined, before the MCP Configuration page renders."
+  },
+  "mcp.configuration.loadingCredentials": {
+    "defaultMessage": "Loading MCP credentials",
+    "description": "Shown in the credentials table while it loads."
+  },
+  "mcp.configuration.matches": {
+    "defaultMessage": "{count} matches",
+    "description": "Number of credentials the filter matches. {count} is the number."
+  },
+  "mcp.configuration.name": {
+    "defaultMessage": "Name",
+    "description": "Label of the credential name, in the form and as a column header."
+  },
+  "mcp.configuration.nameDescription": {
+    "defaultMessage": "Shown on this page and in the audit log.",
+    "description": "Help under the credential name field."
+  },
+  "mcp.configuration.neverWarning": {
+    "defaultMessage": "A credential that never expires keeps working until someone revokes it.",
+    "description": "Warning shown when the expiry Never is chosen for a new credential."
+  },
+  "mcp.configuration.no": {
+    "defaultMessage": "No",
+    "description": "Table cell value: the credential may not use the write tools."
+  },
+  "mcp.configuration.noMatch": {
+    "defaultMessage": "No matching credentials",
+    "description": "Shown in the credentials table when the filter matches nothing."
+  },
+  "mcp.configuration.notEnabledBody": {
+    "defaultMessage": "Update the stack with EnableMCP set to true to use the MCP server and manage its credentials here.",
+    "description": "Text shown on the MCP Configuration page when the stack has no MCP server. EnableMCP is a stack parameter name and stays as is."
+  },
+  "mcp.configuration.notEnabledHeader": {
+    "defaultMessage": "MCP is not enabled on this stack",
+    "description": "Header shown on the MCP Configuration page when the stack has no MCP server."
+  },
+  "mcp.configuration.overlapLabel": {
+    "defaultMessage": "Keep the current credential working for",
+    "description": "Label of the overlap period field in the rotate dialog; the options are periods in days."
+  },
+  "mcp.configuration.overlapNone": {
+    "defaultMessage": "Stop the old credential now",
+    "description": "Rotation option: the old credential stops working immediately rather than after an overlap of some days."
+  },
+  "mcp.configuration.profiles": {
+    "defaultMessage": "Configuration profiles",
+    "description": "Label of the configuration profiles an MCP credential may see, in the credential form and as a column header."
+  },
+  "mcp.configuration.quickHelp": {
+    "defaultMessage": "Add the IDP server as an MCP integration in Amazon Quick and choose service-to-service OAuth.",
+    "description": "Instructions on the Amazon Quick tab of the new-credential dialog."
+  },
+  "mcp.configuration.quickTab": {
+    "defaultMessage": "Amazon Quick (service-to-service OAuth)",
+    "description": "Tab in the new-credential dialog with the fields to enter in Amazon Quick. Amazon Quick is a product name."
+  },
+  "mcp.configuration.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Screen-reader label of the button that reloads the credentials table."
+  },
+  "mcp.configuration.revoke": {
+    "defaultMessage": "Revoke",
+    "description": "Button that revokes the selected credential, and the confirm button of the revoke dialog."
+  },
+  "mcp.configuration.revokeBody": {
+    "defaultMessage": "Callers using this credential are refused from their next request. Its app client is deleted and its secret is scheduled for deletion. This cannot be undone.",
+    "description": "Explanation in the revoke dialog."
+  },
+  "mcp.configuration.revokeFailed": {
+    "defaultMessage": "Revoking the credential failed: {error}",
+    "description": "Error shown when revoking an MCP credential fails. {error} is the error text from the server."
+  },
+  "mcp.configuration.revokeHeader": {
+    "defaultMessage": "Revoke {name}",
+    "description": "Header of the dialog that revokes a credential. {name} is the credential name, or its client ID when it has none."
+  },
+  "mcp.configuration.revoked": {
+    "defaultMessage": "Revoked {name}. Its callers are refused from their next request.",
+    "description": "Confirmation after an MCP credential is revoked. {name} is the credential name, or its client ID when it has none."
+  },
+  "mcp.configuration.role": {
+    "defaultMessage": "Role",
+    "description": "Label of the credential role, in the form and as a column header."
+  },
+  "mcp.configuration.roleAdmin": {
+    "defaultMessage": "Admin",
+    "description": "Name of the Admin role, as an option for an MCP credential."
+  },
+  "mcp.configuration.roleAdminDescription": {
+    "defaultMessage": "Every tool, every profile",
+    "description": "Description of the Admin role option for an MCP credential."
+  },
+  "mcp.configuration.roleAuthor": {
+    "defaultMessage": "Author",
+    "description": "Name of the Author role, as an option for an MCP credential."
+  },
+  "mcp.configuration.roleAuthorDescription": {
+    "defaultMessage": "Reads, and with write tools can process and reprocess",
+    "description": "Description of the Author role option for an MCP credential."
+  },
+  "mcp.configuration.roleDescription": {
+    "defaultMessage": "What its callers may do, as for a user with that role.",
+    "description": "Help under the credential role field."
+  },
+  "mcp.configuration.roleReviewer": {
+    "defaultMessage": "Reviewer",
+    "description": "Name of the Reviewer role, as an option for an MCP credential."
+  },
+  "mcp.configuration.roleReviewerDescription": {
+    "defaultMessage": "Reads documents and results",
+    "description": "Description of the Reviewer role option for an MCP credential."
+  },
+  "mcp.configuration.roleViewer": {
+    "defaultMessage": "Viewer",
+    "description": "Name of the Viewer role, as an option for an MCP credential."
+  },
+  "mcp.configuration.roleViewerDescription": {
+    "defaultMessage": "Reads documents and results; may use search when unscoped",
+    "description": "Description of the Viewer role option for an MCP credential."
+  },
+  "mcp.configuration.rotate": {
+    "defaultMessage": "Rotate",
+    "description": "Button that rotates the selected credential, and the confirm button of the rotate dialog."
+  },
+  "mcp.configuration.rotateBody": {
+    "defaultMessage": "A new credential with the same role and profiles is created and its secret shown once. The current one keeps working for the time you choose, so callers can move across.",
+    "description": "Explanation in the rotate dialog."
+  },
+  "mcp.configuration.rotateFailed": {
+    "defaultMessage": "Rotating the credential failed: {error}",
+    "description": "Error shown when rotating an MCP credential fails. {error} is the error text from the server."
+  },
+  "mcp.configuration.rotateHeader": {
+    "defaultMessage": "Rotate {name}",
+    "description": "Header of the dialog that rotates a credential. {name} is the credential name, or its client ID when it has none."
+  },
+  "mcp.configuration.save": {
+    "defaultMessage": "Save",
+    "description": "Confirm button of the dialog that edits a credential."
+  },
+  "mcp.configuration.saveFailed": {
+    "defaultMessage": "Saving the credential failed: {error}",
+    "description": "Error shown when saving changes to an MCP credential fails. {error} is the error text from the server."
+  },
+  "mcp.configuration.saved": {
+    "defaultMessage": "Saved {name}.",
+    "description": "Confirmation after an MCP credential is saved. {name} is the credential name, or its client ID when it has none."
+  },
+  "mcp.configuration.scopeAdmin": {
+    "defaultMessage": "An Admin credential is not limited to profiles.",
+    "description": "Help under the configuration profiles field when the Admin role is chosen."
+  },
+  "mcp.configuration.scopeApiGrants": {
+    "defaultMessage": "Tenants are granted by your entitlement system on this stack (setMcpCredentialTenant), not here.",
+    "description": "Help under the configuration profiles field when tenants are granted through the API. setMcpCredentialTenant is an API operation name and stays as is."
+  },
+  "mcp.configuration.scopeOptional": {
+    "defaultMessage": "Leave empty for every profile, or choose the profiles of one tenant.",
+    "description": "Help under the configuration profiles field when choosing profiles is optional."
+  },
+  "mcp.configuration.scopeRequired": {
+    "defaultMessage": "Required: the profiles of one tenant this credential may see.",
+    "description": "Help under the configuration profiles field when choosing profiles is required."
+  },
+  "mcp.configuration.secretShownOnce": {
+    "defaultMessage": "This secret will not be shown again",
+    "description": "Warning header in the new-credential dialog."
+  },
+  "mcp.configuration.secretsManagerArn": {
+    "defaultMessage": "Secrets Manager ARN",
+    "description": "Label of the identifier of the AWS Secrets Manager secret that holds the credential."
+  },
+  "mcp.configuration.serverEndpoint": {
+    "defaultMessage": "MCP server endpoint",
+    "description": "Label of the URL of the MCP server."
+  },
+  "mcp.configuration.signingInHeader": {
+    "defaultMessage": "Signing in to the MCP server",
+    "description": "Header of the panel that explains how users and services sign in to the MCP server."
+  },
+  "mcp.configuration.signingInServices": {
+    "defaultMessage": "Clients that sign in as a service, such as a shared Amazon Quick workflow or the MCP Connector, use a credential from this page. Each credential has its own role, profiles, expiry and secret, and is refused from its next request once revoked.",
+    "description": "Second paragraph of the sign-in panel, about services signing in with a credential."
+  },
+  "mcp.configuration.signingInUsers": {
+    "defaultMessage": "People sign in to the MCP server as themselves, through your MCP client's user authentication with the MCP client ID from the stack outputs; they then get their own role and configuration profiles, as in this console.",
+    "description": "First paragraph of the sign-in panel, about people signing in."
+  },
+  "mcp.configuration.snippetLine": {
+    "defaultMessage": "{label}: {value}",
+    "description": "One line of the Amazon Quick fields copied to the clipboard. {label} is the field name (MCP server endpoint, Client ID, Client secret, Token URL), {value} its value."
+  },
+  "mcp.configuration.status": {
+    "defaultMessage": "Status",
+    "description": "Column header for the credential status."
+  },
+  "mcp.configuration.storedSecret": {
+    "defaultMessage": "I have stored the secret",
+    "description": "Button that closes the new-credential dialog; the secret is not shown again afterwards."
+  },
+  "mcp.configuration.tableDescription": {
+    "defaultMessage": "Service credentials for MCP clients. Secrets are shown once, when a credential is created or rotated.",
+    "description": "Description under the credentials table header."
+  },
+  "mcp.configuration.tableHeader": {
+    "defaultMessage": "MCP credentials",
+    "description": "Header of the credentials table."
+  },
+  "mcp.configuration.tokenUrl": {
+    "defaultMessage": "Token URL",
+    "description": "Label of the OAuth token endpoint URL MCP clients request tokens from."
+  },
+  "mcp.configuration.writeTools": {
+    "defaultMessage": "Write tools",
+    "description": "Label of the setting that lets an MCP credential use the process and reprocess tools, and its column header."
+  },
+  "mcp.configuration.writeToolsDescription": {
+    "defaultMessage": "Lets callers start processing with the process and reprocess tools.",
+    "description": "Help under the Write tools field."
+  },
+  "mcp.configuration.yes": {
+    "defaultMessage": "Yes",
+    "description": "Table cell value: the credential may use the write tools."
+  },
+  "navigation.configuration.mcpConfiguration": {
+    "defaultMessage": "MCP Configuration",
+    "description": "Side navigation link, in the Configuration section, to the page that manages MCP server credentials. Admin users only."
   },
   "pricing.layout.cannotSaveInvalidPrices": {
     "defaultMessage": "Cannot save: {count, plural, one {# price is} other {# prices are}} not valid. Correct the prices listed under Invalid prices and save again.",
