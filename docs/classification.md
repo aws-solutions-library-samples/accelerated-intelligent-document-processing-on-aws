@@ -1701,19 +1701,14 @@ shows a fully populated entry.
 
 ## Using CachePoint for Classification
 
-The solution integrates with Amazon Bedrock CachePoint for improved performance:
+The `<<CACHEPOINT>>` delimiter marks the end of the prompt prefix that Amazon Bedrock prompt caching may cache. Only that prefix is cached; model responses are never reused. A cache entry expires five minutes after the start of the request that wrote it, and each read restarts that timer ([prompt caching study §3](./benchmarking/studies/prompt-caching.md#3-the-cache-write-premium-on-a-document-processed-once)). No benchmark in this repository has measured caching's effect on latency.
 
-- Caches frequently used prompts and responses
-- Reduces latency for similar classification requests
-- Optimizes costs through response reuse
-- Automatic cache management and expiration
-
-CachePoint is particularly beneficial with few-shot examples, as these can add significant token count to prompts. The `<<CACHEPOINT>>` delimiter in prompt templates separates:
+Few-shot examples make the cacheable prefix larger. The `<<CACHEPOINT>>` delimiter in prompt templates separates:
 
 - **Static portion** (before CACHEPOINT): Class definitions, few-shot examples, instructions
 - **Dynamic portion** (after CACHEPOINT): The specific document being processed
 
-This approach allows the static portion to be cached and reused across multiple document processing requests, while only the dynamic portion varies per document, significantly reducing costs and improving performance.
+This approach allows the static portion to be cached and reused across multiple document processing requests, while only the dynamic portion varies per document. On Claude models a cached prefix read again within five minutes is billed at a tenth of the input price (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but a prefix below the model's minimum is never cached, and a prefix written and not read again costs about 25% more than an uncached one ([prompt caching study](./benchmarking/studies/prompt-caching.md)).
 
 Example task prompt with CachePoint for few-shot examples:
 
@@ -2019,7 +2014,7 @@ Classification supports few-shot example prompting at either granularity and und
 - **📏 Consistent Output**: Examples establish exact structure and formatting standards
 - **🚫 Reduced Hallucination**: Examples reduce likelihood of made-up classifications
 - **🔧 Domain Adaptation**: Examples help models understand domain-specific terminology
-- **💰 Cost Effectiveness with Caching**: Using prompt caching with few-shot examples significantly reduces costs
+- **💰 Cost with Caching**: Prompt caching can lower the cost of the examples when its prefix is read again within five minutes, as it can be when documents with the same configuration are processed close together, and on Claude models raises it when the prefix is written and not read again ([Using CachePoint for Classification](#using-cachepoint-for-classification))
 
 ### Few Shot Example Configuration
 
@@ -2261,16 +2256,18 @@ classification:
 
 | Mode | What the model is asked for | Notes |
 |------|-----------------------------|-------|
-| `topk` (default) | ranked candidate classes with probabilities | Best calibrated, and it answers "what else could this have been?" |
-| `verbalized` | one self-reported 0-1 number | Cheapest and the most overconfident. |
+| `topk` (default) | ranked candidate classes with probabilities | Chosen over `verbalized` on published evidence (below); not compared with it in this repository. It answers "what else could this have been?" |
+| `verbalized` | one self-reported 0-1 number | Asks for less output than `topk`. Published work finds a single self-reported number overconfident; not measured here. |
 | `off` | nothing extra | Costs nothing at all. |
 
-`topk` is the default for a measured reason. Asking for a single number gets
+`topk` is the default for a published reason. Asking for a single number gets
 ~0.95 on everything; making the model enumerate and rank alternatives forces it
 to distribute probability mass instead (Tian et al., *Just Ask for Calibration*,
 EMNLP 2023 — the same reasoning behind extraction's `G1/P1` confidence path). It
 produces exactly the "80 % W-2, 15 % 1099" shape, and the runner-ups are stored
-and shown in the UI.
+and shown in the UI. This repository's
+[classification confidence study](./benchmarking/studies/classification-confidence.md) compared `topk` with `off`
+only; it did not run `verbalized`, so the two scoring modes have not been compared here.
 
 **What it costs:** measured over 298 pages of a 13-class corpus, `topk` added
 **+17 % to the classification step** — which is only ~3 % of total document cost
@@ -2408,11 +2405,12 @@ A single self-reported confidence is usually poorly calibrated — models asked
 because it invites automated escalation on noise. Smaller models are the most
 overconfident, and the default classification model is a small one. That is why
 the shipped mode is `topk` rather than `verbalized`: ranking alternatives against
-each other is what makes the number carry information, where a single
-self-reported figure mostly does not. `off` is for a deployment that will not act
+each other is meant to make the number carry information where a single
+self-reported figure mostly does not. That is the published reasoning above; the
+comparison with `verbalized` has not been run in this repository. `off` is for a deployment that will not act
 on the score — it is the only setting that saves the output tokens.
 
-**This is measured, not asserted.** On 298 pages of a deliberately confusable
+**What has been measured is how informative the `topk` score is.** On 298 pages of a deliberately confusable
 13-class corpus, in `topk` mode ([full study](./benchmarking/studies/classification-confidence.md)):
 
 | | Nova 2 Lite (default) | Claude Haiku 4.5 |

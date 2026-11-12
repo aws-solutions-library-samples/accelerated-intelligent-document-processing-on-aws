@@ -1431,7 +1431,7 @@ ask for, the placeholders it can use, and where `<<CACHEPOINT>>` goes.
 
 ### Bedrock Prompt Caching
 
-The solution supports Bedrock prompt caching to reduce costs and improve performance by caching static portions of prompts. It applies to the classification, extraction, assessment and summarization calls.
+The solution supports Bedrock prompt caching of the static portion of a prompt, which can lower its cost. It applies to the classification, extraction, assessment and summarization calls.
 
 #### How It Works
 
@@ -1450,7 +1450,7 @@ extraction:
     {DOCUMENT_TEXT}
 ```
 
-Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across similar requests, while content after it remains dynamic. This can significantly reduce token costs and improve response times.
+Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across similar requests, while content after it remains dynamic. On Claude models a cached prefix read again within five minutes is billed at a tenth of the input price (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but a prefix below the model's minimum (below) is never cached, and a prefix written and not read again costs about 25% more than an uncached one ([prompt caching study](./benchmarking/studies/prompt-caching.md)). No benchmark in this repository has measured caching's effect on response time.
 
 #### Best Practices
 
@@ -1460,9 +1460,9 @@ Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across
 
 #### Benefits
 
-- **Cost Savings**: Cached tokens cost significantly less than regular input tokens
-- **Performance**: Reduced processing time for cached content
-- **Token Efficiency**: Particularly beneficial for long system prompts or few-shot examples
+- **Cost**: A cache read is billed at 0.1× the input price on most Claude models, 0.05× on Claude Sonnet 5.5 and Opus 5.5, and 0.25× on Nova (per-model rates are in `config_library/pricing.yaml`). A cache write is billed at 1.25× on Claude models and at no charge on Nova, so on Claude a prefix that is written and not read again within five minutes costs more than no caching ([prompt caching study §3](./benchmarking/studies/prompt-caching.md#3-the-cache-write-premium-on-a-document-processed-once))
+- **Share of the bill**: Only the prefix is discounted. On the `ocr-benchmark` corpus the prefix was about 1,000–2,900 of roughly 7,800 input tokens per document, so the discount applies to that fraction of the input rather than to the whole bill ([prompt caching study §6](./benchmarking/studies/prompt-caching.md#6-end-to-end-effect-on-cost))
+- **Where it matters most**: long system prompts or few-shot examples, where the prefix is a large share of each request
 
 #### Minimum cacheable prefix — per model, and not monotonic
 

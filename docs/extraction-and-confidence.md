@@ -156,10 +156,18 @@ per shard.
 
 ```yaml
 extraction:
-  agentic:
-    enabled: true             # Advanced mode
+  mode: advanced   # Advanced mode
   model: us.anthropic.claude-sonnet-5
 ```
+
+> ⚠️ **`extraction.mode` selects the path; `extraction.agentic.enabled` is derived
+> from it.** When `mode` is set, `agentic.enabled` is overwritten to match it
+> (`advanced` turns it on, `simple` turns it off). A sparse custom configuration
+> that sets only `agentic.enabled: true` is still read as Advanced, because the
+> configuration migration pins `mode` from it before merging onto the defaults. A
+> **full** configuration is different: it already carries `mode: simple`, so
+> editing only `agentic.enabled` to `true` in it leaves the document on the Simple
+> path, with no error. Set `mode: advanced` to choose Advanced extraction.
 
 #### Supported models for agentic extraction
 
@@ -300,7 +308,7 @@ over 20% in accuracy on the [getomni-ai benchmark](https://getomni.ai/blog/ocr-b
 
 - **100% schema compliance** vs frequent validation failures
 - **Reduced manual review** and correction efforts
-- **Automatic caching**: For supported models, prompt and tool caching is automatically enabled, reducing costs for repeated extractions with the same configuration
+- **Automatic caching**: For supported models, prompt caching is enabled automatically, and tool caching on Claude models. On Claude a cached prefix read again within five minutes is billed at a tenth of the input price (a twentieth on Claude Sonnet 5.5 and Opus 5.5), a prefix below the model's minimum is never cached, and a prefix written and not read again costs about 25% more than uncached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
 
 ##### Dropping the duplicated schema (`restate_schema_in_system_prompt`)
 
@@ -397,8 +405,8 @@ of rows):
 
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   agentic:
-    enabled: true
     table_parsing:
       enabled: true                  # give the agent a deterministic parse_table tool
       min_confidence_threshold: 95.0 # OCR-confidence target (Textract only)
@@ -470,8 +478,7 @@ stronger model**:
 
 ```yaml
 extraction:
-  agentic:
-    enabled: true
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   validation:                  # sits under `extraction`, not under `extraction.agentic`
     enabled: true
     check_formats: true        # enforce JSON-Schema 'format' (ISO-8601 dates, etc.)
@@ -511,9 +518,9 @@ failures a single huge request would hit — and runs shards in parallel.
 
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   context_buffer: 0.30            # ONE knob: keep 30% of each model window free ON TOP of the measured prompt overhead (auto-sizes everything below)
   agentic:
-    enabled: true
     runtime: step_functions       # DEFAULT for agentic: per-shard Lambdas defeat the 900s timeout + resume
     max_concurrent_batches: 10    # >1 enables sharding (upper bound on parallelism & shard count)
     shard_token_budget: 0         # 0 = AUTO-size from the model's context window (minus context_buffer)
@@ -659,8 +666,7 @@ classes:
 
 ```yaml
 extraction:
-  agentic:
-    enabled: true            # Advanced mode: for lists above ~400 rows (see §0)
+  mode: advanced   # Advanced mode: for lists above ~400 rows (see §0)
   model: anthropic.claude-sonnet-4-5-20250929-v1:0
   temperature: 0.0           # Keep low for consistency
   top_p: 0.1
@@ -2306,7 +2312,8 @@ smart scaling (only downsizes when scale < 1.0), high-quality resampling.
 
 ### Using CachePoint
 
-CachePoint caches partial computations to improve performance and reduce costs.
+CachePoint caches the prompt prefix before the tag, which can lower its cost: see the
+[prompt caching study](./benchmarking/studies/prompt-caching.md) for when it does and when it costs more.
 Enable it by placing `<<CACHEPOINT>>` tags in prompt templates to mark where the
 model should cache preceding prompt components:
 

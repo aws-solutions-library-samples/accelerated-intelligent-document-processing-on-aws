@@ -1027,7 +1027,7 @@ task_prompt: >-
 
 For models supporting cache checkpoints:
 - **Initial Request**: Full token cost, plus a write premium on the cached prefix (1.25× its input price on Claude models)
-- **Subsequent Requests**: Cache read cost (a tenth of the input price on Claude models) + new content cost
+- **Subsequent Requests**: Cache read cost (a tenth of the input price on most Claude models, a twentieth on Claude Sonnet 5.5 and Opus 5.5) + new content cost
 - **What it saves depends on the workload, and it can cost more.** Only the prefix
   before `<<CACHEPOINT>>` is cached, and on the `ocr-benchmark` documents that was
   about 1,000–2,900 of about 7,800 input tokens per request. A prefix shorter than the
@@ -1669,11 +1669,17 @@ what had happened to the list this paragraph replaced.
 
 Commonly used choices:
 
-- `us.amazon.nova-lite-v1:0` — cheapest; adequate for clean, text-heavy scans
-- `us.amazon.nova-pro-v1:0` — better on mixed layouts
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0` — fast Claude option
-- `us.anthropic.claude-sonnet-4-6` — strongest on handwriting and dense tables
-- `qwen.qwen3-vl-235b-a22b` — vision-language alternative
+- `us.amazon.nova-2-lite-v1:0` — the default `ocr.model_id` (used only when the
+  backend is `bedrock`), and the one the v0.6.14 benchmark measured (below)
+- `us.amazon.nova-lite-v1:0`, `us.amazon.nova-pro-v1:0` — Amazon Nova
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0`, `us.anthropic.claude-sonnet-4-6` —
+  Anthropic Claude
+- `qwen.qwen3-vl-235b-a22b` — Qwen vision-language model
+
+No benchmark in this repository compares OCR models with one another, so this list
+says nothing about which is more accurate on a given kind of document. Compare
+candidates on a sample of your own documents, and compare their per-token prices in
+`config_library/pricing.yaml`.
 
 Select `LambdaHook` instead of a model to route OCR to your own Lambda function.
 

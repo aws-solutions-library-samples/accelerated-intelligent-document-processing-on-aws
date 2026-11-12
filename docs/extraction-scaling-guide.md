@@ -11,9 +11,10 @@ This guide characterizes how the IDP extraction pipeline behaves as documents an
 their embedded lists/tables grow, so you can choose **simple** vs **advanced
 (agentic)** extraction mode with confidence and predict cost. Its size limits, cost and
 wall-clock figures are from the v0.6.14 benchmark
-([Configuration Guidance](./benchmarking/config-guidance.md)); its truncation table and
-6,400-row result are from an earlier controlled scaling study (v0.6.0, Claude Sonnet 5
-extraction, Textract TABLES OCR). Both use synthetic bank statements with an exact known
+([Configuration Guidance](./benchmarking/config-guidance.md)); its 6,400-row result and
+part of its truncation table are from an earlier controlled scaling study (v0.6.0, Claude
+Sonnet 5 extraction, Textract TABLES OCR), shown beside the v0.6.14 result where the two
+disagree. Both use synthetic bank statements with an exact known
 number of transaction rows.
 
 > **Companion:** see [extraction-and-confidence.md](extraction-and-confidence.md)
@@ -23,8 +24,9 @@ number of transaction rows.
 > `COMPLETED`.** The Simple-mode list-size threshold on this page comes from the v0.6.14
 > benchmark grid with the shipped default extraction model (Claude Sonnet 5); the cost and
 > wall-clock figures further down are from the same v0.6.14 benchmark, and the
-> truncation table and the 6,400-row result come from the earlier study described
-> below and have not been re-measured. In that grid Simple mode returned every row of each of three
+> 6,400-row result comes from the earlier study described below and has not been
+> re-measured, and the truncation table below sets that study beside the v0.6.14
+> control-model result. In that grid Simple mode returned every row of each of three
 > 400-row, 9-page statements on every run, but on an 800-row, 17-page statement it
 > returned the whole list on only **5 of 13** runs and **43 to 190 rows** on the other
 > 8, each one `COMPLETED`
@@ -100,20 +102,29 @@ returned 43 to 190 rows
 Whether a given run at that size truncates varies from run to run, so one complete run
 says little about the next.
 
-The earlier study this page was built on, one run per size, shows the same shape at a
-larger size:
+Above 800 rows the two studies this page draws on disagree, and they used different
+extraction models, so neither is a prediction for the other. Both ran one document per
+size:
 
-| Rows in doc | Pages | Rows extracted (simple) | Result |
-|-------------|-------|-------------------------|--------|
-| 400  | 9  | 400 | ✅ complete |
-| 800  | 17 | 800 | ✅ complete |
-| 1,000 | 21 | 239 | ⚠️ silent truncation |
-| 1,200 | 25 | 92  | ⚠️ worse |
-| 1,600 | 33 | 43  | ⚠️ worst |
+| Rows in doc | Pages | v0.6.0 study, Claude Sonnet 5 (rows returned) | v0.6.14 `scaling` suite, Claude Sonnet 4.6 control model (rows returned) |
+|-------------|-------|----------------------------------------------|---------------------------------------------------------------------------|
+| 400   | 9  | 400 ✅ | 400 ✅ |
+| 800   | 17 | 800 ✅ | 800 ✅ |
+| 1,000 | 21 | 239 ⚠️ silent truncation | not measured |
+| 1,200 | 25 | 92 ⚠️ | 1,200 ✅, 5% of rows without a confidence score |
+| 1,600 | 33 | 43 ⚠️ | 1,600 ✅, 20% of rows without a confidence score |
 
-This is **not** a fixable max-tokens setting — the truncated runs emitted only
-2.5K–12K output tokens, far below the model's 128K output cap. The model gives up on
-the list as total input grows. The more rows/pages, the *earlier* it truncates.
+The v0.6.14 figures are from
+[config-guidance §3](./benchmarking/config-guidance.md#3-scaling-limits-by-document-size),
+and they are the more recent measurement. The shipped default, Claude Sonnet 5, was not
+run in Simple mode between 800 and 3,200 rows on v0.6.14 (at 3,200 rows it was refused, as
+described below), so whether its v0.6.0 truncation at 1,000 to 1,600 rows still holds is not
+known; what v0.6.14 did measure for it is the partial lists at 800 rows described above. Treat the upper end of Simple mode as dependent on the
+model and the release rather than as a fixed row count.
+
+The v0.6.0 truncations were **not** a max-tokens setting: those runs emitted only
+2.5K–12K output tokens, far below the model's 128K output cap, so the model stopped the
+list early rather than running out of output budget.
 
 ### 2. Request too large: refused at 66 pages
 A document too large for one request is refused before extraction runs, with Bedrock's
