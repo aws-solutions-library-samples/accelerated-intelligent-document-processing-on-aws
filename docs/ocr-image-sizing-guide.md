@@ -50,13 +50,16 @@ raise `dpi`.
 
 ## Do not lower resolution to save tokens
 
-Lowering resolution saves far less than it appears to, because Bedrock
-downscales images to its own long-edge ceiling before tokenizing. Token spend
-therefore saturates: beyond roughly 1568px on the long edge, extra pixels are
-free.
+Lowering resolution saves less than it appears to, because Bedrock downscales
+images to the model's own long-edge ceiling before tokenizing, so token spend
+stops growing once a page exceeds that ceiling. The ceiling depends on the model:
+about 1,568px for Sonnet 4.6, Sonnet 4.5, Haiku 4.5 and the 3.x family, and about 2,576px for
+Claude 4.7 and later, Opus 5 and Sonnet 5, which therefore keep spending tokens
+on pixels up to that size
+([configuration](./configuration.md#a-request-with-more-than-20-page-images-caps-every-image-at-2000-px)).
 
-Measured end to end on a 4-page scanned document (Sonnet 4.5, all three LLM
-stages):
+The saturation was measured on one model only — end to end on a 4-page scanned
+document (Sonnet 4.5, all three LLM stages):
 
 | Stored page image | Total input tokens |
 |---|---|

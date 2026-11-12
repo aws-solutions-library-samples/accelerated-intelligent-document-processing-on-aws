@@ -73,35 +73,35 @@ InvokeDataAutomation (with waitForTaskToken)
 ## Deployment
 
 ### Prerequisites
-- Bedrock Data Automation project already set up and configured
+- A BDA project does not have to exist beforehand. The solution creates one for a
+  configuration profile when the profile first needs one — for example the first
+  time the profile is synced with BDA — and records it on the profile
 - Required AWS permissions for Bedrock, Lambda, Step Functions, and S3
-- S3 buckets created for input, working, and output storage
 
 ### Configuration
 
 **Stack Deployment Parameters:**
-- `BDAProjectArn`: ARN of your Bedrock Data Automation project
-- **Summarization**: Control summarization via configuration file `summarization.enabled` property (replaces `IsSummarizationEnabled` parameter)
-- `ConfigurationDefaultS3Uri`: Optional S3 URI to custom configuration (uses default configuration if not specified)
-- `InputBucket`: S3 bucket for input documents
-- `WorkingBucket`: S3 bucket for temporary BDA job output
-- `OutputBucket`: S3 bucket for final processed results
-- `TrackingTable`: DynamoDB table for task token tracking
-- `CustomerManagedEncryptionKeyArn`: KMS key ARN for encryption
-- `LogRetentionDays`: CloudWatch log retention period
-- `ExecutionTimeThresholdMs`: Latency threshold for alerts
 
-**Stack Outputs:**
-- `SageMakerA2IReviewPortalURL`: URL for the SageMaker A2I human review portal (when HITL is enabled)
+BDA mode has no deployment parameters of its own. The stack is deployed with the
+main template's parameters, and the starting configuration is chosen with
+`ConfigurationPreset` (a directory under `config_library/unified/`) or
+`CustomConfigPath` (the S3 URI of your own configuration file). The BDA project is
+not a stack parameter: it is linked to each configuration profile (see
+[discovery.md](./discovery.md#bdaidp-sync-feature)). Summarization is controlled by
+the configuration's `summarization.enabled` property.
 
 **Configuration Management:**
-- Configuration now supports multiple presets per pattern (e.g., default, checkboxed_attributes_extraction, medical_records_summarization)
+- The presets are the directories under `config_library/unified/`. None is specific to BDA mode: set `use_bda: true` on whichever you choose
 - Configuration can be updated through the Web UI without stack redeployment
 - Summarization functionality is controlled through the configuration file `summarization.enabled` property rather than CloudFormation parameters
-- BDA-specific configuration is handled within the Bedrock Data Automation project rather than the IDP stack configuration
 
 **Note on BDA Configuration:**
-Unlike Patterns 2 and 3, Pattern 1 delegates most document processing configuration to the Bedrock Data Automation (BDA) project itself. Classification and extraction behaviors are configured within the BDA project using BDA Blueprints rather than through the IDP configuration system.
+In BDA mode, classification and extraction are performed by BDA, using the
+blueprints of the BDA project linked to the configuration profile. Those blueprints
+correspond to the profile's document classes, and **Sync to BDA…** and **Sync from
+BDA…** on the Configuration page keep the two in step in either direction, so the classes
+can be defined in the solution's configuration and pushed to BDA, or defined in BDA
+and pulled into the configuration. See [discovery.md](./discovery.md#bdaidp-sync-feature).
 
 ## Monitoring and Metrics
 
@@ -207,9 +207,11 @@ payload = {
 
 ### Human-in-the-Loop (HITL)
 
-Pattern-1 supports Human-in-the-Loop (HITL) review capabilities using Amazon SageMaker Augmented AI (A2I). This feature allows human reviewers to validate and correct extracted information when the system's confidence falls below a specified threshold.
+Human review is built into the solution's Web UI; it does not use Amazon SageMaker
+Augmented AI (A2I). Reviewers validate and correct extracted information when the
+system's confidence falls below a specified threshold.
 
-**Pattern-1 Specific Configuration:** HITL is enabled through the configuration
+**Configuration:** HITL is enabled through the configuration
 (Web UI **Configuration → Human-in-the-Loop (HITL) Review (Optional)**, or the
 `hitl.enabled` key in the config YAML),
 not a CloudFormation parameter — the `EnableHITL` parameter was removed in v0.4.11.
@@ -263,13 +265,12 @@ This is useful for:
 
 ## Best Practices
 1. **BDA Project Configuration**:
-   - Configure classification and extraction within the BDA project using BDA Blueprints
+   - Define the document classes in the configuration profile, or in the BDA project's blueprints, and keep the two in step with **Sync to BDA…** and **Sync from BDA…**
    - Use BDA's built-in capabilities for document type detection and field extraction
    - Test BDA configuration thoroughly before integrating with IDP stack
 
 2. **Configuration Management**:
    - Use the configuration library for IDP-specific settings (summarization, evaluation, etc.)
-   - BDA-specific configuration should be managed within the BDA project
    - Leverage the Web UI for IDP configuration updates without redeployment
 
 3. **Monitoring and Scaling**:
@@ -291,6 +292,6 @@ This is useful for:
    - Implement proper error handling for BDA job failures
 
 6. **HITL Management**:
-   - Configure confidence thresholds on the Web UI's Configuration page (**Processing Settings** tab) based on business requirements
-   - Regularly check the Review Portal for pending tasks to avoid processing delays
+   - Set the confidence threshold (`hitl.confidence_threshold`) in the configuration based on business requirements
+   - Regularly check the review queues for pending items to avoid processing delays
    - Establish consistent correction guidelines if multiple reviewers are involved

@@ -86,7 +86,14 @@ def cfn_types_in_tree(template: Path, variant: str | None = None) -> set[str]:
     return types
 
 
-S3_URL = re.compile(r"https://s3[.-]([a-z0-9-]+)\.amazonaws\.com[^/]*/([^/]+)/(.+)$")
+#: A published nested-template URL, path style. The region is optional: in
+#: us-east-1 the publisher writes the global endpoint, ``https://s3.amazonaws.com``,
+#: which names none.
+S3_URL = re.compile(
+    r"https://s3(?:[.-]([a-z0-9-]+))?\.amazonaws\.com[^/]*/([^/]+)/(.+)$"
+)
+#: The region the global endpoint serves.
+S3_GLOBAL_ENDPOINT_REGION = "us-east-1"
 
 
 def s3_loader(cache: Path) -> Callable[[str], dict[str, Any]]:
@@ -99,6 +106,7 @@ def s3_loader(cache: Path) -> Callable[[str], dict[str, Any]]:
         if not m:
             raise TranslationError(f"cannot read nested TemplateURL {url}")
         region, bucket, key = m.groups()
+        region = region or S3_GLOBAL_ENDPOINT_REGION
         target = cache / key.replace("/", "_")
         if not target.exists():
             cache.mkdir(parents=True, exist_ok=True)

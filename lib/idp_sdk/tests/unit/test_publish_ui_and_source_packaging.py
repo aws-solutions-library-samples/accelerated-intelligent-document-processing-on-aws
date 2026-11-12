@@ -454,6 +454,41 @@ def test_package_ui_zips_the_right_members_and_uploads_them(
 
 
 @mock_aws
+def test_package_ui_says_so_when_the_pseudo_locale_marker_is_present(
+    tmp_path, monkeypatch, aws_credentials
+):
+    """``src/ui/.pseudo-locale`` makes the deployed UI include the en-XA pseudo-locale
+    (see ``src/ui/src/i18n/README.md``). It is gitignored and removed by hand after a
+    test deploy, so a forgotten one would otherwise ride into the next stack silently;
+    the publisher names it, and stays quiet when it is absent.
+    """
+    import io
+
+    from rich.console import Console
+
+    monkeypatch.chdir(tmp_path)
+    ui = _ui_tree(tmp_path)
+    s3 = boto3.client("s3", region_name="us-east-1")
+    s3.create_bucket(Bucket=_BUCKET)
+
+    pub = _publisher(s3)
+    pub.console = Console(file=io.StringIO(), width=1000, no_color=True)
+    pub.package_ui()
+    assert ".pseudo-locale" not in pub.console.file.getvalue()
+
+    (ui / ".pseudo-locale").touch()
+    pub = _publisher(s3)
+    pub.console = Console(file=io.StringIO(), width=1000, no_color=True)
+    name = pub.package_ui()
+    out = pub.console.file.getvalue()
+    assert "src/ui/.pseudo-locale is present" in out
+    assert "en-XA" in out and "Remove the marker" in out
+    assert ".pseudo-locale" in _zip_names(os.path.join(".aws-sam", name)), (
+        "the notice is about a marker the zip carries; it must still be in the zip"
+    )
+
+
+@mock_aws
 def test_package_ui_ships_an_envrc(tmp_path, monkeypatch, aws_credentials):
     """DEFECT pinned: the dotenv exclusion does not cover ``.envrc``.
 
