@@ -38,6 +38,11 @@ def default_model_id() -> str:
     return regional_default(SONNET_4_6_MODEL_ID, stack_region())
 
 
+#: :func:`default_model_id` as resolved for the Region the process starts in, kept
+#: for callers that import the name; the agent itself resolves it per call.
+DEFAULT_MODEL_ID = default_model_id()
+
+
 SYSTEM_PROMPT = """
 You are the Quick Start Agent for the GenAI IDP Accelerator. You help a new user
 go from a plain-language description of their document type to a working IDP

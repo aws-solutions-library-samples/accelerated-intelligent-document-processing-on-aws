@@ -219,9 +219,22 @@ def test_the_quick_start_agent_uses_the_fallback_when_given_no_model(monkeypatch
     with (
         patch.object(quick_start_agent, "create_strands_bedrock_model") as make_model,
         patch.object(quick_start_agent.strands, "Agent"),
+        patch.object(quick_start_agent, "with_cost_hook") as cost_hook,
     ):
         quick_start_agent.create_quick_start_agent(session=object())
-    assert make_model.call_args.kwargs["model_id"] == ("eu.anthropic.claude-sonnet-4-6")
+    assert make_model.call_args.kwargs["model_id"] == "eu.anthropic.claude-sonnet-4-6"
+    assert cost_hook.call_args.args[2] == "eu.anthropic.claude-sonnet-4-6"
+
+
+@pytest.mark.unit
+def test_the_quick_start_agent_keeps_a_model_it_is_given(monkeypatch):
+    monkeypatch.setenv("AWS_REGION", "eu-central-1")
+    with (
+        patch.object(quick_start_agent, "create_strands_bedrock_model") as make_model,
+        patch.object(quick_start_agent.strands, "Agent"),
+    ):
+        quick_start_agent.create_quick_start_agent(session=object(), model_id="given")
+    assert make_model.call_args.kwargs["model_id"] == "given"
 
 
 @pytest.mark.unit
