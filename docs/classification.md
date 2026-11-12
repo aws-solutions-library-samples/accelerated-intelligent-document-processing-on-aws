@@ -149,12 +149,15 @@ classification* as `SectionClassification/…`. The combined strategy stays unde
 - **A declared document shape skips the boundary work.** Under
   `sectionSplitting: disabled` or `page`, split-then-classify makes no splitting calls:
   the segments are known, so it goes straight to section classification.
-- **The model choice outweighs all of it.** On the benchmark suite Nova 2 Lite,
-  Claude Haiku 4.5 and Claude Sonnet 5 reached the same classification accuracy
-  at $0.007, $0.047 and $0.189 per document respectively — see
-  [`benchmarking/config-guidance.md`](./benchmarking/config-guidance.md) §5.3.
-  With Sonnet 5 as the classifier, classification reached 67% of total document
-  cost on a 9-page benchmark row.
+- **The model choice outweighs all of it.** On the v0.6.14 benchmark grid (133
+  runs per model) Nova 2 Lite, Claude Haiku 5.5 and Claude Sonnet 5 placed the
+  section boundary correctly on 132, 133 and 133 runs, with the same downstream
+  extraction accuracy, at a classification cost of $0.0069, at least $0.0086 and
+  $0.1263 per document respectively. Haiku 5.5's figure is a lower bound, because
+  its banded pricing is held as one flat rate — see
+  [config-guidance §5.3](./benchmarking/config-guidance.md#53-classification-model).
+  Classification was about 1% of the whole per-document bill with Nova 2 Lite and
+  about 16% with Sonnet 5, rising to 35% on one 4-page run.
 
 ### Combinations refused when you save
 
