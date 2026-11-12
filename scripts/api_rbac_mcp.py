@@ -375,7 +375,7 @@ def run_mcp_suite(
         try:
             token = service_token(mcp, mcp["connector"], mcp["connector_secret"])
             status, text = call_text(mcp, token, "status", INERT_TOOL_ARGS["status"])
-            isolated = "not assigned to a tenant" in text
+            isolated = "this MCP credential is disabled" in text
             record(
                 results,
                 "mcp:status",

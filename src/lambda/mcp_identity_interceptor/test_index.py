@@ -40,6 +40,11 @@ INTERCEPTOR = Path(__file__).resolve().parent / "index.py"
 REQUEST_ID = "184bd53c-b0bc-48a5-8d59-bcf4b4ada42c"
 USER_CLIENT = "6g97km074t91v627s3ugutgiae"
 SERVICE_CLIENT = "50hmqfukml41lhoj31r0dchceh"
+#: The Secrets Manager ARN a registry row records for the stack-created client. A
+#: name, not a secret: the row only points at where the stack keeps it.
+_CONNECTOR_ARN = (
+    "arn:aws:secretsmanager:us-east-1:111122223333:secret:stk/mcp/credentials/x"
+)
 
 
 def _jwt(claims):
@@ -136,6 +141,17 @@ def world(monkeypatch):
                 "allowedConfigVersions": ["acme-*"],
             }
         )
+        creds = ddb.create_table(
+            TableName="stack-creds",
+            KeySchema=[{"AttributeName": "clientId", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "clientId", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        from idp_common.mcp_credentials import register_stack_default
+
+        register_stack_default(
+            creds, SERVICE_CLIENT, secret_arn=_CONNECTOR_ARN, environ={}
+        )
         secret = boto3.client("secretsmanager", region_name=REGION).create_secret(
             Name="stack/mcp/caller-signing-key", SecretString="s" * 64
         )["ARN"]
@@ -145,7 +161,7 @@ def world(monkeypatch):
             "USER_POOL_ID": pool,
             "USERS_TABLE_NAME": "users",
             "MCP_USER_CLIENT_IDS": USER_CLIENT,
-            "MCP_STACK_SERVICE_CLIENT_IDS": SERVICE_CLIENT,
+            "MCP_CREDENTIALS_TABLE": "stack-creds",
             "CALLER_SIGNING_SECRET_ARN": secret,
             "URL_SUFFIX": "amazonaws.com",
         }
@@ -159,7 +175,7 @@ def world(monkeypatch):
         spec.loader.exec_module(module)
         issuer = ma.expected_issuer(REGION, pool)
         yield SimpleNamespace(
-            mod=module, pool=pool, subs=subs, issuer=issuer, key=b"s" * 64
+            mod=module, pool=pool, subs=subs, issuer=issuer, key=b"s" * 64, creds=creds
         )
         sys.modules.pop("mcp_interceptor_index", None)
 
@@ -279,10 +295,23 @@ def test_the_stack_service_client_is_an_author_when_isolation_is_off(world):
     )
 
 
-def test_the_stack_service_client_is_refused_under_strict(world, monkeypatch):
+def test_the_stack_service_client_is_registered_disabled_under_strict(
+    world, monkeypatch
+):
+    """Registered where an unscoped caller is denied, the stack-created client's row
+    is disabled until an Admin gives it a tenant's profiles."""
+    from idp_common.mcp_credentials import register_stack_default
+
     monkeypatch.setenv(TENANT_ISOLATION_ENV, "Strict")
+    world.creds.delete_item(Key={"clientId": SERVICE_CLIENT})
+    register_stack_default(
+        world.creds,
+        SERVICE_CLIENT,
+        secret_arn=_CONNECTOR_ARN,
+        environ={TENANT_ISOLATION_ENV: "Strict"},
+    )
     event = _event(_call("IDPTools___status", {"batch_id": "b"}), service_token(world))
-    assert "tenant" in refusal_text(world.mod.handler(event, _context()))
+    assert "disabled" in refusal_text(world.mod.handler(event, _context()))
 
 
 def test_a_client_with_no_rule_is_refused(world):

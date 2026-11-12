@@ -2945,7 +2945,6 @@ Resources:
       LambdaArn: !GetAtt AgentCoreMCPHandlerFunction.Arn
       UserPoolId: !Ref UserPool
       ClientId: !Ref ExternalAppClient
-      ClientSecret: !GetAtt ExternalAppClient.ClientSecret
       ConnectorClientId: !Ref MCPConnectorClient
       ExecutionRoleArn: !GetAtt AgentCoreGatewayExecutionRole.Arn
       # Bump when IDP_TOOLS_SCHEMA in the gateway manager Lambda changes.
@@ -3056,6 +3055,10 @@ Resources:
   McpIdentityInterceptorFunction:
     Type: AWS::Serverless::Function
     Condition: CreateAgentCoreLambda
+    # On an upgrade, the stack-created connector client is admitted through its
+    # registry row; updating this function only after the row is written means the
+    # connector is never refused in between.
+    DependsOn: McpDefaultCredential
     Metadata:
       cfn_nag:
         rules_to_suppress:
@@ -3084,7 +3087,6 @@ Resources:
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           MCP_USER_CLIENT_IDS: !Ref ExternalAppClient
-          MCP_STACK_SERVICE_CLIENT_IDS: !Ref MCPConnectorClient
           CALLER_SIGNING_SECRET_ARN: !Ref McpCallerSigningSecret
           URL_SUFFIX: !Ref AWS::URLSuffix
           MCP_CREDENTIALS_TABLE: !Ref McpCredentialsTable
@@ -3118,6 +3120,108 @@ Resources:
               Action:
                 - kms:Decrypt
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+
+  # The stack-created clients' secrets, in Secrets Manager under the stack key,
+  # in place of the stack outputs that used to print them. The connector client's
+  # secret sits where every MCP credential's does, so the MCP Configuration page
+  # and `aws secretsmanager get-secret-value` find it the same way.
+  McpConnectorClientSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: CreateAgentCoreLambda
+    Properties:
+      Name: !Sub "${AWS::StackName}/mcp/credentials/${MCPConnectorClient}"
+      Description: "Client ID and secret of the stack-created MCP client-credentials client (MCP Configuration: Default (stack-created))"
+      KmsKeyId: !Ref CustomerManagedEncryptionKey
+      SecretString: !Sub
+        - '{"clientId": "${Id}", "clientSecret": "${Secret}", "tokenUrl": "https://${Domain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token"}'
+        - Id: !Ref MCPConnectorClient
+          Secret: !GetAtt MCPConnectorClient.ClientSecret
+          Domain: !GetAtt GetDomain.OutputString
+
+  McpUserClientSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: CreateAgentCoreLambda
+    Properties:
+      Name: !Sub "${AWS::StackName}/mcp/user-client"
+      Description: "Client ID and secret of the MCP user-authentication client (authorization code flow, e.g. Amazon Quick user authentication)"
+      KmsKeyId: !Ref CustomerManagedEncryptionKey
+      SecretString: !Sub
+        - '{"clientId": "${Id}", "clientSecret": "${Secret}", "tokenUrl": "https://${Domain}.auth.${AWS::Region}.amazoncognito.com/oauth2/token", "authorizationUrl": "https://${Domain}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize"}'
+        - Id: !Ref ExternalAppClient
+          Secret: !GetAtt ExternalAppClient.ClientSecret
+          Domain: !GetAtt GetDomain.OutputString
+
+  # Records the stack-created client in the credential registry as "Default
+  # (stack-created)". Its own function, so a rollback or downgrade deletes the
+  # row with this code. See src/lambda/mcp_default_credential/index.py.
+  McpDefaultCredential:
+    Type: Custom::McpDefaultCredential
+    Condition: CreateAgentCoreLambda
+    Properties:
+      ServiceToken: !GetAtt McpDefaultCredentialFunction.Arn
+      TableName: !Ref McpCredentialsTable
+      ClientId: !Ref MCPConnectorClient
+      SecretArn: !Ref McpConnectorClientSecret
+      TenantIsolationMode: !Ref TenantIsolationMode
+      TenantGrantSource: !Ref TenantGrantSource
+
+  McpDefaultCredentialLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateAgentCoreLambda
+    Properties:
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      RetentionInDays: !Ref LogRetentionDays
+
+  McpDefaultCredentialFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateAgentCoreLambda
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with AWS services via APIs"
+          - id: W92
+            reason: "Function does not require reserved concurrency; it runs only during stack operations"
+    # checkov:skip=CKV_AWS_116: "CloudFormation custom resource handler; a DLQ does not apply"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency; it runs only during stack operations"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold no sensitive data"
+    Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      CodeUri: src/lambda/mcp_default_credential/
+      Handler: index.handler
+      Runtime: python3.12
+      MemorySize: 256
+      Timeout: 60
+      Layers:
+        - !Ref IDPCommonBaseLayer
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+      LoggingConfig:
+        LogGroup: !Ref McpDefaultCredentialLogGroup
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem
+              Resource: !GetAtt McpCredentialsTable.Arn
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey
+              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+            # Its last log lines can arrive after a stack delete removed the log
+            # group; without this they would recreate it with no retention or key.
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${McpDefaultCredentialLogGroup}"
+                - !GetAtt McpDefaultCredentialLogGroup.Arn
 
   # One row per MCP service credential (a client-credentials app an Admin created
   # on the MCP Configuration page). The interceptor reads a caller's row on every
@@ -17893,10 +17997,10 @@ Outputs:
     Condition: CreateAgentCoreLambda
     Description: Cognito client ID for user-based authentication with the IDP MCP server. Used by external applications like Amazon QuickSight that require user password authentication.
     Value: !Ref ExternalAppClient
-  MCPClientSecret:
+  MCPClientSecretArn:
     Condition: CreateAgentCoreLambda
-    Description: Cognito client secret for user-based authentication with the IDP MCP server. Used by external applications like Amazon QuickSight that require user password authentication.
-    Value: !GetAtt ExternalAppClient.ClientSecret
+    Description: Secrets Manager ARN holding the client ID and secret of the MCP user-authentication client (authorization code flow, e.g. Amazon Quick user authentication). Read with aws secretsmanager get-secret-value.
+    Value: !Ref McpUserClientSecret
   MCPUserPool:
     Condition: CreateAgentCoreLambda
     Description: MCP User Pool ID
@@ -17921,10 +18025,10 @@ Outputs:
     Condition: CreateAgentCoreLambda
     Description: Cognito client ID used by the MCP Connector for machine-to-machine (M2M) authentication with the IDP system
     Value: !Ref MCPConnectorClient
-  MCPConnectorClientSecret:
+  MCPConnectorClientSecretArn:
     Condition: CreateAgentCoreLambda
-    Description: Cognito client secret used by the MCP Connector for machine-to-machine (M2M) authentication with the IDP system
-    Value: !GetAtt MCPConnectorClient.ClientSecret
+    Description: Secrets Manager ARN holding the client ID and secret of the stack-created MCP client-credentials client, listed on the MCP Configuration page as Default (stack-created). Read with aws secretsmanager get-secret-value.
+    Value: !Ref McpConnectorClientSecret
   MCPContentBucketConsoleURL:
     Description: MCP server content bucket console URL
     Value: !Sub

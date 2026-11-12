@@ -1241,12 +1241,12 @@ the same roles and configuration scope as UI users.
   token. An interceptor Lambda then resolves it: a token from the
   user-authentication client (`MCPClientId`) is the signed-in user, with the groups
   in their token and the `allowedConfigVersions` the UI would apply to them; a token
-  from the stack-created client-credentials client (`MCPConnectorClientId`) is an
-  Author with no configuration scope, refused under `TenantIsolationMode=Strict` or
-  an external `TenantGrantSource`; a token from a
-  [service credential](./mcp-server.md#service-credentials) an Admin created has that
-  credential's role and configuration profiles, read on every call, so a revoked or
-  expired credential is refused at once. The credential operations
+  from any client-credentials client is a
+  [service credential](./mcp-server.md#service-credentials), with that credential's
+  role and configuration profiles read on every call, so a revoked or expired
+  credential is refused at once. That includes the stack-created client
+  (`MCPConnectorClientId`), listed as "Default (stack-created)": an Author with no
+  configuration scope, registered disabled where tenant isolation applies. The credential operations
   (`listMcpCredentials`, `createMcpCredential`, `updateMcpCredential`,
   `rotateMcpCredential`, `revokeMcpCredential`, `setMcpCredentialTenant`) are Admin
   only. A scoped Admin can grant only profiles inside their own scope, and only a

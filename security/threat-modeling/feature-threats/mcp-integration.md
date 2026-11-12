@@ -70,8 +70,8 @@ flowchart TD
 | **Likelihood** | Medium |
 | **Severity** | Critical |
 | **Affected Components** | Custom MCP Lambdas, MCP Gateway Lambda, external services |
-| **Mitigations** | Under `TenantIsolationMode=Strict` or an external `TenantGrantSource` the MCP handler refuses every tool, and refuses them too when the mode cannot be read (`agentcore_mcp_handler/index.py`), because no tool can be confined to one tenant (TEN.T01). Customer-managed MCP Lambda security review, IAM least-privilege for MCP Lambdas, network-level egress controls (VPC), audit logging of all MCP tool invocations, data classification awareness in agent prompts |
-| **Evidence** | `src/lambda/mcp_identity_interceptor/test_index.py::test_the_stack_service_client_is_refused_under_strict`; UNVERIFIED: the citations have not been matched to each listed mitigation |
+| **Mitigations** | Each MCP caller is resolved to a role and configuration scope by the gateway's request interceptor (`mcp_identity_interceptor`, `idp_common.mcp_access`): a signed-in user's groups and `allowedConfigVersions`, or a service credential's role and profiles from the credential registry. The handler refuses a call whose signed caller block it cannot verify, and `status`, `get_results`, `process` and `reprocess` apply the caller's scope; `search`, which reads across every profile, is refused to any scoped caller, so under `TenantIsolationMode=Strict` or an external `TenantGrantSource` it is Admin-only (TEN.T01). Customer-managed MCP Lambda security review, IAM least-privilege for MCP Lambdas, network-level egress controls (VPC), audit logging of all MCP tool invocations, data classification awareness in agent prompts |
+| **Evidence** | `lib/idp_common_pkg/tests/unit/test_mcp_credentials.py::test_the_stack_client_is_registered_disabled_under_tenant_isolation`; `lib/idp_common_pkg/tests/unit/test_mcp_credentials.py::test_strict_switched_on_later_narrows_an_unscoped_credential`; UNVERIFIED: the citations have not been matched to each listed mitigation |
 
 ### MCP.T02: Malicious Tool Injection
 
@@ -130,7 +130,7 @@ flowchart TD
 | **Likelihood** | Medium |
 | **Severity** | Medium |
 | **Affected Components** | AgentCore Gateway, MCP handler Lambda, Agent Processor Lambda |
-| **Mitigations** | Cognito authentication required for all external clients (dedicated `idp-mcp-connector` resource server with a `client_credentials` app client, separate from the Web UI app client), Lambda concurrency limits, RBAC-based capability restrictions, CloudWatch alarms on usage patterns |
+| **Mitigations** | Cognito authentication required for all external clients; the gateway admits only the user-authentication client and registered client-credentials apps. Per-tool role checks in the interceptor and the handler, matching each tool's REST equivalent (`mcp_tools:` in `scripts/api_rbac_expectations.yaml`, checked by `make api-test-static` M1–M5 and driven live by `make api-test`). Service credentials each carry a role, profiles and expiry, are read on every call and so refused on the next request once revoked, and keep their secrets in Secrets Manager; no client secret is a stack output. Lambda concurrency limits, CloudWatch alarms on usage patterns |
 | **Evidence** | `lib/idp_common_pkg/tests/unit/test_mcp_access.py::test_each_role_may_call_exactly_its_tools`; `lib/idp_common_pkg/tests/unit/lambdas/test_agentcore_mcp_handler_scope.py::test_no_verified_caller_is_refused_before_the_tool`; `src/lambda/mcp_identity_interceptor/test_index.py::test_a_client_supplied_caller_is_replaced`; UNVERIFIED: the citations cover per-role tool restrictions and caller verification; concurrency limits and usage alarms are not covered |
 
 ### MCP.T06: AgentCore Gateway Lifecycle Attacks
@@ -158,6 +158,6 @@ flowchart TD
 | **IaC-managed tools** | Tool definitions in CloudFormation, not runtime-configurable | MCP.T02 |
 | **Output sanitization** | Tool response validation and size limits | MCP.T03 |
 | **Input validation** | Parameter schema enforcement in MCP Lambdas | MCP.T04 |
-| **Authentication** | Cognito auth required for external clients | MCP.T05 |
+| **Authentication** | Cognito auth required for external clients; each token resolved to a role and configuration scope by the gateway interceptor | MCP.T01, MCP.T05 |
 | **Rate limiting** | Lambda concurrency limits + AgentCore Gateway throttling | MCP.T05, MCP.T06 |
 | **Gateway monitoring** | CloudWatch alarms on gateway status | MCP.T06 |

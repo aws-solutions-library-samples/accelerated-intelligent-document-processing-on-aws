@@ -999,6 +999,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/mcp_interceptor_attach && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@# MCP credential manager: Admin-only routing, the scoped-Admin rule, the sweep.
 	cd src/lambda/mcp_credential_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# Registers the stack-created MCP client as "Default (stack-created)".
+	cd src/lambda/mcp_default_credential && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/test_file_copier && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/update_configuration && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/user_management && $(PYTEST_HERMETIC) -q -p no:cacheprovider

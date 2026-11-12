@@ -105,8 +105,9 @@ CHECKS
       in lib/idp_common_pkg/tests/unit/lambdas/test_agentcore_mcp_handler_scope.py
       and test_mcp_identity_interceptor.py.
   M5  MCP clients — every client the `AgentCoreGateway` resource admits is
-      declared in `mcp_clients:` with a kind, and the interceptor's environment
-      names exactly the clients of each kind.
+      declared in `mcp_clients:` with a kind; the interceptor's environment names
+      exactly the `user` clients, and `McpDefaultCredential` registers exactly the
+      `registry` ones.
 
 EXIT CODES
 ----------
@@ -1742,8 +1743,11 @@ MCP_SCOPE_HELPERS = {
 MCP_GATEWAY_CLIENT_PROPERTIES = ("ClientId", "ConnectorClientId")
 MCP_INTERCEPTOR_CLIENT_ENV = {
     "user": "MCP_USER_CLIENT_IDS",
-    "service": "MCP_STACK_SERVICE_CLIENT_IDS",
 }
+#: The kind whose clients are resolved from the credential registry, and the
+#: resource that registers a template client there.
+MCP_REGISTRY_KIND = "registry"
+MCP_REGISTRY_RESOURCE = "McpDefaultCredential"
 
 
 def _module_assignments(tree: ast.Module) -> dict[str, ast.AST]:
@@ -2023,7 +2027,7 @@ def mcp_checks(
     if not isinstance(clients, dict) or not clients:
         fail("M5", "api_rbac_expectations.yaml has no mcp_clients section")
         return findings
-    kinds = set(MCP_INTERCEPTOR_CLIENT_ENV)
+    kinds = set(MCP_INTERCEPTOR_CLIENT_ENV) | {MCP_REGISTRY_KIND}
     for client, kind in clients.items():
         if kind not in kinds:
             fail("M5", f"mcp_clients '{client}' has kind {kind!r}; expected one of "
@@ -2051,6 +2055,13 @@ def mcp_checks(
         if wired != expected:
             fail("M5", f"{MCP_INTERCEPTOR_FUNCTION} {env} names {sorted(wired)}; "
                  f"mcp_clients declares {sorted(expected)} as {kind}")
+    registry = {c for c, k in clients.items() if k == MCP_REGISTRY_KIND}
+    if registry:
+        block = _resource_block(template, MCP_REGISTRY_RESOURCE)
+        registered = set(_block_refs(block, "ClientId")) if block else set()
+        if registered != registry:
+            fail("M5", f"{MCP_REGISTRY_RESOURCE} registers {sorted(registered)}; "
+                 f"mcp_clients declares {sorted(registry)} as {MCP_REGISTRY_KIND}")
     return findings
 
 
