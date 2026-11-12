@@ -211,6 +211,9 @@ class ExtractionResult(BaseModel):
     ``extraction_multi_instance_suspected``."""
 
 
+_ESCALATION_FAILED_PREFIX = "escalation call failed: "
+
+
 def _escalation_failure_reason(exc: BaseException) -> str:
     """One bounded line for ``escalation_decision`` when the escalation call raised.
 
@@ -223,7 +226,7 @@ def _escalation_failure_reason(exc: BaseException) -> str:
     """
     lines = (str(exc) or "").strip().splitlines()
     text = lines[0] if lines else ""
-    return f"escalation call failed: {type(exc).__name__}: {text[:160]}"
+    return f"{_ESCALATION_FAILED_PREFIX}{type(exc).__name__}: {text[:160]}"
 
 
 class ExtractionService:
@@ -4963,6 +4966,20 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "values are stored as extracted and the document's status is "
                     "unchanged."
                 )
+            elif escalated and str(
+                validation.get("escalation_decision") or ""
+            ).startswith(_ESCALATION_FAILED_PREFIX):
+                # Escalation raised: in the model call (an escalation model the
+                # agentic path cannot call, say), or while reading its response.
+                # Either way no escalated value was kept. Saying it "did not
+                # resolve it" reported that as a model whose answer was judged,
+                # with the reason only in section metadata.
+                consequence = (
+                    f" Escalation to "
+                    f"{validation.get('escalation_model') or 'the escalation model'}"
+                    f" failed ({validation.get('escalation_decision')}), so"
+                    " nothing from it was kept; the values are stored as extracted."
+                )
             elif escalated:
                 consequence = (
                     " Re-extraction with the escalation model did not resolve it;"
@@ -4991,6 +5008,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         "error_count": error_count,
                         "fail_action": fail_action,
                         "escalated": escalated,
+                        "escalation_decision": validation.get("escalation_decision"),
                         # The first few concrete messages, so the issue is
                         # actionable without opening the section result JSON.
                         "errors": (validation.get("errors") or [])[:5],
@@ -6444,7 +6462,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             raise ValueError(
                 f"OpenAI Responses model '{model_id}' is not compatible with agentic "
                 "extraction (extraction.mode: advanced). Set extraction.mode to "
-                "'simple' or choose a non-OpenAI model. (This is also enforced by "
+                "'simple' or choose a model outside the OpenAI GPT-5.x Responses "
+                "family; OpenAI GPT-6 Astra is served through Converse and supports "
+                "agentic extraction. (This is also enforced by "
                 "'idp-cli config-validate'.)"
             )
 

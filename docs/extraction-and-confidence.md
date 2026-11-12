@@ -273,8 +273,13 @@ Agentic extraction requires models with tool-use support:
 > that sets no `mode`, `extraction.agentic.enabled: true` — is a **hard error** in
 > `idp-cli config-validate` and raises at runtime. `mode` wins whenever it is set,
 > so `mode: simple` with `agentic.enabled: true` runs Simple extraction and is
-> accepted. OpenAI models are fully supported for **Simple (non-agentic)
-> extraction**. See
+> accepted. The same rule covers the **escalation model**
+> (`extraction.validation.escalation_model`, or a class's
+> `x-aws-idp-extraction-escalation-model`) whenever escalation can run on the
+> Advanced path — validation enabled and `fail_action: escalate` — because that
+> re-extraction runs through the same agent loop. Under Simple extraction,
+> escalation is a plain model call and a GPT-5.x escalation model works. OpenAI
+> models are fully supported for **Simple (non-agentic) extraction**. See
 > [OpenAI GPT-5.x Models](openai-models.md).
 
 > **✅ xAI Grok CAN be used with agentic extraction.** Grok 4.6
@@ -497,6 +502,7 @@ extraction:
 
 - **`fail_action: escalate`** re-extracts only the failing top-level fields with `escalation_model` and merges them back — far cheaper than human review. The re-extraction replaces the original only if it lost no populated data (a list that had rows must not come back null or shorter; a filled value must not come back null) *and* got better field by field; a result that merely has fewer errors in total is not enough, because nulling a whole 100-row list produces one error where 100 unreadable cells produce 100. The decision and its reason appear in the **Processing Report** as `escalation_kept` / `escalation_decision`. `warn` records the outcome and proceeds; `reject` records the result as not parsed, which makes the section's Processing Report read `FAILED` and raises the issue at error severity — it does not change the section's or the document's outcome, and it does not route the section to human review (HITL routing is driven by `hitl.confidence_threshold`, not by this).
 - A per-class override `x-aws-idp-extraction-escalation-model` takes precedence over the global `escalation_model`.
+- Under Advanced extraction the escalation model must support the agent loop, so an OpenAI GPT-5.x escalation model is refused by `idp-cli config-validate` there (see [Advanced (agentic) extraction](#advanced-agentic-extraction)). If escalation fails at runtime — the model call raises, or its response cannot be read — the original result is kept and the section's `extraction_validation_failed` issue says the escalation failed and why, rather than that the escalation model failed to resolve the violation.
 - **`min_population_ratio`** is an advisory completeness heuristic: it flags suspiciously sparse results (e.g. a table that returned zero rows) without failing extraction.
 - Outcomes are recorded per section under `metadata.validation` and `metadata.population_check`, and surfaced in the Web UI **Processing Report** tab.
 

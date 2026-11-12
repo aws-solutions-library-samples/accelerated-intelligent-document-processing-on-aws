@@ -825,7 +825,9 @@ class TestValidateAgenticOpenAI:
             }
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result, agentic=True)
+        _validate_agentic_openai(
+            config, result, agentic=True, escalates=False, escalation_model=None
+        )
 
         # Hard error — surfaced at config time, not a silent runtime fallback.
         assert result["valid"] is False
@@ -842,7 +844,9 @@ class TestValidateAgenticOpenAI:
             }
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result, agentic=True)
+        _validate_agentic_openai(
+            config, result, agentic=True, escalates=False, escalation_model=None
+        )
 
         assert result["valid"] is False
         assert "openai.gpt-5.6-terra" in result["errors"][0]
@@ -856,7 +860,9 @@ class TestValidateAgenticOpenAI:
             }
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result, agentic=False)
+        _validate_agentic_openai(
+            config, result, agentic=False, escalates=False, escalation_model=None
+        )
 
         assert result["valid"] is True
         assert result["errors"] == []
@@ -870,7 +876,9 @@ class TestValidateAgenticOpenAI:
             }
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result, agentic=True)
+        _validate_agentic_openai(
+            config, result, agentic=True, escalates=False, escalation_model=None
+        )
 
         assert result["valid"] is True
         assert result["errors"] == []
@@ -890,7 +898,9 @@ class TestValidateAgenticOpenAI:
             ],
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result, agentic=True)
+        _validate_agentic_openai(
+            config, result, agentic=True, escalates=False, escalation_model=None
+        )
 
         assert result["valid"] is False
         assert len(result["errors"]) == 1
@@ -910,7 +920,9 @@ class TestValidateAgenticOpenAI:
             }
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result, agentic=True)
+        _validate_agentic_openai(
+            config, result, agentic=True, escalates=False, escalation_model=None
+        )
         assert result["valid"] is True
         assert result["errors"] == []
 
@@ -931,7 +943,9 @@ class TestValidateAgenticOpenAI:
             }
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result, agentic=True)
+        _validate_agentic_openai(
+            config, result, agentic=True, escalates=False, escalation_model=None
+        )
         assert result["valid"] is True
         assert result["errors"] == []
 
@@ -947,7 +961,9 @@ class TestValidateAgenticOpenAI:
             ],
         }
         result = {"valid": True, "errors": [], "warnings": []}
-        _validate_agentic_openai(config, result, agentic=True)
+        _validate_agentic_openai(
+            config, result, agentic=True, escalates=False, escalation_model=None
+        )
         assert result["valid"] is True
         assert result["errors"] == []
 
