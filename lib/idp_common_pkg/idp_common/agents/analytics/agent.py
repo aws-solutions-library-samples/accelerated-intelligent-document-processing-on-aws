@@ -127,15 +127,21 @@ def create_analytics_agent(
     where raw `metering` scans millions.
 
     - **< 2 hours** — raw `metering`, filter on `date` AND `hour` to partition-prune.
-    - **2–24 hours** — cost → `metering_hourly`; docs / pages → `metering_docs_hourly`.
+    - **2–24 hours** — cost → `metering_hourly`; docs / pages / runs → `metering_docs_hourly`.
       For the CURRENT partial hour, live-tail from raw `metering` (see `get_table_info(['metering_hourly'])`).
-    - **> 24 hours** — cost → `metering_daily`; docs / pages → `metering_docs_daily`.
+    - **> 24 hours** — cost → `metering_daily`; docs / pages / runs → `metering_docs_daily`.
       Live-tail the current day from `metering_hourly` / `metering_docs_hourly`.
 
     Split rules:
     - Cost aggregates (`sum_cost` USD) AND per-unit quantities (`sum_value` — tokens/pages/seconds, check `unit`) live on `metering_hourly` / `metering_daily`.
-    - Volume aggregates (`n_docs`, `sum_pages`) live on `metering_docs_hourly` / `metering_docs_daily`.
+    - Volume aggregates (`n_docs`, `sum_pages`, `n_runs`) live on `metering_docs_hourly` / `metering_docs_daily`.
+    - `n_docs` counts DOCUMENTS and `n_runs` counts RUNS — one run is one
+      `(document_id, timestamp)` pair, so a reprocessed document raises `n_runs`
+      without raising `n_docs`. `SUM(n_runs)` is exact over any set of rows; `SUM(n_docs)`
+      is an upper bound on distinct documents, since a document spanning several
+      hours, versions or classes is counted once per cell.
     - **NEVER** `SELECT sum_pages FROM metering_hourly` — column doesn't exist there.
+    - **NEVER** `SELECT n_runs FROM metering_hourly` — column doesn't exist there.
     - **NEVER** `SELECT sum_cost FROM metering_docs_hourly` — column doesn't exist there.
     - **NEVER** `GROUP BY service_api` on `metering_docs_*` — column doesn't exist.
     - `sum_value` is a **quantity** (tokens / pages / seconds — check `unit`), NOT USD. Use `sum_cost` for dollars.
@@ -271,13 +277,15 @@ def create_analytics_agent(
     GROUP BY "service_api"
     ORDER BY total_cost DESC
 
-    -- Doc-hours and page-hours this month — volume rollup (NOT metering_daily).
+    -- Doc-hours, page-hours and runs this month — volume rollup (NOT metering_daily).
     -- ⚠ On metering_docs_daily, n_docs is a doc-HOURS count (SUM of hourly
     -- n_docs). For a strict unique-doc count across days, query raw metering
-    -- with COUNT(DISTINCT document_id) and accept the wider scan.
+    -- with COUNT(DISTINCT document_id) and accept the wider scan. n_runs has no
+    -- such caveat — a run falls in one hour, so SUM(n_runs) is exact.
     SELECT "config_version",
            SUM("n_docs") AS doc_hours,
-           SUM("sum_pages") AS page_hours
+           SUM("sum_pages") AS page_hours,
+           SUM("n_runs") AS runs
     FROM metering_docs_daily
     WHERE "date" >= date_format(current_date - interval '30' day, '%Y-%m-%d')
     GROUP BY "config_version"
