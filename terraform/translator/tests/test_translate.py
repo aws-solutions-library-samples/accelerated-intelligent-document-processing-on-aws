@@ -691,3 +691,54 @@ def test_a_waf_logging_setting_the_mapping_does_not_carry_fails(vendored):
     t = _waf_logging_template(RedactedFields=[{"UriPath": {}}])
     with pytest.raises(TranslationError, match="RedactedFields"):
         Translator(t, vendored).render()
+
+
+# -- nested templates by their published S3 URL ---------------------------------
+
+
+class _RecordingS3:
+    def __init__(self, body: str):
+        self.body, self.calls = body, []
+
+    def download_file(self, bucket, key, target):
+        self.calls.append((bucket, key))
+        Path(target).write_text(self.body)
+
+
+@pytest.mark.parametrize(
+    ("url", "region"),
+    [
+        # what the publisher writes in us-east-1: the global endpoint, no region
+        ("https://s3.amazonaws.com/bkt/pre/0.6/abc.template", "us-east-1"),
+        ("https://s3.us-west-2.amazonaws.com/bkt/pre/0.6/abc.template", "us-west-2"),
+        (
+            "https://s3-eu-central-1.amazonaws.com/bkt/pre/0.6/abc.template",
+            "eu-central-1",
+        ),
+    ],
+)
+def test_a_published_nested_template_url_is_read_from_its_region(
+    tmp_path, monkeypatch, url, region
+):
+    import boto3
+    from idp_tf.cli import s3_loader
+
+    fake = _RecordingS3("AWSTemplateFormatVersion: '2010-09-09'\nResources: {}\n")
+    seen = {}
+
+    def client(service, region_name=None):
+        seen["service"], seen["region"] = service, region_name
+        return fake
+
+    monkeypatch.setattr(boto3, "client", client)
+    template = s3_loader(tmp_path / "cache")(url)
+    assert template.get("Resources") == {}
+    assert seen == {"service": "s3", "region": region}
+    assert fake.calls == [("bkt", "pre/0.6/abc.template")]
+
+
+def test_a_url_that_is_not_s3_is_still_refused(tmp_path):
+    from idp_tf.cli import TranslationError, s3_loader
+
+    with pytest.raises(TranslationError, match="cannot read nested TemplateURL"):
+        s3_loader(tmp_path)("https://example.com/bkt/abc.template")
