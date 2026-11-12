@@ -193,9 +193,11 @@ Each step includes comprehensive retry logic for handling transient errors:
 
 ### Human-in-the-Loop (HITL)
 
-Pattern-2 supports Human-in-the-Loop (HITL) review capabilities using Amazon SageMaker Augmented AI (A2I). This feature allows human reviewers to validate and correct extracted information when the system's confidence falls below a specified threshold.
+Human review is built into the solution's Web UI; it does not use Amazon SageMaker
+Augmented AI (A2I). Reviewers validate and correct extracted information when the
+system's confidence falls below a specified threshold.
 
-**Pattern-2 Specific Configuration:** HITL is enabled through the configuration
+**Configuration:** HITL is enabled through the configuration
 (Web UI **Configuration → Human-in-the-Loop (HITL) Review (Optional)**, or the
 `hitl.enabled` key in the config YAML),
 not a CloudFormation parameter — the `EnableHITL` parameter was removed in v0.4.11.
@@ -238,15 +240,20 @@ The pattern exports these outputs to the parent stack:
 ### Configuration
 
 **Stack Deployment Parameters:**
-- **Summarization**: Control summarization via configuration file `summarization.enabled` property (replaces `IsSummarizationEnabled` parameter)
-- `ConfigurationDefaultS3Uri`: Optional S3 URI to custom configuration (uses default configuration if not specified)
+
+Pipeline mode has no deployment parameters of its own. The stack is deployed with the
+main template's parameters, among them:
+- `ConfigurationPreset`: the starting configuration, a directory under `config_library/unified/`
+- `CustomConfigPath`: the S3 URI of your own configuration file, which overrides the preset
 - `MaxConcurrentWorkflows`: Workflow concurrency limit
 - `LogRetentionDays`: CloudWatch log retention period
 - `ExecutionTimeThresholdMs`: Latency threshold for alerts
 
+Summarization is controlled by the configuration's `summarization.enabled` property.
+
 **Configuration Management:**
 - Model selection is now handled through configuration files rather than CloudFormation parameters
-- Configuration supports multiple presets per pattern (e.g., default, checkboxed_attributes_extraction, medical_records_summarization, few_shot_example)
+- The presets are the directories under `config_library/unified/`
 - Configuration can be updated through the Web UI without stack redeployment
 - Model choices are constrained through enum constraints in the configuration schema
 
@@ -254,7 +261,7 @@ The pattern exports these outputs to the parent stack:
 
 ### Overview
 
-Pattern 2 now supports Amazon Bedrock LLMs (Claude, Nova) as an alternative OCR backend alongside the traditional Amazon Textract service. This feature enables multimodal document processing where large language models can extract text from document images using their vision capabilities.
+Pipeline mode supports Amazon Bedrock LLMs (Claude, Nova) as an alternative OCR backend alongside the traditional Amazon Textract service. This feature enables multimodal document processing where large language models can extract text from document images using their vision capabilities.
 
 ### Configuration
 
@@ -318,7 +325,7 @@ To use Bedrock OCR:
 
 ## OCR Configuration
 
-The OCR service in Pattern 2 supports enhanced image processing capabilities for optimal text extraction:
+The OCR service in pipeline mode supports enhanced image processing capabilities for optimal text extraction:
 
 ### DPI Configuration
 
@@ -450,7 +457,7 @@ Available categories:
 
 ## Few Shot Example Feature
 
-Pattern 2 supports few shot learning through example-based prompting to significantly improve classification and extraction accuracy. This feature allows you to provide concrete examples of documents with their expected classifications and attribute extractions.
+Pipeline mode supports few shot learning through example-based prompting to significantly improve classification and extraction accuracy. This feature allows you to provide concrete examples of documents with their expected classifications and attribute extractions.
 
 ### Overview
 
@@ -580,7 +587,7 @@ task_prompt: |
 
 ### Available Template Placeholders
 
-Pattern 2 supports several placeholders for building dynamic prompts:
+Pipeline mode supports several placeholders for building dynamic prompts:
 
 - **`{CLASS_NAMES_AND_DESCRIPTIONS}`**: List of document classes and their descriptions
 - **`{FEW_SHOT_EXAMPLES}`**: Examples from the configuration (class-specific for extraction, all classes for classification)
@@ -750,7 +757,7 @@ That guide covers:
 ## Best Practices
 
 1. **Configuration Management**:
-   - Use the configuration library for different use cases (default, medical_records, few_shot_example)
+   - Start from the configuration library preset closest to your use case (the directories under `config_library/unified/`)
    - Test configuration changes thoroughly before production deployment
    - Leverage the Web UI for configuration updates without redeployment
 

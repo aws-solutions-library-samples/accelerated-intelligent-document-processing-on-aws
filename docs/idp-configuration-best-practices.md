@@ -1672,12 +1672,13 @@ Configure Bedrock OCR for:
 
 ### Configuration Presets
 
-The IDP accelerator supports multiple configuration presets for different use cases:
-
-- **Default**: Standard processing configuration
-- **few_shot_example**: Enhanced with few-shot learning examples
-- **medical_records_summarization**: Specialized for medical document processing
-- **checkboxed_attributes_extraction**: Optimized for form processing
+The configuration presets are the directories under `config_library/unified/`.
+The `ConfigurationPreset` stack parameter takes a directory name, though it offers
+only some of them: its `AllowedValues` in `template.yaml` list which, and any other
+preset can be loaded as a custom configuration instead. List that directory for the
+current set; most presets carry a `README.md` saying what they are
+for. Few-shot examples, for instance, are demonstrated by
+`rvl-cdip-with-few-shot-examples`.
 
 ### Dynamic Configuration Updates
 

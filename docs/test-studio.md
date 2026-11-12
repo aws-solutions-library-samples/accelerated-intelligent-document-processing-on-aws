@@ -348,9 +348,12 @@ Use with: `config_library/unified/fake-w2/config.yaml`
 
 ### Backend Components
 
+The UI reaches every backend operation below through the REST API, as
+`POST /op/<operation>` on the API Gateway dispatcher, not through GraphQL.
+
 #### TestSetResolver Lambda
 - **Location**: `nested/api-resolvers/src/lambda/test_set_resolver/index.py`
-- **Purpose**: Handles GraphQL operations for test set management
+- **Purpose**: Handles the test set management operations
 - **Features**: Creates test sets, scans TestSetBucket for direct uploads, validates file matching, manages test set status
 
 #### TestSetFileCopier Lambda
@@ -375,11 +378,11 @@ Use with: `config_library/unified/fake-w2/config.yaml`
 
 #### TestResultsResolver Lambda
 - **Location**: `nested/api-resolvers/src/lambda/test_results_resolver/index.py`
-- **Purpose**: Handles GraphQL queries for test results and comparisons, plus asynchronous cache updates
+- **Purpose**: Handles the test results and comparison operations, plus asynchronous cache updates
 - **Features**: 
   - Result retrieval with cached metrics
   - Comparison logic and metrics aggregation
-  - Dual event handling (GraphQL + SQS)
+  - Dual event handling (API operations from the dispatcher, and SQS messages)
   - Asynchronous cache update processing
   - Progress-aware status updates
 
@@ -391,8 +394,8 @@ Use with: `config_library/unified/fake-w2/config.yaml`
   - 15-minute visibility timeout for long-running calculations
   - Automatic retry handling
 
-### GraphQL Schema
-- **Location**: `nested/api-resolvers/src/api/schema.graphql`
+### API Operations
+- **Contract**: `nested/api-resolvers/src/api/schema.graphql`. No GraphQL service evaluates it; it is the typed contract the UI's types and the dispatcher's argument validation are generated from (see [architecture.md](./architecture.md))
 - **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `addDocumentsToTestSet`, `addDocumentsToTestSetByKey`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
 
 ### Frontend Components
@@ -434,7 +437,7 @@ Test Studio has two subsystems: **test-set management** (creating, updating,
 and validating the folder of documents you run against) and **test-run
 management** (starting a run, tracking it, and aggregating its metrics).
 Each has an **online** path (the user is in the UI and the UI drives every
-transition through GraphQL) and an **offline** path (something happens
+transition through the REST API) and an **offline** path (something happens
 outside the UI — a direct S3 edit, or a CLI command — and the workflow has
 to catch up later).
 

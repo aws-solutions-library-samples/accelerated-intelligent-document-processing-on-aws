@@ -1973,7 +1973,7 @@ hitl:
 
 Human review integrates confidence scores and geometry so reviewers see exactly
 which fields need attention and where they appear on the page. For the full
-workflow, the review UI, and Amazon A2I integration, see
+workflow and the review UI, see
 [Human Review](human-review.md).
 
 `hitl.notifications` sets how long [Inbox](web-ui.md#inbox) messages are kept and how
@@ -3045,7 +3045,7 @@ the system automatically adds `confidence_threshold` from configuration.
 
 ## Related Documentation
 
-- [Human Review](human-review.md) — HITL workflow and A2I integration
+- [Human Review](human-review.md) — HITL workflow and review UI
 - [Few-Shot Examples](few-shot-examples.md) — building example sets
 - [Configuration Guide](configuration.md) — configuration schema details
 - [Granular Assessment Retirement](migration-granular-retirement.md) — v0.6 migration notes
