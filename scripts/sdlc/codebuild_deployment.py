@@ -1062,6 +1062,16 @@ def ci_region(environ: dict | None = None) -> str:
     return env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or PRIMARY_CI_REGION
 
 
+def _region_type(environ: dict | None = None) -> str | None:
+    """``eu`` or ``ca`` for a build the model swap covers, else None."""
+    region = ci_region(environ)
+    if region.startswith("eu-"):
+        return "eu"
+    if region.startswith("ca-"):
+        return "ca"
+    return None
+
+
 def _model_swapper():
     """The product's own `swap_model_ids`, from the UpdateConfiguration Lambda.
 
@@ -1092,9 +1102,7 @@ def regional_config_file(config_path: str, environ: dict | None = None) -> str:
     import yaml
 
     region = ci_region(environ)
-    region_type = (
-        "eu" if region.startswith("eu-") else "ca" if region.startswith("ca-") else None
-    )
+    region_type = _region_type(environ)
     if region_type is None:
         return config_path
     with open(config_path, "rb") as f:
@@ -1222,7 +1230,10 @@ def _ensure_boundary_policy(iam_client, account_id, policy_name):
 
 
 def create_iam_resources(
-    stack_name, shared_boundary=False, terraform_deployer_arn=None
+    stack_name,
+    shared_boundary=False,
+    terraform_deployer_arn=None,
+    terraform_migration=False,
 ):
     """Create the permissions boundary, then the CFN service role that requires it.
 
@@ -1293,7 +1304,11 @@ def create_iam_resources(
         ]
         output_key = "ServiceRoleArn"
         if terraform_deployer_arn:
-            template_body = json.dumps(terraform_deploy_role_template(template_body))
+            template_body = json.dumps(
+                terraform_deploy_role_template(
+                    template_body, terraform_migration=terraform_migration
+                )
+            )
             parameters.append(
                 {
                     "ParameterKey": "TerraformDeployerPrincipalArn",
@@ -2368,6 +2383,140 @@ def test_step10_multi_doc_discovery(stack_name):
         return {
             "success": False,
             "error": f"Multi-document discovery test failed: {str(e)}",
+        }
+
+
+QUICK_START_PROFILE = "integration-quick-start"
+QUICK_START_CLASS = "IntegrationPaystub"
+QUICK_START_PROMPT = (
+    "Employee paystubs that list the employer, the pay period end date, "
+    "the gross pay and the net pay"
+)
+QUICK_START_FIELD_HINTS = ("employer name", "pay period end date", "net pay")
+QUICK_START_MODEL = "us.anthropic.claude-sonnet-4-6"
+QUICK_START_ATTEMPTS = 2
+
+
+def quick_start_model(environ: dict | None = None) -> str:
+    """The authoring model, swapped for an EU or CA build as an uploaded config is."""
+    region_type = _region_type(environ)
+    if region_type is None:
+        return QUICK_START_MODEL
+    return _model_swapper()({"model": QUICK_START_MODEL}, region_type)["model"]
+
+
+def quick_start_bootstrap_command(stack_name, environ: dict | None = None):
+    hints = " ".join(f'--field-hint "{hint}"' for hint in QUICK_START_FIELD_HINTS)
+    return (
+        f"idp-cli bootstrap --stack-name {stack_name} "
+        f'--prompt "{QUICK_START_PROMPT}" --class-name {QUICK_START_CLASS} '
+        f"--target-profile {QUICK_START_PROFILE} {hints} "
+        f"--model-id {quick_start_model(environ)} --count 1"
+    )
+
+
+def quick_start_profile_problem(config_data):
+    """Why a downloaded Quick Start profile is not the one bootstrap was asked for.
+
+    Returns ``None`` when the profile holds the requested class with at least one
+    leaf field per hint, nested or not. Field names are the model's choice, so only
+    the count is held.
+    """
+    from idp_common.synthesis.schema_bridge import leaf_field_paths
+
+    classes = (config_data or {}).get("classes") or []
+    target = next(
+        (
+            c
+            for c in classes
+            if QUICK_START_CLASS in (c.get("$id"), c.get("x-aws-idp-document-type"))
+        ),
+        None,
+    )
+    if target is None:
+        found = [c.get("$id") for c in classes]
+        return f"class {QUICK_START_CLASS} not in profile {QUICK_START_PROFILE} (found {found})"
+    fields = leaf_field_paths(target)
+    if len(fields) < len(QUICK_START_FIELD_HINTS):
+        return (
+            f"class {QUICK_START_CLASS} has {len(fields)} field(s), fewer than the "
+            f"{len(QUICK_START_FIELD_HINTS)} it was asked for"
+        )
+    return None
+
+
+def run_quick_start_bootstrap(stack_name):
+    """Run `idp-cli bootstrap`, once more if it fails; return the last problem.
+
+    Authoring is one model call that must return a valid schema, and a failure in
+    the parallel pool fails the whole suite, so one retry keeps a single bad
+    response from costing the run. A suite that has already failed fast is not
+    retried. Returns None once a run reports saving the profile.
+    """
+    saved = f"Config profile: {QUICK_START_PROFILE}"
+    problem = None
+    for attempt in range(1, QUICK_START_ATTEMPTS + 1):
+        try:
+            result = run_command(quick_start_bootstrap_command(stack_name), timeout=600)
+        except Exception as e:
+            if ABORT_TESTS.is_set():
+                raise
+            problem = str(e)
+        else:
+            if saved in (result.stdout or ""):
+                return None
+            problem = (
+                f"idp-cli bootstrap did not report saving profile {QUICK_START_PROFILE}"
+            )
+        print(f"  ⚠️ Bootstrap attempt {attempt} of {QUICK_START_ATTEMPTS}: {problem}")
+    return problem
+
+
+def test_step16_quick_start_bootstrap(stack_name):
+    """Step 16: Quick Start's headless path authors a schema and saves a profile.
+
+    `idp-cli bootstrap` shares the schema authoring and profile write the Quick
+    Start agent's tools use. It names no starting profile, so the catalog is empty
+    and the catalog match does not run. It saves its own profile and never activates
+    it, so it is safe in the parallel pool.
+    """
+    print("Step 16: Testing Quick Start bootstrap (idp-cli bootstrap)...")
+
+    try:
+        problem = run_quick_start_bootstrap(stack_name)
+        if problem:
+            return {
+                "success": False,
+                "error": f"Quick Start bootstrap test failed: {problem}",
+            }
+
+        config_file = "/tmp/quick-start-bootstrap-config.yaml"  # nosec B108
+        cmd = (
+            f"idp-cli config-download --stack-name {stack_name} "
+            f"--config-version {QUICK_START_PROFILE} --output {config_file}"
+        )
+        run_command(cmd, check=True)
+
+        import yaml
+
+        with open(config_file, "r") as f:
+            problem = quick_start_profile_problem(yaml.safe_load(f))
+        if problem:
+            print(f"❌ {problem}")
+            return {
+                "success": False,
+                "error": f"Quick Start bootstrap test failed: {problem}",
+            }
+
+        print(f"  ✓ Profile {QUICK_START_PROFILE} holds class {QUICK_START_CLASS}")
+        print("✅ Quick Start bootstrap test completed")
+        return {"success": True}
+
+    except Exception as e:
+        print(f"❌ Quick Start bootstrap test failed: {e}")
+        return {
+            "success": False,
+            "error": f"Quick Start bootstrap test failed: {str(e)}",
         }
 
 
@@ -4372,6 +4521,12 @@ PARALLEL_TEST_STEPS = [
         "Pipeline hooks",
         "Pipeline hooks end-to-end (preprocessing + postprocessing, mutation persisted)",
     ),
+    (
+        test_step16_quick_start_bootstrap,
+        "Step 16",
+        "Quick Start bootstrap",
+        "Quick Start schema authoring saves a profile (idp-cli bootstrap)",
+    ),
 ]
 # Step 12 stays sequential: its dynamic RBAC harness temporarily flips
 # ADMIN_USER_PASSWORD_AUTH on the shared UI app client (a stack-wide auth
@@ -4748,7 +4903,23 @@ def _cfn_long_form(loader, suffix, node):
 _CfnLongFormLoader.add_multi_constructor("!", _cfn_long_form)
 
 
-def terraform_deploy_role_template(service_role_template_text: str) -> dict:
+#: What a Terraform-migration run's deploy role holds beyond a nightly's: the
+#: driver's preflight reads the account's IAM role count against its quota
+#: (iam:GetAccountSummary, which takes no resource but "*") before two
+#: deployments holding several hundred roles between them are started. Read-only.
+TERRAFORM_MIGRATION_ROLE_ADDITIONS = (
+    {
+        "Sid": "TerraformMigrationRoleQuotaRead",
+        "Effect": "Allow",
+        "Action": ["iam:GetAccountSummary"],
+        "Resource": "*",
+    },
+)
+
+
+def terraform_deploy_role_template(
+    service_role_template_text: str, terraform_migration: bool = False
+) -> dict:
     """The CI pre-stack for a Terraform run: the customer service-role template
     plus a sibling role Terraform assumes.
 
@@ -4809,6 +4980,11 @@ def terraform_deploy_role_template(service_role_template_text: str) -> dict:
                         "Action": ["cloudcontrol:*"],
                         "Resource": "*",
                     },
+                    *(
+                        copy.deepcopy(list(TERRAFORM_MIGRATION_ROLE_ADDITIONS))
+                        if terraform_migration
+                        else []
+                    ),
                     deny_self,
                 ],
             },
@@ -11316,6 +11492,10 @@ def send_failure_notification(subject, summary_text):
 # ---------------------------------------------------------------------------
 
 TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
+#: The line the GitLab job's after_script reads the build's summary from (its
+#: `sed -n '/<marker>/,$p'` over the CodeBuild log, in .gitlab-ci.yml). Every
+#: path that ends a build with a summary prints it first.
+DEPLOYMENT_SUMMARY_LOG_MARKER = "🤖 Generating deployment summary with Bedrock..."
 #: Heads the summary and marks the failure email on a migration run, so its result
 #: is never read as a nightly's.
 TERRAFORM_MIGRATION_RUN_LABEL = "WEEKLY TERRAFORM MIGRATION RUN"
@@ -11447,7 +11627,6 @@ def terraform_migration_driver_command(
     old_name,
     new_name,
     module_url,
-    role_arn,
     terraform_bin,
     work_dir,
     region,
@@ -11455,6 +11634,11 @@ def terraform_migration_driver_command(
     boundary_arn,
     state_mirror=None,
 ):
+    """The driver's argv. No ``--terraform-assume-role-arn``: the driver and every
+    process it starts already run as the run's TFDeployRole through the AWS
+    profile (render_migration_aws_config), and that role's trust admits only the
+    build's principal, so asking it to assume itself is refused — by the SDK's
+    own lookups in ``migrate plan`` and by the new root's providers alike."""
     mirror = ["--state-mirror", state_mirror] if state_mirror else []
     return [
         sys.executable,
@@ -11471,8 +11655,6 @@ def terraform_migration_driver_command(
         terraform_bin,
         "--terraform-module-url",
         module_url,
-        "--terraform-assume-role-arn",
-        role_arn,
         "--expected-account",
         account,
         "--upstream-iam-path",
@@ -11529,6 +11711,62 @@ def terraform_migration_budget(
     return max(left - TERRAFORM_MIGRATION_RESERVE_SECONDS, 0), max(left - 300, 0)
 
 
+#: How much of the driver's newest logs a failure analysis reads: the failing
+#: phase's command output ends there, as a Terraform apply's error does.
+TERRAFORM_MIGRATION_ANALYSIS_LOGS = 3
+TERRAFORM_MIGRATION_ANALYSIS_LOG_LINES = 150
+
+
+def migration_failure_evidence(work_dir: str) -> str:
+    """The tails of the driver's most recently written logs, newest first.
+
+    The driver writes one log per command under ``<work dir>/logs``, so the
+    newest ones belong to the phase that failed and to the teardown after it."""
+    logs = sorted(
+        (p for p in Path(work_dir, "logs").glob("*") if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[:TERRAFORM_MIGRATION_ANALYSIS_LOGS]
+    parts = []
+    for path in logs:
+        lines = path.read_text(errors="replace").splitlines()
+        tail = "\n".join(lines[-TERRAFORM_MIGRATION_ANALYSIS_LOG_LINES:])
+        parts.append(
+            f"--- {path.name} (last {len(lines[-TERRAFORM_MIGRATION_ANALYSIS_LOG_LINES:])} lines) ---\n{tail}"
+        )
+    return "\n\n".join(parts) or "(the driver wrote no logs)"
+
+
+def generate_migration_failure_summary(summary_text: str, evidence: str) -> str:
+    """An AI analysis of a failed migration run, from the driver's own summary
+    (which names the failing phase) and the tails of its newest logs. Never
+    raises: a failed analysis is reported in place of one."""
+    try:
+        prompt = dedent(f"""
+        The weekly Terraform-migration integration test of the IDP accelerator
+        failed. It deploys a pinned awslabs/genai-idp-terraform release, migrates
+        it in place onto this repository's Terraform module with every phase of
+        `idp-cli terraform migrate-from-genai-idp-terraform`, verifies, and
+        destroys both deployments. Identify the failing phase and its root cause.
+
+        Driver summary:
+        {summary_text}
+
+        Newest driver logs:
+        {evidence}
+
+        Respond with bullet points, each under 75 characters, under these headings:
+
+        🔍 Failing phase and root cause:
+        🧹 Was teardown complete (any leftovers named)?
+        💡 Fix: the specific change to make, naming the file, resource or
+           permission involved. If an IAM permission is missing, name it exactly.
+        """)
+        return "🤖 AI FAILURE ANALYSIS\n\n" + _invoke_bedrock(prompt)
+    except Exception as e:  # noqa: BLE001 - the run's result must still be sent
+        return f"⚠️ Failed to generate the migration failure analysis: {e}"
+
+
 def run_terraform_migration(stack_name, module_url, terraform_bin, started=None):
     """Run the migration driver under this run's TFDeployRole. Returns
     ``(success, summary_text)``; never raises. ``started`` is the build's
@@ -11541,7 +11779,9 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
     success = False
     try:
         role_arn, boundary_arn = create_iam_resources(
-            new_name, terraform_deployer_arn=_caller_principal_arn()
+            new_name,
+            terraform_deployer_arn=_caller_principal_arn(),
+            terraform_migration=True,
         )
         if not role_arn or not boundary_arn or not _wait_until_assumable(role_arn):
             return False, f"❌ the run's TFDeployRole for {new_name} was not usable"
@@ -11583,7 +11823,6 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
             old_name,
             new_name,
             module_url,
-            role_arn,
             terraform_bin,
             work_dir,
             region,
@@ -11619,7 +11858,41 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
     finally:
         for finding in cleanup_iam_resources(new_name):
             summary += f"\n⚠️ IAM cleanup: {finding}"
+    if not success:
+        analysis = generate_migration_failure_summary(
+            summary, migration_failure_evidence(work_dir)
+        )
+        summary += f"\n\n{analysis}"
     return success, summary
+
+
+#: The driver's context beside run.json in a migration run's mirror
+#: (MIRROR_CONTEXT in terraform_migration_test.py).
+TERRAFORM_MIGRATION_CONTEXT_KEY = "context.json"
+
+
+def _migration_run_created_anything(client, bucket, prefix, keys) -> bool:
+    """Whether the mirrored context says the run created something. No context,
+    or one that cannot be read, counts as created: the reap then runs, and the
+    driver's own checks decide."""
+    key = prefix + TERRAFORM_MIGRATION_CONTEXT_KEY
+    if key not in keys:
+        return True
+    try:
+        context = json.loads(client.get_object(Bucket=bucket, Key=key)["Body"].read())
+    except Exception:  # noqa: BLE001
+        return True
+    return bool(context.get("created"))
+
+
+def _remove_s3_prefix(client, bucket, prefix) -> None:
+    """Delete every object version and delete marker under ``prefix``."""
+    paginator = client.get_paginator("list_object_versions")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for item in page.get("Versions", []) + page.get("DeleteMarkers", []):
+            client.delete_object(
+                Bucket=bucket, Key=item["Key"], VersionId=item["VersionId"]
+            )
 
 
 def _reap_terraform_migration(new_name, bucket, keys, s3=None):
@@ -11645,6 +11918,16 @@ def _reap_terraform_migration(new_name, bucket, keys, s3=None):
             "Body"
         ].read()
     )
+    if not _migration_run_created_anything(client, bucket, prefix, keys):
+        # Refused before it created anything (a preflight that failed, say): the
+        # build already removed its `-iam` pre-stack, so there is no role to
+        # assume and nothing to destroy. Read with this build's own credentials.
+        print(f"[{new_name}] the dead run created nothing; removing its mirror")
+        _remove_s3_prefix(client, bucket, prefix)
+        return {
+            "findings": [f"{new_name}: {f}" for f in cleanup_iam_resources(new_name)],
+            "timed_out": False,
+        }
     with tempfile.TemporaryDirectory(prefix="idp-tfmig-reap-") as tmp:
         config_path = os.path.join(tmp, "aws-config")
         with open(config_path, "w") as f:
@@ -11661,7 +11944,6 @@ def _reap_terraform_migration(new_name, bucket, keys, s3=None):
             record["old_name"],
             new_name,
             record["module_url"],
-            record["role_arn"],
             ensure_terraform_binary(),
             os.path.join(tmp, "work"),
             record["region"],
@@ -11987,10 +12269,19 @@ def main():
                 started=main_started,
             )
         else:
+            # The publish analysis main() already ran (generate_publish_failure_
+            # summary) is the only diagnosis this run gets; keep it.
             ok, migration_summary = False, f"❌ publish failed: {failure_reason}"
+            if ai_summary:
+                migration_summary += f"\n\n{ai_summary}"
         text = label_ci_run(
             ("✅ PASSED\n\n" if ok else "❌ FAILED\n\n") + migration_summary
         )
+        # The GitLab job reads the summary from deploy/summaries/, and from the
+        # log from this marker on when that read fails; without the line a failed
+        # read leaves the job and both Slack posts reporting "no deployment
+        # summary" for a run that wrote one.
+        print(DEPLOYMENT_SUMMARY_LOG_MARKER)
         print(text)
         publish_summary_to_s3(text)
         if not ok:
@@ -12370,7 +12661,7 @@ def main():
         )
     print(f"\n{consolidated}\n")
 
-    print("\n🤖 Generating deployment summary with Bedrock...")
+    print(f"\n{DEPLOYMENT_SUMMARY_LOG_MARKER}")
     full_summary = consolidated
     if ai_summary:
         print(ai_summary)

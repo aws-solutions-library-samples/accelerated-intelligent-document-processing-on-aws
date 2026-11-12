@@ -84,7 +84,16 @@ const renderWith = (pricing: PricingTableLike): void => {
   );
 };
 
-describe('Restore default (All) on the Pricing page', () => {
+/**
+ * A longer timeout for this block only, as refAttributeShape.test.tsx does, rather
+ * than raising vite.config.js's default for every test. Each case renders the real
+ * Pricing page over the full default table (50+ models), which is the point of the
+ * file: measured at 1.7–1.9s per case on an idle developer machine, while the
+ * first render ran past the 10s default on the shared arm64 CI runners.
+ */
+const PAGE_RENDER_TIMEOUT_MS = 30_000;
+
+describe('Restore default (All) on the Pricing page', { timeout: PAGE_RENDER_TIMEOUT_MS }, () => {
   beforeEach(() => {
     pricingState.pricing = null;
     pricingState.defaultPricing = null;
