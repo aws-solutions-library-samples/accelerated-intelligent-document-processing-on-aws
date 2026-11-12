@@ -332,6 +332,7 @@
     "scripts": {
       "total": 83.05,
       "files": {
+        "scripts/api_rbac_mcp.py": 28.48,
         "scripts/api_security_cases.py": 93.65,
         "scripts/check_account_ids.py": 97.42,
         "scripts/check_coverage_debt.py": 96.92,
@@ -357,6 +358,7 @@
         "scripts/hermetic_aws_env.py": 91.67,
         "scripts/hooks/check_commit_text.py": 98.48,
         "scripts/hooks/check_shared_branch.py": 95.46,
+        "scripts/hooks/check_worktree_reach.py": 24.8,
         "scripts/inbox_live_check.py": 94.59,
         "scripts/malware_gate_burst.py": 97.71,
         "scripts/migrate_metering_hour_partition.py": 0.0,
