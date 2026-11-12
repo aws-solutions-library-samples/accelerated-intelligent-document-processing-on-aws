@@ -2647,7 +2647,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
   - `ocr.task_prompt` (bedrock only): Requires `{DOCUMENT_IMAGE}`
   - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `extraction.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
-  - `extraction.confidence.task_prompt` (unless `extraction.confidence.mode` is `off`): Requires `{EXTRACTION_RESULTS}`, and at least one of `{DOCUMENT_TEXT}`, `{OCR_TEXT_CONFIDENCE}` or `{DOCUMENT_IMAGE}`. `{DOCUMENT_IMAGE}` is not required on its own, because leaving it out is how the confidence pass is made text-only. A pre-0.6 `assessment.task_prompt` is checked at this path, where the migration moves it
+  - `extraction.confidence.task_prompt` (unless `extraction.confidence.mode` is `off`): Requires `{EXTRACTION_RESULTS}`, and at least one of `{DOCUMENT_TEXT}`, `{OCR_TEXT_CONFIDENCE}` or `{DOCUMENT_IMAGE}`. `{DOCUMENT_IMAGE}` is not required on its own, because leaving it out is how the confidence pass is made text-only. A pre-0.6 `assessment.task_prompt` is checked at this path, where the migration moves it. `{DOCUMENT_IMAGE}` may appear at most once in the prompt the confidence pass sends — this prompt with comments removed, plus `extraction.geometry.task_prompt_bbox` when `extraction.geometry.mode` is `llm` or `llm_grounded` — because the pass refuses every document otherwise
   - `summarization.task_prompt`: Requires `{DOCUMENT_TEXT}`, `{EXTRACTION_RESULTS}`
 - **JSON Schema Fields** - Warns about non-standard fields (e.g., `data_type`)
 - **Pre-0.9 classification layout** - Warns when the file still uses the flat

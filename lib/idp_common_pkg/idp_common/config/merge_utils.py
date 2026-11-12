@@ -857,6 +857,7 @@ def validate_config(
     # only inside a comment must not count. The stored text is not changed.
     sent_prompts = strip_prompt_comments_in_config(merged)
     _validate_task_prompt_placeholders(sent_prompts, result)
+    _validate_confidence_prompt_as_sent(validated, merged, result)
     _validate_schema_fields(config.get("classes", []), result)
     # The extraction path is decided by the validated model, never by re-reading the
     # merged dict: `reconcile_mode_and_agentic` makes `extraction.mode` authoritative,
@@ -1599,6 +1600,51 @@ def _confidence_pass_can_run(merged_config: Dict[str, Any]) -> bool:
     return ConfidenceConfig.model_validate(
         _dict_at(merged_config, "extraction", "confidence")
     ).enabled
+
+
+def _validate_confidence_prompt_as_sent(
+    validated: Any, merged_config: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Refuse a confidence prompt ``AssessmentService`` would refuse on every document.
+
+    The prompt judged is the one the separate confidence pass sends: built the way
+    the runtime builds it, from the validated configuration with prompt comments
+    removed (``without_prompt_comments``), through ``select_confidence_task_prompt``,
+    which appends ``extraction.geometry.task_prompt_bbox`` in the LLM-box geometry
+    modes. When that prompt carries ``{DOCUMENT_IMAGE}`` the service applies
+    ``document_image_placeholder_error`` to it, and this applies the same rule.
+
+    Classification and extraction are not checked for this: given a repeated
+    ``{DOCUMENT_IMAGE}`` they log a warning and send the images after the text
+    instead of refusing.
+
+    Skipped when the confidence block turns scoring off, as the placeholder check
+    above is, because the prompt is then never sent.
+    """
+    if not _confidence_pass_can_run(merged_config):
+        return
+
+    from idp_common.config import without_prompt_comments
+    from idp_common.extraction.prompt_assembly import (
+        DOCUMENT_IMAGE_PLACEHOLDER,
+        document_image_placeholder_error,
+        geometry_requires_llm_boxes,
+        select_confidence_task_prompt,
+    )
+
+    extraction = without_prompt_comments(validated, as_model=True).extraction
+    prompt = select_confidence_task_prompt(extraction)
+    path = "extraction.confidence.task_prompt"
+    if geometry_requires_llm_boxes(extraction.geometry.mode):
+        path += " (with extraction.geometry.task_prompt_bbox appended)"
+
+    if DOCUMENT_IMAGE_PLACEHOLDER in prompt:
+        error = document_image_placeholder_error(prompt)
+        if error:
+            result["valid"] = False
+            result["errors"].append(
+                f"{path}: {error} The confidence pass refuses every document otherwise."
+            )
 
 
 def _validate_task_prompt_placeholders(
