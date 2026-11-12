@@ -336,6 +336,46 @@ class TestPatternNeverOverwritesAMember:
         assert _body(s3, "my-set/input/docs/x.pdf") == b"OLD"
         assert _body(s3, "my-set/input/x.pdf") == b"NEW"
 
+    def test_a_member_unlabeled_in_the_set_keeps_its_input_when_the_bucket_has_a_baseline(
+        self, env
+    ):
+        copier, s3 = env
+        s3.put_object(Bucket=TEST_SET, Key="my-set/input/x.pdf", Body=b"OLD")
+        s3.put_object(Bucket=INPUT, Key="x.pdf", Body=b"NEW")
+        _put_baseline(s3, "x.pdf")
+
+        row = _run(copier, mode="append", filePattern="*.pdf")
+
+        assert row["status"] == "COMPLETED", row.get("error")
+        assert _keys(s3, "my-set/") == ["input/x.pdf"]
+        assert _body(s3, "my-set/input/x.pdf") == b"OLD"
+
+    def test_an_input_key_shaped_like_a_set_path_is_its_own_document(self, env):
+        """From the Input bucket a key lands under its full name; only Test Set
+        bucket keys drop their ``<set>/input/`` prefix."""
+        copier, s3 = env
+        _put_member(s3, "my-set", "y.pdf")
+        s3.put_object(Bucket=INPUT, Key="other/input/y.pdf", Body=b"NEW")
+
+        row = _run(copier, mode="append", filePattern="other/**")
+
+        assert row["status"] == "COMPLETED", row.get("error")
+        assert _body(s3, "my-set/input/other/input/y.pdf") == b"NEW"
+        assert _body(s3, "my-set/input/y.pdf") == b"OLD"
+
+    def test_members_beyond_the_first_listing_page_are_kept(self, env):
+        copier, s3 = env
+        for i in range(1001):
+            s3.put_object(
+                Bucket=TEST_SET, Key=f"my-set/input/m{i:04d}.pdf", Body=b"OLD"
+            )
+        s3.put_object(Bucket=INPUT, Key="m1000.pdf", Body=b"NEW")
+
+        row = _run(copier, mode="append", filePattern="m1000.pdf")
+
+        assert row["status"] == "COMPLETED", row.get("error")
+        assert _body(s3, "my-set/input/m1000.pdf") == b"OLD"
+
     def test_a_test_set_bucket_append_keeps_the_members_baseline(self, env):
         copier, s3 = env
         _put_member(s3, "dest", "a.pdf")
@@ -357,36 +397,45 @@ class TestPatternNeverOverwritesAMember:
 
 
 @pytest.mark.unit
-class TestInputBucketPatternCopiesDocumentsOnly:
+class TestInputBucketPatternLeavesOutArchives:
     """A pattern searches the whole Input bucket. A ``.zip`` copied into a set's
     ``input/`` folder starts the test-set zip extractor, which fails the set, so
-    only the file types a document upload accepts are copied."""
+    archives are left out; every other object is still copied."""
 
     def test_a_zip_among_the_matches_is_left_out(self, env, caplog):
         copier, s3 = env
         _put_input(s3, "a.pdf")
         s3.put_object(Bucket=INPUT, Key="batch.zip", Body=b"PK")
-        s3.put_object(Bucket=INPUT, Key="notes", Body=b"x")
+        s3.put_object(Bucket=INPUT, Key="old/BATCH.ZIP", Body=b"PK")
 
         with caplog.at_level("INFO"):
-            row = _run(copier, mode="append", filePattern="*")
+            row = _run(copier, mode="append", filePattern="**")
 
         assert row["status"] == "COMPLETED", row.get("error")
         assert row["fileCount"] == 1
         assert _keys(s3, "my-set/") == ["input/a.pdf"]
-        assert "Added 1 files (1 unlabeled, 2 not a document)" in caplog.text
+        assert "Added 1 files (1 unlabeled, 2 .zip archives left out)" in caplog.text
 
-    def test_extensions_are_compared_regardless_of_case(self, env):
+    def test_documents_the_upload_dialog_does_not_offer_are_still_copied(self, env):
+        """The pipeline processes ``.webp``, ``.gif`` and ``.bmp`` (and files sent
+        by the CLI or straight to S3), so a labeled one must not be dropped."""
         copier, s3 = env
-        _put_input(s3, "scan.TIFF")
-        _put_input(s3, "sheet.Xlsx")
+        for key in ("photo.webp", "scan.gif", "zip-notes.txt", "a.zip/page.bmp"):
+            _put_input(s3, key)
+        _put_baseline(s3, "photo.webp")
 
-        row = _run(copier, filePattern="*")
+        row = _run(copier, filePattern="**")
 
         assert row["status"] == "COMPLETED", row.get("error")
-        assert _keys(s3, "my-set/") == ["input/scan.TIFF", "input/sheet.Xlsx"]
+        assert _keys(s3, "my-set/") == [
+            "baseline/photo.webp/sections/1/result.json",
+            "input/a.zip/page.bmp",
+            "input/photo.webp",
+            "input/scan.gif",
+            "input/zip-notes.txt",
+        ]
 
-    def test_matching_only_non_documents_fails_with_a_reason(self, env):
+    def test_matching_only_archives_fails_with_a_reason(self, env):
         copier, s3 = env
         s3.put_object(Bucket=INPUT, Key="batch.zip", Body=b"PK")
 
@@ -394,26 +443,27 @@ class TestInputBucketPatternCopiesDocumentsOnly:
 
         assert row["status"] == "FAILED"
         assert "No documents found matching pattern" in row["error"]
-        assert "not a supported document type" in row["error"]
+        assert ".zip archives" in row["error"]
         assert _keys(s3, "my-set/") == []
 
-    def test_the_list_is_the_document_upload_list(self, env):
-        """Held equal to the upload dialog's list rather than written out twice."""
+    def test_the_suffix_is_the_zip_extractors_notification_filter(self, env):
+        """Held equal to the S3 notification that starts the extractor rather than
+        written out twice."""
         import re
 
         copier, _s3 = env
-        constants = next(
-            parent / "src" / "ui" / "src" / "components" / "common" / "constants.ts"
+        template = next(
+            parent / "template.yaml"
             for parent in Path(__file__).resolve().parents
-            if (parent / "src" / "ui" / "src" / "components" / "common").is_dir()
-        )
-        match = re.search(
-            r"SUPPORTED_UPLOAD_EXTENSIONS\s*=\s*'([^']+)'", constants.read_text()
-        )
-        assert match, "SUPPORTED_UPLOAD_EXTENSIONS not found"
-        upload = {e.strip().lower() for e in match.group(1).split(",") if e.strip()}
-        assert upload, "the upload list parsed empty"
-        assert copier.DOCUMENT_EXTENSIONS == upload
+            if (parent / "src" / "lambda" / "test_set_zip_extractor").is_dir()
+        ).read_text()
+        start = template.index("'Id': 'TestSetZipExtractor'")
+        block = template[
+            start : template.index("]", template.index("FilterRules", start))
+        ]
+        suffixes = re.findall(r"'Name':\s*'suffix',\s*'Value':\s*'([^']+)'", block)
+        assert suffixes, "the extractor's suffix filter was not found"
+        assert suffixes == [copier.ZIP_EXTRACTOR_SUFFIX]
 
 
 @pytest.mark.unit
@@ -432,6 +482,10 @@ def test_pattern_result_wording():
     assert (
         mod._pattern_result("append", 1, 1, 2)
         == "Added 1 files (1 unlabeled, 2 already in the set)"
+    )
+    assert (
+        mod._pattern_result("create", 1, 0, 0, 3)
+        == "Created with 1 files (3 .zip archives left out)"
     )
 
 

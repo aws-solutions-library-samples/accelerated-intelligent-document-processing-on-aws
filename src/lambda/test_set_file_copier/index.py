@@ -97,8 +97,8 @@ def handler(event, context):
                     if not matching_files:
                         raise ValueError(
                             f"No documents found matching pattern: {file_pattern} "
-                            f"({len(not_documents)} matching files are not a "
-                            "supported document type)"
+                            f"({len(not_documents)} matching files are .zip "
+                            "archives, which are not added)"
                         )
 
                 # As on the by-key path, a document already in the set is never
@@ -305,37 +305,31 @@ def _split_existing_members(test_set_id, object_keys):
     return new, members
 
 
-#: The file types a document upload accepts: ``SUPPORTED_UPLOAD_EXTENSIONS`` in
-#: ``src/ui/src/components/common/constants.ts``, which a unit test holds this equal
-#: to. Lower case, compared against the key's lower-cased extension.
-DOCUMENT_EXTENSIONS = frozenset(
-    {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".xlsx", ".xls", ".csv"}
-    | {".docx", ".txt"}
-)
+#: The key suffix the test-set zip extractor's S3 notification on the TestSetBucket
+#: filters on (``template.yaml``, ``TestSetZipExtractor``); a unit test holds the two
+#: equal. Any object ending in it, written under a set's folder, starts the extractor.
+ZIP_EXTRACTOR_SUFFIX = ".zip"
 
 
 def _split_documents(matching_files):
-    """Split Input-bucket matches into documents and everything else.
+    """Split Input-bucket matches into documents and archives.
 
-    A pattern searches the whole bucket, which also holds objects that are not
-    documents. Copied into the set's ``input/`` folder, a ``.zip`` starts the
-    test-set zip extractor, which fails the set; anything else would be run as a
-    document by every test run. So only the file types a document upload accepts
-    are copied, and the rest are counted and left out.
+    A pattern searches the whole bucket. A ``.zip`` copied into the set's ``input/``
+    folder starts the test-set zip extractor, which reads it as a test-set upload and
+    fails the set, so archives are counted and left out. Nothing else is: the
+    pipeline processes any other object it is given (including types the upload
+    dialog does not offer, such as ``.webp``), and the by-key add has no filter.
     """
     documents = []
-    others = []
+    archives = []
     for file_key in matching_files:
-        _, dot, extension = file_key.rpartition("/")[-1].rpartition(".")
-        if dot and f".{extension.lower()}" in DOCUMENT_EXTENSIONS:
-            documents.append(file_key)
+        if file_key.lower().endswith(ZIP_EXTRACTOR_SUFFIX):
+            archives.append(file_key)
         else:
-            others.append(file_key)
-    if others:
-        logger.info(
-            f"{len(others)} matches are not a supported document type; leaving them out"
-        )
-    return documents, others
+            documents.append(file_key)
+    if archives:
+        logger.info(f"{len(archives)} matches are .zip archives; leaving them out")
+    return documents, archives
 
 
 def _set_member_name(bucket_type, file_key):
@@ -382,7 +376,7 @@ def _pattern_result(mode, added, unlabeled, already_members, not_documents=0):
     if already_members:
         parts.append(f"{already_members} already in the set")
     if not_documents:
-        parts.append(f"{not_documents} not a document")
+        parts.append(f"{not_documents} .zip archives left out")
     if not parts and mode != "append":
         return None
     action = "Added" if mode == "append" else "Created with"

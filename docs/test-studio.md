@@ -640,10 +640,9 @@ one unlabeled document makes the whole set read as `unlabeled` until it is
 draft-labeled. A pattern re-applied when adding documents leaves every document
 already in the set as it is, labeled or not, so labels drafted or reviewed in the set
 are never replaced by the copy in the bucket. A set whose every match is unlabeled is created as an unlabeled set.
-From the input bucket only the file types the document upload accepts are copied
-(PDF, PNG, JPEG, TIFF, XLSX, XLS, CSV, DOCX and TXT); anything else the pattern
-matches, such as a `.zip`, is left out, and a pattern that matches nothing else fails
-with that reason.
+From the input bucket a `.zip` the pattern matches is left out, because a `.zip`
+written into a set's folder is read as a test-set upload; a pattern that matches
+only `.zip` files fails with that reason. Every other matching file is copied.
 Patterns match the full
 object key: `*` matches within one folder level, `**` matches across folders, `?`
 matches a single character. The folder path before the first wildcard must be typed
@@ -742,9 +741,9 @@ On the table, the set shows an "Updating..." status while files are being added 
 
 **Key behaviors:**
 - **Documents without ground truth arrive unlabeled**: From the Input Bucket, by pattern or **From processed documents**, a file with no matching baseline data in the evaluation bucket is added without labels rather than skipped. Adding one to a labeled or draft-labeled set makes the set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. From the Test Set Bucket, every matching file must still have a baseline folder, or the add fails.
-- **Existing documents are kept**: Adding from a bucket or from processed documents skips a document already in the set, so labels drafted or reviewed in the set are never overwritten by the copy in the bucket. A zip upload still replaces a document it contains. To take a newer copy of a document's ground truth from the evaluation baseline bucket, remove the document from the set and add it again. File counts are always recounted from S3 for accuracy.
+- **Existing documents are kept**: Adding from a bucket or from processed documents skips a document already in the set, so labels drafted or reviewed in the set are never overwritten by the copy in the bucket. A zip upload still writes over the input and baseline files it contains. To take a newer copy of a document's ground truth from the evaluation baseline bucket, remove the document from the set and add it again. File counts are always recounted from S3 for accuracy.
 - **Prepopulated file pattern**: The file pattern field is pre-filled with the pattern used to create the test set, so you can reuse or adjust it.
-- **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns.
+- **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns. It picks up documents new to the set only: a document already in the set keeps its copy even if its ground truth was reviewed again since.
 
 ### File Structure Requirements
 ```
