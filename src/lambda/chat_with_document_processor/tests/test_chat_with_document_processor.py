@@ -1429,3 +1429,29 @@ class TestProcessorStrictTenantIsolation:
         assert result == {"ok": False, "reason": "scope_unavailable"}
         bedrock.converse_stream.assert_not_called()
         users_table.query.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("region", "expected"),
+    [
+        ("us-east-1", "us.anthropic.claude-opus-4-8:1m"),
+        ("eu-central-1", "eu.anthropic.claude-opus-4-8:1m"),
+        ("ca-central-1", "us.anthropic.claude-opus-4-8:1m"),
+        (None, "us.anthropic.claude-opus-4-8:1m"),
+    ],
+)
+def test_the_default_chat_model_is_the_one_the_swap_writes(
+    monkeypatch, region, expected
+):
+    """With no chat or summarization model configured, the processor uses the US
+    default through the shared Region translation, which
+    ``src/lambda/update_configuration/test_eu_region.py`` holds to the swap tables.
+    """
+    import index
+
+    if region is None:
+        monkeypatch.delenv("AWS_REGION", raising=False)
+    else:
+        monkeypatch.setenv("AWS_REGION", region)
+    assert index._default_model_for_region() == expected

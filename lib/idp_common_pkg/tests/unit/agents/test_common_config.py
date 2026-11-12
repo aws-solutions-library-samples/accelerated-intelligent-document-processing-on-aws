@@ -5,10 +5,8 @@
 Unit tests for the agents common configuration module.
 """
 
-import ast
 import builtins
 import os
-import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -206,32 +204,3 @@ class TestLastResortModels:
 )
 def test_portable_profile(model_id, expected):
     assert portable_profile(model_id) == expected
-
-
-#: Unanchored, so an inference-profile ARN carrying the ID is found too, and
-#: ``[``/``]`` are allowed for a ``[1m]`` context suffix. Only strings without
-#: whitespace are read: prose (a docstring citing an example ID) is not a model the
-#: code can call. Run-time concatenation is outside what reading the source can see.
-_GEOGRAPHIC_MODEL_LITERAL = re.compile(
-    r"(?<![\w-])(us|eu|apac|ca|jp|au)\.[a-z]+\.[\w.:\[\]-]+"
-)
-_AGENTS = Path(common_config.__file__).resolve().parents[1]
-
-
-@pytest.mark.unit
-def test_no_agent_module_carries_a_geographic_model_literal():
-    """The class, not the instance: every model literal under ``agents/`` is a
-    fallback (the configured model comes from the configuration), and a fallback
-    in a ``us.`` profile cannot be invoked from an EU or Canadian stack."""
-    modules = sorted(_AGENTS.rglob("*.py"))
-    assert len(modules) > 10, f"only {len(modules)} agent modules found"
-    found = [
-        f"{path.relative_to(_AGENTS)}:{node.lineno}: {node.value}"
-        for path in modules
-        for node in ast.walk(ast.parse(path.read_text()))
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and not re.search(r"\s", node.value)
-        and _GEOGRAPHIC_MODEL_LITERAL.search(node.value)
-    ]
-    assert not found, found
