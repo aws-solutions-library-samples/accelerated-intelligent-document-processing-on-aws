@@ -13,9 +13,11 @@ The comparator's model, system prompt and task prompt reach it from:
   prompt — directly, or for a field whose comparator config does not carry the
   service's `evaluation.llm_method`.
 
-The third reads the first rather than spelling the values out, so the fallback is
-exercised here rather than compared by text, and the comparator module is held to
-carrying no model ID or prompt text of its own. The field default once read
+The third reads the first rather than spelling the values out. That is held two
+ways: each fallback path is exercised with the comparator's default constants
+replaced by sentinels, so a path that spells its own value fails however that
+value is written; and the module is scanned for a model ID or prompt literal as a
+cheaper second check that a split or concatenated literal can get past. The field default once read
 "ou are an evaluator ...", with the first letter missing, while the other copies
 were correct, so which prompt the model received depended on which path built the
 config.
@@ -118,11 +120,78 @@ def test_comparator_model_fallback_is_the_model_default(
     assert build().llm_config["model"] == EvaluationLLMMethodConfig().model
 
 
-def test_comparator_module_carries_no_model_or_prompt_literal() -> None:
-    """Pins that no fourth copy comes back.
+_SENTINELS = {
+    "_DEFAULT_MODEL": "sentinel-model",
+    "_DEFAULT_SYSTEM_PROMPT": "sentinel system",
+    "_DEFAULT_TASK_PROMPT": "sentinel task {ATTRIBUTE_NAME}",
+}
 
-    Every string constant in the module is checked, so a model ID or a prompt
-    written back in as a fallback fails here even when no test reaches its path.
+
+@pytest.fixture
+def sentinel_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in _SENTINELS.items():
+        monkeypatch.setattr(comparators, name, value)
+
+
+def _invoked(llm_config: Dict[str, Any]) -> Dict[str, Any]:
+    calls: List[Dict[str, Any]] = []
+    comparators.compare_llm(
+        "a",
+        "b",
+        attr_name="Vendor",
+        llm_config=llm_config,
+        bedrock_invoker=_invoke_capturing(calls),
+    )
+    (call,) = calls
+    return call
+
+
+@pytest.mark.parametrize("llm_config", [{}, {"model": ""}], ids=["absent", "empty"])
+def test_every_compare_llm_fallback_reads_the_shared_defaults(
+    sentinel_defaults: None, llm_config: Dict[str, Any]
+) -> None:
+    call = _invoked(llm_config)
+    assert call["model_id"] == "sentinel-model"
+    assert call["system_prompt"] == "sentinel system"
+    assert call["content"][0]["text"] == "sentinel task Vendor"
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: comparators.LLMComparator(),
+        lambda: comparators.LLMComparator(model=""),
+        lambda: comparators.create_llm_comparator_from_config({}),
+        lambda: comparators.create_llm_comparator_from_config({"model": ""}),
+    ],
+    ids=["no-model", "empty-model", "factory-empty-config", "factory-empty-model"],
+)
+def test_every_comparator_model_fallback_reads_the_shared_default(
+    sentinel_defaults: None, build: Callable[[], Any]
+) -> None:
+    assert build().llm_config["model"] == "sentinel-model"
+
+
+def test_configured_model_and_prompts_reach_bedrock() -> None:
+    configured = {
+        "model": "configured-model",
+        "system_prompt": "configured system",
+        "task_prompt": "configured task {ATTRIBUTE_NAME}",
+    }
+    call = _invoked(configured)
+    assert call["model_id"] == "configured-model"
+    assert call["system_prompt"] == "configured system"
+    assert call["content"][0]["text"] == "configured task Vendor"
+    built = comparators.create_llm_comparator_from_config(configured)
+    assert {k: built.llm_config[k] for k in configured} == configured
+
+
+def test_comparator_module_carries_no_model_or_prompt_literal() -> None:
+    """A second, spelling-based check that no copy comes back.
+
+    Every string constant in the module is checked. A literal split across
+    constants or built at run time gets past this; the sentinel tests above are
+    what catch that.
     """
     tree = ast.parse(inspect.getsource(comparators))
     default = EvaluationLLMMethodConfig()
@@ -144,37 +213,63 @@ def test_comparator_module_carries_no_model_or_prompt_literal() -> None:
     assert offending == []
 
 
-def test_llm_field_with_its_own_method_config_gets_the_service_model() -> None:
-    """A per-field method-config adds to the service's llm_method, never replaces it.
+def _list_field(field: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "array",
+        "items": {"type": "object", "properties": {"Vendor": field}},
+    }
+
+
+@pytest.mark.parametrize(
+    ("field_keys", "in_list"),
+    [
+        ({"x-aws-idp-evaluation-method-config": {"threshold": 0.9}}, False),
+        ({"x-aws-stickler-comparator-config": {"threshold": 0.9}}, False),
+        (
+            {
+                "x-aws-idp-evaluation-method-config": {"threshold": 0.9},
+                "x-aws-idp-evaluation-allow-llm-in-list": True,
+            },
+            True,
+        ),
+    ],
+    ids=["method-config", "raw-stickler-config", "llm-in-list-opt-in"],
+)
+def test_llm_field_with_its_own_config_gets_the_service_model(
+    field_keys: Dict[str, Any], in_list: bool
+) -> None:
+    """A field's own comparator config adds to the service's llm_method.
 
     Replacing it left such a field judged by the comparator's fallback model and
     prompts instead of the configured ones.
     """
+    field = {"type": "string", "x-aws-idp-evaluation-method": "LLM", **field_keys}
     schema = {
         "$id": "Invoice",
         "x-aws-idp-document-type": "Invoice",
         "type": "object",
         "properties": {
-            "Vendor": {
-                "type": "string",
-                "x-aws-idp-evaluation-method": "LLM",
-                "x-aws-idp-evaluation-method-config": {"threshold": 0.9},
-            },
+            "Rows" if in_list else "Vendor": _list_field(field) if in_list else field
         },
     }
     llm_config = {
         "model": "configured-model",
         "system_prompt": "configured system",
         "task_prompt": "configured task",
+        "temperature": 0.3,
         "threshold": 0.5,
     }
-    prop = SticklerConfigMapper.build_stickler_model_config(
+    props = SticklerConfigMapper.build_stickler_model_config(
         schema, llm_config=llm_config
-    )["schema"]["properties"]["Vendor"]
+    )["schema"]["properties"]
+    prop = (
+        props["Rows"]["items"]["properties"]["Vendor"] if in_list else props["Vendor"]
+    )
+    assert prop["x-aws-stickler-comparator"] == "IDPLLMComparator"
     cfg = prop["x-aws-stickler-comparator-config"]
-    assert cfg["model"] == "configured-model"
-    assert cfg["system_prompt"] == "configured system"
-    assert cfg["task_prompt"] == "configured task"
+    assert {k: cfg[k] for k in llm_config if k != "threshold"} == {
+        k: v for k, v in llm_config.items() if k != "threshold"
+    }
     # The field's own key wins over the service-level one.
     assert cfg["threshold"] == 0.9
     assert cfg["attribute_name"] == "Vendor"

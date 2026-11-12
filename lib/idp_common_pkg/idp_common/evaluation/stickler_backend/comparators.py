@@ -383,7 +383,8 @@ def compare_llm(
 
         # Default LLM configuration if not provided
         config = llm_config or {}
-        model = config.get("model", _DEFAULT_MODEL)
+        # An empty model is treated as missing, as LLMComparator treats it.
+        model = config.get("model") or _DEFAULT_MODEL
         temperature = config.get("temperature", 0.0)
         top_k = config.get("top_k", 5)
         reasoning_effort = config.get("reasoning_effort")
