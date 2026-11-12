@@ -343,7 +343,11 @@ class DiscoveryOperation:
             from idp_common import bedrock
             from idp_common.config.merge_utils import load_system_defaults
             from idp_common.prompt_comments import strip_prompt_comments_in_config
-            from idp_common.regional_models import NOVA_PRO_MODEL_ID, regional_default
+            from idp_common.regional_models import (
+                NOVA_PRO_MODEL_ID,
+                regional_default,
+                regional_shipped_model,
+            )
 
             # Shipped defaults may document prompts in {# ... #} comments; this
             # path sends them without the runtime config reader, so strip here.
@@ -355,11 +359,15 @@ class DiscoveryOperation:
 
             region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
 
-            # Caller override wins over system default. The last resort goes
-            # through the Region translation: this path never runs the deploy-time
-            # swap, and a us. profile is not callable from an EU or Canada Region.
-            model_id = model_id or auto_cfg.get(
-                "model_id", regional_default(NOVA_PRO_MODEL_ID, region)
+            # Caller override wins over system default. The system default and
+            # the last resort both go through the Region translation: this path
+            # never runs the deploy-time swap, and a us. profile is not callable
+            # from an EU or Canada Region.
+            shipped_model_id = auto_cfg.get("model_id")
+            model_id = model_id or (
+                regional_shipped_model(shipped_model_id, region)
+                if shipped_model_id
+                else regional_default(NOVA_PRO_MODEL_ID, region)
             )
 
             # Grok, GPT-5.x and GPT-6 Astra cannot accept the `document` content
@@ -551,7 +559,11 @@ class DiscoveryOperation:
             from idp_common import bedrock, image
             from idp_common.config.merge_utils import load_system_defaults
             from idp_common.prompt_comments import strip_prompt_comments_in_config
-            from idp_common.regional_models import NOVA_PRO_MODEL_ID, regional_default
+            from idp_common.regional_models import (
+                NOVA_PRO_MODEL_ID,
+                regional_default,
+                regional_shipped_model,
+            )
 
             # If a page range is specified and the file is a PDF, extract only those pages
             file_extension = doc_path.suffix.lower().lstrip(".")
@@ -578,11 +590,15 @@ class DiscoveryOperation:
 
             region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
 
-            # Caller override wins over system default. The last resort goes
-            # through the Region translation: this path never runs the deploy-time
-            # swap, and a us. profile is not callable from an EU or Canada Region.
-            model_id = model_id or mode_cfg.get(
-                "model_id", regional_default(NOVA_PRO_MODEL_ID, region)
+            # Caller override wins over system default. The system default and
+            # the last resort both go through the Region translation: this path
+            # never runs the deploy-time swap, and a us. profile is not callable
+            # from an EU or Canada Region.
+            shipped_model_id = mode_cfg.get("model_id")
+            model_id = model_id or (
+                regional_shipped_model(shipped_model_id, region)
+                if shipped_model_id
+                else regional_default(NOVA_PRO_MODEL_ID, region)
             )
 
             # Grok, GPT-5.x and GPT-6 Astra cannot accept the `document` content

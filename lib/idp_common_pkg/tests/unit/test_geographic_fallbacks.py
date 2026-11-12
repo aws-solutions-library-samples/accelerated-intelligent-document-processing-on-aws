@@ -311,6 +311,71 @@ def test_the_registration_check_tells_the_two_apart(source, registered):
     assert (not _unregistered(_translation_calls("x.py", source))) == registered
 
 
+def _shipped_calls(path: str, source: str) -> list[tuple[str, ast.expr]]:
+    return [
+        (f"{path}:{node.lineno}", node.args[0])
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and _call_name(node) == "regional_shipped_model"
+        and node.args
+    ]
+
+
+def _refused_shipped(calls):
+    """A literal, or a constant outside the registry, passed to
+    ``regional_shipped_model``.
+
+    That function exists for a value read from the shipped defaults, which
+    ``tests/unit/test_regional_shipped_models.py`` holds to the registry by reading
+    the YAML. A model written in code belongs in :func:`regional_default`, where the
+    check above sees it; passed here it would escape both.
+    """
+    return [
+        (site, ast.unparse(arg))
+        for site, arg in calls
+        if isinstance(arg, ast.Constant)
+        or (
+            _resolve(arg) is not None
+            and _resolve(arg) not in regional_models.FALLBACK_MODEL_IDS
+        )
+    ]
+
+
+@pytest.mark.unit
+def test_no_code_model_is_passed_to_the_shipped_translation():
+    calls = [
+        call
+        for path in _modules()
+        for call in _shipped_calls(path, (_REPO / path).read_text(encoding="utf-8"))
+    ]
+    assert calls, "no regional_shipped_model call found; this test reads nothing"
+    assert not _refused_shipped(calls), _refused_shipped(calls)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "refused"),
+    [
+        ("regional_shipped_model(shipped_model_id, r)", False),
+        ("regional_shipped_model(SONNET_4_6_MODEL_ID, r)", False),
+        ("regional_shipped_model('us.amazon.nova-lite-v1:0', r)", True),
+        (f"regional_shipped_model('{regional_models.CHAT_MODEL_ID}', r)", True),
+    ],
+)
+def test_the_shipped_check_tells_them_apart(source, refused):
+    """Without this the check above could go vacuous and stay green."""
+    assert bool(_refused_shipped(_shipped_calls("x.py", source))) == refused
+
+
+@pytest.mark.unit
+def test_an_unregistered_constant_is_refused_by_the_shipped_check(monkeypatch):
+    monkeypatch.setattr(
+        regional_models, "UNREGISTERED_MODEL_ID", "us.amazon.nova-lite-v1:0", False
+    )
+    calls = _shipped_calls("x.py", "regional_shipped_model(UNREGISTERED_MODEL_ID, r)")
+    assert _refused_shipped(calls)
+
+
 @pytest.mark.unit
 def test_discovery_delegates_to_the_shared_translation():
     """A second copy of the table in ``regional_defaults`` would escape the

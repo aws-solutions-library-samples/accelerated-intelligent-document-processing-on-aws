@@ -118,6 +118,33 @@ REGIONAL_NOVA_PRO_FALLBACK = [
 ]
 
 
+#: Region -> what the deploy-time swap makes of each model `base-discovery.yaml`
+#: ships for a local path: Nova Pro for schema discovery, Claude Opus 4.6 1M for
+#: section detection. Opus 4.6 has a us. profile callable from Canada, so the swap
+#: leaves it there. The library holds `regional_models` equal to the swap tables in
+#: `src/lambda/update_configuration/test_eu_region.py`.
+REGIONAL_SHIPPED_MODELS = {
+    "us-west-2": ("us.amazon.nova-pro-v1:0", "us.anthropic.claude-opus-4-6-v1:1m"),
+    "eu-central-1": ("eu.amazon.nova-pro-v1:0", "eu.anthropic.claude-opus-4-6-v1:1m"),
+    "eu-west-1": ("eu.amazon.nova-pro-v1:0", "eu.anthropic.claude-opus-4-6-v1:1m"),
+    "ca-central-1": (
+        "us.amazon.nova-2-lite-v1:0",
+        "us.anthropic.claude-opus-4-6-v1:1m",
+    ),
+}
+
+
+def test_the_shipped_models_are_the_ones_this_table_translates():
+    """Otherwise the table below would test ids the defaults no longer ship."""
+    from idp_common.config.merge_utils import load_system_defaults
+
+    discovery = load_system_defaults("pattern-2")["discovery"]
+    us_schema, us_split = REGIONAL_SHIPPED_MODELS["us-west-2"]
+    assert discovery["with_ground_truth"]["model_id"] == us_schema
+    assert discovery["without_ground_truth"]["model_id"] == us_schema
+    assert discovery["auto_split"]["model_id"] == us_split
+
+
 @pytest.fixture
 def discovery_env(monkeypatch):
     """Contain `CONFIGURATION_TABLE_NAME`, which the stack workers export.
@@ -827,6 +854,82 @@ class TestRunLocal:
         assert result.status == "SUCCESS"
         assert client.invoke_model.call_args.kwargs["model_id"] == expected
 
+    @pytest.mark.parametrize("with_ground_truth", [False, True])
+    @pytest.mark.parametrize("region", sorted(REGIONAL_SHIPPED_MODELS))
+    def test_the_shipped_model_is_callable_from_the_region(
+        self, tmp_path, region, with_ground_truth
+    ):
+        """The shipped defaults name a us. model and this path never runs the
+        deploy-time swap, so it translates the shipped model itself."""
+        document = tmp_path / "a.pdf"
+        document.write_bytes(_pdf(1))
+        kwargs = {}
+        if with_ground_truth:
+            truth = tmp_path / "a.json"
+            truth.write_text(json.dumps({"InvoiceNumber": "INV-42"}))
+            kwargs["ground_truth_path"] = str(truth)
+        client = _bedrock(_converse_response(_fenced(VALID_SCHEMA)))
+
+        with patch("idp_common.bedrock.BedrockClient", return_value=client):
+            result = IDPClient(region=region).discovery.run(str(document), **kwargs)
+
+        assert result.status == "SUCCESS"
+        sent = client.invoke_model.call_args.kwargs["model_id"]
+        assert sent == REGIONAL_SHIPPED_MODELS[region][0]
+
+    @pytest.mark.parametrize(
+        ("with_ground_truth", "section"),
+        [(False, "without_ground_truth"), (True, "with_ground_truth")],
+    )
+    def test_the_model_is_read_from_its_own_section(
+        self, tmp_path, with_ground_truth, section
+    ):
+        """The shipped model equals the code fallback, so it alone cannot show
+        which key was read; defaults naming another model can."""
+        document = tmp_path / "a.pdf"
+        document.write_bytes(_pdf(1))
+        kwargs = {}
+        if with_ground_truth:
+            truth = tmp_path / "a.json"
+            truth.write_text(json.dumps({"InvoiceNumber": "INV-42"}))
+            kwargs["ground_truth_path"] = str(truth)
+        other = "without_ground_truth" if with_ground_truth else "with_ground_truth"
+        defaults = {
+            "discovery": {
+                section: {"model_id": "us.anthropic.claude-sonnet-4-6"},
+                other: {"model_id": "us.amazon.nova-pro-v1:0"},
+            }
+        }
+        client = _bedrock(_converse_response(_fenced(VALID_SCHEMA)))
+
+        with (
+            patch("idp_common.bedrock.BedrockClient", return_value=client),
+            patch(
+                "idp_common.config.merge_utils.load_system_defaults",
+                return_value=defaults,
+            ),
+        ):
+            result = IDPClient(region="eu-west-1").discovery.run(
+                str(document), **kwargs
+            )
+
+        assert result.status == "SUCCESS"
+        sent = client.invoke_model.call_args.kwargs["model_id"]
+        assert sent == "eu.anthropic.claude-sonnet-4-6"
+
+    def test_a_caller_model_is_sent_as_given(self, tmp_path):
+        document = tmp_path / "a.pdf"
+        document.write_bytes(_pdf(1))
+        client = _bedrock(_converse_response(_fenced(VALID_SCHEMA)))
+
+        with patch("idp_common.bedrock.BedrockClient", return_value=client):
+            IDPClient(region="eu-west-1").discovery.run(
+                str(document), model_id="us.amazon.nova-pro-v1:0"
+            )
+
+        sent = client.invoke_model.call_args.kwargs["model_id"]
+        assert sent == "us.amazon.nova-pro-v1:0"
+
     def test_defaults_carrying_no_prompts_fall_back_to_the_built_in_ones(
         self, tmp_path
     ):
@@ -1200,6 +1303,47 @@ class TestAutoDetectLocal:
 
         assert result.status == "SUCCESS"
         assert client.invoke_model.call_args.kwargs["model_id"] == expected
+
+    @pytest.mark.parametrize("region", sorted(REGIONAL_SHIPPED_MODELS))
+    def test_the_shipped_model_is_callable_from_the_region(self, tmp_path, region):
+        document = tmp_path / "packet.pdf"
+        document.write_bytes(_pdf(2))
+        client = _bedrock(_converse_response(json.dumps([{"start": 1, "end": 1}])))
+
+        with patch("idp_common.bedrock.BedrockClient", return_value=client):
+            result = IDPClient(region=region).discovery.auto_detect_sections(
+                str(document)
+            )
+
+        assert result.status == "SUCCESS"
+        sent = client.invoke_model.call_args.kwargs["model_id"]
+        assert sent == REGIONAL_SHIPPED_MODELS[region][1]
+
+    def test_the_model_is_read_from_the_auto_split_section(self, tmp_path):
+        document = tmp_path / "packet.pdf"
+        document.write_bytes(_pdf(2))
+        defaults = {
+            "discovery": {
+                "auto_split": {"model_id": "us.anthropic.claude-sonnet-4-6"},
+                "without_ground_truth": {"model_id": "us.amazon.nova-pro-v1:0"},
+            }
+        }
+        client = _bedrock(_converse_response(json.dumps([{"start": 1, "end": 1}])))
+
+        with (
+            patch("idp_common.bedrock.BedrockClient", return_value=client),
+            patch(
+                "idp_common.config.merge_utils.load_system_defaults",
+                return_value=defaults,
+            ),
+        ):
+            result = IDPClient(region="eu-west-1").discovery.auto_detect_sections(
+                str(document)
+            )
+
+        assert result.status == "SUCCESS"
+        sent = client.invoke_model.call_args.kwargs["model_id"]
+        assert sent == "eu.anthropic.claude-sonnet-4-6"
 
     def test_defaults_carrying_no_auto_split_block_fall_back(self, tmp_path):
         document = tmp_path / "packet.pdf"
