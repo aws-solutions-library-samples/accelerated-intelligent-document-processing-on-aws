@@ -262,7 +262,8 @@ Agentic extraction requires models with tool-use support:
 > and is the shipped default — for the **confidence-assessment** pass
 > (`extraction.confidence`), and it works for **Simple** extraction, which needs no
 > tool use in its default configuration (the experimental `forced_tool` path is the
-> one exception). See
+> one exception; experimental `structured_output` needs no tool use but applies to
+> Claude models only). See
 > [Benchmarking → which models are measured](benchmarking/index.md#which-models-are-actually-measured).
 
 > **⚠️ OpenAI GPT-5.x cannot be used with agentic extraction.** All
@@ -930,91 +931,13 @@ section beside the rest of its report. The report names the extraction modes
 > **Moved in config format 0.7.** This block was `extraction.agentic.validation`. Stored
 > configurations are migrated automatically on read — no action required.
 
-### Forced tool use (`extraction.forced_tool`) — experimental, off by default
+### Schema enforcement (`extraction.schema_enforcement`) — experimental, off by default
 
-Coercion and validation repair or report a bad result *after* the fact. Forced
-tool use tries to make one shape of bad result impossible in the first place: the
-class schema is sent to the model as a **required tool** whose input *is* your
-schema, rather than described in prose in the prompt, and the API constrains the
-reply to that shape.
-
-```yaml
-extraction:
-  forced_tool:
-    enabled: false             # experimental; measure before turning it on
-    fallback_to_prompt: true   # a prose answer still gets parsed (recommended)
-```
-
-Applies to **Simple** extraction only — Advanced (agentic) extraction already
-sends a tool schema. Configurable under **Configuration → Extraction → Schema
-Enforcement (experimental)**.
-
-**Why it is off by default.** Forcing constrains the *structure* of the reply, not
-the *accuracy* of the values in it. A model that would have emitted a stray key
-may instead emit a worse value that fits the schema, so this is not a free
-accuracy win and it is not yet proven on real corpora. Measure completeness and
-field accuracy on your own documents before enabling it.
-
-**When it is skipped automatically.** Two different things can make forcing
-unavailable, and both fall back to the prompt with the reason recorded — so a
-before/after comparison can tell "forcing changed nothing" from "forcing never
-ran", which are very different results.
-
-- **The route carries no tool configuration at all**: models reached through a
-  custom Lambda hook, and the GPT-5.x (Responses API) route.
-- **The model carries a tool configuration but rejects a *forced* choice**:
-  **Claude Opus 5.5** and **Claude Sonnet 5.5**. Both answer `toolChoice: auto`
-  with a `toolUse` block and both return a 400 for `{"any": {}}` and
-  `{"tool": {...}}` (`tool_choice: type "tool" and "any" are not supported for this
-  model`), so schema enforcement is simply not available on them and the prose
-  schema is used instead.
-
-⚠️ **This is per model id, not per family.** Claude **Sonnet 5** and **Opus 5**
-both accept a forced choice, as does **Haiku 5.5** — so switching from Sonnet 5 to
-Sonnet 5.5 silently turns schema enforcement off, and `metadata.forced_tool.skipped`
-is where that shows up. Check it before reading a Sonnet 5 → Sonnet 5.5 comparison
-as a model difference.
-
-**A fixed failure to know about.** Before this fix, a *group* attribute whose name
-contains a space (`Account Holder Address` — normal in human-authored classes,
-including the shipped `bank-statement-sample`) came back from Claude Sonnet 5 as a
-JSON **string** rather than an object, so every section carrying it failed
-validation: the schema's `$defs` entry kept its spaced name and Sonnet 5 did not
-resolve the `$ref` pointer to it. Definition names are now made wire-safe like
-property names, the pointers are rewritten, and a group the model still returns as
-a JSON string is parsed while its field names are restored — so the stored result
-carries the names you authored, not the wire spellings. The name map follows each
-`$ref` to its definition, so this holds for a class with several groups (the shipped
-lending package has three) and never restores one group's names against another's.
-A `$ref` to a shared *string* definition (an enum factored into `$defs`) is treated as
-a string, so JSON-looking text in it is left alone. If you measured forcing before and
-saw every section invalid, that was this ([#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783)).
-
-**What gets recorded.** Each section's `metadata.forced_tool` holds `requested`,
-`honored` (the model can accept a tool configuration and still answer in prose),
-`renamed_properties`, `renamed_definitions`, and `skipped` with a reason where
-applicable. `honored` is
-the number to look at first: forcing that is not honored has not been tested.
-
-**Visible in the Prompt Preview.** With Extraction mode **Simple** and this
-setting on, **Configuration → Prompt Preview** gains a **Tool Schema** tab showing
-the exact `toolSpec` — tool name, tool description, and input schema — and its
-tokens are added to the previewed total, so the cost of turning enforcement on is
-no longer invisible. The tab shows property names **as you authored them** and
-says so, because the wire-safe rewriting below is reversed in the stored result;
-the token estimate is taken from the compact form actually serialized onto the
-request, not from the indentation added for readability.
-
-> **Field names with spaces are handled.** Bedrock restricts top-level tool
-> property names to `^[a-zA-Z0-9_.-]{1,64}$`, which several shipped configuration
-> presets violate (`"Invoice Number"`). Such names are rewritten to a wire-safe
-> form for the request and restored to exactly what you authored in the stored
-> result — you never see the sanitized names, and no configuration change is
-> needed.
-
-`fallback_to_prompt: false` turns an unhonored force into a **parse failure**
-instead of falling back. That loses data by design and exists only to measure how
-often forcing is actually honored; leave it on in production.
+Simple extraction can make the model's reply match your document schema instead of
+only describing the schema in the prompt — with Bedrock structured outputs, a forced
+tool call, or **Auto**. It replaces `extraction.forced_tool`. See
+[Schema Enforcement](schema-enforcement.md) for the modes, the supported models and
+what each section records.
 
 ### Several records in one section (`instance_count`)
 

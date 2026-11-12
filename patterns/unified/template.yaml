@@ -2241,24 +2241,26 @@ Resources:
                         default: true
                         order: 6
                         dependsOn: { field: "enabled", value: true }
-              forced_tool:
+              schema_enforcement:
                 type: object
                 sectionLabel: Schema Enforcement (experimental)
-                description: "Send the document schema to the model as a required tool rather than describing it in the prompt, so the response structure is enforced by the API. EXPERIMENTAL and off by default: this constrains the SHAPE of the reply, not the accuracy of the values in it, and whether it helps is still being measured. Models reached through a custom Lambda hook or the GPT-5.x route cannot use it and fall back to the prompt automatically. Applies to Simple extraction only (Advanced already sends a tool schema), so this is shown only when Extraction mode is 'simple'."
+                description: "Make the model's reply match your document schema, instead of only describing the schema in the prompt. Simple extraction only. [Learn more](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/schema-enforcement/)"
                 order: 4.05
                 dependsOn: { field: "extraction.mode", value: "simple" }
                 properties:
-                  enabled:
-                    type: boolean
-                    description: "Require the model to answer by calling a tool whose input is your document schema. A malformed-JSON reply becomes structurally impossible for the fields the schema declares. Off by default because it is unproven — measure accuracy and completeness on your own documents before enabling it."
-                    default: false
+                  mode:
+                    type: string
+                    enum: ["off", "auto", "structured_output", "forced_tool"]
+                    enumLabels: { "off": "Off (default)", "auto": "Auto — structured outputs where supported, else forced tool", "structured_output": "Structured outputs — guaranteed valid JSON (Claude only)", "forced_tool": "Forced tool call — best effort" }
+                    default: "off"
+                    description: "Unsupported models fall back to the prompt. See [supported models](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/schema-enforcement/#supported-models). Measure accuracy on your own documents before turning this on."
                     order: 0
                   fallback_to_prompt:
                     type: boolean
-                    description: "If the model accepts the tool but replies in prose anyway (which happens, and is not an error), read the prose reply as usual. Leave this ON. Turning it off makes such a reply a failed section, which is only useful for measuring how often the model actually complies."
+                    description: "If the model answers in prose instead of calling the tool, read the prose as usual. Leave on; turning it off fails the section, which is only useful for measuring compliance."
                     default: true
                     order: 1
-                    dependsOn: { field: "enabled", value: true }
+                    dependsOn: { field: "mode", values: ["forced_tool", "auto"] }
               multi_instance_detection:
                 type: object
                 sectionLabel: Multi-instance Section Detection

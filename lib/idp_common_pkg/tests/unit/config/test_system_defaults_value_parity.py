@@ -247,7 +247,7 @@ def _pattern_dependent_paths() -> Dict[str, List[Any]]:
 def _is_prompt_without_code_copy(model: type[BaseModel], name: str, path: str) -> bool:
     """A prompt field holding prose, with no copy of it in code.
 
-    Read off the annotation as well as the name: ``extraction.forced_tool``'s
+    Read off the annotation as well as the name: ``extraction.schema_enforcement``'s
     ``fallback_to_prompt`` is a switch, not prose, and a name match alone would let
     a ``None`` there take the excuse.
     """

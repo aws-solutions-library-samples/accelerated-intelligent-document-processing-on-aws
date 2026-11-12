@@ -1716,6 +1716,15 @@ const ConfigBuilder = ({
       displayValue = property.default;
     }
 
+    // The same for a dropdown. With no value the Select rendered an empty choice,
+    // although the backend applies the schema default — so `schema_enforcement.mode`
+    // read as blank rather than "Off" whenever the profile and the defaults lacked
+    // the key (a stack mid-upgrade serves exactly that). Display only, like the
+    // boolean case: nothing is written until the user picks.
+    if (property.enum && property.default !== undefined && (value === undefined || value === null || value === '')) {
+      displayValue = property.default;
+    }
+
     // Dependencies are now checked in the main renderField function
 
     // If this is an object type, it should be rendered as an object field, not an input field
@@ -1826,7 +1835,7 @@ const ConfigBuilder = ({
       // A DECLARED scalar type beats the path-name heuristic below. That heuristic
       // exists to give free-text fields a roomy editor, but it matched on the path,
       // so a boolean whose name merely ENDS in "prompt" was rendered as a textarea:
-      // `extraction.forced_tool.fallback_to_prompt` and
+      // `extraction.schema_enforcement.fallback_to_prompt` and
       // `extraction.agentic.restate_schema_in_system_prompt` both shipped as free
       // text where every other true/false setting is a toggle. Typing anything into
       // one stored a STRING, and the backend config model only accepts the

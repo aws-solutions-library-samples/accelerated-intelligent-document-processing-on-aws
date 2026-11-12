@@ -380,8 +380,14 @@ class TestNewerStampIsNotDowngraded:
 
         A string compare would treat every 0.10+ config as older and reshape it.
         """
+        from idp_common.config.migrations._version import parse_version
+
         out = migrate_config({"config_format_version": "0.10"})
-        assert out["config_format_version"] == "0.10"
+        # Brought forward to the current format by the later hops, never back to
+        # 0.7: the stamp only ever moves up.
+        assert out["config_format_version"] == CONFIG_FORMAT_VERSION
+        parsed = parse_version(out["config_format_version"])
+        assert parsed is not None and parsed >= (0, 10)
 
     def test_unparseable_stamp_is_treated_as_predating_versioning(self):
         out = migrate_config({"config_format_version": "not-a-version"})

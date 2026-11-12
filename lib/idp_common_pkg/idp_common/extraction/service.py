@@ -17,6 +17,8 @@ import re
 import time
 from typing import Any, Callable
 
+from botocore.exceptions import ClientError
+
 from idp_common import bedrock, image, metrics, s3, utils
 from idp_common.bedrock import format_prompt, is_openai_responses_model
 from idp_common.config import without_prompt_comments
@@ -297,6 +299,8 @@ class ExtractionService:
         self._pending_validation_metadata: dict[str, Any] | None = None
         self._pending_abstained_fields: dict[str, Any] | None = None
         self._pending_forced_tool_metadata: dict[str, Any] | None = None
+        self._pending_structured_output_metadata: dict[str, Any] | None = None
+        self._pending_schema_enforcement_metadata: dict[str, Any] | None = None
         # Deterministic type/format repairs applied to the most recent section's
         # simple-mode result, so nothing is silently rewritten. Reset per section.
         self._pending_coercion_metadata: dict[str, Any] | None = None
@@ -1162,7 +1166,8 @@ class ExtractionService:
                     or ""
                 )
                 total += estimate_tokens(system_prompt)
-                if getattr(getattr(ex, "forced_tool", None), "enabled", False):
+                enforcement = getattr(ex, "schema_enforcement", None)
+                if getattr(enforcement, "wants_forced_tool", False):
                     from idp_common.extraction.forced_tool import (
                         build_extraction_tool_config,
                     )
@@ -1170,6 +1175,17 @@ class ExtractionService:
                     total += estimate_tokens(
                         _json.dumps(build_extraction_tool_config(wire_schema)[0])
                     )
+                if getattr(enforcement, "wants_structured_output", False):
+                    # Counted whenever the mode may send it, including under
+                    # 'auto', where only one of the two is sent: an over-estimate
+                    # only makes a shard smaller, an under-estimate overflows one.
+                    from idp_common.extraction.structured_output import (
+                        build_extraction_output_config,
+                    )
+
+                    so_config = build_extraction_output_config(wire_schema)[0]
+                    if so_config is not None:
+                        total += estimate_tokens(_json.dumps(so_config))
             self._prompt_overhead_cache = int(total)
             return self._prompt_overhead_cache
         except Exception as e:  # noqa: BLE001 - never break sizing on an estimate
@@ -3497,6 +3513,69 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             self.config.extraction.multi_instance_detection.question,
         )
         return (wire if isinstance(wire, dict) else class_schema), added
+
+    def _plan_structured_output(
+        self, model_id: str, wire_schema: dict[str, Any]
+    ) -> tuple[dict[str, Any] | None, Any]:
+        """Decide whether this Simple-mode request uses structured outputs (#1785).
+
+        Returns ``(output_config, name_map)``; ``output_config`` is None when it is
+        off or cannot apply. Every outcome other than "off" is recorded on
+        ``_pending_structured_output_metadata``, because an A/B in which "applied"
+        and "skipped" look the same cannot be read.
+        """
+        enforcement = self.config.extraction.schema_enforcement
+        from idp_common.extraction.structured_output import (
+            build_extraction_output_config,
+            rejected_reason,
+            should_use_structured_output,
+        )
+
+        use, skip = should_use_structured_output(
+            model_id, enforcement.wants_structured_output, wire_schema
+        )
+        if not use:
+            if skip:
+                logger.info("Structured outputs skipped — %s", skip)
+                self._pending_structured_output_metadata = {
+                    "requested": True,
+                    "applied": False,
+                    "skipped": skip,
+                }
+            return None, None
+
+        output_config, name_map, prepared = build_extraction_output_config(wire_schema)
+        audit = prepared.audit()
+        if output_config is None:
+            reason = (
+                f"the class schema does not fit structured outputs: {prepared.reason}"
+            )
+            logger.info("Structured outputs skipped — %s", reason)
+            self._pending_structured_output_metadata = {
+                "requested": True,
+                "applied": False,
+                "skipped": reason,
+                "schema": audit,
+            }
+            return None, None
+        earlier = rejected_reason(output_config)
+        if earlier:
+            reason = (
+                f"Bedrock rejected this schema earlier in this container: {earlier}"
+            )
+            logger.info("Structured outputs skipped — %s", reason)
+            self._pending_structured_output_metadata = {
+                "requested": True,
+                "applied": False,
+                "skipped": reason,
+                "schema": audit,
+            }
+            return None, None
+        self._pending_structured_output_metadata = {
+            "requested": True,
+            "schema": audit,
+        }
+        return output_config, name_map
 
     def _agentic_probe_model(
         self, dynamic_model: Any, class_label: str, *, resuming: bool
@@ -6425,6 +6504,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         self._pending_coercion_metadata = None
         self._pending_extraction_model = None
         self._pending_forced_tool_metadata = None
+        self._pending_structured_output_metadata = None
+        self._pending_schema_enforcement_metadata = None
 
         # Get extraction config — use per-class model override if specified,
         # otherwise fall back to the global extraction model.
@@ -6898,12 +6979,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     metering["_merged_assessment"] = inline
                     metering["_merged_assessment_alerts"] = []
         else:
-            # Optionally put the class schema on the wire as a FORCED tool instead
-            # of relying on the prompt's description of it (WS-05). Off by default
-            # and gated on a measured win — forcing constrains the response shape,
-            # not the values in it. The prompt is deliberately left unchanged so
-            # the A/B measures forcing alone; dropping the prose schema is #710's
-            # separate question, and bundling the two would confound both.
+            # Optionally make the reply match the class schema instead of relying
+            # on the prompt's description of it (extraction.schema_enforcement:
+            # Bedrock structured outputs, a forced tool, or auto). Off by default
+            # and gated on a measured win — either mechanism constrains the
+            # response shape, not the values in it. The prompt is deliberately left
+            # unchanged so an A/B measures the mechanism alone; dropping the prose
+            # schema is #710's separate question, and bundling the two would
+            # confound both.
             from idp_common.extraction.forced_tool import (
                 EXTRACTION_TOOL_NAME,
                 build_extraction_tool_config,
@@ -6918,20 +7001,43 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # (#753). A forced tool whose input schema lacks the probe would make
             # the count structurally impossible to return, which is exactly the
             # regression #753 warns about for forced tool use generally.
-            ft_cfg = self.config.extraction.forced_tool
+            enforcement = self.config.extraction.schema_enforcement
             wire_schema = self._wire_class_schema or self._class_schema
-            force, skip_reason = should_force_tool(
-                model_id, ft_cfg.enabled, wire_schema
+
+            # Structured outputs (#1785) is decided FIRST: when it applies, the
+            # reply is guaranteed to match the schema, which is strictly more than
+            # a forced tool offers, so the two are not combined.
+            output_config, so_name_map = self._plan_structured_output(
+                model_id, wire_schema
             )
-            tool_config = tool_choice = None
-            tool_name_map = None
-            if force:
-                tool_config, tool_name_map = build_extraction_tool_config(wire_schema)
-                tool_choice = forced_tool_choice()
-            elif skip_reason:
-                # Recorded, not just logged: an A/B in which "no effect" and
-                # "never ran" look identical is unreadable.
-                logger.info("Forced tool use skipped — %s", skip_reason)
+
+            def _plan_forced_tool() -> tuple[bool, str | None, Any, Any, Any]:
+                if output_config is not None:
+                    return (
+                        False,
+                        "structured outputs constrains this request instead "
+                        "(extraction.schema_enforcement.mode: auto)"
+                        if enforcement.wants_forced_tool
+                        else None,
+                        None,
+                        None,
+                        None,
+                    )
+                force_, skip_ = should_force_tool(
+                    model_id, enforcement.wants_forced_tool, wire_schema
+                )
+                if force_:
+                    tc_, nm_ = build_extraction_tool_config(wire_schema)
+                    return True, None, tc_, forced_tool_choice(), nm_
+                if skip_:
+                    # Recorded, not just logged: an A/B in which "no effect" and
+                    # "never ran" look identical is unreadable.
+                    logger.info("Forced tool use skipped — %s", skip_)
+                return False, skip_, None, None, None
+
+            force, skip_reason, tool_config, tool_choice, tool_name_map = (
+                _plan_forced_tool()
+            )
 
             self._simple_mode_input_preflight(
                 content=content,
@@ -6939,20 +7045,63 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 model_id=model_id,
                 section_id=getattr(section_info, "section_id", None),
             )
-            response_with_metering = bedrock.invoke_model(
-                model_id=model_id,
-                system_prompt=system_prompt,
-                content=content,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                max_tokens=max_tokens,
-                context="Extraction",
-                model_lambda_hook_arn=self.config.extraction.model_lambda_hook_arn,
-                reasoning_effort=reasoning_effort,
-                tool_config=tool_config,
-                tool_choice=tool_choice,
-            )
+            invoke_kwargs: dict[str, Any] = {
+                "model_id": model_id,
+                "system_prompt": system_prompt,
+                "content": content,
+                "temperature": temperature,
+                "top_k": top_k,
+                "top_p": top_p,
+                "max_tokens": max_tokens,
+                "context": "Extraction",
+                "model_lambda_hook_arn": self.config.extraction.model_lambda_hook_arn,
+                "reasoning_effort": reasoning_effort,
+                "tool_config": tool_config,
+                "tool_choice": tool_choice,
+            }
+            if output_config is not None:
+                invoke_kwargs["output_config"] = output_config
+            try:
+                response_with_metering = bedrock.invoke_model(**invoke_kwargs)
+            except ClientError as exc:
+                # Bedrock validates a schema against its subset immediately, and
+                # enforces the optional-property limit while compiling the grammar
+                # (up to ~90 s). Either is a ValidationException, and neither may
+                # fail the document: retry once on today's path. A different
+                # ValidationException fails the retry the same way and is raised
+                # from there, exactly as it would have been without this feature.
+                code = exc.response.get("Error", {}).get("Code")
+                if output_config is None or code != "ValidationException":
+                    raise
+                message = str(exc.response.get("Error", {}).get("Message", ""))[:500]
+                logger.warning(
+                    "Bedrock rejected the structured-output schema for %s (%s); "
+                    "retrying without it",
+                    section_info.class_label,
+                    message,
+                )
+                from idp_common.extraction.structured_output import (
+                    record_rejection,
+                )
+
+                rejected_config = output_config
+                output_config = None
+                so_name_map = None
+                force, skip_reason, tool_config, tool_choice, tool_name_map = (
+                    _plan_forced_tool()
+                )
+                invoke_kwargs.pop("output_config", None)
+                invoke_kwargs["tool_config"] = tool_config
+                invoke_kwargs["tool_choice"] = tool_choice
+                response_with_metering = bedrock.invoke_model(**invoke_kwargs)
+                # Remembered only once the retry has succeeded, i.e. once the
+                # output format is known to have been the cause.
+                record_rejection(rejected_config, message)
+                self._pending_structured_output_metadata = {
+                    **(self._pending_structured_output_metadata or {}),
+                    "applied": False,
+                    "rejected": message,
+                }
 
             # A model can accept a toolConfig and still answer in prose. That is a
             # normal outcome (stopReason end_turn rather than tool_use), so an
@@ -6993,7 +7142,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         "Forced tool use was requested but the model answered in "
                         "prose; %s",
                         "falling back to text parsing"
-                        if ft_cfg.fallback_to_prompt
+                        if enforcement.fallback_to_prompt
                         else "treating it as a parse failure (fallback disabled)",
                     )
             elif skip_reason:
@@ -7003,10 +7152,52 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "skipped": skip_reason,
                 }
 
+            if enforcement.mode != "off":
+                # Which mechanism the request that produced this reply carried —
+                # the one answer 'auto' otherwise leaves to be inferred from two
+                # metadata blocks.
+                self._pending_schema_enforcement_metadata = {
+                    "mode": enforcement.mode,
+                    "used": "structured_output"
+                    if output_config is not None
+                    else "forced_tool"
+                    if force
+                    else "prompt",
+                }
+
             extracted_text = bedrock.extract_text_from_response(
                 dict(response_with_metering)
             )
             metering = response_with_metering["metering"]
+
+            # Structured outputs: a reply that ended normally IS the JSON, so it
+            # is parsed directly — no fenced-block heuristics, no repair. Any other
+            # stop (max_tokens, a refusal, a filter) falls through to the text path
+            # below, which already handles truncation and repair.
+            structured_fields = None
+            if output_config is not None:
+                from idp_common.extraction.structured_output import (
+                    parse_structured_reply,
+                )
+
+                raw = response_with_metering.get("response")
+                so_stop = raw.get("stopReason") if isinstance(raw, dict) else None
+                structured_fields = parse_structured_reply(
+                    extracted_text, so_stop, so_name_map
+                )
+                self._pending_structured_output_metadata = {
+                    **(self._pending_structured_output_metadata or {}),
+                    "applied": True,
+                    "stop_reason": so_stop,
+                    "parsed": structured_fields is not None,
+                }
+                if structured_fields is None:
+                    logger.warning(
+                        "Structured-output reply for %s was not used directly "
+                        "(stopReason=%s); parsing it as text",
+                        section_info.class_label,
+                        so_stop,
+                    )
 
             # Parse response into JSON
             extracted_fields = {}
@@ -7049,7 +7240,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 ) = self._normalize_list_result(
                     forced_tool_input, context="forced-tool"
                 )
-            elif force and not ft_cfg.fallback_to_prompt:
+            elif structured_fields is not None:
+                # Constrained decoding guarantees the shape. Normalized like every
+                # other source, because a multi-instance class can legitimately
+                # come back as a list (#565/#687).
+                (
+                    extracted_fields,
+                    parsing_succeeded,
+                    instance_count,
+                    recovered_instances,
+                ) = self._normalize_list_result(
+                    structured_fields, context="structured-output"
+                )
+            elif force and not enforcement.fallback_to_prompt:
                 # Explicitly configured to treat an unhonored force as a failure.
                 # Only useful for measuring how often forcing is actually honored.
                 logger.warning(
@@ -7059,7 +7262,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 extracted_fields = {
                     "error": (
                         "forced tool use was requested but the model answered in "
-                        "prose, and extraction.forced_tool.fallback_to_prompt is "
+                        "prose, and extraction.schema_enforcement.fallback_to_prompt is "
                         "disabled"
                     )
                 }
@@ -8046,6 +8249,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # never ran" — a skipped route or an unhonored force are both normal
             # and both invisible without this.
             metadata["forced_tool"] = self._pending_forced_tool_metadata
+        if self._pending_structured_output_metadata is not None:
+            # Same reason as forced_tool: "applied and had no effect" and "never
+            # applied" must be distinguishable, and so must a schema that did not
+            # fit or that Bedrock rejected.
+            metadata["structured_output"] = self._pending_structured_output_metadata
+        if self._pending_schema_enforcement_metadata is not None:
+            metadata["schema_enforcement"] = self._pending_schema_enforcement_metadata
 
         # Deterministic type/format repairs. Recorded so a human can audit exactly
         # what was rewritten and what was refused — coercion must never silently

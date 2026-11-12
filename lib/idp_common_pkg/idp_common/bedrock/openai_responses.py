@@ -42,9 +42,9 @@ Prompt caching differs by model generation:
 
 Schema-enforced output (opt-in)
 -------------------------------
-Unlike the Converse / InvokeModel surface — where ``strict`` tool use and
-``output_config.format`` are both rejected by ``bedrock-runtime`` — the OpenAI
-Responses API exposes a constrained-decoding format:
+The OpenAI Responses API has its own constrained-decoding format, separate from
+the Converse ``outputConfig.textFormat`` that Claude models take on
+``bedrock-runtime`` (see ``structured_output.py``):
 
     ``text.format = {"type": "json_schema", "name": ..., "schema": ...,
     "strict": true}``

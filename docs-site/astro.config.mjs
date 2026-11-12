@@ -105,6 +105,7 @@ export default defineConfig({
               label: "Extraction & Confidence",
               slug: "extraction-and-confidence",
             },
+            { label: "Schema Enforcement", slug: "schema-enforcement" },
             // Legacy guides consolidated into Extraction & Confidence (kept as
             // redirect stubs so old deep links still resolve).
             { label: "Extraction (moved)", slug: "extraction" },

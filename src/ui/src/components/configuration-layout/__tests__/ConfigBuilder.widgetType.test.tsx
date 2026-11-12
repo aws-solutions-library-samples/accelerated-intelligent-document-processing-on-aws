@@ -10,7 +10,7 @@
  * template gets one without every prompt in every schema having to declare
  * `format: textarea`. That test looked at the name before the declared `type`, so
  * a boolean whose key merely ENDS in "prompt" rendered as a free-text box:
- * `extraction.forced_tool.fallback_to_prompt` (Schema Enforcement) and
+ * `extraction.schema_enforcement.fallback_to_prompt` (Schema Enforcement) and
  * `extraction.agentic.restate_schema_in_system_prompt` both shipped that way,
  * while every other true/false setting is a toggle.
  *
@@ -66,6 +66,29 @@ const widgetKinds = (label: string): { toggles: number; textareas: number; input
 };
 
 describe('ConfigBuilder widget selection', () => {
+  it('shows a dropdown its schema default when the value is absent, rather than a blank', () => {
+    renderConfig(
+      sectionWith('mode', {
+        type: 'string',
+        enum: ['off', 'auto'],
+        enumLabels: { off: 'Off (default)', auto: 'Auto' },
+        default: 'off',
+      }),
+      { extraction: {} },
+    );
+    const field = screen.getByText('Mode').closest('.compact-form-field');
+    expect(field?.textContent).toContain('Off (default)');
+  });
+
+  it('shows the stored dropdown value over the default', () => {
+    renderConfig(sectionWith('mode', { type: 'string', enum: ['off', 'auto'], enumLabels: { off: 'Off', auto: 'Auto' }, default: 'off' }), {
+      extraction: { mode: 'auto' },
+    });
+    const field = screen.getByText('Mode').closest('.compact-form-field');
+    expect(field?.textContent).toContain('Auto');
+    expect(field?.textContent).not.toContain('Off');
+  });
+
   it('renders fallback_to_prompt as a toggle, not a text box', () => {
     renderConfig(
       sectionWith('fallback_to_prompt', {

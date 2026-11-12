@@ -821,10 +821,12 @@ CACHEPOINT_SUPPORTED_MODELS = [
 # and emits ``toolUse`` under a forced ``toolChoice`` (verified live), so it is
 # tool-capable even though its GPT-5.x stablemates on the Responses API are not.
 #
-# NOTE: there is no hard-grammar/strict mode available on bedrock-runtime.
-# ``toolSpec.strict``, ``output_config.format`` and ``response_format`` are all
-# rejected ("Extra inputs are not permitted") on BOTH Converse and InvokeModel,
-# so a forced ``toolChoice`` is the strongest schema enforcement available.
+# NOTE: a forced ``toolChoice`` constrains the response shape on a best-effort
+# basis only. Bedrock structured outputs is the guarantee: a JSON Schema output
+# format (``outputConfig.textFormat`` on Converse, ``output_config.format`` on an
+# Anthropic InvokeModel body) or ``strict: true`` on a tool definition, both
+# enforced by constrained decoding. See STRUCTURED_OUTPUT_BASE_NAMES below and
+# ``invoke_model(output_config=...)``.
 TOOL_CONFIG_UNSUPPORTED_ROUTES: Dict[str, str] = {
     "LambdaHook": (
         "the LambdaHook route posts a Converse-shaped payload to a customer-owned "
@@ -882,13 +884,12 @@ def supports_tool_config(model_id: str) -> bool:
 #     "tool" and "any" are not supported for this model.'
 #   * ``toolChoice: {"tool": {"name": ...}}`` -> the same ValidationException.
 #
-# This matters beyond the error message because a forced ``toolChoice`` is the
-# strongest schema enforcement bedrock-runtime offers (``toolSpec.strict``,
-# ``output_config.format`` and ``response_format`` are all rejected on Converse and
-# InvokeModel alike). So on this model the extraction forced-tool path has no
-# equivalent and must fall back to the prose schema — which
+# This matters beyond the error message because the extraction forced-tool path
+# cannot run on such a model and must fall back to the prose schema — which
 # ``forced_tool.should_force_tool`` already knows how to do, recording the reason in
-# the section's audit metadata rather than skipping silently.
+# the section's audit metadata rather than skipping silently. Structured outputs
+# (``outputConfig.textFormat``) needs no ``toolChoice`` at all, so both of these
+# models can still constrain an extraction that way.
 # Claude Sonnet 5.5 is the second entry, and the one that shows this is not an
 # Opus-only quirk. Verified live on Bedrock Converse
 # (us.anthropic.claude-sonnet-5-5, us-east-1, 2026-10-14) with the same three
@@ -933,6 +934,96 @@ def supports_forced_tool_choice(model_id: str) -> bool:
     :func:`supports_tool_config` is True.
     """
     return forced_tool_choice_unsupported_reason(model_id) is None
+
+
+# Bedrock structured outputs (constrained decoding to a JSON Schema) capability
+# gate, for the Converse ``outputConfig.textFormat`` carrier.
+#
+# Support is per model and is published on each Bedrock model card's
+# "Capabilities and Features" table. Every Claude model this solution offers lists
+# "Structured outputs" as supported there (read 2026-11-10); none of the other
+# Converse families here is claimed, so they are refused rather than sent a field
+# their card does not promise. An allowlist, not a denylist, because an
+# unsupported model answers with a 400 that arrives after the retry ladder, and a
+# new model should have to be checked against its card before it is offered.
+#
+# Keyed on base names and matched by prefix, like _CLAUDE_EFFORT_BASE_NAMES, so
+# dated foundation ids (``...-20251001-v1:0``) resolve. Each model is listed even
+# where a shorter entry would already match it by prefix, so that a future model
+# sharing a stem has to be decided here rather than inheriting an answer.
+STRUCTURED_OUTPUT_BASE_NAMES = (
+    "anthropic.claude-haiku-4-5",
+    "anthropic.claude-haiku-5-5",
+    "anthropic.claude-sonnet-4-5",
+    "anthropic.claude-sonnet-4-6",
+    "anthropic.claude-sonnet-5",
+    "anthropic.claude-sonnet-5-5",
+    "anthropic.claude-opus-4-5",
+    "anthropic.claude-opus-4-6",
+    "anthropic.claude-opus-4-7",
+    "anthropic.claude-opus-4-8",
+    "anthropic.claude-opus-5",
+    "anthropic.claude-opus-5-5",
+)
+
+
+def _botocore_supports_output_config() -> bool:
+    """True if the installed botocore knows Converse's ``outputConfig`` member.
+
+    An older botocore refuses the parameter client-side (``ParamValidationError:
+    Unknown parameter in input``) before any request is made, so the capability
+    is a property of this runtime as well as of the model. Read from botocore's own
+    service model rather than from a version number.
+    """
+    global _OUTPUT_CONFIG_IN_BOTOCORE
+    if _OUTPUT_CONFIG_IN_BOTOCORE is None:
+        try:
+            import botocore.session
+
+            shape = (
+                botocore.session.get_session()
+                .get_service_model("bedrock-runtime")
+                .operation_model("Converse")
+                .input_shape
+            )
+            _OUTPUT_CONFIG_IN_BOTOCORE = "outputConfig" in shape.members
+        except Exception:  # noqa: BLE001 - a capability probe must not raise
+            _OUTPUT_CONFIG_IN_BOTOCORE = False
+    return _OUTPUT_CONFIG_IN_BOTOCORE
+
+
+_OUTPUT_CONFIG_IN_BOTOCORE: Optional[bool] = None
+
+
+def structured_output_unsupported_reason(model_id: str) -> Optional[str]:
+    """Explain why ``model_id`` cannot take a Converse ``outputConfig.textFormat``.
+
+    Returns None when Bedrock structured outputs can be requested.
+    """
+    route = tool_config_unsupported_reason(model_id)
+    if route:
+        return route
+    if not model_id:
+        return "no model id was given"
+    base = _strip_region_and_1m(resolve_model_id_from_arn(model_id))
+    if not any(base.startswith(name) for name in STRUCTURED_OUTPUT_BASE_NAMES):
+        return (
+            f"model '{model_id}' is not listed as supporting Bedrock structured "
+            f"outputs (only Claude models whose model card lists the capability "
+            f"are; an application-inference-profile ARN cannot be resolved "
+            f"offline)"
+        )
+    if not _botocore_supports_output_config():
+        return (
+            "the installed botocore does not know the Converse 'outputConfig' "
+            "parameter; upgrade boto3/botocore"
+        )
+    return None
+
+
+def supports_structured_output(model_id: str) -> bool:
+    """True if ``model_id`` can be sent a Converse JSON Schema output format."""
+    return structured_output_unsupported_reason(model_id) is None
 
 
 # Build set of base model names (without region/tier prefixes) for inference profile resolution.
@@ -1203,6 +1294,7 @@ class BedrockClient:
         reasoning_effort: Optional[str] = None,
         tool_config: Optional[Dict[str, Any]] = None,
         tool_choice: Optional[Dict[str, Any]] = None,
+        output_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Make the instance callable with the same signature as the original function.
@@ -1221,6 +1313,7 @@ class BedrockClient:
             service_tier: Optional service tier (priority, standard, flex)
             tool_config: Optional Converse toolConfig (see invoke_model)
             tool_choice: Optional Converse toolChoice (see invoke_model)
+            output_config: Optional Converse outputConfig (see invoke_model)
 
         Returns:
             Bedrock response object with metering information
@@ -1245,6 +1338,7 @@ class BedrockClient:
             reasoning_effort=reasoning_effort,
             tool_config=tool_config,
             tool_choice=tool_choice,
+            output_config=output_config,
         )
 
     def _preprocess_content_for_cachepoint(
@@ -1493,6 +1587,47 @@ class BedrockClient:
         merged["toolChoice"] = tool_choice
         return merged
 
+    @staticmethod
+    def _resolve_output_config(
+        model_id: str, output_config: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Validate a Converse ``outputConfig`` before anything is sent.
+
+        Returns None when none was supplied, so the request is unchanged.
+
+        Raises:
+            ValueError: if the model cannot take structured outputs (a non-Converse
+                route, a model whose card does not list the capability, or a
+                botocore too old to know the parameter), or if the dict is not a
+                ``textFormat`` JSON Schema format. Refused locally rather than left
+                to Bedrock, because an unsupported request is a 400 that arrives
+                after the retry ladder, and a dropped format would return
+                unconstrained text that looks like a constrained answer.
+        """
+        if output_config is None:
+            return None
+        reason = structured_output_unsupported_reason(model_id)
+        if reason:
+            raise ValueError(
+                f"output_config (structured outputs) is not supported for model "
+                f"'{model_id}': {reason}. Check supports_structured_output("
+                f"model_id) first and use a prompt-described schema for this model."
+            )
+        text_format = (
+            output_config.get("textFormat") if isinstance(output_config, dict) else None
+        )
+        schema = (
+            ((text_format or {}).get("structure") or {}).get("jsonSchema") or {}
+        ).get("schema")
+        if not isinstance(schema, str):
+            raise ValueError(
+                "output_config must be a Converse outputConfig of the form "
+                "{'textFormat': {'type': 'json_schema', 'structure': {'jsonSchema': "
+                "{'schema': '<JSON string>', 'name': ...}}}}; build it with "
+                "idp_common.bedrock.structured_output.converse_output_config()."
+            )
+        return output_config
+
     def invoke_model(
         self,
         model_id: str,
@@ -1509,6 +1644,7 @@ class BedrockClient:
         reasoning_effort: Optional[str] = None,
         tool_config: Optional[Dict[str, Any]] = None,
         tool_choice: Optional[Dict[str, Any]] = None,
+        output_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Invoke a Bedrock model or custom Lambda hook with retry logic.
@@ -1552,6 +1688,12 @@ class BedrockClient:
                 logged. Requires ``tool_config``: passing ``tool_choice`` alone
                 raises ValueError, because Converse rejects a ``toolChoice``
                 with no tools.
+            output_config: Optional Converse ``outputConfig`` dict requesting
+                Bedrock structured outputs — constrained decoding that
+                guarantees the reply is JSON matching a JSON Schema. Build it
+                with ``structured_output.converse_output_config()`` from a schema
+                that has been through ``structured_output.prepare_schema()``.
+                Omitted from the request when None (the default).
 
         Returns:
             Response object with metering information (same format for both Bedrock and Lambda)
@@ -1562,17 +1704,23 @@ class BedrockClient:
                 sentinel or an OpenAI GPT-5.x Responses model. The schema is
                 never silently dropped; use ``supports_tool_config(model_id)``
                 to branch beforehand if you need a text fallback.
+            ValueError: If ``output_config`` is passed for a model that cannot
+                take structured outputs (see
+                ``structured_output_unsupported_reason``).
 
         Tool-use notes (read before adding a caller):
             * **Response may still be text.** Even with a forced ``toolChoice``,
               treat a text answer as possible: use
               ``extract_tool_use_from_response()`` and fall back to
               ``extract_text_from_response()`` when it returns None.
-            * **No strict mode exists on bedrock-runtime.** ``toolSpec.strict``,
-              ``output_config.format`` and ``response_format`` are all rejected
-              ("Extra inputs are not permitted") on both Converse and
-              InvokeModel. A forced ``toolChoice`` is best-effort constrained
-              decoding, not a grammar guarantee — validate the result.
+            * **A forced ``toolChoice`` is best effort, not a guarantee.** It
+              constrains the shape a model is steered toward and the result must
+              still be validated. The guarantee is Bedrock structured outputs:
+              ``output_config`` here (Converse ``outputConfig.textFormat``), or
+              ``"strict": true`` on the ``toolSpec`` together with
+              ``additionalProperties: false`` on every object of its
+              ``inputSchema``. Either way the schema must fit the subset and
+              limits that ``structured_output.prepare_schema`` enforces.
             * **Property names must be sanitized by the caller.** Converse
               rejects *top-level* ``inputSchema.json.properties`` keys that do
               not match ``^[a-zA-Z0-9_.-]{1,64}$`` — so a key like
@@ -1593,6 +1741,9 @@ class BedrockClient:
         # getting a plausible-looking free-text answer with no schema applied.
         effective_tool_config = self._resolve_tool_config(
             model_id=model_id, tool_config=tool_config, tool_choice=tool_choice
+        )
+        effective_output_config = self._resolve_output_config(
+            model_id=model_id, output_config=output_config
         )
 
         # Route to Lambda hook if model_id is LambdaHook
@@ -1967,6 +2118,11 @@ class BedrockClient:
         if effective_tool_config is not None:
             converse_params["toolConfig"] = effective_tool_config
 
+        # Structured outputs (constrained decoding to a JSON Schema). Absent unless
+        # supplied, so every other request is unchanged.
+        if effective_output_config is not None:
+            converse_params["outputConfig"] = effective_output_config
+
         # Add service tier if specified
         if normalized_service_tier:
             converse_params["serviceTier"] = {"type": normalized_service_tier}
@@ -2123,6 +2279,15 @@ class BedrockClient:
             # for tool-enabled calls, so existing log output is unchanged.
             if "toolConfig" in converse_params:
                 logger.info(f"  - toolConfig: {converse_params['toolConfig']}")
+            if "outputConfig" in converse_params:
+                logger.info(
+                    "  - outputConfig: json_schema %s",
+                    converse_params["outputConfig"]
+                    .get("textFormat", {})
+                    .get("structure", {})
+                    .get("jsonSchema", {})
+                    .get("name"),
+                )
 
             # Log guardrail usage if configured
             if "guardrailConfig" in converse_params:
@@ -3615,6 +3780,7 @@ Args:
     context: Context prefix for metering key (default: "Unspecified")
     tool_config: Optional Converse toolConfig dict (see BedrockClient.invoke_model)
     tool_choice: Optional Converse toolChoice dict (see BedrockClient.invoke_model)
+    output_config: Optional Converse outputConfig dict (see BedrockClient.invoke_model)
 
 Returns:
     Bedrock response object with metering information

@@ -43,6 +43,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 - [Classification](./classification.md) - Customizing document classification
 - [Extraction & Confidence](./extraction-and-confidence.md) - Extraction configuration, per-field confidence scoring, and bounding-box geometry (consolidates the former Extraction, Assessment, and Assessment Bounding Boxes guides)
+- [Schema Enforcement](./schema-enforcement.md) - Make the extraction reply match the document schema: Bedrock structured outputs, a forced tool call, or auto
 - [Extraction Scaling Guide](./extraction-scaling-guide.md) - Simple vs advanced (agentic) mode limits by document/list size; where each hits limits and how to choose
 - [Missing Pages vs. Blank Fields](./missing-page-handling.md) - Telling a legitimately omitted page apart from an empty field on sparsely populated forms
 - [Few-Shot Examples](./few-shot-examples.md) - Implementing few-shot examples for improved accuracy
