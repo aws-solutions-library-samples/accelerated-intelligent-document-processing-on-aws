@@ -11,6 +11,7 @@ import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { IntlProvider, createIntl } from 'react-intl';
 
 const { mockGraphql } = vi.hoisted(() => ({ mockGraphql: vi.fn() }));
 vi.mock('../../../api/client-shim', () => ({
@@ -31,6 +32,15 @@ vi.mock('../../../hooks/use-configuration-versions', () => ({ default: () => sta
 vi.mock('../../../hooks/use-tenants', () => ({ default: () => stable.tenants }));
 
 import McpConfigurationLayout, { connectorSnippet, quickSnippet } from '../McpConfigurationLayout';
+
+// The page reads react-intl; under `en` it renders the inline English.
+const renderPage = () =>
+  render(
+    <IntlProvider locale="en" defaultLocale="en">
+      <McpConfigurationLayout />
+    </IntlProvider>,
+  );
+const intlEn = createIntl({ locale: 'en', defaultLocale: 'en' });
 
 const SECRET = 'sEcReT-value-1234';
 const LISTED = {
@@ -64,14 +74,14 @@ describe('McpConfigurationLayout', () => {
   });
 
   it('lists credentials with their role, profiles and status', async () => {
-    render(<McpConfigurationLayout />);
+    renderPage();
     expect(await screen.findByText('nightly')).toBeInTheDocument();
     expect(screen.getByText('acme-invoices')).toBeInTheDocument();
     expect(screen.getByText('active')).toBeInTheDocument();
   });
 
   it('shows a new secret once, with the Quick and connector snippets', async () => {
-    render(<McpConfigurationLayout />);
+    renderPage();
     await screen.findByText('nightly');
     fireEvent.click(screen.getByRole('button', { name: 'Create credential' }));
     const dialog = (await screen.findByText('Create MCP credential')).closest('[role="dialog"]') as HTMLElement;
@@ -90,8 +100,25 @@ describe('McpConfigurationLayout', () => {
     await waitFor(() => expect(screen.queryByText(SECRET)).toBeNull());
   });
 
+  it('takes its text from the catalog of the active locale', async () => {
+    render(
+      <IntlProvider locale="fr-CA" defaultLocale="en" messages={{ 'mcp.configuration.tableHeader': 'Identifiants MCP' }}>
+        <McpConfigurationLayout />
+      </IntlProvider>,
+    );
+    expect(await screen.findByText('Identifiants MCP')).toBeInTheDocument();
+    expect(screen.queryByText('MCP credentials')).toBeNull();
+  });
+
   it('builds snippets naming the issued values', () => {
-    expect(quickSnippet(ISSUED)).toContain(`Client secret: ${SECRET}`);
+    expect(quickSnippet(ISSUED, intlEn)).toBe(
+      [
+        'MCP server endpoint: https://gw.example/mcp',
+        'Client ID: client-2',
+        `Client secret: ${SECRET}`,
+        'Token URL: https://auth.example/oauth2/token',
+      ].join('\n'),
+    );
     const connector = JSON.parse(connectorSnippet(ISSUED));
     expect(connector.mcpServers['idp-mcp-server'].env).toEqual({
       IDP_MCP_ENDPOINT: 'https://gw.example/mcp',
@@ -108,7 +135,7 @@ describe('McpConfigurationLayout', () => {
         return Promise.reject({ errors: [{ message: 'This scope spans tenants acme, globex.', errorType: 'ValidationError' }] });
       return Promise.resolve({ data: {} });
     });
-    render(<McpConfigurationLayout />);
+    renderPage();
     fireEvent.click((await screen.findAllByRole('button', { name: 'Create credential' }))[0]);
     const dialog = (await screen.findByText('Create MCP credential')).closest('[role="dialog"]') as HTMLElement;
     const input = within(dialog).getByPlaceholderText('nightly-quick-workflow');
@@ -118,7 +145,7 @@ describe('McpConfigurationLayout', () => {
   });
 
   const roleOptions = async (): Promise<string[]> => {
-    render(<McpConfigurationLayout />);
+    renderPage();
     await screen.findByText('nightly');
     fireEvent.click(screen.getByRole('button', { name: 'Create credential' }));
     await screen.findByText('Create MCP credential');
@@ -147,14 +174,14 @@ describe('McpConfigurationLayout', () => {
 
   it('is Admin-only', () => {
     stable.role.isAdmin = false;
-    render(<McpConfigurationLayout />);
+    renderPage();
     expect(screen.getByText(/available to Admin users only/)).toBeInTheDocument();
     expect(mockGraphql).not.toHaveBeenCalled();
   });
 
   it('says MCP is not enabled when the stack has no MCP server', () => {
     stable.settings.settings.McpServerEndpoint = '';
-    render(<McpConfigurationLayout />);
+    renderPage();
     expect(screen.getByText('MCP is not enabled on this stack')).toBeInTheDocument();
     expect(mockGraphql).not.toHaveBeenCalled();
   });

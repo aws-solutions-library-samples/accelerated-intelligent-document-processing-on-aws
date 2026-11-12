@@ -11,6 +11,7 @@
 import React from 'react';
 import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { IntlProvider } from 'react-intl';
 import type { SideNavigationProps } from '@cloudscape-design/components';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -52,9 +53,11 @@ const ROLES: Array<[string, Record<string, unknown>, string]> = [
 
 const activeAt = (path: string, activeHref?: string | null) => {
   render(
-    <MemoryRouter initialEntries={[path]}>
-      <Navigation activeHref={activeHref} />
-    </MemoryRouter>,
+    <IntlProvider locale="en" defaultLocale="en">
+      <MemoryRouter initialEntries={[path]}>
+        <Navigation activeHref={activeHref} />
+      </MemoryRouter>
+    </IntlProvider>,
   );
   return state.nav!.activeHref;
 };

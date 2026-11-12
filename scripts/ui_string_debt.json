@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 260,
-    "findings": 6574
+    "files": 259,
+    "findings": 6449
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -37,7 +37,7 @@
     "src/ui/src/api/presign-batch.ts": 1,
     "src/ui/src/api/rest-client.ts": 1,
     "src/ui/src/components/agent-chat/AgentChatHistoryDropdown.tsx": 8,
-    "src/ui/src/components/agent-chat/AgentChatLayout.tsx": 54,
+    "src/ui/src/components/agent-chat/AgentChatLayout.tsx": 52,
     "src/ui/src/components/agent-chat/AgentToolComponent.tsx": 25,
     "src/ui/src/components/agent-chat/BedrockErrorMessage.tsx": 15,
     "src/ui/src/components/agent-chat/QuickStartWidget.tsx": 7,
@@ -173,7 +173,7 @@
     "src/ui/src/components/genai-idp-top-navigation/GenAIIDPTopNavigation.tsx": 20,
     "src/ui/src/components/genaiidp-layout/breadcrumbs.tsx": 3,
     "src/ui/src/components/genaiidp-layout/feature-platform-nav-items.ts": 3,
-    "src/ui/src/components/genaiidp-layout/navigation.tsx": 80,
+    "src/ui/src/components/genaiidp-layout/navigation.tsx": 78,
     "src/ui/src/components/genaiidp-layout/review-queues-nav-items.tsx": 3,
     "src/ui/src/components/inbox/DeleteInboxMessagesModal.tsx": 7,
     "src/ui/src/components/inbox/InboxLayout.tsx": 1,
@@ -200,7 +200,6 @@
     "src/ui/src/components/json-schema-builder/constraints/StringConstraints.tsx": 13,
     "src/ui/src/components/json-schema-builder/constraints/ValueConstraints.tsx": 17,
     "src/ui/src/components/json-schema-builder/utils/badgeHelpers.tsx": 5,
-    "src/ui/src/components/mcp-configuration/McpConfigurationLayout.tsx": 121,
     "src/ui/src/components/model-config-limits-layout/ModelConfigLimitsLayout.tsx": 94,
     "src/ui/src/components/pages-panel/PageTextEditorModal.tsx": 43,
     "src/ui/src/components/pages-panel/PagesPanel.tsx": 15,
