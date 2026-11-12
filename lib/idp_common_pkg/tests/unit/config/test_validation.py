@@ -1484,7 +1484,11 @@ _UNIFIED_PRESETS = sorted(
 )
 
 
-@pytest.mark.skipif(not _UNIFIED_PRESETS, reason="config_library not in this tree")
+def test_the_preset_glob_finds_presets():
+    """An empty glob would make the parametrised preset test below collect nothing."""
+    assert len(_UNIFIED_PRESETS) > 1
+
+
 @pytest.mark.parametrize(
     "preset",
     _UNIFIED_PRESETS,

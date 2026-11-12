@@ -1591,18 +1591,14 @@ def _confidence_pass_can_run(merged_config: Dict[str, Any]) -> bool:
     ``enabled`` here: the model is what the runtime reads, and it folds the legacy
     ``enabled: false`` into ``mode: off``. ``integrated`` still counts as able to run,
     because simple extraction scores a class with list fields in the separate pass
-    even then. A block the model refuses is reported by the Pydantic step, so it is
-    treated here as able to run and its prompt is still checked.
+    even then. ``validate_config`` calls this only after ``IDPConfig`` has accepted
+    the merged configuration, so the block validates here.
     """
     from idp_common.config.models import ConfidenceConfig
 
-    try:
-        block = ConfidenceConfig.model_validate(
-            _dict_at(merged_config, "extraction", "confidence")
-        )
-    except Exception:
-        return True
-    return block.enabled
+    return ConfidenceConfig.model_validate(
+        _dict_at(merged_config, "extraction", "confidence")
+    ).enabled
 
 
 def _validate_task_prompt_placeholders(
