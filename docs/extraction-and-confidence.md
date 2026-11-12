@@ -243,7 +243,8 @@ Agentic extraction requires models with tool-use support:
 > and is the shipped default — for the **confidence-assessment** pass
 > (`extraction.confidence`), and it works for **Simple** extraction, which needs no
 > tool use in its default configuration (the experimental `forced_tool` path is the
-> one exception). See
+> one exception; experimental `structured_output` needs no tool use but applies to
+> Claude models only). See
 > [Benchmarking → which models are measured](benchmarking/index.md#which-models-are-actually-measured).
 
 > **⚠️ OpenAI GPT-5.x cannot be used with agentic extraction.** All
@@ -990,6 +991,69 @@ request, not from the indentation added for readability.
 `fallback_to_prompt: false` turns an unhonored force into a **parse failure**
 instead of falling back. That loses data by design and exists only to measure how
 often forcing is actually honored; leave it on in production.
+
+### Structured outputs (`extraction.structured_output`) — experimental, off by default
+
+Forced tool use *asks* the model to answer in your schema's shape. Bedrock
+**structured outputs** *guarantees* it: the class schema is sent as a JSON Schema
+output format and constrained decoding makes the reply valid JSON that matches it.
+A reply that ends normally is then read as-is, with no JSON repair.
+
+```yaml
+extraction:
+  structured_output:
+    enabled: false   # experimental; measure before turning it on
+```
+
+Applies to **Simple** extraction only. Configurable under **Configuration →
+Extraction → Structured Outputs (experimental)**. When it applies it takes
+precedence over [forced tool use](#forced-tool-use-extractionforced_tool--experimental-off-by-default),
+and `metadata.forced_tool.skipped` says so.
+
+**Why it is off by default.** It constrains the *structure* of the reply, not the
+*accuracy* of the values in it, and it has not yet been benchmarked against the
+default path. Measure field accuracy, completeness, cost and latency on your own
+documents before enabling it.
+
+**Which models.** Claude models whose Bedrock model card lists structured outputs —
+every Claude model the solution offers, including **Claude Opus 5.5** and **Sonnet
+5.5**, which reject a forced tool but need no tool here. Other models (Amazon Nova,
+xAI Grok, OpenAI GPT-6 Astra and GPT-5.x) and a custom Lambda hook use the prompt as
+before.
+
+**Which document schemas.** Structured outputs accepts a subset of JSON Schema and
+limits how many fields may be missing. Before sending, the solution:
+
+- removes constraints it does not accept (`minimum`/`maximum`, `minLength`/`maxLength`,
+  `maxItems`, unsupported string `format`s) and lowers a `minItems` above 1 to 1.
+  When [validation](#schema-validation-extractionvalidation) is on, these are still checked
+  against your original schema afterwards;
+- makes optional fields required but nullable, up to **16**, so the model returns
+  `null` for a field the document does not contain, and leaves any further fields
+  optional, up to **12**. (An optional text field tends to come back as an empty
+  string rather than `null`, which is why the nullable form is used first.)
+
+A schema that cannot fit — more optional fields than the two limits hold, or a
+recursive schema — is extracted with the prompt as before. Large forms (W-2s, claim
+forms, insurance applications) commonly exceed the limits.
+
+**It never fails a document.** If Bedrock rejects a schema anyway, the section is
+retried once without it, and that class is not sent with structured outputs again
+until the function restarts. A reply cut off at the output-token limit, or a
+refusal, goes through the usual parse-and-repair path.
+
+**Latency.** The first document of a class can take up to about **90 seconds**
+longer while Bedrock compiles the schema; later documents with the same schema
+reuse it for 24 hours.
+
+**What gets recorded.** Each section's `metadata.structured_output` holds
+`applied`, `parsed`, `stop_reason`, `skipped` or `rejected` with the reason, and a
+`schema` summary of what was changed to fit (`made_nullable`, `relaxed_keywords`,
+the optional and nullable counts). `applied` and `parsed` are the numbers to look
+at first.
+
+See the [extraction module README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/extraction/README.md#structured-outputs-simple-mode-extractionstructured_output)
+for the implementation.
 
 ### Several records in one section (`instance_count`)
 

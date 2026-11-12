@@ -695,6 +695,63 @@ effect" from "forcing never ran", and both look identical in the output.
 > `bedrock.<name>(...)` calls and asserts each resolves; add the re-export line
 > whenever you call a new client method that way.
 
+## Structured outputs (Simple mode, `extraction.structured_output`)
+
+Bedrock structured outputs constrains decoding to a JSON Schema, so the reply is
+**guaranteed** to be JSON matching it — where a forced tool only steers the shape.
+With `extraction.structured_output.enabled: true` (off by default), the Simple path
+sends the wire class schema as a Converse `outputConfig.textFormat` and, for a reply
+that ends with `stopReason: end_turn`, parses it with `json.loads` directly: no
+fenced-block heuristics and no `repair_truncated_json`. The prompt is unchanged.
+
+`idp_common.extraction.structured_output` owns the extraction side:
+
+| Helper | Purpose |
+|---|---|
+| `should_use_structured_output(model_id, enabled, class_schema)` | `(use, skip_reason)`. Refuses routes that cannot carry it (Lambda hook, GPT-5.x Responses API) and models outside `bedrock.client.STRUCTURED_OUTPUT_BASE_NAMES` — the Claude models whose Bedrock model card lists structured outputs. Nova, Grok and Astra are refused. |
+| `build_extraction_output_config(class_schema)` | `(output_config, name_map, prepared)`. Sanitizes names (as forced tool does), then `bedrock.structured_output.prepare_schema`. `output_config` is None when the schema does not fit, and `prepared.reason` says why. |
+| `parse_structured_reply(text, stop_reason, name_map)` | The parsed, name-restored reply, or None to use the ordinary text path. |
+| `record_rejection` / `rejected_reason` | Per-container memory of schemas Bedrock rejected. |
+
+**Schema preparation** (`idp_common.bedrock.structured_output.prepare_schema`) sets
+`additionalProperties: false` on every object, inlines `$ref` (so the limits are
+counted on the tree actually sent, and a recursive schema is detected), keeps only
+the documented keyword subset (`minItems` above 1 is clamped to 1; `minimum`,
+`maxLength`, `maxItems`, unlisted `format` values, lookaround patterns and
+annotations such as `data_type` are removed), and fits the limits: optional
+properties are listed in `required` and made nullable while the **16** union-typed
+allowance lasts, and at most **12** may stay optional across the whole schema.
+Nullable is spent first because, measured live, a required nullable field the
+document lacks comes back `null` while an optional string comes back `""`. A nullable
+enum is wrapped in `anyOf` rather than given a type array, which Bedrock rejects. Full-schema validation still
+reads the original class schema, so a removed constraint is still checked when
+`extraction.validation` is on. Measure how many of the shipped class schemas fit with
+`prepare_schema` over `config_library/unified/*/config.yaml`;
+`tests/unit/bedrock/test_structured_output.py` does exactly that.
+
+**Fallbacks never fail the section.** An unsupported model or a schema that does not
+fit uses today's path (including `forced_tool` if that is on). A `ValidationException`
+from Bedrock — a schema is validated immediately, but the optional-property limit is
+enforced while the grammar compiles, up to ~90 s — is retried once without the output
+format, and remembered for the container once that retry succeeds. A `max_tokens`
+stop or a refusal is never trusted as complete, even if the text parses, and goes
+down the ordinary parse-and-repair path.
+
+**Precedence.** When structured outputs applies, `forced_tool` is not sent, and
+`metadata.forced_tool.skipped` says so.
+
+**`metadata.structured_output`** records `requested`, `applied`, `parsed`,
+`stop_reason`, `skipped` or `rejected` with the reason, and `schema` — the
+preparation audit (`optional_properties`, `union_properties`, `made_required`,
+`made_nullable`, `relaxed_keywords`).
+
+**Latency.** Bedrock compiles a grammar the first time it sees a schema (up to ~90 s)
+and caches it for 24 hours per account. The schema string keeps the authored property
+order, which is deterministic, so an unchanged class always hits that cache. It is not
+sorted: constrained decoding emits properties in schema order, and alphabetizing them
+measurably changed what the model wrote. The client read timeout
+(`CONFIDENCE_READ_TIMEOUT_SECONDS`) is above the 120 s the user guide asks for.
+
 ## Page images over Bedrock's per-image limit (`metadata.image_downscale`)
 
 Bedrock enforces its 5 MiB per-image limit on the **base64-encoded** payload, so a

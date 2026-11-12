@@ -56,6 +56,17 @@ extraction:
     # an error. Keep true in production; set false only to measure how often
     # forcing is actually honored.
     fallback_to_prompt: true
+  # Constrain the reply to the class schema with Bedrock structured outputs
+  # (constrained decoding, #1785): the schema goes on the request as a JSON Schema
+  # output format and the reply is guaranteed to be JSON matching it.
+  structured_output:
+    # OFF by default and gated on a measured win, like forced_tool: it constrains
+    # the SHAPE of the reply, not the values in it. Applies to Claude models whose
+    # Bedrock model card lists structured outputs, and only to class schemas that
+    # fit its limits (12 optional plus 16 nullable properties). Anything else falls
+    # back to the prompt automatically, and the reason is recorded in the section's
+    # metadata.structured_output. Takes precedence over forced_tool when it applies.
+    enabled: false
   # Detect a section that holds SEVERAL records of the same class when the
   # model returned only one of them (GitHub #753 / #565). One extra integer is
   # requested in the same inference and stripped from the result; when the answer

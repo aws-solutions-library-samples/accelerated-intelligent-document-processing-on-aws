@@ -2259,6 +2259,18 @@ Resources:
                     default: true
                     order: 1
                     dependsOn: { field: "enabled", value: true }
+              structured_output:
+                type: object
+                sectionLabel: Structured Outputs (experimental)
+                description: "Send the document schema to Bedrock as a structured-outputs JSON Schema, so the reply is guaranteed to be valid JSON matching it (constrained decoding). EXPERIMENTAL and off by default: it constrains the SHAPE of the reply, not the accuracy of the values in it. Applies to Claude models whose Bedrock model card lists structured outputs, and to document schemas within its limits (12 optional plus 16 nullable fields); anything else falls back to the prompt automatically and the reason is recorded in the section metadata. Takes precedence over Schema Enforcement when both are on. Applies to Simple extraction only, so this is shown only when Extraction mode is 'simple'."
+                order: 4.06
+                dependsOn: { field: "extraction.mode", value: "simple" }
+                properties:
+                  enabled:
+                    type: boolean
+                    description: "Constrain the model's reply to your document schema. Measure accuracy and completeness on your own documents before enabling it. The first document of each class can take up to about 90 seconds longer while Bedrock compiles the schema; later ones reuse it for 24 hours."
+                    default: false
+                    order: 0
               multi_instance_detection:
                 type: object
                 sectionLabel: Multi-instance Section Detection

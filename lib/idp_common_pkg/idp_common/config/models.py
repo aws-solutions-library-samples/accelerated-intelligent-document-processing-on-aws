@@ -582,11 +582,11 @@ class ForcedToolConfig(BaseModel):
     an empirical question the benchmark ``forcing`` suite exists to answer, and it
     is entirely possible the answer is no — in which case this stays off.
 
-    What it buys regardless of accuracy is that a malformed-JSON parse failure
-    becomes structurally impossible for the declared fields. Note Anthropic
-    ``strict`` tool use and structured outputs are rejected by Bedrock on Converse,
-    InvokeModel and Mantle Messages alike, so a forced ``toolChoice`` is the
-    strongest enforcement available on Claude and Nova.
+    What it buys regardless of accuracy is that the response arrives as a tool
+    input rather than prose. A forced ``toolChoice`` steers the shape on a
+    best-effort basis only; the guarantee for Claude is Bedrock structured outputs,
+    which is ``StructuredOutputConfig`` and takes precedence over this when both
+    are enabled and it applies.
     """
 
     enabled: bool = Field(
@@ -612,6 +612,37 @@ class ForcedToolConfig(BaseModel):
             "OFF only to make such a response a hard parse failure — useful for "
             "measuring how often forcing is actually honored, and a bad idea in "
             "production."
+        ),
+    )
+
+
+class StructuredOutputConfig(BaseModel):
+    """Constrain Simple extraction's reply with Bedrock structured outputs (#1785).
+
+    The class schema is sent as a Converse ``outputConfig.textFormat`` JSON Schema,
+    and constrained decoding guarantees the reply is JSON matching it, so the
+    parse-and-repair path is not needed for a reply that ends normally.
+
+    **Off by default, and gated on evidence**, like ``forced_tool``: constraining
+    the shape says nothing about the values. It applies only to Claude models whose
+    Bedrock model card lists structured outputs, and only to class schemas that fit
+    the subset and limits structured outputs enforces (at most 12 optional and 16
+    nullable properties). Anything else falls back to the prompt-described schema,
+    and the reason is recorded in the section's ``metadata.structured_output``. When
+    it applies it takes precedence over ``forced_tool``.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Send the document schema as a Bedrock structured-outputs JSON Schema "
+            "so the reply is guaranteed to be JSON matching it. OFF by default and "
+            "gated on a measured win. Applies to Claude models whose model card "
+            "lists structured outputs; other models, a custom Lambda hook, and "
+            "class schemas that exceed the limits (12 optional plus 16 nullable "
+            "properties) fall back to the prompt automatically, with the reason "
+            "recorded in the section metadata. The first request for a new schema "
+            "can take up to about 90 seconds while Bedrock compiles it."
         ),
     )
 
@@ -1479,6 +1510,14 @@ class ExtractionConfig(BaseModel):
             "Send the class schema as a forced Converse tool rather than "
             "describing it in the prompt. Off by default and gated on a measured "
             "win — see ForcedToolConfig."
+        ),
+    )
+    structured_output: StructuredOutputConfig = Field(
+        default_factory=StructuredOutputConfig,
+        description=(
+            "Constrain the reply to the class schema with Bedrock structured "
+            "outputs. Off by default and gated on a measured win — see "
+            "StructuredOutputConfig."
         ),
     )
     multi_instance_detection: MultiInstanceDetectionConfig = Field(

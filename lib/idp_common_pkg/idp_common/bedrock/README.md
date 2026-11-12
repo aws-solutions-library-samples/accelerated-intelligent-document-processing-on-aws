@@ -323,11 +323,9 @@ text = response["response"]["output"]["message"]["content"][0]["text"]
 
 ### Schema-enforced output (`output_schema`, opt-in)
 
-This is the **only** surface in the accelerator with a native constrained-decoding
-format. On Converse and InvokeModel, `strict` tool use and `output_config.format`
-are both rejected by `bedrock-runtime` (`Extra inputs are not permitted`), so
-schema enforcement there is best-effort `toolConfig` at most. The Responses API
-instead accepts:
+The Responses API has its own constrained-decoding format, separate from the
+Converse `outputConfig.textFormat` that Claude models take on `bedrock-runtime`
+(see [Structured outputs](#structured-outputs-outputconfig)). It accepts:
 
 ```
 text.format = {"type": "json_schema", "name": ..., "schema": {...}, "strict": true}
@@ -495,6 +493,57 @@ Both extraction helpers scan **every** content block rather than indexing
 `content[0]`. Reasoning models (Claude Sonnet 5 / 4.6+, and any model with
 extended thinking on) emit one or more `reasoningContent` blocks *before* the
 answer block, so `content[0]` is frequently not the answer.
+
+## Structured outputs (`outputConfig`)
+
+Bedrock structured outputs constrains decoding to a JSON Schema, so a reply that
+ends normally is guaranteed to be JSON matching it. `invoke_model(...,
+output_config=...)` passes a Converse `outputConfig` through:
+
+```python
+from idp_common.bedrock.client import supports_structured_output
+from idp_common.bedrock.structured_output import converse_output_config, prepare_schema
+from idp_common.bedrock.tool_schema import restore_names, sanitize_tool_schema
+
+clean, name_map = sanitize_tool_schema(class_schema)
+prepared = prepare_schema(clean)
+if supports_structured_output(model_id) and prepared.fits:
+    out = client.invoke_model(
+        model_id=model_id, system_prompt=system, content=content,
+        output_config=converse_output_config(prepared.schema, "extracted_fields"),
+    )
+    if out["response"]["stopReason"] == "end_turn":
+        fields = restore_names(json.loads(client.extract_text_from_response(out)), name_map)
+```
+
+| Piece | What it does |
+|---|---|
+| `structured_output_unsupported_reason(model_id)` / `supports_structured_output` | The capability gate. An allowlist, `STRUCTURED_OUTPUT_BASE_NAMES`, of the Claude models whose Bedrock model card lists structured outputs; every Claude model the solution offers is on it, and a test fails if one is offered without being decided. Lambda hook, GPT-5.x, Nova, Grok and Astra are refused, as is a botocore whose service model lacks Converse `outputConfig` (read from the installed model, not a version number). |
+| `prepare_schema(schema)` | Makes a sanitized schema acceptable: `additionalProperties: false` on every object, `$ref` inlined, only the documented keyword subset kept (`minItems` clamped to 1), and the limits of **16** union-typed and **12** optional properties met by listing optional properties in `required` and making them nullable while the union allowance lasts (a required nullable field comes back `null`; an optional string was measured coming back `""`). Returns a `PreparedSchema` with `fits`, `reason` and an `audit()` of what changed. |
+| `converse_output_config(schema, name, description)` | The Converse carrier. The schema is a JSON **string** there. Property order is kept as authored, not sorted: the model emits fields in schema order, and alphabetizing them was measured to change extracted values. Insertion order is deterministic, so an identical schema still hits Bedrock's 24-hour grammar cache. |
+| `invoke_model_output_config(schema)` | The `output_config` member of an Anthropic InvokeModel body, where the schema is an **object**. `invoke_model` sends Converse only; this is for code that builds an InvokeModel body itself, and it must be merged with any `effort` already in `output_config`. |
+
+`invoke_model` raises `ValueError` before any request when the model cannot take it,
+or when the dict is not a `textFormat` JSON Schema with a string `schema`.
+
+Things to know before relying on it:
+
+- **The first request for a new schema compiles a grammar**, which can take up to
+  ~90 s. The client read timeout is 300 s, above the 120 s the user guide asks for.
+- **A schema can still be rejected at run time.** The optional-property limit is
+  enforced during compilation, so "Schema is too complex" can arrive as a
+  `ValidationException` up to ~90 s in. Catch it and retry without the format.
+- **Only `end_turn` is a complete answer.** A `max_tokens` stop returns incomplete
+  JSON even under constrained decoding, and a refusal or filter is not an answer.
+- **Not compatible with citations**; Bedrock returns a 400 if both are requested.
+- **Verified live** (us-east-1, 2026-11-11): every Claude model in
+  `STRUCTURED_OUTPUT_BASE_NAMES` accepts it, alongside `output_config.effort`
+  where the model takes effort; Amazon Nova answers "This model doesn't support the
+  outputConfig field"; 13 optional properties fail with "Schema is too complex"
+  after ~80 s, 17 union-typed are refused at once; and a `type` array beside an
+  `enum` is refused ("Enum value ... does not match declared type").
+- Source: the Bedrock user guide,
+  [Get validated JSON results from models](https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html).
 
 ## Tool Use (`toolConfig` / `toolChoice`)
 
@@ -702,11 +751,10 @@ else:
 
 ### Caveats before you add a caller
 
-- **There is no strict / structured-output mode on `bedrock-runtime`.**
-  `toolSpec.strict`, `output_config.format` and `response_format` are all
-  rejected (`Extra inputs are not permitted`) on **both** Converse and
-  InvokeModel. A forced `toolChoice` is best-effort constrained decoding, not a
-  grammar guarantee — always validate the returned object.
+- **A forced `toolChoice` is best effort, not a guarantee** — always validate the
+  returned object. The guarantee is Bedrock structured outputs: `output_config`
+  on `invoke_model` (see [Structured outputs](#structured-outputs-outputconfig)), or
+  `"strict": true` on a `toolSpec` whose `inputSchema` meets the same rules.
 - **Property names must be sanitized by the caller.** Converse rejects
   *top-level* `inputSchema.json.properties` keys that don't match
   `^[a-zA-Z0-9_.-]{1,64}$` (`Property keys should match pattern ...`). Names like
