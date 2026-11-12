@@ -2076,12 +2076,16 @@ function_url_endpoints:
 #                   permissive way to do the same thing.
 #   enforced_in:    the tool module; it must call the shared scope helper.
 mcp_clients:
-  # Every Cognito client the gateway authorizer admits, and how the interceptor
-  # resolves a token from it. The scan reads AgentCoreGateway's client properties
-  # and the interceptor's environment and fails if either names a client this
-  # list does not, so a client cannot be allowed in without a resolution rule.
+  # Every Cognito client the gateway authorizer admits through the template, and
+  # how the interceptor resolves a token from it: `user` (a signed-in user, named
+  # in the interceptor's MCP_USER_CLIENT_IDS) or `registry` (a row in the MCP
+  # credential registry, which McpDefaultCredential writes for the stack-created
+  # client). The scan fails if the template admits a client this list does not
+  # declare, or wires one in a way its kind does not match. Clients an Admin
+  # creates are added to the gateway at run time and are registry rows by
+  # construction.
   ExternalAppClient: user
-  MCPConnectorClient: service
+  MCPConnectorClient: registry
 
 mcp_tools:
   search:

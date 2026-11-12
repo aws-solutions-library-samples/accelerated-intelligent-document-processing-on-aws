@@ -88,7 +88,7 @@ behaviour.
 | Upload outside every tenant's prefixes | Processed under the active profile | **Refused** at ingest once at least one tenant is declared (internal producers excepted, below) |
 | Document chat | Streams through the chat Function URL | The web UI is not given the Function URL and uses the REST path. Both paths scope the turn from the caller's verified identity: the Function URL verifies the Cognito ID token the browser presents and refuses a request without one |
 | Agent Chat, agent queries and Knowledge Base queries, which read across documents | Available to their usual groups | **Admin only** |
-| MCP tools | Available to the caller's role, within their configuration scope | Scoped like the UI: a signed-in user sees only their tenant's documents; `search` is **Admin only**; the stack-created client-credentials client is **refused** |
+| MCP tools | Available to the caller's role, within their configuration scope | Scoped like the UI: a signed-in user sees only their tenant's documents; `search` is **Admin only**; the stack-created client-credentials client is created **disabled** until an Admin gives it one tenant's profiles |
 
 The ingest rule is a single comparison: **the tenant that owns the object key must
 be the tenant that owns the profile the document resolves to.** It does not depend
@@ -192,7 +192,7 @@ Under `IdpClaim` and `Api` four things change, whatever `TenantIsolationMode` sa
   entitlement push, is denied rather than served every tenant's documents.
 - **The surfaces that read across tenants are closed to non-Admins,** as in strict
   mode: Agent Chat, agent queries, Knowledge Base queries and the MCP `search` tool are
-  Admin only, the stack-created MCP client-credentials client is refused, and the web
+  Admin only, the stack-created MCP client-credentials client starts disabled, and the web
   UI sends document chat over the REST path. The chat Function URL applies the same
   rules from the caller's verified ID token. Once users are confined to a tenant, any
   of these would otherwise be a way around the confinement.
@@ -400,8 +400,16 @@ cannot verify. Check, in order:
   `get_results` need Admin, Author, Reviewer or Viewer. A user in no group is
   refused.
 - **The isolation mode and grant source.** Under `Strict`, `IdpClaim` or `Api` a
-  non-Admin always has a scope, so `search` is Admin only, and the stack-created
-  client-credentials client is refused because it is not assigned to a tenant.
+  non-Admin always has a scope, so `search` is Admin only. The stack-created
+  client-credentials client ("Default (stack-created)" on the MCP Configuration
+  page) is registered disabled there, because its access is unscoped; give it one
+  tenant's profiles and enable it, or create a credential per tenant. Whether it starts enabled is decided once, when the stack first registers it, and
+  a later stack update never changes it. Switching `TenantIsolationMode` to `Strict`
+  afterwards leaves it enabled but, having no profiles, it then sees no documents;
+  switching back to `Off` leaves a disabled one disabled until an Admin enables it.
+- **A service credential.** It must be active and unexpired, its role must admit
+  the tool, and it sees only its own configuration profiles. Under `Strict`, an
+  Admin credential is refused and an unscoped one sees nothing.
 - **The function's `idp_common` layer.** Without it the handler cannot verify the
   caller and refuses every tool, saying the caller could not be verified.
 

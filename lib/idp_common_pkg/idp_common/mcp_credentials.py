@@ -989,3 +989,72 @@ def touch_last_used(table: Any, client_id: str, now: Optional[datetime] = None):
         )
     except Exception:  # noqa: BLE001 - the condition failing is the common case
         pass
+
+
+# --- the stack-created client ---------------------------------------------------------
+
+#: The name the stack-created client-credentials client is listed under.
+STACK_DEFAULT_NAME = "Default (stack-created)"
+KIND_STACK_DEFAULT = "stack-default"
+
+
+def register_stack_default(
+    table: Any,
+    client_id: str,
+    *,
+    secret_arn: str,
+    environ: Optional[Mapping[str, str]] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Record the stack-created client as a credential, once.
+
+    It keeps the access every caller of that client had before credentials existed:
+    an Author with no configuration scope and write tools on. Where an unscoped
+    caller is denied (strict isolation, or tenants granted by an IdP claim or an
+    entitlement system) that access is exactly what the mode forbids, so it is
+    registered **disabled** until an Admin gives it a tenant's profiles and enables
+    it on the MCP Configuration page.
+
+    An existing row is left as it is: an Admin may have narrowed, disabled or
+    revoked it, and a stack update must not undo that.
+    """
+    now = now or _now()
+    existing = get_row(table, client_id)
+    if existing:
+        return existing
+    enabled = not unscoped_is_denied(environ)
+    row = {
+        "clientId": client_id,
+        "name": STACK_DEFAULT_NAME,
+        "role": "Author",
+        "writeTools": True,
+        "enabled": enabled,
+        "status": STATUS_ACTIVE if enabled else STATUS_DISABLED,
+        "kind": KIND_STACK_DEFAULT,
+        "createdBy": "stack",
+        "createdAt": _iso(now),
+        "secretArn": secret_arn,
+    }
+    try:
+        table.put_item(Item=row, ConditionExpression="attribute_not_exists(clientId)")
+    except Exception as exc:  # noqa: BLE001 - a concurrent create wins
+        if "ConditionalCheckFailed" not in str(exc):
+            raise
+        return get_row(table, client_id) or row
+    _audit("register-stack-default", "stack", row)
+    return row
+
+
+def remove_stack_default(table: Any, client_id: str) -> bool:
+    """Delete the stack-created client's row, and only that kind of row."""
+    try:
+        table.delete_item(
+            Key={"clientId": client_id},
+            ConditionExpression="kind = :k",
+            ExpressionAttributeValues={":k": KIND_STACK_DEFAULT},
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        if "ConditionalCheckFailed" in str(exc):
+            return False
+        raise

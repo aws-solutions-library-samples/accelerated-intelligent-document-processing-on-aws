@@ -126,7 +126,6 @@ def _resolve(request: Dict[str, Any]) -> mcp_access.Caller:
         claims,
         credential_row=credential_row,
         user_client_ids=_ids("MCP_USER_CLIENT_IDS"),
-        stack_service_client_ids=_ids("MCP_STACK_SERVICE_CLIENT_IDS"),
         cognito=_client("cognito-idp"),
         user_pool_id=os.environ.get("USER_POOL_ID", ""),
         users_table_name=os.environ.get("USERS_TABLE_NAME", ""),

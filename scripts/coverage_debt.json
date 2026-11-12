@@ -472,6 +472,8 @@
         "job_tracker/index.py": 100.0,
         "mcp_credential_manager/cfnresponse.py": 43.48,
         "mcp_credential_manager/index.py": 73.23,
+        "mcp_default_credential/cfnresponse.py": 0.0,
+        "mcp_default_credential/index.py": 85.19,
         "mcp_identity_interceptor/index.py": 96.43,
         "mcp_interceptor_attach/cfnresponse.py": 0.0,
         "mcp_interceptor_attach/index.py": 97.14,

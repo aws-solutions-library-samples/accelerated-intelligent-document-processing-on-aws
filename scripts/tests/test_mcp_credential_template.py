@@ -55,3 +55,36 @@ def test_the_managers_gateway_grant_does_not_name_the_gateway_arn():
     for st in grants:
         assert "AgentCoreGateway.GatewayArn" not in str(st["Resource"])
         assert ":gateway/*" in str(st["Resource"])
+
+
+def test_the_interceptor_is_updated_only_after_the_connector_row_exists():
+    depends = RESOURCES["McpIdentityInterceptorFunction"].get("DependsOn")
+    depends = [depends] if isinstance(depends, str) else list(depends or [])
+    assert "McpDefaultCredential" in depends
+    default = RESOURCES["McpDefaultCredential"]["Properties"]
+    assert default["ClientId"] == {"Fn::Ref": "MCPConnectorClient"}
+
+
+def _reaches_client_secret(value):
+    if isinstance(value, dict):
+        att = value.get("Fn::GetAtt")
+        if isinstance(att, str) and att.endswith(".ClientSecret"):
+            return True
+        if isinstance(att, list) and att[-1:] == ["ClientSecret"]:
+            return True
+        return any(_reaches_client_secret(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_reaches_client_secret(v) for v in value)
+    return isinstance(value, str) and ".ClientSecret}" in value
+
+
+def test_no_output_prints_a_client_secret():
+    outputs = load_template("template.yaml").get("Outputs") or {}
+    printing = [k for k, v in outputs.items() if _reaches_client_secret(v.get("Value"))]
+    assert printing == []
+
+
+def test_the_default_credential_is_told_the_isolation_mode():
+    props = RESOURCES["McpDefaultCredential"]["Properties"]
+    assert props["TenantIsolationMode"] == {"Fn::Ref": "TenantIsolationMode"}
+    assert props["TenantGrantSource"] == {"Fn::Ref": "TenantGrantSource"}

@@ -396,9 +396,6 @@ def expected_issuer(region: str, user_pool_id: str, url_suffix: str = "amazonaws
 
 # --- resolving a principal ----------------------------------------------------
 
-#: The name the stack-created client-credentials client is shown under.
-DEFAULT_SERVICE_CREDENTIAL_NAME = "Default (stack-created)"
-
 
 def _user_attributes(response: Mapping[str, Any]) -> Dict[str, str]:
     return {
@@ -480,39 +477,10 @@ def resolve_user_caller(
     )
 
 
-def resolve_stack_service_caller(
-    claims: Mapping[str, Any], *, environ: Optional[Mapping[str, str]] = None
-) -> Caller:
-    """The principal behind the stack-created client-credentials client.
-
-    It is an Author with no configuration scope and write tools on, which is what
-    every caller of that client could do before callers were resolved. A caller
-    with no scope is exactly what strict isolation and an external tenant-grant
-    source forbid, so under either it is refused, as every MCP call was before.
-    """
-    from idp_common.config_scope import unscoped_is_denied
-
-    if unscoped_is_denied(environ):
-        raise refusal(
-            "this deployment runs with tenant isolation, and the stack-created MCP "
-            "client is not assigned to a tenant."
-        )
-    return Caller(
-        kind="service",
-        id=str(claims.get("client_id") or ""),
-        name=DEFAULT_SERVICE_CREDENTIAL_NAME,
-        roles=["Author"],
-        scope=None,
-        tenant=None,
-        write_tools=True,
-    )
-
-
 def resolve_caller(
     claims: Mapping[str, Any],
     *,
     user_client_ids: Sequence[str],
-    stack_service_client_ids: Sequence[str],
     cognito: Any,
     user_pool_id: str,
     users_table_name: str,
@@ -524,15 +492,16 @@ def resolve_caller(
     """Route a validated token to the resolver for its client, or refuse it.
 
     ``credential_row(client_id)`` returns the MCP credential registry row for a
-    client, or ``None``; a client-credentials token from any client other than the
-    stack's own is resolved from it (``idp_common.mcp_credentials``), read on every
+    client, or ``None``; a client-credentials token from any client is resolved
+    from it (``idp_common.mcp_credentials``), read on every
     call so a revoked credential is refused on the next request.
 
     A token is a user token only when it comes from a user-authentication client
-    AND names a user; a service token only when it comes from a known
-    client-credentials client and names none. A client this function does not know
-    is refused, so a client added to the gateway's allowed list without a matching
-    rule here can authenticate and do nothing.
+    AND names a user; a service token only when it names none and the credential
+    registry has a row for its client. The stack-created client-credentials client
+    is in the registry too ("Default (stack-created)"). A client with no rule here is
+    refused, so a client added to the gateway's allowed list without one can
+    authenticate and do nothing.
     """
     client_id = str(claims.get("client_id") or "")
     has_user = bool(claims.get("username"))
@@ -545,8 +514,6 @@ def resolve_caller(
             dynamodb=dynamodb,
             scope_cache=scope_cache,
         )
-    if client_id in set(stack_service_client_ids) and not has_user:
-        return resolve_stack_service_caller(claims, environ=environ)
     if credential_row is not None and not has_user and client_id:
         from idp_common.mcp_credentials import caller_from_row
 

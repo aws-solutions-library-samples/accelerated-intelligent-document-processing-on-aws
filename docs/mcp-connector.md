@@ -76,9 +76,15 @@ The IDP Accelerator exposes document intelligence capabilities through a remote 
 |----------------------|-------------|
 | `MCPServerEndpoint` | The AgentCore Gateway HTTPS endpoint |
 | `MCPTokenURL` | Cognito OAuth token endpoint URL |
-| `MCPConnectorClientId` | Cognito app client ID for the MCP Connector (machine-to-machine (M2M) `client_credentials` flow — no user login required) |
-| `MCPConnectorClientSecret` | Cognito app client secret for the MCP Connector (machine-to-machine (M2M) flow) |
+| `MCPConnectorClientId` | The stack-created client-credentials client's ID (listed on the MCP Configuration page as "Default (stack-created)") |
+| `MCPConnectorClientSecretArn` | The Secrets Manager ARN holding that client's secret |
 | `MCPContentBucket` | S3 bucket for uploading documents (optional, for `process` tool) |
+
+Prefer a [service credential](mcp-server.md#service-credentials) of the connector's own,
+created on the MCP Configuration page: it carries only the role and configuration
+profiles you give it, and its settings entry is shown ready to paste. To use the
+stack-created client instead, read its secret with
+`aws secretsmanager get-secret-value --secret-id <MCPConnectorClientSecretArn>`.
 
 ### Installation
 
@@ -114,8 +120,8 @@ The connector is configured entirely through environment variables. All four aut
 |---------------------|----------|----------------------|-------------|
 | `IDP_MCP_ENDPOINT` | ✅ Yes | `MCPServerEndpoint` | AgentCore Gateway URL |
 | `IDP_MCP_TOKEN_URL` | ✅ Yes | `MCPTokenURL` | Cognito OAuth token endpoint |
-| `IDP_MCP_CLIENT_ID` | ✅ Yes | `MCPConnectorClientId` | Cognito app client ID (machine-to-machine (M2M) `client_credentials` flow — no user login required) |
-| `IDP_MCP_CLIENT_SECRET` | ✅ Yes | `MCPConnectorClientSecret` | Cognito app client secret |
+| `IDP_MCP_CLIENT_ID` | ✅ Yes | a service credential, or `MCPConnectorClientId` | Cognito app client ID (machine-to-machine (M2M) `client_credentials` flow — no user login required) |
+| `IDP_MCP_CLIENT_SECRET` | ✅ Yes | a service credential, or the secret at `MCPConnectorClientSecretArn` | Cognito app client secret |
 
 ### Configuring Cline
 
@@ -131,8 +137,8 @@ Add the following to your Cline MCP settings file (`~/.cline/data/settings/cline
       "env": {
         "IDP_MCP_ENDPOINT": "<MCPServerEndpoint from CloudFormation outputs>",
         "IDP_MCP_TOKEN_URL": "<MCPTokenURL from CloudFormation outputs>",
-        "IDP_MCP_CLIENT_ID": "<MCPConnectorClientId from CloudFormation outputs>",
-        "IDP_MCP_CLIENT_SECRET": "<MCPConnectorClientSecret from CloudFormation outputs>"
+        "IDP_MCP_CLIENT_ID": "<client ID of a service credential (MCP Configuration page)>",
+        "IDP_MCP_CLIENT_SECRET": "<its client secret, shown once when created>"
       },
       "alwaysAllow": [],
       "disabled": false
@@ -179,7 +185,7 @@ After deployment, navigate to the CloudFormation console and copy these output v
 MCPServerEndpoint       →  https://xxx.bedrock-agentcore.us-east-1.amazonaws.com/mcp
 MCPTokenURL             →  https://idp-stack-xxx.auth.us-east-1.amazoncognito.com/oauth2/token
 MCPConnectorClientId    →  abc123def456ghi789
-MCPConnectorClientSecret →  <secret-value>
+MCPConnectorClientSecretArn → arn:aws:secretsmanager:...:secret:<stack>/mcp/credentials/abc123def456ghi789
 MCPContentBucket        →  idp-stack-mcp-content-bucket-xxx
 ```
 

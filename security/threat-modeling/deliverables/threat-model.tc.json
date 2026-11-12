@@ -951,7 +951,7 @@
       "component": "MCP Integration",
       "affectedComponents": "Custom MCP Lambdas, MCP Gateway Lambda, external services",
       "status": "Partially Mitigated",
-      "mitigations": "Under `TenantIsolationMode=Strict` or an external `TenantGrantSource` the MCP handler refuses every tool, and refuses them too when the mode cannot be read (`agentcore_mcp_handler/index.py`), because no tool can be confined to one tenant (TEN.T01). Customer-managed MCP Lambda security review, IAM least-privilege for MCP Lambdas, network-level egress controls (VPC), audit logging of all MCP tool invocations, data classification awareness in agent prompts",
+      "mitigations": "Each MCP caller is resolved to a role and configuration scope by the gateway's request interceptor (`mcp_identity_interceptor`, `idp_common.mcp_access`): a signed-in user's groups and `allowedConfigVersions`, or a service credential's role and profiles from the credential registry. The handler refuses a call whose signed caller block it cannot verify, and `status`, `get_results`, `process` and `reprocess` apply the caller's scope; `search`, which reads across every profile, is refused to any scoped caller, so under `TenantIsolationMode=Strict` or an external `TenantGrantSource` it is Admin-only (TEN.T01). Customer-managed MCP Lambda security review, IAM least-privilege for MCP Lambdas, network-level egress controls (VPC), audit logging of all MCP tool invocations, data classification awareness in agent prompts",
       "residualRisk": "",
       "source": "feature-threats/mcp-integration.md"
     },
@@ -1019,7 +1019,7 @@
       "component": "MCP Integration",
       "affectedComponents": "AgentCore Gateway, MCP handler Lambda, Agent Processor Lambda",
       "status": "Mitigated",
-      "mitigations": "Cognito authentication required for all external clients (dedicated `idp-mcp-connector` resource server with a `client_credentials` app client, separate from the Web UI app client), Lambda concurrency limits, RBAC-based capability restrictions, CloudWatch alarms on usage patterns",
+      "mitigations": "Cognito authentication required for all external clients; the gateway admits only the user-authentication client and registered client-credentials apps. Per-tool role checks in the interceptor and the handler, matching each tool's REST equivalent (`mcp_tools:` in `scripts/api_rbac_expectations.yaml`, checked by `make api-test-static` M1\u2013M5 and driven live by `make api-test`). Service credentials each carry a role, profiles and expiry, are read on every call and so refused on the next request once revoked, and keep their secrets in Secrets Manager; no client secret is a stack output. Lambda concurrency limits, CloudWatch alarms on usage patterns",
       "residualRisk": "",
       "source": "feature-threats/mcp-integration.md"
     },

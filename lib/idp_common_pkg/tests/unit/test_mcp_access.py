@@ -333,11 +333,11 @@ def resolve(world, claims):
     return ma.resolve_caller(
         claims,
         user_client_ids=["user-client"],
-        stack_service_client_ids=["svc-client"],
         cognito=world["cognito"],
         user_pool_id=world["pool"],
         users_table_name="users",
         dynamodb=world["ddb"],
+        credential_row=lambda cid: world.get("rows", {}).get(cid),
     )
 
 
@@ -403,7 +403,21 @@ def test_a_scope_that_cannot_be_evaluated_refuses(world):
         )
 
 
-def test_the_stack_service_client_is_an_unscoped_author_when_isolation_is_off(world):
+def test_the_stack_created_client_resolves_from_its_registry_row(world):
+    """No built-in rule: the stack-created client is a registry row like any other."""
+    from idp_common.mcp_credentials import register_stack_default
+
+    rows = {}
+
+    class Table:
+        def get_item(self, Key, ConsistentRead=False):
+            return {"Item": rows[Key["clientId"]]} if Key["clientId"] in rows else {}
+
+        def put_item(self, Item, ConditionExpression=None):
+            rows[Item["clientId"]] = Item
+
+    register_stack_default(Table(), "svc-client", secret_arn="arn")
+    world["rows"] = rows
     got = resolve(world, {"client_id": "svc-client", "sub": "svc-client"})
     assert (got.kind, got.roles, got.scope, got.write_tools) == (
         "service",
@@ -411,22 +425,6 @@ def test_the_stack_service_client_is_an_unscoped_author_when_isolation_is_off(wo
         None,
         True,
     )
-
-
-@pytest.mark.parametrize(
-    "env,value",
-    [
-        (TENANT_ISOLATION_ENV, "Strict"),
-        (TENANT_GRANT_SOURCE_ENV, "IdpClaim"),
-        (TENANT_GRANT_SOURCE_ENV, "Api"),
-    ],
-)
-def test_the_stack_service_client_is_refused_under_tenant_isolation(
-    world, monkeypatch, env, value
-):
-    monkeypatch.setenv(env, value)
-    with pytest.raises(ma.McpAccessRefused, match="tenant"):
-        resolve(world, {"client_id": "svc-client", "sub": "svc-client"})
 
 
 @pytest.mark.parametrize(

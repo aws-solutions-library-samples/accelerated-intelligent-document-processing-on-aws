@@ -343,7 +343,6 @@ def test_resolve_caller_routes_other_clients_to_the_registry(world):
     caller = mcp_access.resolve_caller(
         {"client_id": out["clientId"], "sub": out["clientId"]},
         user_client_ids=["user-client"],
-        stack_service_client_ids=["stack-client"],
         cognito=None,
         user_pool_id="",
         users_table_name="",
@@ -819,3 +818,76 @@ def test_a_row_with_no_valid_role_is_refused():
         mc.caller_from_row(
             {"clientId": "c", "role": "Superuser", "enabled": True}, now=NOW
         )
+
+
+# --- the stack-created client -----------------------------------------------------------
+
+
+def test_the_stack_client_keeps_its_access_when_isolation_is_off(world):
+    row = mc.register_stack_default(
+        world["svc"].table, "stack-client", secret_arn="arn"
+    )
+    caller = mc.caller_from_row(row, now=NOW)
+    assert (row["name"], row["kind"], row["enabled"]) == (
+        "Default (stack-created)",
+        "stack-default",
+        True,
+    )
+    assert (caller.roles, caller.scope, caller.write_tools) == (["Author"], None, True)
+
+
+@pytest.mark.parametrize(
+    "environ",
+    [
+        {TENANT_ISOLATION_ENV: "Strict"},
+        {TENANT_GRANT_SOURCE_ENV: "IdpClaim"},
+        {TENANT_GRANT_SOURCE_ENV: "Api"},
+    ],
+)
+def test_the_stack_client_is_registered_disabled_under_tenant_isolation(world, environ):
+    row = mc.register_stack_default(
+        world["svc"].table, "stack-client", secret_arn="arn", environ=environ
+    )
+    assert row["enabled"] is False and row["status"] == "disabled"
+    with pytest.raises(mcp_access.McpAccessRefused, match="disabled"):
+        mc.caller_from_row(row, now=NOW)
+
+
+def test_a_stack_update_never_undoes_an_admins_change(world):
+    table = world["svc"].table
+    mc.register_stack_default(table, "stack-client", secret_arn="arn")
+    table.update_item(
+        Key={"clientId": "stack-client"},
+        UpdateExpression="SET enabled = :f, allowedConfigVersions = :s",
+        ExpressionAttributeValues={":f": False, ":s": ["acme-*"]},
+    )
+    again = mc.register_stack_default(table, "stack-client", secret_arn="arn2")
+    assert again["enabled"] is False and again["allowedConfigVersions"] == ["acme-*"]
+
+
+def test_removing_the_stack_row_never_touches_an_admin_credential(world):
+    out = create(world)
+    assert mc.remove_stack_default(world["svc"].table, out["clientId"]) is False
+    assert mc.get_row(world["svc"].table, out["clientId"])
+    mc.register_stack_default(world["svc"].table, "stack-client", secret_arn="arn")
+    assert mc.remove_stack_default(world["svc"].table, "stack-client") is True
+
+
+def test_revoking_the_stack_client_keeps_its_app_client(world):
+    """The stack owns that app client (MCPConnectorClient); revoking refuses it and
+    takes it off the gateway, and leaves the client and its stack secret alone."""
+    svc = world["svc"]
+    client = svc.cognito.create_user_pool_client(
+        UserPoolId=world["pool"], ClientName="mcp-connector-client", GenerateSecret=True
+    )["UserPoolClient"]["ClientId"]
+    world["gw"].state["authorizerConfiguration"]["customJWTAuthorizer"][
+        "allowedClients"
+    ].append(client)
+    mc.register_stack_default(svc.table, client, secret_arn="arn")
+    mc.revoke_credential(svc, client, actor="a", now=NOW)
+    assert svc.cognito.describe_user_pool_client(
+        UserPoolId=world["pool"], ClientId=client
+    )
+    assert client not in world["gw"].allowed()
+    with pytest.raises(mcp_access.McpAccessRefused, match="revoked"):
+        mc.caller_from_row(mc.get_row(svc.table, client), now=NOW)

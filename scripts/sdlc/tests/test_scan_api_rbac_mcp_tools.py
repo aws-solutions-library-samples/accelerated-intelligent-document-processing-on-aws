@@ -92,7 +92,10 @@ TEMPLATE = """Resources:
       Environment:
         Variables:
           MCP_USER_CLIENT_IDS: !Ref ExternalAppClient
-          MCP_STACK_SERVICE_CLIENT_IDS: !Ref MCPConnectorClient
+  McpDefaultCredential:
+    Type: Custom::McpDefaultCredential
+    Properties:
+      ClientId: !Ref MCPConnectorClient
   Other:
     Type: AWS::SNS::Topic
 """
@@ -100,7 +103,7 @@ TEMPLATE = """Resources:
 
 def spec():
     return {
-        "mcp_clients": {"ExternalAppClient": "user", "MCPConnectorClient": "service"},
+        "mcp_clients": {"ExternalAppClient": "user", "MCPConnectorClient": "registry"},
         "mcp_tools": {
             "search": {
                 "groups": ["Admin", "Author", "Viewer"],
@@ -306,14 +309,18 @@ def test_m5_a_client_admitted_without_a_resolution_rule(tmp_path):
     assert any(f.check == "M5" and "SomeOtherClient" in f.message for f in got)
 
 
-def test_m5_the_interceptor_is_not_told_about_a_client(tmp_path):
+def test_m5_the_interceptor_is_not_told_about_a_user_client(tmp_path):
     template = TEMPLATE.replace(
-        "          MCP_STACK_SERVICE_CLIENT_IDS: !Ref MCPConnectorClient\n", ""
+        "          MCP_USER_CLIENT_IDS: !Ref ExternalAppClient\n", ""
     )
     got = run(tmp_path, **{"template.yaml": template})
-    assert any(
-        f.check == "M5" and "MCP_STACK_SERVICE_CLIENT_IDS" in f.message for f in got
-    )
+    assert any(f.check == "M5" and "MCP_USER_CLIENT_IDS" in f.message for f in got)
+
+
+def test_m5_a_registry_client_nothing_registers(tmp_path):
+    template = TEMPLATE.replace("      ClientId: !Ref MCPConnectorClient\n", "")
+    got = run(tmp_path, **{"template.yaml": template})
+    assert any(f.check == "M5" and "McpDefaultCredential" in f.message for f in got)
 
 
 def test_m5_a_client_declared_with_the_wrong_kind(tmp_path):
