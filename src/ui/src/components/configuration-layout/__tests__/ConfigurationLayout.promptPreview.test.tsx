@@ -38,7 +38,10 @@ vi.mock('../../../hooks/use-user-role', () => ({
   default: () => ({ isAdmin: true, canWrite: true, allowedConfigVersions: null, loading: false }),
 }));
 vi.mock('../../../hooks/use-configuration-library', () => ({ default: () => ({ listConfigurations: vi.fn(), getFile: vi.fn() }) }));
-vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: {} }) }));
+vi.mock('../../../contexts/settings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../contexts/settings')>()),
+  default: () => ({ settings: {} }),
+}));
 vi.mock('../../../contexts/app', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../contexts/app')>()),
   default: () => ({ setSuccessMessage: vi.fn() }),
