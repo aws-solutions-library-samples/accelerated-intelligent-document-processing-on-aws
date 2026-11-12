@@ -1268,10 +1268,11 @@ dep_audit:
 #                        job prints SKIPPED and exits 0.
 #   AI_REVIEW_GITLAB_ROLE_ARN
 #                        the ARN of idp-sdlc-GitLabReview (the GitLabReviewRole
-#                        output of the credential-vendor stack), MASKED. The job
-#                        passes it to the runner fleet's credential vendor as
-#                        AWS_CREDS_TARGET_ROLE, so this job holds a Bedrock-only
-#                        role rather than the integration-test one.
+#                        output of the credential-vendor stack), MASKED. The
+#                        runner fleet vends the project's integration-test role
+#                        to this job like any other, so the script assumes this
+#                        ARN from that session before anything else and hands the
+#                        model only the review role's credentials.
 ai_mr_review:
   stage: fast_checks
   interruptible: true
@@ -1311,14 +1312,15 @@ ai_mr_review:
     # develop, which a shallow clone does not have.
     GIT_DEPTH: 0
     # The Bedrock-only review role, idp-sdlc-GitLabReview in
-    # scripts/sdlc/cfn/credential-vendor.yml, which the runner fleet vends for
-    # this job in place of the integration-test role. Its ARN embeds an account
-    # id, which scripts/check_account_ids.py refuses in this public tree, so it
-    # lives in the masked project variable AI_REVIEW_GITLAB_ROLE_ARN. The script
-    # asks STS which role it holds and refuses to review on any other, so an
-    # unset variable, or a project-level AWS_CREDS_TARGET_ROLE that overrides
-    # this job-level one, fails the job instead of reviewing on the wider role.
-    AWS_CREDS_TARGET_ROLE: $AI_REVIEW_GITLAB_ROLE_ARN
+    # scripts/sdlc/cfn/credential-vendor.yml. A job-level AWS_CREDS_TARGET_ROLE
+    # cannot select it: the project-level variable of that name outranks a job
+    # variable, so the runner fleet vends the integration-test role here as
+    # everywhere. The script therefore assumes the review role itself
+    # (--assume-role-from AI_REVIEW_GITLAB_ROLE_ARN; the ARN embeds an account id,
+    # which scripts/check_account_ids.py refuses in this public tree, so it is a
+    # masked project variable), replaces the job's credentials in its own
+    # environment, and then asks STS which role it holds and refuses to review on
+    # any other.
     REVIEW_ROLE_NAME: "idp-sdlc-GitLabReview"
     REVIEW_HARNESS_DIR: "/tmp/review-harness"
     REVIEW_HARNESS: "scripts/sdlc/ai_mr_review.py scripts/ux_runner/__init__.py scripts/ux_runner/redact.py scripts/hooks/check_commit_text.py"
@@ -1391,7 +1393,7 @@ ai_mr_review:
         echo "   it cannot review this MR. Reviews resume once the target carries it."
         exit 1
       fi
-      REVIEW="python3 -I $REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py --checkout $CI_PROJECT_DIR --require-aws-role $REVIEW_ROLE_NAME"
+      REVIEW="python3 -I $REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py --checkout $CI_PROJECT_DIR --require-aws-role $REVIEW_ROLE_NAME --assume-role-from AI_REVIEW_GITLAB_ROLE_ARN"
       if [ -n "$CI_MERGE_REQUEST_IID" ]; then
         $REVIEW --mr "$CI_MERGE_REQUEST_IID"
       else
