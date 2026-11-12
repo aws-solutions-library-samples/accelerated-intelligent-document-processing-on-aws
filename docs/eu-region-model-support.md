@@ -220,11 +220,40 @@ The following US models do not have direct EU equivalents:
 2. **Test Thoroughly**: Test document processing with actual EU model endpoints
 3. **Monitor Logs**: Check UpdateConfiguration lambda logs for model swap confirmations
 
-### Recommended EU Models
+### Default EU Models
 
-- **Fastest**: `eu.amazon.nova-lite-v1:0`
-- **Balanced**: `eu.amazon.nova-pro-v1:0`
-- **Best Quality**: `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
+This repository holds no measurement that ranks models against each other in EU
+regions, so this page does not label any EU model as the fastest or the best
+quality. What it can state is what an EU stack runs when you do not choose: the
+system defaults name mostly `us.` models, and the UpdateConfiguration Lambda
+rewrites each `us.` id through the mapping table above after merging the defaults
+with the selected preset. The default preset (`lending-package-sample`) overrides
+none of them, so an EU deployment of it uses the following models for document
+processing and chat:
+
+| Step | Default EU model |
+|------|------------------|
+| Classification | `eu.amazon.nova-2-lite-v1:0` |
+| Extraction | `eu.anthropic.claude-sonnet-5` |
+| Confidence assessment | `eu.amazon.nova-lite-v1:0` |
+| Confidence and extraction-validation escalation | `eu.anthropic.claude-sonnet-5:1m` |
+| Summarization | `eu.anthropic.claude-sonnet-5:1m` |
+| Chat with Document | `eu.anthropic.claude-opus-4-8:1m` |
+| Agent companion chat | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` |
+
+OCR uses Amazon Textract by default, so no Bedrock model is involved in that step
+unless you set `ocr.backend` to `bedrock`. Each mapping in this table is a direct
+mapping, not a fallback. The table does not cover every default: evaluation, the
+error analyzer, rule validation and discovery also name default models, which are
+rewritten the same way, and a `global.` id such as the rule-discovery default
+`global.anthropic.claude-sonnet-4-6` is left unchanged, because a global cross-region profile is not tied to
+one geography.
+
+Claude Sonnet 4.5 (`eu.anthropic.claude-sonnet-4-5-20250929-v1:0`) remains
+selectable but is not the default for any step in a commercial-partition
+configuration. An AWS Health notice puts it in legacy
+from 2026-10-08 with end of life on 2027-04-08, and a legacy model receives no
+further Service Quota increases, so do not choose it for a new configuration.
 
 ## Troubleshooting
 
