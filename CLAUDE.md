@@ -1002,9 +1002,9 @@ The extraction service supports an optional **agentic extraction mode** with int
 **Configuration**:
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   model: "us.anthropic.claude-sonnet-5"
   agentic:
-    enabled: true
     table_parsing:
       enabled: true  # Enable deterministic table parser tool
       max_empty_line_gap: 3  # Tolerate up to 3 empty lines in tables (0-10)
@@ -1012,6 +1012,11 @@ extraction:
       min_confidence_threshold: 95.0  # OCR confidence target (Textract only)
       min_parse_success_rate: 0.90  # Quality threshold for parsed results
 ```
+
+`extraction.mode` is authoritative: whenever it is set it overwrites
+`agentic.enabled`, so setting only `agentic.enabled: true` in a config that also
+carries `mode: simple` (as every preset does through the system defaults) silently
+runs the traditional path.
 
 **Tuning**:
 - **High-quality OCR**: `max_empty_line_gap: 2`

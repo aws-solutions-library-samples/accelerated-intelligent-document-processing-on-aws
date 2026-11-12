@@ -431,6 +431,10 @@
     "defaultMessage": "Cannot save: {count, plural, one {# price is} other {# prices are}} not valid. Correct the prices listed under Invalid prices and save again.",
     "description": "Error shown when Save changes is chosen on the Pricing page while some prices are invalid. {count} is how many."
   },
+  "pricing.layout.defaultUnitsAlwaysApply": {
+    "defaultMessage": "Your saved prices are applied over the default prices. A default unit you delete comes back at its default price after you save and reload. To make a default unit cost nothing, set its price to 0.",
+    "description": "Note above the pricing tables on the Pricing page: deleting a default unit does not persist, because saved prices are merged over the defaults per unit."
+  },
   "pricing.layout.invalidPrice": {
     "defaultMessage": "Enter a non-negative decimal number with no spaces, such as 0.0015 or 6.0E-8.",
     "description": "Inline error under a price field on the Pricing page when the value is not a valid price."

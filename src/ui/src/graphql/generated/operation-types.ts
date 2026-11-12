@@ -2933,6 +2933,7 @@ export type TestSetSectionDraft = {
 
 export type TestSetSectionGrouping = {
   documentClass?: Maybe<Scalars['String']['output']>;
+  extractedAsClass?: Maybe<Scalars['String']['output']>;
   pageIndices: Array<Scalars['Int']['output']>;
   sectionId: Scalars['String']['output'];
 };
@@ -3887,7 +3888,7 @@ export type UpdateTestSetDocumentSectionsMutationVariables = Exact<{
 }>;
 
 
-export type UpdateTestSetDocumentSectionsMutation = { updateTestSetDocumentSections?: { testSetId: string, objectKey: string, sections: Array<{ sectionId: string, documentClass?: string | null, pageIndices: Array<number> }> } | null };
+export type UpdateTestSetDocumentSectionsMutation = { updateTestSetDocumentSections?: { testSetId: string, objectKey: string, sections: Array<{ sectionId: string, documentClass?: string | null, pageIndices: Array<number>, extractedAsClass?: string | null }> } | null };
 
 export type UpdateTestSetQueueMutationVariables = Exact<{
   input: TestSetQueueSettingsInput;

@@ -234,17 +234,6 @@
       ],
       "reason": "rule_validation and postprocessing build their issues through document_failure.record_section_failure from handlers in patterns/unified/src/, after extraction and assessment have written the section result.json, and nothing rewrites that file afterwards. So a stage in this list is one the harness is structurally blind to, and the whole point of registering it is that the blindness is written down instead of discovered again -- #1378 is itself an instance of a check firing into a field nobody read. The closure is an equality with no authored inventory on either side: the left-hand set is every stage whose only ProcessingIssue construction is the document_failure pass-through, derived by AST, and the right is this list, so a sixth stage lands in the left and fails rather than being silently unread. What a reviewer should check is that the equality is real -- add a *_STAGE constant to document_failure.py and watch test_every_declared_stage_is_either_covered_or_a_named_boundary fail. The reason this is not an exemption is that there is no gate here for it to excuse: nothing in this repository asserts the harness sees every stage, because measurement says it does not, and an assertion to the contrary is the defect rather than the fix."
     },
-    "docs-site/add-frontmatter.sh::skipped": {
-      "kind": "fixture",
-      "memberKind": "shell variable holding a count",
-      "turnsOff": "nothing. It is a counter in the docs-site frontmatter helper, incremented once per Markdown file that already has frontmatter and printed in the closing summary line",
-      "premise": [
-        "JUDGEMENT"
-      ],
-      "ratchet": "none",
-      "reason": "An integer, not a list of members, and it decides nothing beyond a line of output: the loop skips a file because that file already carries frontmatter, and this records how many times that happened. It is discovered at all only because the shell pattern's first character is now matched by a lookahead rather than consumed, so a variable whose name BEGINS with a vocabulary fragment can match -- and this one entry is the whole measured cost of that fix over this tree, which is also the evidence that the fix reaches something.",
-      "ratchetGap": "Nothing in this registry re-measures a SHELL variable -- there is no parser for one here -- so no ratchet applies and claiming one would be a label with nothing behind it. What remains is the registry's own both-directions membership assertion, which fails if the variable is renamed or removed. It costs one slot of the unratcheted budget, which the PYTHON_PATHSPECS entry frees in the same change by gaining the dead-glob ratchet it did not have."
-    },
     "feature-platform/confbench-testset/shared/prune_layer.py::PRUNE_DIRS": {
       "kind": "prune",
       "memberKind": "path",
@@ -2184,6 +2173,17 @@
       "reason": "Paths the document names BECAUSE they are absent. An inverse test requires each to stay absent.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_contributing_doc.py"
+    },
+    "scripts/tests/test_contributing_doc.py::PATHS_EXEMPT_AS_BUILD_ARTIFACTS": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "the 'every path the document names exists' check in test_documented_paths_exist, for a generated file CONTRIBUTING.md names that exists only after a local build",
+      "premise": [
+        "vcs_ignored_build_output"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/tests/test_contributing_doc.py",
+      "reason": "src/ui/.checksum is written by `make ui-lint` and is absent from a fresh clone, so whether it exists says nothing about whether the sentence naming it is right, and neither direction can be asserted. The premise is computed for the one member by test_build_artifact_exemptions_are_ignored_and_still_named: an ignore rule must cover the path and git must track nothing there, so the exemption cannot come to hide a file that ships. The same test fails when CONTRIBUTING.md no longer names the path, which is the stale case that would otherwise pre-exempt whatever is next written there."
     },
     "scripts/tests/test_coverage_debt.py::COVERAGE_UNREACHABLE_FILES_EXEMPT": {
       "kind": "exemption",

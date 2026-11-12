@@ -319,9 +319,14 @@ class LLMComparator(BaseComparator):
         #   later documents' pairs (finding from code review — earlier
         #   design froze the cache at 10 000 entries for the container's
         #   lifetime).
-        # * Locked because Stickler's Hungarian matching drives ``compare``
-        #   from a thread pool, and OrderedDict's move_to_end + popitem +
-        #   __setitem__ combo used below is a three-op critical section.
+        # * Locked because one instance can be called from several threads at
+        #   once: EvaluationService.evaluate_document evaluates a document's
+        #   sections in a ThreadPoolExecutor, and sections of the same class
+        #   share the cached Stickler model and therefore its comparator
+        #   instances. Stickler itself (1.0.0) runs no thread pool; its
+        #   Hungarian list matching calls ``compare`` sequentially.
+        #   OrderedDict's move_to_end + popitem + __setitem__ combo used below
+        #   is a three-op critical section.
         self._verdict_cache: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
         self._verdict_cache_lock = threading.Lock()
 

@@ -2122,6 +2122,13 @@ How it works:
 schema extension → global `validation.escalation_model` → the extraction model
 itself (escalation becomes a plain second attempt).
 
+**Escalation metering context.** Every escalation model call, in both modes and
+both escalation scopes, is metered under `ESCALATION_METERING_CONTEXT`
+(`ExtractionEscalation`) from `extraction/service.py`. Simple mode used
+`Extraction-Escalation` before that constant existed, so stored reporting rows
+from earlier releases carry that spelling; a reader that groups escalation cost
+must accept both.
+
 **Configuration UI.** The global `validation` block (enabled / check_formats /
 fail_action / escalation_model) is editable under **Extraction → Agentic
 Extraction → Schema Validation & Escalation** in the Configuration editor. The

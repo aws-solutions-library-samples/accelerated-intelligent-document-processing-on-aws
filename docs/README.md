@@ -128,6 +128,9 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Dependency Mirroring](./dependency-mirroring.md) - Listing every Python and Node.js dependency for mirroring into an artifact repository
 - [API Gateway Hosting](./apigateway-hosting.md) - Serve the full Web UI from the existing API Gateway REST API (S3 proxy), within a VPC when combined with `ApiGatewayVisibility=PRIVATE` (alternative to CloudFront)
 - [GovCloud Deployment](./govcloud-deployment.md) - Deploy to GovCloud with the full Web UI (`--govcloud`) or headless (`--headless`)
+- [GovCloud Architecture](./govcloud-architecture.md) - Services removed vs. retained, limitations, and workarounds
+- [GovCloud Batch Jobs REST API](./govcloud-batch-api.md) - API reference, authentication, and bastion tunnel setup
+- [GovCloud Operations](./govcloud-operations.md) - Monitoring, troubleshooting, and best practices
 - [EU Region Model Support](./eu-region-model-support.md) - Model availability in EU regions
 - [Canada (Central) Region Model Support](./canada-region-model-support.md) - Model availability and default model changes in ca-central-1
 
@@ -146,13 +149,6 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Granular Assessment Retirement](./migration-granular-retirement.md) - What the retirement of granular assessment means for your configuration
 - [AppSync to REST API Migration](./migration-appsync-to-rest.md) - How the REST transport reproduces what the UI previously got from AWS AppSync
 - [Migration v0.4 to v0.5](./migration-v04-to-v05.md) - Upgrading from v0.4.x to v0.5.x (Unified Pattern)
-
-### GovCloud
-
-- [GovCloud Deployment Guide](./govcloud-deployment.md) - Deployment options (Web UI or headless), prerequisites, and deploy commands
-- [GovCloud Architecture](./govcloud-architecture.md) - Services removed vs. retained, limitations, and workarounds
-- [Batch Jobs REST API](./govcloud-batch-api.md) - API reference, authentication, and bastion tunnel setup
-- [GovCloud Operations](./govcloud-operations.md) - Monitoring, troubleshooting, and best practices
 
 ## Blogs, Customer Stories & Research
 

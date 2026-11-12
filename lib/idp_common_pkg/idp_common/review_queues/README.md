@@ -323,9 +323,15 @@ A **section draft** is a section's saved edits that are not reviewed and start n
   untouched.
 - **Lifecycle:** `write_reviewed` deletes the section's draft; `move_drafts` makes
   drafts follow their sections through a regroup, rewriting each draft's
-  `split_document.page_indices` and `document_class.type`, and drops a removed
-  section's; `delete_document_drafts` runs when a document is removed from the set.
-  Skip, Re-extract, Clear draft labels and Reset labels keep drafts. Publishing, the
+  `split_document.page_indices`, `document_class.type` and `extractedAsClass`
+  (`EXTRACTED_AS_CLASS_KEY`: the class the section's fields were extracted under,
+  which the regroup records on the label when it first changes the class and removes
+  when the class is changed back; #1816), and drops a removed section's; `delete_document_drafts` runs when a document is removed from the set.
+  Skip, Clear draft labels and Reset labels keep drafts. A re-extract's write-back
+  deletes the written section's draft (`delete_draft`; the job carries
+  `reextract: true`), since its edits were made over the fields just replaced; a
+  Generate draft labels write-back only removes `extractedAsClass` from it
+  (`clear_draft_extracted_as`, in place, revision unchanged). Publishing, the
   version snapshot, test runs, the content signature and the summaries read
   `baseline/` only.
 

@@ -1048,6 +1048,13 @@ class SaveReportingData:
                 # Convert configuration pricing to lookup dictionary (convert strings to floats)
                 for service in self.config.pricing:
                     service_name = service.name
+                    # The entry is recorded even when none of its prices is valid,
+                    # so ``_get_unit_cost`` matches it and reports the unit
+                    # unpriced. Leaving it out let the suffix walk go on to a
+                    # shorter key and price the unit from a different entry, while
+                    # the web UI's cost panel (``toPricingLookup``) keeps the entry
+                    # and shows the unit unpriced.
+                    pricing_map.setdefault(service_name, {})
                     for unit_info in service.units:
                         unit_name = unit_info.name
                         # The same rule the save path enforces (PricingConfig), so
@@ -1060,8 +1067,6 @@ class SaveReportingData:
                                 f"Invalid price value for {service_name}/{unit_name}: {unit_info.price!r}. Skipping entry."
                             )
                             continue
-                        if service_name not in pricing_map:
-                            pricing_map[service_name] = {}
                         pricing_map[service_name][unit_name] = price
                         config_loaded_count += 1
 

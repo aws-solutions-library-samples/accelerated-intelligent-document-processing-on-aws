@@ -1501,3 +1501,171 @@ def test_shipped_presets_pass_the_prompt_placeholder_check(preset):
         pytest.skip("not a configuration document")
     result = validate_config(config)
     assert [e for e in result["errors"] if "task_prompt" in e] == []
+
+
+def _default_confidence_prompt() -> str:
+    from idp_common.config.merge_utils import load_system_defaults
+
+    return load_system_defaults("pattern-2")["extraction"]["confidence"]["task_prompt"]
+
+
+def _confidence_pass_refuses(merged: dict) -> bool:
+    """Whether the separate confidence pass refuses this configuration's prompt.
+
+    Answered by the runtime, not restated: ``AssessmentService`` built from the
+    merged configuration, the prompt it selects, and its own content builder,
+    which raises on a placeholder it cannot place.
+    """
+    from idp_common.assessment.service import AssessmentService
+    from idp_common.extraction.prompt_assembly import select_confidence_task_prompt
+
+    service = AssessmentService(region="us-east-1", config=merged)
+    prompt = select_confidence_task_prompt(service.config.extraction)
+    if not prompt:
+        # AssessmentService's own guard, ahead of the builder: it raises
+        # "Assessment task_prompt is required" (pinned in the test below).
+        return True
+    try:
+        service._build_content_with_or_without_image_placeholder(
+            prompt, "text", "cls", "attrs", "{}", "", None
+        )
+    except ValueError:
+        return True
+    return False
+
+
+_IMAGE = "{DOCUMENT_IMAGE}"
+_DOUBLE_IMAGE_CASES = {
+    # name: (confidence block, geometry block, refused)
+    "shipped": ({}, {}, False),
+    "image twice": ({"task_prompt": "<p>\n" + _IMAGE}, {}, True),
+    "image three times": ({"task_prompt": "<p>\n" + _IMAGE + _IMAGE}, {}, True),
+    "text only": (
+        {"task_prompt": "{OCR_TEXT_CONFIDENCE}\n{EXTRACTION_RESULTS}"},
+        {},
+        False,
+    ),
+    "second image only in a comment": (
+        {"task_prompt": "<p>\n{# " + _IMAGE + " #}"},
+        {},
+        False,
+    ),
+    "second image from the bbox block": (
+        {},
+        {"mode": "llm", "task_prompt_bbox": "Boxes for " + _IMAGE},
+        True,
+    ),
+    "bbox block not sent in ocr_only": (
+        {},
+        {"mode": "ocr_only", "task_prompt_bbox": "Boxes for " + _IMAGE},
+        False,
+    ),
+    "confidence off": ({"mode": "off", "task_prompt": "<p>\n" + _IMAGE}, {}, None),
+}
+
+
+class TestConfidencePromptAsTheRuntimeSendsIt:
+    """``validate_config`` refuses exactly the confidence prompts the pass refuses.
+
+    Each case's expectation is checked against the runtime first
+    (``_confidence_pass_refuses``), so the table cannot drift from what
+    ``AssessmentService`` actually does.
+    """
+
+    @staticmethod
+    def _config(confidence: dict, geometry: dict) -> dict:
+        confidence = {
+            k: v.replace("<p>", _default_confidence_prompt())
+            if isinstance(v, str)
+            else v
+            for k, v in confidence.items()
+        }
+        extraction: dict = {}
+        if confidence:
+            extraction["confidence"] = confidence
+        if geometry:
+            extraction["geometry"] = geometry
+        return {"extraction": extraction} if extraction else {}
+
+    @pytest.mark.parametrize(
+        "confidence,geometry,refused",
+        list(_DOUBLE_IMAGE_CASES.values()),
+        ids=list(_DOUBLE_IMAGE_CASES),
+    )
+    def test_document_image_placeholder(self, confidence, geometry, refused):
+        result = validate_config(self._config(confidence, geometry))
+        errors = [e for e in result["errors"] if "DOCUMENT_IMAGE placeholder" in e]
+        if refused is None:
+            # The pass never runs, so its prompt is not judged.
+            assert errors == []
+            return
+        assert _confidence_pass_refuses(result["merged_config"]) is refused
+        assert bool(errors) is refused
+        assert result["valid"] is not refused
+        if refused:
+            assert errors[0].startswith("extraction.confidence.task_prompt")
+
+    def test_the_cases_include_both_verdicts(self):
+        verdicts = {refused for _, _, refused in _DOUBLE_IMAGE_CASES.values()}
+        assert {True, False} <= verdicts
+
+
+_EMPTY_PROMPT_CASES = {
+    "empty": ({"task_prompt": ""}, {}, True),
+    "comment only": ({"task_prompt": "{# nothing #}"}, {}, True),
+    "empty with llm geometry": ({"task_prompt": ""}, {"mode": "llm"}, True),
+    "absent uses the default": ({}, {}, False),
+    "empty in integrated mode": (
+        {"mode": "integrated", "task_prompt": ""},
+        {},
+        True,
+    ),
+    "empty with confidence off": ({"mode": "off", "task_prompt": ""}, {}, None),
+}
+
+
+class TestEmptyConfidencePrompt:
+    """An explicit empty confidence prompt is refused, as the pass refuses it.
+
+    Consistent with LLM evaluation's empty prompts: an empty value is refused and
+    an absent one uses the shipped prompt. Whitespace-only is not covered here; the
+    placeholder check already refuses it.
+    """
+
+    @pytest.mark.parametrize(
+        "confidence,geometry,refused",
+        list(_EMPTY_PROMPT_CASES.values()),
+        ids=list(_EMPTY_PROMPT_CASES),
+    )
+    def test_empty_prompt(self, confidence, geometry, refused):
+        extraction: dict = {}
+        if confidence:
+            extraction["confidence"] = confidence
+        if geometry:
+            extraction["geometry"] = geometry
+        result = validate_config({"extraction": extraction} if extraction else {})
+        errors = [e for e in result["errors"] if " is empty" in e]
+        if refused is None:
+            assert errors == []
+            return
+        assert _confidence_pass_refuses(result["merged_config"]) is refused
+        assert bool(errors) is refused
+        assert result["valid"] is not refused
+        if refused:
+            assert errors[0].startswith("extraction.confidence.task_prompt")
+
+    def test_the_service_refuses_an_empty_prompt(self):
+        """The runtime guard ``_confidence_pass_refuses`` relies on for this case."""
+        import inspect
+
+        from idp_common.assessment.service import AssessmentService
+
+        source = inspect.getsource(AssessmentService)
+        assert "if not prompt_template:" in source
+        assert "Assessment task_prompt is required" in source
+
+    def test_whitespace_is_left_to_the_placeholder_check(self):
+        result = validate_config({"extraction": {"confidence": {"task_prompt": "  "}}})
+        assert result["valid"] is False
+        assert not any(" is empty" in e for e in result["errors"])
+        assert any("must include {EXTRACTION_RESULTS}" in e for e in result["errors"])

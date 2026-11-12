@@ -213,6 +213,14 @@ class ExtractionResult(BaseModel):
 
 _ESCALATION_FAILED_PREFIX = "escalation call failed: "
 
+ESCALATION_METERING_CONTEXT = "ExtractionEscalation"
+"""Metering context of every validation-escalation model call, in both extraction
+modes, so a cost report shows escalation on one row. Simple mode used
+``Extraction-Escalation`` before this constant existed, so reporting rows stored
+by earlier releases carry that spelling. A reader that has to group escalation
+must accept both; the shipped readers match the ``Extraction`` prefix instead.
+"""
+
 
 def _escalation_failure_reason(exc: BaseException) -> str:
     """One bounded line for ``escalation_decision`` when the escalation call raised.
@@ -5916,7 +5924,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 top_k=self.config.extraction.top_k,
                 top_p=self.config.extraction.top_p,
                 max_tokens=None,
-                context="Extraction-Escalation",
+                context=ESCALATION_METERING_CONTEXT,
                 model_lambda_hook_arn=self.config.extraction.model_lambda_hook_arn,
                 reasoning_effort=self.config.extraction.reasoning_effort,
             )
@@ -6219,7 +6227,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # Attachment is decided on the content; this pool is for view_image.
                     attach_page_images=False,
                     config=self.config,
-                    context="ExtractionEscalation",
+                    context=ESCALATION_METERING_CONTEXT,
                     strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=None,  # validated against the full schema below
@@ -6245,7 +6253,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # Attachment is decided on the content; this pool is for view_image.
                     attach_page_images=False,
                     config=self.config,
-                    context="ExtractionEscalation",
+                    context=ESCALATION_METERING_CONTEXT,
                     strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=self._build_schema_validator(),
