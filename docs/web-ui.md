@@ -59,6 +59,14 @@ Test Studio submits its documents through the same pipeline as ordinary uploads 
 
 The two views are mutually exclusive by design — there is no combined view. On a stack that uses Test Studio regularly the test documents outnumber real uploads by an order of magnitude, so merging them would bury the uploads. The selection is not remembered between visits, so the list always opens on Production.
 
+### Adding documents to a test set
+
+Admins can send processed documents straight to a [Test Studio](test-studio.md) test set from the Production view. Select the documents and choose **Add to test set**. The button is enabled once at least one selected document has finished processing.
+
+It opens the same dialog as Test Studio's **Add documents → From processed documents**, with your selection already chosen and a **Test set** field in place of a fixed set. Pick an existing set; a set that is not ready (still being created or updated, or failed) is listed but cannot be picked, and a new set is created in Test Studio first. Selected documents that have not finished processing are left out, and the dialog says how many. Everything else works as it does in Test Studio: a document with no ground truth is added unlabeled and named before you confirm, the dialog warns when that would make a labeled set read as unlabeled, and a document already in the set is skipped. A notice above the table confirms the add once it is queued. See [Adding documents to existing test sets](test-studio.md#adding-documents-to-existing-test-sets).
+
+The action is not shown in the Test Studio view, whose documents are copies made by test runs, or to users who are not Admins. Authors can still add processed documents from Test Studio.
+
 ### Deleting documents
 
 Select one or more rows and use **Delete**. The confirmation modal applies to the whole

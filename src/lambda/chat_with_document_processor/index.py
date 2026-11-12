@@ -57,6 +57,7 @@ from idp_common.config_scope import (
     scope_allows,
     unscoped_is_denied,
 )
+from idp_common.regional_models import CHAT_MODEL_ID, regional_default
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -219,10 +220,12 @@ def _get_bedrock_runtime():
 
 
 def _default_model_for_region() -> str:
-    region = os.environ.get("AWS_REGION", "us-east-1")
-    if region.startswith("eu-"):
-        return "eu.anthropic.claude-opus-4-8:1m"
-    return "us.anthropic.claude-opus-4-8:1m"
+    """The chat model when neither the chat nor the summarization section names one.
+
+    The US default, through the Region translation the other code fallbacks use, so
+    it is the model the deploy-time swap would have written for this Region.
+    """
+    return regional_default(CHAT_MODEL_ID, os.environ.get("AWS_REGION"))
 
 
 def _s3_object_exists(bucket: str, key: str) -> bool:

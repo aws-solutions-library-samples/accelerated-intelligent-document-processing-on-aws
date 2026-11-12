@@ -18,6 +18,7 @@ from idp_common.config.merge_utils import (
     _validate_model_ids,
     _validate_schema_fields,
     _validate_task_prompt_placeholders,
+    validate_config,
 )
 
 
@@ -348,28 +349,25 @@ class TestValidateTaskPromptPlaceholders:
         assert len(result["errors"]) == 1
         assert "ocr.task_prompt" in result["errors"][0]
 
-    def test_skips_disabled_assessment(self):
-        """Test skips assessment validation when disabled."""
+    def test_skips_confidence_when_mode_is_off(self):
+        """The confidence prompt is not checked when scoring is off."""
         config = {
-            "assessment": {
-                "enabled": False,
-                "task_prompt": "Missing placeholders",  # Would fail if enabled
+            "extraction": {
+                "confidence": {"mode": "off", "task_prompt": "Missing placeholders"}
             }
         }
 
         result = {"valid": True, "errors": [], "warnings": []}
         _validate_task_prompt_placeholders(config, result)
 
-        # Should skip validation for disabled section
         assert result["valid"] is True
         assert len(result["errors"]) == 0
 
-    def test_validates_enabled_assessment(self):
-        """Test validates assessment when enabled."""
+    def test_validates_confidence_prompt(self):
+        """A confidence prompt with no placeholders is refused, at its real path."""
         config = {
-            "assessment": {
-                "enabled": True,
-                "task_prompt": "Assess quality",  # Missing all required placeholders
+            "extraction": {
+                "confidence": {"mode": "separate", "task_prompt": "Assess quality"}
             }
         }
 
@@ -378,35 +376,31 @@ class TestValidateTaskPromptPlaceholders:
 
         assert result["valid"] is False
         assert len(result["errors"]) == 1
-        assert "assessment.task_prompt" in result["errors"][0]
+        assert result["errors"][0].startswith("extraction.confidence.task_prompt")
 
-    def test_assessment_requires_all_placeholders(self):
-        """Test assessment requires ALL three placeholders."""
-        # Only has DOCUMENT_IMAGE, missing other two
-        config = {
-            "assessment": {
-                "enabled": True,
-                "task_prompt": "Assess: {DOCUMENT_IMAGE}",
-            }
-        }
-
-        result = {"valid": True, "errors": [], "warnings": []}
-        _validate_task_prompt_placeholders(config, result)
-
-        assert result["valid"] is False
-
-        # Has all three required placeholders
-        config = {
-            "assessment": {
-                "enabled": True,
-                "task_prompt": "{DOCUMENT_IMAGE} {OCR_TEXT_CONFIDENCE} {EXTRACTION_RESULTS}",
-            }
-        }
+    @pytest.mark.parametrize(
+        "prompt, valid",
+        [
+            ("{DOCUMENT_IMAGE} {OCR_TEXT_CONFIDENCE} {EXTRACTION_RESULTS}", True),
+            # Text-only: dropping {DOCUMENT_IMAGE} is the documented way to make
+            # the confidence pass text-only, so it must not be refused.
+            ("{OCR_TEXT_CONFIDENCE} {EXTRACTION_RESULTS}", True),
+            ("{DOCUMENT_TEXT} {EXTRACTION_RESULTS}", True),
+            ("{DOCUMENT_IMAGE} {EXTRACTION_RESULTS}", True),
+            # The values to score are missing.
+            ("{DOCUMENT_IMAGE} {OCR_TEXT_CONFIDENCE} {DOCUMENT_TEXT}", False),
+            # Nothing to score them against.
+            ("{EXTRACTION_RESULTS}", False),
+        ],
+    )
+    def test_confidence_prompt_requirements(self, prompt, valid):
+        """{EXTRACTION_RESULTS} plus at least one document-content placeholder."""
+        config = {"extraction": {"confidence": {"task_prompt": prompt}}}
 
         result = {"valid": True, "errors": [], "warnings": []}
         _validate_task_prompt_placeholders(config, result)
 
-        assert result["valid"] is True
+        assert result["valid"] is valid
 
     def test_skips_disabled_summarization(self):
         """Test skips summarization validation when disabled."""
@@ -1402,3 +1396,108 @@ class TestTheClassificationPlaceholderRuleReadsTheModality:
         result = {"valid": True, "errors": [], "warnings": []}
         _validate_task_prompt_placeholders(config, result)
         assert result["valid"] is True, result["errors"]
+
+
+class TestConfidencePromptThroughValidateConfig:
+    """The confidence-prompt check as ``idp-cli config-validate`` runs it.
+
+    ``validate_config`` merges with the system defaults (running the migration
+    chain) and checks the merged result, so these drive it end to end rather than
+    handing the validator a hand-built dict.
+    """
+
+    @staticmethod
+    def _errors(config):
+        result = validate_config(config)
+        return result["valid"], [
+            e for e in result["errors"] if "confidence.task_prompt" in e
+        ]
+
+    def test_refuses_a_confidence_prompt_missing_its_placeholders(self):
+        valid, errors = self._errors(
+            {"extraction": {"confidence": {"task_prompt": "Score these fields."}}}
+        )
+        assert valid is False
+        assert len(errors) == 1
+        assert errors[0].startswith("extraction.confidence.task_prompt")
+
+    def test_refuses_a_prompt_missing_only_extraction_results(self):
+        valid, errors = self._errors(
+            {
+                "extraction": {
+                    "confidence": {
+                        "task_prompt": "{DOCUMENT_IMAGE} {OCR_TEXT_CONFIDENCE}"
+                    }
+                }
+            }
+        )
+        assert valid is False
+        assert len(errors) == 1
+
+    def test_accepts_a_text_only_confidence_prompt(self):
+        valid, errors = self._errors(
+            {
+                "extraction": {
+                    "confidence": {
+                        "task_prompt": "{OCR_TEXT_CONFIDENCE}\n{EXTRACTION_RESULTS}"
+                    }
+                }
+            }
+        )
+        assert errors == []
+
+    @pytest.mark.parametrize(
+        "confidence", [{"mode": "off"}, {"enabled": False}], ids=["mode", "legacy"]
+    )
+    def test_skipped_when_confidence_is_off(self, confidence):
+        valid, errors = self._errors(
+            {"extraction": {"confidence": {**confidence, "task_prompt": "nothing"}}}
+        )
+        assert errors == []
+
+    def test_still_checked_in_integrated_mode(self):
+        # Simple extraction scores a class with list fields in the separate pass
+        # even in integrated mode, so the prompt can still be sent.
+        valid, errors = self._errors(
+            {"extraction": {"confidence": {"mode": "integrated", "task_prompt": "x"}}}
+        )
+        assert len(errors) == 1
+
+    def test_a_pre_06_assessment_prompt_is_checked_after_migration(self):
+        # The migration moves `assessment` under `extraction.confidence`, which
+        # is why the validator reads only the current path.
+        result = validate_config({"assessment": {"task_prompt": "Score these."}})
+        assert "assessment" not in result["merged_config"]
+        assert any(
+            e.startswith("extraction.confidence.task_prompt") for e in result["errors"]
+        )
+
+    def test_the_default_confidence_prompt_passes(self):
+        valid, errors = self._errors({})
+        assert errors == []
+
+
+_UNIFIED_PRESETS = sorted(
+    (Path(__file__).resolve().parents[5] / "config_library" / "unified").glob(
+        "*/*.yaml"
+    )
+)
+
+
+def test_the_preset_glob_finds_presets():
+    """An empty glob would make the parametrised preset test below collect nothing."""
+    assert len(_UNIFIED_PRESETS) > 1
+
+
+@pytest.mark.parametrize(
+    "preset",
+    _UNIFIED_PRESETS,
+    ids=[f"{p.parent.name}/{p.name}" for p in _UNIFIED_PRESETS],
+)
+def test_shipped_presets_pass_the_prompt_placeholder_check(preset):
+    """Every shipped preset's prompts satisfy the placeholder rules."""
+    config = yaml.safe_load(preset.read_text())
+    if not isinstance(config, dict):
+        pytest.skip("not a configuration document")
+    result = validate_config(config)
+    assert [e for e in result["errors"] if "task_prompt" in e] == []
