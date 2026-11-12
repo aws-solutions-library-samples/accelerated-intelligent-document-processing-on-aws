@@ -76,6 +76,7 @@ const Harness = ({
   afterChange,
   afterChanges,
   refsAfterChange,
+  holdRefs = false,
   mayChangeClass = true,
 }: {
   sections?: TestSetDocumentSectionRef[];
@@ -85,6 +86,11 @@ const Harness = ({
   afterChanges?: TestSetDocumentSectionRef[][];
   /** The refs the page re-reads, computed when it re-reads them, for a simulated server. */
   refsAfterChange?: () => TestSetDocumentSectionRef[];
+  /**
+   * The page's re-read of the refs is slow: a change does not update them until "Re-read
+   * sections" is pressed, which reads `refsAfterChange` then.
+   */
+  holdRefs?: boolean;
 }): React.JSX.Element => {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -103,7 +109,7 @@ const Harness = ({
       onChanged();
       const next = refsAfterChange ? refsAfterChange() : afterChanges ? afterChanges[changes] : afterChange;
       setChanges((n) => n + 1);
-      if (next) setRefs(next);
+      if (next && !holdRefs) setRefs(next);
     },
   });
   const board = usePageClassBoard(slots.board, openId, data);
@@ -114,6 +120,11 @@ const Harness = ({
         Edit Page Grouping
       </button>
       {board.dialog}
+      {holdRefs && refsAfterChange && (
+        <button type="button" onClick={() => setRefs(refsAfterChange())}>
+          Re-read sections
+        </button>
+      )}
       <SectionEditor
         objectKey="p.pdf"
         sections={slots.reviewSections}
@@ -647,19 +658,35 @@ describe('the note a finished re-extract leaves (#1728)', () => {
 });
 
 describe('the class a reclassified section names, across several saves (#1816)', () => {
-  type Stored = { sectionId: string; documentClass: string; pageIndices: number[] };
+  type Stored = {
+    sectionId: string;
+    documentClass: string;
+    pageIndices: number[];
+    /** The section's field values and label source; BASELINE's when not given. */
+    fields?: Record<string, string>;
+    labelSource?: string;
+  };
 
   /**
    * A test set's server for one document, as the resolver behaves: a save keeps each sent
    * section's content, writes the sections in order of their lowest page index and
    * numbers them 1..N; each section's baseline is served from what is stored under its
    * id. The editor's class, and the board's class for the open section, come from that.
+   * A sent section's fields and label source are the stored section's under the id it was
+   * sent with, and a section sent under an id nothing is stored under is written with no
+   * fields, as a draft — which is how the resolver tells an added section from a kept one.
    */
-  const serve = (initial: Stored[]) => {
+  const serve = (initial: Stored[], { holdRefs = false }: { holdRefs?: boolean } = {}) => {
     let stored = initial;
     global.fetch = vi.fn((url: string) => {
       const sec = stored.find((s) => s.sectionId === new URL(url).searchParams.get('section'))!;
-      const body = { ...BASELINE, document_class: { type: sec.documentClass }, split_document: { page_indices: sec.pageIndices } };
+      const body = {
+        ...BASELINE,
+        document_class: { type: sec.documentClass },
+        split_document: { page_indices: sec.pageIndices },
+        ...(sec.fields ? { inference_result: sec.fields } : {}),
+        ...(sec.labelSource ? { labelSource: sec.labelSource } : {}),
+      };
       return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(body)) });
     }) as never;
     graphql.mockImplementation((args: { query: string; variables?: { s3Uri?: string; input?: { sections: Stored[] } } }) => {
@@ -669,7 +696,16 @@ describe('the class a reclassified section names, across several saves (#1816)',
       }
       if (args.query === 'updateTestSetDocumentSections') {
         const sent = [...args.variables!.input!.sections].sort((a, b) => Math.min(...a.pageIndices) - Math.min(...b.pageIndices));
-        stored = sent.map((s, i) => ({ sectionId: String(i + 1), documentClass: s.documentClass, pageIndices: s.pageIndices }));
+        const before = new Map(stored.map((s) => [s.sectionId, s]));
+        stored = sent.map((s, i) => {
+          const kept = before.get(s.sectionId);
+          return {
+            sectionId: String(i + 1),
+            documentClass: s.documentClass,
+            pageIndices: s.pageIndices,
+            ...(kept ? { fields: kept.fields, labelSource: kept.labelSource } : { fields: {}, labelSource: 'draft-machine' }),
+          };
+        });
         return Promise.resolve({ data: { updateTestSetDocumentSections: { testSetId: 'ts1', objectKey: 'p.pdf', sections: stored } } });
       }
       if (args.query === 'reextractTestSetDocument') {
@@ -679,7 +715,7 @@ describe('the class a reclassified section names, across several saves (#1816)',
     });
     const refs = (): TestSetDocumentSectionRef[] =>
       stored.map((s) => ({ ...s, baselineKey: `ts1/baseline/p.pdf/sections/${s.sectionId}/result.json` }));
-    render(<Harness sections={refs()} refsAfterChange={refs} />);
+    render(<Harness sections={refs()} refsAfterChange={refs} holdRefs={holdRefs} />);
   };
   const START: Stored[] = [
     { sectionId: '1', documentClass: 'Invoice', pageIndices: [0, 1] },
@@ -814,5 +850,66 @@ describe('the class a reclassified section names, across several saves (#1816)',
     // The added section starts first, so it is section 1 now; it has no fields to mismatch.
     await openSection(1, '1');
     expect(note()).toBeNull();
+  });
+
+  describe('section ids across a save (#1895)', () => {
+    const WITH_FIELDS: Stored[] = [
+      { sectionId: '1', documentClass: 'Invoice', pageIndices: [0, 1], fields: { total: '10.00' }, labelSource: 'reviewed-human' },
+      { sectionId: '2', documentClass: 'W2', pageIndices: [2], fields: { wages: '500.00' }, labelSource: 'reviewed-human' },
+    ];
+
+    it("does not give a section added after deleting the last one the deleted section's fields", async () => {
+      serve(WITH_FIELDS);
+      await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+      await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
+      // Empty section 2 into section 1 and delete it, then add a section and give it page 3.
+      await userEvent.click(screen.getByRole('button', { name: /^Move page 3/i }));
+      await userEvent.click(await screen.findByRole('menuitem', { name: /^Section 1\b/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Delete section 2/i }));
+      await userEvent.click(screen.getByRole('button', { name: /Add section/ }));
+      await userEvent.click(screen.getByRole('button', { name: /^Move page 3/i }));
+      const targets = await screen.findAllByRole('menuitem', { name: /^Section \d+\b/ });
+      await userEvent.click(targets[targets.length - 1]);
+      const selects = createWrapper(document.body).findModal()!.findContent().findAllSelects();
+      act(() => selects[1].openDropdown());
+      act(() => selects[1].selectOptionByValue('Payslip'));
+      await userEvent.click(screen.getByRole('button', { name: /Save page grouping/i }));
+      await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+      await settle();
+      // The added section is sent under an id the server has never held.
+      const sent = graphql.mock.calls.find((c) => c[0].query === 'updateTestSetDocumentSections')![0].variables.input.sections;
+      expect(sent.map((s: Stored) => s.sectionId)).not.toContain('2');
+      // Section 2 is the added one: it has no fields, and none of the deleted section's.
+      await openSection(2, '3');
+      expect(screen.queryByDisplayValue('500.00')).not.toBeInTheDocument();
+      expect(screen.getByText(/No field values for this section/i)).toBeInTheDocument();
+      expect(note()).toBeNull();
+    });
+
+    it('does not reuse the id of a section deleted earlier in the same edit', async () => {
+      serve(WITH_FIELDS);
+      await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+      await userEvent.click(screen.getByRole('button', { name: 'Edit Page Grouping' }));
+      await userEvent.click(screen.getByRole('button', { name: /^Move page 3/i }));
+      await userEvent.click(await screen.findByRole('menuitem', { name: /^Section 1\b/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Delete section 2/i }));
+      await userEvent.click(screen.getByRole('button', { name: /Add section/ }));
+      await userEvent.click(screen.getByRole('button', { name: /Add section/ }));
+      // Two added sections, neither named after section 2, nor after each other.
+      expect(screen.queryByRole('button', { name: /Delete section 2/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Delete section 3/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Delete section 4/i })).toBeInTheDocument();
+    });
+
+    it('does not offer Edit Page Grouping until the saved grouping has been re-read', async () => {
+      serve(WITH_FIELDS, { holdRefs: true });
+      await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+      // Page 1 joins section 2, which then starts first: the server renumbers it to 1, so
+      // the refs still on the page name the other section by that id.
+      await regroup({}, { page: 1, to: 2 });
+      expect(screen.getByRole('button', { name: 'Edit Page Grouping' })).toBeDisabled();
+      await userEvent.click(screen.getByRole('button', { name: 'Re-read sections' }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Edit Page Grouping' })).toBeEnabled());
+    });
   });
 });
