@@ -483,3 +483,15 @@ def test_a_tool_called_without_a_caller_refuses(sdk, module, cls, args):
     out = tool.execute(**args)
     assert out["success"] is False and "Unauthorized" in out["error"]
     assert sdk.calls == []
+
+
+def test_a_document_derived_result_leaves_the_handler_with_its_envelope(handler):
+    index, tool = handler
+    tool.execute.return_value = {"success": True, "documents": [{"fields": {}}]}
+    block = ma.sign_caller(caller(), key=KEY, request_id=REQUEST)
+    out = index.lambda_handler(
+        {"document_id": "a.pdf", "_caller": block}, context("get_results")
+    )
+    body = json.loads(out["body"])
+    assert body["provenance"]["documentDerived"] == ["documents"]
+    assert body["documents"] == [{"fields": {}}]

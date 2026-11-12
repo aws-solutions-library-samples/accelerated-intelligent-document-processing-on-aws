@@ -630,8 +630,13 @@ entries:
         {symbol: lib/idp_common_pkg/idp_common/mcp_access.py::verify_caller, limits: mcp_client}
       - &mcp_authorize_tool
         {symbol: lib/idp_common_pkg/idp_common/mcp_access.py::authorize_tool, limits: mcp_client}
+      # Names the result fields that carry document text and says to treat them as
+      # data, so the client's model is told which of what it reads came from documents.
+      - &mcp_provenance
+        {symbol: lib/idp_common_pkg/idp_common/mcp_access.py::with_provenance, limits: mcp_client}
     test:
       - lib/idp_common_pkg/tests/unit/test_mcp_access.py::test_search_is_refused_to_any_scoped_caller
+      - &mcp_provenance_test lib/idp_common_pkg/tests/unit/test_mcp_provenance.py::test_document_derived_results_carry_the_envelope
       - &mcp_signature_test lib/idp_common_pkg/tests/unit/test_mcp_access.py::test_changing_any_field_invalidates_the_signature
       - &mcp_unverified_test lib/idp_common_pkg/tests/unit/lambdas/test_agentcore_mcp_handler_scope.py::test_no_verified_caller_is_refused_before_the_tool
 
@@ -645,8 +650,10 @@ entries:
     control:
       - *mcp_verify_caller
       - *mcp_authorize_tool
+      - *mcp_provenance
       - {symbol: src/lambda/agentcore_mcp_handler/tools/base.py::IDPTool, limits: document_store}
     test:
+      - *mcp_provenance_test
       - *mcp_signature_test
       - *mcp_unverified_test
       - lib/idp_common_pkg/tests/unit/lambdas/test_agentcore_mcp_handler_scope.py::test_get_results_refuses_a_document_outside_scope

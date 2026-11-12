@@ -4893,6 +4893,9 @@ def _primary_param_pairs(permissions_boundary_arn, malware_mode):
         # Must equal the service role's CreatedRolePermissionsBoundaryArn.
         f"PermissionsBoundaryArn={permissions_boundary_arn}",
         f"MalwareScanning={malware_mode}",
+        # MCP is off by default, and the deploy path's MCP resources (gateway,
+        # interceptor, credential registry) are exercised only if it is on.
+        "EnableMCP=true",
     ]
 
 

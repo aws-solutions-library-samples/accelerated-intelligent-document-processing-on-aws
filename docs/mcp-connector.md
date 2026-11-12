@@ -273,7 +273,33 @@ After saving the configuration, Cline automatically launches the connector proce
 
 ---
 
-### Related Documentation
+## Using MCP clients
+
+An MCP client passes each tool result to its own model, and the IDP server's results
+are mostly text taken from your documents: extracted values, classifications, file
+names, and the analytics agent's answers about them. Operate a client with that in
+mind:
+
+- **Connect the IDP server alongside tools you trust.** Whatever else the client
+  can do (send email, call web APIs, write files), its model can be steered to do
+  with what it read here. Keep the IDP server out of clients that also hold tools
+  you would not want acting on a document's contents.
+- **Results mark which fields are document content.** Each result that carries
+  document text includes a `provenance` field naming those fields
+  (`documentDerived`) and saying to treat them as data to report, not as
+  instructions to follow. The connector shows that note to the model as a separate
+  text block ahead of the result. A client that drops it loses the hint, not the result.
+- **Give each client the least access it needs.** Prefer a service credential with
+  the Viewer role and only the configuration profiles the integration reads. Turn
+  write tools (`process`, `reprocess`) on only where the client must start
+  processing, and keep `search`, which reads across every profile, to clients that
+  need it.
+- **Keep a person in the loop for actions.** Where the client asks before running a
+  tool, leave that on for write tools and for tools of other servers.
+- **Rotate and revoke.** A credential that a client no longer uses should be revoked
+  on the MCP Configuration page; revocation applies to the next request.
+
+## Related Documentation
 
 - [MCP Server](./mcp-server.md) — IDP MCP Server overview and tool reference
 - [Custom MCP Agent](./custom-MCP-agent.md) — Connecting your own MCP servers to the IDP web interface

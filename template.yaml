@@ -366,9 +366,9 @@ Parameters:
   # MCP Integration
   EnableMCP:
     Type: String
-    Default: 'true'
+    Default: 'false'
     AllowedValues: [ 'true', 'false' ]
-    Description: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway
+    Description: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway. Off by default; set to true to create the MCP server, its clients and the MCP Configuration page
 
   EnableQuickStartWidget:
     Type: String

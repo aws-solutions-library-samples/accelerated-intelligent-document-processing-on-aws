@@ -88,3 +88,8 @@ def test_the_default_credential_is_told_the_isolation_mode():
     props = RESOURCES["McpDefaultCredential"]["Properties"]
     assert props["TenantIsolationMode"] == {"Fn::Ref": "TenantIsolationMode"}
     assert props["TenantGrantSource"] == {"Fn::Ref": "TenantGrantSource"}
+
+
+def test_mcp_is_off_unless_a_stack_turns_it_on():
+    params = load_template("template.yaml")["Parameters"]
+    assert params["EnableMCP"]["Default"] == "false"
