@@ -44,6 +44,18 @@ What this gate checks:
   under the manifest's ``roles`` section, which ``test_analytics_role_grants.py``
   reads to bound those roles' grants.
 
+**The derivation's reach is by spelling.** It sees ``tool``, ``Agent`` and the other
+constructors when they are imported by name (aliases included) from a ``strands`` or
+``bedrock_agentcore`` module, or reached as an attribute of a module bound by
+``import strands``. It does not see ``@tools.tool`` through ``from strands import
+tools``, ``t = strands.tool`` followed by ``@t``, ``strands.agent.Agent(...)``, a
+subclass of ``Agent`` constructed under its own name, an undecorated function added
+to an existing ``tools=[...]`` list, or a ``claude`` argv spelled ``--print`` or
+assembled without the flags in :data:`CLAUDE_FLAGS` (the interactive pair session in
+``scripts/ux_runner/run_in_docker.py`` is one). None of those forms creates a surface
+in the tree today except that pair session, which is a person's own session rather
+than an unattended one.
+
 ⚠️ **This gate checks declarations, not truth.** It cannot tell whether an entry's
 ``reads`` are complete, whether a ``control`` actually limits what the entry says it
 limits, or whether a cited test asserts anything about it. Those are the questions
@@ -80,6 +92,7 @@ import test_src_lambda_tests_in_ci as ci_coverage  # noqa: E402
 #: new finding is a deliberate edit here, and a fixed one has to be removed.
 PENDING_CONTROL_FINDINGS = (
     "entry:orchestrator",
+    "entry:failure-agent-harness",
     "role:ExtractionFunction:delete:OutputBucket/*",
     "role:ShardRuntimeFunction:delete:WorkingBucket/*",
     "role:ShardRuntimeFunction:delete:OutputBucket/*",

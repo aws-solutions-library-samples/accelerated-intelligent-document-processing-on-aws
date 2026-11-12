@@ -2,7 +2,7 @@
   "schema": "threat-composer/1.0",
   "projectName": "GenAI IDP Accelerator",
   "description": "STRIDE threat model for the GenAI Intelligent Document Processing Accelerator (unified architecture: Pipeline + BDA modes). Generated from the Markdown corpus by scripts/build_threat_model.py \u2014 do not edit by hand.",
-  "version": "3.16",
+  "version": "3.18",
   "lastUpdated": "2026-11-09",
   "appliesToRelease": "v0.6.14",
   "lastReviewedAgainstVersion": "0.6.14",

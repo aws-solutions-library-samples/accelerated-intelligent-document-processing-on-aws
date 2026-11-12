@@ -14,7 +14,8 @@ those roles to what their code paths use:
 * ``lambda:InvokeFunction`` names functions; a wildcard ARN is allowed only where the
   role's manifest declaration names it under ``invoke`` with the code path that needs
   it;
-* each S3 object read on the input or output bucket, and each S3 object write or
+* each S3 object read on a bucket holding documents or data derived from them
+  (:data:`DOCUMENT_BUCKETS`), and each S3 object write or
   delete anywhere, is one the manifest declares for that role under
   ``object_access``, with the code path that ``uses`` it. A grant no code path uses
   is declared ``unused``, which ``test_agent_capabilities.py`` counts as an open
@@ -25,6 +26,10 @@ code constructs an agent (a call to ``create_analytics_agent`` or to an
 ``agent_factory.create_*`` method), found by reading each function's ``CodeUri``, and
 the manifest's document-input roles. The grants are read from the template with SAM's
 policy templates expanded from ``samtranslator``'s own ``policy_templates.json``.
+
+Policies attached by ``!Ref`` to a managed policy in the same template are read
+from that policy's document; any policy entry the reader cannot resolve fails
+``test_every_policy_on_the_role_is_read`` rather than being skipped.
 
 ⚠️ This reads identity policies only. A bucket policy, an SCP, a permissions boundary
 and the KMS key policy also decide what a deployed role can do, and none of them is in
@@ -72,8 +77,16 @@ MEASURED_AGENT_FUNCTIONS = {
     ("template.yaml", "AgentCoreMCPHandlerFunction"),
 }
 
-#: Buckets that hold documents and their processing results.
-DOCUMENT_BUCKETS = {"InputBucket", "OutputBucket"}
+#: Buckets that hold documents, their processing results, or data derived from them
+#: (intermediate results, test sets, discovery samples). Object reads on these must be
+#: declared.
+DOCUMENT_BUCKETS = {
+    "InputBucket",
+    "OutputBucket",
+    "WorkingBucket",
+    "TestSetBucket",
+    "DiscoveryBucket",
+}
 
 #: Per role, the S3 object access its code uses: ``(kind, bucket, key pattern)`` with
 #: the code path that needs it, or the finding that nothing does. ``kind`` is ``read``
@@ -173,10 +186,17 @@ def _substitute(node: Any, params: Dict[str, Any]) -> Any:
     return node
 
 
-def _statements(policies: List[Any]) -> Iterator[Dict[str, Any]]:
-    """Every Allow statement in a SAM ``Policies`` list, SAM templates expanded and
-    both arms of an ``Fn::If`` included."""
+def _statements(
+    policies: List[Any],
+    resources: Dict[str, Any] | None = None,
+    unread: List[str] | None = None,
+) -> Iterator[Dict[str, Any]]:
+    """Every Allow statement in a SAM ``Policies`` list, SAM templates expanded, both
+    arms of an ``Fn::If`` included (around a statement or a whole list entry), and a
+    ``!Ref`` to an ``AWS::IAM::ManagedPolicy`` in the same template read from that
+    resource's document. A ``!Ref`` this cannot read is appended to ``unread``."""
     sam = _sam_templates()
+    resources = resources or {}
 
     def flatten(stmt):
         if isinstance(stmt, dict) and "Fn::If" in stmt:
@@ -185,17 +205,42 @@ def _statements(policies: List[Any]) -> Iterator[Dict[str, Any]]:
         elif isinstance(stmt, dict) and stmt.get("Effect") == "Allow":
             yield stmt
 
-    for entry in policies:
-        if not isinstance(entry, dict):
-            continue
-        for key, value in entry.items():
-            if key == "Statement":
-                for stmt in value if isinstance(value, list) else [value]:
-                    yield from flatten(stmt)
-            elif key in sam:
-                definition = _substitute(sam[key]["Definition"], value or {})
-                for stmt in definition["Statement"]:
-                    yield from flatten(stmt)
+    def entries(entry):
+        if isinstance(entry, dict) and "Fn::If" in entry:
+            for arm in entry["Fn::If"][1:]:
+                yield from entries(arm)
+        elif isinstance(entry, list):
+            for item in entry:
+                yield from entries(item)
+        else:
+            yield entry
+
+    for raw in policies:
+        for entry in entries(raw):
+            if not isinstance(entry, dict):
+                continue  # a managed policy named by string (AWS-managed)
+            if set(entry) == {"Ref"}:
+                target = resources.get(entry["Ref"]) or {}
+                if target.get("Type") == "AWS::IAM::ManagedPolicy":
+                    document = (target.get("Properties") or {}).get(
+                        "PolicyDocument"
+                    ) or {}
+                    stmts = document.get("Statement") or []
+                    for stmt in stmts if isinstance(stmts, list) else [stmts]:
+                        yield from flatten(stmt)
+                elif entry["Ref"] != "AWS::NoValue" and unread is not None:
+                    unread.append(entry["Ref"])
+                continue
+            for key, value in entry.items():
+                if key == "Statement":
+                    for stmt in value if isinstance(value, list) else [value]:
+                        yield from flatten(stmt)
+                elif key in sam:
+                    definition = _substitute(sam[key]["Definition"], value or {})
+                    for stmt in definition["Statement"]:
+                        yield from flatten(stmt)
+                elif unread is not None:
+                    unread.append(key)
 
 
 def _render(node: Any) -> str:
@@ -226,10 +271,13 @@ def _as_list(value: Any) -> List[Any]:
     return value if isinstance(value, list) else [value]
 
 
-def _grants(logical_id: str, template: str) -> List[Tuple[str, str]]:
-    properties = _load(template)["Resources"][logical_id].get("Properties") or {}
+def _grants(
+    logical_id: str, template: str, unread: List[str] | None = None
+) -> List[Tuple[str, str]]:
+    resources = _load(template)["Resources"]
+    properties = resources[logical_id].get("Properties") or {}
     out = []
-    for stmt in _statements(properties.get("Policies") or []):
+    for stmt in _statements(properties.get("Policies") or [], resources, unread):
         for action in _as_list(stmt.get("Action") or []):
             for resource in _as_list(stmt.get("Resource") or []):
                 out.append((action, _render(resource)))
@@ -305,6 +353,17 @@ def test_every_function_that_runs_the_agent_is_named_in_the_manifest():
     assert not missing, (
         f"these functions run an agent and no capability manifest entry that takes "
         f"document-derived input names them in `roles`: {missing}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("template, function", _all_roles())
+def test_every_policy_on_the_role_is_read(template, function):
+    unread: List[str] = []
+    _grants(function, template, unread)
+    assert not unread, (
+        f"{function} carries policy entries this test cannot read, so its grants "
+        f"are not all checked: {unread}"
     )
 
 

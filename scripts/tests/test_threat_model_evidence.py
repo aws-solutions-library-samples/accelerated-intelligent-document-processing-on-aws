@@ -3,7 +3,8 @@
 
 """Each modelled entry's mitigations say what tests them, or say that nothing does.
 
-Every entry block in ``security/threat-modeling/feature-threats/*.md`` carries one
+Every entry block the export builder
+(``security/threat-modeling/scripts/build_threat_model.py``) reads carries one
 ``| **Evidence** |`` row after its mitigations. The row is a ``; ``-separated list of
 citations, each in backticks, optionally followed by ``UNVERIFIED: <what is not
 covered>``:
@@ -37,7 +38,6 @@ from typing import Dict, List, Set, Tuple
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-FEATURE_DOCS = REPO_ROOT / "security" / "threat-modeling" / "feature-threats"
 BUILD_SCRIPT = (
     REPO_ROOT / "security" / "threat-modeling" / "scripts" / "build_threat_model.py"
 )
@@ -47,13 +47,14 @@ import test_agent_capabilities as capabilities  # noqa: E402
 
 #: Rows whose Evidence cell is marked UNVERIFIED. Lower it when a row's mitigations
 #: are all cited; it must never be raised to admit a new unverified row silently.
-PINNED_UNVERIFIED_MITIGATIONS = 95
+PINNED_UNVERIFIED_MITIGATIONS = 109
 
 _CITATION = re.compile(r"`([^`]+)`")
 _UNVERIFIED = "UNVERIFIED:"
 _HEADING = re.compile(r"^### [A-Z]+\.T\d+:", re.M)
 
 
+@functools.lru_cache(maxsize=None)
 def _build_module():
     spec = importlib.util.spec_from_file_location("build_threat_model", BUILD_SCRIPT)
     module = importlib.util.module_from_spec(spec)
@@ -67,7 +68,7 @@ def entries() -> Dict[str, Tuple[str, List[Tuple[str, str]]]]:
     """Entry id -> (document, rows), parsed with the export builder's own patterns."""
     build = _build_module()
     out: Dict[str, Tuple[str, List[Tuple[str, str]]]] = {}
-    for doc in sorted(FEATURE_DOCS.glob("*.md")):
+    for doc in _build_module().source_docs():
         for match in build.BLOCK_RE.finditer(doc.read_text(encoding="utf-8")):
             rows = [
                 (k.strip(), v.strip())
@@ -138,12 +139,17 @@ def _evidence(entry_id: str) -> List[str]:
 def test_every_entry_heading_is_parsed() -> None:
     headings = sum(
         len(_HEADING.findall(p.read_text(encoding="utf-8")))
-        for p in FEATURE_DOCS.glob("*.md")
+        for p in _build_module().source_docs()
     )
     assert entries(), "no entry blocks parsed"
     assert len(entries()) == headings, (
         f"{headings} entry headings but {len(entries())} entry tables parsed; a "
         "heading whose table the export builder cannot read is outside this gate"
+    )
+    exported = {str(t["id"]) for t in _build_module().parse_threats()}
+    assert set(entries()) == exported, (
+        "this gate and the export disagree on which entries exist: "
+        f"{sorted(set(entries()) ^ exported)}"
     )
 
 

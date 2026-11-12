@@ -154,6 +154,12 @@ vocabulary:
     sub_agent:
       external: false
       note: A question passed to another agent in the same process.
+    shell_commands:
+      external: true
+      note: >-
+        Shell commands a harness lets the model run. Claude Code's Bash allowlist
+        rules are prefix matches, so a command chained after an allowed prefix runs
+        too, and reaches whatever the shell and its credentials can.
     ci_job_log:
       external: false
       note: The CI job's own log.
@@ -220,6 +226,7 @@ roles:
       - {kind: read, bucket: InputBucket, key: /*, uses: reads the uploaded document's pages}
       - {kind: read, bucket: OutputBucket, key: /*, uses: reads OCR and classification output}
       - {kind: write, bucket: OutputBucket, key: /*, uses: writes extraction results}
+      - {kind: read, bucket: WorkingBucket, key: /*, uses: reads its checkpoint and per-shard results}
       - {kind: write, bucket: WorkingBucket, key: /*, uses: writes checkpoints and per-shard results}
       - {kind: delete, bucket: WorkingBucket, key: /*,
          uses: "deletes the section checkpoint and per-shard results
@@ -239,6 +246,7 @@ roles:
       - {kind: read, bucket: InputBucket, key: /*, uses: reads the uploaded document's pages}
       - {kind: read, bucket: OutputBucket, key: /*, uses: reads OCR and classification output}
       - {kind: write, bucket: OutputBucket, key: /*, uses: writes merged section results}
+      - {kind: read, bucket: WorkingBucket, key: /*, uses: reads the section's shard plan and per-shard results}
       - {kind: write, bucket: WorkingBucket, key: /*, uses: writes per-shard results}
       - {kind: delete, bucket: WorkingBucket, key: /*,
          unused: "S3CrudPolicy grants it; sfn_runtime_handler.py states the per-shard
@@ -250,7 +258,14 @@ roles:
   MultiDocDiscoveryAnalyzeFunction:
     template: nested/multi-doc-discovery/template.yaml
     object_access:
-      - {kind: read, bucket: InputBucket, key: /*, uses: loads the cluster's sampled document images}
+      - {kind: read, bucket: InputBucket, key: /*,
+         uses: "loads the cluster's sampled document images from the job's source bucket
+           (analyze_handler.py, _load_cluster_images)"}
+      - {kind: read, bucket: TestSetBucket, key: /*,
+         uses: "the same load when the job's source is a test set; the source bucket comes
+           from the state machine input (analyze_handler.py, event['bucket'])"}
+      - {kind: read, bucket: DiscoveryBucket, key: /*,
+         uses: reads the job's embeddings and cluster data (analyze_handler.py)}
       - {kind: write, bucket: DiscoveryBucket, key: /*,
          unused: "S3CrudPolicy grants it; analyze_handler.py and the discovery modules
            it calls only read objects. Inferred from source, not measured."}
@@ -676,7 +691,16 @@ entries:
       (IDP_FAILURE_AGENT=1). Its report goes into the job's own log.
     reads: [ci_account_read_only, repository_checkout]
     inputs: [build_log]
-    outputs: [ci_job_log]
+    outputs: [ci_job_log, shell_commands]
+    finding:
+      outputs: [shell_commands]
+      text: >-
+        The harness grants Bash rules for read-only aws verbs, and its own docstring
+        records that they are prefix matches, not a limit on what a chained command
+        does. With IDP_FAILURE_AGENT_ROLE_ARN unset it runs on the job's ambient
+        credentials; with it set, the read-only role
+        (_readonly_credentials) bounds what those commands can change, and no test
+        exercises that function. The agent is off unless IDP_FAILURE_AGENT=1.
 
   sandbox-network-probe:
     surfaces: [construct:scripts/sdlc/sandbox_network_probe.py::_run_live::CodeInterpreter]
