@@ -2,6 +2,9 @@
 title: "Release Benchmark Audit Trail"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Release Benchmark Audit Trail
 
 One entry per release, comparing each `develop` prerelease against the **previous

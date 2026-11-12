@@ -1,6 +1,10 @@
 ---
 title: "Feature Platform"
 ---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Feature Platform
 
 > **Status: preview.** The Feature Platform is the *framework* for installable

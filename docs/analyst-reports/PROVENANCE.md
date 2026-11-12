@@ -1,3 +1,6 @@
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Analyst report provenance
 
 Third-party analyst reports about the GenAI IDP Accelerator, hosted here with

@@ -1,6 +1,10 @@
 ---
 title: "Feature Platform — Developer Guide"
 ---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Feature Platform — Developer Guide
 
 How to build a new **extension** (feature) and add it to the catalog. For the
