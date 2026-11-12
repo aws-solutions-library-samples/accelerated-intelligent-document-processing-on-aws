@@ -505,43 +505,18 @@ class TestPricing:
         five = self._units("bedrock/us.anthropic.claude-sonnet-5")
         assert five["cacheReadInputTokens"] / five["inputTokens"] == pytest.approx(0.1)
 
-    def test_the_sonnet_5_rows_are_knowingly_higher_and_that_is_not_a_discount(self):
-        """⚠️ A cost report out of this file makes Sonnet 5.5 look 1.50x cheaper than
-        Sonnet 5 on input and output. It is not: the price list gives the two models
-        the identical $2.20/$11.00 band, and the six Sonnet 5 rows carry Sonnet 4.6's
-        rates by a documented, deliberately-deferred decision (the ⚠️ block on
-        ``bedrock/us.anthropic.claude-sonnet-5``).
-
-        Asserted rather than only commented so the artefact is visible to whoever
-        fixes those rows: when they drop to 2.2e-6 this test fails and points at the
-        prose that needs removing, instead of the discrepancy quietly disappearing
-        from a document nobody re-reads.
-
-        ⚠️ This assertion is about the RATIO between two models, so it fires on a
-        change to **either** side — which is the point, but it means a failure here
-        is not evidence that Sonnet 5.5's own rows drifted. Those are pinned
-        absolutely in ``test_the_regional_rates`` above, so check that first: if it
-        passes and this fails, somebody corrected the Sonnet 5 rows and the work is
-        to delete prose, not to change a price. The failure message says so, because
-        the name of this test alone points at the wrong model.
-        """
+    def test_sonnet_5_and_5_5_share_one_input_and_output_band(self):
+        """The price list gives the two models the identical $2.20/$11.00 band, so a
+        cost report from this file must not show either as cheaper per input or
+        output token. Until #1830 the Sonnet 5 rows carried Sonnet 4.6's rates, which
+        made Sonnet 5.5 read 1.5x cheaper; the only real difference is cache read."""
         five_five = self._units("bedrock/us.anthropic.claude-sonnet-5-5")
         five = self._units("bedrock/us.anthropic.claude-sonnet-5")
-        hint = (
-            "The Sonnet 5 rows no longer read 1.50x Sonnet 5.5's. If "
-            "test_the_regional_rates still passes, Sonnet 5.5 is fine and the Sonnet "
-            "5 rows have been CORRECTED — in which case delete this test and the "
-            "⚠️ paragraphs it guards: the pricing.yaml note on "
-            "bedrock/us.anthropic.claude-sonnet-5-5, the CHANGELOG's '~33% cheaper' "
-            "sentence, and the benchmarking index row's price note. If "
-            "test_the_regional_rates also fails, the new rows are what drifted."
-        )
-        assert five["inputTokens"] / five_five["inputTokens"] == pytest.approx(1.5), (
-            hint
-        )
-        assert five["outputTokens"] / five_five["outputTokens"] == pytest.approx(1.5), (
-            hint
-        )
+        assert five["inputTokens"] == five_five["inputTokens"]
+        assert five["outputTokens"] == five_five["outputTokens"]
+        assert five_five["cacheReadInputTokens"] / five[
+            "cacheReadInputTokens"
+        ] == pytest.approx(0.5)
 
     def test_no_1m_pricing_entry_exists(self):
         """There is no ``:1m`` id for this model, so an entry would be a rate keyed on
