@@ -91,7 +91,6 @@ import test_src_lambda_tests_in_ci as ci_coverage  # noqa: E402
 #: each member is the manifest's own text beside it. Pinned in both directions, so a
 #: new finding is a deliberate edit here, and a fixed one has to be removed.
 PENDING_CONTROL_FINDINGS = (
-    "entry:orchestrator",
     "entry:failure-agent-harness",
     "role:ExtractionFunction:delete:OutputBucket/*",
     "role:ShardRuntimeFunction:delete:WorkingBucket/*",

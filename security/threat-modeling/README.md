@@ -5,7 +5,7 @@
 | Field | Value |
 |-------|-------|
 | **Version** | 3.18 |
-| **Last Updated** | 2026-11-09 |
+| **Last Updated** | 2026-11-12 |
 | **Applies to release** | v0.6.14 |
 | **Last reviewed against version** | 0.6.14 |
 | **System** | GenAI Intelligent Document Processing (IDP) Accelerator |

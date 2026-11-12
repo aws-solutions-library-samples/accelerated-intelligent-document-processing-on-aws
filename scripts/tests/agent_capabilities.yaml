@@ -226,7 +226,8 @@ roles:
       - {kind: read, bucket: InputBucket, key: /*, uses: reads the uploaded document's pages}
       - {kind: read, bucket: OutputBucket, key: /*, uses: reads OCR and classification output}
       - {kind: write, bucket: OutputBucket, key: /*, uses: writes extraction results}
-      - {kind: read, bucket: WorkingBucket, key: /*, uses: reads its checkpoint and per-shard results}
+      - {kind: read, bucket: WorkingBucket, key: /*, uses: "loads the compressed document (Document.load_document) and reads its
+           checkpoint and per-shard results"}
       - {kind: write, bucket: WorkingBucket, key: /*, uses: writes checkpoints and per-shard results}
       - {kind: delete, bucket: WorkingBucket, key: /*,
          uses: "deletes the section checkpoint and per-shard results
@@ -246,7 +247,8 @@ roles:
       - {kind: read, bucket: InputBucket, key: /*, uses: reads the uploaded document's pages}
       - {kind: read, bucket: OutputBucket, key: /*, uses: reads OCR and classification output}
       - {kind: write, bucket: OutputBucket, key: /*, uses: writes merged section results}
-      - {kind: read, bucket: WorkingBucket, key: /*, uses: reads the section's shard plan and per-shard results}
+      - {kind: read, bucket: WorkingBucket, key: /*, uses: "loads the compressed document (Document.load_document) and reads the
+           section's per-shard results"}
       - {kind: write, bucket: WorkingBucket, key: /*, uses: writes per-shard results}
       - {kind: delete, bucket: WorkingBucket, key: /*,
          unused: "S3CrudPolicy grants it; sfn_runtime_handler.py states the per-shard
@@ -262,10 +264,12 @@ roles:
          uses: "loads the cluster's sampled document images from the job's source bucket
            (analyze_handler.py, _load_cluster_images)"}
       - {kind: read, bucket: TestSetBucket, key: /*,
-         uses: "the same load when the job's source is a test set; the source bucket comes
-           from the state machine input (analyze_handler.py, event['bucket'])"}
+         uses: "the same load when the job's source is a test set, which only an unscoped
+           caller may choose; the source bucket comes from the state machine input
+           (analyze_handler.py, event['bucket'])"}
       - {kind: read, bucket: DiscoveryBucket, key: /*,
-         uses: reads the job's embeddings and cluster data (analyze_handler.py)}
+         uses: "reads the job's embeddings and cluster data, and the sampled images when
+           the job's source is an upload, the default (analyze_handler.py)"}
       - {kind: write, bucket: DiscoveryBucket, key: /*,
          unused: "S3CrudPolicy grants it; analyze_handler.py and the discovery modules
            it calls only read objects. Inferred from source, not measured."}
@@ -375,7 +379,9 @@ entries:
     note: >-
       Each enabled agent is one of its tools. It holds the whole conversation, so an
       answer the Analytics or Error Analyzer agent gave earlier is in its context
-      when it writes a question for another agent.
+      when it writes a question for another agent. The Code Intelligence and External
+      MCP agents are opt-in per request, and are left out of (or refused within) any
+      session in which a data agent has returned a result.
     roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction, AgentProcessorFunction]
     reads: [reporting_tables, tracking_and_logs, chat_memory]
     inputs: [user_prompt, conversation_history, reporting_rows, logs_and_records,
@@ -386,21 +392,26 @@ entries:
          limits: chat_memory}
       - {symbol: lib/idp_common_pkg/idp_common/agents/utils/memory_provider.py::DynamoDBMemoryHookProvider,
          limits: chat_memory}
+      - {symbol: lib/idp_common_pkg/idp_common/chat_session_agents.py::select_orchestrator_agent_ids,
+         limits: deepwiki_mcp_server}
+      - {symbol: lib/idp_common_pkg/idp_common/chat_session_agents.py::select_orchestrator_agent_ids,
+         limits: external_mcp_server}
+      - {symbol: lib/idp_common_pkg/idp_common/chat_session_agents.py::SessionAgentGate,
+         limits: deepwiki_mcp_server}
+      - {symbol: lib/idp_common_pkg/idp_common/chat_session_agents.py::SessionAgentGate,
+         limits: external_mcp_server}
       - *safe_markdown_images
       - *safe_markdown_schema
     test:
       - lib/idp_common_pkg/tests/unit/test_chat_session_owner.py::TestReadPath::test_the_row_a_message_used_to_create_is_not_ownership
       - lib/idp_common_pkg/tests/unit/agents/utils/test_memory_provider.py::TestConstructionAndKeys::test_two_users_naming_one_session_id_get_different_keys
+      - lib/idp_common_pkg/tests/unit/test_chat_session_agents.py::TestSelection::test_a_flagged_session_gets_no_opt_in_agent_whatever_was_asked
+      - lib/idp_common_pkg/tests/unit/test_chat_session_agents.py::TestSelection::test_no_opt_in_means_no_opt_in_agent
+      - lib/idp_common_pkg/tests/unit/test_chat_session_agents.py::TestGate::test_first_data_result_records_once_and_closes_opt_in_agents
+      - lib/idp_common_pkg/tests/unit/test_chat_session_agents.py::TestRecheck::test_a_failed_recheck_closes_them
       - *safe_markdown_test
       - *markdown_surfaces_test
       - *csp_test
-    finding:
-      outputs: [deepwiki_mcp_server, external_mcp_server]
-      text: >-
-        Within one session, text from an Analytics or Error Analyzer answer can be
-        written into a question the orchestrator sends to the Code Intelligence agent
-        (DeepWiki) or an External MCP agent. Nothing in the code limits which agents a
-        session that has received such an answer may call next.
 
   quick-start-agent:
     surfaces:

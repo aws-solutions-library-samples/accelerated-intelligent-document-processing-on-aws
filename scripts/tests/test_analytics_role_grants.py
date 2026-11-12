@@ -111,6 +111,11 @@ DECLARED_WILDCARD_INVOKES: Dict[str, Dict[str, str]] = {
     for role, decl in capabilities.manifest()["roles"].items()
 }
 
+#: Policies named by string in a ``Policies`` list whose content is known and holds
+#: no S3, Lambda or AgentCore grant: AWSLambdaBasicExecutionRole is CloudWatch Logs
+#: only. Any other name is reported as unread, because its grants are not checked.
+READABLE_NAMED_POLICIES = frozenset({"AWSLambdaBasicExecutionRole"})
+
 READ_ACTIONS = ("s3:GetObject", "s3:GetObjectVersion")
 WRITE_ACTIONS = ("s3:PutObject",)
 DELETE_ACTIONS = ("s3:DeleteObject", "s3:DeleteObjectVersion")
@@ -218,7 +223,9 @@ def _statements(
     for raw in policies:
         for entry in entries(raw):
             if not isinstance(entry, dict):
-                continue  # a managed policy named by string (AWS-managed)
+                if entry not in READABLE_NAMED_POLICIES and unread is not None:
+                    unread.append(str(entry))
+                continue
             if set(entry) == {"Ref"}:
                 target = resources.get(entry["Ref"]) or {}
                 if target.get("Type") == "AWS::IAM::ManagedPolicy":
@@ -284,6 +291,9 @@ def _grants(
     return out
 
 
+#: A resource that names objects in every bucket.
+_ANY_BUCKET = re.compile(r"\*|arn:(?:\$\{AWS::Partition\}|aws[\w-]*):s3:::\*(?:/.*)?")
+
 _BUCKET_REF = re.compile(r"\$\{(\w*Bucket)(?:Name)?(?:\.Arn)?\}")
 
 
@@ -293,19 +303,24 @@ def _object_access(grants: List[Tuple[str, str]]) -> Set[Tuple[str, str, str]]:
         if not action.startswith("s3:") and action != "*":
             continue
         match = _BUCKET_REF.search(resource)
-        if not match:
+        if match:
+            bucket = match.group(1)
+            key = resource[match.end() :]
+            if not key.startswith("/"):
+                continue  # bucket-level resource; object actions do not apply to it
+        elif _ANY_BUCKET.fullmatch(resource):
+            # every bucket: recorded as bucket "*", which no declaration names, so
+            # a wildcard object grant always fails the declared-access check
+            bucket, key = "*", "/*"
+        else:
             continue
-        bucket = match.group(1)
-        key = resource[match.end() :]
-        if not key.startswith("/"):
-            continue  # bucket-level resource; object actions do not apply to it
         for kind, ops in (
             ("read", READ_ACTIONS),
             ("write", WRITE_ACTIONS),
             ("delete", DELETE_ACTIONS),
         ):
             if any(fnmatch.fnmatchcase(op, action) for op in ops):
-                if kind == "read" and bucket not in DOCUMENT_BUCKETS:
+                if kind == "read" and bucket not in DOCUMENT_BUCKETS | {"*"}:
                     continue
                 found.add((kind, bucket, key))
     return found
