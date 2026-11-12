@@ -1326,7 +1326,15 @@ section says **Fields still reflect the previous class** and offers **Re-extract
 which re-runs that document and waits for the new labels before returning, so you
 are never left looking at fields from the previous class. On a document with one
 section it re-extracts the whole document; on a document with several it re-extracts
-only the section you are looking at (see below).
+only the section you are looking at (see below). The note names the class the fields
+were extracted under, so a section changed twice before it is re-extracted (Invoice to
+W2, then to Payslip) still says Invoice, and a section changed back to that class shows
+no note. The note stays with its section when a later save moves pages and renumbers
+the sections, and when a different section is re-extracted. It lasts for the page visit
+only: saving a new class overwrites the class in the section's ground truth, and nothing
+the editor loads records the class the fields were extracted under, so after a reload
+the note is not shown, though the fields still belong to the earlier class until the
+section is re-extracted.
 
 The corrected class is sent into the re-run itself, not merely written onto the
 existing labels: the document is re-processed with classification **skipped** and
