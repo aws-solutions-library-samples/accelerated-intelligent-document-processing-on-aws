@@ -115,6 +115,18 @@ The GenAI IDP Accelerator solution includes a built-in cost estimation feature i
 
 This real-time cost tracking helps you monitor actual usage patterns and optimize costs based on real-world usage.
 
+**Model calls whose result was not used are still counted.** An Advanced-mode
+(agentic) extraction run that stops on an error, or that ends without a valid
+extraction, adds the tokens of every model call it completed to the document's
+metering under its step. The case you will see in the estimate is a failed
+[validation escalation](extraction-and-confidence.md#schema-validation-and-model-escalation): it keeps the original result, the document
+continues, and the escalation's calls appear under `ExtractionEscalation`. Two
+cases are not counted. A document whose workflow fails records no cost in the
+reports at all, for any step, because the tracker saves metering only from a
+workflow that succeeded. And when an extraction attempt fails with a transient
+error and Step Functions retries it, the calls of the failed attempt are not
+counted; only the attempt that finishes is.
+
 #### Editing the pricing table
 
 Administrators change prices on the **Pricing** page. The shipped rates come from

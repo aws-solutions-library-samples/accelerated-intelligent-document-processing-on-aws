@@ -6327,6 +6327,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 extra={"error": str(e)},
                 exc_info=True,
             )
+            # A re-extraction that raised carries the usage of the agent turns it
+            # completed on the exception (#1923). Empty when the raise came after
+            # ``structured_output`` returned, whose metering is already bound above.
+            metering = utils.merge_metering_data(metering, utils.failure_metering(e))
             return (
                 extracted_fields,
                 structured_data,
@@ -8372,6 +8376,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # cause stays the sentence a reader can act on.
             raise
         except Exception as e:
+            # Usage of the model calls the section made before it failed, carried on
+            # the exception because a raise returns nothing (#1923). Merged before
+            # any branch below re-raises under another class.
+            failed_run_metering = utils.failure_metering(e)
+            if failed_run_metering:
+                document.metering = utils.merge_metering_data(
+                    document.metering, failed_run_metering
+                )
             from idp_common.utils.bedrock_utils import (
                 is_image_request_rejection,
                 is_input_token_overflow,
