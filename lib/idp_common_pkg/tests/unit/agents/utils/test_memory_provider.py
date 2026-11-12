@@ -974,3 +974,71 @@ class TestHousekeeping:
         stats = provider.get_conversation_stats()
         assert stats["exists"] is False
         assert "boom" in stats["error"]
+
+
+@pytest.mark.unit
+class TestMemoryExpiry:
+    """Memory is kept no longer than the session owner record it belongs with."""
+
+    def test_an_append_carries_an_expiry(self):
+        provider, table = _provider(expires_after_seconds=100)
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        with patch(f"{MODULE}.time.time", return_value=1000):
+            provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        assert _written_item(table)["ExpiresAfter"] == 1100
+
+    def test_a_new_item_carries_an_expiry(self):
+        provider, table = _provider(expires_after_seconds=100)
+        table.query.return_value = {"Items": []}
+        with patch(f"{MODULE}.time.time", return_value=1000):
+            provider._store_message_to_dynamodb({"text": "hello"}, "user")
+        assert _written_item(table)["ExpiresAfter"] == 1100
+
+    def test_no_expiry_unless_asked(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": []}
+        provider._store_message_to_dynamodb({"text": "hello"}, "user")
+        assert "ExpiresAfter" not in _written_item(table)
+
+    @pytest.mark.parametrize(
+        "days,expected", [("2", 172800), ("", None), ("0", None), ("x", None)]
+    )
+    def test_the_factory_takes_the_expiry_from_the_retention_period(
+        self, monkeypatch, days, expected
+    ):
+        import importlib
+
+        mod = importlib.import_module("idp_common.agents.factory.agent_factory")
+        monkeypatch.setenv("DATA_RETENTION_DAYS", days)
+        assert mod._memory_expiry_seconds() == expected
+
+
+@pytest.mark.unit
+class TestExpiredMemoryIsNotRead:
+    """An item past its ``ExpiresAfter`` reads as gone before DynamoDB deletes it."""
+
+    def test_history_skips_an_expired_item(self):
+        provider, table = _provider()
+        table.query.return_value = {
+            "Items": [
+                _item("t2", [_message("user", "new")], ExpiresAfter=2000),
+                _item("t1", [_message("user", "old")], ExpiresAfter=500),
+            ]
+        }
+        with patch(f"{MODULE}.time.time", return_value=1000):
+            turns = provider._load_conversation_history()
+        texts = [m["content"]["text"] for turn in turns for m in turn]
+        assert texts == ["new"]
+
+    def test_an_expired_newest_item_is_not_appended_to(self):
+        provider, table = _provider(expires_after_seconds=100)
+        table.query.return_value = {
+            "Items": [_item("t1", [_message("user", "old")], ExpiresAfter=500)]
+        }
+        with patch(f"{MODULE}.time.time", return_value=1000):
+            assert provider._get_latest_conversation_item() is None
+
+    def test_an_item_without_expiry_is_read(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        assert provider._get_latest_conversation_item() is not None

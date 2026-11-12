@@ -195,6 +195,7 @@ class TestConversationalOrchestrator:
             region_name="us-west-2",
             max_message_size_kb=8.5,
             max_history_turns=20,
+            expires_after_seconds=None,  # DATA_RETENTION_DAYS is not set here
         )
 
     @patch(

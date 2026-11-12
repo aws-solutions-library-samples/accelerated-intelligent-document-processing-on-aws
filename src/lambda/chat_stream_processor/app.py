@@ -14,7 +14,8 @@ Two routes:
   * ``POST /chat/document`` — Chat-with-Document. Body:
     ``{sessionId, prompt, s3Uri, modelId, turnId?}``.
   * ``POST /chat/agent``    — Agent chat. Body:
-    ``{sessionId, prompt, method?, enableCodeIntelligence?}``.
+    ``{sessionId, prompt, method?, enableCodeIntelligence?,
+    enableExternalMcpAgents?}``.
 
 Each emitted event is written as one SSE frame::
 
@@ -141,6 +142,9 @@ class DocumentChatRequest(_ChatRequest):
 class AgentChatRequest(_ChatRequest):
     method: str = Field(default="chat", max_length=64)
     enableCodeIntelligence: StrictBool = False
+    # Default off, like Code Intelligence: External MCP agents send their query
+    # to a server outside the deployment.
+    enableExternalMcpAgents: StrictBool = False
 
 
 def _verified_caller(request: Request) -> dict:
@@ -436,6 +440,7 @@ async def chat_agent(request: Request, body: AgentChatRequest) -> StreamingRespo
                     # Typed StrictBool on AgentChatRequest, so a non-boolean is
                     # rejected with a 422 before reaching here.
                     "enableCodeIntelligence": body.enableCodeIntelligence,
+                    "enableExternalMcpAgents": body.enableExternalMcpAgents,
                     # The id the caller's session list is filed under, from the
                     # verified token. The processor files the turn there.
                     "callerSub": _session_user_id(claims),

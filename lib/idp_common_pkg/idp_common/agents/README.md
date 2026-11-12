@@ -167,7 +167,9 @@ ship without the layer).
 
 **Schema**:
 - **PK**: `sessionId`
-- **Attributes**: `ownerSub` (the owner's Cognito `sub`), `ExpiresAfter`
+- **Attributes**: `ownerSub` (the owner's Cognito `sub`), `ExpiresAfter`, and
+  `dataResultsAt` (epoch seconds; present once the session holds Analytics or Error
+  Analyzer results, see [Opt-in agents per session](#opt-in-agents-per-session))
 
 The first user to use an id registers it with a conditional write; a second user can
 neither register it nor read its history. A path that writes a turn registers an
@@ -186,7 +188,8 @@ Stores conversation history for agent memory.
   `conversation#{session_id}` key is not read.
 - **SK**: `timestamp` (ISO-8601 format)
 - **Attributes**: conversation_history (JSON), message_count, last_updated,
-  conversation_version
+  conversation_version, ExpiresAfter (the retention period after the item's last
+  write, when `DATA_RETENTION_DAYS` is set)
 
 Appending a message rewrites the whole newest item, so `conversation_version`
 guards it: the write is conditional on the value that was read and advances it in
@@ -335,7 +338,7 @@ true token-by-token path.
 
 ```
 POST <streamUrl>/chat/agent        (SigV4, IAM-authed)
-body: { prompt, sessionId, method, enableCodeIntelligence, callerSub }
+body: { prompt, sessionId, method, enableCodeIntelligence, enableExternalMcpAgents }
 
 → text/event-stream; one event per chunk, terminal event marks completion
 ```
@@ -379,7 +382,55 @@ The system includes several specialized agents:
 4. **Sample Calculator Agent**: Performs calculations and data analysis
 5. **External MCP Agents**: Connects to external MCP servers
 
-All agents are automatically available to the orchestrator - no manual selection needed.
+Every agent is available to the orchestrator except the opt-in ones below.
+
+### Opt-in agents per session
+
+`idp_common.chat_session_agents` decides which agents a chat orchestrator is built
+with. An agent registered with `opt_in` (`register_agent(..., opt_in=...)`, reported
+by `list_available_agents()`) sends its query to a service outside the deployment:
+the Code Intelligence Agent (`opt_in="code_intelligence"`) and every External MCP
+agent (`opt_in="external_mcp"`). Each is included only when the request opts in to
+its kind (`enableCodeIntelligence`, `enableExternalMcpAgents`, both literal `true`,
+both off by default).
+
+The data agents (`DATA_AGENT_IDS`: Analytics, Error Analyzer) read the deployment's
+own data, and their results reach later turns through memory. The two never share a
+session:
+
+- The processor hands the orchestrator a per-turn `SessionAgentGate` as
+  `session_gate` (popped by `create_orchestrator_agent`, never forwarded to a
+  sub-agent). A data agent's tool calls `note_data_result` before it yields its
+  result — also when its stream ends without a `result` event — and the first call
+  in a session records `dataResultsAt` on the owner row
+  (`chat_session_owner.record_data_results`, conditional on `#owner = :owner`,
+  first time kept). If the record cannot be written, the tool yields an error in
+  place of the result. From then on an opt-in agent's tool answers
+  `UNAVAILABLE_MESSAGE` without building its sub-agent.
+- On every later turn the processor reads the flag
+  (`chat_session_owner.holds_data_results`; a failed read counts as set) and
+  `select_orchestrator_agent_ids` leaves every opt-in agent out.
+- A turn that opts in on a flagged session (`needs_new_session`) runs in a new
+  session id instead, which has no memory: the agent_chat resolver does this before
+  it stores the user message and returns the new id, and on the streaming path the
+  processor does it and sends a `session_replaced` event. When the processor is
+  invoked with `persistUserMessage: false` it cannot move the turn, so it only
+  leaves the agents out. It also sends `session_data_results` whenever the session
+  is flagged, which the web UI uses to start a new session when an opt-in is turned
+  on.
+
+An opt-in agent's tool also re-reads the flag (`SessionAgentGate(recheck=...)`, a
+failed read counting as set) before it runs, which covers a second turn on the same
+session recording a data result after this turn's first read and before it loaded
+memory: the flag is always written before the result reaches memory.
+
+The flag lives as long as the owner row, whose expiry is the retention period plus
+an hour after the last turn. Memory items carry `ExpiresAfter` set to the
+retention period (`DATA_RETENTION_DAYS`) after their last write
+(`DynamoDBMemoryHookProvider(expires_after_seconds=...)`), so memory expires
+before the flag that describes it. An item past its `ExpiresAfter` is not read,
+since DynamoDB deletes expired items some time later and per table. Items written
+before the expiry existed carry none and are still read.
 
 ### What the analytics agent's tools read
 

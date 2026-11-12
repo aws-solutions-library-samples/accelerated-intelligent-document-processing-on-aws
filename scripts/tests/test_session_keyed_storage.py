@@ -45,7 +45,10 @@ _REGISTRY_REASON = (
     "the owner registry itself: ChatSessionOwnersTable is keyed by sessionId alone "
     "on purpose, because a conditional write on that key is what makes one user the "
     "owner of an id, and has_stored_messages reads ChatMessagesTable by sessionId "
-    "only to tell an unused id from one with history"
+    "only to tell an unused id from one with history. The data-results flag lives "
+    "on the same row: record_data_results writes it only under #owner = :owner, and "
+    "holds_data_results returns one boolean, read by callers that have already "
+    "established the caller owns the id"
 )
 
 
@@ -55,24 +58,24 @@ def _vendored(resolver: str) -> str:
 
 #: path -> (sites pinned when audited, file holding the guard, reason).
 SESSION_KEYED_EXEMPT: dict[str, tuple[int, str, str]] = {
-    _REGISTRY: (4, _REGISTRY, _REGISTRY_REASON),
+    _REGISTRY: (6, _REGISTRY, _REGISTRY_REASON),
     _vendored("agent_chat_resolver"): (
-        4,
+        6,
         _vendored("agent_chat_resolver"),
         "byte-identical copy of the owner registry (test_chat_session_owner_vendored)",
     ),
     _vendored("get_agent_chat_messages_resolver"): (
-        4,
+        6,
         _vendored("get_agent_chat_messages_resolver"),
         "byte-identical copy of the owner registry (test_chat_session_owner_vendored)",
     ),
     _vendored("delete_agent_chat_session_resolver"): (
-        4,
+        6,
         _vendored("delete_agent_chat_session_resolver"),
         "byte-identical copy of the owner registry (test_chat_session_owner_vendored)",
     ),
     _vendored("send_chat_document_message_resolver"): (
-        4,
+        6,
         _vendored("send_chat_document_message_resolver"),
         "byte-identical copy of the owner registry (test_chat_session_owner_vendored)",
     ),

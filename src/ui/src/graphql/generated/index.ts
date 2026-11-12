@@ -2933,8 +2933,8 @@ export const saveTestSetDocumentSectionDraft = /* GraphQL */ `
 ` as GeneratedMutation<SaveTestSetDocumentSectionDraftMutationVariables, SaveTestSetDocumentSectionDraftMutation>;
 
 export const sendAgentChatMessage = /* GraphQL */ `
-  mutation SendAgentChatMessage($prompt: String!, $sessionId: String, $method: String, $enableCodeIntelligence: Boolean, $toolMetadata: ToolMetadataInput) {
-    sendAgentChatMessage(prompt: $prompt, sessionId: $sessionId, method: $method, enableCodeIntelligence: $enableCodeIntelligence, toolMetadata: $toolMetadata) {
+  mutation SendAgentChatMessage($prompt: String!, $sessionId: String, $method: String, $enableCodeIntelligence: Boolean, $enableExternalMcpAgents: Boolean, $toolMetadata: ToolMetadataInput) {
+    sendAgentChatMessage(prompt: $prompt, sessionId: $sessionId, method: $method, enableCodeIntelligence: $enableCodeIntelligence, enableExternalMcpAgents: $enableExternalMcpAgents, toolMetadata: $toolMetadata) {
       role
       content
       timestamp

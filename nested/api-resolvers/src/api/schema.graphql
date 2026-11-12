@@ -2402,6 +2402,7 @@ type Mutation {
     sessionId: String
     method: String
     enableCodeIntelligence: Boolean
+    enableExternalMcpAgents: Boolean
     toolMetadata: ToolMetadataInput
   ): AgentChatMessage
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])

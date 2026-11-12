@@ -93,6 +93,28 @@ class _ConversationReadFailed(Exception):
     """
 
 
+def _unexpired(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """``items`` without those whose ``ExpiresAfter`` has passed.
+
+    DynamoDB deletes an expired item some time after its expiry, not at it, and
+    each table on its own schedule. Reading past-expiry memory as gone keeps
+    memory expiring before the session owner record that says whether it holds
+    Analytics or Error Analyzer results, whenever either is physically deleted.
+    An item with no ``ExpiresAfter`` is kept.
+    """
+    now = time.time()
+    kept = []
+    for item in items:
+        expires = item.get("ExpiresAfter")
+        try:
+            if expires is not None and float(expires) <= now:
+                continue
+        except (TypeError, ValueError):
+            pass
+        kept.append(item)
+    return kept
+
+
 def _sleep_before_retry(attempt: int) -> None:
     """
     Sleep a jittered interval before rebuilding an append that lost a conflict.
@@ -138,6 +160,7 @@ class DynamoDBMemoryHookProvider(HookProvider):
         max_message_size_kb: float = 8.5,
         max_history_turns: int = 20,
         max_item_size_kb: float = 350.0,  # 50KB buffer below 400KB DynamoDB limit
+        expires_after_seconds: Optional[int] = None,
     ):
         """
         Initialize the DynamoDBMemoryHookProvider for agent system.
@@ -154,6 +177,11 @@ class DynamoDBMemoryHookProvider(HookProvider):
             max_history_turns: Maximum number of conversation turns to load on
                 initialization; 0 loads no history at all
             max_item_size_kb: Maximum item size in KB before creating new item (default 350KB)
+            expires_after_seconds: When set, every item written carries
+                ``ExpiresAfter`` (the table's TTL attribute) this many seconds
+                after the write, so memory is kept no longer than the chat
+                history and the session owner record it belongs with. ``None``
+                writes no expiry.
         """
         if not user_id:
             raise ValueError(
@@ -169,6 +197,7 @@ class DynamoDBMemoryHookProvider(HookProvider):
         self.max_message_size_kb = max_message_size_kb
         self.max_history_turns = max_history_turns
         self.max_item_size_kb = max_item_size_kb
+        self.expires_after_seconds = expires_after_seconds
 
         # Initialize DynamoDB client
         self.dynamodb = boto3.resource("dynamodb", region_name=region_name)
@@ -238,7 +267,7 @@ class DynamoDBMemoryHookProvider(HookProvider):
                 Limit=1,
             )
 
-            items = response.get("Items", [])
+            items = _unexpired(response.get("Items", []))
             return items[0] if items else None
 
         except Exception as e:
@@ -290,15 +319,17 @@ class DynamoDBMemoryHookProvider(HookProvider):
         """
         try:
             self.table.put_item(
-                Item={
-                    "PK": pk,
-                    "SK": self._generate_timestamp_sk(),
-                    "conversation_history": json.dumps([message_entry]),
-                    "session_id": self.session_id,
-                    "last_updated": datetime.now().isoformat(),
-                    "message_count": 1,
-                    _VERSION_ATTRIBUTE: 1,
-                },
+                Item=self._with_expiry(
+                    {
+                        "PK": pk,
+                        "SK": self._generate_timestamp_sk(),
+                        "conversation_history": json.dumps([message_entry]),
+                        "session_id": self.session_id,
+                        "last_updated": datetime.now().isoformat(),
+                        "message_count": 1,
+                        _VERSION_ATTRIBUTE: 1,
+                    }
+                ),
                 ConditionExpression="attribute_not_exists(PK)",
             )
             return True
@@ -309,6 +340,12 @@ class DynamoDBMemoryHookProvider(HookProvider):
             ):
                 return False
             raise
+
+    def _with_expiry(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """``item`` with ``ExpiresAfter`` set, when this provider writes one."""
+        if self.expires_after_seconds:
+            item["ExpiresAfter"] = int(time.time()) + int(self.expires_after_seconds)
+        return item
 
     def _put_conditionally(self, item: Dict[str, Any], version: int) -> bool:
         """
@@ -324,7 +361,7 @@ class DynamoDBMemoryHookProvider(HookProvider):
         """
         try:
             self.table.put_item(
-                Item=item,
+                Item=self._with_expiry(item),
                 # The first clause admits an item written before the guard
                 # existed; two writers racing to add it still conflict, because
                 # whichever commits first makes the attribute exist.
@@ -539,7 +576,7 @@ class DynamoDBMemoryHookProvider(HookProvider):
                 Limit=10,  # Get more items than needed to ensure we have enough messages
             )
 
-            items = response.get("Items", [])
+            items = _unexpired(response.get("Items", []))
 
             if not items:
                 logger.info(

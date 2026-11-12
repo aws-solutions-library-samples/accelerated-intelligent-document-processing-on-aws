@@ -38,6 +38,20 @@ plus :data:`EXPIRY_MARGIN_SECONDS`, so it outlives the messages written under it
 each message expires a retention period after it was written, and the reply of a
 turn is written at most one Lambda invocation (15 minutes) after the turn began.
 
+The same row also records whether the session's conversation holds results from
+the agents that read this deployment's own data (Analytics, Error Analyzer):
+:data:`DATA_RESULTS_ATTRIBUTE`, written once by :func:`record_data_results` and
+read by :func:`holds_data_results`. It lives here because this row is the one
+record that is per session, belongs to exactly one user, is read before every
+turn on both chat paths, and is not removed when the user deletes the session
+from their list — while the conversation memory it describes is kept under the
+same user and session. ``idp_common.chat_session_agents`` decides what the flag
+changes.
+
+The flag lasts as long as the owner row: its expiry moves forward on every turn,
+to the retention period plus the margin below. Conversation memory items expire
+the retention period after their last write, so they are gone before the flag is.
+
 Vendored verbatim into the resolver Lambdas that ship without the ``idp_common``
 layer (``nested/api-resolvers/src/lambda/*/chat_session_owner.py``), so it imports
 nothing beyond ``botocore``. ``test_chat_session_owner_vendored.py`` keeps the
@@ -55,6 +69,9 @@ EXPIRES_ATTRIBUTE = "ExpiresAfter"
 #: Added to every expiry this module writes. Longer than any one turn can run, so
 #: a reply written at the end of a turn never outlives its session's owner row.
 EXPIRY_MARGIN_SECONDS = 3600
+#: Epoch seconds at which the session's conversation first held a result from an
+#: agent that reads this deployment's data. Absent until then; never removed.
+DATA_RESULTS_ATTRIBUTE = "dataResultsAt"
 
 
 def recorded_owner(owners_table: Any, session_id: str) -> Optional[str]:
@@ -191,3 +208,49 @@ def holds_session_row(sessions_table: Any, user_id: str, session_id: str) -> boo
         Key={"userId": user_id, "sessionId": session_id}, ConsistentRead=True
     )
     return "Item" in response
+
+
+def holds_data_results(owners_table: Any, session_id: str) -> bool:
+    """Whether ``session_id``'s conversation already holds data-agent results.
+
+    A strongly consistent read of the owner row. ``False`` for an id with no
+    row. A DynamoDB error is raised: the caller decides what an unanswered
+    question means, and for this one the answer it acts on is "yes".
+    """
+    if not session_id:
+        return False
+    item = owners_table.get_item(
+        Key={"sessionId": session_id}, ConsistentRead=True
+    ).get("Item")
+    return bool(item and item.get(DATA_RESULTS_ATTRIBUTE))
+
+
+def record_data_results(
+    owners_table: Any, session_id: str, owner_sub: str, recorded_at: int
+) -> bool:
+    """Record that ``session_id``'s conversation now holds data-agent results.
+
+    Written only on the owner's own row (``#owner = :owner``), and only once: a
+    later call keeps the first time. Returns False when the row is missing or
+    belongs to someone else, so nothing was recorded. A DynamoDB error other than
+    that condition is raised, so a caller can refuse to hand on a result it could
+    not record.
+    """
+    if not session_id or not owner_sub:
+        return False
+    try:
+        owners_table.update_item(
+            Key={"sessionId": session_id},
+            UpdateExpression="SET #flag = if_not_exists(#flag, :at)",
+            ConditionExpression="#owner = :owner",
+            ExpressionAttributeNames={
+                "#flag": DATA_RESULTS_ATTRIBUTE,
+                "#owner": OWNER_ATTRIBUTE,
+            },
+            ExpressionAttributeValues={":at": int(recorded_at), ":owner": owner_sub},
+        )
+    except ClientError as error:
+        if _is_conditional_failure(error):
+            return False
+        raise
+    return True
