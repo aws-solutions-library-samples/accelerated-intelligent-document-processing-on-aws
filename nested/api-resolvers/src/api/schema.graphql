@@ -284,6 +284,41 @@ type UserList @aws_cognito_user_pools {
   users: [User]
 }
 
+# An MCP service credential: a client-credentials app with a role, a configuration
+# scope and an expiry. The secret is never part of this type.
+type McpCredential @aws_cognito_user_pools {
+  clientId: ID!
+  name: String
+  role: String
+  allowedConfigVersions: [String]
+  tenant: String
+  writeTools: Boolean
+  enabled: Boolean
+  status: String
+  kind: String
+  createdBy: String
+  createdAt: String
+  updatedBy: String
+  updatedAt: String
+  expiresAt: String
+  lastUsedAt: String
+  rotatedFrom: String
+  replacedBy: String
+  secretArn: String
+}
+
+# Returned once, by createMcpCredential and rotateMcpCredential: the only
+# responses that carry the client secret.
+type McpCredentialIssued @aws_cognito_user_pools {
+  credential: McpCredential
+  clientId: ID!
+  clientSecret: String!
+  tokenUrl: String
+  gatewayUrl: String
+  secretArn: String
+  oauthScopes: [String]
+}
+
 type ValidationError @aws_cognito_user_pools @aws_iam {
   field: String
   message: String
@@ -2105,6 +2140,30 @@ type Mutation {
   # TenantGrantSource is Api, for an entitlement system pushing grants.
   setUserTenant(email: String!, tenantId: String): User
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # MCP service credentials (MCP Configuration page). Admin only.
+  createMcpCredential(
+    name: String!
+    role: String!
+    allowedConfigVersions: [String]
+    writeTools: Boolean
+    expiresInDays: Int
+  ): McpCredentialIssued @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  updateMcpCredential(
+    clientId: ID!
+    role: String
+    allowedConfigVersions: [String]
+    clearScope: Boolean
+    writeTools: Boolean
+    enabled: Boolean
+  ): McpCredential @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  rotateMcpCredential(clientId: ID!, overlapDays: Int): McpCredentialIssued
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  revokeMcpCredential(clientId: ID!): McpCredential
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # Grant a credential one tenant (tenantId) or none (null). Only when the stack's
+  # TenantGrantSource is Api, for an entitlement system pushing grants.
+  setMcpCredentialTenant(clientId: ID!, tenantId: String): McpCredential
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   updatePricing(pricingConfig: AWSJSON!): UpdatePricingResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
   restoreDefaultPricing: UpdatePricingResponse
@@ -2406,6 +2465,7 @@ type Mutation {
     sessionId: String
     method: String
     enableCodeIntelligence: Boolean
+    enableExternalMcpAgents: Boolean
     toolMetadata: ToolMetadataInput
   ): AgentChatMessage
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
@@ -2524,11 +2584,9 @@ type Mutation {
   # onChatDocumentMessageUpdate.
   #
   # An assigned group is required: this sends document content to a model and
-  # bills inference. ⚠️ The directive and the dispatcher's floor both apply to the
-  # REST route only. The streaming Lambda Function URL (POST /chat/document)
-  # reaches the same processor and forwards no cognito:groups claim at all, so a
-  # caller in no group is refused here and is not refused there — GAP-07 in
-  # scripts/api_rbac_expectations.yaml.
+  # bills inference. The directive and the dispatcher's floor apply to this REST
+  # route; the streaming Lambda Function URL (POST /chat/document) applies the
+  # same floor from the Cognito ID token it verifies.
   sendChatDocumentMessage(
     sessionId: String!
     prompt: String!
@@ -3003,6 +3061,7 @@ type Query @aws_cognito_user_pools @aws_iam {
 
   # User Management queries
   listUsers: UserList @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  listMcpCredentials: [McpCredential] @aws_cognito_user_pools(cognito_groups: ["Admin"])
   getMyProfile: User @aws_cognito_user_pools
 
   # Fine-Tuning queries

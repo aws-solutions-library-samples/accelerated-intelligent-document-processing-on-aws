@@ -19,6 +19,7 @@ from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
 from idp_common.config.revisions import RevisionNotRecordedError
 from idp_common.config.schema_constants import X_AWS_IDP_MULTI_INSTANCE
+from idp_common.discovery.discovered_text import clean_schema_text
 from idp_common.utils.s3util import S3Util
 
 logger = logging.getLogger(__name__)
@@ -600,6 +601,11 @@ class ClassesDiscovery:
         # rather than degrading. Prompt instructions are guidance; this is the
         # guarantee.
         synthesized = self._normalize_class_id(new_class)
+        # Descriptions and examples are model-written and reach the UI and every
+        # later classification and extraction prompt for this profile, so they are
+        # kept to plain text here, on the one write path both discovery flows share.
+        # Only the discovered class is cleaned; existing, authored classes are not.
+        clean_schema_text(new_class)
 
         # Get class identifier for the new class
         new_class_id = new_class.get("$id") or new_class.get("x-aws-idp-document-type")

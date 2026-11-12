@@ -3386,7 +3386,10 @@ def _python_files(entry: str) -> list[Path]:
 
 
 def _resolved(importer: Path, node: ast.Import | ast.ImportFrom) -> list[Path]:
-    """The scripts/ or scripts/sdlc/ files an import statement can load."""
+    """The scripts/, scripts/sdlc/ or scripts/hooks/ files an import can load.
+
+    ``scripts/hooks`` is there because ``ai_mr_review`` puts it on the import path
+    for ``check_commit_text``."""
     targets: list[Path] = []
     if isinstance(node, ast.ImportFrom) and node.level:
         package = importer.parents[node.level - 1]
@@ -3400,7 +3403,7 @@ def _resolved(importer: Path, node: ast.Import | ast.ImportFrom) -> list[Path]:
         dotted = [node.module or ""]
         dotted += [f"{node.module}.{alias.name}" for alias in node.names]
     for name in dotted:
-        for base in (SCRIPTS, SCRIPTS / "sdlc"):
+        for base in (SCRIPTS, SCRIPTS / "sdlc", SCRIPTS / "hooks"):
             module = base.joinpath(*name.split("."))
             for candidate in (module.with_suffix(".py"), module / "__init__.py"):
                 if candidate.is_file():

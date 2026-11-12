@@ -117,6 +117,7 @@ background children when memory is tight, and a killed deploy leaves a stack up.
 | Dependency audit | `make dep-audit` | nothing at or above HIGH | — |
 | Type check | `make typecheck` | compare **totals** against develop's baseline (4 errors / 51 warnings on 2026-09-11); file placement shifts with the installed deps. Report the delta, not the raw count | `full-test-battery.md` |
 | Build + package | `publish.py … --clean-build` in a **clean env** (`env -i HOME=$HOME PATH=/usr/local/bin:/usr/bin:/bin AWS_PROFILE=default bash -lc '…'`) | template validation + cfn-lint clean on all packaged templates | `full-test-battery.md` |
+| Agent capability audit | follow `agent-capability-review.md` (one subagent per manifest entry; reads code only, writes only under `scratch/`) | every entry in `scripts/tests/agent_capabilities.yaml` re-verified against the code, and the diff against the manifest is empty or each line of it is a manifest edit in this release's validation PR. The release record carries the counts only (entries checked; verified, inferred and unverified; diff lines), never the findings' text | `agent-capability-review.md` |
 | **Test coverage** | `make coverage-all` then `make check-coverage-debt` | every measurable tree measured, and the ratchet green. Record the per-tree table in the release record and diff it against PREV's — a tree that *lost* coverage is a finding even when the ratchet's 1% tolerance absorbs it | `full-test-battery.md` |
 
 The build is needed anyway: the transform tiers publish from source, and the

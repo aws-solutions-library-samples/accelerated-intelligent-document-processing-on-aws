@@ -852,6 +852,37 @@ export type LatestPublishedVersion = {
   templateUrl?: Maybe<Scalars['String']['output']>;
 };
 
+export type McpCredential = {
+  allowedConfigVersions?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
+  clientId: Scalars['ID']['output'];
+  createdAt?: Maybe<Scalars['String']['output']>;
+  createdBy?: Maybe<Scalars['String']['output']>;
+  enabled?: Maybe<Scalars['Boolean']['output']>;
+  expiresAt?: Maybe<Scalars['String']['output']>;
+  kind?: Maybe<Scalars['String']['output']>;
+  lastUsedAt?: Maybe<Scalars['String']['output']>;
+  name?: Maybe<Scalars['String']['output']>;
+  replacedBy?: Maybe<Scalars['String']['output']>;
+  role?: Maybe<Scalars['String']['output']>;
+  rotatedFrom?: Maybe<Scalars['String']['output']>;
+  secretArn?: Maybe<Scalars['String']['output']>;
+  status?: Maybe<Scalars['String']['output']>;
+  tenant?: Maybe<Scalars['String']['output']>;
+  updatedAt?: Maybe<Scalars['String']['output']>;
+  updatedBy?: Maybe<Scalars['String']['output']>;
+  writeTools?: Maybe<Scalars['Boolean']['output']>;
+};
+
+export type McpCredentialIssued = {
+  clientId: Scalars['ID']['output'];
+  clientSecret: Scalars['String']['output'];
+  credential?: Maybe<McpCredential>;
+  gatewayUrl?: Maybe<Scalars['String']['output']>;
+  oauthScopes?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
+  secretArn?: Maybe<Scalars['String']['output']>;
+  tokenUrl?: Maybe<Scalars['String']['output']>;
+};
+
 export type MessageContent = {
   text?: Maybe<Scalars['String']['output']>;
 };
@@ -926,6 +957,7 @@ export type Mutation = {
   createDocument?: Maybe<CreateDocumentOutput>;
   createEmptyTestSet?: Maybe<TestSet>;
   createFinetuningJob?: Maybe<FinetuningJob>;
+  createMcpCredential?: Maybe<McpCredentialIssued>;
   createReviewQueue?: Maybe<ReviewQueueDefinition>;
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
@@ -993,6 +1025,8 @@ export type Mutation = {
   restoreDefaultModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   restoreDefaultPricing?: Maybe<UpdatePricingResponse>;
   resumeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
+  revokeMcpCredential?: Maybe<McpCredential>;
+  rotateMcpCredential?: Maybe<McpCredentialIssued>;
   saveReviewDraft?: Maybe<ReviewDraft>;
   saveSectionReviewEdits?: Maybe<Document>;
   saveTestSetDocumentSection?: Maybe<TestSetSectionSaveResult>;
@@ -1001,6 +1035,7 @@ export type Mutation = {
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
   sendTestRunToReview?: Maybe<SendTestRunToReviewResult>;
   setActiveVersion?: Maybe<UpdateConfigurationResponse>;
+  setMcpCredentialTenant?: Maybe<McpCredential>;
   setUserTenant?: Maybe<User>;
   skipAllSectionsReview?: Maybe<Document>;
   skipTestSetDocument?: Maybe<TestSetDocumentSkipResult>;
@@ -1048,6 +1083,7 @@ export type Mutation = {
   updateDocumentStatus?: Maybe<Document>;
   updateFinetuningJobStatus?: Maybe<FinetuningJob>;
   updateInboxPreferences?: Maybe<InboxPreferences>;
+  updateMcpCredential?: Maybe<McpCredential>;
   updateModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   updatePricing?: Maybe<UpdatePricingResponse>;
   updateReviewQueue?: Maybe<ReviewQueueDefinition>;
@@ -1189,6 +1225,15 @@ export type MutationCreateEmptyTestSetArgs = {
 
 export type MutationCreateFinetuningJobArgs = {
   input: CreateFinetuningJobInput;
+};
+
+
+export type MutationCreateMcpCredentialArgs = {
+  allowedConfigVersions?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
+  expiresInDays?: InputMaybe<Scalars['Int']['input']>;
+  name: Scalars['String']['input'];
+  role: Scalars['String']['input'];
+  writeTools?: InputMaybe<Scalars['Boolean']['input']>;
 };
 
 
@@ -1460,6 +1505,17 @@ export type MutationResumeCircuitBreakerArgs = {
 };
 
 
+export type MutationRevokeMcpCredentialArgs = {
+  clientId: Scalars['ID']['input'];
+};
+
+
+export type MutationRotateMcpCredentialArgs = {
+  clientId: Scalars['ID']['input'];
+  overlapDays?: InputMaybe<Scalars['Int']['input']>;
+};
+
+
 export type MutationSaveReviewDraftArgs = {
   baseRevision?: InputMaybe<Scalars['Int']['input']>;
   cycleId: Scalars['String']['input'];
@@ -1495,6 +1551,7 @@ export type MutationSaveTestSetDocumentSectionDraftArgs = {
 
 export type MutationSendAgentChatMessageArgs = {
   enableCodeIntelligence?: InputMaybe<Scalars['Boolean']['input']>;
+  enableExternalMcpAgents?: InputMaybe<Scalars['Boolean']['input']>;
   method?: InputMaybe<Scalars['String']['input']>;
   prompt: Scalars['String']['input'];
   sessionId?: InputMaybe<Scalars['String']['input']>;
@@ -1523,6 +1580,12 @@ export type MutationSendTestRunToReviewArgs = {
 
 export type MutationSetActiveVersionArgs = {
   versionName: Scalars['String']['input'];
+};
+
+
+export type MutationSetMcpCredentialTenantArgs = {
+  clientId: Scalars['ID']['input'];
+  tenantId?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -1688,6 +1751,16 @@ export type MutationUpdateFinetuningJobStatusArgs = {
 
 export type MutationUpdateInboxPreferencesArgs = {
   mutedTypes: Array<Scalars['String']['input']>;
+};
+
+
+export type MutationUpdateMcpCredentialArgs = {
+  allowedConfigVersions?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
+  clearScope?: InputMaybe<Scalars['Boolean']['input']>;
+  clientId: Scalars['ID']['input'];
+  enabled?: InputMaybe<Scalars['Boolean']['input']>;
+  role?: InputMaybe<Scalars['String']['input']>;
+  writeTools?: InputMaybe<Scalars['Boolean']['input']>;
 };
 
 
@@ -1939,6 +2012,7 @@ export type Query = {
    * installed extensions via SigV4 — the InstalledFeature type is already @aws_iam.
    */
   listInstalledFeatures?: Maybe<Array<InstalledFeature>>;
+  listMcpCredentials?: Maybe<Array<Maybe<McpCredential>>>;
   listMyReviewWork?: Maybe<ReviewItemPage>;
   listMyTestSetTasks?: Maybe<Array<TestSetTask>>;
   listReviewQueueItems?: Maybe<ReviewItemPage>;
@@ -3230,6 +3304,17 @@ export type CreateFinetuningJobMutationVariables = Exact<{
 
 export type CreateFinetuningJobMutation = { createFinetuningJob?: { jobId: string, jobName: string, status: FinetuningJobStatus, baseModelId: string, customModelName?: string | null, testSetId: string, testSetName?: string | null, createdAt: string } | null };
 
+export type CreateMcpCredentialMutationVariables = Exact<{
+  name: Scalars['String']['input'];
+  role: Scalars['String']['input'];
+  allowedConfigVersions?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>> | InputMaybe<Scalars['String']['input']>>;
+  writeTools?: InputMaybe<Scalars['Boolean']['input']>;
+  expiresInDays?: InputMaybe<Scalars['Int']['input']>;
+}>;
+
+
+export type CreateMcpCredentialMutation = { createMcpCredential?: { clientId: string, clientSecret: string, tokenUrl?: string | null, gatewayUrl?: string | null, secretArn?: string | null, oauthScopes?: Array<string | null> | null, credential?: { clientId: string, name?: string | null, role?: string | null, allowedConfigVersions?: Array<string | null> | null, tenant?: string | null, writeTools?: boolean | null, enabled?: boolean | null, status?: string | null, kind?: string | null, createdBy?: string | null, createdAt?: string | null, updatedBy?: string | null, updatedAt?: string | null, expiresAt?: string | null, lastUsedAt?: string | null, rotatedFrom?: string | null, replacedBy?: string | null, secretArn?: string | null } | null } | null };
+
 export type CreateReviewQueueMutationVariables = Exact<{
   input: ReviewQueueDefinitionInput;
 }>;
@@ -3570,6 +3655,21 @@ export type ResumeCircuitBreakerMutationVariables = Exact<{
 
 export type ResumeCircuitBreakerMutation = { resumeCircuitBreaker?: { enabled: boolean, state?: string | null, openedAt?: string | null, lastCheckedAt?: string | null, failureCount?: number | null, recoveryAttempts?: number | null, lastError?: string | null } | null };
 
+export type RevokeMcpCredentialMutationVariables = Exact<{
+  clientId: Scalars['ID']['input'];
+}>;
+
+
+export type RevokeMcpCredentialMutation = { revokeMcpCredential?: { clientId: string, name?: string | null, role?: string | null, allowedConfigVersions?: Array<string | null> | null, tenant?: string | null, writeTools?: boolean | null, enabled?: boolean | null, status?: string | null, kind?: string | null, createdBy?: string | null, createdAt?: string | null, updatedBy?: string | null, updatedAt?: string | null, expiresAt?: string | null, lastUsedAt?: string | null, rotatedFrom?: string | null, replacedBy?: string | null, secretArn?: string | null } | null };
+
+export type RotateMcpCredentialMutationVariables = Exact<{
+  clientId: Scalars['ID']['input'];
+  overlapDays?: InputMaybe<Scalars['Int']['input']>;
+}>;
+
+
+export type RotateMcpCredentialMutation = { rotateMcpCredential?: { clientId: string, clientSecret: string, tokenUrl?: string | null, gatewayUrl?: string | null, secretArn?: string | null, oauthScopes?: Array<string | null> | null, credential?: { clientId: string, name?: string | null, role?: string | null, allowedConfigVersions?: Array<string | null> | null, tenant?: string | null, writeTools?: boolean | null, enabled?: boolean | null, status?: string | null, kind?: string | null, createdBy?: string | null, createdAt?: string | null, updatedBy?: string | null, updatedAt?: string | null, expiresAt?: string | null, lastUsedAt?: string | null, rotatedFrom?: string | null, replacedBy?: string | null, secretArn?: string | null } | null } | null };
+
 export type SaveReviewDraftMutationVariables = Exact<{
   objectKey: Scalars['String']['input'];
   cycleId: Scalars['String']['input'];
@@ -3616,6 +3716,7 @@ export type SendAgentChatMessageMutationVariables = Exact<{
   sessionId?: InputMaybe<Scalars['String']['input']>;
   method?: InputMaybe<Scalars['String']['input']>;
   enableCodeIntelligence?: InputMaybe<Scalars['Boolean']['input']>;
+  enableExternalMcpAgents?: InputMaybe<Scalars['Boolean']['input']>;
   toolMetadata?: InputMaybe<ToolMetadataInput>;
 }>;
 
@@ -3741,6 +3842,18 @@ export type UpdateInboxPreferencesMutationVariables = Exact<{
 
 
 export type UpdateInboxPreferencesMutation = { updateInboxPreferences?: { mutedTypes: Array<string>, updatedAt?: string | null, types: Array<{ id: string, displayName: string, description: string, defaultSeverity: string, muted: boolean }> } | null };
+
+export type UpdateMcpCredentialMutationVariables = Exact<{
+  clientId: Scalars['ID']['input'];
+  role?: InputMaybe<Scalars['String']['input']>;
+  allowedConfigVersions?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>> | InputMaybe<Scalars['String']['input']>>;
+  clearScope?: InputMaybe<Scalars['Boolean']['input']>;
+  writeTools?: InputMaybe<Scalars['Boolean']['input']>;
+  enabled?: InputMaybe<Scalars['Boolean']['input']>;
+}>;
+
+
+export type UpdateMcpCredentialMutation = { updateMcpCredential?: { clientId: string, name?: string | null, role?: string | null, allowedConfigVersions?: Array<string | null> | null, tenant?: string | null, writeTools?: boolean | null, enabled?: boolean | null, status?: string | null, kind?: string | null, createdBy?: string | null, createdAt?: string | null, updatedBy?: string | null, updatedAt?: string | null, expiresAt?: string | null, lastUsedAt?: string | null, rotatedFrom?: string | null, replacedBy?: string | null, secretArn?: string | null } | null };
 
 export type UpdateModelConfigLimitsMutationVariables = Exact<{
   modelConfigLimits: Scalars['AWSJSON']['input'];
@@ -4233,6 +4346,11 @@ export type ListInboxMessagesQueryVariables = Exact<{
 
 
 export type ListInboxMessagesQuery = { listInboxMessages?: { nextToken?: string | null, unreadCount: number, items: Array<{ id: string, type: string, title: string, body: string, severity: string, link?: string | null, source: string, createdAt: string, read: boolean, readAt?: string | null, metadata?: string | null }> } | null };
+
+export type ListMcpCredentialsQueryVariables = Exact<{ [key: string]: never; }>;
+
+
+export type ListMcpCredentialsQuery = { listMcpCredentials?: Array<{ clientId: string, name?: string | null, role?: string | null, allowedConfigVersions?: Array<string | null> | null, tenant?: string | null, writeTools?: boolean | null, enabled?: boolean | null, status?: string | null, kind?: string | null, createdBy?: string | null, createdAt?: string | null, updatedBy?: string | null, updatedAt?: string | null, expiresAt?: string | null, lastUsedAt?: string | null, rotatedFrom?: string | null, replacedBy?: string | null, secretArn?: string | null } | null> | null };
 
 export type ListMyReviewWorkQueryVariables = Exact<{
   limit?: InputMaybe<Scalars['Int']['input']>;

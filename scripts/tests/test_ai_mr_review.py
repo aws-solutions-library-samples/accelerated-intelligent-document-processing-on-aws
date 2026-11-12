@@ -480,15 +480,9 @@ def test_the_worktree_cannot_execute_the_mrs_own_code(mod, tmp_path) -> None:
     It registers ``PreToolUse`` hooks that run
     ``python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/*.py"`` — the **MR's** copies of
     those scripts — as soon as the session uses a matching tool, whatever the model
-    does or refuses. That is code execution reached without the model's
-    cooperation, so no amount of prompt hardening or tool denial touches it.
-    ``.mcp.json`` is the same shape: a server definition is a command line.
+    does or refuses. ``.mcp.json`` is the same shape: a server definition is a
+    command line. Asserted by running the removal, not by reading the constant.
     """
-    for relative in (".claude/settings.json", ".mcp.json"):
-        assert relative in mod.NEUTRALISED_IN_WORKTREE, (
-            f"{relative} is no longer removed from the worktree"
-        )
-
     worktree = tmp_path / "head"
     (worktree / ".claude").mkdir(parents=True)
     (worktree / ".claude" / "settings.json").write_text('{"hooks": {}}')
@@ -503,32 +497,213 @@ def test_the_worktree_cannot_execute_the_mrs_own_code(mod, tmp_path) -> None:
     )
 
 
+#: Every project location the Claude Code documentation lists as read
+#: automatically, as a file to plant and the page that lists it. Transcribed from
+#: the memory, settings, permissions, skills, sub-agents, output-styles and MCP
+#: pages of https://code.claude.com/docs/en/ (read 2026-11-10). Locations under
+#: the user's home directory and the managed-policy path are left out: the
+#: worktree cannot carry them, and ``--restricted`` ignores the user settings.
+DOCUMENTED_PROJECT_LOCATIONS = (
+    ("CLAUDE.md", "memory.md"),
+    (".claude/CLAUDE.md", "memory.md"),
+    ("CLAUDE.local.md", "memory.md"),
+    ("sub/CLAUDE.md", "memory.md (subdirectory, on demand)"),
+    ("sub/CLAUDE.local.md", "memory.md (subdirectory, on demand)"),
+    ("AGENTS.md", "memory.md (read when no CLAUDE.md)"),
+    ("sub/AGENTS.md", "memory.md (subdirectory, on demand)"),
+    (".claude/rules/r.md", "memory.md (rules)"),
+    (".claude/rules/nested/r.md", "memory.md (rules, recursive)"),
+    (".claude/settings.json", "settings.md, permissions.md (also hooks)"),
+    (".claude/settings.local.json", "settings.md"),
+    (".mcp.json", "mcp.md (project scope)"),
+    (".claude/skills/name/SKILL.md", "skills.md"),
+    ("sub/.claude/skills/name/SKILL.md", "skills.md (subdirectory, on demand)"),
+    (".claude/commands/c.md", "skills.md (commands merged into skills)"),
+    (".claude/agents/a.md", "sub-agents.md"),
+    (".claude/agents/nested/a.md", "sub-agents.md (scanned recursively)"),
+    (".claude/output-styles/o.md", "output-styles.md"),
+)
+
+
 @pytest.mark.unit
-def test_the_ci_job_pins_the_harness_before_running_it(ci_config: dict) -> None:
+@pytest.mark.parametrize(
+    "relative", [location for location, _ in DOCUMENTED_PROJECT_LOCATIONS]
+)
+def test_every_documented_location_is_pinned_or_removed(
+    mod, tmp_path, relative: str
+) -> None:
+    """Each documented location ends the setup either removed or pinned.
+
+    Planted with head-only content. A location at a ``pin`` glob gets the target
+    copy written over it, standing in for the pin step (which needs git refs and
+    is exercised by the symlink test below); then the real removal step runs. A
+    location matching neither ``remove`` nor ``pin`` in ``AGENT_CONFIG_LOCATIONS``
+    keeps the head's text and fails here.
+    """
+    worktree = tmp_path / "head"
+    planted = worktree / relative
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_text("HEAD-SUPPLIED\n")
+
+    pinned = mod._matches(relative, mod._locations("pin"))
+    keep = frozenset({relative}) if pinned else frozenset()
+    if pinned:
+        planted.write_text("TARGET COPY\n")  # what the pin step writes
+    mod.neutralise_agent_config(worktree, keep)
+
+    survived = planted.read_text() if planted.exists() else None
+    assert survived in (None, "TARGET COPY\n"), (
+        f"{relative} keeps the head's own text: AGENT_CONFIG_LOCATIONS neither "
+        f"pins nor removes it"
+    )
+
+
+@pytest.mark.unit
+def test_the_documented_location_table_is_not_empty() -> None:
+    """An empty table parametrises to zero cases, which pytest reports as a skip."""
+    assert len(DOCUMENTED_PROJECT_LOCATIONS) >= 15
+
+
+@pytest.mark.unit
+def test_a_pinned_skill_survives_the_removal_of_its_directory(mod, tmp_path) -> None:
+    """``.claude`` goes whole except the pinned skills the prompt tells the review
+    to read, and a head-only skill beside them goes too."""
+    worktree = tmp_path / "head"
+    skills = worktree / ".claude" / "skills"
+    skills.mkdir(parents=True)
+    (skills / "pr-review.md").write_text("pinned")
+    (skills / "added-by-head.md").write_text("head")
+    (worktree / ".claude" / "rules").mkdir()
+    (worktree / ".claude" / "rules" / "r.md").write_text("rule")
+
+    removed = mod.neutralise_agent_config(
+        worktree, frozenset({".claude/skills/pr-review.md"})
+    )
+
+    assert (skills / "pr-review.md").read_text() == "pinned"
+    assert not (skills / "added-by-head.md").exists()
+    assert not (worktree / ".claude" / "rules").exists()
+    assert ".claude/rules/r.md" in removed
+
+
+@pytest.mark.unit
+def test_a_symlinked_config_directory_loses_the_link_not_its_target(
+    mod, tmp_path
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("not the worktree's")
+    worktree = tmp_path / "head"
+    worktree.mkdir()
+    (worktree / ".claude").symlink_to(outside, target_is_directory=True)
+
+    assert mod.neutralise_agent_config(worktree) == [".claude"]
+    assert (outside / "keep.txt").read_text() == "not the worktree's"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("linked", ["CLAUDE.md", ".claude/skills"])
+def test_a_pinned_file_is_not_written_through_a_symlink(
+    mod, tmp_path, monkeypatch, linked: str
+) -> None:
+    """The head can make ``CLAUDE.md``, or a directory above a pinned skill, a
+    symlink to a path outside the worktree; the pin step must write the
+    worktree's own file, not follow the link."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "CLAUDE.md").write_text("untouched")
+    (outside / "pr-review.md").write_text("untouched")
+    worktree = tmp_path / "head"
+    (worktree / ".claude").mkdir(parents=True)
+    target = outside / "CLAUDE.md" if linked == "CLAUDE.md" else outside
+    (worktree / linked).symlink_to(target, target_is_directory=target.is_dir())
+    pinned = "CLAUDE.md" if linked == "CLAUDE.md" else ".claude/skills/pr-review.md"
+    monkeypatch.setattr(mod, "instruction_files", lambda *_: [pinned])
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0, "pinned", ""),
+    )
+
+    mod.pin_instructions_to_target_branch(worktree, "develop")
+
+    assert (outside / "CLAUDE.md").read_text() == "untouched"
+    assert (outside / "pr-review.md").read_text() == "untouched"
+    assert (worktree / pinned).read_text() == "pinned"
+    assert not (worktree / pinned).is_symlink()
+
+
+@pytest.mark.unit
+def test_the_ci_job_stages_the_harness_and_runs_it_isolated(ci_config: dict) -> None:
     """The outer channel, and the only place it can be closed.
 
-    In an MR pipeline the checkout is the MR, so ``ai_mr_review.py`` is the MR's
-    copy of itself — its permission mode, tool lists and prompt are all
-    author-controlled, and its internal pinning runs too late to matter. Nothing
-    inside the script can fix that: by the time Python starts, the code running is
-    already the MR's. So the job replaces the harness from the target branch first,
-    and that is asserted here because it is two lines of YAML with no other trace.
+    In an MR pipeline the checkout is the MR, so its ``ai_mr_review.py`` is the
+    MR's copy of itself. So the job extracts the target branch's
+    ``REVIEW_HARNESS_PATHS`` into a directory outside the checkout, refuses if it
+    cannot, and runs the copy with ``python3 -I`` so nothing beside it in the
+    checkout can be imported.
     """
-    script = "\n".join(ci_config["ai_mr_review"]["script"])
-    assert "git checkout FETCH_HEAD --" in script, (
-        "the job no longer pins the harness from the target branch, so the reviewer "
-        "in an MR pipeline is the MR's own copy of the reviewer"
+    job = ci_config["ai_mr_review"]
+    script = "\n".join(job["script"])
+    harness = job["variables"]["REVIEW_HARNESS"].split()
+    mod = _module()
+    assert tuple(harness) == mod.REVIEW_HARNESS_PATHS
+    extraction = re.search(
+        r"^[ \t]*if git archive --format=tar -o (?P<tar>\S+) FETCH_HEAD -- "
+        r'\$REVIEW_HARNESS && tar -xf (?P=tar) -C "\$REVIEW_HARNESS_DIR" '
+        r'&& chmod -R go-w "\$REVIEW_HARNESS_DIR"; then\n'
+        r"(?:.*\n)*?[ \t]*else\n(?P<refuse>(?:.*\n)*?)[ \t]*fi$",
+        script,
+        re.MULTILINE,
     )
-    for pinned in (
-        "scripts/sdlc/ai_mr_review.py",
-        ".claude/skills/pr-review.md",
-        ".claude/skills/pr-review-ci.md",
-        "CLAUDE.md",
-    ):
-        assert pinned in script, f"{pinned} is not pinned by the job"
+    assert extraction, "the extraction is not the one condition whose failure refuses"
+    assert re.search(r"^\s*exit 1\s*$", extraction.group("refuse"), re.M), (
+        "the staging no longer fails closed"
+    )
+    assert 'git fetch -q origin "refs/heads/$TARGET"' in script
+    assert "git checkout FETCH_HEAD" not in script, (
+        "an in-place checkout leaves MR-added modules beside the pinned ones"
+    )
+    assert not job["variables"]["REVIEW_HARNESS_DIR"].startswith(
+        ("$CI_PROJECT_DIR", ".")
+    ), "the staged copy must sit outside the checkout"
+    runs = [line for line in script.splitlines() if "ai_mr_review.py" in line]
+    assert runs and all(
+        "python3 -I $REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py" in line
+        for line in runs
+        if "python3" in line
+    ), runs
+    assert "--checkout $CI_PROJECT_DIR" in script
+    assert "--require-aws-role $REVIEW_ROLE_NAME" in script
     assert "CI_MERGE_REQUEST_TARGET_BRANCH_NAME" in script, (
         "the pin must follow the MR's actual target branch, not a hardcoded one"
     )
+
+
+@pytest.mark.unit
+def test_the_staged_harness_runs_isolated_from_its_own_files(mod, tmp_path) -> None:
+    """Copy exactly ``REVIEW_HARNESS_PATHS`` somewhere else and run it as CI does.
+
+    A first-party module the script imports that is not in the list fails here at
+    import, which is how it would fail in CI. ``-I`` is what CI passes, so the
+    checkout and the current directory are not on the import path for this run
+    either.
+    """
+    staged = tmp_path / "staged"
+    for relative in mod.REVIEW_HARNESS_PATHS:
+        destination = staged / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((REPO_ROOT / relative).read_bytes())
+    result = subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, "-I", str(staged / mod.REVIEW_HARNESS_PATHS[0]), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr[-800:]
+    assert "--checkout" in result.stdout
 
 
 @pytest.mark.unit
@@ -1112,28 +1287,44 @@ def test_the_github_sweep_follows_every_page(mod, header_name: str) -> None:
 
 
 @pytest.mark.unit
-def test_the_github_workflow_pins_the_harness_before_running_it(gh_job: dict) -> None:
+def test_the_github_workflow_stages_the_harness_and_runs_it_isolated(
+    gh_job: dict,
+) -> None:
     """Same outer channel as the GitLab job, closed the same way.
 
-    On a ``pull_request`` run the checkout contains the PR's changes, so without
-    this the reviewer is the PR's own copy of itself. Nothing inside the script
-    can fix that: by the time Python starts, the code running is already the
-    PR's.
+    On a ``pull_request`` run the checkout contains the PR's changes, so the
+    harness is extracted from the target branch outside the checkout and run with
+    ``python3 -I``.
     """
     script = "\n".join(
         str(step.get("run", "")) for step in gh_job["steps"] if "run" in step
     )
-    assert "git checkout FETCH_HEAD --" in script, (
-        "the workflow no longer pins the harness from the target branch, so the "
-        "reviewer on a pull request is the PR's own copy of the reviewer"
+    listed = re.search(r'HARNESS="([^"]+)"', script)
+    assert listed, "no staged harness list in the workflow"
+    assert tuple(listed.group(1).split()) == _module().REVIEW_HARNESS_PATHS
+    extraction = re.search(
+        r"^[ \t]*if git archive --format=tar -o (?P<tar>\S+) FETCH_HEAD -- "
+        r'\$HARNESS && tar -xf (?P=tar) -C "\$STAGED" '
+        r'&& chmod -R go-w "\$STAGED"; then\n'
+        r"(?:.*\n)*?[ \t]*else\n(?P<refuse>(?:.*\n)*?)[ \t]*fi$",
+        script,
+        re.MULTILINE,
     )
-    for pinned in (
-        "scripts/sdlc/ai_mr_review.py",
-        ".claude/skills/pr-review.md",
-        ".claude/skills/pr-review-ci.md",
-        "CLAUDE.md",
-    ):
-        assert pinned in script, f"{pinned} is not pinned by the workflow"
+    assert extraction, "the extraction is not the one condition whose failure refuses"
+    assert re.search(r"^\s*exit 1\s*$", extraction.group("refuse"), re.M)
+    assert 'git fetch -q origin "refs/heads/$TARGET_BRANCH"' in script
+    assert "git checkout FETCH_HEAD" not in script
+    assert (
+        "python3 -I $RUNNER_TEMP/review-harness/scripts/sdlc/ai_mr_review.py" in script
+    )
+    assert "--checkout $GITHUB_WORKSPACE" in script
+    assert "--require-aws-role $REVIEW_ROLE_NAME" in script
+    runs = [
+        line
+        for line in script.splitlines()
+        if "python3" in line and "ai_mr_review.py" in line
+    ]
+    assert all("python3 -I" in line for line in runs), runs
 
 
 @pytest.mark.unit
@@ -1293,16 +1484,16 @@ def test_the_github_workflow_states_the_forge_on_the_command_line(
     that is allowed to be advisory and so goes unnoticed.
     """
     runs = [str(s.get("run", "")) for s in gh_job["steps"] if "run" in s]
-    # Matched on the INVOCATION, not on the filename: the harness-pinning step
-    # names the same path among the files it pins, so counting mentions of the
-    # path scores that step as an invocation that forgot the flag.
+    # Matched on the INVOCATION, not on the filename: the staging step names the
+    # same path among the files it extracts, so counting mentions of the path
+    # scores that step as an invocation that forgot the flag. The Review step
+    # builds the interpreter line once as $REVIEW and runs it twice.
     invocations = [
         block
         for run in runs
-        for block in re.findall(
-            r"python3\s+scripts/sdlc/ai_mr_review\.py(?:[^\n]*\\\n)*[^\n]*", run
-        )
+        for block in re.findall(r"^\s*\$REVIEW\b(?:[^\n]*\\\n)*[^\n]*", run, re.M)
     ]
+    assert len(invocations) == 2, invocations
     assert invocations, "the workflow never invokes the reviewer"
     for invocation in invocations:
         assert "--forge github" in invocation, (
@@ -2998,3 +3189,321 @@ def test_the_committing_fixtures_survive_a_host_that_refuses_commits(
         "scripts/sdlc/tests/test_typecheck_pr_changes.py.\n"
         f"\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
+
+
+# --- posting check, session scope and the review role -------------------------
+
+#: Fixtures built at run time from the documented shapes, so this file quotes no
+#: credential-shaped literal (``test_fake_aws_credentials.py``).
+_ACCESS_KEY = "AKIA" + "Q7" * 8
+_SESSION_TOKEN = "IQoJb3JpZ2luX2Vj" + "x" * 40  # an STS prefix the redactor knows
+_SECRET_KEY = "aB3/" + "kL9x" * 9  # 40 base64 characters, mixed case and digits
+_GITHUB_TOKEN = "ghs_" + "a1B2" * 9  # server-to-server, GitHub's documented shape
+_GITLAB_TOKEN = "glpat-" + "Zz9" * 7
+_INTERNAL_HOST = "wiki.corp." + "amazon.com"
+#: AWS's documented placeholder key id, which the posting check lets through.
+_EXAMPLE_KEY = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+_PLAIN = "## PR/MR Review: a title\n\nLooks fine. See `scripts/x.py:12`.\n"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "kind"),
+    [
+        (f"key {_ACCESS_KEY} here", "a credential or token"),
+        (f"token {_SESSION_TOKEN}", "a credential or token"),
+        (f"glab {_GITLAB_TOKEN}", "a credential or token"),
+        (f"gh {_GITHUB_TOKEN}", "a GitHub token"),
+        ("gh " + "ghp_" + "Q" * 36, "a GitHub token"),
+        ("gh github_pat_" + "Q1_" * 10, "a GitHub token"),
+        (f"secret {_SECRET_KEY} end", "an AWS secret key shape"),
+        (f"see https://{_INTERNAL_HOST}/x", "internal hostname"),
+        ("![chart](https://remote.example/p.png)", "image or embedded-resource markup"),
+        (
+            "![chart][ref]\n\n[ref]: https://remote.example/p",
+            "image or embedded-resource markup",
+        ),
+        (
+            "![chart] is shown\n\n[chart]: https://remote.example/p",
+            "image or embedded-resource markup",
+        ),
+        ('<img src="https://remote.example/p">', "image or embedded-resource markup"),
+        ("<IMG/SRC=x>", "image or embedded-resource markup"),
+        ("<picture><source srcset=x></picture>", "image or embedded-resource markup"),
+        ("![a\nb](https://remote.example/p)", "image or embedded-resource markup"),
+        ("![a [b] c](https://remote.example/p)", "image or embedded-resource markup"),
+        ("![x\\]y](https://remote.example/p)", "image or embedded-resource markup"),
+        (
+            "![x] text\n\n> [x]: https://remote.example/p",
+            "image or embedded-resource markup",
+        ),
+        (
+            "![x] text\n\n- [x]: https://remote.example/p",
+            "image or embedded-resource markup",
+        ),
+        (
+            "[![a\nb](https://remote.example/p)](https://remote.example/l)",
+            "image or embedded-resource markup",
+        ),
+        ("see https://BUILD.CORP." + "AMAZON.COM/x", "internal hostname"),
+        ("D \\\\![z](https://remote.example/p)", "image or embedded-resource markup"),
+        (
+            "!123456789012(https://remote.example/p)",
+            "image or embedded-resource markup",
+        ),
+        (
+            "!someone@example.org(https://remote.example/p)",
+            "image or embedded-resource markup",
+        ),
+        (
+            "```\n![a](https://remote.example/p)\n```",
+            "image or embedded-resource markup",
+        ),
+    ],
+)
+def test_the_posting_check_refuses_each_kind(mod, text: str, kind: str) -> None:
+    """Through ``publishable_review``, which checks the text as written and again
+    as it would be posted, after redaction and escaping."""
+    _, reasons = mod.publishable_review(_PLAIN + text, environ={})
+    assert kind in reasons
+
+
+@pytest.mark.unit
+def test_a_job_credential_value_is_refused_whatever_its_shape(mod) -> None:
+    """A value of one of the job's own credential variables is registered with the
+    redactor verbatim, so it is refused even where no shape rule would see it."""
+    value = "plain-words-but-a-secret"
+    environ = {"GITLAB_REVIEW_TOKEN": value}
+    assert mod.posting_refusals(f"{_PLAIN}{value}", environ=environ) == [
+        "a credential or token"
+    ]
+    assert mod.posting_refusals(f"{_PLAIN}{value}", environ={}) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        _PLAIN,
+        "fixture key " + _EXAMPLE_KEY + " in conftest",
+        "head " + "0123456789abcdef" * 2 + "01234567",  # a 40-hex git SHA
+        "path lib/idp_common_pkg/idp_common/extraction/Service2Main.py",
+        "an escaped \\![x](https://remote.example/p) is text, not an image",
+        "three backslashes \\\\\\![x](https://remote.example/p) are text too",
+        "mixed case SSH.GitLab.aws.dev is the forge's own host",
+        "the comment is posted to gitlab.aws.dev via ssh.gitlab.aws.dev",
+        "link [text](https://remote.example/page) is not an image",
+    ],
+)
+def test_the_posting_check_passes_ordinary_review_text(mod, text: str) -> None:
+    assert mod.posting_refusals(text, forge_host="gitlab.aws.dev", environ={}) == []
+
+
+@pytest.mark.unit
+def test_the_forge_host_is_allowed_only_on_its_own_forge(mod) -> None:
+    text = "see https://gitlab.aws.dev/group/project"
+    assert mod.posting_refusals(text, forge_host="gitlab.aws.dev", environ={}) == []
+    assert mod.posting_refusals(text, forge_host="api.github.com", environ={}) == [
+        "internal hostname"
+    ]
+
+
+@pytest.mark.unit
+def test_a_refused_review_is_replaced_whole_and_names_only_kinds(mod) -> None:
+    merge_request = mod.MergeRequest(
+        iid=7,
+        title="t",
+        author="a",
+        source_branch="s",
+        target_branch="develop",
+        web_url="u",
+        head_sha="a" * 40,
+        draft=False,
+    )
+    review = f"{_PLAIN}quoted {_GITHUB_TOKEN}"
+    note = mod.compose_note(merge_request, review, (1, 1, 1), False, "m")
+    assert _GITHUB_TOKEN not in note and "Looks fine" not in note
+    assert "was not posted" in note and "a GitHub token" in note
+    assert mod.MARKER_RE.search(note), "a withheld review must still carry the marker"
+
+
+@pytest.mark.unit
+def test_an_accepted_review_still_goes_through_the_redactor(mod) -> None:
+    merge_request = mod.MergeRequest(
+        iid=7,
+        title="t",
+        author="a",
+        source_branch="s",
+        target_branch="develop",
+        web_url="u",
+        head_sha="a" * 40,
+        draft=False,
+    )
+    note = mod.compose_note(
+        merge_request, f"{_PLAIN}account 123456789012", (1, 1, 1), False, "m"
+    )
+    assert "123456789012" not in note and "[account]" in note
+
+
+@pytest.mark.unit
+def test_the_argv_carries_the_session_scope_flags(mod) -> None:
+    command = mod.claude_command("claude", "prompt")
+    for flag in mod.SESSION_SCOPE_FLAGS:
+        assert flag in command, f"{flag} is not in the argv the review runs"
+    assert set(mod.SESSION_SCOPE_FLAGS) == {"--restricted", "--safe-mode"}
+    assert command[command.index("--permission-mode") + 1] == "manual"
+
+
+@pytest.mark.unit
+def test_run_claude_runs_the_argv_the_probe_measures(mod) -> None:
+    """The probe in test_ai_mr_review_session_scope.py measures ``claude_command``;
+    that is only worth something if ``run_claude`` runs that same list."""
+    source = ast.get_source_segment(
+        SCRIPT.read_text(),
+        next(
+            node
+            for node in ast.walk(ast.parse(SCRIPT.read_text()))
+            if isinstance(node, ast.FunctionDef) and node.name == "run_claude"
+        ),
+    )
+    assert source and "command = claude_command(binary, prompt)" in source
+    assert "_run(command," in source
+
+
+@pytest.mark.unit
+def test_the_sigv4_signature_matches_botocore(mod) -> None:
+    """Derived from the authority: botocore's own signer, same request and time."""
+    botocore_auth = pytest.importorskip("botocore.auth")
+    from botocore.awsrequest import AWSRequest
+    from botocore.credentials import Credentials
+
+    host, region = "sts.us-east-1.amazonaws.com", "us-east-1"
+    body = "Action=GetCallerIdentity&Version=2011-06-15"
+    access, secret, token = _EXAMPLE_KEY, "wJalr" + "X" * 30 + "EXAMP", "t0k"
+    amz_date = "20261110T120000Z"
+    ours = mod.sigv4_headers(host, region, body, access, secret, token, amz_date)
+
+    request = AWSRequest(
+        method="POST",
+        url=f"https://{host}/",
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"},
+    )
+    request.context["timestamp"] = amz_date
+    signer = botocore_auth.SigV4Auth(Credentials(access, secret, token), "sts", region)
+    import datetime as _dt
+    from unittest import mock
+
+    fixed = _dt.datetime(2026, 11, 10, 12, 0, 0)
+    with mock.patch.object(botocore_auth.datetime, "datetime") as clock:
+        clock.utcnow.return_value = fixed
+        clock.now.return_value = fixed
+        clock.strptime = _dt.datetime.strptime
+        signer.add_auth(request)
+    assert request.headers["X-Amz-Date"] == amz_date
+    assert ours["Authorization"] == request.headers["Authorization"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("arn", "name"),
+    [
+        (
+            "arn:aws:sts::111122223333:assumed-role/idp-sdlc-GitLabReview/s",
+            "idp-sdlc-GitLabReview",
+        ),
+        ("arn:aws:sts::111122223333:assumed-role/idp-sdlc-GitLab/s", "idp-sdlc-GitLab"),
+        ("arn:aws:iam::111122223333:user/someone", "user/someone"),
+    ],
+)
+def test_the_role_name_is_read_from_the_sts_answer(
+    mod, monkeypatch, arn: str, name: str
+) -> None:
+    class Answer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return f"<GetCallerIdentityResponse><Arn>{arn}</Arn>".encode()
+
+    monkeypatch.setattr(mod._NO_REDIRECT_OPENER, "open", lambda *a, **k: Answer())
+    environ = {
+        "AWS_ACCESS_KEY_ID": _EXAMPLE_KEY,
+        "AWS_SECRET_ACCESS_KEY": "x",
+    }
+    assert mod.caller_role_name(environ) == name
+
+
+@pytest.mark.unit
+def test_the_wrong_role_refuses_the_whole_run(
+    mod, monkeypatch, capsys, tmp_path
+) -> None:
+    """The integration-test role must not be enough to review, so ``main`` stops
+    with exit 1 before any merge request is read."""
+    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", "t")
+    monkeypatch.setattr(mod, "caller_role_name", lambda environ=None: "idp-sdlc-GitLab")
+    read = []
+    monkeypatch.setattr(mod.Gitlab, "merge_request", lambda self, iid: read.append(iid))
+    code = mod.main(
+        [
+            "--mr",
+            "1",
+            "--project",
+            "p",
+            "--require-aws-role",
+            "idp-sdlc-GitLabReview",
+            "--artifact-dir",
+            str(tmp_path),
+        ]
+    )
+    assert code == 1 and read == []
+    assert "not the review role 'idp-sdlc-GitLabReview'" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_no_credentials_refuse_rather_than_skip(mod) -> None:
+    with pytest.raises(mod.Failure, match="no AWS credentials"):
+        mod.caller_role_name({})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("job", "role"),
+    [("gitlab", "idp-sdlc-GitLabReview"), ("github", "idp-sdlc-GitHubReview")],
+)
+def test_each_ci_job_requires_its_review_role(
+    ci_config: dict, gh_job: dict, job: str, role: str
+) -> None:
+    variables = (
+        ci_config["ai_mr_review"]["variables"]
+        if job == "gitlab"
+        else next(s for s in gh_job["steps"] if s.get("name") == "Review")["env"]
+    )
+    assert variables["REVIEW_ROLE_NAME"] == role
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("config", ["gitlab", "github"])
+def test_an_older_target_reviewer_is_refused_with_a_message(
+    ci_config: dict, gh_job: dict, config: str
+) -> None:
+    """Until the target branch carries the staged, role-checked reviewer, the job
+    stops with a message instead of an argument error from the old script."""
+    script = (
+        "\n".join(ci_config["ai_mr_review"]["script"])
+        if config == "gitlab"
+        else "\n".join(str(s.get("run", "")) for s in gh_job["steps"])
+    )
+    found = re.search(
+        r'^[ \t]*if ! grep -q -- "--require-aws-role" '
+        r'"[^"\n]+/scripts/sdlc/ai_mr_review\.py"; then\n'
+        r"(?P<body>(?:.*\n)*?)[ \t]*fi\n",
+        script,
+        re.MULTILINE,
+    )
+    assert found, "the check is not one plain `if ! grep ...; then` condition"
+    assert re.search(r"^\s*exit 1\s*$", found.group("body"), re.M)
+    assert found.start() < script.index("REVIEW=")

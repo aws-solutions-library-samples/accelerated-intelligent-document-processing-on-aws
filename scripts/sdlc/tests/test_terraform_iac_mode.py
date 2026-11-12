@@ -406,7 +406,11 @@ def test_the_terraform_command_parses_as_a_terraform_deploy(cbd, faked_deploy, r
     assert faked_deploy["staged"] == [
         (
             TF_ROLE_ARN,
-            [f"PermissionsBoundaryArn={BOUNDARY_ARN}", "MalwareScanning=CREATE_PLAN"],
+            [
+                f"PermissionsBoundaryArn={BOUNDARY_ARN}",
+                "MalwareScanning=CREATE_PLAN",
+                "EnableMCP=true",
+            ],
         )
     ]
 
