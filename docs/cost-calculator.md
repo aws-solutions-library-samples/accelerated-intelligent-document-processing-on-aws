@@ -145,21 +145,32 @@ loads, and the page lists the value for correction. A value whose only problem i
 surrounding spaces is still priced, because the reports and the web UI both read it.
 Any other invalid value is reported as unpriced until it is corrected.
 
-⚠️ **Saving the Pricing page stores the whole table, and a saved table replaces the
-default table in full.** It is not merged over the defaults row by row. Two things
-follow for a stack that has ever saved the page, however small the edit:
+The Pricing page saves the whole table, and the stack prices with the shipped
+defaults with your saved table laid over them, model by model and unit by unit:
 
-- A rate a later release corrects in `pricing.yaml` does not reach it, because the
-  saved table still carries the old rate.
-- A model a later release adds has no price on it. Its usage is reported as
-  unpriced (`NULL` in the reporting `metering` table) rather than costed.
+- A rate you saved overrides the default rate for that unit of that model.
+- A unit or model you added that the defaults do not have is kept.
+- A default unit or model your saved table does not mention is priced at its
+  default rate. So a model that a later release adds to `pricing.yaml` is priced
+  on a stack that saved the page before the upgrade.
 
-To pick up the current defaults, choose **Restore default (All)** on the Pricing
-page, which discards the saved table, and then re-apply your own changes. The button
-is enabled whenever the table on the page differs from the defaults: a price that
-differs by any amount (the same value in a different notation, such as `2.2E-6` and
-`0.0000022`, does not count), a row the defaults do not have, or a default row you
-deleted.
+Two consequences follow:
+
+- ⚠️ A rate that a later release corrects in `pricing.yaml` does not reach a unit
+  your saved table holds, even if you never edited that unit, because every save
+  stores the whole table. Saving once pins the defaults of that moment for every
+  row in the table.
+- Deleting a default row in the editor does not stick. The saved table records no
+  deletions, so the row is back at its default rate once the table is saved and the
+  page is reloaded. To have a default model cost nothing in the reports, set its
+  rates to `0` instead.
+
+To pick up the current defaults for every row, choose **Restore default (All)** on
+the Pricing page, which discards the saved table, and then re-apply your own
+changes. The button is enabled whenever the table on the page differs from the
+defaults: a price that differs by any amount (the same value in a different
+notation, such as `2.2E-6` and `0.0000022`, does not count), a row the defaults do
+not have, or a default row you have deleted and not yet saved.
 
 ### What the estimate cannot express: prices that change with request size
 
