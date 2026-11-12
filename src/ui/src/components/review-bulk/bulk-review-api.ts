@@ -19,8 +19,15 @@ import type {
   BulkSkipAllReviewsResult,
   SendToReviewResult,
 } from '../../graphql/generated/schema-types';
+import { SKIP_ALL_REASONS } from '../common/review-status';
 
 const client = generateClient();
+
+/**
+ * The reason a dry run sends: the server validates it but records nothing. The catch-all
+ * reason value ("Other (see note)"), last in the server's SKIP_ALL_REASONS list.
+ */
+const DRY_RUN_REASON = SKIP_ALL_REASONS[SKIP_ALL_REASONS.length - 1];
 
 const required = <T>(value: T | null | undefined, field: string): T => {
   if (value == null) throw new Error(`${field} returned no result`);
@@ -39,7 +46,7 @@ export interface BulkSkipChoice {
 
 const input = (scope: BulkSkipScope, extra: Partial<BulkSkipAllReviewsInput>): BulkSkipAllReviewsInput => ({
   ...scope,
-  reason: extra.reason ?? 'Other (see note)',
+  reason: extra.reason ?? DRY_RUN_REASON,
   ...extra,
 });
 

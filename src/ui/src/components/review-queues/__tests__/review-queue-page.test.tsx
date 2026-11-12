@@ -14,7 +14,8 @@
  */
 
 import React from 'react';
-import { act, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, fireEvent, waitFor } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -91,7 +92,7 @@ const Navigator = () => {
 };
 
 const renderPage = async (onName?: (name: string) => void) => {
-  render(
+  renderWithIntl(
     <MemoryRouter initialEntries={['/review-queues/queues/default']}>
       <Navigator />
       <Routes>

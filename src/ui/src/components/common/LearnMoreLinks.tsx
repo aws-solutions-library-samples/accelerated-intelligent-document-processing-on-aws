@@ -4,13 +4,23 @@
 // The "Learn more" footer of an info panel (HelpPanel): links into the published docs.
 import React from 'react';
 import { Icon } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, type NoMessageValues } from 'react-intl';
 
 import { DOCS_BASE_URL } from '../../constants/github';
 
+const messages = defineMessages<{ heading: NoMessageValues }>({
+  heading: {
+    id: 'common.learnMoreLinks.heading',
+    defaultMessage: 'Learn more',
+    description: 'Heading of the footer of an info (help) panel, above a list of links into the product documentation.',
+  },
+});
+
 export interface DocLink {
-  text: string;
+  /** The link label: a `<FormattedMessage>` (or a string the caller already formatted). */
+  text: React.ReactNode;
   /** Docs-site path, e.g. `human-review/` or `web-ui/#inbox`. */
-  path: string;
+  docsPath: string;
 }
 
 /** A docs-site URL for ``path`` (no leading slash). */
@@ -19,12 +29,12 @@ export const docsUrl = (path: string): string => `${DOCS_BASE_URL}/${path}`;
 const LearnMoreLinks = ({ links }: { links: DocLink[] }): React.JSX.Element => (
   <div>
     <h3>
-      Learn more <Icon name="external" />
+      <FormattedMessage {...messages.heading} /> <Icon name="external" />
     </h3>
     <ul>
       {links.map((link) => (
-        <li key={link.path}>
-          <a href={docsUrl(link.path)} target="_blank" rel="noopener noreferrer">
+        <li key={link.docsPath}>
+          <a href={docsUrl(link.docsPath)} target="_blank" rel="noopener noreferrer">
             {link.text}
           </a>
         </li>

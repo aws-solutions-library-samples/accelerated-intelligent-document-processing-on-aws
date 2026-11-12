@@ -124,7 +124,8 @@ describe('the queue page', () => {
     const adminBranch = source.slice(start, source.indexOf(') : (', start));
     expect(adminBranch).toContain('moreActions([queueGroup, skipGroup])');
     const queueGroup = source.slice(source.indexOf('const queueGroup'), source.indexOf('const onMoreAction'));
-    expect(queueGroup).toContain("counted('Remove from queue…', removable.length)");
+    expect(queueGroup).toContain('counted(intl.formatMessage(messages.removeFromQueue), removable.length)');
+    expect(source).toContain("id: 'reviewQueues.queuePage.removeFromQueue',\n    defaultMessage: 'Remove from queue…',");
     expect(source).toContain("else if (id === 'remove') supervisor.open('remove', removable);");
   });
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState } from 'react';
 import { Modal, Box, SpaceBetween, Button, Alert } from '@cloudscape-design/components';
+import { useIntl } from 'react-intl';
 import DateRangeFields, { lastDaysRange, toIsoRange, validateDateRange } from './DateRangeFields';
 import type { DateRangeValue } from './DateRangeFields';
 
@@ -12,12 +13,13 @@ interface DateRangeModalProps {
 }
 
 const DateRangeModal = ({ visible, onDismiss, onApply }: DateRangeModalProps): React.JSX.Element => {
+  const intl = useIntl();
   // Default to last 7 days
   const [range, setRange] = useState<DateRangeValue>(() => lastDaysRange(7));
   const [error, setError] = useState<string | null>(null);
 
   const handleApply = () => {
-    const problem = validateDateRange(range);
+    const problem = validateDateRange(range, intl);
     setError(problem);
     if (problem) return;
     onApply(toIsoRange(range));

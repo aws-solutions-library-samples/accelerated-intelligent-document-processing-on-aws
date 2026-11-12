@@ -9,7 +9,8 @@
  */
 
 import React from 'react';
-import { fireEvent, render, waitFor } from '@testing-library/react';
+import { fireEvent, waitFor } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -126,7 +127,7 @@ describe('DocumentList review alerts', () => {
   it('shows the refusal for Start Review and does not open the document', async () => {
     documentsRef.current = [doc('owed.pdf')];
     graphqlMock.mockImplementation(() => refused('NO_REVIEW_PENDING: this document has no review waiting, so there is nothing to start'));
-    render(<DocumentList />);
+    renderWithIntl(<DocumentList />);
     selectRow(1);
     chooseReview('Start Review');
 
@@ -140,7 +141,7 @@ describe('DocumentList review alerts', () => {
     graphqlMock.mockResolvedValue({
       data: { claimReview: { HITLReviewOwner: 'admin', HITLReviewOwnerEmail: 'a@example.com', HITLStatus: 'InProgress' } },
     });
-    render(<DocumentList />);
+    renderWithIntl(<DocumentList />);
     selectRow(1);
     chooseReview('Start Review');
 
@@ -155,7 +156,7 @@ describe('DocumentList review alerts', () => {
       doc('finished.pdf', { HITLReviewOwner: 'rev', HITLStatus: 'Completed' }),
     ];
     graphqlMock.mockImplementation(() => refused('REVIEW_FINISHED: this review is already finished, so there is nothing to release'));
-    render(<DocumentList />);
+    renderWithIntl(<DocumentList />);
     [1, 2, 3].forEach(selectRow);
     chooseReview('Release Review');
 
@@ -167,7 +168,7 @@ describe('DocumentList review alerts', () => {
   it('shows no alert when every release succeeds', async () => {
     documentsRef.current = [doc('claimed.pdf', { HITLReviewOwner: 'rev', HITLStatus: 'InProgress' })];
     graphqlMock.mockResolvedValue({ data: { releaseReview: { HITLStatus: 'Review Pending' } } });
-    render(<DocumentList />);
+    renderWithIntl(<DocumentList />);
     selectRow(1);
     chooseReview('Release Review');
 
@@ -189,7 +190,7 @@ describe('DocumentList review alerts', () => {
         ? Promise.resolve({ data: { releaseReview: { HITLStatus: 'Review Pending' } } })
         : refused('NO_REVIEW_PENDING: this document has no review waiting, so there is nothing to start'),
     );
-    render(<DocumentList />);
+    renderWithIntl(<DocumentList />);
     selectRow(1);
     chooseReview('Start Review');
     await waitFor(() => expect(alertText()).toContain('Start Review was refused'));
@@ -202,7 +203,7 @@ describe('DocumentList review alerts', () => {
 
   it('opens bulk Skip All Reviews with only the skippable rows, and patches them in place', async () => {
     documentsRef.current = [doc('owed.pdf'), doc('done.pdf', { HITLStatus: 'Review Skipped', HITLCompleted: true })];
-    render(<DocumentList />);
+    renderWithIntl(<DocumentList />);
     [1, 2].forEach(selectRow);
     const before = createWrapper()
       .findTable()!

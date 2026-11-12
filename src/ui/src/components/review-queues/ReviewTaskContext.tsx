@@ -13,10 +13,35 @@
 // reasons in order.
 import React, { useState } from 'react';
 import { Alert, Badge, Box, Button, Container, Header, Popover, SpaceBetween } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl } from 'react-intl';
 
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { NEXT_ALERT_LABEL } from '../common/labels';
 import { MISSING_REQUIRED_KIND, reasonText } from './review-api';
+
+const messages = defineMessages<{
+  sentToReview: { readonly reason: string };
+  sentBy: { readonly requestedBy: string };
+  sentByWithNote: { readonly requestedBy: string; readonly note: string };
+}>({
+  sentToReview: {
+    id: 'reviewQueues.taskContext.sentToReview',
+    defaultMessage: 'Sent to review: {reason}',
+    description:
+      'Header of the info alert on a review task whose document was sent to review by hand. {reason} is the reason chosen when sending it.',
+  },
+  sentBy: {
+    id: 'reviewQueues.taskContext.sentBy',
+    defaultMessage: 'By {requestedBy}',
+    description: 'Body of the Sent to review alert. {requestedBy} is the user (e-mail) who sent the document to review.',
+  },
+  sentByWithNote: {
+    id: 'reviewQueues.taskContext.sentByWithNote',
+    defaultMessage: 'By {requestedBy} — {note}',
+    description:
+      'Body of the Sent to review alert when the sender left a note. {requestedBy} is the user (e-mail) who sent it; {note} is their free-text note.',
+  },
+});
 
 export const TOP_REASONS = 5;
 
@@ -31,6 +56,7 @@ interface ReviewTaskContextProps {
 }
 
 const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): React.JSX.Element => {
+  const intl = useIntl();
   const { item } = detail;
   const [showAll, setShowAll] = useState(false);
   // The reason Next alert moves to next.
@@ -65,9 +91,15 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
           </Alert>
         )}
         {item.sentToReview && (
-          <Alert type="info" header={`Sent to review: ${item.sentToReview.reason}`}>
-            {`By ${item.sentToReview.requestedBy}`}
-            {item.sentToReview.note ? ` — ${item.sentToReview.note}` : ''}
+          <Alert type="info" header={intl.formatMessage(messages.sentToReview, { reason: item.sentToReview.reason })}>
+            {item.sentToReview.note ? (
+              <FormattedMessage
+                {...messages.sentByWithNote}
+                values={{ requestedBy: item.sentToReview.requestedBy, note: item.sentToReview.note }}
+              />
+            ) : (
+              <FormattedMessage {...messages.sentBy} values={{ requestedBy: item.sentToReview.requestedBy }} />
+            )}
           </Alert>
         )}
         <SpaceBetween direction="horizontal" size="xs">

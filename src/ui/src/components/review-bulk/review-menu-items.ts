@@ -6,6 +6,7 @@
 // is shown only to the roles offered it and disabled, with its reason, when the
 // selection doesn't fit. The counts are estimates; the server decides per document.
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
+import { defineMessages, type IntlShape, type NoMessageValues } from 'react-intl';
 
 import {
   NO_SENDABLE_SELECTION_REASON,
@@ -21,6 +22,54 @@ import {
 } from '../document-list/documents-table-config';
 import type { MappedDocument } from '../document-list/documents-table-config';
 
+const messages = defineMessages<{
+  startReview: NoMessageValues;
+  startReviewDisabled: NoMessageValues;
+  releaseReview: NoMessageValues;
+  releaseReviewDisabled: NoMessageValues;
+  skipSelected: { readonly count: number };
+  skipProfile: NoMessageValues;
+  sendSelected: { readonly count: number };
+}>({
+  startReview: {
+    id: 'reviewBulk.reviewMenu.startReview',
+    defaultMessage: 'Start Review',
+    description: "Review menu item of the Document List that claims the selected documents' pending reviews.",
+  },
+  startReviewDisabled: {
+    id: 'reviewBulk.reviewMenu.startReviewDisabled',
+    defaultMessage: 'Select documents with an unclaimed pending review',
+    description: 'Why the Start Review menu item is disabled: no selected document has an unclaimed pending review.',
+  },
+  releaseReview: {
+    id: 'reviewBulk.reviewMenu.releaseReview',
+    defaultMessage: 'Release Review',
+    description: "Review menu item of the Document List (Admin) that releases the claims on the selected documents' reviews.",
+  },
+  releaseReviewDisabled: {
+    id: 'reviewBulk.reviewMenu.releaseReviewDisabled',
+    defaultMessage: 'Select documents with a claimed review',
+    description: 'Why the Release Review menu item is disabled: no selected document has a claimed review.',
+  },
+  skipSelected: {
+    id: 'reviewBulk.reviewMenu.skipSelected',
+    defaultMessage: 'Skip All Reviews ({count} selected)',
+    description:
+      'Review menu item that skips the pending reviews of the selected documents. {count} is the number of selected documents it applies to.',
+  },
+  skipProfile: {
+    id: 'reviewBulk.reviewMenu.skipProfile',
+    defaultMessage: 'Skip All Reviews by profile…',
+    description: 'Review menu item that opens bulk Skip All Reviews by configuration profile and submitted dates.',
+  },
+  sendSelected: {
+    id: 'reviewBulk.reviewMenu.sendSelected',
+    defaultMessage: 'Send to review ({count} selected)',
+    description:
+      'Review menu item that sends the selected finished documents to the Default review queue. {count} is the number of selected documents it applies to.',
+  },
+});
+
 export type ReviewMenuId = 'claim' | 'release' | 'skip-selected' | 'skip-profile' | 'send-selected';
 
 export interface ReviewMenuInput {
@@ -30,6 +79,8 @@ export interface ReviewMenuInput {
   isTestView: boolean;
   defaultQueueEnabled: boolean | null;
   show: { claim: boolean; release: boolean; skip: boolean; send: boolean };
+  /** Formats the menu's labels and reasons. */
+  intl: IntlShape;
 }
 
 export interface ReviewMenu {
@@ -48,6 +99,7 @@ export const buildReviewMenuItems = ({
   isTestView,
   defaultQueueEnabled,
   show,
+  intl,
 }: ReviewMenuInput): ReviewMenu => {
   const skippable = selected.filter((d) => isSkippableForReview(d, currentUsername, isAdmin)).map((d) => d.objectKey);
   const sendable = selected.filter(isSendableToReview).map((d) => d.objectKey);
@@ -57,32 +109,32 @@ export const buildReviewMenuItems = ({
   if (show.claim)
     reviewItems.push({
       id: 'claim',
-      text: 'Start Review',
+      text: intl.formatMessage(messages.startReview),
       disabled: !claimable,
-      disabledReason: claimable ? undefined : 'Select documents with an unclaimed pending review',
+      disabledReason: claimable ? undefined : intl.formatMessage(messages.startReviewDisabled),
     });
   if (show.release)
     reviewItems.push({
       id: 'release',
-      text: 'Release Review',
+      text: intl.formatMessage(messages.releaseReview),
       disabled: !releasable,
-      disabledReason: releasable ? undefined : 'Select documents with a claimed review',
+      disabledReason: releasable ? undefined : intl.formatMessage(messages.releaseReviewDisabled),
     });
   const bulkItems: ButtonDropdownProps.Item[] = [];
   if (show.skip) {
     bulkItems.push({
       id: 'skip-selected',
-      text: `Skip All Reviews (${skippable.length} selected)`,
+      text: intl.formatMessage(messages.skipSelected, { count: skippable.length }),
       disabled: skippable.length === 0,
       disabledReason: skippable.length === 0 ? NO_SKIPPABLE_SELECTION_REASON : undefined,
     });
-    bulkItems.push({ id: 'skip-profile', text: 'Skip All Reviews by profile…' });
+    bulkItems.push({ id: 'skip-profile', text: intl.formatMessage(messages.skipProfile) });
   }
   if (show.send) {
     const off = defaultQueueEnabled === false;
     bulkItems.push({
       id: 'send-selected',
-      text: `Send to review (${sendable.length} selected)`,
+      text: intl.formatMessage(messages.sendSelected, { count: sendable.length }),
       disabled: off || sendable.length === 0,
       disabledReason: off ? REVIEW_QUEUE_OFF_REASON : sendable.length === 0 ? NO_SENDABLE_SELECTION_REASON : undefined,
     });

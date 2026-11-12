@@ -4,6 +4,7 @@
 /** The Document List's Review menu: counts, reasons, roles and the Test Studio view. */
 
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
+import { createIntl } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -26,6 +27,7 @@ const doc = (objectKey: string, over: Partial<MappedDocument> = {}): MappedDocum
     ...over,
   }) as MappedDocument;
 
+const intl = createIntl({ locale: 'en', defaultLocale: 'en' });
 const ALL = { claim: true, release: true, skip: true, send: true };
 const flat = (items: ButtonDropdownProps.Items) =>
   items.flatMap((i) => ('items' in i ? (i.items as ButtonDropdownProps.Item[]) : [i as ButtonDropdownProps.Item]));
@@ -42,6 +44,7 @@ const SELECTION = [
 describe('buildReviewMenuItems', () => {
   it('counts only the rows each bulk action applies to', () => {
     const menu = buildReviewMenuItems({
+      intl,
       selected: SELECTION,
       currentUsername: 'rev',
       isAdmin: false,
@@ -56,21 +59,43 @@ describe('buildReviewMenuItems', () => {
   });
 
   it('lets an Admin count another reviewer’s legacy review', () => {
-    const menu = buildReviewMenuItems({ selected: SELECTION, isAdmin: true, isTestView: false, defaultQueueEnabled: true, show: ALL });
+    const menu = buildReviewMenuItems({
+      intl,
+      selected: SELECTION,
+      isAdmin: true,
+      isTestView: false,
+      defaultQueueEnabled: true,
+      show: ALL,
+    });
     expect(menu.skippable).toContain('held.pdf');
   });
 
   it('disables with reasons', () => {
-    const empty = buildReviewMenuItems({ selected: [], isAdmin: false, isTestView: false, defaultQueueEnabled: false, show: ALL });
+    const empty = buildReviewMenuItems({
+      intl,
+      selected: [],
+      isAdmin: false,
+      isTestView: false,
+      defaultQueueEnabled: false,
+      show: ALL,
+    });
     expect(item(empty.items, 'skip-selected')?.disabledReason).toBe(NO_SKIPPABLE_SELECTION_REASON);
     expect(item(empty.items, 'send-selected')?.disabledReason).toBe(REVIEW_QUEUE_OFF_REASON);
-    const noSend = buildReviewMenuItems({ selected: [], isAdmin: false, isTestView: false, defaultQueueEnabled: true, show: ALL });
+    const noSend = buildReviewMenuItems({
+      intl,
+      selected: [],
+      isAdmin: false,
+      isTestView: false,
+      defaultQueueEnabled: true,
+      show: ALL,
+    });
     expect(item(noSend.items, 'send-selected')?.disabledReason).toBe(NO_SENDABLE_SELECTION_REASON);
     expect(item(noSend.items, 'skip-profile')?.disabled).toBeFalsy();
   });
 
   it('offers nothing a role may not use, and disables the menu in Test Studio', () => {
     const none = buildReviewMenuItems({
+      intl,
       selected: [],
       isAdmin: false,
       isTestView: false,
@@ -78,7 +103,14 @@ describe('buildReviewMenuItems', () => {
       show: { claim: false, release: false, skip: false, send: false },
     });
     expect(none.visible).toBe(false);
-    const test = buildReviewMenuItems({ selected: [], isAdmin: true, isTestView: true, defaultQueueEnabled: true, show: ALL });
+    const test = buildReviewMenuItems({
+      intl,
+      selected: [],
+      isAdmin: true,
+      isTestView: true,
+      defaultQueueEnabled: true,
+      show: ALL,
+    });
     expect(test.disabledReason).toBe(TEST_STUDIO_REVIEW_MENU_REASON);
   });
 });

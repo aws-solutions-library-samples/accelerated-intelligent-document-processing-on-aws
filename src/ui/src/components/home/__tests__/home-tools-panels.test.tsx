@@ -8,7 +8,8 @@
 
 import React from 'react';
 import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 
 import { DOCS_BASE_URL } from '../../../constants/github';
 import { InboxToolsPanel, JobToolsPanel, JobsToolsPanel, MyQueuesToolsPanel, TasksToolsPanel } from '../home-tools-panels';
@@ -23,7 +24,7 @@ const CASES: [string, () => React.JSX.Element, string[]][] = [
 
 describe('Home info panels', () => {
   it.each(CASES)('%s says what the page is for and links to the docs', (title, Panel, paths) => {
-    render(<Panel />);
+    renderWithIntl(<Panel />);
     expect(screen.getByRole('heading', { level: 2, name: title })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Learn more/ })).toBeInTheDocument();
     const hrefs = screen.getAllByRole('link').map((a) => a.getAttribute('href'));
@@ -34,7 +35,7 @@ describe('Home info panels', () => {
 
 describe('the Inbox info panel', () => {
   it('says the Inbox is planned as the general notification channel', () => {
-    render(<InboxToolsPanel />);
+    renderWithIntl(<InboxToolsPanel />);
     expect(screen.getByRole('heading', { name: 'Looking ahead' })).toBeInTheDocument();
     expect(screen.getByText(/general notification channel/).textContent).toMatch(
       /background jobs, the outcome of asynchronous requests, and reminders when a task is due/,

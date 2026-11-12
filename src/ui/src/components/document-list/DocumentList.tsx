@@ -7,6 +7,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import { fetchSharedAuthSession } from '../../api/auth-session';
 import { useNavigate } from 'react-router-dom';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 interface DateRange {
   startDateTime: string;
@@ -67,6 +68,40 @@ import '@cloudscape-design/global-styles/index.css';
 
 const logger = new ConsoleLogger('DocumentList');
 
+const messages = defineMessages<{
+  downloadFailed: { readonly error: string };
+  unknownError: NoMessageValues;
+  bulkSkipJobStarted: NoMessageValues;
+  bulkSkipResults: NoMessageValues;
+  sendToReviewResults: NoMessageValues;
+}>({
+  downloadFailed: {
+    id: 'documents.list.downloadFailed',
+    defaultMessage: 'Download failed: {error}',
+    description: 'Error notification when the bulk document export fails. {error} is the error message.',
+  },
+  unknownError: {
+    id: 'documents.list.unknownError',
+    defaultMessage: 'Unknown error',
+    description: 'Used as the error of a failed bulk document export when there is no error message.',
+  },
+  bulkSkipJobStarted: {
+    id: 'documents.list.bulkSkipJobStarted',
+    defaultMessage: 'Skip All Reviews is running as a background job.',
+    description: 'Success notification when bulk Skip All Reviews is too large to run at once and starts as a background job.',
+  },
+  bulkSkipResults: {
+    id: 'documents.list.bulkSkipResults',
+    defaultMessage: 'Skip All Reviews results',
+    description: 'Title of the results dialog of a bulk Skip All Reviews run from the Document List.',
+  },
+  sendToReviewResults: {
+    id: 'documents.list.sendToReviewResults',
+    defaultMessage: 'Send to review results',
+    description: 'Title of the results dialog of Send to review from the Document List.',
+  },
+});
+
 /**
  * Documents hydrated per round before a bulk export. Matches the exporter's own
  * fetch concurrency so a large selection cannot fan out unbounded.
@@ -96,6 +131,7 @@ const DocumentList = (): React.JSX.Element => {
   const { settings } = useSettingsContext();
   const { currentCredentials, setErrorMessage, setSuccessMessage } = useAppContext();
   const reviewSettings = useReviewActionSettings();
+  const intl = useIntl();
   // Bulk Skip All Reviews / Send to review: the open dialog and the last results.
   const [bulkSkip, setBulkSkip] = useState<{ mode: BulkSkipMode; keys: string[] } | null>(null);
   const [sendKeys, setSendKeys] = useState<string[] | null>(null);
@@ -471,7 +507,9 @@ const DocumentList = (): React.JSX.Element => {
         logger.info('Bulk document export cancelled by user');
       } else {
         logger.error('Bulk document export failed:', err);
-        setErrorMessage(`Download failed: ${(err as Error).message || 'Unknown error'}`);
+        setErrorMessage(
+          intl.formatMessage(messages.downloadFailed, { error: (err as Error).message || intl.formatMessage(messages.unknownError) }),
+        );
       }
     } finally {
       setIsDownloadInProgress(false);
@@ -509,6 +547,7 @@ const DocumentList = (): React.JSX.Element => {
     isTestView,
     defaultQueueEnabled: reviewSettings.defaultQueueEnabled,
     show: { claim: !!canReview, release: !!isAdmin, skip: !!canReview, send: !!canReview },
+    intl,
   });
 
   /** Reflect skipped or sent documents in the list without reloading it. */
@@ -539,14 +578,14 @@ const DocumentList = (): React.JSX.Element => {
           onDismiss={() => setBulkSkip(null)}
           onJobStarted={(jobId) => {
             setBulkSkip(null);
-            setSuccessMessage('Skip All Reviews is running as a background job.');
+            setSuccessMessage(intl.formatMessage(messages.bulkSkipJobStarted));
             navigate(jobDetailPath(jobId));
           }}
           onFinished={(result) => {
             setBulkSkip(null);
             patchRows(result.results, (r) => (r.outcome === 'SKIPPED' ? (r.kind === 'queue' ? 'complete' : 'Review Skipped') : null));
             setBulkResults({
-              header: 'Skip All Reviews results',
+              header: intl.formatMessage(messages.bulkSkipResults),
               counts: result.counts,
               results: result.results,
               exportName: `skip-all-reviews-${result.jobId ?? 'results'}`,
@@ -562,7 +601,7 @@ const DocumentList = (): React.JSX.Element => {
             setSendKeys(null);
             patchRows(result.results, (r) => (r.outcome === 'SENT' ? 'in_review' : null));
             setBulkResults({
-              header: 'Send to review results',
+              header: intl.formatMessage(messages.sendToReviewResults),
               counts: result.counts,
               results: result.results,
               exportName: 'send-to-review-results',

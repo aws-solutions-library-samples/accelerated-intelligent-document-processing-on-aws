@@ -488,6 +488,8 @@
         "skipped": 0
       },
       "files": {
+        "bulk_review_resolver/index.py": 75.14,
+        "bulk_review_worker/index.py": 76.81,
         "configuration_resolver/index.py": 41.9,
         "delete_agent_chat_session_resolver/index.py": 74.32,
         "delete_agent_chat_session_resolver/log_sanitizer.py": 70.0,

@@ -7,15 +7,19 @@
  * `reviewedByEmail`) are listed, not dropped, with the skip's reason, note and options.
  */
 import { describe, expect, it } from 'vitest';
+import { createIntl } from 'react-intl';
 
 import { documentReviewHistory } from '../direct-edit-model';
 import { eventLabel } from '../../review-queues/ReviewHistoryModal';
 
+const intl = createIntl({ locale: 'en' });
+
 describe('documentReviewHistory', () => {
   it("lists a finished section from complete_section_review's record", () => {
-    const rows = documentReviewHistory([
-      { sectionId: '2', reviewedBy: 'user-1', reviewedByEmail: 'r@example.com', reviewedAt: '2026-11-01T10:00:00Z' },
-    ]);
+    const rows = documentReviewHistory(
+      [{ sectionId: '2', reviewedBy: 'user-1', reviewedByEmail: 'r@example.com', reviewedAt: '2026-11-01T10:00:00Z' }],
+      intl,
+    );
     expect(rows).toEqual([
       { at: '2026-11-01T10:00:00Z', event: 'section_reviewed', actor: 'r@example.com', details: JSON.stringify({ note: 'Section 2' }) },
     ]);
@@ -23,20 +27,23 @@ describe('documentReviewHistory', () => {
   });
 
   it("lists Skip All Reviews from legacy_skip's record, with its reason, note, job and resubmit choice", () => {
-    const rows = documentReviewHistory([
-      {
-        sectionId: 'ALL_SKIPPED',
-        reviewedBy: 'user-1',
-        reviewedByEmail: '',
-        reviewedAt: '2026-11-02T10:00:00Z',
-        action: 'skip_all',
-        reason: 'Duplicate document',
-        note: 'Sent twice',
-        source: 'bulk',
-        jobId: 'job-7',
-        resubmitted: false,
-      },
-    ]);
+    const rows = documentReviewHistory(
+      [
+        {
+          sectionId: 'ALL_SKIPPED',
+          reviewedBy: 'user-1',
+          reviewedByEmail: '',
+          reviewedAt: '2026-11-02T10:00:00Z',
+          action: 'skip_all',
+          reason: 'Duplicate document',
+          note: 'Sent twice',
+          source: 'bulk',
+          jobId: 'job-7',
+          resubmitted: false,
+        },
+      ],
+      intl,
+    );
     expect(rows).toHaveLength(1);
     expect(rows[0].event).toBe('skip_all');
     expect(eventLabel('skip_all')).toBe('Skipped (Skip All Reviews)');
@@ -48,12 +55,12 @@ describe('documentReviewHistory', () => {
   });
 
   it('still reads records written with timestamp, user and action', () => {
-    expect(documentReviewHistory([{ action: 'skip_all', timestamp: '2026-11-03T00:00:00Z', user: 'u@example.com' }])).toEqual([
+    expect(documentReviewHistory([{ action: 'skip_all', timestamp: '2026-11-03T00:00:00Z', user: 'u@example.com' }], intl)).toEqual([
       { at: '2026-11-03T00:00:00Z', event: 'skip_all', actor: 'u@example.com', details: null },
     ]);
   });
 
   it('drops a record with no time, or with neither an action nor a section', () => {
-    expect(documentReviewHistory([{ action: 'skip_all' }, { reviewedAt: '2026-11-03T00:00:00Z' }])).toEqual([]);
+    expect(documentReviewHistory([{ action: 'skip_all' }, { reviewedAt: '2026-11-03T00:00:00Z' }], intl)).toEqual([]);
   });
 });

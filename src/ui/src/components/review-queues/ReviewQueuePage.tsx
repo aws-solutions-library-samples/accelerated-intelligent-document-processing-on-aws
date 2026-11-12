@@ -10,6 +10,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 import {
   Alert,
   Box,
@@ -60,6 +61,92 @@ const CLAIM_NEXT_REASONS: Record<string, string> = {
   CAP_REACHED: 'You hold as many items from this queue as you may. Finish or skip one first.',
 };
 
+const messages = defineMessages<{
+  moreActions: NoMessageValues;
+  queueGroup: NoMessageValues;
+  move: NoMessageValues;
+  noOtherQueue: NoMessageValues;
+  selectToMove: NoMessageValues;
+  removeFromQueue: NoMessageValues;
+  selectToRemove: NoMessageValues;
+  skipGroup: NoMessageValues;
+  skipAllReviews: NoMessageValues;
+  skipByProfile: NoMessageValues;
+  adminDescription: NoMessageValues;
+  skipJobStarted: NoMessageValues;
+  skipResultsHeader: NoMessageValues;
+}>({
+  moreActions: {
+    id: 'reviewQueues.queuePage.moreActions',
+    defaultMessage: 'More actions',
+    description: "Menu button in the header of a review queue's Items table, holding the queue and skip actions for the selected items.",
+  },
+  queueGroup: {
+    id: 'reviewQueues.queuePage.queueGroup',
+    defaultMessage: 'Queue',
+    description: 'Group heading in the More actions menu of a review queue: moving or removing the selected items.',
+  },
+  move: {
+    id: 'reviewQueues.queuePage.move',
+    defaultMessage: 'Move…',
+    description:
+      'More actions item that moves the selected items to another review queue (opens a dialog). The count of selected items is appended in parentheses.',
+  },
+  noOtherQueue: {
+    id: 'reviewQueues.queuePage.noOtherQueue',
+    defaultMessage: 'There is no other queue',
+    description: 'Why the Move… item is disabled: there is no other review queue to move items to.',
+  },
+  selectToMove: {
+    id: 'reviewQueues.queuePage.selectToMove',
+    defaultMessage: 'Select items to move',
+    description: 'Why the Move… item is disabled: no item is selected.',
+  },
+  removeFromQueue: {
+    id: 'reviewQueues.queuePage.removeFromQueue',
+    defaultMessage: 'Remove from queue…',
+    description:
+      'More actions item that takes the selected items out of the review queues (opens a dialog). The count of removable items is appended in parentheses.',
+  },
+  selectToRemove: {
+    id: 'reviewQueues.queuePage.selectToRemove',
+    defaultMessage: 'Select items waiting for review or assigned',
+    description: 'Why the Remove from queue… item is disabled: no selected item is waiting for review or assigned.',
+  },
+  skipGroup: {
+    id: 'reviewQueues.queuePage.skipGroup',
+    defaultMessage: 'Skip reviews',
+    description: 'Group heading in the More actions menu of a review queue: skipping the reviews of documents.',
+  },
+  skipAllReviews: {
+    id: 'reviewQueues.queuePage.skipAllReviews',
+    defaultMessage: 'Skip All Reviews',
+    description: 'More actions item that skips all reviews of the selected items. The count of skippable items is appended in parentheses.',
+  },
+  skipByProfile: {
+    id: 'reviewQueues.queuePage.skipByProfile',
+    defaultMessage: 'Skip All Reviews by profile…',
+    description: 'More actions item that opens the dialog to skip all reviews of the documents matching a profile (filters).',
+  },
+  adminDescription: {
+    id: 'reviewQueues.queuePage.adminDescription',
+    defaultMessage:
+      'Select items to assign them to an Annotator or unassign them. More actions moves them to another queue, removes them from the queues or skips their reviews. Edit opens an item without changing its assignment.',
+    description:
+      'Description under the Items table header of a review queue, for an Admin. "More actions" and "Edit" name the table\'s menu and row action.',
+  },
+  skipJobStarted: {
+    id: 'reviewQueues.queuePage.skipJobStarted',
+    defaultMessage: 'Skip All Reviews is running as a background job.',
+    description: 'Success notification when a bulk Skip All Reviews started as a background job; the page then opens the job.',
+  },
+  skipResultsHeader: {
+    id: 'reviewQueues.queuePage.skipResultsHeader',
+    defaultMessage: 'Skip All Reviews results',
+    description: 'Header of the dialog listing the per-document outcomes of a bulk Skip All Reviews that ran inline.',
+  },
+});
+
 const isClaimable = (item: ReviewItem): boolean => item.state === QueueItemState.OPEN;
 
 /** The Items table: Document, Source, Queue, Priority and State, then the row Actions menu. */
@@ -74,6 +161,7 @@ interface ReviewQueuePageProps {
 const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element => {
   // The router has already decoded the queue id once.
   const { queue: queueId = '' } = useParams();
+  const intl = useIntl();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
   const { isAdmin, canReview, loading: roleLoading } = useUserRole();
   const navigate = useNavigate();
@@ -256,32 +344,32 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
   const skippable = selectedItems.filter((i) => isSkippableQueueItem(i, !!isAdmin));
   // The Skip All Reviews group of the table's More actions menu.
   const skipGroup: ButtonDropdownProps.ItemGroup = {
-    text: 'Skip reviews',
+    text: intl.formatMessage(messages.skipGroup),
     items: [
       {
         id: 'skip-selected',
-        text: counted('Skip All Reviews', skippable.length),
+        text: counted(intl.formatMessage(messages.skipAllReviews), skippable.length),
         disabled: skippable.length === 0,
         disabledReason: NO_SKIPPABLE_SELECTION_REASON,
       },
-      { id: 'skip-by-profile', text: 'Skip All Reviews by profile…' },
+      { id: 'skip-by-profile', text: intl.formatMessage(messages.skipByProfile) },
     ],
   };
   // The Admin's queue group: move the selection to another queue, or take it out of the queues.
   const queueGroup: ButtonDropdownProps.ItemGroup = {
-    text: 'Queue',
+    text: intl.formatMessage(messages.queueGroup),
     items: [
       {
         id: 'move',
-        text: counted('Move…', selectedItems.length),
+        text: counted(intl.formatMessage(messages.move), selectedItems.length),
         disabled: selectedItems.length === 0 || otherQueues.length === 0,
-        disabledReason: otherQueues.length === 0 ? 'There is no other queue' : 'Select items to move',
+        disabledReason: otherQueues.length === 0 ? intl.formatMessage(messages.noOtherQueue) : intl.formatMessage(messages.selectToMove),
       },
       {
         id: 'remove',
-        text: counted('Remove from queue…', removable.length),
+        text: counted(intl.formatMessage(messages.removeFromQueue), removable.length),
         disabled: removable.length === 0,
-        disabledReason: 'Select items waiting for review or assigned',
+        disabledReason: intl.formatMessage(messages.selectToRemove),
       },
     ],
   };
@@ -293,7 +381,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
   };
   const moreActions = (groups: ButtonDropdownProps.ItemGroup[]) => (
     <ButtonDropdown items={groups} onItemClick={({ detail }) => onMoreAction(detail.id)}>
-      More actions
+      <FormattedMessage {...messages.moreActions} />
     </ButtonDropdown>
   );
   const afterBulkSkip = async () => {
@@ -469,7 +557,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
           }
           description={
             isAdmin
-              ? 'Select items to assign them to an Annotator or unassign them. More actions moves them to another queue, removes them from the queues or skips their reviews. Edit opens an item without changing its assignment.'
+              ? intl.formatMessage(messages.adminDescription)
               : 'Open any item to view it. Claim an item waiting for review to work it in Home › Tasks, or choose Next item to claim the next one.'
           }
           footer={
@@ -510,7 +598,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
           onDismiss={() => setBulkSkip(null)}
           onJobStarted={(jobId) => {
             setBulkSkip(null);
-            setSuccessMessage('Skip All Reviews is running as a background job.');
+            setSuccessMessage(intl.formatMessage(messages.skipJobStarted));
             navigate(jobDetailPath(jobId));
           }}
           onFinished={(result) => {
@@ -522,7 +610,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
       )}
       {bulkResults && (
         <BulkResultsModal
-          header="Skip All Reviews results"
+          header={intl.formatMessage(messages.skipResultsHeader)}
           counts={bulkResults.counts}
           results={bulkResults.results}
           exportName={`skip-all-reviews-${bulkResults.jobId ?? 'results'}`}

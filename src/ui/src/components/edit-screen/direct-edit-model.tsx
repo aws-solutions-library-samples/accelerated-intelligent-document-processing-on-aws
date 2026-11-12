@@ -17,6 +17,7 @@
 // enforces all of these.
 import React, { useCallback } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
+import { defineMessages, useIntl, type IntlShape, type NoMessageValues } from 'react-intl';
 import { Link } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
@@ -62,6 +63,30 @@ export const MIRROR_LAG_REASON = "This document's review is being updated. Reloa
 const SKIP_ALL_SECTION = 'ALL_SKIPPED';
 const text = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
 
+const historyMessages = defineMessages<{
+  section: { readonly sectionId: string };
+  notResubmitted: NoMessageValues;
+  job: { readonly jobId: string };
+}>({
+  section: {
+    id: 'editScreen.reviewActivity.section',
+    defaultMessage: 'Section {sectionId}',
+    description:
+      'Part of a Review Activity note in the edit page History: the section the review event was for. {sectionId} is the section id, e.g. "2".',
+  },
+  notResubmitted: {
+    id: 'editScreen.reviewActivity.notResubmitted',
+    defaultMessage: 'Not resubmitted for downstream processing',
+    description:
+      'Part of a Review Activity note: Skip All Reviews ran without re-running Summarization, Evaluation and the post-processing hook.',
+  },
+  job: {
+    id: 'editScreen.reviewActivity.job',
+    defaultMessage: 'Job {jobId}',
+    description: 'Part of a Review Activity note: the bulk job that made the review event. {jobId} is the job id.',
+  },
+});
+
 /**
  * The document's HITL review events, in the shape History's Review Activity lists. The
  * legacy review writes `reviewedAt` and `reviewedBy`/`reviewedByEmail` (a finished section
@@ -70,6 +95,7 @@ const text = (v: unknown): string | undefined => (typeof v === 'string' && v ? v
  */
 export const documentReviewHistory = (
   events: DirectEditDocument['hitlReviewHistory'],
+  intl: IntlShape,
 ): { at: string; event: string; actor: string | null; details: string | null }[] =>
   (events ?? []).flatMap((e) => {
     const at = text(e.timestamp) ?? text(e.reviewedAt);
@@ -79,9 +105,9 @@ export const documentReviewHistory = (
     const reason = text(e.reason);
     const note = [
       text(e.note),
-      sectionId && sectionId !== SKIP_ALL_SECTION ? `Section ${sectionId}` : undefined,
-      e.resubmitted === false ? 'Not resubmitted for downstream processing' : undefined,
-      text(e.jobId) ? `Job ${e.jobId as string}` : undefined,
+      sectionId && sectionId !== SKIP_ALL_SECTION ? intl.formatMessage(historyMessages.section, { sectionId }) : undefined,
+      e.resubmitted === false ? intl.formatMessage(historyMessages.notResubmitted) : undefined,
+      text(e.jobId) ? intl.formatMessage(historyMessages.job, { jobId: e.jobId as string }) : undefined,
     ]
       .filter(Boolean)
       .join(' · ');
@@ -107,6 +133,7 @@ export interface DirectEditOptions {
 }
 
 export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }: DirectEditOptions, session: EditorSession): EditModel => {
+  const intl = useIntl();
   const adapter = useDocumentEdit(objectKey, seed);
   const { document: doc, loading, loadError, reload } = adapter;
   const { user } = useAppContext();
@@ -295,7 +322,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
       },
       // A finished queue review's activity, then the document's own review events.
       history: {
-        reviewActivity: [...(seed?.reviewActivity ?? []), ...documentReviewHistory(doc.hitlReviewHistory)],
+        reviewActivity: [...(seed?.reviewActivity ?? []), ...documentReviewHistory(doc.hitlReviewHistory, intl)],
         baseline: evaluation.baseline,
       },
       process: {

@@ -9,7 +9,8 @@
  */
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, fireEvent } from '@testing-library/react';
+import { act, screen, fireEvent } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import { MemoryRouter } from 'react-router-dom';
 
 const state = vi.hoisted(() => ({
@@ -67,7 +68,7 @@ const settle = () =>
 
 const renderPage = async (hash = '#/documents/config') => {
   window.location.hash = hash;
-  render(
+  renderWithIntl(
     <MemoryRouter>
       <ConfigurationLayout />
     </MemoryRouter>,

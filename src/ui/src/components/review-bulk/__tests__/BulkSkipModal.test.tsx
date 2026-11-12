@@ -4,7 +4,8 @@
 /** Bulk Skip All Reviews dialog: dry run first, then an inline run or a job. */
 
 import React from 'react';
-import { act, render, waitFor } from '@testing-library/react';
+import { act, waitFor } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -55,7 +56,7 @@ describe('BulkSkipModal', () => {
     api.dryRunBulkSkip.mockResolvedValue(result());
     api.runBulkSkip.mockResolvedValue(result({ dryRun: false, jobId: 'brj-1' }));
     const onFinished = vi.fn();
-    render(
+    renderWithIntl(
       <BulkSkipModal mode="SELECTED" objectKeys={['a', 'b', 'c']} onDismiss={vi.fn()} onFinished={onFinished} onJobStarted={vi.fn()} />,
     );
     await waitFor(() => expect(api.dryRunBulkSkip).toHaveBeenCalledWith({ mode: 'SELECTED', objectKeys: ['a', 'b', 'c'] }));
@@ -68,7 +69,7 @@ describe('BulkSkipModal', () => {
 
   it('cannot confirm when nothing is eligible', async () => {
     api.dryRunBulkSkip.mockResolvedValue(result({ eligibleCount: 0, counts: [{ outcome: 'NOT_PENDING', count: 3 }] }));
-    render(<BulkSkipModal mode="SELECTED" objectKeys={['a']} onDismiss={vi.fn()} onFinished={vi.fn()} onJobStarted={vi.fn()} />);
+    renderWithIntl(<BulkSkipModal mode="SELECTED" objectKeys={['a']} onDismiss={vi.fn()} onFinished={vi.fn()} onJobStarted={vi.fn()} />);
     await waitFor(() => expect(modal().findContent().getElement().textContent).toContain('None of the selected documents'));
     expect(confirmButton().isDisabled()).toBe(true);
   });
@@ -77,7 +78,9 @@ describe('BulkSkipModal', () => {
     api.dryRunBulkSkip.mockResolvedValue(result({ runMode: 'ASYNC', eligibleCount: 500 }));
     api.runBulkSkip.mockResolvedValue(result({ dryRun: false, runMode: 'ASYNC', jobId: 'brj-9' }));
     const onJobStarted = vi.fn();
-    render(<BulkSkipModal mode="SELECTED" objectKeys={['a']} onDismiss={vi.fn()} onFinished={vi.fn()} onJobStarted={onJobStarted} />);
+    renderWithIntl(
+      <BulkSkipModal mode="SELECTED" objectKeys={['a']} onDismiss={vi.fn()} onFinished={vi.fn()} onJobStarted={onJobStarted} />,
+    );
     await waitFor(() => expect(modal().findContent().getElement().textContent).toContain('background job'));
     chooseReason();
     act(() => confirmButton().click());
@@ -85,7 +88,7 @@ describe('BulkSkipModal', () => {
   });
 
   it('asks for a profile before counting in profile mode', () => {
-    render(<BulkSkipModal mode="PROFILE" onDismiss={vi.fn()} onFinished={vi.fn()} onJobStarted={vi.fn()} />);
+    renderWithIntl(<BulkSkipModal mode="PROFILE" onDismiss={vi.fn()} onFinished={vi.fn()} onJobStarted={vi.fn()} />);
     expect(api.dryRunBulkSkip).not.toHaveBeenCalled();
     expect(confirmButton().isDisabled()).toBe(true);
   });

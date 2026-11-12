@@ -3,11 +3,20 @@
 import React from 'react';
 import { Badge } from '@cloudscape-design/components';
 import type { SideNavigationProps } from '@cloudscape-design/components';
+import { defineMessages, type IntlShape, type NoMessageValues } from 'react-intl';
 
 import { JOBS_PATH, MY_QUEUES_PATH, MY_TASKS_PATH, REVIEW_QUEUES_PATH } from '../../routes/constants';
 
 export const REVIEW_STUDIO_SECTION = 'Review Studio';
 export const HOME_SECTION = 'Home';
+
+const messages = defineMessages<{ jobs: NoMessageValues }>({
+  jobs: {
+    id: 'navigation.home.jobs',
+    defaultMessage: 'Jobs',
+    description: 'Side-navigation link under Home to the list of bulk Skip All Reviews jobs (Admins and Reviewers).',
+  },
+});
 
 /** Tasks, with a badge counting the items assigned to the caller. */
 export const buildMyTasksNavLink = (count: number | null): SideNavigationProps.Link => {
@@ -30,7 +39,18 @@ export const buildMyTasksNavLink = (count: number | null): SideNavigationProps.L
  */
 export const buildHomeNavSection = (
   inboxLink: SideNavigationProps.Link,
-  { showWork, taskCount, showJobs = false }: { showWork: boolean; taskCount: number | null; showJobs?: boolean },
+  {
+    showWork,
+    taskCount,
+    showJobs = false,
+    intl,
+  }: {
+    showWork: boolean;
+    taskCount: number | null;
+    showJobs?: boolean;
+    /** Formats the Jobs label; without it the label is the English source text. */
+    intl?: Pick<IntlShape, 'formatMessage'>;
+  },
 ): SideNavigationProps.Section => ({
   type: 'section',
   text: HOME_SECTION,
@@ -39,7 +59,9 @@ export const buildHomeNavSection = (
       ? [inboxLink, buildMyTasksNavLink(taskCount), { type: 'link' as const, text: 'Queues', href: `#${MY_QUEUES_PATH}` }]
       : [inboxLink]),
     // Bulk Skip All Reviews jobs (Admins and Reviewers).
-    ...(showJobs ? [{ type: 'link' as const, text: 'Jobs', href: `#${JOBS_PATH}` }] : []),
+    ...(showJobs
+      ? [{ type: 'link' as const, text: intl ? intl.formatMessage(messages.jobs) : messages.jobs.defaultMessage, href: `#${JOBS_PATH}` }]
+      : []),
   ],
 });
 

@@ -8,7 +8,8 @@
  */
 
 import React from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -69,7 +70,7 @@ beforeEach(() => {
 });
 
 const renderJobs = async () => {
-  render(
+  renderWithIntl(
     <MemoryRouter>
       <JobsPage />
     </MemoryRouter>,
@@ -148,7 +149,7 @@ describe('JobsPage', () => {
 
   it('explains an empty list', async () => {
     api.listBulkJobs.mockResolvedValue({ jobs: [], nextToken: null });
-    render(
+    renderWithIntl(
       <MemoryRouter>
         <JobsPage />
       </MemoryRouter>,
@@ -158,7 +159,7 @@ describe('JobsPage', () => {
 });
 
 const renderDetail = () =>
-  render(
+  renderWithIntl(
     <MemoryRouter initialEntries={['/my-work/jobs/brj-1']}>
       <Routes>
         <Route path="/my-work/jobs/:jobId" element={<JobDetailPage />} />

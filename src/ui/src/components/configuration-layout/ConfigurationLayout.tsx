@@ -26,6 +26,7 @@ import Editor, { type OnMount } from '@monaco-editor/react';
 import yaml from 'js-yaml';
 import ReactMarkdown from 'react-markdown';
 import { useLocation } from 'react-router-dom';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import useConfiguration from '../../hooks/use-configuration';
@@ -61,6 +62,30 @@ const client = generateClient();
 const PROMPT_PREVIEW_TAB_PARAM = 'prompt-preview';
 
 const logger = new ConsoleLogger('ConfigurationLayout');
+
+const messages = defineMessages<{
+  previewPrompts: NoMessageValues;
+  previewPromptsDisabledReason: NoMessageValues;
+  previewPromptsClose: NoMessageValues;
+}>({
+  previewPrompts: {
+    id: 'configuration.layout.previewPrompts',
+    defaultMessage: 'Preview prompts',
+    description:
+      "Configuration page: label of the button that opens a dialog showing what each processing step's prompt includes, and the header of that dialog.",
+  },
+  previewPromptsDisabledReason: {
+    id: 'configuration.layout.previewPromptsDisabledReason',
+    defaultMessage: 'Open a configuration profile first',
+    description:
+      'Tooltip on the disabled "Preview prompts" button of the Configuration page, shown while no configuration profile is open.',
+  },
+  previewPromptsClose: {
+    id: 'configuration.layout.previewPromptsClose',
+    defaultMessage: 'Close',
+    description: 'Button that closes the "Preview prompts" dialog of the Configuration page.',
+  },
+});
 
 // Shown as the disabled-reason tooltip on actions that cannot run against the
 // stack-managed `default` version (the user must first create an editable copy).
@@ -179,6 +204,7 @@ const getInitialVersionFromUrl = (): string | null => {
 };
 
 const ConfigurationLayout = (): React.JSX.Element => {
+  const intl = useIntl();
   // Version selection state - declare first
   // Initialize from URL to avoid a race where 'default' config is fetched before the URL version
   const [selectedVersionsForCompare, setSelectedVersionsForCompare] = useState<string[]>([]);
@@ -2427,11 +2453,11 @@ const ConfigurationLayout = (): React.JSX.Element => {
         visible={showPromptPreview}
         onDismiss={() => setShowPromptPreview(false)}
         size="max"
-        header="Preview prompts"
+        header={intl.formatMessage(messages.previewPrompts)}
         footer={
           <Box float="right">
             <Button variant="primary" onClick={() => setShowPromptPreview(false)}>
-              Close
+              <FormattedMessage {...messages.previewPromptsClose} />
             </Button>
           </Box>
         }
@@ -2471,9 +2497,9 @@ const ConfigurationLayout = (): React.JSX.Element => {
                 <Button
                   onClick={() => setShowPromptPreview(true)}
                   disabled={Object.keys(formValues).length === 0}
-                  disabledReason="Open a configuration profile first"
+                  disabledReason={intl.formatMessage(messages.previewPromptsDisabledReason)}
                 >
-                  Preview prompts
+                  <FormattedMessage {...messages.previewPrompts} />
                 </Button>
                 {/* Secondary / less-frequent actions grouped into a single menu to keep the
                     action bar scannable. Disabled items carry a disabledReason tooltip. */}

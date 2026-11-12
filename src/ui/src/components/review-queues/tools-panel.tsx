@@ -11,9 +11,9 @@ import LearnMoreLinks from '../common/LearnMoreLinks';
 const LearnMore = (): React.JSX.Element => (
   <LearnMoreLinks
     links={[
-      { text: 'Review queues', path: 'review-queues/' },
-      { text: 'Human review', path: 'human-review/' },
-      { text: 'Test Studio', path: 'test-studio/' },
+      { text: 'Review queues', docsPath: 'review-queues/' },
+      { text: 'Human review', docsPath: 'human-review/' },
+      { text: 'Test Studio', docsPath: 'test-studio/' },
     ]}
   />
 );

@@ -4,7 +4,8 @@
 /** The results table: outcome labels, the outcome filter and the Excel export. */
 
 import React from 'react';
-import { act, render } from '@testing-library/react';
+import { act } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -21,7 +22,7 @@ const ROWS = [
 
 describe('BulkResultsTable', () => {
   it('labels outcomes and details, filters by outcome and exports what is shown', () => {
-    render(<BulkResultsTable results={ROWS} exportName="results" />);
+    renderWithIntl(<BulkResultsTable results={ROWS} exportName="results" />);
     const table = createWrapper().findTable()!;
     expect(table.findRows()).toHaveLength(3);
     expect(table.getElement().textContent).toContain('Held by another reviewer');

@@ -3,8 +3,22 @@
 
 import React from 'react';
 import { HelpPanel, Icon } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, type MessageTag } from 'react-intl';
 
 const DOCS_BASE_URL = 'https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws';
+
+/** Renders a `<strong>...</strong>` element value: a UI label named inside a sentence. */
+const strong = (chunks: React.ReactNode[]): React.JSX.Element => <strong>{chunks}</strong>;
+
+const messages = defineMessages<{ editingTabsAndPreview: { readonly strong: MessageTag } }>({
+  editingTabsAndPreview: {
+    id: 'configuration.toolsPanel.editingTabsAndPreview',
+    defaultMessage:
+      "The <strong>Processing Settings</strong> tab holds the processing steps' settings (OCR, classification, extraction, assessment, summarization, HITL and the rest). Use the <strong>Document Schema</strong> and <strong>Policy Schema</strong> tabs to edit document classes and validation rules, and the <strong>Preview prompts</strong> button to see what each step's prompt includes, with your configuration values filled in. The preview shows which placeholders a step carries and which it leaves empty; it is not the exact bytes of the request.",
+    description:
+      'Configuration info panel, "Editing" list item. Each <strong> phrase is the label of a tab or button on the Configuration page, shown in bold.',
+  },
+});
 
 const ToolsPanel = (): React.JSX.Element => (
   <HelpPanel
@@ -81,11 +95,7 @@ const ToolsPanel = (): React.JSX.Element => (
           <strong>YAML View</strong> (raw editing) using the view toggle.
         </li>
         <li>
-          The <strong>Processing Settings</strong> tab holds the processing steps&apos; settings (OCR, classification, extraction,
-          assessment, summarization, HITL and the rest). Use the <strong>Document Schema</strong> and <strong>Policy Schema</strong> tabs to
-          edit document classes and validation rules, and the <strong>Preview prompts</strong> button to see what each step&apos;s prompt
-          includes, with your configuration values filled in. The preview shows which placeholders a step carries and which it leaves empty;
-          it is not the exact bytes of the request.
+          <FormattedMessage {...messages.editingTabsAndPreview} values={{ strong }} />
         </li>
         <li>
           Edited fields show an orange dot; a per-field <strong>Restore default</strong> resets a single value. An unsaved-changes banner

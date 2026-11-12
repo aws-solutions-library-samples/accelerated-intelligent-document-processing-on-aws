@@ -6,6 +6,7 @@
 // bulk Skip All Reviews runs. Home › Inbox, which every user has, keeps its own route.
 import React from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 import GenAIIDPTopNavigation from '../components/genai-idp-top-navigation';
 import ReviewQueuesLayout from '../components/review-queues/ReviewQueuesLayout';
@@ -18,28 +19,45 @@ import RequireRole from './RequireRole';
 import { HOME_CRUMB, JOBS_CRUMB, MY_QUEUES_CRUMB, TASKS_CRUMB } from '../components/review-queues/breadcrumbs';
 import { MY_TASKS_PATH } from './constants';
 
-const JobsRoutes = (): React.JSX.Element => (
-  <RequireRole roles={['Admin', 'Reviewer']}>
-    <Routes>
-      <Route
-        index
-        element={
-          <ReviewQueuesLayout trail={[HOME_CRUMB, JOBS_CRUMB]} tools={<JobsToolsPanel />}>
-            <JobsPage />
-          </ReviewQueuesLayout>
-        }
-      />
-      <Route
-        path=":jobId"
-        element={
-          <ReviewQueuesLayout trail={[HOME_CRUMB, JOBS_CRUMB, { text: 'Job', href: '#' }]} tools={<JobToolsPanel />}>
-            <JobDetailPage />
-          </ReviewQueuesLayout>
-        }
-      />
-    </Routes>
-  </RequireRole>
-);
+const messages = defineMessages<{ jobCrumb: NoMessageValues }>({
+  jobCrumb: {
+    id: 'routes.myWork.jobCrumb',
+    defaultMessage: 'Job',
+    description: 'Last breadcrumb on the page of one bulk Skip All Reviews job, after Home › Jobs.',
+  },
+});
+
+/** The Cognito groups that see Home › Jobs (group names, not display text). */
+const JOBS_ROLES = ['Admin', 'Reviewer'] as const;
+
+const JobsRoutes = (): React.JSX.Element => {
+  const intl = useIntl();
+  return (
+    <RequireRole roles={JOBS_ROLES}>
+      <Routes>
+        <Route
+          index
+          element={
+            <ReviewQueuesLayout trail={[HOME_CRUMB, JOBS_CRUMB]} tools={<JobsToolsPanel />}>
+              <JobsPage />
+            </ReviewQueuesLayout>
+          }
+        />
+        <Route
+          path=":jobId"
+          element={
+            <ReviewQueuesLayout
+              trail={[HOME_CRUMB, JOBS_CRUMB, { text: intl.formatMessage(messages.jobCrumb), href: '#' }]}
+              tools={<JobToolsPanel />}
+            >
+              <JobDetailPage />
+            </ReviewQueuesLayout>
+          }
+        />
+      </Routes>
+    </RequireRole>
+  );
+};
 
 const MyWorkRoutes = (): React.JSX.Element => (
   <div>

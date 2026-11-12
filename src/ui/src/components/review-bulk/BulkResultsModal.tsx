@@ -4,10 +4,19 @@
 // The results of an inline bulk Skip All Reviews run or of Send to review.
 import React from 'react';
 import { Box, Button, Modal, SpaceBetween } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, type NoMessageValues } from 'react-intl';
 
 import BulkResultsTable from './BulkResultsTable';
 import type { BulkResultRow } from './BulkResultsTable';
 import OutcomeCounts from './OutcomeCounts';
+
+const messages = defineMessages<{ close: NoMessageValues }>({
+  close: {
+    id: 'reviewBulk.bulkResultsModal.close',
+    defaultMessage: 'Close',
+    description: 'Button that closes the results dialog of a bulk Skip All Reviews run or of Send to review.',
+  },
+});
 
 interface BulkResultsModalProps {
   header: string;
@@ -26,7 +35,7 @@ const BulkResultsModal = ({ header, counts, results, exportName, onDismiss }: Bu
     footer={
       <Box float="right">
         <Button variant="primary" onClick={onDismiss}>
-          Close
+          <FormattedMessage {...messages.close} />
         </Button>
       </Box>
     }
