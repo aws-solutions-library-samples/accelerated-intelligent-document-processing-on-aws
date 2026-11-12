@@ -278,7 +278,7 @@ model only appears there if it has been swept, and the table records when:
 | **Claude Sonnet 5** (default) | ✅ | ✅ **2026-11-07 and 2026-11-09, v0.6.14** (`coresynth` 133 runs, plus `cost`, `advverify`, `astravalue`, `astracap`) | 133 of 133 completed, recall **0.9463** over 72,364 cells — all of the shortfall simple-mode truncation on the 17-page document (8 of 13 runs return 43–190 of 800 rows, each `COMPLETED` and flagged), 1.0000 in advanced mode. Its `pricing.yaml` rows carried Sonnet 4.6's rates, 1.5× its published price, until [#1830](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1830); the guide's v0.6.14 Sonnet 5 dollar figures are re-priced at the published rates, and Sonnet 5 figures from earlier editions are as priced then |
 | Sonnet 5 `:1m` | ✅ | ✅ **2026-11-07, v0.6.14** (`coresynth`, 133 runs) | recall 0.9524, cell accuracy 0.9995 over 74,188 cells — the same simple-mode truncation as Sonnet 5 (6 of 13). Its dollar figures are re-priced the same way as Sonnet 5's. The 1M window rescued no request on this corpus |
 | **Claude Opus 5** | ✅ | ✅ **2026-11-07, v0.6.14** (`coresynth` 133 runs, `opus55value` 20) | 133 of 133 at recall **1.0000** and cell accuracy **1.0000** over the full 83,790 cells, $127.08 over the grid — and dominated by Opus 5.5, which does the same for 17% less |
-| **Claude Opus 5.5** | ✅ (`extraction_model` sweep + the `opus55value` pair) | ✅ **2026-11-07, v0.6.14** (`coresynth` 133 runs, `opus55value` 20) | 133 of 133 at recall **1.0000** and cell accuracy **1.0000** over 83,790 cells for **$105.95** — the cheapest arm at the grid's ceiling, 17% below Opus 5 and 63% above the shipped default (re-priced, see the guide's header). In the dedicated pair it is 13% cheaper than Opus 5 on identical denominators, 15% in simple mode and 11% in advanced. ⚠️ **The `forcing` axis has no measurement for it**: it rejects a forced `toolChoice` (`tool_choice: type "tool" and "any" are not supported for this model`), so its `force-on` cells run the prose path with `forced_tool_attempted=0`. Thinking cannot be disabled, and its default effort is `medium` where Opus 5's is `high` (per the model card; a default is not observable from a response, so this is cited rather than measured) |
+| **Claude Opus 5.5** | ✅ (`extraction_model` sweep + the `opus55value` pair) | ✅ **2026-11-07, v0.6.14** (`coresynth` 133 runs, `opus55value` 20) | 133 of 133 at recall **1.0000** and cell accuracy **1.0000** over 83,790 cells for **$105.95** — the cheapest arm at the grid's ceiling, 17% below Opus 5 and 63% above the shipped default (re-priced, see the guide's header). In the dedicated pair it is 13% cheaper than Opus 5 on identical denominators, 15% in simple mode and 11% in advanced. ⚠️ **The `forcing` axis has no measurement for it**: it rejects a forced `toolChoice` (`tool_choice: type "tool" and "any" are not supported for this model`), so its `force-on` cells run the prose path with `forced_tool_attempted=0`. Thinking cannot be disabled, and its default effort is `medium` where Opus 5's is `high` (per the model card; a default is not observable from a response, so this is cited rather than measured). That default does not apply to these figures: every v0.6.14 benchmark cell, like the shipped extraction default, sends `low` |
 | **OpenAI GPT-6 Astra** | ✅ | ✅ **2026-11-07, v0.6.14** (`coresynth` 133 runs, `astravalue` 100, `astracap` 12) | 133 of 133 completed, recall 0.9924 and the lowest cell accuracy of the grid, **0.9810** over 82,184 cells; $191.85, a **lower bound** (long-context band above 272,000 input tokens). On the 26-page `dense_250` in simple mode it returns no usable row key on 10 of 10 runs, with nothing reporting a problem — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it) |
 | `global.openai.gpt-6-astra` | ❌ deliberately; measured in `astravalue` only | ✅ 2026-11-07, v0.6.14 (20 runs) | same weights, cheaper: $20.62 against `us.`'s $23.19 over the same 13,000 cells; same simple-mode failure on `dense_250` |
 | Claude Haiku 4.5 (classification only) | ❌ not on the axis (see below) | 2026-09-12, **v0.6.8** (133 runs) — not re-measured | reproducible on demand with `--set classification_model=haiku45` |
@@ -480,13 +480,18 @@ Three things to know before reading the output:
   share one window and one sizing budget, so both simple-mode arms would be refused on
   both documents: an A/B whose two arms fail identically measures nothing and is still
   billed. The ceiling question belongs to `astracap`, which already owns it.
-- ⚠️ **This suite measures the switch, not the model.** Opus 5.5 defaults to `medium`
-  reasoning effort where Opus 5 defaults to `high`, and neither cell sets
-  `reasoning_effort` — so the two arms differ by model *and* by default effort. That is
-  what a user who changes the model and nothing else actually gets, which is the
-  decision the guide has to inform, but it is not a model-for-model comparison. To
-  separate the two, re-run with `--set reasoning_effort=high` on both arms and read the
-  difference between the two runs.
+- **Both arms run at `low` reasoning effort, so the pair is matched on effort.** No cell
+  names `reasoning_effort`, so every cell inherits `default_cell`'s `low`, and the
+  generated configuration sets `extraction.reasoning_effort: low` on all four. The
+  v0.6.14 run records it: `rows[].resolved.reasoning_effort` is `low` on all 40 rows of
+  `opus55value` and on all 133 rows of each of the two `coresynth` Opus arms. The models'
+  own defaults (`medium` for Opus 5.5, `high` for Opus 5, per the model cards) therefore
+  never applied to these figures. The shipped extraction default is also `low`
+  (`lib/idp_common_pkg/idp_common/config/system_defaults/base-extraction.yaml`), and no
+  preset in `config_library/unified/` overrides it, so this is also what a user who
+  switches the model and changes nothing else gets. How the pair compares at a higher
+  effort is not measured; re-run with `--set reasoning_effort=medium` or `high` to
+  measure it.
 - **`repeats: 5` is what makes a cost claim sayable at all**, for the same reason
   `astravalue` uses it: agentic cost is non-deterministic (turn-count spreads around 4×
   have been observed), so a single draw per cell cannot resolve a cost *difference*.

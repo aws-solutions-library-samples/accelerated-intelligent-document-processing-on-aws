@@ -239,10 +239,17 @@ your filter actually returns your spend before you trust a budget built on it.
 
 There is no single recommended amount, because per-document cost across the
 configurations this solution supports spans roughly two orders of magnitude.
-Measured figures from the benchmark suite bracket it: the OCR benchmark corpus
-costs **$0.02–0.05 per document** in simple mode, while large multi-page
-documents through advanced (agentic) mode measured **$1.22–$2.65 per document**
-across Sonnet 4.6, Sonnet 5, Opus 5 and GPT-6 Astra on the v0.6.11 grid. See
+Measured figures from the v0.6.14 benchmark bracket it. The OCR benchmark corpus
+(20 real documents, extracted with Claude Sonnet 4.6) cost **$0.02–0.04 per
+document** in simple mode, as the mean of each configuration (single documents
+reached $0.07). On the synthetic grid
+of seven synthetic bank statements (from a one-page, 5-row form to 17 pages
+and 800 rows), advanced (agentic)
+mode averaged **$0.60 per document** with the shipped default (Claude Sonnet 5),
+**$0.92** with Claude Opus 5.5 and **$1.17** with Claude Opus 5; GPT-6 Astra
+cost at least $2.22, a lower bound because its long-context pricing band is not
+modelled. A 66-page, 3,200-row statement cost $3.76–4.20 in advanced mode with
+the shipped default. See
 [the configuration guidance](benchmarking/config-guidance.md) for the full
 matrix. Pick from your own arm of that range rather than averaging it.
 
