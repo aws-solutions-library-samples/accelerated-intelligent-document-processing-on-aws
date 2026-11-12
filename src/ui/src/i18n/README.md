@@ -329,9 +329,28 @@ candidate (it is never a file). Once `fr-CA` ships, this is the figure quoted in
   chunk does in the browser, so the first assertion on translated text uses `findBy*` or
   `waitFor`. Misuse throws rather than quietly rendering English: `messages` without the mock
   line, `messages` for `en`, or a `locale` outside `enabledLocales`.
-- **English tests keep plain `render`.** English is inline and `LocaleProvider` under `en` adds
-  nothing to the markup: the document-list header and a set of Cloudscape built-ins render
-  identically with and without it, apart from the per-render generated ids (React `useId`
+- **English tests of a react-intl component need an `IntlProvider`.** A component that calls
+  `useIntl()` or renders `<FormattedMessage>` throws under plain `render` (`[React Intl] Could
+  not find required intl object`), even in English, so every component a conversion PR
+  touches needs one in its tests. The minimal form is an `en` `IntlProvider` passed as
+  `render`'s `wrapper`, as
+  [`test-set-item-edit-author.test.tsx`](../components/edit-screen/__tests__/test-set-item-edit-author.test.tsx)
+  does:
+
+  ```tsx
+  const English = ({ children }: { children: React.ReactNode }) => (
+    <IntlProvider locale="en" defaultLocale="en">
+      {children}
+    </IntlProvider>
+  );
+
+  render(<Component />, { wrapper: English });
+  ```
+
+  English is inline (`defaultMessage`), so no catalog is involved. A component with no
+  react-intl calls can keep plain `render`: `LocaleProvider` under `en` adds nothing to the
+  markup of the document-list header and a set of Cloudscape built-ins, which render
+  identically with and without it apart from the per-render generated ids (React `useId`
   values, Cloudscape's performance marks) that the assertions normalise first. A test moves to
   `renderWithIntl` when it renders another locale or its component reads `useLocale()`.
 - **Hygiene**: a file that switches locales resets `localStorage`, `document.documentElement.lang`
