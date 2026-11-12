@@ -48,6 +48,7 @@ _DEFAULT_TEMPERATURE: float = _LLM_METHOD_FIELDS["temperature"].default
 _DEFAULT_TOP_K: float = _LLM_METHOD_FIELDS["top_k"].default
 _DEFAULT_TOP_P: float = _LLM_METHOD_FIELDS["top_p"].default
 _DEFAULT_MAX_TOKENS: Optional[int] = _LLM_METHOD_FIELDS["max_tokens"].default
+_DEFAULT_REASONING_EFFORT: str = _LLM_METHOD_FIELDS["reasoning_effort"].default
 
 
 def _refuse_empty_prompts(system_prompt: Any, task_prompt: Any) -> None:
@@ -210,6 +211,7 @@ class LLMComparator(BaseComparator):
         top_k: Optional[int] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
         system_prompt: Optional[str] = None,
         task_prompt: Optional[str] = None,
         threshold: Optional[float] = None,
@@ -235,6 +237,11 @@ class LLMComparator(BaseComparator):
             top_p: Top-p (nucleus) sampling parameter
             max_tokens: Maximum tokens for LLM response. ``None`` (or an empty
                 string) requests the model's maximum output, as everywhere else.
+            reasoning_effort: Reasoning effort, forwarded to the Bedrock client,
+                which sends it only to a model with an effort control and drops
+                it for the rest (Nova, Sonnet 4.5, Haiku 4.5). ``None`` or an
+                empty string takes the ``evaluation.llm_method`` default
+                (``medium``), which every stored profile holds.
             system_prompt: Custom system prompt for LLM
             task_prompt: Custom task prompt template for LLM
             threshold: Minimum score to consider a match (0.0-1.0)
@@ -245,12 +252,7 @@ class LLMComparator(BaseComparator):
                 ``{ATTRIBUTE_DESCRIPTION}``. This is the one the judge most needs:
                 it is what makes a *semantic* decision possible instead of a guess
                 between two bare strings.
-            **kwargs: Additional parameters (ignored). This includes
-                ``evaluation.llm_method.reasoning_effort``: evaluation does not
-                apply it, so no effort is sent. Every stored profile carries the
-                field's default (``medium``), indistinguishable from a value a
-                user chose, so forwarding it would start sending an effort on
-                every stack whose evaluation model has an effort control.
+            **kwargs: Additional parameters (ignored).
 
         Raises:
             ValueError: If ``system_prompt`` or ``task_prompt`` is given but
@@ -281,6 +283,11 @@ class LLMComparator(BaseComparator):
             "top_k": to_float(top_k, _DEFAULT_TOP_K),
             "top_p": to_float(top_p, _DEFAULT_TOP_P),
             "max_tokens": to_int(max_tokens, _DEFAULT_MAX_TOKENS),
+            "reasoning_effort": (
+                str(reasoning_effort)
+                if reasoning_effort not in (None, "")
+                else _DEFAULT_REASONING_EFFORT
+            ),
         }
         if system_prompt is not None:
             self.llm_config["system_prompt"] = str(system_prompt)
@@ -437,6 +444,7 @@ def create_llm_comparator_from_config(config: dict) -> LLMComparator:
         top_k=config.get("top_k"),
         top_p=config.get("top_p"),
         max_tokens=config.get("max_tokens"),
+        reasoning_effort=config.get("reasoning_effort"),
         system_prompt=config.get("system_prompt"),
         task_prompt=config.get("task_prompt"),
         threshold=config.get("threshold", 0.8),
@@ -496,9 +504,8 @@ def compare_llm(
         top_k = setting("top_k", _DEFAULT_TOP_K)
         top_p = setting("top_p", _DEFAULT_TOP_P)
         max_tokens = setting("max_tokens", _DEFAULT_MAX_TOKENS)
-        # Forwarded only when a direct caller puts it in llm_config, with no
-        # default; LLMComparator never does (see its **kwargs note).
-        reasoning_effort = config.get("reasoning_effort")
+        # The client sends it only to a model with an effort control.
+        reasoning_effort = setting("reasoning_effort", _DEFAULT_REASONING_EFFORT)
 
         # Absent prompts take the defaults; an empty one is refused before any
         # Bedrock call (the outer handler turns it into this function's error
