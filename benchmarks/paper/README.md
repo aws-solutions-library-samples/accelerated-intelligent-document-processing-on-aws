@@ -1,9 +1,7 @@
 # benchmarks/paper/
 
-**The benchmark papers now live in `docs/benchmarking/` — that is the single source
-of truth (published to the docs site).** This directory previously held duplicate
-Markdown copies (`BENCHMARK_PAPER.md`, `VERSION_COMPARISON_*.md`) that drifted from the
-`docs/` versions; they have been retired.
+**The benchmark papers live in `docs/benchmarking/`, which is the single source of
+truth (published to the docs site).** This directory holds no Markdown copies of them.
 
 | What | Where |
 |------|-------|

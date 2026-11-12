@@ -2,6 +2,9 @@
 title: "Extraction Scaling Guide"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Extraction Scaling Guide — Simple vs Advanced Mode, Document Size & List Limits
 
 This guide characterizes how the IDP extraction pipeline behaves as documents and

@@ -311,7 +311,7 @@ The full default task prompt also defines the JSON output format the LLM must re
 
 ### API Integration
 
-**GraphQL Mutation:**
+**API operation** (`POST /op/uploadDiscoveryDocument`; the shape below is the contract in `schema.graphql`):
 ```graphql
 mutation UploadDiscoveryDocument($fileName: String!, $discoveryType: String, $version: String) {
   uploadDiscoveryDocument(

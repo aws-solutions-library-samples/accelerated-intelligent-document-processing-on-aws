@@ -672,7 +672,7 @@ classes:
 
 ## Confidence (Assessment)
 
-As of **config v0.6**, per-field **confidence** and **geometry** are **outputs of
+As of **config format 0.6**, per-field **confidence** and **geometry** are **outputs of
 extraction**, not a separate downstream stage. Their settings live under
 `extraction.confidence.*` and `extraction.geometry.*` (there is no top-level
 `assessment.{model, geometry_mode, ...}` block anymore). This section is a Pattern

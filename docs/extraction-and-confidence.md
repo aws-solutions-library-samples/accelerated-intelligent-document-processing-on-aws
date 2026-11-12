@@ -8,18 +8,17 @@ SPDX-License-Identifier: MIT-0
 # Extraction & Confidence
 
 Information extraction transforms unstructured document content into structured
-data. As of **config v0.6**, per-field **confidence** and **geometry (bounding
+data. As of **config format 0.6**, per-field **confidence** and **geometry (bounding
 boxes)** are treated as **outputs of extraction**, not a separate downstream
 stage. Their settings live under `extraction.confidence.*` and
 `extraction.geometry.*`; human-in-the-loop review is configured under the
 top-level `hitl.*` block.
 
-This guide consolidates what used to live across three separate documents
-(Customizing Extraction, the Assessment Feature, and Bounding Box Integration)
-into one place, reflecting the v0.6 model where extraction produces the value,
+This guide covers customizing extraction, confidence assessment and bounding
+boxes in one place, because in the current model extraction produces the value,
 its confidence, and its location together.
 
-> **Config v0.6 at a glance**
+> **Config format 0.6 at a glance**
 >
 > - `extraction.confidence.{enabled, mode, model, list_batch_size, image, system_prompt, task_prompt, ...}` — confidence scoring (formerly the top-level `assessment` block).
 > - `extraction.geometry.{mode, task_prompt_bbox}` — field bounding boxes (formerly `assessment.geometry_mode` / `assessment.ground_geometry_in_ocr`).
@@ -72,7 +71,7 @@ They combine freely. The tables below give pros/cons and a recommendation; the r
 
 > **Simple + `integrated` uses 1S-TopK.** On the Simple path, `integrated` mode asks the model for its **top-K guesses with probabilities** per field (`G1/P1` … `GK/PK`) in one call; the top guess becomes the value and its probability the confidence. Enumerating alternatives yields better-calibrated, less-overconfident scores than a single value + a single confidence number (Tian et al., *"Just Ask for Calibration"*, EMNLP 2023). The output `result.json` is identical in shape to `separate` mode (same `inference_result` + `explainability_info`), so HITL, evaluation, reporting, and the UI are unchanged, and the standalone Assessment step auto-skips — for scalar-only classes; a list-bearing class is scored separately regardless (see the warning below). A field whose top guess comes back with no usable probability is scored 0.0, so it still raises a confidence alert, and its `confidence_reason` in `result.json` says the 0.0 is a stand-in rather than the model's confidence. The prompt is editable in the UI ("Task prompt (1-Stage TopK extraction + confidence — simple)") / `extraction.task_prompt_extraction_with_confidence_topk`. See the [reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) and the [extraction library README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/extraction/README.md#1s-topk-single-stage-extraction--confidence-simple-mode).
 
-> ⚠️ **Simple + `integrated` is automatically scored in a separate pass for list-bearing classes.** On a class that declares any list field (including every multi-instance class, whose `instances` array is a list), a Simple-mode section ignores `integrated` and runs the standalone Assessment step instead. Its cost relative to the single inference is model-dependent: at the shipped default model (Claude Sonnet 5) a 100-row statement cost about **2.5×** ($0.608 vs $0.247, batched list scoring), while at Claude Sonnet 4.6 the same cell was cheaper than the integrated call in the 2026-09-09 live pass ($0.131 vs $0.171). Either way the result is complete: Simple + `integrated` returned **10 of 100 rows** while Simple + `separate` returned 100 of 100 in every repeat. The mechanism is output volume: the TopK envelope costs several guesses *per cell*, so a list that fits comfortably in a plain extraction can exceed what the model will emit in one response, and it stops emitting rows rather than erroring. Two changes reduce it — list cells are asked for a **single** guess (`G1/P1` only) instead of four, and the prompt no longer tells the model to make each guess *"as short as possible"* (which also shortened *values*) — but the single-response limit remains. Scalar-only classes keep the single-inference saving, and Advanced extraction is unchanged (sharding keeps each call small). Two per-class opt-outs keep a list-bearing class on 1S-TopK: its own `x-aws-idp-extraction-task-prompt` (the downgrade works by swapping the prompt, so a user-controlled prompt is never half-applied), or the explicit `x-aws-idp-allow-integrated-lists: true` flag for a class whose lists you have **verified come back complete on your own documents** — the [1S-TopK reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) sets it on its `Invoice` class for that reason. Where you see the decision: `idp-cli config-validate` (and the SDK validate operation) warns and names the affected classes — the web UI does **not** validate on save, but its **Prompt Preview** pane shows, per class, that the plain prompt is sent; per section, `metadata.confidence_mode_effective: separate` and the **Processing Flow** in the Processing Report record it. It is deliberately *not* a Processing Issue, because that flag is severity-blind and would badge every document. See [config-guidance](./benchmarking/config-guidance.md) for the measured comparison.
+> ⚠️ **Simple + `integrated` is automatically scored in a separate pass for list-bearing classes.** On a class that declares any list field (including every multi-instance class, whose `instances` array is a list), a Simple-mode section ignores `integrated` and runs the standalone Assessment step instead. Because it is the same pass, it costs what `separate` costs: on the v0.6.14 benchmark's 100-row statement the two Simple cells cost **$0.2251 and $0.2252** at the shipped default (Claude Sonnet 5, at its published rates; `benchmarks/results/v0.6.14/coresynth__extraction-model-sonnet5/`) and $0.2053 against $0.2054 over four repeats at the control model, Claude Sonnet 4.6 ([config-guidance §2.1](./benchmarking/config-guidance.md#21-integrated-confidence-with-simple-mode-list-truncation-fixed-in-v068)). The single 1S-TopK inference it replaces looked cheaper only because it did less work, and its result was not complete: Simple + `integrated` returned **10 of 100 rows** while Simple + `separate` returned 100 of 100 in every repeat. The mechanism is output volume: the TopK envelope costs several guesses *per cell*, so a list that fits comfortably in a plain extraction can exceed what the model will emit in one response, and it stops emitting rows rather than erroring. Two changes reduce it — list cells are asked for a **single** guess (`G1/P1` only) instead of four, and the prompt no longer tells the model to make each guess *"as short as possible"* (which also shortened *values*) — but the single-response limit remains. Scalar-only classes keep the single-inference saving, and Advanced extraction is unchanged (sharding keeps each call small). Two per-class opt-outs keep a list-bearing class on 1S-TopK: its own `x-aws-idp-extraction-task-prompt` (the downgrade works by swapping the prompt, so a user-controlled prompt is never half-applied), or the explicit `x-aws-idp-allow-integrated-lists: true` flag for a class whose lists you have **verified come back complete on your own documents** — the [1S-TopK reference config](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml) sets it on its `Invoice` class for that reason. Where you see the decision: `idp-cli config-validate` (and the SDK validate operation) warns and names the affected classes — the web UI does **not** validate on save, but its **Prompt Preview** pane shows, per class, that the plain prompt is sent; per section, `metadata.confidence_mode_effective: separate` and the **Processing Flow** in the Processing Report record it. It is deliberately *not* a Processing Issue, because that flag is severity-blind and would badge every document. See [config-guidance](./benchmarking/config-guidance.md) for the measured comparison.
 
 > **Large lists & truncation are handled on every path.** Whichever combination you pick, long list fields are assessed in sequential batches (`list_batch_size`), and if the confidence model truncates a batch at its output-token ceiling the batch is **recursively split until it fits** — so you get complete per-cell coverage without tuning. See [Large-list batching](#large-list-batching-list_batch_size). For documents that are large because of a *very large single section* (not just a long list), prefer **Advanced sharding** — see [Large-Document Guidance](#8-large-document-guidance).
 
@@ -122,9 +121,11 @@ extraction:
 > GPT-5.x (`minimal`|`low`|`medium`|`high`), xAI Grok
 > (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`), and OpenAI GPT-6 Astra
 > (`none`|`low`|`medium`|`high`|`xhigh`|`max`, **not** `minimal`) — `reasoning_effort` controls how much
-> the model reasons before answering. Extraction **defaults to `low`**: a full
-> effort sweep found higher effort adds output-token cost with negligible
-> extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
+> the model reasons before answering. Extraction **defaults to `low`**, because higher
+> effort spends more output tokens. Its effect on extraction accuracy has not been
+> measured here: every benchmark cell holds effort at `low`
+> ([config-guidance](./benchmarking/config-guidance.md#configuration-axes-measured)).
+> If you raise it for reasoning-heavy documents, A/B test it on your own documents.
 > Ignored by Nova, Sonnet 4.5, and Haiku **4.5** — note the two Haikus differ here:
 > Haiku 5.5 is the first Haiku that accepts effort, and its own default is
 > `medium` rather than `high`. Sonnet 5.5's own default is `high`, the ordinary
@@ -374,9 +375,8 @@ which makes the previewed saving a floor, not a ceiling.
 > **How agentic uses your configuration:** Agentic extraction automatically
 > converts your document class configuration (classes, attributes, descriptions,
 > types) into Pydantic models internally. Improving your configuration directly
-> improves extraction accuracy. A future enhancement will let you define custom
-> Pydantic models with validators, custom types, and business logic — including
-> **MCP server integration** for real-time external lookups.
+> improves extraction accuracy. The configuration has no way to supply custom
+> Pydantic models (your own validators, types or business logic).
 
 #### Automatic retry handling
 
@@ -536,7 +536,7 @@ extraction:
 - **`max_pages_per_shard` is the timeout lever.** It stays a small fixed default (5) rather than model-derived: the 900s Lambda limit is about *sequential agent turns per shard* (wall-clock), not context tokens, so a roomy token budget must not collapse a large doc back into one giant shard. Fewer pages/shard ⇒ fewer turns ⇒ each shard Lambda finishes well under 900s.
 - **Advanced defaults to the resumable runtime.** `runtime: step_functions` is now the agentic default: each shard is its own Lambda iteration in a nested Step Functions **Distributed Map**, so a very large section is not bound by the single-Lambda 15-minute limit and Step Functions **retries only the incomplete shards** (completed shards are reused from S3). `in_process` (asyncio within one Lambda) remains available but is still bound by that one Lambda's 900s.
 - **Confidence *and* bounding-box grounding are sharded too.** Each shard runs its confidence assessment **and grounds its own rows' bounding boxes against only its own pages** — so both scale per-shard and run concurrently. The final merge only concatenates already-scored, already-grounded rows (plus a fast top-up for any rows the assessment LLM omitted); it does **not** re-assess or re-ground the whole section. This keeps the merge step fast even on very large tables (previously a single full-section grounding sweep over thousands of rows could approach the merge Lambda's 900s limit).
-- **Large-document guidance.** The defaults above are tuned to work out-of-the-box on large documents. Validated at scale on 100- and 200-page single- and multi-table documents (exact row counts, no loss/duplication, no timeouts).
+- **Large-document guidance.** The defaults above are tuned to work out-of-the-box on large documents. The largest document the benchmark suite has measured is 66 pages and 3,200 rows, on which advanced mode at the default model returned every row on both repeats ([config-guidance](./benchmarking/config-guidance.md#largest-document-tested-66-pages-3200-rows)); larger documents have not been measured.
 
 See [Large-Document Guidance](#8-large-document-guidance) for choosing between
 Simple + separate confidence and Advanced sharding.
@@ -912,7 +912,7 @@ section beside the rest of its report. The report names the extraction modes
 
 ![The document editor's Processing report dialog for a payslip section: extraction outcome, schema validation, the processing path and prompt-cache use](../images/extraction-processing-report.png)
 
-> **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
+> **Moved in config format 0.7.** This block was `extraction.agentic.validation`. Stored
 > configurations are migrated automatically on read — no action required.
 
 ### Forced tool use (`extraction.forced_tool`) — experimental, off by default
@@ -1297,7 +1297,7 @@ is configured under `extraction.confidence`.
 
 - **Per-attribute scoring**: Individual confidence scores for each field, recursively for nested groups and list items. To keep responses compact, the default prompts ask the model to include a `confidence_reason` **only for lower-confidence leaves (below 0.9)** — a high-confidence value emits just `{"confidence": <score>}`. This cuts assessment output tokens substantially (output tokens dominate assessment cost) without affecting the scores or thresholds. Widen or remove the threshold in the confidence `task_prompt` if you want a reason on every field.
 - **Multimodal analysis**: Optionally combines OCR text with document images.
-- **Token-optimized**: Uses condensed OCR text confidence data for 80–90% token reduction versus full OCR results.
+- **Token-optimized**: Uses condensed OCR text confidence data, which is smaller than the full OCR results it is derived from.
 - **Large-list batching**: Long list fields (hundreds of rows) are automatically assessed in sequential batches (`list_batch_size`) so every row is scored — see below.
 - **UI integration**: Results appear in the web interface with color-coded confidence indicators and (with geometry) bounding-box overlays.
 
@@ -1382,7 +1382,7 @@ The confidence prompts support the following placeholders:
 | `{EXTRACTION_RESULTS}` | JSON string of extraction results to assess |
 | `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` | Formatted list of attribute names and descriptions |
 | `{DOCUMENT_TEXT}` | OCR text (markdown) of the section's pages |
-| `{OCR_TEXT_CONFIDENCE}` | Condensed OCR confidence data (80-90% token reduction) |
+| `{OCR_TEXT_CONFIDENCE}` | Condensed OCR confidence data (smaller than the full OCR results) |
 | `{DOCUMENT_IMAGE}` | **Optional** — inserts document images at the specified position (see [Image Placement](#7-image-placement-cachepoint-output-formats--few-shot)) |
 
 A representative confidence `task_prompt` requesting scores (and geometry, when
@@ -2346,9 +2346,10 @@ standard input tokens).
 ### JSON and YAML output
 
 The extraction service auto-detects and parses both JSON and YAML LLM responses
-via `extract_structured_data_from_text()`. YAML is more token-efficient (~10–30%
-fewer tokens; ~25% typical): no quotes around keys, compact nested syntax,
-natural multiline support. All existing JSON prompts continue to work unchanged —
+via `extract_structured_data_from_text()`. YAML usually needs fewer tokens than the
+equivalent JSON — no quotes around keys, compact nested syntax, natural multiline
+support — though the saving has not been measured here and depends on the shape
+of your data. All existing JSON prompts continue to work unchanged —
 no configuration changes required, with intelligent fallback between formats if
 parsing fails.
 
@@ -2767,7 +2768,7 @@ difference decides how you should pick the number:
 | | Simple (`extraction.mode: simple`) | Advanced (`extraction.mode: advanced`) |
 |---|---|---|
 | Where the floor is checked | after extraction, on the returned result | **inside** the extraction loop, at the agent's tool boundary — and **per shard** when the section shards |
-| A list under the floor | raises `extraction_list_truncated` (**warning**) and, when `extraction.validation.enabled` is on (the default since v0.7), a schema violation in `metadata.validation` / `extraction_validation_failed` | is **rejected**; the agent gets a bounded number of correction rounds, and if it still cannot reach the floor the extraction **fails** |
+| A list under the floor | raises `extraction_list_truncated` (**warning**) and, when `extraction.validation.enabled` is on (the default since config format 0.7), a schema violation in `metadata.validation` / `extraction_validation_failed` | is **rejected**; the agent gets a bounded number of correction rounds, and if it still cannot reach the floor the extraction **fails** |
 | The rows that were extracted | kept, and visible in the section result | **discarded** — a failed extraction writes no `inference_result` |
 | Document status | unchanged: `COMPLETED` | the section fails, so the document fails |
 
@@ -2874,7 +2875,7 @@ that one, and an empty sibling may be genuinely absent.
 in particular it is *not* behind `extraction.validation.enabled` — a guard against
 silent data loss that has to be switched on protects nobody who did not already
 know to look. (That argument is also why `extraction.validation.enabled` itself now
-defaults to **on** as of v0.7; this check stays ungated regardless, so explicitly
+defaults to **on** as of config format 0.7; this check stays ungated regardless, so explicitly
 turning validation off does not also disable a guard whose whole effect is to ask
 the model to try again.) Its only effect is one more agent turn — which is billed,
 so the worst case is one wasted turn on a document that genuinely has no rows inside

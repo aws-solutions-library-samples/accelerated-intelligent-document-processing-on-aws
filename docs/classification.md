@@ -2176,9 +2176,9 @@ classification:
 
 ### Token Efficiency Benefits
 
-YAML format provides significant token savings:
+YAML usually needs fewer tokens than the equivalent JSON, though the saving has
+not been measured here and depends on the shape of your data:
 
-- **10-30% fewer tokens** than equivalent JSON
 - No quotes required around keys
 - More compact syntax for nested structures
 - Natural support for multiline content

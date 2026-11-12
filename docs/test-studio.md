@@ -2,6 +2,9 @@
 title: "Test Studio"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Test Studio
 
 The Test Studio provides a comprehensive interface for managing test sets, running tests, and analyzing results directly from the web UI.
@@ -1324,7 +1327,15 @@ section says **Fields still reflect the previous class** and offers **Re-extract
 which re-runs that document and waits for the new labels before returning, so you
 are never left looking at fields from the previous class. On a document with one
 section it re-extracts the whole document; on a document with several it re-extracts
-only the section you are looking at (see below).
+only the section you are looking at (see below). The note names the class the fields
+were extracted under, so a section changed twice before it is re-extracted (Invoice to
+W2, then to Payslip) still says Invoice, and a section changed back to that class shows
+no note. The note stays with its section when a later save moves pages and renumbers
+the sections, and when a different section is re-extracted. It lasts for the page visit
+only: saving a new class overwrites the class in the section's ground truth, and nothing
+the editor loads records the class the fields were extracted under, so after a reload
+the note is not shown, though the fields still belong to the earlier class until the
+section is re-extracted.
 
 The corrected class is sent into the re-run itself, not merely written onto the
 existing labels: the document is re-processed with classification **skipped** and
@@ -1858,7 +1869,7 @@ class is corrected — see
 
 ### Field-Level Metrics
 
-Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns (Stickler v0.4.0+):
+Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns:
 
 **Displayed Columns:**
 1. **Field Name**: The name of the extracted field (hierarchical with expand/collapse)
@@ -1884,7 +1895,7 @@ happened to get, and the point estimate alone cannot distinguish 100% measured o
 observations from 100% measured on 300. The two justify completely different decisions.
 
 This matters more per field than it does overall. A run's overall accuracy firms up
-quickly — within roughly the first hundred documents — because every document contributes
+much faster than any single field's, because every field of every document contributes
 to it. A field that appears once per document gains one observation per document, so a
 badly-broken field can sit inside a healthy-looking overall score until the set is large
 enough to expose it. At a measured 90% accuracy:
