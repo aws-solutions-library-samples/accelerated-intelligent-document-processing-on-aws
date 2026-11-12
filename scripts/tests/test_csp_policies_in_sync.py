@@ -451,3 +451,56 @@ def test_the_fetch_source_rule_rejects_what_it_claims_to():
         "ws://localhost:*",
     ):
         assert _bad_fetch_sources("img-src", [source]) == [], source
+
+
+#: ``worker-src`` names exactly these sources. A dedicated worker's script must be
+#: same-origin, so ``'self'`` and ``blob:`` are the only sources that can ever name
+#: one: a host source would admit nothing the browser would start, and a bare
+#: scheme or ``*`` would read as permission it does not grant.
+_WORKER_SRC_SOURCES = frozenset({"'self'", "blob:"})
+
+
+def _bad_worker_sources(sources: list[str]) -> list[str]:
+    return [s for s in sources if s not in _WORKER_SRC_SOURCES]
+
+
+def test_worker_src_allows_the_editor_and_pdf_workers_and_nothing_else():
+    """The configuration editor's code views need ``blob:`` workers.
+
+    Monaco's AMD entry, ``min/vs/editor/editor.main.js`` from jsDelivr, defines
+    ``MonacoEnvironment.getWorker`` to wrap each language worker's jsDelivr URL in
+    ``URL.createObjectURL(new Blob(["importScripts(<url>)"]))`` and start the worker
+    from that same-origin ``blob:`` URL. With no ``worker-src`` the browser falls
+    back to ``script-src``, which carries no ``blob:``, so each worker was refused
+    and Monaco ran its JSON and YAML services on the main thread. ``'self'`` is the
+    pdf.js worker, a bundled asset (``new URL('pdfjs-dist/build/pdf.worker.mjs',
+    import.meta.url)``) that ``script-src 'self'`` admitted before this directive
+    existed and that a ``worker-src`` without ``'self'`` would refuse.
+    """
+    for mode, policy in (
+        ("CloudFront", _cloudfront_policy()),
+        ("APIGateway", _api_gateway_policy()),
+    ):
+        sources = _directives(policy).get("worker-src", "").split()
+        missing = sorted(_WORKER_SRC_SOURCES - set(sources))
+        assert not missing, (
+            f"{mode} CSP worker-src lacks {missing}; the configuration editor's "
+            "workers start from same-origin blob: URLs and pdf.js's from 'self'"
+        )
+        assert not _bad_worker_sources(sources), (
+            f"{mode} CSP worker-src carries {_bad_worker_sources(sources)}; it "
+            f"names only {sorted(_WORKER_SRC_SOURCES)} (no bare scheme, no '*')"
+        )
+
+
+def test_the_worker_source_rule_rejects_what_it_claims_to():
+    for source in (
+        "*",
+        "https:",
+        "http:",
+        "data:",
+        "blob:*",
+        "https://cdn.jsdelivr.net/npm/",
+    ):
+        assert _bad_worker_sources([source]) == [source], source
+    assert _bad_worker_sources(["'self'", "blob:"]) == []
