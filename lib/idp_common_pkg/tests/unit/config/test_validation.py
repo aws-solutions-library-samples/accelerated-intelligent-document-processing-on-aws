@@ -170,8 +170,7 @@ class TestValidateModelIds:
         config = {
             "ocr": {"model_id": "invalid1"},
             "classification": {"model": "invalid2"},
-            "extraction": {"model": "invalid3"},
-            "assessment": {"model": "invalid4"},
+            "extraction": {"model": "invalid3", "confidence": {"model": "invalid4"}},
             "summarization": {"model": "invalid5"},
         }
 

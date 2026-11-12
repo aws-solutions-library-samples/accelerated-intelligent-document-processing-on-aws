@@ -41,7 +41,15 @@ model_id = idp_config.extraction.model
 `validate_config()` powers `idp-cli config-validate`. It merges with system
 defaults, runs Pydantic validation, and applies enhanced checks (valid model
 IDs, max-token limits, required prompt placeholders, schema-field warnings, and
-model/feature-compatibility guards). Two guards, with deliberately different
+model/feature-compatibility guards). The model-ID check, `_validate_model_ids`,
+covers every model field `_CATALOG_MODEL_FIELDS` lists, each classification call
+the active strategy makes, and the per-class model overrides; the two embedding
+fields are left out because `pricing.yaml` prices no embedding model, and
+`tests/unit/config/test_model_id_catalog_coverage.py` fails on a model field in
+`IDPConfig` that is in neither set. IDs are compared as written, because the
+Bedrock client routes and sends them unchanged. Like the rest of the check, it does
+nothing when `pricing.yaml` is not on disk, as in a Lambda. Two guards, with
+deliberately different
 scopes — both hard errors at config time rather than an obscure mid-processing
 failure:
 
