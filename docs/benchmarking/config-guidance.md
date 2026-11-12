@@ -18,7 +18,8 @@ default** — in §2–§4 and §7; the extraction, classification and confidenc
 (the shipped default) · summarization disabled (unscored)
 **Pricing:** `config_library/pricing.yaml` (sha256 `44a79aa06c15…`, unchanged since the
 v0.6.12 edition; rates as of 2026-10; intro pricing may apply), except that **every Claude
-Sonnet 5 dollar figure is re-priced at Sonnet 5's published rates** — see the header note below
+Sonnet 5 dollar figure measured on v0.6.14 is re-priced at Sonnet 5's published rates** — see
+the header note below
 **Measured:** 2026-11-07 and 2026-11-09/10 (run launch times), on one stack at one build —
 **3,338 scored rows across 31 result sets** (2,578 synthetic runs and 760 reference-corpus
 documents, $1,970.57 by the rows' own cost as recorded, $1,854.45 with the Sonnet 5 share
@@ -1224,7 +1225,10 @@ The two core cells, which are what a customer actually chooses between:
    for the same result; Astra **at least** 60% more, a bound rather than a ratio because
    its dollar figure is a lower bound (see the header). ⚠️ The `:1m` figure ($2.50) is inflated by the
    pricing defect described in finding 4 and is not the variant's price — `:1m` is billed
-   at exactly plain Sonnet 5's rates. The other four figures are unaffected.
+   at exactly plain Sonnet 5's rates. The other four carry no `:1m` premium, but this
+   block's Sonnet 5 figures, `:1m` included, were priced at the Sonnet 5 rows as they stood
+   before #1830 (1.5× the published rate) and are not re-priced here, so the Opus 5 and Astra
+   premiums over Sonnet 5 above are understated.
 2. **The cheap end is not usable on lists.** Nova Lite in simple mode returns every row of a
    5-row form and a 100-row statement (with 12% of values wrong) and **none** of a 400-row
    one — two of the three 400-row documents came back with 0 matching rows, `COMPLETED`. On
@@ -1800,10 +1804,10 @@ data they can cost a customer. Each says whether this edition re-measured it.
     On Astra the same setting is the cheaper Astra configuration, so the `max_pages_per_shard`
     guidance should be per model.
 11. **The agent's turn count is not visible in the metering, so agentic cost is a range a
-    customer cannot explain (P2, re-measured).** Advanced cells run at CV **7.3–23.4%** at the
-    shipped default and up to **26.7%** at the control, against simple mode's 0.1% and 0.6% on
-    the same document (§4). The widest single cell at the shipped default ranged **$0.904 →
-    $1.604 across five identical runs** of one 400-row, one-section document. Bounding it, or
+    customer cannot explain (P2, re-measured).** Advanced cells run at CV **6.5–22.9%** at the
+    shipped default and up to **26.7%** at the control, against simple mode's 0.1% and 0.5% on
+    the same document (§4). The widest single cell at the shipped default ranged **$0.624 →
+    $1.092 across five identical runs** of one 400-row, one-section document. Bounding it, or
     surfacing it, would make an agentic budget explainable instead of empirical.
 12. **Nova Lite cannot run the agentic path —
     [#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)

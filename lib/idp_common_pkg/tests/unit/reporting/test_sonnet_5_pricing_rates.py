@@ -24,6 +24,7 @@ expectation.
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 import yaml
@@ -34,6 +35,12 @@ _REPO_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..")
 )
 _PRICING_PATH = os.path.join(_REPO_ROOT, "config_library", "pricing.yaml")
+
+#: Any pricing key naming Sonnet 5 itself: a bare model id or any routing prefix,
+#: with or without a suffix such as ``:1m`` — but not ``claude-sonnet-5-5``.
+_SONNET_5_KEY = re.compile(
+    r"^bedrock/(?:[a-z-]+\.)?anthropic\.claude-sonnet-5(?::[^/]*)?$"
+)
 
 PRICE_LIST_MODEL = "Claude Sonnet 5"
 UNITS = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheWriteInputTokens")
@@ -100,11 +107,7 @@ def _digest_band(unit: str) -> dict[str, float]:
 
 @pytest.mark.unit
 def test_the_row_set_is_the_six_sonnet_5_rows():
-    found = {
-        name
-        for name in _bedrock_rows()
-        if name.split(".", 1)[-1].split(":")[0] == "anthropic.claude-sonnet-5"
-    }
+    found = {name for name in _bedrock_rows() if _SONNET_5_KEY.match(name)}
     assert found == set(ROWS)
 
 

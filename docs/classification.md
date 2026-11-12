@@ -181,14 +181,14 @@ images, and the remedy is a smaller window or smaller page images.
 ## Classification in BDA mode and pipeline mode
 
 `use_bda` chooses which of the two runs. They classify in entirely different
-places, which is why only one of them is configurable here:
+places, which is why the settings on the rest of this page apply to pipeline mode
+only:
 
 ### BDA mode (`use_bda: true`)
 
-- Classification is performed by the BDA (Bedrock Data Automation) project configuration
-- Uses BDA blueprints to define classification rules
-- Not configurable inside the GenAIIDP solution itself
-- Configuration happens at the BDA project level
+- Classification is performed by BDA (Bedrock Data Automation), against the blueprints of the BDA project linked to the configuration profile
+- Each blueprint corresponds to a document class. The classes can be defined in the solution's configuration and pushed to BDA with **Sync to BDA…** on the Configuration page, or defined in BDA and pulled in with **Sync from BDA…** (see [discovery.md](./discovery.md#bdaidp-sync-feature))
+- The pipeline-mode classification settings described on the rest of this page (strategy, granularity, prompts, models) do not apply
 
 ### Pipeline mode (`use_bda: false`)
 
