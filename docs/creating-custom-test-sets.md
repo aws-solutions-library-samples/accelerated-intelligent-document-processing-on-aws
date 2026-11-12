@@ -67,8 +67,8 @@ see [How much review is enough?](./test-studio.md#how-much-review-is-enough).
 
 ### How much data
 
-Your overall accuracy score firms up quickly, within roughly the first hundred documents.
-The accuracy of an individual *field* does not, because a field appearing once per
+Your overall accuracy score firms up much faster than the accuracy of any single field,
+because every field of every document contributes to it. A field appearing once per
 document gives you one observation per document — so a badly failing field can hide inside
 a healthy-looking overall score. Fields that repeat within a document (invoice line items)
 need fewer documents; fields appearing once per document drive the requirement.

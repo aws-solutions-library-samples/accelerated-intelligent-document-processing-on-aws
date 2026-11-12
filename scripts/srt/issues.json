@@ -210,21 +210,6 @@
   {
     "source": "security-matrix",
     "path": "template.yaml",
-    "resourceType": "AWS::S3::Bucket",
-    "resourceName": "WebUIBucket",
-    "issue": "S3 bucket lacks lifecycle policy",
-    "fix": "Configure a lifecycle policy to manage S3 objects during their lifetime.",
-    "priority": "HIGH",
-    "check_id": "S3-008",
-    "status": "suppressed",
-    "isCustomResource": false,
-    "firstDetectedAt": "2026-04-27T18:09:25.915Z",
-    "assessmentCount": 22,
-    "suppressionReason": "Accepted: WebUIBucket holds only the current built web-app bundle, redeployed in full by CodeBuild on each update; there is no object accumulation to manage, and an expiry lifecycle rule could delete live UI assets."
-  },
-  {
-    "source": "security-matrix",
-    "path": "template.yaml",
     "resourceType": "AWS::DynamoDB::Table",
     "resourceName": "TrackingTable",
     "issue": "DynamoDB data plane events are not captured by CloudTrail logging",

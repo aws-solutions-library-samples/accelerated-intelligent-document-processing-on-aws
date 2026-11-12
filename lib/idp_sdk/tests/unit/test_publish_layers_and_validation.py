@@ -1481,6 +1481,10 @@ Resources:
     Properties:
       Hash: <SAMPLE_FEATURES_HASH_TOKEN>
       List: '<SAMPLE_FEATURES_LIST_TOKEN>'
+  MultiDocDiscovery:
+    Properties:
+      BuildHash: <MULTI_DOC_DISCOVERY_BUILD_HASH_TOKEN>
+      SourceZipfile: <ARTIFACT_PREFIX_TOKEN>/<MULTI_DOC_DISCOVERY_SOURCE_ZIPFILE_TOKEN>
 """
 
 
@@ -1489,6 +1493,12 @@ def _main_template_tree(root):
     _write(root, "src/lambda/other/index.py", "def handler(e, c): return 1\n")
     _write(root, "config_library/pattern/config.yaml", "classes: []\n")
     _write(root, "config_library/pricing.yaml", "models: []\n")
+    # The multi-doc discovery image's inputs, which every checkout carries; the
+    # main template's BuildHash and source-zip tokens are derived from them.
+    _write(root, "lib/idp_common_pkg/idp_common/__init__.py", "VERSION = 1\n")
+    _write(root, "src/lambda/multi_doc_discovery/index.py", "def handler(e, c): ...\n")
+    _write(root, "nested/multi-doc-discovery/Dockerfile", "FROM python:3.12\n")
+    _write(root, "nested/multi-doc-discovery/requirements.txt", "Pillow==11.0.0\n")
 
 
 def _sam_stub(root, ok=True):
@@ -1574,6 +1584,14 @@ def test_build_main_template_substitutes_every_token_and_uploads_both_keys(
     assert "Key: layers/idp-common-base-aaaa1111.zip" in built
     assert "Key: layers/idp-common-multi_document_discovery-aaaa1111.zip" in built
     assert "Hash: feat0003" in built
+    # BuildHash and the source zip it is built from carry the same content hash
+    # (#1856), so the image tag always names the inputs CodeBuild receives.
+    build_hash = pub.multi_doc_discovery_build_hash()
+    assert f"BuildHash: {build_hash}\n" in built
+    assert (
+        f"SourceZipfile: {_PREFIX}/{_VERSION}/multi-doc-discovery-source-{build_hash}.zip"
+        in built
+    )
     assert "List: '[\"sample-feature\"]'" in built
     # The config file list is the sorted relative paths under config_library.
     assert '\'["pattern/config.yaml", "pricing.yaml"]\'' in built
@@ -1611,6 +1629,42 @@ def test_build_main_template_substitutes_every_token_and_uploads_both_keys(
     ]
     assert package_cmd[package_cmd.index("--s3-bucket") + 1] == _BUCKET
     assert package_cmd[package_cmd.index("--s3-prefix") + 1] == f"{_PREFIX}/{_VERSION}"
+
+
+@mock_aws
+def test_build_main_template_names_the_multi_doc_zip_the_packager_uploaded(
+    monkeypatch, tmp_path, aws_credentials
+):
+    """BuildHash and the source key come from the packaged name, not a re-hash.
+
+    The packager has already written and uploaded a zip under its name. Deriving
+    the template's values from the tree again could name a key that was never
+    uploaded if the tree changed in between, so the passed name wins.
+    """
+    monkeypatch.chdir(tmp_path)
+    _main_template_tree(tmp_path)
+    s3 = boto3.client("s3", region_name=_REGION)
+    s3.create_bucket(Bucket=_BUCKET)
+    pub = _publisher(s3)
+    pub.skip_validation = True
+    pub._layer_arns = {
+        name: {"zip_name": f"idp-common-{name}-aaaa1111.zip"} for name in _LAYER_NAMES
+    }
+    run, _calls = _sam_stub(tmp_path)
+    monkeypatch.setattr(pub, "run_subprocess_with_logging", run)
+    packaged = "multi-doc-discovery-source-fedcba9876543210.zip"
+    assert packaged != pub.multi_doc_discovery_source_zipfile_name()
+
+    pub.build_main_template(
+        "webui.zip",
+        "unified-source-beef0002.zip",
+        [{"component": "main"}],
+        multi_doc_discovery_source_zipfile=packaged,
+    )
+
+    built = (tmp_path / ".aws-sam" / "build" / "idp-main.yaml").read_text()
+    assert "BuildHash: fedcba9876543210\n" in built
+    assert f"SourceZipfile: {_PREFIX}/{_VERSION}/{packaged}" in built
 
 
 @mock_aws

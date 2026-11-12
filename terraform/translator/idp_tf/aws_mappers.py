@@ -1344,9 +1344,23 @@ CLOUDFRONT_DISTRIBUTION = CloudFrontMapper(
 )
 
 
+# The web ACL's request logging. Ref is the web ACL's ARN, as is the provider's
+# id. RedactedFields and LoggingFilter are left unmapped (no template sets them),
+# so a template that adds one fails the translation instead of losing it.
+WAF_LOGGING_CONFIGURATION = SpecMapper(
+    tf_type="aws_wafv2_web_acl_logging_configuration",
+    ref_attr="id",
+    attrs={},
+    spec={
+        "ResourceArn": ("attr", "resource_arn"),
+        "LogDestinationConfigs": ("attr", "log_destination_configs"),
+    },
+)
+
 MAPPERS: dict[str, Any] = {
     "AWS::Events::Rule": EventsRuleMapper(),
     "AWS::WAFv2::WebACL": WAF_WEB_ACL,
+    "AWS::WAFv2::LoggingConfiguration": WAF_LOGGING_CONFIGURATION,
     "AWS::Cognito::UserPool": COGNITO_USER_POOL,
     "AWS::CloudFront::Distribution": CLOUDFRONT_DISTRIBUTION,
     "AWS::CloudFormation::WaitConditionHandle": NoOpMapper(),

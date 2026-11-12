@@ -488,6 +488,20 @@ STARTUP_SWEEPS = (
         ),
     ),
     StartupSweep(
+        func="cleanup_stale_terraform_migrations",
+        label="Dead-run Terraform-migration sweep",
+        fails_run=True,
+        why=(
+            "Fatal, because a dead migration run leaves two deployments, and the "
+            "old one is the separate upstream implementation, whose resources "
+            "carry upstream's own names: no name-based sweep here recognises "
+            "them, so the run's mirrored Terraform state is the only route to "
+            "them. A failure here is bounded the way the Terraform sweep's is: "
+            "counted beside the state, and abandoned to a note for a person once "
+            "retrying stops being worth it, so one run cannot fail every build."
+        ),
+    ),
+    StartupSweep(
         func="cleanup_stale_idp_stacks",
         label="Stale idp- stack sweep",
         fails_run=True,
@@ -1048,6 +1062,16 @@ def ci_region(environ: dict | None = None) -> str:
     return env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or PRIMARY_CI_REGION
 
 
+def _region_type(environ: dict | None = None) -> str | None:
+    """``eu`` or ``ca`` for a build the model swap covers, else None."""
+    region = ci_region(environ)
+    if region.startswith("eu-"):
+        return "eu"
+    if region.startswith("ca-"):
+        return "ca"
+    return None
+
+
 def _model_swapper():
     """The product's own `swap_model_ids`, from the UpdateConfiguration Lambda.
 
@@ -1078,9 +1102,7 @@ def regional_config_file(config_path: str, environ: dict | None = None) -> str:
     import yaml
 
     region = ci_region(environ)
-    region_type = (
-        "eu" if region.startswith("eu-") else "ca" if region.startswith("ca-") else None
-    )
+    region_type = _region_type(environ)
     if region_type is None:
         return config_path
     with open(config_path, "rb") as f:
@@ -1208,7 +1230,10 @@ def _ensure_boundary_policy(iam_client, account_id, policy_name):
 
 
 def create_iam_resources(
-    stack_name, shared_boundary=False, terraform_deployer_arn=None
+    stack_name,
+    shared_boundary=False,
+    terraform_deployer_arn=None,
+    terraform_migration=False,
 ):
     """Create the permissions boundary, then the CFN service role that requires it.
 
@@ -1279,7 +1304,11 @@ def create_iam_resources(
         ]
         output_key = "ServiceRoleArn"
         if terraform_deployer_arn:
-            template_body = json.dumps(terraform_deploy_role_template(template_body))
+            template_body = json.dumps(
+                terraform_deploy_role_template(
+                    template_body, terraform_migration=terraform_migration
+                )
+            )
             parameters.append(
                 {
                     "ParameterKey": "TerraformDeployerPrincipalArn",
@@ -2354,6 +2383,140 @@ def test_step10_multi_doc_discovery(stack_name):
         return {
             "success": False,
             "error": f"Multi-document discovery test failed: {str(e)}",
+        }
+
+
+QUICK_START_PROFILE = "integration-quick-start"
+QUICK_START_CLASS = "IntegrationPaystub"
+QUICK_START_PROMPT = (
+    "Employee paystubs that list the employer, the pay period end date, "
+    "the gross pay and the net pay"
+)
+QUICK_START_FIELD_HINTS = ("employer name", "pay period end date", "net pay")
+QUICK_START_MODEL = "us.anthropic.claude-sonnet-4-6"
+QUICK_START_ATTEMPTS = 2
+
+
+def quick_start_model(environ: dict | None = None) -> str:
+    """The authoring model, swapped for an EU or CA build as an uploaded config is."""
+    region_type = _region_type(environ)
+    if region_type is None:
+        return QUICK_START_MODEL
+    return _model_swapper()({"model": QUICK_START_MODEL}, region_type)["model"]
+
+
+def quick_start_bootstrap_command(stack_name, environ: dict | None = None):
+    hints = " ".join(f'--field-hint "{hint}"' for hint in QUICK_START_FIELD_HINTS)
+    return (
+        f"idp-cli bootstrap --stack-name {stack_name} "
+        f'--prompt "{QUICK_START_PROMPT}" --class-name {QUICK_START_CLASS} '
+        f"--target-profile {QUICK_START_PROFILE} {hints} "
+        f"--model-id {quick_start_model(environ)} --count 1"
+    )
+
+
+def quick_start_profile_problem(config_data):
+    """Why a downloaded Quick Start profile is not the one bootstrap was asked for.
+
+    Returns ``None`` when the profile holds the requested class with at least one
+    leaf field per hint, nested or not. Field names are the model's choice, so only
+    the count is held.
+    """
+    from idp_common.synthesis.schema_bridge import leaf_field_paths
+
+    classes = (config_data or {}).get("classes") or []
+    target = next(
+        (
+            c
+            for c in classes
+            if QUICK_START_CLASS in (c.get("$id"), c.get("x-aws-idp-document-type"))
+        ),
+        None,
+    )
+    if target is None:
+        found = [c.get("$id") for c in classes]
+        return f"class {QUICK_START_CLASS} not in profile {QUICK_START_PROFILE} (found {found})"
+    fields = leaf_field_paths(target)
+    if len(fields) < len(QUICK_START_FIELD_HINTS):
+        return (
+            f"class {QUICK_START_CLASS} has {len(fields)} field(s), fewer than the "
+            f"{len(QUICK_START_FIELD_HINTS)} it was asked for"
+        )
+    return None
+
+
+def run_quick_start_bootstrap(stack_name):
+    """Run `idp-cli bootstrap`, once more if it fails; return the last problem.
+
+    Authoring is one model call that must return a valid schema, and a failure in
+    the parallel pool fails the whole suite, so one retry keeps a single bad
+    response from costing the run. A suite that has already failed fast is not
+    retried. Returns None once a run reports saving the profile.
+    """
+    saved = f"Config profile: {QUICK_START_PROFILE}"
+    problem = None
+    for attempt in range(1, QUICK_START_ATTEMPTS + 1):
+        try:
+            result = run_command(quick_start_bootstrap_command(stack_name), timeout=600)
+        except Exception as e:
+            if ABORT_TESTS.is_set():
+                raise
+            problem = str(e)
+        else:
+            if saved in (result.stdout or ""):
+                return None
+            problem = (
+                f"idp-cli bootstrap did not report saving profile {QUICK_START_PROFILE}"
+            )
+        print(f"  ⚠️ Bootstrap attempt {attempt} of {QUICK_START_ATTEMPTS}: {problem}")
+    return problem
+
+
+def test_step16_quick_start_bootstrap(stack_name):
+    """Step 16: Quick Start's headless path authors a schema and saves a profile.
+
+    `idp-cli bootstrap` shares the schema authoring and profile write the Quick
+    Start agent's tools use. It names no starting profile, so the catalog is empty
+    and the catalog match does not run. It saves its own profile and never activates
+    it, so it is safe in the parallel pool.
+    """
+    print("Step 16: Testing Quick Start bootstrap (idp-cli bootstrap)...")
+
+    try:
+        problem = run_quick_start_bootstrap(stack_name)
+        if problem:
+            return {
+                "success": False,
+                "error": f"Quick Start bootstrap test failed: {problem}",
+            }
+
+        config_file = "/tmp/quick-start-bootstrap-config.yaml"  # nosec B108
+        cmd = (
+            f"idp-cli config-download --stack-name {stack_name} "
+            f"--config-version {QUICK_START_PROFILE} --output {config_file}"
+        )
+        run_command(cmd, check=True)
+
+        import yaml
+
+        with open(config_file, "r") as f:
+            problem = quick_start_profile_problem(yaml.safe_load(f))
+        if problem:
+            print(f"❌ {problem}")
+            return {
+                "success": False,
+                "error": f"Quick Start bootstrap test failed: {problem}",
+            }
+
+        print(f"  ✓ Profile {QUICK_START_PROFILE} holds class {QUICK_START_CLASS}")
+        print("✅ Quick Start bootstrap test completed")
+        return {"success": True}
+
+    except Exception as e:
+        print(f"❌ Quick Start bootstrap test failed: {e}")
+        return {
+            "success": False,
+            "error": f"Quick Start bootstrap test failed: {str(e)}",
         }
 
 
@@ -4358,6 +4521,12 @@ PARALLEL_TEST_STEPS = [
         "Pipeline hooks",
         "Pipeline hooks end-to-end (preprocessing + postprocessing, mutation persisted)",
     ),
+    (
+        test_step16_quick_start_bootstrap,
+        "Step 16",
+        "Quick Start bootstrap",
+        "Quick Start schema authoring saves a profile (idp-cli bootstrap)",
+    ),
 ]
 # Step 12 stays sequential: its dynamic RBAC harness temporarily flips
 # ADMIN_USER_PASSWORD_AUTH on the shared UI app client (a stack-wide auth
@@ -4734,7 +4903,23 @@ def _cfn_long_form(loader, suffix, node):
 _CfnLongFormLoader.add_multi_constructor("!", _cfn_long_form)
 
 
-def terraform_deploy_role_template(service_role_template_text: str) -> dict:
+#: What a Terraform-migration run's deploy role holds beyond a nightly's: the
+#: driver's preflight reads the account's IAM role count against its quota
+#: (iam:GetAccountSummary, which takes no resource but "*") before two
+#: deployments holding several hundred roles between them are started. Read-only.
+TERRAFORM_MIGRATION_ROLE_ADDITIONS = (
+    {
+        "Sid": "TerraformMigrationRoleQuotaRead",
+        "Effect": "Allow",
+        "Action": ["iam:GetAccountSummary"],
+        "Resource": "*",
+    },
+)
+
+
+def terraform_deploy_role_template(
+    service_role_template_text: str, terraform_migration: bool = False
+) -> dict:
     """The CI pre-stack for a Terraform run: the customer service-role template
     plus a sibling role Terraform assumes.
 
@@ -4795,6 +4980,11 @@ def terraform_deploy_role_template(service_role_template_text: str) -> dict:
                         "Action": ["cloudcontrol:*"],
                         "Resource": "*",
                     },
+                    *(
+                        copy.deepcopy(list(TERRAFORM_MIGRATION_ROLE_ADDITIONS))
+                        if terraform_migration
+                        else []
+                    ),
                     deny_self,
                 ],
             },
@@ -5404,15 +5594,20 @@ def cleanup_terraform_deployment(result, terraform, iam=True, delete_timeout=3 *
     return findings + (cleanup_iam_resources(stack_name) if iam else [])
 
 
-def _terraform_state_listing(bucket, s3=None):
-    """{stack_name: {"keys": [...], "newest": datetime | None}} under the state
-    prefix. Raises when the listing does not complete."""
+def _terraform_state_listing(bucket, s3=None, prefix=None):
+    """{stack_name: {"keys": [...], "newest": datetime | None}} under ``prefix``
+    (TERRAFORM_STATE_PREFIX by default). Raises when the listing does not
+    complete. A key outside the prefix is skipped rather than parsed, so the
+    nightly's listing and the migration's never read each other's runs."""
+    prefix = prefix or TERRAFORM_STATE_PREFIX
     client = s3 or boto3.client("s3", config=_THROTTLE_RETRY_CONFIG)
     runs = {}
     paginator = client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=TERRAFORM_STATE_PREFIX):
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for item in page.get("Contents", []):
-            rest = item["Key"][len(TERRAFORM_STATE_PREFIX) :]
+            if not item["Key"].startswith(prefix):
+                continue
+            rest = item["Key"][len(prefix) :]
             stack_name, sep, name = rest.partition("/")
             if not sep or not name:
                 continue
@@ -11297,6 +11492,10 @@ def send_failure_notification(subject, summary_text):
 # ---------------------------------------------------------------------------
 
 TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
+#: The line the GitLab job's after_script reads the build's summary from (its
+#: `sed -n '/<marker>/,$p'` over the CodeBuild log, in .gitlab-ci.yml). Every
+#: path that ends a build with a summary prints it first.
+DEPLOYMENT_SUMMARY_LOG_MARKER = "🤖 Generating deployment summary with Bedrock..."
 #: Heads the summary and marks the failure email on a migration run, so its result
 #: is never read as a nightly's.
 TERRAFORM_MIGRATION_RUN_LABEL = "WEEKLY TERRAFORM MIGRATION RUN"
@@ -11312,6 +11511,19 @@ TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES = 240
 #: delete and 8 for the old one's, plus the sweep), and the `-iam` cleanup after it.
 TERRAFORM_MIGRATION_RESERVE_SECONDS = 45 * 60
 TERRAFORM_MIGRATION_PROFILE = "idp-terraform-migration"
+#: Where a migration run keeps both Terraform states, the driver's context and the
+#: new root's configuration (the driver's ``--state-mirror``), beside the run's
+#: ``run.json``, in the CI state bucket. A prefix of its own rather than under
+#: TERRAFORM_STATE_PREFIX: a migration run's prefix holds two roots and no top-level
+#: ``main.tf``, which the nightly's reaper would report as undestroyable on every
+#: build. cleanup_stale_terraform_migrations is its reaper.
+TERRAFORM_MIGRATION_STATE_PREFIX = "terraform-migration-runs/"
+#: How long the reaper gives the driver's ``--teardown-only`` for one dead run.
+#: Longer than TERRAFORM_REAP_TIMEOUT_SECONDS on purpose: the driver's measured
+#: teardown of both deployments was 27 minutes in a work directory that already
+#: held both roots, and the reaper first re-clones the pinned upstream (with its
+#: `sources/` submodule) and initialises both roots.
+TERRAFORM_MIGRATION_REAP_TIMEOUT_SECONDS = 60 * 60
 
 
 def terraform_migration_mode(
@@ -11373,9 +11585,9 @@ def terraform_migration_names(stack_name: str) -> tuple[str, str]:
     at 64, so the prefix can be at most 13 characters, while a run-prefix name is
     15. It is ``idpo`` plus the run's MMDDHHMM (12 characters): it starts with
     MANAGED_STACK_NAME_PREFIX, which the deploy role requires, and neither name
-    contains the other, which the driver's sweep requires. What a dead build left
-    of the old deployment is therefore reached by no startup sweep; see
-    CI_TEST_COVERAGE.md.
+    contains the other, which the driver's sweep requires. No name-based startup
+    sweep therefore reaches what a dead build left of the old deployment; its
+    mirrored state does (cleanup_stale_terraform_migrations).
     """
     match = _IDP_RUN_PREFIX_RE.match(stack_name)
     if not match:
@@ -11392,6 +11604,11 @@ def terraform_migration_upstream_iam_path(new_name: str) -> str:
     whatever upstream names the role, and it carries the run's name, so what a dead
     build left is found by path."""
     return f"/{new_name}-upstream/"
+
+
+def terraform_migration_state_mirror(bucket: str, new_name: str) -> str:
+    """The driver's ``--state-mirror`` for a run: its prefix in the state bucket."""
+    return f"s3://{bucket}/{TERRAFORM_MIGRATION_STATE_PREFIX}{new_name}/"
 
 
 def render_migration_aws_config(role_arn: str, region: str) -> str:
@@ -11416,7 +11633,9 @@ def terraform_migration_driver_command(
     region,
     account,
     boundary_arn,
+    state_mirror=None,
 ):
+    mirror = ["--state-mirror", state_mirror] if state_mirror else []
     return [
         sys.executable,
         "scripts/sdlc/terraform_migration_test.py",
@@ -11440,6 +11659,7 @@ def terraform_migration_driver_command(
         terraform_migration_upstream_iam_path(new_name),
         "--upstream-permissions-boundary-arn",
         boundary_arn,
+        *mirror,
     ]
 
 
@@ -11489,6 +11709,62 @@ def terraform_migration_budget(
     return max(left - TERRAFORM_MIGRATION_RESERVE_SECONDS, 0), max(left - 300, 0)
 
 
+#: How much of the driver's newest logs a failure analysis reads: the failing
+#: phase's command output ends there, as a Terraform apply's error does.
+TERRAFORM_MIGRATION_ANALYSIS_LOGS = 3
+TERRAFORM_MIGRATION_ANALYSIS_LOG_LINES = 150
+
+
+def migration_failure_evidence(work_dir: str) -> str:
+    """The tails of the driver's most recently written logs, newest first.
+
+    The driver writes one log per command under ``<work dir>/logs``, so the
+    newest ones belong to the phase that failed and to the teardown after it."""
+    logs = sorted(
+        (p for p in Path(work_dir, "logs").glob("*") if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[:TERRAFORM_MIGRATION_ANALYSIS_LOGS]
+    parts = []
+    for path in logs:
+        lines = path.read_text(errors="replace").splitlines()
+        tail = "\n".join(lines[-TERRAFORM_MIGRATION_ANALYSIS_LOG_LINES:])
+        parts.append(
+            f"--- {path.name} (last {len(lines[-TERRAFORM_MIGRATION_ANALYSIS_LOG_LINES:])} lines) ---\n{tail}"
+        )
+    return "\n\n".join(parts) or "(the driver wrote no logs)"
+
+
+def generate_migration_failure_summary(summary_text: str, evidence: str) -> str:
+    """An AI analysis of a failed migration run, from the driver's own summary
+    (which names the failing phase) and the tails of its newest logs. Never
+    raises: a failed analysis is reported in place of one."""
+    try:
+        prompt = dedent(f"""
+        The weekly Terraform-migration integration test of the IDP accelerator
+        failed. It deploys a pinned awslabs/genai-idp-terraform release, migrates
+        it in place onto this repository's Terraform module with every phase of
+        `idp-cli terraform migrate-from-genai-idp-terraform`, verifies, and
+        destroys both deployments. Identify the failing phase and its root cause.
+
+        Driver summary:
+        {summary_text}
+
+        Newest driver logs:
+        {evidence}
+
+        Respond with bullet points, each under 75 characters, under these headings:
+
+        🔍 Failing phase and root cause:
+        🧹 Was teardown complete (any leftovers named)?
+        💡 Fix: the specific change to make, naming the file, resource or
+           permission involved. If an IAM permission is missing, name it exactly.
+        """)
+        return "🤖 AI FAILURE ANALYSIS\n\n" + _invoke_bedrock(prompt)
+    except Exception as e:  # noqa: BLE001 - the run's result must still be sent
+        return f"⚠️ Failed to generate the migration failure analysis: {e}"
+
+
 def run_terraform_migration(stack_name, module_url, terraform_bin, started=None):
     """Run the migration driver under this run's TFDeployRole. Returns
     ``(success, summary_text)``; never raises. ``started`` is the build's
@@ -11501,7 +11777,9 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
     success = False
     try:
         role_arn, boundary_arn = create_iam_resources(
-            new_name, terraform_deployer_arn=_caller_principal_arn()
+            new_name,
+            terraform_deployer_arn=_caller_principal_arn(),
+            terraform_migration=True,
         )
         if not role_arn or not boundary_arn or not _wait_until_assumable(role_arn):
             return False, f"❌ the run's TFDeployRole for {new_name} was not usable"
@@ -11517,6 +11795,28 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
             AWS_SDK_LOAD_CONFIG="1",
         )
         account = boto3.client("sts").get_caller_identity()["Account"]
+        bucket = _terraform_state_bucket()
+        mirror = terraform_migration_state_mirror(bucket, new_name)
+        record = {
+            "old_name": old_name,
+            "new_name": new_name,
+            "region": region,
+            "role_arn": role_arn,
+            "boundary_arn": boundary_arn,
+            "upstream_iam_path": terraform_migration_upstream_iam_path(new_name),
+            "module_url": module_url,
+            "account": account,
+            "build_id": os.environ.get("CODEBUILD_BUILD_ID", ""),
+            "staged_at": datetime.now(tz=timezone.utc).isoformat(),
+        }
+        # Before the driver, which creates nothing until its preflight has written
+        # the mirror: the record is what lets a later build tear this run down.
+        boto3.client("s3", config=_THROTTLE_RETRY_CONFIG).put_object(
+            Bucket=bucket,
+            Key=f"{TERRAFORM_MIGRATION_STATE_PREFIX}{new_name}/{TERRAFORM_RUN_RECORD}",
+            Body=json.dumps(record, indent=2).encode(),
+            ServerSideEncryption="AES256",
+        )
         cmd = terraform_migration_driver_command(
             old_name,
             new_name,
@@ -11527,6 +11827,7 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
             region,
             account,
             boundary_arn,
+            state_mirror=mirror,
         )
         deadline, timeout = terraform_migration_budget(
             time.monotonic() - started if started is not None else 0,
@@ -11556,7 +11857,187 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
     finally:
         for finding in cleanup_iam_resources(new_name):
             summary += f"\n⚠️ IAM cleanup: {finding}"
+    if not success:
+        analysis = generate_migration_failure_summary(
+            summary, migration_failure_evidence(work_dir)
+        )
+        summary += f"\n\n{analysis}"
     return success, summary
+
+
+def _reap_terraform_migration(new_name, bucket, keys, s3=None):
+    """Tear down one dead migration run from its mirror: the driver's own
+    ``--resume --teardown-only``, in a scratch work directory it rebuilds from the
+    mirror, as the run's TFDeployRole, with the names and IAM path its
+    ``run.json`` records. The driver's own checks still decide what it may delete
+    (stored names, account, a run that created something). Returns
+    ``{"findings": [...], "timed_out": bool}``; no findings means destroyed, the
+    `-iam` pre-stack included."""
+    client = s3 or boto3.client("s3", config=_THROTTLE_RETRY_CONFIG)
+    prefix = f"{TERRAFORM_MIGRATION_STATE_PREFIX}{new_name}/"
+    if prefix + TERRAFORM_RUN_RECORD not in keys:
+        return {
+            "findings": [
+                f"{new_name}: s3://{bucket}/{prefix} has no {TERRAFORM_RUN_RECORD}, "
+                "so the run's role and names are unknown; destroy it by hand"
+            ],
+            "timed_out": False,
+        }
+    record = json.loads(
+        client.get_object(Bucket=bucket, Key=prefix + TERRAFORM_RUN_RECORD)[
+            "Body"
+        ].read()
+    )
+    with tempfile.TemporaryDirectory(prefix="idp-tfmig-reap-") as tmp:
+        config_path = os.path.join(tmp, "aws-config")
+        with open(config_path, "w") as f:
+            f.write(render_migration_aws_config(record["role_arn"], record["region"]))
+        env = dict(os.environ)
+        for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+            env.pop(name, None)
+        env.update(
+            AWS_CONFIG_FILE=config_path,
+            AWS_PROFILE=TERRAFORM_MIGRATION_PROFILE,
+            AWS_SDK_LOAD_CONFIG="1",
+        )
+        cmd = terraform_migration_driver_command(
+            record["old_name"],
+            new_name,
+            record["module_url"],
+            record["role_arn"],
+            ensure_terraform_binary(),
+            os.path.join(tmp, "work"),
+            record["region"],
+            record["account"],
+            record["boundary_arn"],
+            state_mirror=f"s3://{bucket}/{prefix}",
+        ) + ["--resume", "--teardown-only"]
+        try:
+            proc = subprocess.run(
+                cmd,
+                env=env,
+                timeout=TERRAFORM_MIGRATION_REAP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "findings": [
+                    f"{new_name}: the migration teardown ran past "
+                    f"{TERRAFORM_MIGRATION_REAP_TIMEOUT_SECONDS // 60} minutes"
+                ],
+                "timed_out": True,
+            }
+    if proc.returncode != 0:
+        return {
+            "findings": [
+                f"{new_name}: the migration teardown exited {proc.returncode}; its "
+                "log is above"
+            ],
+            "timed_out": False,
+        }
+    return {
+        "findings": [f"{new_name}: {f}" for f in cleanup_iam_resources(new_name)],
+        "timed_out": False,
+    }
+
+
+def _manual_migration_destroy_note(new_name, bucket, failures):
+    prefix = f"{TERRAFORM_MIGRATION_STATE_PREFIX}{new_name}/"
+    return (
+        f"Terraform-migration run {new_name} could not be torn down by {failures} "
+        f"reap attempt(s) and is no longer retried by builds. Its states, context "
+        f"and run.json are in s3://{bucket}/{prefix}. To tear it down by hand, run "
+        "scripts/sdlc/terraform_migration_test.py with --resume --teardown-only, "
+        f"--state-mirror s3://{bucket}/{prefix} and the names, role, IAM path and "
+        "boundary run.json records, then delete the `-iam` pre-stack and the "
+        "prefix."
+    )
+
+
+def cleanup_stale_terraform_migrations(
+    pending: set | None = None, abandoned: list | None = None
+):
+    """Tear down Terraform-migration runs a dead build left behind (Step 0 sweep).
+
+    A migration run records `run.json` under TERRAFORM_MIGRATION_STATE_PREFIX
+    before its driver starts, and the driver mirrors both states, its context and
+    the new root there, removing the prefix once a teardown found nothing left. A
+    prefix still there later is a run whose build died first.
+
+    Stale by IDP_STACK_STALE_AGE_SECONDS since the prefix was last written. The
+    driver writes the mirror at the end of every phase, and its longest phase (a
+    DynamoDB time-to-live wait, about an hour) is well inside that gate, so a run
+    still in flight is never reaped; and only one integration build runs at a time
+    (the `integration_deploy` resource group), so none is.
+
+    ``pending`` receives every run with a prefix still standing after this sweep,
+    young or not, so cleanup_stale_idp_stacks keeps its `-iam` pre-stack, whose
+    role the teardown runs as. Failed reaps are counted and abandoned to a note
+    after TERRAFORM_REAP_MAX_ATTEMPTS, as cleanup_stale_terraform_deployments
+    does, so one run that cannot be torn down does not fail every later build.
+    """
+    print("🧹 Tearing down Terraform-migration runs left by dead builds...")
+    try:
+        bucket = _terraform_state_bucket()
+        runs = _terraform_state_listing(bucket, prefix=TERRAFORM_MIGRATION_STATE_PREFIX)
+    except Exception as e:  # noqa: BLE001
+        return _sweep_finding(
+            "could not list the Terraform-migration state prefixes, so no dead "
+            f"migration run was considered: {e}"
+        )
+    now = datetime.now(tz=timezone.utc)
+    findings = []
+    age_unestablishable = []
+    for new_name, run in sorted(runs.items()):
+        if pending is not None:
+            pending.add(new_name)
+        age = _listing_age_seconds(run["newest"], now)
+        if age is None:
+            age_unestablishable.append(new_name)
+            continue
+        if age < IDP_STACK_STALE_AGE_SECONDS:
+            print(f"  [{new_name}] mirror younger than the age gate — may be in flight")
+            continue
+        client = boto3.client("s3", config=_THROTTLE_RETRY_CONFIG)
+        prefix = f"{TERRAFORM_MIGRATION_STATE_PREFIX}{new_name}/"
+        prior = _reap_attempts(client, bucket, prefix, run["keys"])
+        if prior >= TERRAFORM_REAP_MAX_ATTEMPTS:
+            note = _manual_migration_destroy_note(new_name, bucket, prior)
+            print(f"⚠️ {note}")
+            if abandoned is not None:
+                abandoned.append(note)
+            continue
+        print(f"[{new_name}] tearing down a dead Terraform-migration run...")
+        try:
+            outcome = _reap_terraform_migration(new_name, bucket, run["keys"])
+        except Exception as e:  # noqa: BLE001
+            outcome = {
+                "findings": [f"{new_name}: reap failed: {e}"],
+                "timed_out": False,
+            }
+        if not outcome["findings"]:
+            if pending is not None:
+                pending.discard(new_name)
+            continue
+        failures = prior + 1
+        _record_reap_failure(client, bucket, prefix, failures, outcome["findings"])
+        if failures >= TERRAFORM_REAP_MAX_ATTEMPTS or (
+            outcome["timed_out"] and prior >= 1
+        ):
+            note = _manual_migration_destroy_note(new_name, bucket, failures)
+            print(f"⚠️ {note}")
+            if abandoned is not None:
+                abandoned.append(note)
+        else:
+            findings.extend(outcome["findings"])
+    _report_age_unestablishable(
+        age_unestablishable,
+        "the age gate cannot be satisfied, and this path runs terraform destroy on "
+        "a migration run that may still be under test",
+    )
+    if not runs:
+        print("✅ No Terraform-migration state left by a dead run")
+    return [_sweep_finding(f)[0] for f in findings] if findings else []
 
 
 def main():
@@ -11666,6 +12147,17 @@ def main():
     )
     if terraform_sweep_findings and not terraform_runs_left:
         terraform_runs_left = None
+    # The same contract for a dead migration run, whose `-iam` pre-stack holds the
+    # role its teardown runs as. A failed listing makes the set unknown, which the
+    # stack sweep reads as "keep every Terraform-labelled run".
+    migration_runs_left: set = set()
+    migration_sweep_findings = cleanup_stale_terraform_migrations(
+        migration_runs_left, terraform_reaps_abandoned
+    )
+    if migration_sweep_findings and not migration_runs_left:
+        terraform_runs_left = None
+    elif terraform_runs_left is not None:
+        terraform_runs_left |= migration_runs_left
     stale_stack_findings = cleanup_stale_idp_stacks(terraform_runs=terraform_runs_left)
     # Buckets last: a stack the reaper above just deleted frees its buckets for
     # reaping here (CloudFormation can't delete a non-empty bucket, so they'd
@@ -11694,6 +12186,7 @@ def main():
         "cleanup_stale_bda_blueprints": bda_sweep_findings,
         "cleanup_stale_apigw_test_vpcs": apigw_vpc_sweep_findings,
         "cleanup_stale_terraform_deployments": terraform_sweep_findings,
+        "cleanup_stale_terraform_migrations": migration_sweep_findings,
         "cleanup_stale_idp_stacks": stale_stack_findings,
         "cleanup_stale_idp_buckets": stale_bucket_findings,
         "cleanup_stale_idp_roles": stale_role_findings,
@@ -11737,10 +12230,19 @@ def main():
                 started=main_started,
             )
         else:
+            # The publish analysis main() already ran (generate_publish_failure_
+            # summary) is the only diagnosis this run gets; keep it.
             ok, migration_summary = False, f"❌ publish failed: {failure_reason}"
+            if ai_summary:
+                migration_summary += f"\n\n{ai_summary}"
         text = label_ci_run(
             ("✅ PASSED\n\n" if ok else "❌ FAILED\n\n") + migration_summary
         )
+        # The GitLab job reads the summary from deploy/summaries/, and from the
+        # log from this marker on when that read fails; without the line a failed
+        # read leaves the job and both Slack posts reporting "no deployment
+        # summary" for a run that wrote one.
+        print(DEPLOYMENT_SUMMARY_LOG_MARKER)
         print(text)
         publish_summary_to_s3(text)
         if not ok:
@@ -12062,6 +12564,12 @@ def main():
             "cleanup_stale_terraform_deployments", terraform_sweep_findings
         )
         failure_reason = _first_failure_reason(failure_reason, reason)
+    if migration_sweep_findings:
+        stack_success = False
+        reason = _report_sweep_not_completed(
+            "cleanup_stale_terraform_migrations", migration_sweep_findings
+        )
+        failure_reason = _first_failure_reason(failure_reason, reason)
     if stale_stack_findings:
         stack_success = False
         reason = _report_sweep_not_completed(
@@ -12114,7 +12622,7 @@ def main():
         )
     print(f"\n{consolidated}\n")
 
-    print("\n🤖 Generating deployment summary with Bedrock...")
+    print(f"\n{DEPLOYMENT_SUMMARY_LOG_MARKER}")
     full_summary = consolidated
     if ai_summary:
         print(ai_summary)

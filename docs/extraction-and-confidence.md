@@ -46,7 +46,9 @@ They combine freely. The tables below give pros/cons and a recommendation; the r
 | **Cons** | No built-in validation/retry; a single huge section must fit one inference (context-overflow / read-timeout risk); weaker on deeply nested structures | More inferences → higher per-doc cost & latency; requires a model that reliably emits tool use (no OpenAI GPT-5.x, and not Amazon Nova Lite — see below); still in **preview** |
 | **Choose when** | Most documents; small–medium size; simple/flat schemas; lowest cost matters | Complex/nested schemas, strict validation needs, **large documents or big multi-row tables**, business-critical accuracy |
 
-> **Rule of thumb:** start Simple. Move to Advanced when you hit nested-schema accuracy limits, need schema-format validation, or the document is large enough that one inference can't hold it (long tables, 20+ dense pages).
+> ⚠️ **Simple mode can return part of a long list and still report `COMPLETED`.** On the v0.6.14 benchmark grid, with the shipped default extraction model (Claude Sonnet 5), Simple mode returned every row of each of the three 400-row, 9-page statements on every run. On the 800-row, 17-page statement it returned the whole list on only **5 of 13** runs and **43 to 190 rows** on the other 8, and every one of those runs reported `COMPLETED` ([config-guidance §5.5](./benchmarking/config-guidance.md#55-recommendations-by-document-profile)). No size between 400 and 800 rows was measured, so **treat about 400 list rows per section (9 pages on those statements) as the Simple-mode limit, and use Advanced mode above it**. In Advanced mode all seven models in that grid returned 800 of 800 rows on every run. The limit also depends on the model: Claude Sonnet 5.5 lost most of a 400-row list on 15 of its 133 runs, and both Amazon Nova models return about half of a list or less above 100 rows ([config-guidance §5.1](./benchmarking/config-guidance.md#51-extraction-model--the-full-grid)). Check completeness, not completion status. When a list comes back with fewer than half the rows the section's OCR tables of the same width show (and those tables hold at least 30 rows), the section carries the `extraction_rows_below_ocr_estimate` processing issue, a warning by default; all 8 short runs above carry it. A smaller loss of 30 or more rows is reported as `extraction_partial_row_shortfall` (up to 29 rows can go missing unreported), and a list with no matching OCR table may be reported by nothing ([Detecting a truncated list](#detecting-a-truncated-list)). [`extraction.row_shortfall_action: fail`](#making-a-materially-incomplete-list-fail-the-section--extractionrow_shortfall_action) makes a section carrying the first of those fail instead, but it can also fail correct extractions of small 2- or 3-property arrays, including the default preset's `Bank-Statement.account_summary`, so check [the shapes it misjudges](#why-fail-is-opt-in-and-what-to-check-before-turning-it-on) first. Read [`minItems` in Simple vs Advanced mode](#minitems-on-a-list-field--a-warning-in-simple-mode-a-hard-floor-in-advanced) before adding a row floor, because the two modes treat it differently.
+
+> **Rule of thumb:** start Simple. Move to Advanced when a section can hold a list of more than about 400 rows (see the warning above), when you hit nested-schema accuracy limits, when you need schema-format validation, or when a section is too large for one inference to hold.
 
 ### Confidence mode: separate vs integrated vs off
 
@@ -112,9 +114,11 @@ extraction:
 > GPT-5.x (`minimal`|`low`|`medium`|`high`), xAI Grok
 > (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`), and OpenAI GPT-6 Astra
 > (`none`|`low`|`medium`|`high`|`xhigh`|`max`, **not** `minimal`) — `reasoning_effort` controls how much
-> the model reasons before answering. Extraction **defaults to `low`**: a full
-> effort sweep found higher effort adds output-token cost with negligible
-> extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
+> the model reasons before answering. Extraction **defaults to `low`**, because higher
+> effort spends more output tokens. Its effect on extraction accuracy has not been
+> measured here: every benchmark cell holds effort at `low`
+> ([config-guidance](./benchmarking/config-guidance.md#configuration-axes-measured)).
+> If you raise it for reasoning-heavy documents, A/B test it on your own documents.
 > Ignored by Nova, Sonnet 4.5, and Haiku **4.5** — note the two Haikus differ here:
 > Haiku 5.5 is the first Haiku that accepts effort, and its own default is
 > `medium` rather than `high`. Sonnet 5.5's own default is `high`, the ordinary
@@ -526,7 +530,7 @@ extraction:
 - **`max_pages_per_shard` is the timeout lever.** It stays a small fixed default (5) rather than model-derived: the 900s Lambda limit is about *sequential agent turns per shard* (wall-clock), not context tokens, so a roomy token budget must not collapse a large doc back into one giant shard. Fewer pages/shard ⇒ fewer turns ⇒ each shard Lambda finishes well under 900s.
 - **Advanced defaults to the resumable runtime.** `runtime: step_functions` is now the agentic default: each shard is its own Lambda iteration in a nested Step Functions **Distributed Map**, so a very large section is not bound by the single-Lambda 15-minute limit and Step Functions **retries only the incomplete shards** (completed shards are reused from S3). `in_process` (asyncio within one Lambda) remains available but is still bound by that one Lambda's 900s.
 - **Confidence *and* bounding-box grounding are sharded too.** Each shard runs its confidence assessment **and grounds its own rows' bounding boxes against only its own pages** — so both scale per-shard and run concurrently. The final merge only concatenates already-scored, already-grounded rows (plus a fast top-up for any rows the assessment LLM omitted); it does **not** re-assess or re-ground the whole section. This keeps the merge step fast even on very large tables (previously a single full-section grounding sweep over thousands of rows could approach the merge Lambda's 900s limit).
-- **Large-document guidance.** The defaults above are tuned to work out-of-the-box on large documents. Validated at scale on 100- and 200-page single- and multi-table documents (exact row counts, no loss/duplication, no timeouts).
+- **Large-document guidance.** The defaults above are tuned to work out-of-the-box on large documents. The largest document the benchmark suite has measured is 66 pages and 3,200 rows, on which advanced mode at the default model returned every row on both repeats ([config-guidance](./benchmarking/config-guidance.md#largest-document-tested-66-pages-3200-rows)); larger documents have not been measured.
 
 See [Large-Document Guidance](#8-large-document-guidance) for choosing between
 Simple + separate confidence and Advanced sharding.
@@ -1287,7 +1291,7 @@ is configured under `extraction.confidence`.
 
 - **Per-attribute scoring**: Individual confidence scores for each field, recursively for nested groups and list items. To keep responses compact, the default prompts ask the model to include a `confidence_reason` **only for lower-confidence leaves (below 0.9)** — a high-confidence value emits just `{"confidence": <score>}`. This cuts assessment output tokens substantially (output tokens dominate assessment cost) without affecting the scores or thresholds. Widen or remove the threshold in the confidence `task_prompt` if you want a reason on every field.
 - **Multimodal analysis**: Optionally combines OCR text with document images.
-- **Token-optimized**: Uses condensed OCR text confidence data for 80–90% token reduction versus full OCR results.
+- **Token-optimized**: Uses condensed OCR text confidence data, which is smaller than the full OCR results it is derived from.
 - **Large-list batching**: Long list fields (hundreds of rows) are automatically assessed in sequential batches (`list_batch_size`) so every row is scored — see below.
 - **UI integration**: Results appear in the web interface with color-coded confidence indicators and (with geometry) bounding-box overlays.
 
@@ -1372,7 +1376,7 @@ The confidence prompts support the following placeholders:
 | `{EXTRACTION_RESULTS}` | JSON string of extraction results to assess |
 | `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` | Formatted list of attribute names and descriptions |
 | `{DOCUMENT_TEXT}` | OCR text (markdown) of the section's pages |
-| `{OCR_TEXT_CONFIDENCE}` | Condensed OCR confidence data (80-90% token reduction) |
+| `{OCR_TEXT_CONFIDENCE}` | Condensed OCR confidence data (smaller than the full OCR results) |
 | `{DOCUMENT_IMAGE}` | **Optional** — inserts document images at the specified position (see [Image Placement](#7-image-placement-cachepoint-output-formats--few-shot)) |
 
 A representative confidence `task_prompt` requesting scores (and geometry, when
@@ -1973,7 +1977,7 @@ hitl:
 
 Human review integrates confidence scores and geometry so reviewers see exactly
 which fields need attention and where they appear on the page. For the full
-workflow, the review UI, and Amazon A2I integration, see
+workflow and the review UI, see
 [Human Review](human-review.md).
 
 `hitl.notifications` sets how long [Inbox](web-ui.md#inbox) messages are kept and how
@@ -2323,9 +2327,10 @@ standard input tokens).
 ### JSON and YAML output
 
 The extraction service auto-detects and parses both JSON and YAML LLM responses
-via `extract_structured_data_from_text()`. YAML is more token-efficient (~10–30%
-fewer tokens; ~25% typical): no quotes around keys, compact nested syntax,
-natural multiline support. All existing JSON prompts continue to work unchanged —
+via `extract_structured_data_from_text()`. YAML usually needs fewer tokens than the
+equivalent JSON — no quotes around keys, compact nested syntax, natural multiline
+support — though the saving has not been measured here and depends on the shape
+of your data. All existing JSON prompts continue to work unchanged —
 no configuration changes required, with intelligent fallback between formats if
 parsing fails.
 
@@ -2433,14 +2438,19 @@ For large documents and big tables:
 
 ### Detecting a truncated list
 
-Extraction can lose rows **silently**: measured on synthetic bank statements with
-exact ground truth (Sonnet 5, one run per size, after the #726 over-splitting fix so
-each statement is one section), simple mode returns complete lists (recall 1.000)
-through **400 rows / 9 pages**, then **43 of 800 rows at 17 pages while reporting
-`COMPLETED` with no processing issue**, and fails outright with *Input is too long
-for requested model* from about 25 pages. (Earlier figures of "complete through
-~1,600 rows" were an artefact of over-splitting, which cut large statements into 6–18
-sections; see `docs/benchmarking/config-guidance.md` §3.) Two things make this
+Extraction can lose rows while the document still reports `COMPLETED`. Measured on
+synthetic bank statements with exact ground truth on the v0.6.14 benchmark grid, with
+the shipped default extraction model (Claude Sonnet 5) and each statement as one
+section, Simple mode returns the complete list on every run through **400 rows / 9
+pages**. On an **800-row, 17-page** statement it returned all 800 rows on 5 of 13 runs
+and **43 to 190 rows on the other 8**, each reporting `COMPLETED`
+([config-guidance §5.5](./benchmarking/config-guidance.md#55-recommendations-by-document-profile)).
+Each of those 8 runs carries `extraction_rows_below_ocr_estimate` (below), so a
+deployment that reads processing issues sees the loss and one that reads only the status
+does not. At **66 pages** Simple mode is refused before extraction with *Input is too
+long for requested model* ([config-guidance §3](./benchmarking/config-guidance.md#how-simple-mode-behaves-as-documents-grow)).
+(Earlier figures of "complete through ~1,600 rows" were an artefact of over-splitting,
+which cut large statements into 6–18 sections; see the same §3.) Two things make this
 particularly easy to miss:
 
 - **Scalar accuracy is unaffected.** The document's non-list fields extract
@@ -3045,7 +3055,7 @@ the system automatically adds `confidence_threshold` from configuration.
 
 ## Related Documentation
 
-- [Human Review](human-review.md) — HITL workflow and A2I integration
+- [Human Review](human-review.md) — HITL workflow and review UI
 - [Few-Shot Examples](few-shot-examples.md) — building example sets
 - [Configuration Guide](configuration.md) — configuration schema details
 - [Granular Assessment Retirement](migration-granular-retirement.md) — v0.6 migration notes

@@ -17,33 +17,40 @@ default** — in §2–§4 and §7; the extraction, classification and confidenc
 *varied* in §5 · classification Nova 2 Lite (the shipped default) · confidence Nova Lite
 (the shipped default) · summarization disabled (unscored)
 **Pricing:** `config_library/pricing.yaml` (sha256 `44a79aa06c15…`, unchanged since the
-v0.6.12 edition; rates as of 2026-10; intro pricing may apply)
+v0.6.12 edition; rates as of 2026-10; intro pricing may apply), except that **every Claude
+Sonnet 5 dollar figure measured on v0.6.14 is re-priced at Sonnet 5's published rates** — see
+the header note below
 **Measured:** 2026-11-07 and 2026-11-09/10 (run launch times), on one stack at one build —
 **3,338 scored rows across 31 result sets** (2,578 synthetic runs and 760 reference-corpus
-documents, $1,970.57 by the rows' own cost) plus a classification-variant benchmark on a
+documents, $1,970.57 by the rows' own cost as recorded, $1,854.45 with the Sonnet 5 share
+re-priced) plus a classification-variant benchmark on a
 20-packet labelled corpus. A host restart on 2026-11-07 killed six suites mid-run; their
 partial runs were discarded and the suites re-run in full (Appendix A).
 
-⚠️ **Four models' cost figures are not measurements of what the price list charges, in two
-opposite directions.** `pricing.yaml` holds one flat rate per model, and that is wrong for
-four of the swept models:
+⚠️ **Two models' cost figures are lower bounds, and every Sonnet 5 figure is re-priced.**
+`pricing.yaml` holds one flat rate per model, and that is wrong for two of the swept models:
 
 - **Claude Haiku 5.5** is billed 5× on every token type above 100,000 input tokens, and
   that threshold is crossed in practice here. Its figures are **lower bounds**.
 - **GPT-6 Astra** moves to a long-context band above 272,000 input tokens. Its figures are
   **lower bounds**.
-- **Claude Sonnet 5 and Sonnet 5 `:1m`**, the shipped default and its 1M twin, are priced
-  in `pricing.yaml` at Sonnet 4.6's rates, which is **1.5× the published Sonnet 5 price on
-  every token type** ($3.30/$16.50 per MTok against $2.20/$11.00, `us.`/`eu.`). The file
-  says so and leaves it for a separate change. So the Bedrock-token part of every Sonnet 5
-  figure is **overstated**, and those figures are **upper bounds**.
-- **Claude Sonnet 5.5** is priced at its published rates, which are identical to Sonnet
-  5's on input and output ($2.20/$11.00) and half on cache reads. Against the inflated
-  Sonnet 5 rows a report therefore shows Sonnet 5.5 as about a third cheaper than Sonnet 5
-  when the price list says they are nearly the same. Compare those two from the AWS price
-  list, never from here.
 
-Where this page compares one of these models on cost it states two dollar figures from
+**Claude Sonnet 5 and Sonnet 5 `:1m`**, the shipped default and its 1M twin, ran with
+`pricing.yaml` rows that carried Sonnet 4.6's rates, exactly **1.5× the published Sonnet 5
+price on every token type** ($3.30/$16.50 per MTok against $2.20/$11.00, `us.`/`eu.`). Those
+rows now carry the published rates
+([#1830](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1830)),
+and every Sonnet 5 dollar figure measured on v0.6.14 is re-priced to match: each run's Sonnet 5
+spend (its `cost_by_key` entry for `bedrock/us.anthropic.claude-sonnet-5`) is divided by 1.5
+and the rest of its cost is unchanged. Because the old rows were 1.5× high on all four token
+types, that division is exact for any token mix. The `summary.json` files under
+`benchmarks/results/v0.6.14/` still record the cost as it was priced at run time. Sonnet 5
+and **Claude Sonnet 5.5** are priced identically on input and output ($2.20/$11.00) and
+Sonnet 5.5 is half the price on cache reads, so the two now compare directly. Figures this
+page carries over from earlier editions (the v0.6.8 blocks, and v0.6.13 figures quoted for
+comparison) are as priced when they were measured and are not re-priced here.
+
+Where this page compares Haiku 5.5 or Astra on cost it states two dollar figures from
 the same grid and a **one-sided bound** over them ("at least X% less") in the direction the
 bias allows, which is what a bound supports and a ratio is not. Every other arm has a single
 flat rate and its cost figure is a true measurement. See each model's row in
@@ -164,11 +171,10 @@ Headline results at v0.6.14:
 7. **Neither premium knob on the other two model axes earns its price.** Upgrading the
    **classification** model buys nothing measurable: every arm produces downstream recall 1.0000
    over the same 83,790 cells, and each arm gets 132–133 of 133 boundaries right; the grid bill
-   rises from **$89.93 to $114.49** under Sonnet 5. Sonnet 5 as the **confidence** model is **a
+   rises from **$89.93 to $106.11** under Sonnet 5. Sonnet 5 as the **confidence** model is **a
    far more conservative scorer, not a more accurate one**: about **638 of 119,960** confidence
-   leaves below 0.9 against the default's **0 of 119,937**, for **$202.54 against $90.33**, with
-   identical cell accuracy (0.9997 over 83,790 cells in all three arms). The two Sonnet 5
-   premiums are upper bounds, because `pricing.yaml` overstates Sonnet 5 (§5.3, §5.4).
+   leaves below 0.9 against the default's **0 of 119,937**, for **$160.70 against $90.33**, with
+   identical cell accuracy (0.9997 over 83,790 cells in all three arms) (§5.3, §5.4).
 8. **Both standing list-loss hazards stay closed, and every §2 run produced one section.**
    `integrated` confidence with simple extraction is recall 1.000 and cell accuracy 1.000 on **4
    of 4 repeats**, at the same cost to the cent as `separate`, and the advanced-mode tool-decline
@@ -673,8 +679,8 @@ arms produced one section per run and **0 of 2,456 confidence leaves below 0.9**
 default.** `advverify__extraction-model-sonnet5` (the agentic cell with `integrated` and
 `separate` confidence on `longdesc_100`, 4× each, Sonnet 5): **8 of 8 runs complete**,
 recall 1.000 and cell accuracy 1.000 over 200 `cells_compared` per run, one section each.
-Cost is `integrated` **$0.4932** mean ($0.3586–0.7640) against `separate` **$0.3341**
-($0.3141–0.3921), so integrated is about 48% dearer on the agentic path at this size, with
+Cost is `integrated` **$0.3528** mean ($0.2636–0.5329) against `separate` **$0.2477**
+($0.2344–0.2863), so integrated is about 42% dearer on the agentic path at this size, with
 the widest single-run spread of the suite. At v0.6.5 the agent declined the table tool over
 one bad column and returned the whole 100-row list as `null` — the tool-decline hazard the
 v0.6.6/v0.6.7 editions tracked (#666/#668) — and it did not recur.
@@ -879,8 +885,7 @@ against $3.2134 at 1,600 — and simple mode at those two sizes still leaves row
 advanced mode scores in full. The difference is almost all the confidence pass, which costs
 $0.04–0.08 per document in advanced mode across that range and $0.67–1.34 in simple mode.
 For the shipped default at the 3,200-row size, §5.2's `astracap` measures Sonnet 5 at
-**$4.99 and $5.67 over two repeats, 434 s mean** — and those Sonnet 5 figures are upper
-bounds (see the header).
+**$3.76 and $4.20 over two repeats, 434 s mean**.
 
 ---
 
@@ -897,17 +902,16 @@ returned `COMPLETED` at **recall 1.000**, **cell accuracy 1.000 over 800 `cells_
 per run** and **one section**, so every figure below is a cost comparison between
 configurations that all did the job, with no completeness difference confounding it.
 
-Extraction model **Sonnet 5**, the shipped default (`cost__extraction-model-sonnet5`) —
-dollar figures are upper bounds, because `pricing.yaml` prices Sonnet 5 at 1.5× its
-published rates (see the header); the shape and the CVs are unaffected:
+Extraction model **Sonnet 5**, the shipped default (`cost__extraction-model-sonnet5`),
+re-priced at Sonnet 5's published rates (see the header):
 
 | config (OCR / mode / assessment) | cost mean ± stdev | CV | min–max | sections/run |
 |----------------------------------|-------------------|---:|---------|---|
-| BDA / advanced / separate | **$0.669 ± $0.049** | 7.3% | $0.645–0.756 | 1 ×5 |
-| Textract TABLES / advanced / separate | $0.679 ± $0.069 | 10.1% | $0.645–0.802 | 1 ×5 |
-| Textract TABLES / **simple** / separate | $0.705 ± $0.004 | **0.6%** | $0.703–0.712 | 1 ×5 |
-| Textract TABLES / advanced / integrated | $0.941 ± $0.142 | 15.0% | $0.738–1.090 | 1 ×5 |
-| Textract LAYOUT / advanced / separate | $1.258 ± $0.295 | **23.4%** | $0.904–**1.604** | 1 ×5 |
+| BDA / advanced / separate | **$0.501 ± $0.032** | 6.5% | $0.485–0.559 | 1 ×5 |
+| Textract TABLES / advanced / separate | $0.508 ± $0.046 | 9.0% | $0.485–0.589 | 1 ×5 |
+| Textract TABLES / **simple** / separate | $0.534 ± $0.003 | **0.5%** | $0.533–0.539 | 1 ×5 |
+| Textract TABLES / advanced / integrated | $0.684 ± $0.094 | 13.7% | $0.549–0.780 | 1 ×5 |
+| Textract LAYOUT / advanced / separate | $0.861 ± $0.197 | **22.9%** | $0.624–**1.092** | 1 ×5 |
 
 The same five cells at the **control model, Sonnet 4.6** (`cost`, also 5 repeats, all
 complete, one section each):
@@ -923,27 +927,27 @@ complete, one section each):
 **Findings**
 
 - **At 400 rows mode is not a price decision.** On the matched Textract TABLES pair, advanced
-  costs **$0.679 against simple's $0.705** at Sonnet 5 — advanced is the cheaper one, inside
+  costs **$0.508 against simple's $0.534** at Sonnet 5 — advanced is the cheaper one, inside
   its own spread — and **$0.574 against $0.527, 1.09×** at the control. **BDA / advanced at
-  $0.669 is the cheapest cell at the shipped default.** §3's size series shows the advanced
+  $0.501 is the cheapest cell at the shipped default.** §3's size series shows the advanced
   premium *shrinking* with size at the control — 2.22× at 25 rows, 1.22× at 100, 1.27× at
   400 on that single draw — and **inverting at 800**, where advanced costs $1.3260 against
   simple's $1.6192. Advanced mode is the expensive option on short documents, not on long
   lists.
 - **Simple mode is the predictable one at both models.** The control's simple cell is flat to
-  the cent across five runs (CV 0.1%), and at Sonnet 5 the same cell is at CV 0.6%. In the
+  the cent across five runs (CV 0.1%), and at Sonnet 5 the same cell is at CV 0.5%. In the
   v0.6.13 edition the Sonnet 5 simple cell ran at CV 4.4% because two of its five runs needed
   the confidence pass's batch-shrinking ladder; none did here.
 - **The run-to-run spread is a property of the agentic path, and it is wider at the shipped
-  default.** Advanced cells run at CV **7.3–23.4%** at Sonnet 5, and at the control **0.5%**
+  default.** Advanced cells run at CV **6.5–22.9%** at Sonnet 5, and at the control **0.5%**
   on TABLES and BDA but **19.9%** on LAYOUT and **26.7%** on the integrated cell. The widest
-  single cell at the shipped default is LAYOUT / advanced, which ranged **$0.904 → $1.604**
-  across five identical runs of the same document, a **1.77×** swing with no configuration
+  single cell at the shipped default is LAYOUT / advanced, which ranged **$0.624 → $1.092**
+  across five identical runs of the same document, a **1.75×** swing with no configuration
   difference behind it. Every run in both suites is one section, so what is left is the
   agent's own turn count.
 - **Budget the maximum, not the mean.** The largest gap between a cell's mean and its own
   worst run is the control's agentic + `integrated` cell, **$4.812 against a $3.256 mean, 48%
-  above it**; at the shipped default it is LAYOUT / advanced, $1.604 against $1.258, **28%
+  above it**; at the shipped default it is LAYOUT / advanced, $1.092 against $0.861, **27%
   above**. ⚠️ **One cell exceeds the harness's CV > 0.25 unreliable-at-current-n flag** — the
   control's agentic + `integrated` cell at 0.267, as in the v0.6.13 edition — so its mean is
   not resolved at n=5. The other nine are.
@@ -952,27 +956,26 @@ complete, one section each):
   carry `extraction_output_truncated`, with extraction output averaging **171,835 tokens
   against the `separate` cell's 13,524**: the agent is emitting inline assessment, overrunning
   its output budget and retrying, and the dollar figure is mostly that retry. At Sonnet 5 the
-  same cell reads $0.941 but carries `assessment_incomplete` on 5 of 5 runs and **no
+  same cell reads $0.684 but carries `assessment_incomplete` on 5 of 5 runs and **no
   assessment spend at all** ($0.0000 in the Assessment phase), so the confidence work it is
   priced for did not land — the same shape as the v0.6.13 edition. Both arms reach recall
   1.000 and cell accuracy 1.000 over 800 cells, by different routes. Use `separate` on the
   agentic path; §2a measures the same contrast across seven document sizes.
-- **BDA / advanced is the cheapest advanced option at the shipped default** ($0.669, CV 7.3%)
+- **BDA / advanced is the cheapest advanced option at the shipped default** ($0.501, CV 6.5%)
   and within a tenth of a cent of the cheapest at the control ($0.575 against TABLES'
   $0.574).
 - **LAYOUT / advanced is the dearest advanced option at both models, not the cheapest.** Its
-  *minimum* run ($0.904 at Sonnet 5, $0.973 at the control) sits above the TABLES advanced
-  cell's *maximum* ($0.802, $0.577), so the ordering holds run-to-run rather than only on the
-  mean. Extraction is where it goes: $1.192 of its $1.258 at Sonnet 5, against $0.514 of
-  $0.679 for TABLES.
+  *minimum* run ($0.624 at Sonnet 5, $0.973 at the control) sits above the TABLES advanced
+  cell's *maximum* ($0.589, $0.577), so the ordering holds run-to-run rather than only on the
+  mean. Extraction is where it goes: $0.795 of its $0.861 at Sonnet 5, against $0.343 of
+  $0.508 for TABLES.
 - **Why advanced costs anything extra at all, given the deterministic table tool:** it is a
   multi-turn agent loop, and each turn re-sends the growing conversation as *input* tokens.
   With one section per document that loop now runs once.
 
 > **Model note.** §4's Sonnet 5 table is the only Sonnet 5 measurement in §2–§4; §2 and §3
 > are at the control, so compare §4's control table with those and read the Sonnet 5 table
-> against §5. Do not compare absolute dollars across the two tables — only shapes, not least
-> because the Sonnet 5 rates in `pricing.yaml` are 1.5× high.
+> against §5. Do not compare absolute dollars across the two tables — only shapes.
 
 > Methodology note: run these cells with `--suite cost` (or `--repeats ≥5`); the harness
 > flags any cell with cost CV > 0.25 as unreliable-at-current-n, and
@@ -1013,9 +1016,9 @@ non-completions, an Astra and a Haiku 5.5 run that failed in the confidence pass
 | **Claude Opus 5.5** | 133 | **133** | **1.0000** | **1.0000** | **83,790** | **$105.95** | 228 s | 0.000% |
 | Claude Opus 5 | 133 | **133** | **1.0000** | **1.0000** | **83,790** | $127.08 | 284 s | 0.018% |
 | GPT-6 Astra | 133 | 133 | 0.9924 | 0.9810 | 82,184 | $191.85 ◊ | 211 s | 0.000% |
-| Claude Sonnet 5 `:1m` | 133 | 133 | 0.9524 | 0.9995 | 74,188 | $89.71 § | 212 s | 0.016% |
+| Claude Sonnet 5 `:1m` | 133 | 133 | 0.9524 | 0.9995 | 74,188 | $67.62 § | 212 s | 0.016% |
 | Claude Haiku 5.5 | 133 | 133 | 0.9502 | 0.9998 | 73,906 | $25.76 † | 171 s | 0.002% |
-| Claude Sonnet 5 *(shipped default)* | 133 | 133 | 0.9463 | 0.9998 | 72,364 | $86.38 § | 200 s | 0.003% |
+| Claude Sonnet 5 *(shipped default)* | 133 | 133 | 0.9463 | 0.9998 | 72,364 | $65.00 § | 200 s | 0.003% |
 | **Claude Sonnet 5.5** | 133 | 133 | **0.8905** ※ | 1.0000 ※ | 72,130 | $62.21 ‡ | 170 s | 0.000% |
 
 ⚠️ **Read `cells_compared` alongside the accuracy columns, not after them.** A cell the arm
@@ -1100,11 +1103,11 @@ independent of the above:
 
 † No cost *ratio* is published for Haiku 5.5 — two-band pricing, see the header. Its dollar
 figure is a lower bound.
-‡ Sonnet 5.5's $62.21 is priced at its published rates, so it is a true measurement; but the
-Sonnet 5 rows it would be compared with are 1.5× high (§), so the gap to Sonnet 5 in this table
-is a pricing-table artefact and **not** evidence that Sonnet 5.5 is a third cheaper.
-§ Sonnet 5 and Sonnet 5 `:1m` are priced in `pricing.yaml` at 1.5× their published rates, so
-these two figures are **upper bounds**; any premium of another arm over them is a lower bound.
+‡ Sonnet 5.5's $62.21 and Sonnet 5's $65.00 are both at published rates, which are identical on
+input and output; Sonnet 5.5 is 4% cheaper over the grid, which is consistent with its
+half-price cache reads, and it returns fewer cells (※).
+§ Re-priced at Sonnet 5's published rates (see the header). As priced at run time these were
+$89.71 and $86.38.
 ◊ GPT-6 Astra's $191.85 is a lower bound — it moves to a long-context band above 272,000 input
 tokens that `pricing.yaml` cannot express — so the one cost comparison drawn against it above
 is a one-sided bound.
@@ -1222,7 +1225,10 @@ The two core cells, which are what a customer actually chooses between:
    for the same result; Astra **at least** 60% more, a bound rather than a ratio because
    its dollar figure is a lower bound (see the header). ⚠️ The `:1m` figure ($2.50) is inflated by the
    pricing defect described in finding 4 and is not the variant's price — `:1m` is billed
-   at exactly plain Sonnet 5's rates. The other four figures are unaffected.
+   at exactly plain Sonnet 5's rates. The other four carry no `:1m` premium, but this
+   block's Sonnet 5 figures were priced at the Sonnet 5 rows as they stood before #1830 (1.5×
+   the published rate, and 3× for `:1m`) and are not re-priced here, so every Opus 5 and Astra
+   premium over Sonnet 5 in this block is understated.
 2. **The cheap end is not usable on lists.** Nova Lite in simple mode returns every row of a
    5-row form and a 100-row statement (with 12% of values wrong) and **none** of a 400-row
    one — two of the three 400-row documents came back with 0 matching rows, `COMPLETED`. On
@@ -1269,8 +1275,9 @@ The two core cells, which are what a customer actually chooses between:
    Sonnet 5's 0.977: the difference is that Opus 5 truncated one 400-row document once
    (`enforce-warn` / `wide_400`, 43 rows) where Sonnet 5 truncated the 800-row document
    three times under three OCR/format variants (the v0.6.8 §2, finding 2). Both are at cell accuracy
-   1.000. At +23% (simple) / +41% (advanced) it is a price for consistency on long lists in
-   simple mode, not for accuracy.
+   1.000. At +23% (simple) / +41% (advanced) — understated, like every Opus 5 premium in this
+   block (finding 1) — it is a price for consistency on long lists in simple mode, not for
+   accuracy.
 6. **GPT-6 Astra gets values wrong where the Claude models do not, and returns nothing on
    the 17-page document.** Grid cell accuracy **0.902**: with enforcement *off* Astra emits
    amounts as strings (`"0.00"`, `"-13.70"`) on every document, which the typed match
@@ -1291,8 +1298,8 @@ reportable answer. All three suites ran on v0.6.14, on 2026-11-07.
 | suite | the pair, and what it asks | runs | completed | mean recall | mean cell accuracy | `cells_compared` | suite cost |
 |---|---|---:|---:|---|---|---:|---|
 | `opus55value` | Opus 5.5 against Opus 5 — is the newer model cheaper for the same result? | 40 | **40** | **1.0000** | **1.0000** | 20,000 | $22.86 |
-| `astravalue` | Sonnet 5 against GPT-6 Astra — does a larger window buy data? | 100 | **100** | 0.8905 | 0.9999 | 70,986 | $135.92 ◊ |
-| `astracap` | both models at the 66-page / 3,200-row ceiling, 2 repeats | 12 | **8** | 0.6667 | 1.0000 | 51,200 | $89.60 ◊ |
+| `astravalue` | Sonnet 5 against GPT-6 Astra — does a larger window buy data? | 100 | **100** | 0.8905 | 0.9999 | 70,986 | $127.29 ◊ |
+| `astracap` | both models at the 66-page / 3,200-row ceiling, 2 repeats | 12 | **8** | 0.6667 | 1.0000 | 51,200 | $82.68 ◊ |
 
 ⚠️ `astracap` ran at its committed default of **2 repeats** per cell this edition; the v0.6.13
 edition overrode it to 3. Its run count and refusal count are therefore 12 and 4 here against
@@ -1307,9 +1314,9 @@ from any of these arms — including, as the Astra columns below show, from the 
 returned no usable row at all.
 
 ◊ Both Astra-bearing suite totals are **lower bounds** and carry no cost *ratio*, for the reason
-given in the header, and the Sonnet 5 arms inside them are **upper bounds**. Where this section
-compares the two on cost it states two dollar figures from the same suite and a **one-sided
-bound** over them; both biases push the same way, so "Sonnet 5 is at least X% less" is safe.
+given in the header; the Sonnet 5 arms inside them are re-priced at published rates. Where this
+section compares the two on cost it states two dollar figures from the same suite and a
+**one-sided bound** over them; Astra's bias makes "Sonnet 5 is at least X% less" safe.
 
 ⚠️ **`astracap`'s four incomplete runs are the measured outcome, not a failure of the run.** All
 four are the 66-page `scale_3200.pdf` in a **simple-mode** cell — two repeats of Sonnet 5 and
@@ -1371,10 +1378,10 @@ cell, 100 runs, **100 completed**.
 
 | cell | 3 pp / 100 rows | 9 pp / 400 rows | **17 pp / 800 rows** | **26 pp / 250 rows, dense** |
 |---|---|---|---|---|
-| Sonnet 5 · simple | 1.0000 · 1.0000 · $0.20 (1,000) | 1.0000 · 1.0000 · $0.71 (4,000) | **0.8107** · 1.0000 · $1.58 (6,486) | 1.0000 · 1.0000 · $1.37 (2,500) |
+| Sonnet 5 · simple | 1.0000 · 1.0000 · $0.15 (1,000) | 1.0000 · 1.0000 · $0.54 (4,000) | **0.8107** · 1.0000 · $1.28 (6,486) | 1.0000 · 1.0000 · $1.11 (2,500) |
 | Astra · simple | 1.0000 · 1.0000 · $0.27 (1,000) | 1.0000 · 1.0000 · $0.96 (4,000) | **1.0000** · 0.9999 · $2.10 (8,000) | **0.0000** · *not scored* · $1.30 (0) |
 | `global.` Astra · simple | 1.0000 · 1.0000 · $0.25 (1,000) | 1.0000 · 1.0000 · $0.90 (4,000) | **1.0000** · 0.9999 · $1.98 (8,000) | **0.0000** · *not scored* · $0.99 (0) |
-| **Sonnet 5 · advanced** | 1.0000 · 1.0000 · $0.20 (1,000) | 1.0000 · 1.0000 · $0.68 (4,000) | **1.0000 · 1.0000 · $1.35** (8,000) | **1.0000 · 0.9992 · $1.61** (2,500) |
+| **Sonnet 5 · advanced** | 1.0000 · 1.0000 · $0.15 (1,000) | 1.0000 · 1.0000 · $0.51 (4,000) | **1.0000 · 1.0000 · $1.01** (8,000) | **1.0000 · 0.9992 · $1.22** (2,500) |
 | Astra · advanced | 1.0000 · 1.0000 · $0.43 (1,000) | 1.0000 · 1.0000 · $2.56 (4,000) | 1.0000 · 1.0000 · $3.32 (8,000) | 1.0000 · 0.9980 · $4.42 (2,500) |
 
 (each cell: `recall · cell accuracy · cost/doc`, means of 5, with that cell's `cells_compared` in
@@ -1403,7 +1410,7 @@ parentheses. *not scored* means no row matched a truth key, so there was no cell
 - **Advanced Sonnet 5 does the job on all four documents** — recall 1.0000 everywhere, cell
   accuracy 1.0000 on three and 0.9992 on `dense_250` (Astra advanced 0.9980 there) — and it is
   the cheapest arm that does. Over the two advanced arms' identical **15,500 cells** it is
-  **$19.22 against Astra's $53.63, at least 64% less**. The accuracy gained per extra dollar is
+  **$14.42 against Astra's $53.63, at least 73% less**. The accuracy gained per extra dollar is
   zero or negative in every cell.
 
 **What Astra is measurably good at here:** a complete 800-row list in *simple* mode more often
@@ -1418,9 +1425,9 @@ that advanced mode already gets right at a fraction of the price.
 |---|---|---|---:|---|
 | Sonnet 5 · simple | **FAILED** · **FAILED** (too long) | — | 0 | $1.05 |
 | Astra · simple | **FAILED** · **FAILED** (too long) | — | 0 | $1.05 |
-| **Sonnet 5 · advanced, default shards** | **1.0000 · 1.0000** ×2 | **0.999 · 1.000** | 12,800 | **$4.99 · $5.67** |
+| **Sonnet 5 · advanced, default shards** | **1.0000 · 1.0000** ×2 | **0.999 · 1.000** | 12,800 | **$3.76 · $4.20** |
 | Astra · advanced, default shards | 1.0000 · 1.0000 ×2 | 1.000 ×2 | 12,800 | $21.89 · $15.14 |
-| Sonnet 5 · advanced, 25-page "wide" shards | 1.0000 · 1.0000 ×2 | **0.971 · 0.992** | 12,800 | $6.96 · $8.73 |
+| Sonnet 5 · advanced, 25-page "wide" shards | 1.0000 · 1.0000 ×2 | **0.971 · 0.992** | 12,800 | $5.14 · $6.32 |
 | Astra · advanced, 25-page "wide" shards | 1.0000 · 1.0000 ×2 | 0.999 · 0.978 | 12,800 | $9.28 · $12.74 |
 
 Three results, in the order they matter.
@@ -1433,16 +1440,16 @@ the OCR and classification that preceded the refusal.
 
 **Both models hold the ceiling on the agentic path at default shards:** 3,200 of 3,200 rows at
 cell accuracy 1.0000 with essentially every row confidence-scored, on all four runs. Sonnet 5
-costs **$4.99–5.67** against Astra's **$15.14–21.89** on the same document, so Sonnet 5 is **at
-least 63% less** — a bound, not a ratio. At the ceiling the premium model buys nothing and
+costs **$3.76–4.20** against Astra's **$15.14–21.89** on the same document, so Sonnet 5 is **at
+least 72% less** — a bound, not a ratio. At the ceiling the premium model buys nothing and
 costs several times as much.
 
 **The 25-page "wide" shard now keeps both the rows and the confidence on Sonnet 5.** At v0.6.12
 three of its four runs came back with 1,982–2,416 of 3,200 rows; at v0.6.13 all six returned
 every row but Sonnet 5's confidence pass scored only 22%, 78% and 65% of them. On v0.6.14 both
-Sonnet 5 wide-shard runs return 3,200 of 3,200 with **97% and 99%** of rows scored, at $6.96 and
-$8.73 against $11.37–18.12 in the v0.6.13 edition. Two draws, so read it as a direction; it is
-the same movement §3 measures at 1,200 and 1,600 rows in simple mode. It is still dearer than
+Sonnet 5 wide-shard runs return 3,200 of 3,200 with **97% and 99%** of rows scored, at $5.14 and
+$6.32 (the v0.6.13 edition's $11.37–18.12 is as priced then, not re-priced). Two draws, so read
+it as a direction; it is the same movement §3 measures at 1,200 and 1,600 rows in simple mode. It is still dearer than
 default-shard Sonnet 5 on both runs, so **leave `shard_pages` at its default on Sonnet 5**. On
 Astra the wide shard remains the cheaper Astra configuration ($9.28 and $12.74 against $15.14
 and $21.89), and is still dearer than default-shard Sonnet 5 on every run.
@@ -1459,10 +1466,10 @@ extraction model (Sonnet 4.6), 133 runs per arm, with one section the truth for 
 |---|---:|---:|---:|---|---|---:|---|---|---|
 | **Nova 2 Lite** *(shipped default)* | 133 | **133** | 132 / 133 | **1.0000** | 0.9998 | 83,790 | **$0.0069** | **$0.676** | **$89.93** |
 | Claude Haiku 5.5 | 133 | **133** | **133 / 133** | **1.0000** | 0.9997 | 83,790 | $0.0086 † | $0.681 † | $90.59 † |
-| Claude Sonnet 5 | 133 | **133** | **133 / 133** | **1.0000** | 0.9997 | 83,790 | $0.1894 § | $0.861 § | $114.49 § |
+| Claude Sonnet 5 | 133 | **133** | **133 / 133** | **1.0000** | 0.9997 | 83,790 | $0.1263 § | $0.798 § | $106.11 § |
 
 † Haiku 5.5's dollar figures are **lower bounds** — banded pricing, see the header. § Sonnet 5's
-are **upper bounds** — its `pricing.yaml` rows are 1.5× high.
+are re-priced at its published rates (see the header).
 
 **All three arms are graded on the identical 83,790 cells and complete every run**, so these rows
 need no denominator caveat and the differences between them are as small as they look.
@@ -1476,11 +1483,10 @@ has missed 0–2 boundaries in 133 — one classifier draw in about a hundred, w
 consistently better. Downstream recall is 1.0000 in all three and cell accuracy differs in the
 fourth decimal.
 
-What the upgrade does change is the bill. Sonnet 5's classification phase costs **$0.1894 per
-document against the default's $0.0069 — 27×** — which lifts the whole-grid cost from **$89.93 to
-$114.49**. Because the Sonnet 5 rows are priced 1.5× high, the true premium is smaller than that
-27% grid difference, but it is not small: classification is about a fifth of the Sonnet 5 arm's
-per-document bill against about 1% of the default's. Haiku 5.5's grid is $0.66 above the
+What the upgrade does change is the bill. Sonnet 5's classification phase costs **$0.1263 per
+document against the default's $0.0069 — 18×** — which lifts the whole-grid cost from **$89.93 to
+$106.11, 18% more**: classification is about a sixth of the Sonnet 5 arm's per-document bill
+against about 1% of the default's. Haiku 5.5's grid is $0.66 above the
 default's, of which its classification phase accounts for about $0.23.
 
 The one boundary shape the default still gets wrong — a reprinted running header, §7 — is not a
@@ -1501,9 +1507,9 @@ model, extraction held at the control (Sonnet 4.6):
 |---|---:|---:|---|---|---:|---|---|---|---|---|---|---|
 | **Nova Lite** *(shipped default)* | 133 | **133** | 1.0000 | 0.9997 | 83,790 | 0.9921 | **0** of 119,937 | **1.0000** | **$0.094** | **$0.679** | **$90.33** | 188 s |
 | Nova 2 Lite | 133 | **133** | 1.0000 | 0.9997 | 83,790 | 0.9954 | ~**2** of 119,952 | **1.0000** | $0.152 | $0.736 | $97.91 | **157 s** |
-| Claude Sonnet 5 | 133 | **133** | 1.0000 | 0.9997 | 83,790 | 0.9724 | ~**638** of 119,960 | **1.0000** | $0.947 § | $1.523 § | **$202.54** § | 159 s |
+| Claude Sonnet 5 | 133 | **133** | 1.0000 | 0.9997 | 83,790 | 0.9724 | ~**638** of 119,960 | **1.0000** | $0.633 § | $1.208 § | **$160.70** § | 159 s |
 
-§ upper bounds — Sonnet 5's `pricing.yaml` rows are 1.5× high.
+§ re-priced at Sonnet 5's published rates (see the header).
 
 **All three arms completed every run on the identical 83,790 cells at identical recall and cell
 accuracy**, so on this corpus the confidence model changes nothing about what is extracted; the
@@ -1529,11 +1535,10 @@ it if that matters.
 
 **Sonnet 5 as the confidence model is not an accuracy upgrade. It is a far more conservative
 scorer, and that is the whole of what it buys.** It scores about **638 of 119,960** leaves below
-0.9, against the default's **0** and Nova 2 Lite's **~2**, for **$202.54 against $90.33** over the
-same grid, almost all of it in the assessment phase ($0.947 per document against $0.094). That
+0.9, against the default's **0** and Nova 2 Lite's **~2**, for **$160.70 against $90.33** over the
+same grid, 1.78×, almost all of it in the assessment phase ($0.633 per document against $0.094). That
 is more than twice the 285 it flagged in the v0.6.13 edition on the same grid, with the same
-cell accuracy; the run does not record why. Those Sonnet 5 dollars are upper bounds, so the true
-premium is below the 2.2× the table shows, but the assessment phase is still several times the
+cell accuracy; the run does not record why. The assessment phase is several times the
 default's. Choose the confidence model and the review threshold together: on either Nova arm a
 0.9 threshold is close to inert on this corpus, and on Sonnet 5 it is the one setting that
 actually populates the confidence-alerts filter.
@@ -1600,11 +1605,11 @@ denominator stated in the same cell, among arms whose cost can be quoted.
 
 | Document profile | Cheapest arm at ceiling | Mode | Measured basis | Notes |
 |---|---|---|---|---|
-| Small forms, ≤ 1 page, few fields | **any model, Nova Lite included** | simple | `tiny_form`: all seven `coresynth` arms 19/19 at recall 1.0000, cell accuracy 1.0000 over 190 cells (Astra 0.9737); both Nova arms 9/9 at 1.0000 / 1.0000 over 90 cells on the `simplegrid` matrix | Genuinely free. Nova Lite at $0.013/doc and the default at $0.061/doc (an upper bound) produce the same result; pick on price |
-| Statements ≤ ~100 rows / ≤ 4 pages | **the shipped default** (Sonnet 5) | simple | `small_narrow` and `longdesc_100`: Sonnet 5 at recall 1.0000, cell accuracy 1.0000 over **3,800 cells each**, $0.22 and $0.35/doc (upper bounds). Every Claude arm and Astra's recall are at 1.0000 here | **Not** the cheap end: Nova Lite and Nova Pro return most or all rows and get 1–17% of values wrong (§5.1). Haiku 5.5 and Sonnet 5.5 are also at 1.0000 / 1.0000 over 3,800 cells each; Haiku 5.5's cost cannot be quoted as a saving, and Sonnet 5.5 is unsafe one size up |
-| Statements ~400 rows / ~9 pages | **the shipped default** | simple, or advanced | `med_narrow`, `wide_400`, `manylists_400`: Sonnet 5 19/19 each at recall 1.0000 over 15,200 cells, cell accuracy 0.9994–0.9999, $0.75–1.09/doc (upper bounds). Opus 5.5 is 1.0000 / 1.0000 over the same 15,200 at $0.84–1.15/doc | ⚠️ **Do not use Claude Sonnet 5.5 here** — recall 0.59–0.90, two of its short runs unreported (§5.1, [#1494](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1494)). Haiku 5.5 and Sonnet 5 `:1m` dip to 0.95–0.97 on `wide_400` |
+| Small forms, ≤ 1 page, few fields | **any model, Nova Lite included** | simple | `tiny_form`: all seven `coresynth` arms 19/19 at recall 1.0000, cell accuracy 1.0000 over 190 cells (Astra 0.9737); both Nova arms 9/9 at 1.0000 / 1.0000 over 90 cells on the `simplegrid` matrix | Genuinely free. Nova Lite at $0.013/doc and the default at $0.045/doc produce the same result; pick on price |
+| Statements ≤ ~100 rows / ≤ 4 pages | **the shipped default** (Sonnet 5) | simple | `small_narrow` and `longdesc_100`: Sonnet 5 at recall 1.0000, cell accuracy 1.0000 over **3,800 cells each**, $0.16 and $0.26/doc. Every Claude arm and Astra's recall are at 1.0000 here | **Not** the cheap end: Nova Lite and Nova Pro return most or all rows and get 1–17% of values wrong (§5.1). Haiku 5.5 and Sonnet 5.5 are also at 1.0000 / 1.0000 over 3,800 cells each; Haiku 5.5's cost cannot be quoted as a saving, and Sonnet 5.5 is unsafe one size up |
+| Statements ~400 rows / ~9 pages | **the shipped default** | simple, or advanced | `med_narrow`, `wide_400`, `manylists_400`: Sonnet 5 19/19 each at recall 1.0000 over 15,200 cells, cell accuracy 0.9994–0.9999, $0.55–0.84/doc. Opus 5.5 is 1.0000 / 1.0000 over the same 15,200 at $0.84–1.15/doc | ⚠️ **Do not use Claude Sonnet 5.5 here** — recall 0.59–0.90, two of its short runs unreported (§5.1, [#1494](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1494)). Haiku 5.5 and Sonnet 5 `:1m` dip to 0.95–0.97 on `wide_400` |
 | **Statements ~800 rows / ~17 pages** | **any model — but in `advanced` mode** | **advanced** | `large_narrow`: all seven arms 6/6 at 800/800 rows, 9,600 cells, accuracy 1.0000 in advanced; four of the seven fall short in simple | **This is the configuration decision, not a model decision.** In simple mode the default returned the whole list on 5 of 13 runs |
-| 1,000+ rows / 25–66 pages | **the shipped default, advanced, at `shard_pages: default`** | **advanced** | `astracap` on 3,200 rows / 66 pages: Sonnet 5 2/2 at recall 1.0000, cell accuracy 1.0000 over 12,800 cells and full confidence coverage, for **$4.99–5.67 against Astra's $15.14–21.89** per document. §3's `scaling` series holds 1.000 / 1.000 with full coverage through the same ceiling at the control model | Simple mode **refuses** at 66 pages, and at 25–33 pages returns every row with **5–20% unscored** on this release's single draw (§3). The 25-page wide shard on Sonnet 5 now keeps 97–99% of the confidence but still costs more than the default shard (§5.2) |
+| 1,000+ rows / 25–66 pages | **the shipped default, advanced, at `shard_pages: default`** | **advanced** | `astracap` on 3,200 rows / 66 pages: Sonnet 5 2/2 at recall 1.0000, cell accuracy 1.0000 over 12,800 cells and full confidence coverage, for **$3.76–4.20 against Astra's $15.14–21.89** per document. §3's `scaling` series holds 1.000 / 1.000 with full coverage through the same ceiling at the control model | Simple mode **refuses** at 66 pages, and at 25–33 pages returns every row with **5–20% unscored** on this release's single draw (§3). The 25-page wide shard on Sonnet 5 now keeps 97–99% of the confidence but still costs more than the default shard (§5.2) |
 
 **Where a premium model is actually required: nowhere in this corpus, once advanced mode is set.**
 The one thing the premium end buys is a complete 800-row list in *simple* mode, where Opus 5.5,
@@ -1614,16 +1619,16 @@ Opus 5 and Sonnet 5.5 reach 1.0000 on 13 of 13 — and advanced mode gets all se
 faster than Opus 5 on that document (686 s against 1,216 s), where Sonnet 5.5 is complete at 800
 rows but unusable at 400.
 
-**Over the grid as a whole the answers are two, and they differ by at least 23%.** **Claude Opus
+**Over the grid as a whole the answers are two, and they differ by 63%.** **Claude Opus
 5.5 is complete and exact on every document of the grid in both modes** — recall 1.0000 and cell
 accuracy 1.0000 over **83,790 cells** — for **$105.95**, which is **at least 45% below GPT-6
-Astra's $191.85** and **at least 23% above the shipped default's $86.38** (both directions are
-bounds, because Astra's figure is a lower bound and Sonnet 5's an upper one). The default over the
+Astra's $191.85** (a bound, because Astra's figure is a lower bound) and **63% above the shipped
+default's $65.00**. The default over the
 same grid reaches recall 0.9463 over 72,364 cells, all of the gap being simple mode on the 17-page
 document.
 
 So, plainly. **Keep the shipped default and turn on advanced mode for documents above ~400 rows**
-is right on cost, and it is what the per-profile table recommends everywhere. **Pay at least 23%
+is right on cost, and it is what the per-profile table recommends everywhere. **Pay 63%
 more for Opus 5.5** where a complete, exactly-correct list in either mode is worth it — it is the
 cheapest of the two arms in this edition that delivers one on every document in the grid, and the
 other (Opus 5) costs 20% more for the same result. Nothing above those two is worth buying: the
@@ -1796,14 +1801,14 @@ data they can cost a customer. Each says whether this edition re-measured it.
    failure needs to be *detectable*.
 10. **The 25-page "wide" agentic shard costs more than the default shard on Sonnet 5 (P3,
     re-measured, smaller).** On v0.6.14 it returns every row and scores 97–99% of them, against
-    22–78% in the v0.6.13 edition, at $6.96–8.73 against the default shard's $4.99–5.67 (§5.2).
+    22–78% in the v0.6.13 edition, at $5.14–6.32 against the default shard's $3.76–4.20 (§5.2).
     On Astra the same setting is the cheaper Astra configuration, so the `max_pages_per_shard`
     guidance should be per model.
 11. **The agent's turn count is not visible in the metering, so agentic cost is a range a
-    customer cannot explain (P2, re-measured).** Advanced cells run at CV **7.3–23.4%** at the
-    shipped default and up to **26.7%** at the control, against simple mode's 0.1% and 0.6% on
-    the same document (§4). The widest single cell at the shipped default ranged **$0.904 →
-    $1.604 across five identical runs** of one 400-row, one-section document. Bounding it, or
+    customer cannot explain (P2, re-measured).** Advanced cells run at CV **6.5–22.9%** at the
+    shipped default and up to **26.7%** at the control, against simple mode's 0.1% and 0.5% on
+    the same document (§4). The widest single cell at the shipped default ranged **$0.624 →
+    $1.092 across five identical runs** of one 400-row, one-section document. Bounding it, or
     surfacing it, would make an agentic budget explainable instead of empirical.
 12. **Nova Lite cannot run the agentic path —
     [#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)

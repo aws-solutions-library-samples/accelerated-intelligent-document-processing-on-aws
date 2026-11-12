@@ -106,7 +106,7 @@ nightly schedule or on request.
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
-| **fast_checks** | Eight **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `terraform_checks` (offline Terraform translation, then `init`/`validate` under each pinned Terraform and OpenTofu), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
+| **fast_checks** | Eight **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `terraform_checks` (offline Terraform translation, then `init`/`validate` under each pinned Terraform and OpenTofu, then the `checkov` scan diff against the CloudFormation templates, `make terraform-scan-diff`), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack**. The deployment-variant probes run here only on the **weekly variant-probe schedule** — see below. | Yes (deploys) | ~1 hour; longer with the probes |
 | **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/`; `ai_ux_test_stories` (advisory first-time-user stories)⁴, only on non-Draft MRs to `develop` that change `CHANGELOG.md` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only; the stories job stops at its precheck in about a minute on most CHANGELOG MRs, and otherwise keeps to the catalogue's deadline inside a 60-minute job |
@@ -588,13 +588,53 @@ running into its deadline hours later.
 Check the IAM role
 count too: the two deployments hold several hundred roles between them.
 
-**What a dead build leaves.** The driver tears down in a `finally` and within its
-deadline, but a build that dies outright (a lost container) runs no `finally`, and
-its work directory, holding both Terraform states, goes with the container. The next
-run's startup sweeps remove what carries the new deployment's run-prefix name (its
-label stack, buckets, roles and policies) by name and age once no stack of that run
-remains. The old deployment's resources (upstream's names, `idpo…` or none) are
-reached by none of them and stand until removed by hand.
+**What a dead build leaves, and what reaps it.** The driver tears down in a
+`finally` and within its deadline, but a build that dies outright (a lost container)
+runs no `finally`, and its work directory goes with the container. So the run keeps
+what a teardown needs outside it, under
+`terraform-migration-runs/<run>/` in the CI state bucket
+(`TERRAFORM_MIGRATION_STATE_PREFIX`, a prefix of its own beside the nightly's
+`terraform-runs/`):
+
+- `run.json`, written by the build before the driver starts: both names, the region,
+  the run's `TFDeployRole` and boundary, the upstream IAM path, the module URL and
+  the account;
+- both Terraform states, through S3 backends the driver writes into each root before
+  its first `init` (`--state-mirror`);
+- the driver's context and the new root's configuration, copied at the end of every
+  phase. Its secrets file never is: a teardown needs the run's names, not its
+  passwords.
+
+The driver's preflight writes that mirror before anything is created and fails if it
+cannot, so a run that could not be torn down by a later build creates nothing. The
+prefix is removed only after a leftover check that found nothing; a teardown that
+left something keeps it.
+
+`cleanup_stale_terraform_migrations`, a fatal Step 0 sweep in every build, finds a
+prefix older than the stack sweep's age gate (`IDP_STACK_STALE_AGE_SECONDS`, well
+above the driver's longest phase, the hour-long time-to-live wait, between two of
+which the mirror is rewritten) and runs the driver's own `--resume --teardown-only`
+in a scratch work directory, as the run's `TFDeployRole`, with the names `run.json`
+records. The driver rebuilds what its teardown reads — the pinned upstream clone
+with the run's tfvars, IAM overrides, backend and provider lock, and the new root
+from the mirror — and then tears down exactly as a failed run does, under every
+check it already applies: the names and account must match the stored context, and
+the run must have created something. The `-iam` pre-stack is deleted after a clean
+teardown, and the stack sweep keeps it while the prefix stands. Failures are counted
+beside the state and abandoned to a note for a person after
+`TERRAFORM_REAP_MAX_ATTEMPTS`, as for a Terraform nightly; the note names the prefix
+and the command to finish it by hand.
+
+⚠️ **What is still unprotected.** A build that dies after the `-iam` pre-stack exists
+but before `run.json` is written leaves the pre-stack to the name-based sweeps, which
+already remove it; one that dies after `run.json` but before the driver's preflight
+has created nothing, and its reap finds nothing to do. A reap runs inside another
+build's Step 0, so a teardown needing something that build's environment lacks (the
+upstream release host, the registry, the Docker daemon upstream's image builds use)
+fails there, is counted, and is retried by the next build. If the state listing
+itself fails, the stack sweep keeps every Terraform-labelled run, and a migration
+run whose new deployment never reached its label stack is not among those, so its
+`-iam` pre-stack can be reaped by name before its teardown has run.
 
 ### Why fast_checks is eight jobs
 
@@ -1518,10 +1558,12 @@ Notes:
 
 ## Test Execution Strategy
 
-### Parallel Execution (Steps 3-11, 13, 14, 15)
-- **12 tests run concurrently** to minimize pipeline runtime (Step 13, the
-  read-only permissions-boundary check, Step 14, the pipeline-hook test, and
-  Step 15, the config-prefix-mapping routing check, join the parallel pool)
+### Parallel Execution
+- **Every step in `PARALLEL_TEST_STEPS`** (`scripts/sdlc/codebuild_deployment.py`)
+  runs concurrently to minimize pipeline runtime. Read that list for the current
+  set: Step 13, the read-only permissions-boundary check, Step 14, the
+  pipeline-hook test, Step 15, the config-prefix-mapping routing check, and Step
+  16, the Quick Start bootstrap, join Steps 3–11 there
 - **Fail-fast enabled**: If any test fails, remaining tests are cancelled and cleanup begins
 - **Expected runtime**: ~25-35 minutes (vs 60+ minutes sequential)
 
@@ -1957,6 +1999,34 @@ without an upload tag.
   profile, which is a guard the feature adds and this cleanup respects rather than
   fights. Dropping the mappings first also stops a `reject` rule catching an
   unrelated upload while the rest of the cleanup runs.
+
+
+### Step 16: Quick Start Bootstrap ⚡ *Parallel*
+**What it tests**: that [Quick Start](../../../docs/quick-start.md)'s headless
+path, `idp-cli bootstrap`, authors a document-class schema from a description and
+saves it as a configuration profile on a deployed stack.
+- **Why it exists**: the Quick Start agent's tools and `idp-cli bootstrap` share
+  the schema authoring and the profile write in `idp_common.synthesis`. The step
+  names no starting profile, so the catalog is empty and the catalog match over
+  existing profiles is not exercised. The web UI's first-time-user stories stop
+  before a Quick Start message is sent, because the agent would change the shared
+  review stack's configuration, so this is the only live check that the Bedrock
+  authoring and the Configuration table write still compose.
+- **Verification**: bootstrap reports saving `integration-quick-start`; the
+  downloaded profile holds class `IntegrationPaystub`, with at least one leaf field
+  per `--field-hint`, nested or not. Field names are the model's choice, so only
+  their count is held. Bootstrap is retried once if it fails, because authoring is
+  one model call and a failure in the parallel pool fails the whole suite.
+- **Model**: `--model-id` is the CLI's default authoring model, swapped for an EU
+  or CA build by the product's `swap_model_ids`, as every config the suite uploads
+  is, so the weekly region runs call a model their region can reach.
+- **Isolation**: saves its own profile and never activates it, so the other steps'
+  profiles and the active configuration are unaffected. The CI build does not
+  install the document generator, so no test set is generated; `--count 1` bounds
+  the run if one is ever installed.
+- **Implementation**: `test_step16_quick_start_bootstrap` in
+  `scripts/sdlc/codebuild_deployment.py`, offline tests in
+  `scripts/sdlc/tests/test_quick_start_bootstrap_step.py`.
 
 ---
 

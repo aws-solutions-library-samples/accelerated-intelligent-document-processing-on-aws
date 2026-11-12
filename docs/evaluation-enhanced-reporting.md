@@ -169,25 +169,16 @@ for section in result_doc.evaluation_result.section_results:
 
 ## Viewing Interactive Reports
 
-### GitHub
-GitHub's markdown renderer supports HTML, so the interactive controls will work when viewing the report in:
-- Pull requests
-- Issue comments
-- Repository files
+The **Unmatched Items** and **Expand Details** buttons belong to the Web UI's report
+viewer (see [Interactive Markdown Reports](#2-interactive-markdown-reports)), so they
+are available only there. The report file carries no script, so no other viewer —
+GitHub, an editor preview, a notebook — shows the buttons.
 
-### VS Code
-Install a markdown extension that supports HTML:
-- **Markdown Preview Enhanced** (recommended)
-- **Markdown All in One**
+Outside the Web UI the report still reads correctly as Markdown. Where the renderer
+allows embedded HTML, as GitHub's does, each `<details>` block collapses and expands
+on click, so the nested comparisons can be opened one at a time. To read a report in a
+notebook:
 
-### Web Browser
-Open the `.md` file directly in a browser:
-```bash
-open test_evaluation_report.md
-```
-
-### Jupyter Notebooks
-Use `IPython.display.Markdown`:
 ```python
 from IPython.display import Markdown, display
 

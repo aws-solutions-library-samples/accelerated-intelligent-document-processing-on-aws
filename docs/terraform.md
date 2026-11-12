@@ -60,7 +60,11 @@ You need the following before you deploy:
   `DeleteResource`, `ListResources` and `GetResourceRequestStatus`) in addition to the
   permissions of the underlying services. The module also creates one CloudFormation
   stack (the label stack described below), which needs `cloudformation:CreateStack`
-  and its related actions unless you turn the label off. A deploying role that is
+  and its related actions unless you turn the label off. When the deployment uses a
+  customer-managed KMS key, the credentials also need `kms:Decrypt` and
+  `kms:GenerateDataKey` on that key: the label stack's template is stored in the
+  custom-resource bridge's bucket, which is encrypted with the key, and CloudFormation
+  reads it with the caller's credentials. A deploying role that is
   scoped rather than administrator-level is described under
   [Deploying with a scoped role](#deploying-with-a-scoped-role).
 - Terraform 1.7 or later, or OpenTofu 1.7 or later, on your path.
@@ -546,7 +550,7 @@ reading it, so three independent checks look at different things:
 | Check | When it runs | What it shows |
 |---|---|---|
 | The translator's own checks and `terraform validate` on every pinned Terraform and OpenTofu release | every pull request | every type, property and value in the templates is translated and reaches the Terraform; no data-holding resource depends on a value Terraform cannot know at plan time without a declared reason; the module loads and type-checks |
-| A static security scan of both, compared resource by resource | every pull request | no Terraform resource fails a security rule that its CloudFormation source passes, beyond a short list of explained exceptions (all on the custom-resource bridge the module adds) |
+| A static security scan of both, compared resource by resource | every pull request | no Terraform resource fails a security rule that its CloudFormation source passes, beyond a short list of explained exceptions (mostly on the custom-resource bridge the module adds); findings on rules only the Terraform scanner has are pinned per rule, so a new one fails too. The repository's SRT scan does not cover the generated module, which is never committed; this scan is what covers it |
 | A property comparison of a Terraform deployment with a CloudFormation deployment of the same release and parameters, every resource of both read back from AWS | release validation | the two deployments store the same configuration, beyond explained differences |
 
 None of the three plans or applies on a pull request. The full stack has been

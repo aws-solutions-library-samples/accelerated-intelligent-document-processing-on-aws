@@ -372,6 +372,20 @@ def _contents(cbd, sweep, with_target):
         )
         return {"list_objects_v2": [{"Contents": objects}]}
 
+    if sweep == "cleanup_stale_terraform_migrations":
+        objects = (
+            [
+                {
+                    "Key": f"{cbd.TERRAFORM_MIGRATION_STATE_PREFIX}{DEAD_RUN}/"
+                    f"{cbd.TERRAFORM_RUN_RECORD}",
+                    "LastModified": old,
+                }
+            ]
+            if with_target
+            else []
+        )
+        return {"list_objects_v2": [{"Contents": objects}]}
+
     if sweep == "cleanup_stale_ci_diagnostics":
         objects = (
             # Keyed by build AND stack, the shape persist_diagnostics_bundle writes.
@@ -429,6 +443,15 @@ _SWEEP_SPECS = {
         "enumerations": ("list_objects_v2",),
         "per_item": None,  # _reap_terraform_run reports findings; patched below
         "quiet_line": "✅ No Terraform state left by a dead run",
+        "age_gate": {
+            "field": "LastModified",
+            "young_line": "younger than the age gate",
+        },
+    },
+    "cleanup_stale_terraform_migrations": {
+        "enumerations": ("list_objects_v2",),
+        "per_item": None,  # _reap_terraform_migration reports findings; patched
+        "quiet_line": "✅ No Terraform-migration state left by a dead run",
         "age_gate": {
             "field": "LastModified",
             "young_line": "younger than the age gate",
@@ -533,7 +556,13 @@ def _install(
         return {"findings": [], "timed_out": False}
 
     monkeypatch.setattr(cbd, "delete_apigw_test_vpc", _reap_vpc)
+
+    def _reap_terraform_migration(name, _bucket, _keys, s3=None):
+        aws.deleted.append(name)
+        return {"findings": [], "timed_out": False}
+
     monkeypatch.setattr(cbd, "_reap_terraform_run", _reap_terraform_run)
+    monkeypatch.setattr(cbd, "_reap_terraform_migration", _reap_terraform_migration)
     monkeypatch.setattr(cbd, "_delete_managed_policy", _reap_policy)
     monkeypatch.setattr(cbd, "_delete_iam_role", _reap_role)
     return aws
@@ -2026,6 +2055,11 @@ def _sweeps_that_never_read_the_set():
             "destroys only deployments whose state a Terraform run wrote under "
             "terraform-runs/ in the source bucket, and a long-lived stack is a "
             "CloudFormation stack that writes no such state"
+        ),
+        "cleanup_stale_terraform_migrations": (
+            "tears down only migration runs that recorded themselves under "
+            "terraform-migration-runs/ in the source bucket, through the driver's "
+            "own name checks, and no long-lived stack is a migration run"
         ),
     }
 

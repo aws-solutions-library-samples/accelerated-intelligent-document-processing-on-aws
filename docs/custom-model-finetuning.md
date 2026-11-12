@@ -90,143 +90,11 @@ Once a fine-tuning job completes:
 4. Select your fine-tuned model
 5. Save the configuration
 
-## Using the CLI
+## Using the CLI or SDK
 
-### Validate a Test Set
-
-```bash
-idp-cli finetuning validate --test-set docsplit
-```
-
-Output:
-```
-Test Set Validation Results:
-  Valid: Yes
-  Documents: 150
-  Classes: 8
-  Train/Validation Split: 135/15
-
-Class Distribution:
-  drivers_license: 25
-  bank_statement: 30
-  pay_stub: 20
-  w2: 15
-  utility_bill: 20
-  insurance_card: 15
-  tax_return: 15
-  other: 10
-
-Warnings:
-  - Class 'other' has relatively few examples (10)
-```
-
-### Create a Fine-Tuning Job
-
-```bash
-idp-cli finetuning create \
-  --test-set docsplit \
-  --base-model us.amazon.nova-pro-v1:0 \
-  --name my-classifier
-```
-
-Output:
-```
-Fine-tuning job created:
-  Job ID: abc123-def456-...
-  Status: VALIDATING
-  
-Monitor progress with:
-  idp-cli finetuning status --job-id abc123-def456-...
-```
-
-### Check Job Status
-
-```bash
-idp-cli finetuning status --job-id abc123-def456-...
-```
-
-Output:
-```
-Fine-Tuning Job Status:
-  Job ID: abc123-def456-...
-  Name: my-classifier
-  Status: TRAINING
-  Base Model: Nova Pro
-  
-  Timeline:
-    Created: 2024-01-15 10:00:00
-    Training Started: 2024-01-15 10:05:00
-    
-  Training Metrics:
-    Training Loss: 0.05
-    Validation Loss: 0.08
-```
-
-### List All Jobs
-
-```bash
-idp-cli finetuning list
-```
-
-### Delete a Job
-
-```bash
-idp-cli finetuning delete --job-id abc123-def456-...
-```
-
-### List Available Models
-
-```bash
-idp models list
-```
-
-Output:
-```
-Base Models:
-  - us.amazon.nova-2-lite-v1:0 (Nova 2 Lite - recommended)
-  - us.amazon.nova-2-pro-v1:0 (Nova 2 Pro - recommended)
-  - us.amazon.nova-lite-v1:0 (Nova Lite v1 - legacy)
-  - us.amazon.nova-pro-v1:0 (Nova Pro v1 - legacy)
-
-Custom Models:
-  - my-classifier (Nova Pro) - Active
-  - docsplit-v2 (Nova Lite) - Active
-```
-
-## Using the SDK
-
-```python
-from idp_sdk import IDPClient
-
-client = IDPClient()
-
-# Validate a test set
-validation = client.finetuning.validate_test_set("docsplit")
-print(f"Valid: {validation.is_valid}")
-print(f"Documents: {validation.document_count}")
-print(f"Classes: {validation.class_count}")
-
-# Create a fine-tuning job
-job = client.finetuning.create_job(
-    test_set_id="docsplit",
-    base_model="us.amazon.nova-pro-v1:0",
-    name="my-classifier"
-)
-print(f"Job ID: {job.id}")
-
-# Wait for completion (with progress updates)
-completed_job = client.finetuning.wait_for_completion(
-    job.id,
-    poll_interval=60  # Check every minute
-)
-print(f"Status: {completed_job.status}")
-print(f"Model ARN: {completed_job.custom_model_deployment_arn}")
-
-# List available models
-models = client.models.list_available_models()
-for model in models.custom_models:
-    print(f"  {model.name} ({model.base_model})")
-```
+Neither the IDP CLI (`idp-cli`) nor the IDP SDK (`idp_sdk`) has fine-tuning
+commands or methods. Create and monitor jobs in the UI (above), or call the API
+operations listed under [API Reference](#api-reference).
 
 ## Best Practices
 
@@ -293,7 +161,15 @@ Custom Model Deployments use on-demand pricing, so you only pay when the model i
 
 ## API Reference
 
-### GraphQL Queries
+These operations are reached through the solution's REST API, as
+`POST /op/<operation>` on the API Gateway dispatcher with a JSON body of the form
+`{"arguments": {...}}`. No GraphQL service runs and no GraphQL document is sent. They
+are written below in the syntax of `nested/api-resolvers/src/api/schema.graphql`,
+the typed contract the UI's types and the dispatcher's argument validation are
+generated from, because that is where each operation's arguments and returned fields
+are declared.
+
+### Queries
 
 The last two below, `validateTestSetForFinetuning` and `listAvailableModels`, are
 documented as the schema declares them; they are **not routable today** (see the
@@ -369,7 +245,7 @@ query ListAvailableModels {
 }
 ```
 
-### GraphQL Mutations
+### Mutations
 
 ```graphql
 # Create fine-tuning job

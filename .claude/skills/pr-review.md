@@ -114,6 +114,24 @@ documentation, testing, code-review).
   - Config schemas under `config_library/`
   - GraphQL schema and generated types in `src/ui/src/graphql/generated/`
   - Lambda handler event/response contracts
+- Quick Start still works? It is a new user's first experience, and it calls
+  surfaces other pages own, so it breaks with no failing test. If the PR changes
+  the agent chat route or stream, configuration profile creation or activation,
+  the discovery upload resolvers, schema authoring or the class catalog, the
+  Welcome page, side navigation or tour, the Test Set Generator extension, the
+  groups a role holds, or the stack wiring Quick Start reads (the
+  `EnableQuickStartWidget` parameter and the installed-features SSM parameter),
+  check in the diff that Quick Start still handles any contract it changes. If it
+  renames a page, navigation item or product term, check that the Quick Start
+  agent's prompt (`lib/idp_common_pkg/idp_common/agents/quick_start/agent.py`),
+  `docs/quick-start.md` and its stories in `scripts/ux_stories.toml` still match.
+  A change the diff shows Quick Start's side cannot handle (a field it reads
+  renamed or removed, a requirement it does not meet) is 🔴; a backward-compatible
+  change needs nothing; one that may break it, or a prompt, page or story that no
+  longer matches, is 🟡. Where the PR description or commit messages are available,
+  also note whether they say how the Quick Start journey was exercised: open it,
+  describe a document, approve the drafted fields, profile created and activated.
+  The paths are in `.claude/rules/quick-start.md`
 - No obvious race conditions, unbounded loops, or missing pagination
 - Error handling uses explicit exceptions (no bare `except:`), with `exc_info=True`
 - No removal of observability (X-Ray `patch_all`, structured logging)

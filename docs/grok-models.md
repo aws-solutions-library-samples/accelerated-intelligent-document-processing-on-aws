@@ -164,8 +164,11 @@ Reach for Grok 4.6 when you want:
   useful for long documents you would rather not split finely.
 - **Agentic extraction with a non-Anthropic model.** Grok is currently the only
   non-Claude/non-Nova option that supports the Strands tool-use loop.
-- **Low cost per token at frontier quality** — $2.00 / $6.00 per 1M on the global
-  profile is materially cheaper than Claude Opus or GPT-5.6 Sol.
+- **Low cost per token** — $2.00 / $6.00 per 1M input / output tokens on the
+  global profile (`config_library/pricing.yaml`). Its extraction accuracy has not
+  been measured: Grok is not in any benchmark sweep
+  ([benchmarking](./benchmarking/index.md)), so A/B test it on your own documents
+  before relying on it.
 
 Prefer a **Claude** model when you need Discovery, verified prompt caching,
 GovCloud, `temperature` control, or the `max` reasoning effort level.

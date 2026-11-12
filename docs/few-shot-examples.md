@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT-0
 
 ## Overview
 
-Pipeline mode supports few-shot example prompting, a powerful feature that allows you to provide concrete document examples with expected outputs to significantly improve model accuracy, consistency, and reduce hallucination for both document classification and attribute extraction tasks.
+Pipeline mode supports few-shot example prompting, a feature that lets you provide concrete document examples with expected outputs, for both document classification and attribute extraction tasks. Examples are meant to make the model's output more accurate and consistent; the size of that effect has not been measured in this repository's benchmarks, so A/B test it on your own documents (see [Performance Considerations](#performance-considerations)).
 
 Few-shot examples apply to **pipeline mode only** — the processing mode that runs
 Amazon Textract or LLM-based OCR, then classification and extraction as separate
@@ -25,9 +25,9 @@ Few-shot learning enhances AI model performance by providing concrete examples a
 
 ## Key Benefits
 
-- **🎯 Improved Accuracy**: Models understand document patterns and expected formats better through concrete examples
+- **🎯 Accuracy**: Concrete examples can help a model recognise document patterns and expected formats
 - **📏 Consistent Output**: Examples establish exact JSON structure and formatting standards
-- **🚫 Reduced Hallucination**: Examples reduce likelihood of made-up classification or attribute values
+- **🚫 Fewer made-up values**: Examples showing the expected output can discourage invented classification or attribute values
 - **🔧 Domain Adaptation**: Examples help models understand domain-specific terminology and conventions
 - **💡 Better Edge Case Handling**: Visual examples clarify ambiguous cases that text descriptions might miss
 - **💰 Cost Effectiveness with Caching**: Using prompt caching with few-shot examples can significantly reduce costs for repeated processing
@@ -70,7 +70,7 @@ classes:
               "RecipientName": "The Honorable Wendell H. Ford",
               "Date": "10/31/1995",
               "Subject": null
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
       - x-aws-idp-class-prompt: "This is an example of the class 'Letter'"
         name: "Letter2"
         x-aws-idp-attributes-prompt: |
@@ -80,7 +80,7 @@ classes:
               "RecipientName": "Mr. Addison Y. Yeaman",
               "Date": "10/14/1970",
               "Subject": "Invitation to the Twelfth Annual Meeting of the TGIC"
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter2.png"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter2.png"
 ```
 
 ### Example Fields Explained
@@ -156,12 +156,12 @@ The `x-aws-idp-image-path` field supports multiple formats for maximum flexibili
 
 **Single Image File (Original functionality)**:
 ```yaml
-x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
 ```
 
 **Local Directory with Multiple Images (New)**:
 ```yaml
-x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/"
+x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/"
 ```
 
 **S3 Prefix with Multiple Images (New)**:
@@ -206,7 +206,7 @@ Few-shot examples support both multimodal and text-only approaches:
 - Include sample document text (OCR output) within `x-aws-idp-class-prompt` or `x-aws-idp-attributes-prompt`
 - Useful when images are not available or for privacy-sensitive scenarios
 - Can demonstrate text patterns and content structure
-- Still provide significant accuracy improvements over no examples
+- Can still help where no images are available
 
 **Example with OCR Text Content**:
 ```yaml
@@ -667,46 +667,52 @@ task_prompt: |
 
 ## Testing Your Configuration
 
-Use the provided test notebooks to validate your few-shot configuration:
+To check that a configuration's examples load, including their images, build the
+example content the classification and extraction prompts receive. This makes no
+model call. The builders are the functions both services use, and the snippet runs
+as written from the repository root against the `rvl-cdip-with-few-shot-examples`
+preset; substitute your own configuration file and class:
 
-### Classification Testing
 ```python
-# Test classification few-shot examples
-from idp_common.classification.service import ClassificationService
+# Run from the repository root.
+import os
+
 import yaml
 
-# Load your configuration
-with open('path/to/your/config.yaml', 'r') as f:
-    config = yaml.safe_load(f)
+from idp_common.config.models import IDPConfig
+from idp_common.utils.few_shot_example_builder import (
+    build_few_shot_examples_content,
+    build_few_shot_extraction_examples_content,
+)
 
-# Initialize service
-service = ClassificationService(config=config, backend="bedrock")
+# A local x-aws-idp-image-path is resolved against ROOT_DIR (in a deployed stack,
+# against the configuration bucket instead).
+os.environ["ROOT_DIR"] = os.getcwd()
 
-# Test building examples for all classes
-examples = service._build_few_shot_examples_content()
+with open("config_library/unified/rvl-cdip-with-few-shot-examples/config.yaml") as f:
+    config = IDPConfig.model_validate(yaml.safe_load(f))
+
+# Classification: the examples of every class
+examples = build_few_shot_examples_content(config)
 print(f"Loaded {len(examples)} example items for classification")
-```
 
-### Extraction Testing
-```python
-# Test extraction few-shot examples for specific class
-from idp_common.extraction.service import ExtractionService
-
-service = ExtractionService(config=config)
-
-# Test building examples for specific class (e.g., "letter")
-examples = service._build_few_shot_examples_content('letter')
+# Extraction: the examples of one class (here "letter")
+letter = next(c for c in config.classes if c.get("$id") == "letter")
+examples = build_few_shot_extraction_examples_content(letter)
 print(f"Loaded {len(examples)} example items for 'letter' class extraction")
 ```
+
+An example whose image cannot be found is logged as a warning and contributes its
+text only, so compare the number of image items with the images you expect.
 
 ## Performance Considerations
 
 ### Benefits
-- **Higher Accuracy**: Well-crafted examples typically improve accuracy by 10-30%
+- **Accuracy**: Well-crafted examples can improve accuracy. No benchmark in this repository has measured by how much, so compare with and without examples on your own documents
 - **Reduced Prompt Engineering**: Less time spent fine-tuning text descriptions
 - **Consistent Outputs**: Examples establish clear formatting standards
 - **Better Edge Case Handling**: Visual and textual examples help with ambiguous documents
-- **Cost Efficiency with Caching**: Prompt caching can reduce costs by 50-90% for repeated processing
+- **Cost Efficiency with Caching**: Cached prompt prefixes are billed at a reduced cache-read rate, provided the prefix reaches the model's minimum cacheable size ([prompt-caching study](./benchmarking/studies/prompt-caching.md))
 
 ### Trade-offs
 - **Increased Initial Token Usage**: Examples add to prompt length, increasing initial processing costs
@@ -789,9 +795,10 @@ Monitor these metrics to ensure optimal cache usage:
 
 ### Complete Working Example with Caching
 
-See `config_library/unified/few_shot_example/` for a complete working configuration that demonstrates:
+See `config_library/unified/rvl-cdip-with-few-shot-examples/` for a complete working configuration that demonstrates:
 - Letter classification and extraction with 2 examples
 - Email classification and extraction with 1 example
+- Bank statement classification and extraction with 1 example whose images are a directory of pages
 - Proper image path configuration
 - Task prompts with few-shot placeholder integration and optimal CACHEPOINT placement
 

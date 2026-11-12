@@ -292,11 +292,12 @@ It is **ignored** by models without an effort control — Amazon Nova, Claude
 Sonnet 4.5, and Claude Haiku 4.5. In the config UI, the **Reasoning effort**
 selector appears only when the section's selected model supports it.
 
-**Extraction defaults to `low`.** A full effort sweep (5 extraction methods ×
-{low, medium, high, xhigh} × 2 datasets × 20 docs) found higher effort adds
-output-token cost with negligible extraction-accuracy gain, so `low` keeps the
-Claude Sonnet 5 default affordable. Raise it per-config for genuinely
-reasoning-heavy documents. Other services default to `medium`.
+**Extraction defaults to `low`**, because higher effort spends more output
+tokens and `low` keeps the Claude Sonnet 5 default affordable. Its effect on
+extraction accuracy has not been measured in this repository: every benchmark
+cell holds effort at `low`
+([config-guidance](./benchmarking/config-guidance.md#configuration-axes-measured)).
+If you raise it for reasoning-heavy documents, A/B test it on your own documents. Other services default to `medium`.
 
 ```yaml
 extraction:

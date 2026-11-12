@@ -313,8 +313,10 @@ def test_text_with_no_marker_is_read_whole_and_text_after_it_alone_has_no_row() 
 
 @pytest.mark.unit
 def test_the_marker_is_the_line_the_build_prints_before_its_narrative() -> None:
-    source = Path(_codebuild_deployment().__file__).read_text(encoding="utf-8")
-    assert f'print("\\n{story_digest.NARRATIVE_MARKER}")' in source
+    build = _codebuild_deployment()
+    source = Path(build.__file__).read_text(encoding="utf-8")
+    assert build.DEPLOYMENT_SUMMARY_LOG_MARKER == story_digest.NARRATIVE_MARKER
+    assert 'print(f"\\n{DEPLOYMENT_SUMMARY_LOG_MARKER}")' in source
 
 
 def _digest_of(night: Night, **overrides: Any) -> dict[str, Any]:

@@ -79,7 +79,7 @@ The Assessment service is designed to assess the confidence and accuracy of extr
 - **Multi-modal analysis** with support for both document text and images
 - **Automatic bounding box processing** with spatial localization of extracted fields
 - **UI-compatible geometry output** for immediate visualization
-- **Optimized token usage** with pre-generated text confidence data (80-90% reduction)
+- **Optimized token usage** with pre-generated text confidence data, which is smaller than the full OCR results
 - **Structured confidence output** with scores and explanations per attribute
 - **Prompt template support** with placeholder substitution
 - **Image placeholder positioning** for precise multimodal prompt construction
@@ -1039,7 +1039,7 @@ The assessment service supports the following placeholders in prompt templates:
 - `{EXTRACTION_RESULTS}` - JSON of extraction results to assess
 
 ### OCR Confidence Data
-- `{OCR_TEXT_CONFIDENCE}` - **NEW** - Optimized text confidence data with 80-90% token reduction
+- `{OCR_TEXT_CONFIDENCE}` - **NEW** - Optimized text confidence data, smaller than the full OCR results
 
 ### Image Positioning
 - `{DOCUMENT_IMAGE}` - Placeholder for precise image positioning in multimodal prompts.

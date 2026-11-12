@@ -110,6 +110,7 @@ make fastcommit         # fastlint (skip UI) + auto-commit + push
 - [ ] License header after frontmatter
 - [ ] `CHANGELOG.md` updated for user-facing changes
 - [ ] Cross-references to related docs where appropriate
+- [ ] Touches a surface Quick Start calls, or renames a page, navigation item or product term? → Quick Start still works, and its agent's prompt, `docs/quick-start.md` and its stories still match (see `.claude/rules/quick-start.md`)
 
 ## Testing
 - [ ] Unit tests added (`@pytest.mark.unit`)

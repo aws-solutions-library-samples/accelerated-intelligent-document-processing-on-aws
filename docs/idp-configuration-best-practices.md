@@ -814,9 +814,9 @@ Few-shot learning enhances AI model performance by providing concrete examples a
 
 ### Key Benefits
 
-- **🎯 Improved Accuracy**: Models understand document patterns and expected formats better through concrete examples
+- **🎯 Accuracy**: Concrete examples can help a model recognise document patterns and expected formats. The size of the effect has not been measured in this repository's benchmarks, so A/B test it on your own documents
 - **📏 Consistent Output**: Examples establish exact JSON structure and formatting standards
-- **🚫 Reduced Hallucination**: Examples reduce likelihood of made-up classification or attribute values
+- **🚫 Fewer made-up values**: Examples showing the expected output can discourage invented classification or attribute values
 - **🔧 Domain Adaptation**: Examples help models understand domain-specific terminology and conventions
 - **💡 Better Edge Case Handling**: Visual examples clarify ambiguous cases that text descriptions might miss
 - **💰 Cost Effectiveness with Caching**: Using prompt caching with few-shot examples can significantly reduce costs for repeated processing
@@ -849,7 +849,7 @@ classes:
               "RecipientName": "The Honorable Wendell H. Ford",
               "Date": "10/31/1995",
               "Subject": null
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
       - x-aws-idp-class-prompt: "This is an example of the class 'Letter'"
         name: "Letter2"
         x-aws-idp-attributes-prompt: |
@@ -859,7 +859,7 @@ classes:
               "RecipientName": "Mr. Addison Y. Yeaman",
               "Date": "10/14/1970",
               "Subject": "Invitation to the Twelfth Annual Meeting of the TGIC"
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter2.png"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter2.png"
 ```
 
 ### Example Fields Explained
@@ -884,12 +884,12 @@ The `x-aws-idp-image-path` field supports multiple formats:
 
 **Single Image File:**
 ```yaml
-x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
 ```
 
 **Local Directory with Multiple Images:**
 ```yaml
-x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/"
+x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/"
 ```
 
 **S3 Prefix with Multiple Images:**
@@ -1028,7 +1028,7 @@ task_prompt: >-
 For models supporting cache checkpoints:
 - **Initial Request**: Full token cost
 - **Subsequent Requests**: Cache read cost (typically 10x cheaper) + new content cost
-- **Typical Savings**: 60-90% cost reduction for repeated processing
+- **Savings**: depend on how much of each request is a cacheable prefix, and need the prefix to reach the model's minimum cacheable size ([prompt-caching study](./benchmarking/studies/prompt-caching.md))
 
 ## LLM Inference Parameters
 
@@ -1074,11 +1074,19 @@ top_p: 0.0    # Take the most likely token
 top_k: 5      # Consider top 5 candidates
 ```
 
-**Conservative Configuration:**
+**Narrower alternative** (not shipped, and not measured to be more accurate):
 ```yaml
 top_p: 0.05   # More focused selection
 top_k: 3      # Fewer candidates
 ```
+
+The only top-k measurement in this repository found no effect: on Nova Lite
+Advanced extraction, `topK: 1` and the full greedy triple left the invalid
+tool-use failure rate unchanged
+([greedy-decoding study](./benchmarking/studies/greedy-decoding-tool-use.md)).
+Claude 4.7 and later, xAI Grok and OpenAI GPT-6 Astra reject sampling parameters,
+so the accelerator omits them for those models and a configured `top_k` is
+silently ignored there. A/B test any change on your own documents.
 
 ### Max Tokens Sizing
 
@@ -1134,9 +1142,9 @@ extraction:
 
 #### Token Efficiency Benefits
 
-YAML format provides significant token savings for all processing tasks:
+YAML usually needs fewer tokens than the equivalent JSON, though the saving has
+not been measured here and depends on the shape of your data:
 
-- **10-30% fewer tokens** than equivalent JSON
 - No quotes required around keys
 - More compact syntax for nested structures
 - Natural support for multiline content
@@ -1191,13 +1199,13 @@ customer_name: John Smith
 customer_address: 456 Oak Ave, City, State 67890
 ```
 
-The YAML version uses approximately 25% fewer tokens while maintaining the same information content.
+The YAML version carries the same information with less punctuation, so it usually needs fewer tokens.
 
 ### OCR Confidence Data Integration
 
 The assessment feature implements several cost optimization techniques:
 
-1. **Text Confidence Data**: Uses condensed OCR confidence information instead of full raw OCR results (80-90% token reduction)
+1. **Text Confidence Data**: Uses condensed OCR confidence information instead of full raw OCR results, which is smaller
 2. **Conditional Image Processing**: Images only processed when `{DOCUMENT_IMAGE}` placeholder is present
 3. **Efficient Prompting**: Optimized prompt templates minimize token usage while maintaining accuracy
 
@@ -1260,8 +1268,8 @@ Each configuration contains these essential components:
 ocr: [OCR method and parameters]
 classes: [Document type definitions]
 classification: [Classification prompts and parameters]
-extraction: [Extraction prompts and parameters]
-assessment: [Assessment prompts and parameters]
+extraction: [Extraction prompts and parameters, including confidence assessment under extraction.confidence]
+hitl: [Human review settings, including the confidence threshold]
 evaluation: [Evaluation prompts and parameters]
 summarization: [Summarization prompts and parameters]
 pricing: [Cost calculation parameters]
@@ -1433,7 +1441,7 @@ full reference.
 
 - **Multimodal Analysis**: Combines text analysis with document images for comprehensive confidence assessment
 - **Per-Attribute Scoring**: Provides individual confidence scores and explanations for each extracted attribute
-- **Token-Optimized Processing**: Uses condensed text confidence data for 80-90% token reduction compared to full OCR results
+- **Token-Optimized Processing**: Uses condensed text confidence data, which is smaller than the full OCR results
 - **UI Integration**: Seamlessly displays confidence results in the web interface with explainability information
 - **Confidence Threshold Support**: Configurable global and per-attribute confidence thresholds with color-coded visual indicators
 - **Runtime Control**: Enabled/disabled via configuration (`extraction.confidence.enabled` / `mode`), no stack redeployment required
@@ -1542,7 +1550,7 @@ classes:
         type: string
         description: Name of the vendor
         x-aws-idp-evaluation-method: FUZZY  # Use fuzzy matching
-        x-aws-idp-confidence-threshold: 0.8  # Minimum similarity threshold
+        x-aws-idp-evaluation-threshold: 0.8  # Minimum similarity threshold
 ```
 
 ### Supported Evaluation Methods
@@ -1559,12 +1567,22 @@ The framework supports multiple comparison methods:
 ### Baseline Data Configuration
 
 #### Baseline Bucket Structure Configuration
+
+Each document's baseline is a directory named after the document's key, holding
+one `result.json` per section, in the same layout the solution writes to the
+output bucket (see [evaluation.md](./evaluation.md#method-2-create-baseline-data-manually)):
+
 ```
 baseline-bucket/
-├── document1.pdf.json    # Baseline for document1.pdf
-├── document2.pdf.json    # Baseline for document2.pdf
+├── document1.pdf/
+│   └── sections/
+│       └── 1/
+│           └── result.json    # Baseline for section 1 of document1.pdf
 └── subfolder/
-    └── document3.pdf.json  # Baseline for subfolder/document3.pdf
+    └── document3.pdf/
+        └── sections/
+            └── 1/
+                └── result.json  # Baseline for subfolder/document3.pdf
 ```
 
 ### Aggregate Evaluation Analytics Configuration
@@ -1662,12 +1680,13 @@ Configure Bedrock OCR for:
 
 ### Configuration Presets
 
-The IDP accelerator supports multiple configuration presets for different use cases:
-
-- **Default**: Standard processing configuration
-- **few_shot_example**: Enhanced with few-shot learning examples
-- **medical_records_summarization**: Specialized for medical document processing
-- **checkboxed_attributes_extraction**: Optimized for form processing
+The configuration presets are the directories under `config_library/unified/`.
+The `ConfigurationPreset` stack parameter takes a directory name, though it offers
+only some of them: its `AllowedValues` in `template.yaml` list which, and any other
+preset can be loaded as a custom configuration instead. List that directory for the
+current set; most presets carry a `README.md` saying what they are
+for. Few-shot examples, for instance, are demonstrated by
+`rvl-cdip-with-few-shot-examples`.
 
 ### Dynamic Configuration Updates
 
@@ -1933,8 +1952,8 @@ ocr:
 
 classes: [Document type definitions with examples]
 classification: [Classification configuration with few-shot]
-extraction: [Extraction configuration with few-shot]
-assessment: [Assessment configuration]
+extraction: [Extraction configuration with few-shot, and confidence assessment under extraction.confidence]
+hitl: [Human review configuration]
 evaluation: [Evaluation configuration]
 summarization: [Summarization configuration]
 pricing: [Cost calculation parameters]
