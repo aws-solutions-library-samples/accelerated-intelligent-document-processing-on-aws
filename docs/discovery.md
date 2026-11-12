@@ -223,9 +223,9 @@ This method analyzes documents from scratch without any prior knowledge or label
 discovery:
   without_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0
+    temperature: 0.0
     top_p: 0.1
-    max_tokens: 10000
+    max_tokens: ""    # empty = the model's maximum output
     system_prompt: >-
       You are an expert in processing forms. Analyze forms line by line to identify 
       field names, data types, and organizational structure. Focus on creating 
@@ -291,9 +291,9 @@ This method uses existing labeled data or known field definitions to optimize th
 discovery:
   with_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0
+    temperature: 0.0
     top_p: 0.1
-    max_tokens: 10000
+    max_tokens: ""    # empty = the model's maximum output
     system_prompt: >-
       You are an expert in processing forms. Use provided ground truth data as 
       reference to optimize field extraction and ensure consistency with expected 
@@ -342,10 +342,10 @@ The auto-detect prompt is fully configurable via the Discovery Configuration in 
 ```yaml
 discovery:
   auto_split:
-    model_id: "us.amazon.nova-pro-v1:0"
+    model_id: "us.anthropic.claude-opus-4-6-v1:1m"
     temperature: 0.0    # Low temperature for consistent boundary detection
     top_p: 0.1
-    max_tokens: 4096
+    max_tokens: ""      # empty = the model's maximum output
     system_prompt: >-
       You are an expert document analyst. Your task is to identify
       distinct document sections within a multi-page document package.
@@ -623,9 +623,9 @@ The Discovery module supports comprehensive configuration through the deployment
 discovery:
   without_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0        # Creativity level (0.0-1.0)
+    temperature: 0.0        # Creativity level (0.0-1.0)
     top_p: 0.1             # Nucleus sampling (0.0-1.0)
-    max_tokens: 10000      # Maximum response length
+    max_tokens: ""         # Maximum response length; empty = the model's maximum
 ```
 
 **Parameter Guidelines:**
@@ -758,16 +758,16 @@ UpdateSchemaConfig:
 discovery:
   without_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0
+    temperature: 0.0
     top_p: 0.1
-    max_tokens: 10000
+    max_tokens: ""    # empty = the model's maximum output
     system_prompt: "You are an expert in processing forms..."
     user_prompt: "This image contains forms data..."
   with_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0
+    temperature: 0.0
     top_p: 0.1
-    max_tokens: 10000
+    max_tokens: ""    # empty = the model's maximum output
     system_prompt: "You are an expert in processing forms..."
     user_prompt: "This image contains unstructured data..."
   output_format:
