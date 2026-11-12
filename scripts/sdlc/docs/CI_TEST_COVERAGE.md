@@ -1558,10 +1558,12 @@ Notes:
 
 ## Test Execution Strategy
 
-### Parallel Execution (Steps 3-11, 13, 14, 15)
-- **12 tests run concurrently** to minimize pipeline runtime (Step 13, the
-  read-only permissions-boundary check, Step 14, the pipeline-hook test, and
-  Step 15, the config-prefix-mapping routing check, join the parallel pool)
+### Parallel Execution
+- **Every step in `PARALLEL_TEST_STEPS`** (`scripts/sdlc/codebuild_deployment.py`)
+  runs concurrently to minimize pipeline runtime. Read that list for the current
+  set: Step 13, the read-only permissions-boundary check, Step 14, the
+  pipeline-hook test, Step 15, the config-prefix-mapping routing check, and Step
+  16, the Quick Start bootstrap, join Steps 3–11 there
 - **Fail-fast enabled**: If any test fails, remaining tests are cancelled and cleanup begins
 - **Expected runtime**: ~25-35 minutes (vs 60+ minutes sequential)
 
@@ -1997,6 +1999,34 @@ without an upload tag.
   profile, which is a guard the feature adds and this cleanup respects rather than
   fights. Dropping the mappings first also stops a `reject` rule catching an
   unrelated upload while the rest of the cleanup runs.
+
+
+### Step 16: Quick Start Bootstrap ⚡ *Parallel*
+**What it tests**: that [Quick Start](../../../docs/quick-start.md)'s headless
+path, `idp-cli bootstrap`, authors a document-class schema from a description and
+saves it as a configuration profile on a deployed stack.
+- **Why it exists**: the Quick Start agent's tools and `idp-cli bootstrap` share
+  the schema authoring and the profile write in `idp_common.synthesis`. The step
+  names no starting profile, so the catalog is empty and the catalog match over
+  existing profiles is not exercised. The web UI's first-time-user stories stop
+  before a Quick Start message is sent, because the agent would change the shared
+  review stack's configuration, so this is the only live check that the Bedrock
+  authoring and the Configuration table write still compose.
+- **Verification**: bootstrap reports saving `integration-quick-start`; the
+  downloaded profile holds class `IntegrationPaystub`, with at least one leaf field
+  per `--field-hint`, nested or not. Field names are the model's choice, so only
+  their count is held. Bootstrap is retried once if it fails, because authoring is
+  one model call and a failure in the parallel pool fails the whole suite.
+- **Model**: `--model-id` is the CLI's default authoring model, swapped for an EU
+  or CA build by the product's `swap_model_ids`, as every config the suite uploads
+  is, so the weekly region runs call a model their region can reach.
+- **Isolation**: saves its own profile and never activates it, so the other steps'
+  profiles and the active configuration are unaffected. The CI build does not
+  install the document generator, so no test set is generated; `--count 1` bounds
+  the run if one is ever installed.
+- **Implementation**: `test_step16_quick_start_bootstrap` in
+  `scripts/sdlc/codebuild_deployment.py`, offline tests in
+  `scripts/sdlc/tests/test_quick_start_bootstrap_step.py`.
 
 ---
 
