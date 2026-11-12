@@ -139,8 +139,9 @@ separators (`1_000`) are not, because the cost reports and the web UI read them
 differently. A sign and surrounding spaces are not accepted either, so that every
 saved price has one form. A missing price (`null`) is refused as well. Earlier
 releases stored a null sent to the backend as `0.0`, so such a price now reads as a
-plain zero: it is valued at $0 and is not listed for correction. The Pricing page marks an invalid value and will not save the table
-until it is corrected, and the backend refuses to store one.
+plain zero: it is valued at $0 and is not listed for correction. The Pricing page
+marks an invalid value and will not save the table until it is corrected, and the
+backend refuses to store one.
 
 A custom table saved by an earlier release can still hold such a value. It still
 loads, and the page lists the value for correction. A value whose only problem is
