@@ -182,6 +182,40 @@ class TestMeteringHourlyColumnsInPrompt:
             "otherwise get wrong without any error to signal it"
         )
 
+    def test_the_prompt_makes_an_n_runs_query_carry_its_own_completeness(self):
+        """⚠️ The write side produces "unknown"; the consumer can flatten it.
+
+        ``n_runs`` is NULL for partitions older than the migration window, and
+        Athena's ``SUM`` skips NULLs — so a range reaching past that boundary
+        returns an ordinary-looking number covering only part of it. The daily
+        rollup is careful to yield NULL rather than a partial sum; an agent that
+        writes a bare ``SUM(n_runs)`` over 90 days undoes that care and reports
+        the short figure as a total, with no error anywhere to contradict it.
+
+        So the prompt has to ask for the completeness alongside the figure. A
+        sentence of prose saying the column "can be NULL" is not enough: it
+        tells the agent a fact without telling it what to do, which is the
+        difference between a caveat and an instruction.
+        """
+        prompt = get_rollup_tables_description()
+        idx = prompt.find("### 3. `metering_docs_hourly`")
+        end = prompt.find("### 5. `control_plane_hourly`", idx)
+        section = prompt[idx:end]
+
+        assert 'COUNT("n_runs")' in section, (
+            "the prompt does not show the completeness count that distinguishes "
+            "a full range from a partial one"
+        )
+        assert "SKIPS NULL" in section.upper() or "SKIPS NULLS" in section.upper(), (
+            "the prompt does not say that SUM skips NULLs, which is the whole "
+            "reason a partial range reads as an ordinary number"
+        )
+        # The instruction, not merely the fact.
+        assert "lower bound" in section, (
+            "the prompt states the boundary but never tells the agent what to "
+            "report when a range is not fully covered"
+        )
+
     def test_metering_hourly_bullet_calls_out_anti_pattern(self):
         """The specific defense against round-27's blocker: the
         metering_hourly bullet must include the ``NEVER SELECT

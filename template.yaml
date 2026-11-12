@@ -5588,6 +5588,13 @@ Resources:
             - Name: sum_pages
               Type: bigint
             - Name: n_runs
+              # Readable from the catalog itself (SHOW CREATE TABLE, GetTable,
+              # the console) so the boundary travels with the column rather
+              # than only with the docs. ⚠️ It does NOT reach the analytics
+              # agent: that prompt carries its own hand-written table
+              # descriptions and never reads Glue metadata, so the same
+              # warning is repeated in schema_provider.py on purpose.
+              Comment: "Document runs: one run is one (document_id, timestamp) pair in metering. NULL, permanently, for partitions older than the data-mart migration window (Days, default 30) - meaning not recorded, never zero runs. SUM() skips NULLs, so pair it with COUNT(*) and COUNT(n_runs) to see whether a range is fully covered."
               Type: bigint
           Compressed: true
         PartitionKeys:
@@ -5653,6 +5660,13 @@ Resources:
             - Name: sum_pages
               Type: bigint
             - Name: n_runs
+              # Readable from the catalog itself (SHOW CREATE TABLE, GetTable,
+              # the console) so the boundary travels with the column rather
+              # than only with the docs. ⚠️ It does NOT reach the analytics
+              # agent: that prompt carries its own hand-written table
+              # descriptions and never reads Glue metadata, so the same
+              # warning is repeated in schema_provider.py on purpose.
+              Comment: "Document runs: one run is one (document_id, timestamp) pair in metering. NULL, permanently, for partitions older than the data-mart migration window (Days, default 30) - meaning not recorded, never zero runs. SUM() skips NULLs, so pair it with COUNT(*) and COUNT(n_runs) to see whether a range is fully covered."
               Type: bigint
           Compressed: true
         PartitionKeys:

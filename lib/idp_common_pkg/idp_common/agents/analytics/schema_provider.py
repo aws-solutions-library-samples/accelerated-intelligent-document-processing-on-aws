@@ -227,6 +227,27 @@ number of (service, unit) rows a doc touched.
   so `SUM(n_docs)` is an upper bound on distinct documents. Use `n_runs` when the
   question is "how much processing happened", and raw `metering` with
   `COUNT(DISTINCT document_id)` when it is strictly "how many distinct documents".
+- ⚠️ **`n_runs` is NULL for partitions older than the data-mart migration
+  window** (its `Days` property, 30 by default). NULL means "not recorded for
+  this partition", never "zero runs", and `SUM` SKIPS NULLs — so a range
+  reaching past that boundary returns an ordinary-looking number covering only
+  part of it, with nothing to mark it short. **Whenever you aggregate
+  `n_runs`, select its completeness beside it** and say so in your answer if
+  the range is not fully covered:
+
+  ```sql
+  SELECT SUM("n_runs")      AS runs,
+         COUNT(*)           AS cells,
+         COUNT("n_runs")    AS cells_with_runs   -- < cells means PARTIAL
+  FROM metering_docs_hourly
+  WHERE "date" >= date_format(current_date - interval '7' day, '%Y-%m-%d')
+  ```
+
+  Report "N runs over the last 7 days" only when `cells_with_runs = cells`.
+  Otherwise report the figure as a lower bound and name the covered part. The
+  daily table takes the same care on the write side — it yields its own
+  `n_runs` only when every hourly cell in a group recorded one — so do not
+  undo that by presenting a partial sum as a total.
 - **Partitioned by**: `date`, `hour`. Same partition-filter rule as `metering_hourly`.
 
 ### 4. `metering_docs_daily`

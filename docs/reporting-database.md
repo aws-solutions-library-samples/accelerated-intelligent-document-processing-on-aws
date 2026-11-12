@@ -204,7 +204,14 @@ unique-doc counts, query raw `metering` with
 `(document_id, timestamp)` pair in raw `metering`, so reprocessing a
 document raises `n_runs` without raising `n_docs`. Unlike `n_docs` it is
 additive: a run falls in exactly one hour, so `SUM(n_runs)` is exact at
-either grain and over any range. See
+either grain and over any range it fully covers.
+
+⚠️ **`n_runs` is NULL for partitions older than the data-mart migration
+window**, and `SUM` skips NULLs — so a query reaching past that boundary
+returns a number covering only part of the range, with nothing marking it
+short. Select `COUNT(*)` and `COUNT("n_runs")` alongside any `SUM("n_runs")`
+and treat them differing as "partially recorded". The column carries the
+same warning as its Glue comment, so it is visible from the catalog too. See
 [`docs/reporting-sql-layer.md`](reporting-sql-layer.md) for the
 measurements behind both claims.
 
