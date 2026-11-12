@@ -42,7 +42,9 @@ from pydantic import (
     ConfigDict,
     Discriminator,
     Field,
+    PrivateAttr,
     ValidationInfo,
+    ValidatorFunctionWrapHandler,
     model_validator,
 )
 from pydantic import field_validator as _pydantic_field_validator
@@ -3576,6 +3578,12 @@ class PricingUnit(BaseModel):
         description="Price as string (supports scientific notation like '6.0E-8')"
     )
 
+    # Set when the price arrived as null. A null is still read as ``"0.0"``, so a
+    # processing configuration or a stored record holding one loads as it always
+    # did, but ``PricingConfig`` refuses it on save: a null written through the API
+    # was stored as free, where it should be refused as missing.
+    _price_was_null: bool = PrivateAttr(default=False)
+
     @field_validator("price", mode="before")
     @classmethod
     def parse_price(cls, v: Any) -> str:
@@ -3583,6 +3591,17 @@ class PricingUnit(BaseModel):
         if v is None:
             return "0.0"
         return str(v)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _remember_null_price(
+        cls, data: Any, handler: ValidatorFunctionWrapHandler
+    ) -> Any:
+        """Record that ``price`` was null before ``parse_price`` replaces it."""
+        unit = handler(data)
+        if isinstance(data, dict) and "price" in data and data["price"] is None:
+            unit._price_was_null = True
+        return unit
 
 
 class PricingEntry(BaseModel):
@@ -3659,21 +3678,26 @@ class PricingConfig(BaseModel):
         configuration resolver, ``ConfigurationManager.save_custom_pricing`` and
         ``update_configuration`` at deploy time -- so every writer that saves a table is checked.
 
+        A null price is refused too, although ``PricingUnit`` reads it as
+        ``"0.0"``: written through the API it would otherwise be stored as free.
+
         A record read back from storage is validated under
         ``STORED_PRICING_CONTEXT``: an invalid price there is logged and kept, so a
         stack holding one saved before this check still loads and the Pricing page
         shows the value for correction. The cost readers value it by
-        ``read_price``: unpriced, unless only surrounding whitespace was wrong.
+        ``read_price``: unpriced, unless only surrounding whitespace was wrong. A
+        stored null keeps its ``"0.0"`` reading, which is how it was always valued.
 
         One writer does not construct it: the fine-tuning deployment handler
         appends a row to the stored record directly, and only ever with the
         constant price ``"0.0"``.
         """
         invalid = [
-            f"{entry.name}/{unit.name}: {unit.price!r}"
+            f"{entry.name}/{unit.name}: "
+            + ("None" if unit._price_was_null else repr(unit.price))
             for entry in self.pricing
             for unit in entry.units
-            if parse_price(unit.price) is None
+            if unit._price_was_null or parse_price(unit.price) is None
         ]
         if not invalid:
             return self

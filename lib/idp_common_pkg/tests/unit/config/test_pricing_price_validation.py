@@ -38,6 +38,8 @@ from idp_common.config.models import (
     ConfigurationRecord,
     IDPConfig,
     PricingConfig,
+    PricingEntry,
+    PricingUnit,
     parse_price,
     read_price,
 )
@@ -244,6 +246,41 @@ class TestWriteIsRefused:
 
 
 @pytest.mark.unit
+class TestNullPrice:
+    """A null price is refused on save, and read as ``"0.0"`` everywhere else.
+
+    ``PricingUnit`` reads a null price as ``"0.0"``, which ``parse_price`` accepts,
+    so before the save check looked for it an API save with a null price was
+    stored as free. The fine-tuning deployment handler writes ``"0.0"`` explicitly,
+    which is a valid price and stays accepted.
+    """
+
+    def test_a_null_price_is_refused_on_save(self):
+        with pytest.raises(ValidationError, match="textract/a/pages: None"):
+            PricingConfig(**_one(None))
+
+    def test_a_null_price_on_a_built_unit_is_refused_on_save(self):
+        unit = PricingUnit(name="pages", price=None)
+        with pytest.raises(ValidationError, match="textract/a/pages: None"):
+            PricingConfig(pricing=[PricingEntry(name="textract/a", units=[unit])])
+
+    def test_the_explicit_zero_the_finetuning_handler_writes_is_accepted(self):
+        unit = PricingConfig(**_one("0.0")).pricing[0].units[0]
+        assert unit.price == "0.0"
+
+    def test_idp_config_still_reads_a_null_price_as_zero(self):
+        assert IDPConfig.model_validate(_one(None)).pricing[0].units[0].price == "0.0"
+
+    def test_a_stored_null_price_loads_as_zero_and_warns(self, caplog):
+        item = {"Configuration": CONFIG_TYPE_CUSTOM_PRICING, **_one(None)}
+        with caplog.at_level(logging.WARNING):
+            record = ConfigurationRecord.from_dynamodb_item(item)
+        assert isinstance(record.config, PricingConfig)
+        assert record.config.pricing[0].units[0].price == "0.0"
+        assert "textract/a/pages: None" in caplog.text
+
+
+@pytest.mark.unit
 class TestStoredIsKept:
     def test_a_stored_record_with_an_invalid_price_loads_and_warns(self, caplog):
         item = {"Configuration": CONFIG_TYPE_CUSTOM_PRICING, **_one("0x10")}
@@ -275,6 +312,12 @@ class TestThroughTheManager:
         manager = _manager(monkeypatch)
         with pytest.raises(ValidationError):
             manager.save_custom_pricing(_one("0x10"))
+        assert manager.get_configuration(CONFIG_TYPE_CUSTOM_PRICING) is None
+
+    def test_save_custom_pricing_refuses_a_null_price(self, monkeypatch):
+        manager = _manager(monkeypatch)
+        with pytest.raises(ValidationError, match="None"):
+            manager.save_custom_pricing(_one(None))
         assert manager.get_configuration(CONFIG_TYPE_CUSTOM_PRICING) is None
 
     def test_a_legacy_invalid_custom_price_loads_and_is_unpriced(self, monkeypatch):
