@@ -35,8 +35,10 @@ expression or an ``if not m: m = ...`` assignment outside a ``return``;
 ``setdefault``/``pop``/``next`` defaults; dataclass and class-attribute defaults;
 a lambda body; a ``model_id=`` keyword argument; a ``us-gov.`` prefix; and
 run-time concatenation. None of those shapes holds a geographic literal in scope
-today except ``DEFAULT_CLASSIFICATION_MODEL`` in ``config/models.py``, which must
-equal the shipped classification default and is outside this change.
+today. ``DEFAULT_CLASSIFICATION_MODEL`` in ``config/models.py`` is a US id because
+it must equal the shipped classification default; the one place it is substituted
+at run time, a cleared call's model, goes through :func:`regional_default`
+(``tests/unit/config/test_classification_default_region.py``).
 """
 
 from __future__ import annotations

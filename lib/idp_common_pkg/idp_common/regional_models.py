@@ -39,6 +39,9 @@ AGENT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 #: Chat with Document, when neither the chat nor the summarization section names
 #: a model.
 CHAT_MODEL_ID = "us.anthropic.claude-opus-4-8:1m"
+#: A classification call whose model was cleared (``DEFAULT_CLASSIFICATION_MODEL``
+#: in ``idp_common.config.models``, held equal to ``base-classification.yaml``).
+CLASSIFICATION_MODEL_ID = "us.amazon.nova-2-lite-v1:0"
 
 #: Every US id a code fallback passes to :func:`regional_default`.
 FALLBACK_MODEL_IDS = frozenset(
@@ -48,6 +51,7 @@ FALLBACK_MODEL_IDS = frozenset(
         NOVA_PRO_MODEL_ID,
         CHAT_MODEL_ID,
         AGENT_MODEL_ID,
+        CLASSIFICATION_MODEL_ID,
     }
 )
 
@@ -61,16 +65,28 @@ REGIONAL_DEFAULT_MODELS: dict[str, dict[str, str]] = {
         NOVA_PRO_MODEL_ID: "eu.amazon.nova-pro-v1:0",
         CHAT_MODEL_ID: "eu.anthropic.claude-opus-4-8:1m",
         AGENT_MODEL_ID: "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+        CLASSIFICATION_MODEL_ID: "eu.amazon.nova-2-lite-v1:0",
     },
     # Cohere Embed v4 is reachable from Canada only through its global. profile.
     # Nova Pro has no profile there, global. included, so the swap moves it to
-    # Nova 2 Lite. The US Sonnet 4.6, Opus 4.8 and Haiku 4.5 profiles are callable
-    # from ca-central-1, so they stay.
+    # Nova 2 Lite. The US Sonnet 4.6, Opus 4.8, Haiku 4.5 and Nova 2 Lite
+    # profiles are callable from ca-central-1, so they stay.
     "ca-": {
         EMBEDDING_MODEL_ID: "global.cohere.embed-v4:0",
         NOVA_PRO_MODEL_ID: "us.amazon.nova-2-lite-v1:0",
     },
 }
+
+
+def stack_region() -> str:
+    """The Region a code fallback has to be callable from.
+
+    ``AWS_REGION`` is set in every Lambda. ``AWS_DEFAULT_REGION`` is what a local
+    SDK or CLI session usually carries instead. With neither set the answer is
+    empty, and :func:`regional_default` then returns the US model, as it does for
+    any Region the deploy-time swap leaves alone.
+    """
+    return os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or ""
 
 
 def regional_default(model_id: str, region: Optional[str] = None) -> str:
@@ -84,3 +100,4 @@ def regional_default(model_id: str, region: Optional[str] = None) -> str:
         if region.startswith(prefix):
             return row.get(model_id, model_id)
     return model_id
+

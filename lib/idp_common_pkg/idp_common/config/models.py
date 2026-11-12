@@ -48,6 +48,12 @@ from pydantic import (
 from pydantic import field_validator as _pydantic_field_validator
 from typing_extensions import Self
 
+from idp_common.regional_models import (
+    CLASSIFICATION_MODEL_ID,
+    regional_default,
+    stack_region,
+)
+
 # Current config schema/shape version. Bump when the stored config shape changes
 # in a way that requires a migration (see config/migrations/). v0.6 folded the
 # top-level `assessment` block into `extraction.confidence` / `extraction.geometry`
@@ -1948,7 +1954,17 @@ def normalise_reasoning_effort(v: Any, path: str) -> str:
 #: different model, which is a cost and accuracy change nobody asked for, and its
 #: warning names a model the profile being edited does not use.
 #: ``test_classification_defaults_parity.py`` pins the two together.
-DEFAULT_CLASSIFICATION_MODEL = "us.amazon.nova-2-lite-v1:0"
+#:
+#: This is the US id. A cleared model resolves to
+#: :func:`default_classification_model`, its equivalent for the stack's Region:
+#: the deploy-time swap rewrites a stored profile, but not a value substituted
+#: while one is read, so an EU stack would otherwise send a ``us.`` profile.
+DEFAULT_CLASSIFICATION_MODEL = CLASSIFICATION_MODEL_ID
+
+
+def default_classification_model() -> str:
+    """:data:`DEFAULT_CLASSIFICATION_MODEL`, callable from the stack's Region."""
+    return regional_default(CLASSIFICATION_MODEL_ID, stack_region())
 
 
 def _parse_float_param(v: Any) -> float:
@@ -2087,18 +2103,21 @@ class ClassificationModelSettings(BaseModel):
         otherwise send no model ID at all. The substitution is logged, and
         :data:`DEFAULT_CLASSIFICATION_MODEL` is kept equal to the model the system
         defaults ship so that clearing one call's model does not quietly move it
-        onto a different, differently-priced model than its siblings run.
+        onto a different, differently-priced model than its siblings run, and it
+        is translated for the stack's Region the way the deploy-time swap
+        translates the stored siblings.
         """
         if v is None or (isinstance(v, str) and not v.strip()):
+            default = default_classification_model()
             if v is not None:
                 import logging
 
                 logging.getLogger(__name__).warning(
                     "A classification call's model is empty; using the default "
                     "model %s. Set the model on that call to choose another.",
-                    DEFAULT_CLASSIFICATION_MODEL,
+                    default,
                 )
-            return DEFAULT_CLASSIFICATION_MODEL
+            return default
         return str(v)
 
 

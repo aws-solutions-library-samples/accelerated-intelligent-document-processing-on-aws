@@ -242,7 +242,11 @@ the model's field default**. The YAML wins on a normal load, so nothing shows un
 a field is *cleared* — and then that one call falls back to the code's opinion
 instead of the value the rest of the profile is running. A cleared model field used
 to move a call from `nova-2-lite` to `nova-pro`, with the warning naming a model the
-profile did not use.
+profile did not use. The substituted model is `DEFAULT_CLASSIFICATION_MODEL`
+translated for the stack's Region (`AWS_REGION`, then `AWS_DEFAULT_REGION`) by
+`idp_common.regional_models`, so an EU stack gets `eu.amazon.nova-2-lite-v1:0`, as
+the deploy-time swap gives the call's stored siblings. A model key absent from the
+data, rather than cleared, still takes the field default, the US id.
 
 `tests/unit/config/test_classification_defaults_parity.py` asserts all three for
 classification, with its exemptions registered in
