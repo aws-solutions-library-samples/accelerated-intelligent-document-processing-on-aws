@@ -237,9 +237,25 @@ profile did not use.
 
 `tests/unit/config/test_classification_defaults_parity.py` asserts all three for
 classification, with its exemptions registered in
-`scripts/tests/gate_exemptions.json`. It is the classification half of a gate that
-should eventually cover every section; `base-extraction.yaml` and its models are not
-compared yet.
+`scripts/tests/gate_exemptions.json`.
+
+The third property is also held for **every** section, in both patterns, by
+`tests/unit/config/test_system_defaults_value_parity.py`. It compares each value the
+merged system defaults ship with the owning model's default (read from a default
+instance, so a derived value is read as a caller sees it) and with the value a
+default `IDPConfig()` holds at the same path, which is where a parent
+`default_factory` passing its own value would show. A cleared numeric field
+falls back to the field default (`_default_if_none`), so this is the property that
+keeps clearing a field from changing what it does. Two shapes are excused by
+computation, and each is pinned: a top-level setting the two patterns ship
+differently (`PATTERN_DEPENDENT_PATHS`, today `notes` and `use_bda`), and a prompt
+whose code default is empty or `None` — the prompts that carry a code copy are
+listed in `PROMPTS_WITH_A_CODE_COPY` and never take it. Lists of models, such as
+`ocr.features`, are compared whole. Anything else that differs is listed one path
+at a time in `DEFAULT_PARITY_EXEMPT`, each with its reason, and an entry that no
+longer differs fails. The key-set directions are still
+asserted for classification only, and a field the YAML does not ship has no value
+to compare, so this gate says nothing about it.
 
 ## Files
 
