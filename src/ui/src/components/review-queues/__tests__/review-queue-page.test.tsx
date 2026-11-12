@@ -14,7 +14,8 @@
  */
 
 import React from 'react';
-import { act, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, fireEvent, waitFor } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -76,6 +77,11 @@ vi.mock('../review-api', async (importOriginal) => ({
   }),
 }));
 
+// The bulk dialog has its own tests; here it only shows which mode the page opened it in.
+vi.mock('../../review-bulk/BulkSkipModal', () => ({
+  default: ({ mode }: { mode: string }) => <div data-testid="bulk-skip">{mode}</div>,
+}));
+
 import ReviewQueuePage from '../ReviewQueuePage';
 import { queueAnnotatorRows } from '../QueueAnnotatorsTable';
 
@@ -86,7 +92,7 @@ const Navigator = () => {
 };
 
 const renderPage = async (onName?: (name: string) => void) => {
-  render(
+  renderWithIntl(
     <MemoryRouter initialEntries={['/review-queues/queues/default']}>
       <Navigator />
       <Routes>
@@ -145,6 +151,32 @@ describe('a production queue page', () => {
     await renderPage();
     expect(itemsTable().findHeaderSlot()!.getElement().textContent).toContain('Documents');
     expect(headers(itemsTable()).slice(-7)).toEqual(['Document', 'Source', 'Queue', 'Priority', 'State', 'Annotator', 'Actions']);
+  });
+});
+
+describe("the Documents table's actions", () => {
+  it('shows Assign and Unassign as buttons and groups the rest under More actions', async () => {
+    await renderPage();
+    const slot = itemsTable().findHeaderSlot()!;
+    expect(slot.findAllButtons().map((b) => b.getElement().textContent)).toEqual(expect.arrayContaining(['Assign to…', 'Unassign']));
+    const menu = slot.findButtonDropdown()!;
+    expect(menu.getElement().textContent).toContain('More actions');
+    menu.openDropdown();
+    expect(menu.getElement().textContent).toMatch(/Queue.*Skip reviews/s);
+    expect(menu.findItems().map((i) => i.getElement().getAttribute('data-testid'))).toEqual([
+      'move',
+      'remove',
+      'skip-selected',
+      'skip-by-profile',
+    ]);
+  });
+
+  it('opens Skip All Reviews by profile from the menu', async () => {
+    await renderPage();
+    const menu = itemsTable().findHeaderSlot()!.findButtonDropdown()!;
+    menu.openDropdown();
+    act(() => menu.findItemById('skip-by-profile')!.click());
+    await waitFor(() => expect(document.querySelector('[data-testid="bulk-skip"]')?.textContent).toBe('PROFILE'));
   });
 });
 

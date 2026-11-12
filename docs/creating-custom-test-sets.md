@@ -294,7 +294,7 @@ You don't have to create your entire test set in one go. As you process and revi
 6. Optionally use the **Modified after** filter (e.g., "Last 24 hours" or a custom date/time) to easily find recently reviewed documents
 7. Click **Check Files** to preview matches, then **Add Documents**
 
-Files without matching baseline data are automatically excluded, so you can use a broad pattern — only documents you've reviewed and saved as evaluation baselines will be added. The test set's file count is updated automatically.
+Files without matching baseline data are added **unlabeled** rather than skipped, so narrow the pattern (or the **Modified after** filter) to the documents you have reviewed if you want the set to stay fully labeled: one unlabeled document makes the whole set read as unlabeled until it is draft-labeled. A document already in the set is skipped, so its labels in the set are kept; to take a newer baseline for it, remove it from the set and add it again. A `.zip` the pattern matches is left out. The test set's file count is updated automatically.
 
 You do not have to start with documents at all: **Create test set** → **Start empty** creates a set with nothing in it, ready to be grown this way. To prune a set, open it, tick the documents and choose **Remove**.
 

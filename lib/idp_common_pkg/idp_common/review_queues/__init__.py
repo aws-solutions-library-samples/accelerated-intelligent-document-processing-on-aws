@@ -51,6 +51,13 @@ _LAZY = (
     "testset_docs",
     "section_writes",
     "testset_labels",
+    "bulk_settings",
+    "bulk_models",
+    "legacy_skip",
+    "review_skip",
+    "send_to_review",
+    "bulk_selection",
+    "bulk_jobs",
 )
 
 

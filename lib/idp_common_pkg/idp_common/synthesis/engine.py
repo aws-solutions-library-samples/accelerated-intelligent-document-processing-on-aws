@@ -54,6 +54,15 @@ INSTALL_HINT = (
 )
 
 
+# The PDF backend SEED renders with, named here rather than left to SEED's
+# default. SEED offers three: the two HTML backends ("xhtml2pdf", "weasyprint")
+# give its document-generator model a render tool, while "reportlab" gives it a
+# shell tool instead, so that it can run the Python script it writes. Naming the
+# backend keeps the model's tool set fixed if SEED's default ever changes.
+# xhtml2pdf is the one SEED documents as needing no system libraries.
+SEED_RENDERER = "xhtml2pdf"
+
+
 @dataclass
 class SynthesisJob:
     """Inputs for one synthesis run. Runtime-agnostic (no AWS handles)."""
@@ -189,6 +198,62 @@ def _seed_pipeline_timeout_s() -> int:
     return max(configured, node_s * 2)
 
 
+def _render_without_remote_fetches() -> None:
+    """Make SEED's xhtml2pdf render tool load only local and inline resources.
+
+    SEED renders the HTML its document-generator model writes by calling
+    ``pisa.CreatePDF`` with no access policy, and xhtml2pdf's default policy
+    fetches public ``http(s)`` references (images, stylesheets, ``@import``,
+    fonts) while the PDF renders. SEED's own configuration has no switch for
+    that, so the backend in ``seed_data.tools._HTML_RENDERERS`` is replaced
+    with one that passes ``ResourceAccessPolicy(allow_remote=False)``.
+    ``data:`` URIs still load, and local reads keep xhtml2pdf's default
+    confinement to the process's working directory, as SEED's own call did; a
+    refused reference is logged by xhtml2pdf and left out of the PDF, and the
+    render carries on.
+
+    ``make_render_tool`` reads that dict each time it builds a document
+    generator, so the replacement must happen before ``generate_batch``. If
+    SEED or xhtml2pdf has changed shape, this logs a warning and leaves SEED's
+    renderer in place rather than failing the run.
+    """
+    try:
+        from seed_data import tools as seed_tools
+        from xhtml2pdf import pisa
+        from xhtml2pdf.config.resources import ResourceAccessPolicy
+    except ImportError as e:
+        logger.warning("Render fetch policy not applied: %s", e)
+        return
+
+    renderers = getattr(seed_tools, "_HTML_RENDERERS", None)
+    if not isinstance(renderers, dict) or SEED_RENDERER not in renderers:
+        logger.warning(
+            "Render fetch policy not applied: seed_data.tools has no %r renderer",
+            SEED_RENDERER,
+        )
+        return
+    if getattr(renderers[SEED_RENDERER], "_local_resources_only", False):
+        return
+
+    def _render(html_path: str, pdf_path: str) -> None:
+        policy = ResourceAccessPolicy(allow_remote=False)
+        with (
+            open(html_path, encoding="utf-8") as src,
+            open(pdf_path, "wb") as dest,
+        ):
+            status = pisa.CreatePDF(
+                src.read(), dest=dest, encoding="utf-8", resource_policy=policy
+            )
+        if status.err:
+            raise RuntimeError(
+                f"xhtml2pdf reported {status.err} error(s) while rendering"
+            )
+
+    setattr(_render, "_local_resources_only", True)
+    renderers[SEED_RENDERER] = _render
+    logger.info("SEED %s renderer loads local resources only", SEED_RENDERER)
+
+
 def _raise_seed_node_timeout() -> None:
     """Raise SEED's per-node timeout default (600s) for long high-quality runs.
 
@@ -268,10 +333,12 @@ def synthesize(
     import boto3
 
     _raise_seed_node_timeout()
+    _render_without_remote_fetches()
 
     generator = Generator(
         models=ModelConfig(**model_kwargs),
         threshold=job.threshold,
+        renderer=SEED_RENDERER,
         output_dir=batch_out,
         augment=job.augment,
         session=boto3.Session(),

@@ -10,7 +10,8 @@
  */
 
 import React from 'react';
-import { render, waitFor } from '@testing-library/react';
+import { waitFor } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -115,7 +116,7 @@ const doc = (over: Record<string, unknown> = {}) => ({
 
 const getDocumentDetailsFromIds = vi.fn();
 const renderPanel = (item = doc()) =>
-  render(
+  renderWithIntl(
     <DocumentPanel
       item={item as never}
       getDocumentDetailsFromIds={getDocumentDetailsFromIds}

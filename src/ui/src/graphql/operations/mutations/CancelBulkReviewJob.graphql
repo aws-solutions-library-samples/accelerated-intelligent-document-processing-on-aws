@@ -1,0 +1,28 @@
+mutation CancelBulkReviewJob($jobId: String!) {
+  cancelBulkReviewJob(jobId: $jobId) {
+    jobId
+    jobType
+    kind
+    status
+    mode
+    profile
+    submittedFrom
+    submittedTo
+    reason
+    note
+    resubmit
+    requestedBy
+    total
+    processed
+    counts {
+      outcome
+      count
+    }
+    limitReached
+    stalled
+    error
+    createdAt
+    startedAt
+    finishedAt
+  }
+}

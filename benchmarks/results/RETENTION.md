@@ -95,6 +95,23 @@ checksums against the release directory. And **a metric backfilled into one is n
 other**: `--augment` both, or `compare_cells` will report the metric as uncomparable on
 one side.
 
+### A `:1m` arm's cost is keyed under the base model id
+
+In a grid run with a `:1m` model (for example
+`v0.6.14/coresynth__extraction-model-sonnet5-1m/`), each row's `cost_by_key` names
+`bedrock/us.anthropic.claude-sonnet-5`, not `bedrock/us.anthropic.claude-sonnet-5:1m`.
+That is the stack's metering, recorded as measured, and it is correct. The Bedrock
+client meters every call through `metering_model_id()` in
+`lib/idp_common_pkg/idp_common/bedrock/model_utils.py`, which drops the `:1m` suffix:
+the suffix is never sent to Bedrock (the client sends the 1M-context beta header
+instead), and the 1M window is billed at the model's standard rates, so there is no
+second price for a separate key to select (#899). The harness prices whatever keys
+the stack recorded and does not rename them.
+
+A `:1m` grid and a plain grid of the same model therefore carry identical pricing
+keys, so tell them apart by the directory name and `meta.overrides`
+(`extraction_model=sonnet5_1m`), never by `cost_by_key`.
+
 ## What is not kept
 
 Suite slices run to answer a one-off question — cross-config grids (`config-*`),

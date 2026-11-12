@@ -19,10 +19,18 @@ extraction:
   confidence:
     mode: separate               # off | separate | integrated (enabled derived: mode != off)
     # Nova Lite is the default confidence model because the assessment pass is
-    # far cheaper on it. Live A/B on the OCR benchmark (identical prompt, only the
-    # confidence model swapped): ~$0.0011/doc on Nova Lite vs ~$0.145/doc on
-    # Sonnet 5 (~130x) — driven by Sonnet's higher per-token rate AND ~2x more
-    # (verbose) output tokens, which dominate assessment cost. Both models use the
+    # far cheaper on it. Live A/B on the OCR benchmark at release 0.6.0 (10 docs
+    # per arm, identical prompt, only the confidence model swapped): ~$0.0011/doc
+    # on Nova Lite vs ~$0.145/doc on Sonnet 5 (~130x). Both figures would have
+    # been priced from config_library/pricing.yaml as it then stood, and both
+    # rates have since been corrected: Sonnet 5 was 1.5x today's rate on every
+    # unit (issue #1830), and Nova Lite charged cache writes at the full input
+    # rate where they are now free (#1405). The token counts were not kept, so
+    # neither has been re-priced. Scaling the Sonnet 5 figure by 1/1.5 gives
+    # ~$0.097/doc; the Nova Lite figure is an overstatement of unknown size, so
+    # the ratio is at least ~88x. Both are estimates, not measurements. The gap is
+    # driven by Sonnet's higher per-token rate AND ~2x more (verbose) output
+    # tokens, which dominate assessment cost. Both models use the
     # two <<CACHEPOINT>> boundaries below for prompt-prefix caching (static
     # instructions cached across documents; the per-doc image+OCR block cached
     # across the initial call, the missing-row retry, and every list batch), so
@@ -128,3 +136,6 @@ hitl:
   notifications:
     retention_days: 30  # Days an Inbox message is kept before DynamoDB TTL removes it (1-365)
     max_per_user: 50    # Messages kept per user; the oldest read message is removed first (1-200)
+  # Bulk Skip All Reviews runs inline up to this many documents and as a background
+  # job above it. Read from the ACTIVE configuration profile (cached ~60 s).
+  bulk_skip_sync_limit: 50  # Inline (synchronous) limit for bulk Skip All Reviews (1-100)

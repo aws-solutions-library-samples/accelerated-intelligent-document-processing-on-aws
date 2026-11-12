@@ -362,7 +362,7 @@ The UI reaches every backend operation below through the REST API, as
 #### TestSetFileCopier Lambda
 - **Location**: `src/lambda/test_set_file_copier/index.py`
 - **Purpose**: Copies files from source buckets to the test set bucket
-- **Features**: Pattern-based file matching, baseline validation, automatic baseline filtering for Input Bucket sources, time-based file filtering, file count recount, supports both create and append modes
+- **Features**: Pattern-based file matching, baseline validation, Input Bucket documents without a baseline added unlabeled, documents already in the set skipped, time-based file filtering, file count recount, supports both create and append modes
 
 #### TestSetZipExtractor Lambda
 - **Location**: `src/lambda/test_set_zip_extractor/index.py`
@@ -632,8 +632,18 @@ The **From files already in a bucket** step adds a **Modified after** filter —
 a preset (last hour, 24 hours, 7 days, …) or a custom date and time, which makes
 it easy to pick up only recently reviewed documents — and a **Check matching
 files** button that reports the match count before you commit. When reading from
-the input bucket, documents with no ground truth in the evaluation baseline bucket
-are skipped rather than failing, so a broad pattern is safe. Patterns match the full
+the input bucket, a matching document with no ground truth in the evaluation baseline
+bucket is added **unlabeled**, as it is from every other source: its input is copied
+and it waits for [draft labels](#draft-labeling-unlabeled-documents--ground-truth).
+A broad pattern therefore brings in every file it matches, labeled or not, and
+one unlabeled document makes the whole set read as `unlabeled` until it is
+draft-labeled. A pattern re-applied when adding documents leaves every document
+already in the set as it is, labeled or not, so labels drafted or reviewed in the set
+are never replaced by the copy in the bucket. A set whose every match is unlabeled is created as an unlabeled set.
+From the input bucket a `.zip` the pattern matches is left out, because a `.zip`
+written into a set's folder is read as a test-set upload; a pattern that matches
+only `.zip` files fails with that reason. Every other matching file is copied.
+Patterns match the full
 object key: `*` matches within one folder level, `**` matches across folders, `?`
 matches a single character. The folder path before the first wildcard must be typed
 as it exists in the bucket; everything after it is matched regardless of case.
@@ -723,17 +733,17 @@ The same **Add documents** menu is available in two places: on the Test Sets tab
 
 - **From files in a bucket** (Admin only): Select a bucket, enter a file pattern, and optionally filter by modification time. Matching a pattern searches the whole bucket, so this source is not offered to Authors
 - **From a zip upload**: Upload a zip file containing new documents and, optionally, their baselines. A zip with only `input/` adds unlabeled documents; a set that was fully labeled then shows as unlabeled until those documents are draft-labeled or reviewed
-- **From processed documents**: Pick documents that have finished processing from a list of completed Production documents, newest first, with their configuration profile, a filter, and **Load older documents** for earlier ones. Each is copied into the set with any ground truth already saved for it in the evaluation baseline bucket. A document with **no** ground truth is added **unlabeled** rather than skipped, and the dialog names those documents before you confirm. If the set is labeled or draft-labeled, the dialog instead warns that one unlabeled document is enough to make the whole set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. A document already in the set is skipped rather than copied again, so labels reviewed in the set are never overwritten. Available to Admins and Authors. Every selected document is checked on the server before anything is copied: it must have finished processing under a configuration profile the caller may access, so a user scoped to certain profiles cannot add documents outside them. If any selected document fails that check, the whole request is refused with one message that does not say which document or why.
+- **From processed documents**: Pick documents that have finished processing from a list of completed Production documents, newest first, with their configuration profile, a filter, and **Load older documents** for earlier ones. Each is copied into the set with any ground truth already saved for it in the evaluation baseline bucket. A document with **no** ground truth is added **unlabeled** rather than skipped, and the dialog names those documents before you confirm. If the set is labeled or draft-labeled, the dialog instead warns that one unlabeled document is enough to make the whole set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. A document already in the set is skipped rather than copied again, so labels reviewed in the set are never overwritten. Available to Admins and Authors. Every selected document is checked on the server before anything is copied: it must have finished processing under a configuration profile the caller may access, so a user scoped to certain profiles cannot add documents outside them. If any selected document fails that check, the whole request is refused with one message that does not say which document or why. Admins can also open this dialog from the Document List: select documents there and choose **Add to test set**, then pick the set (see [Adding documents to a test set](web-ui.md#adding-documents-to-a-test-set)).
 - **Generate synthetic documents**: Opens the generator already pointed at this set (requires the synthetic data generator extension)
 
 
 On the table, the set shows an "Updating..." status while files are being added and the file count updates when it completes. On the set's page, a notice reports that documents are arriving and the list refreshes when they land; for generation it follows the job and refreshes when the job completes.
 
 **Key behaviors:**
-- **Automatic baseline filtering** (Input Bucket pattern import only): Files without matching baseline data in the evaluation bucket are automatically excluded rather than failing. Documents added **From processed documents** are never excluded for this reason; they arrive unlabeled instead. A result message reports the counts (e.g., "Added 8 of 12 files (4 excluded - no baseline data)").
-- **Idempotent**: Adding a document that already exists overwrites it. File counts are always recounted from S3 for accuracy.
+- **Documents without ground truth arrive unlabeled**: From the Input Bucket, by pattern or **From processed documents**, a file with no matching baseline data in the evaluation bucket is added without labels rather than skipped. Adding one to a labeled or draft-labeled set makes the set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. From the Test Set Bucket, every matching file must still have a baseline folder, or the add fails.
+- **Existing documents are kept**: Adding from a bucket or from processed documents skips a document already in the set, so labels drafted or reviewed in the set are never overwritten by the copy in the bucket. A zip upload still writes over the input and baseline files it contains. To take a newer copy of a document's ground truth from the evaluation baseline bucket, remove the document from the set and add it again. File counts are always recounted from S3 for accuracy.
 - **Prepopulated file pattern**: The file pattern field is pre-filled with the pattern used to create the test set, so you can reuse or adjust it.
-- **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns.
+- **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns. It picks up documents new to the set only: a document already in the set keeps its copy even if its ground truth was reviewed again since.
 
 ### File Structure Requirements
 ```
@@ -757,7 +767,7 @@ my-test-set/
   A *partially* labeled set (baselines for some documents but not others) is
   still a validation error, since that indicates an incomplete upload rather
   than a deliberate label-later workflow.
-- When using Input Bucket as source, files without baselines are automatically excluded (not treated as an error)
+- When using Input Bucket as source, files without baselines are added unlabeled (not treated as an error), so the set can be partially labeled; it reads as `unlabeled` until those documents are draft-labeled
 - Status: COMPLETED (valid), FAILED (validation errors), QUEUED/COPYING (creating), UPDATING (adding documents)
 - These rules apply to a zip upload exactly as they do to folders found in the bucket: the
   zip extractor accepts an archive with no `baseline/` folder as an unlabeled set and still
@@ -992,9 +1002,14 @@ above; **Process Changes** flips the label to *Reviewed*.
 **Saved changes are drafts until Process Changes.** A draft is stored under
 `<set>/drafts/` in the TestSetBucket, outside `baseline/`, so it is not part of a
 published version or a test run, and the label, the queue's progress and the
-confidence curve are unchanged until it is applied. Drafts survive **Re-extract**,
-**Clear draft labels** and **Reset labels**, move with their sections on **Edit Page
-Class**, and are deleted with the document when it is removed from the set. Once enough of the set is
+confidence curve are unchanged until it is applied. **Re-extract** deletes the draft
+of each section whose fields it writes back, because the draft's edits were made over
+the fields it replaces: those edits are lost, and the section opens with the
+re-extracted values. A section the re-extract does not write — another section of the
+packet, or authored ground truth, whose values it keeps — keeps its draft. Drafts
+survive **Generate draft labels**, **Clear draft labels** and **Reset labels**, move
+with their sections on **Edit Page Class**, and are deleted with the document when it
+is removed from the set. Once enough of the set is
 reviewed, publish a version to freeze it as a benchmark.
 
 **A field you edit stops carrying the model's confidence.** The score describes
@@ -1331,11 +1346,17 @@ only the section you are looking at (see below). The note names the class the fi
 were extracted under, so a section changed twice before it is re-extracted (Invoice to
 W2, then to Payslip) still says Invoice, and a section changed back to that class shows
 no note. The note stays with its section when a later save moves pages and renumbers
-the sections, and when a different section is re-extracted. It lasts for the page visit
-only: saving a new class overwrites the class in the section's ground truth, and nothing
-the editor loads records the class the fields were extracted under, so after a reload
-the note is not shown, though the fields still belong to the earlier class until the
-section is re-extracted.
+the sections, and when a different section is re-extracted. It also survives a page
+reload: the save records the class the fields were extracted under on the section's
+ground truth (`extractedAsClass` in its `result.json`, and in its draft if it has one),
+and the editor reads it when it opens the section. Re-extracting the section, or a
+**Generate draft labels** run that rewrites it, removes it from the section and from its
+draft once the new fields are written; a re-extract deletes that section's draft
+instead, so the section opens with the re-extracted values. For a section of
+authored ground truth, whose values a re-extract keeps, the record goes when the
+re-extract corrects the class. Saving or confirming the section's labels keeps it, because the
+values are still the ones extracted under the earlier class. A class change saved
+by a release that predates this is not recorded, so its note does not survive a reload.
 
 The corrected class is sent into the re-run itself, not merely written onto the
 existing labels: the document is re-processed with classification **skipped** and

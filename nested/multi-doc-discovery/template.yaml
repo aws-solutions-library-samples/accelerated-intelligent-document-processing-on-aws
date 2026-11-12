@@ -79,6 +79,14 @@ Parameters:
     Type: String
     Default: ""
     Description: "(Optional) Session name for sts:AssumeRole into the Bedrock hub-account role."
+  BedrockGuardrailId:
+    Type: String
+    Default: ""
+    Description: "(Optional) Id of an existing Bedrock Guardrail applied to the discovery model calls."
+  BedrockGuardrailVersion:
+    Type: String
+    Default: ""
+    Description: "(Optional) Version of the Bedrock Guardrail named by BedrockGuardrailId."
   VpcId:
     Type: String
     Default: ""
@@ -105,6 +113,11 @@ Conditions:
   HasBedrockHubRoleExternalId: !Not [!Equals [!Ref BedrockHubRoleExternalId, ""]]
   HasBedrockHubRoleSessionName: !Not [!Equals [!Ref BedrockHubRoleSessionName, ""]]
   HasArtifactsBucketKmsKey: !Not [!Equals [!Ref ArtifactsBucketKmsKeyArn, ""]]
+  HasGuardrailConfig:
+    !And [
+      !Not [!Equals [!Ref BedrockGuardrailId, ""]],
+      !Not [!Equals [!Ref BedrockGuardrailVersion, ""]],
+    ]
 
 Resources:
   ##########################################################################
@@ -726,6 +739,12 @@ Resources:
             !If [HasBedrockHubRoleExternalId, !Ref BedrockHubRoleExternalId, !Ref AWS::NoValue]
           BEDROCK_ASSUME_ROLE_SESSION_NAME:
             !If [HasBedrockHubRoleSessionName, !Ref BedrockHubRoleSessionName, !Ref AWS::NoValue]
+          GUARDRAIL_ID_AND_VERSION:
+            !If [
+              HasGuardrailConfig,
+              !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}",
+              "",
+            ]
       LoggingConfig:
         LogGroup: !Ref MultiDocDiscoveryAnalyzeFunctionLogGroup
       Policies:
@@ -757,6 +776,12 @@ Resources:
               - Effect: Allow
                 Action: sts:AssumeRole
                 Resource: !Ref BedrockHubRoleArn
+              - !Ref AWS::NoValue
+            - !If
+              - HasGuardrailConfig
+              - Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${BedrockGuardrailId}"
               - !Ref AWS::NoValue
             - Effect: Allow
               Action: [cloudwatch:PutMetricData]
@@ -805,6 +830,12 @@ Resources:
             !If [HasBedrockHubRoleExternalId, !Ref BedrockHubRoleExternalId, !Ref AWS::NoValue]
           BEDROCK_ASSUME_ROLE_SESSION_NAME:
             !If [HasBedrockHubRoleSessionName, !Ref BedrockHubRoleSessionName, !Ref AWS::NoValue]
+          GUARDRAIL_ID_AND_VERSION:
+            !If [
+              HasGuardrailConfig,
+              !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}",
+              "",
+            ]
       LoggingConfig:
         LogGroup: !Ref MultiDocDiscoverySaveFunctionLogGroup
       Policies:
@@ -852,6 +883,12 @@ Resources:
               - Effect: Allow
                 Action: sts:AssumeRole
                 Resource: !Ref BedrockHubRoleArn
+              - !Ref AWS::NoValue
+            - !If
+              - HasGuardrailConfig
+              - Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${BedrockGuardrailId}"
               - !Ref AWS::NoValue
             - Effect: Allow
               Action: [cloudwatch:PutMetricData]

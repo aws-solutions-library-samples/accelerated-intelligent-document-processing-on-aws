@@ -15,6 +15,11 @@ Base table (``PK`` / ``SK``):
   definition, so a queue re-created under the same id continues from it.
 * ``QREG`` / ``Q#<queueId>``: the queue registry (with a member snapshot).
 * ``QUEUE#<queueId>`` / ``ANNOUNCE``: the "items waiting" debounce.
+* ``BRJOB#<jobId>`` / ``META``: a bulk Skip All Reviews job; ``K#<seq>`` its
+  selected-mode key chunks; ``R#<sha256(objectKey)[:32]>`` its per-document results.
+* ``BRJOBS#U#<reviewerKey>`` and ``BRJOBS#ALL`` / ``<createdAt>#<jobId>``: the
+  requester's and the all-jobs (Admin) job lists. ``BRJOB#ACTIVE`` / ``LOCK``: the
+  one-running-job lock. None of these rows carries a GSI key.
 * ``TSDOC#<testSetId>`` / ``D#<objectKey>``: a Test Studio document's summary
   (labels, alerts, classes) and assignment; its content stays in S3. Each section
   draft is a top-level ``Draft#<sectionId>`` map on it (``Revision``, ``S3Key``,
@@ -274,3 +279,46 @@ def decode_cursor(token: str, *, multi: bool) -> Any:
         else:
             raise _bad_cursor()
     return out
+
+
+# ------------------------------------------------------------- bulk review jobs
+
+BULK_META_SK = "META"
+BULK_LOCK_KEY = {"PK": "BRJOB#ACTIVE", "SK": "LOCK"}
+BULK_ALL_INDEX_PK = "BRJOBS#ALL"
+BULK_JOB_ID_RE = re.compile(r"^brj-[0-9a-f]{24}$")
+
+
+def bulk_job_pk(job_id: str) -> str:
+    return f"BRJOB#{job_id}"
+
+
+def bulk_job_key(job_id: str) -> dict[str, str]:
+    return {"PK": bulk_job_pk(job_id), "SK": BULK_META_SK}
+
+
+def bulk_chunk_sk(seq: int) -> str:
+    return f"K#{seq:05d}"
+
+
+def bulk_result_sk(object_key: str) -> str:
+    return "R#" + hashlib.sha256(object_key.encode("utf-8")).hexdigest()[:32]
+
+
+def bulk_user_index_pk(reviewer_key: str) -> str:
+    return f"BRJOBS#U#{reviewer_key}"
+
+
+def bulk_index_sk(created_at: str, job_id: str) -> str:
+    return f"{created_at}#{job_id}"
+
+
+def new_bulk_job_id(reviewer_key: str, client_request_id: Optional[str] = None) -> str:
+    """``brj-<24 hex>``: derived from the request id when given (idempotent
+    submission), random otherwise."""
+    if client_request_id:
+        digest = hashlib.sha256(
+            f"{reviewer_key}|{client_request_id}".encode("utf-8")
+        ).hexdigest()
+        return "brj-" + digest[:24]
+    return "brj-" + secrets.token_hex(12)

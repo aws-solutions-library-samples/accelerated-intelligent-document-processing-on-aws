@@ -4414,3 +4414,66 @@ def test_bedrock_pricing_load_skips_a_price_the_pricing_page_reads_differently()
     assert loaded == {
         "bedrock/m": {"outputTokens": 2.0e-6, "cacheWriteInputTokens": 3.0e-6}
     }
+
+
+@pytest.mark.unit
+def test_bedrock_pricing_load_prices_a_default_model_a_saved_table_omits(
+    monkeypatch,
+):
+    """The rollup reads the per-row merge, not the saved table alone (#1886).
+
+    A stack that saved the Pricing page before a release added a model holds a
+    saved table without it; the hourly Bedrock cost columns must still price it.
+    Runs through the real ``ConfigurationManager`` against moto's DynamoDB.
+    """
+    import boto3
+    from moto import mock_aws
+
+    from idp_common.config import ConfigurationManager
+    from idp_common.config.constants import CONFIG_TYPE_DEFAULT_PRICING
+    from idp_common.config.models import PricingConfig
+
+    default = {
+        "pricing": [
+            {
+                "name": "bedrock/old",
+                "units": [{"name": "inputTokens", "price": "1.0E-6"}],
+            },
+            {
+                "name": "bedrock/new",
+                "units": [{"name": "inputTokens", "price": "3.0E-6"}],
+            },
+        ]
+    }
+    saved = {
+        "pricing": [
+            {
+                "name": "bedrock/old",
+                "units": [{"name": "inputTokens", "price": "2.0E-6"}],
+            }
+        ]
+    }
+    with mock_aws():
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        monkeypatch.delenv("CONFIGURATION_BUCKET", raising=False)
+        boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="t",
+            KeySchema=[{"AttributeName": "Configuration", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "Configuration", "AttributeType": "S"}
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        manager = ConfigurationManager(table_name="t")
+        manager.save_configuration(
+            CONFIG_TYPE_DEFAULT_PRICING, PricingConfig(**default)
+        )
+        manager.save_custom_pricing(PricingConfig(**saved))
+
+        module = _load_with_env(CONFIGURATION_TABLE_NAME="t")
+        loaded = module._load_bedrock_pricing_from_config()
+
+    assert loaded == {
+        "bedrock/old": {"inputTokens": 2.0e-6},
+        "bedrock/new": {"inputTokens": 3.0e-6},
+    }

@@ -373,7 +373,7 @@ properties:
 
 **Symptoms:**
 - UI displays `attributes` array instead of `properties` object
-- Configuration tab is blank
+- The Configuration page's **Processing Settings** tab is blank
 
 **Solution:**
 1. Refresh browser cache (hard refresh: Ctrl+Shift+R or Cmd+Shift+R)

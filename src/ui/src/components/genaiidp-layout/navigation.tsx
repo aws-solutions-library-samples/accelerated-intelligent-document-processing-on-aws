@@ -1,6 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React, { useMemo } from 'react';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 import { useLocation } from 'react-router-dom';
 import type { SideNavigationProps } from '@cloudscape-design/components';
 import { Badge, Box, Button, Hotspot, Link, Popover, SideNavigation, SpaceBetween } from '@cloudscape-design/components';
@@ -28,6 +29,7 @@ import {
   MODEL_CONFIG_LIMITS_PATH,
   DISCOVERY_PATH,
   USER_MANAGEMENT_PATH,
+  MCP_CONFIGURATION_PATH,
   CONFIG_PREFIX_MAPPINGS_PATH,
   AGENT_CHAT_PATH,
   CAPACITY_PLANNING_PATH,
@@ -37,8 +39,19 @@ import {
   MY_QUEUES_PATH,
   MY_TASKS_PATH,
   MY_WORK_PATH,
+  JOBS_PATH,
   REVIEW_QUEUES_PATH,
 } from '../../routes/constants';
+
+const messages = defineMessages<{ mcpConfiguration: NoMessageValues }>({
+  mcpConfiguration: {
+    id: 'navigation.configuration.mcpConfiguration',
+    defaultMessage: 'MCP Configuration',
+    description: 'Side navigation link, in the Configuration section, to the page that manages MCP server credentials. Admin users only.',
+  },
+});
+
+const MCP_CONFIGURATION_HREF = `#${MCP_CONFIGURATION_PATH}`;
 
 const NAV_HOTSPOTS: Record<string, string> = {
   [`#${DOCUMENTS_PATH}`]: 'nav-documents',
@@ -122,6 +135,9 @@ export const adminNavItems = [
       // Profile, which is the document-visibility partition, so it is not an
       // Author-level setting.
       { type: 'link', text: 'Prefix Mappings', href: `#${CONFIG_PREFIX_MAPPINGS_PATH}` },
+      // Admin-only: MCP service credentials. Hidden on a stack without MCP. The text
+      // here is the English; FullNavigation formats it in the UI's language.
+      { type: 'link', text: String(messages.mcpConfiguration.defaultMessage), href: MCP_CONFIGURATION_HREF },
       { type: 'link', text: 'View / Edit Pricing', href: `#${PRICING_PATH}` },
       { type: 'link', text: 'View / Edit Model Limits', href: `#${MODEL_CONFIG_LIMITS_PATH}` },
     ],
@@ -454,11 +470,12 @@ const FullNavigation = ({
   onFollowHandler = defaultOnFollowHandler,
   activeHref: pinned,
 }: NavigationProps): React.JSX.Element => {
+  const intl = useIntl();
   const location = useLocation();
   const path = location.pathname;
   let activeHref = `#${DEFAULT_PATH}`;
   const { settings } = useSettingsContext();
-  const { isAdmin, isAuthor, isViewerOnly, isQueueWorker } = useUserRole();
+  const { isAdmin, isAuthor, isViewerOnly, isQueueWorker, canReview } = useUserRole();
   const reviewWork = useOptionalReviewWork();
   const reviewCount = reviewWork?.count ?? null;
   // Home (the Inbox) is everyone's; its Tasks and Queues are for Annotators, who are
@@ -490,7 +507,11 @@ const FullNavigation = ({
     else roleItems = viewerNavItems; // Viewer, and Viewer + Reviewer (the union)
 
     // Home (the Inbox, plus an Annotator's Tasks and Queues) comes first for everyone.
-    const home = buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: isQueueWorker, taskCount: reviewCount });
+    const home = buildHomeNavSection(buildInboxNavLink(unreadCount), {
+      showWork: isQueueWorker,
+      taskCount: reviewCount,
+      showJobs: !!canReview,
+    });
     roleItems = [home as unknown as Record<string, unknown>, ...roleItems];
     if (showHitl) {
       // HITL follows Test Studio; without Test Studio it goes before the trailing sections.
@@ -509,7 +530,7 @@ const FullNavigation = ({
     );
     if (resourcesIdx < 0) return [...roleItems, featuresSection as unknown as Record<string, unknown>];
     return [...roleItems.slice(0, resourcesIdx), featuresSection as unknown as Record<string, unknown>, ...roleItems.slice(resourcesIdx)];
-  }, [items, isAdmin, isAuthor, isViewerOnly, featuresSection, unreadCount, isQueueWorker, showHitl, reviewCount]);
+  }, [items, isAdmin, isAuthor, isViewerOnly, featuresSection, unreadCount, isQueueWorker, showHitl, reviewCount, canReview]);
 
   // Filter out navigation items based on deployment context:
   // - Capacity Planning: hidden if pattern is not Pattern-2 or Unified
@@ -536,6 +557,10 @@ const FullNavigation = ({
     if (!isCapacityPlanningSupported) {
       hiddenConfigItems.add('Capacity Planning');
     }
+    // MCP Configuration only where the stack has an MCP server. Hidden until the
+    // settings say so, so a stack without MCP never shows a dead link. Keyed on the
+    // link's href, which does not change with the language.
+    const showMcpConfiguration = Boolean(settings?.McpServerEndpoint);
 
     // Transform navigation items: hide unsupported items, grey out region-restricted items
     return baseItems
@@ -547,8 +572,12 @@ const FullNavigation = ({
             ...item,
             items: section.items
               .filter((subItem) => !hiddenConfigItems.has((subItem as { text?: string }).text ?? ''))
+              .filter((subItem) => showMcpConfiguration || (subItem as { href?: string }).href !== MCP_CONFIGURATION_HREF)
               .map((subItem) => {
                 const link = subItem as SideNavigationProps.Link;
+                if (link.href === MCP_CONFIGURATION_HREF) {
+                  return { ...link, text: intl.formatMessage(messages.mcpConfiguration) };
+                }
                 // Grey out Custom Models with region badge when not in us-east-1
                 if (link.text === 'Custom Models' && !isCustomModelsSupported) {
                   return {
@@ -575,7 +604,7 @@ const FullNavigation = ({
         return item;
       })
       .filter((item) => !hiddenConfigItems.has((item as { text?: string }).text ?? ''));
-  }, [baseItems, settings?.IDPPattern]);
+  }, [baseItems, settings?.IDPPattern, settings?.McpServerEndpoint, intl]);
 
   // Determine active link based on current path
   if (path.includes(PRICING_PATH)) {
@@ -601,12 +630,16 @@ const FullNavigation = ({
     activeHref = `#${USER_MANAGEMENT_PATH}`;
   } else if (path.includes(CONFIG_PREFIX_MAPPINGS_PATH)) {
     activeHref = `#${CONFIG_PREFIX_MAPPINGS_PATH}`;
+  } else if (path.includes(MCP_CONFIGURATION_PATH)) {
+    activeHref = MCP_CONFIGURATION_HREF;
   } else if (path.includes(CUSTOM_MODELS_PATH)) {
     activeHref = `#${CUSTOM_MODELS_PATH}`;
   } else if (path.includes(CAPACITY_PLANNING_PATH)) {
     activeHref = `#${CAPACITY_PLANNING_PATH}`;
   } else if (path.startsWith(MY_QUEUES_PATH)) {
     activeHref = `#${MY_QUEUES_PATH}`;
+  } else if (path.startsWith(JOBS_PATH)) {
+    activeHref = `#${JOBS_PATH}`;
   } else if (path.startsWith(MY_WORK_PATH)) {
     activeHref = `#${MY_TASKS_PATH}`;
   } else if (path.startsWith(REVIEW_QUEUES_PATH)) {
@@ -662,8 +695,9 @@ const QueueWorkerNavigation = ({ onFollowHandler = defaultOnFollowHandler, activ
   const { unreadCount } = useInbox();
   const reviewWork = useOptionalReviewWork();
   const deploymentInfo = useDeploymentInfoNavSection();
+  const { canReview } = useUserRole();
   const items: SideNavigationProps.Item[] = [
-    buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: true, taskCount: reviewWork?.count ?? null }),
+    buildHomeNavSection(buildInboxNavLink(unreadCount), { showWork: true, taskCount: reviewWork?.count ?? null, showJobs: !!canReview }),
     ...(deploymentInfo ? [deploymentInfo] : []),
   ];
   // The edit pages (a Test Studio item under /review-queues/.../items for an Annotator, or a document's
@@ -671,6 +705,7 @@ const QueueWorkerNavigation = ({ onFollowHandler = defaultOnFollowHandler, activ
   // (under /review-queues) from Queues.
   let activeHref = `#${MY_TASKS_PATH}`;
   if (path.startsWith(INBOX_PATH)) activeHref = `#${INBOX_PATH}`;
+  else if (path.startsWith(JOBS_PATH)) activeHref = `#${JOBS_PATH}`;
   else if (path.startsWith(MY_QUEUES_PATH) || (path.startsWith(REVIEW_QUEUES_PATH) && !path.includes('/items/')))
     activeHref = `#${MY_QUEUES_PATH}`;
   return (

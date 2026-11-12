@@ -1,0 +1,728 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Agent capability manifest. Checked by scripts/tests/test_agent_capabilities.py,
+# whose docstring explains every field and every check. In short:
+#
+#   reads    what the code around the model can read on its behalf
+#   inputs   what text reaches the model, and its origin
+#   outputs  where the model's output can go
+#   control  code that limits one of the above: {symbol: path::name, limits: term}
+#   test     the test nodes that exercise those controls
+#   finding  recorded when an entry needs a control for an output and has none
+#   roles    Lambda functions whose credentials the model's tools run with
+#
+# An entry whose inputs include document-derived or external text, whose reads
+# include private data and whose outputs include an external channel must name,
+# for each external output, a control that limits it or a finding that lists it.
+#
+# The gate checks that these declarations are complete and resolve. It does not
+# check that they are true; .claude/skills/agent-capability-review.md is the audit
+# that does, surface by surface.
+
+vocabulary:
+  inputs:
+    user_prompt:
+      origin: user
+      note: The signed-in user's own message.
+    orchestrator_query:
+      origin: document
+      note: >-
+        A question the orchestrator writes for a sub-agent. The orchestrator writes
+        it from the whole conversation, which holds earlier agents' answers, and those
+        can carry text from documents and the reporting tables.
+    conversation_history:
+      origin: document
+      note: >-
+        The caller's own earlier turns, including agent answers derived from
+        documents.
+    document_content:
+      origin: document
+      note: Text or page images of a processed or uploaded document.
+    reporting_rows:
+      origin: document
+      note: Rows from the reporting tables, which hold values extracted from documents.
+    logs_and_records:
+      origin: document
+      note: >-
+        CloudWatch log lines, X-Ray traces, Step Functions history and tracking-table
+        records. They carry file names and error text, and can carry document text a
+        function logged (inferred, not measured).
+    configuration:
+      origin: document
+      note: >-
+        Configuration profiles. A profile is written by an Author or by discovery,
+        and discovery writes text derived from documents (cleaned first, see the
+        discovery entries).
+    knowledge_base_passages:
+      origin: document
+      note: Passages the knowledge base retrieves from indexed documents.
+    remote_tool_results:
+      origin: external
+      note: Responses from an MCP server outside the stack.
+    mcp_tool_arguments:
+      origin: external
+      note: Arguments an MCP client's model chose for a tool call.
+    review_stack_pages:
+      origin: external
+      note: >-
+        Pages of the shared review stack in a browser, which show documents and text
+        from the merge request under test.
+    change_under_review:
+      origin: external
+      note: A merge or pull request's diff, description and discussion.
+    build_log:
+      origin: external
+      note: A CI build log, which includes output of code from the change under test.
+    generation_request:
+      origin: user
+      note: A data-generation job the signed-in user confirmed in Quick Start.
+    fixed_code:
+      origin: none
+      note: Code written into the harness; no model is involved.
+
+  reads:
+    reporting_tables:
+      private: true
+      note: Athena over the reporting database, every document's extracted values.
+    document_store:
+      private: true
+      note: Objects in the Input and Output buckets.
+    this_document:
+      private: true
+      note: Only the document being processed.
+    discovery_samples:
+      private: true
+      note: The sampled documents of one discovery job.
+    tracking_and_logs:
+      private: true
+      note: The tracking table, CloudWatch Logs, X-Ray and Step Functions history.
+    chat_memory:
+      private: true
+      note: The caller's stored conversation, keyed on the caller and the session.
+    knowledge_base:
+      private: true
+      note: Every document indexed into the knowledge base.
+    configuration_profiles:
+      private: false
+      note: Configuration profiles and the schema catalog.
+    ci_account_read_only:
+      private: true
+      note: Read-only describe and log access in the shared CI account.
+    review_stack_session:
+      private: true
+      note: A signed-in browser session on the shared review stack.
+    repository_checkout:
+      private: false
+      note: The public repository's own files.
+    nothing:
+      private: false
+      note: The code around the model reads nothing on its behalf.
+
+  outputs:
+    ui_rendered:
+      external: true
+      note: >-
+        Rendered in the web UI. A rendered page can request remote resources; the
+        markdown renderer and the content policy decide which it may load.
+    code_interpreter_sandbox:
+      external: true
+      note: >-
+        The AgentCore Code Interpreter session, which can reach Amazon S3 in its own
+        region (docs/agent-analysis.md, "Network reach of the Python interpreter").
+    deepwiki_mcp_server:
+      external: true
+      note: The public DeepWiki MCP server the Code Intelligence agent asks.
+    external_mcp_server:
+      external: true
+      note: An MCP server an administrator configured, outside the stack.
+    mcp_client:
+      external: true
+      note: An MCP client outside the stack, whose own model reads the result.
+    review_comment:
+      external: true
+      note: A comment on a merge or pull request, read by people and other tools.
+    configuration_write:
+      external: false
+      note: A configuration profile or revision saved in the stack.
+    processing_results:
+      external: false
+      note: Extraction and processing results in the stack's own buckets.
+    generation_queue:
+      external: false
+      note: A data-generation job queued inside the stack.
+    sub_agent:
+      external: false
+      note: A question passed to another agent in the same process.
+    shell_commands:
+      external: true
+      note: >-
+        Shell commands a harness lets the model run. Claude Code's Bash allowlist
+        rules are prefix matches, so a command chained after an allowed prefix runs
+        too, and reaches whatever the shell and its credentials can.
+    ci_job_log:
+      external: false
+      note: The CI job's own log.
+    none:
+      external: false
+      note: The output goes nowhere outside the harness.
+
+# Per Lambda function: the S3 object access and function invocations its code
+# uses, each with the code path that needs it, or `unused` with what was found.
+# scripts/tests/test_analytics_role_grants.py fails when a role named by an entry
+# that takes document-derived input holds a grant this section does not declare,
+# or when a declaration names a grant the role no longer holds.
+roles:
+  AgentChatProcessorFunction:
+    template: template.yaml
+    object_access:
+      - {kind: write, bucket: ConfigurationBucket, key: /config_revisions/*,
+         uses: configuration profile saves cut a revision (#1778)}
+      - {kind: delete, bucket: ConfigurationBucket, key: /config_revisions/*,
+         uses: configuration profile saves cut a revision (#1778)}
+      - {kind: write, bucket: ReportingBucket, key: /athena-results/*,
+         uses: Athena writes query results with the caller's credentials}
+  AgentProcessorFunction:
+    template: template.yaml
+    object_access:
+      - {kind: write, bucket: ConfigurationBucket, key: /config_revisions/*,
+         uses: configuration profile saves cut a revision (#1778)}
+      - {kind: delete, bucket: ConfigurationBucket, key: /config_revisions/*,
+         uses: configuration profile saves cut a revision (#1778)}
+      - {kind: write, bucket: ReportingBucket, key: /athena-results/*,
+         uses: Athena writes query results with the caller's credentials}
+  ChatStreamProcessorFunction:
+    template: template.yaml
+    object_access:
+      - {kind: write, bucket: ConfigurationBucket, key: /config_revisions/*,
+         uses: configuration profile saves cut a revision (#1778)}
+      - {kind: delete, bucket: ConfigurationBucket, key: /config_revisions/*,
+         uses: configuration profile saves cut a revision (#1778)}
+      - {kind: write, bucket: ReportingBucket, key: /athena-results/*,
+         uses: Athena writes query results with the caller's credentials}
+      - {kind: read, bucket: OutputBucket, key: /*,
+         uses: "Chat with Document reads each page's text from its TextUri
+           (vendored/chat_with_document_processor.py, _get_full_text)"}
+      - {kind: write, bucket: OutputBucket, key: /*/summary/fulltext.txt,
+         uses: Chat with Document caches the assembled text at
+           <document key>/summary/fulltext.txt}
+  # The MCP handler's batch tools upload, read, reprocess and clean up documents
+  # through idp_sdk; its S3 scope is the batch tools' and is declared as granted.
+  AgentCoreMCPHandlerFunction:
+    template: template.yaml
+    object_access:
+      - {kind: read, bucket: InputBucket, key: /*, uses: batch tools read uploaded documents}
+      - {kind: read, bucket: OutputBucket, key: /*, uses: get_results reads processing output}
+      - {kind: write, bucket: InputBucket, key: /*, uses: batch_run uploads documents}
+      - {kind: write, bucket: OutputBucket, key: /*, uses: batch_reprocess rewrites output}
+      - {kind: write, bucket: MCPContentBucket, key: /*, uses: batch_run stages content under temp/}
+      - {kind: write, bucket: ReportingBucket, key: /*,
+         uses: "search runs Athena, which writes results with the caller's credentials"}
+      - {kind: delete, bucket: OutputBucket, key: /*,
+         uses: batch_reprocess clears prior output (idp_sdk rerun_processor)}
+  ExtractionFunction:
+    template: patterns/unified/template.yaml
+    object_access:
+      - {kind: read, bucket: InputBucket, key: /*, uses: reads the uploaded document's pages}
+      - {kind: read, bucket: OutputBucket, key: /*, uses: reads OCR and classification output}
+      - {kind: write, bucket: OutputBucket, key: /*, uses: writes extraction results}
+      - {kind: read, bucket: WorkingBucket, key: /*, uses: "loads the compressed document (Document.load_document) and reads its
+           checkpoint and per-shard results"}
+      - {kind: write, bucket: WorkingBucket, key: /*, uses: writes checkpoints and per-shard results}
+      - {kind: delete, bucket: WorkingBucket, key: /*,
+         uses: "deletes the section checkpoint and per-shard results
+           (extraction_function/index.py, delete_extraction_checkpoint and delete_shard_results)"}
+      - {kind: delete, bucket: OutputBucket, key: /*,
+         unused: "S3CrudPolicy grants it; no delete call on this function's code path
+           (extraction_function/index.py deletes only in the working bucket, and
+           idp_common/extraction makes none). Inferred from source, not measured."}
+    invoke:
+      - {resource: "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:GENAIIDP-*",
+         uses: "the configured custom prompt Lambda and LambdaHook inference, whose
+           function names must start with GENAIIDP- (extraction/service.py,
+           custom_prompt_lambda_arn). The ARN is chosen by configuration, not by a tool."}
+  ShardRuntimeFunction:
+    template: patterns/unified/template.yaml
+    object_access:
+      - {kind: read, bucket: InputBucket, key: /*, uses: reads the uploaded document's pages}
+      - {kind: read, bucket: OutputBucket, key: /*, uses: reads OCR and classification output}
+      - {kind: write, bucket: OutputBucket, key: /*, uses: writes merged section results}
+      - {kind: read, bucket: WorkingBucket, key: /*, uses: "loads the compressed document (Document.load_document) and reads the
+           section's per-shard results"}
+      - {kind: write, bucket: WorkingBucket, key: /*, uses: writes per-shard results}
+      - {kind: delete, bucket: WorkingBucket, key: /*,
+         unused: "S3CrudPolicy grants it; sfn_runtime_handler.py states the per-shard
+           results are never deleted from this handler, and no delete call is on its
+           code path. Inferred from source, not measured."}
+      - {kind: delete, bucket: OutputBucket, key: /*,
+         unused: "S3CrudPolicy grants it; no delete call on this function's code path.
+           Inferred from source, not measured."}
+  MultiDocDiscoveryAnalyzeFunction:
+    template: nested/multi-doc-discovery/template.yaml
+    object_access:
+      - {kind: read, bucket: InputBucket, key: /*,
+         uses: "loads the cluster's sampled document images from the job's source bucket
+           (analyze_handler.py, _load_cluster_images)"}
+      - {kind: read, bucket: TestSetBucket, key: /*,
+         uses: "the same load when the job's source is a test set, which only an unscoped
+           caller may choose; the source bucket comes from the state machine input
+           (analyze_handler.py, event['bucket'])"}
+      - {kind: read, bucket: DiscoveryBucket, key: /*,
+         uses: "reads the job's embeddings and cluster data, and the sampled images when
+           the job's source is an upload, the default (analyze_handler.py)"}
+      - {kind: write, bucket: DiscoveryBucket, key: /*,
+         unused: "S3CrudPolicy grants it; analyze_handler.py and the discovery modules
+           it calls only read objects. Inferred from source, not measured."}
+      - {kind: delete, bucket: DiscoveryBucket, key: /*,
+         unused: "S3CrudPolicy grants it; analyze_handler.py and the discovery modules
+           it calls only read objects. Inferred from source, not measured."}
+
+entries:
+  analytics-agent:
+    surfaces:
+      - agent:Analytics-Agent
+      - construct:lib/idp_common_pkg/idp_common/agents/analytics/agent.py::create_analytics_agent::Agent
+      - tool:lib/idp_common_pkg/idp_common/agents/analytics/agent.py::create_analytics_agent.run_athena_query_with_config
+      - tool:lib/idp_common_pkg/idp_common/agents/analytics/tools/athena_tool.py::run_athena_query
+      - tool:lib/idp_common_pkg/idp_common/agents/analytics/tools/code_interpreter_tools.py::CodeInterpreterTools.execute_python
+      - tool:lib/idp_common_pkg/idp_common/agents/analytics/tools/code_interpreter_tools.py::CodeInterpreterTools.write_query_results_to_code_sandbox
+      - construct:lib/idp_common_pkg/idp_common/agents/analytics/tools/code_interpreter_tools.py::CodeInterpreterTools._get_code_interpreter_client::CodeInterpreter
+      - tool:lib/idp_common_pkg/idp_common/agents/analytics/tools/get_database_info_tool.py::get_table_info
+      - tool:lib/idp_common_pkg/idp_common/agents/analytics/tools/get_database_info_tool.py::get_database_overview
+    note: >-
+      get_database_overview is a tool function the agent's tool list does not
+      include. The MCP search tool runs this agent too (see mcp-search).
+    roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction, AgentProcessorFunction,
+            AgentCoreMCPHandlerFunction]
+    reads: [reporting_tables]
+    inputs: [orchestrator_query, reporting_rows]
+    outputs: [ui_rendered, code_interpreter_sandbox, sub_agent]
+    control:
+      - {symbol: lib/idp_common_pkg/idp_common/agents/analytics/query_validation.py::validate_read_only_query,
+         limits: reporting_tables}
+      - {symbol: lib/idp_common_pkg/idp_common/agents/analytics/tools/code_interpreter_tools.py::CodeInterpreterTools.record_query_result,
+         limits: code_interpreter_sandbox}
+      - {symbol: lib/idp_common_pkg/idp_common/agents/analytics/sandbox_code_checks.py::check_sandbox_code,
+         limits: code_interpreter_sandbox}
+      - &safe_markdown_images
+        {symbol: src/ui/src/components/common/safe-markdown-policy.ts::rehypeRestrictImages,
+         limits: ui_rendered}
+      - &safe_markdown_schema
+        {symbol: src/ui/src/components/common/safe-markdown-policy.ts::safeSchema,
+         limits: ui_rendered}
+    test:
+      - lib/idp_common_pkg/tests/unit/agents/analytics/test_query_validation.py::test_refused
+      - lib/idp_common_pkg/tests/unit/agents/analytics/test_query_validation.py::TestRunAthenaQueryRefusesBeforeCallingAthena::test_refused_query_makes_no_athena_call
+      - lib/idp_common_pkg/tests/unit/agents/analytics/test_code_interpreter_tools.py::TestWriteQueryResultsToCodeSandbox::test_the_tool_takes_no_arguments
+      - lib/idp_common_pkg/tests/unit/agents/analytics/test_code_interpreter_tools.py::TestWriteQueryResultsToCodeSandbox::test_refuses_when_no_query_has_run
+      - lib/idp_common_pkg/tests/unit/agents/analytics/test_sandbox_code_checks.py::TestExecutePython::test_refused_code_is_not_sent_to_the_sandbox
+      - &safe_markdown_test "src/ui/src/components/common/__tests__/SafeMarkdown.test.tsx::SafeMarkdown loads nothing from another origin"
+      - &markdown_surfaces_test "src/ui/src/components/common/__tests__/markdown-surfaces.test.ts::markdown and raw HTML reach the page only through SafeMarkdown"
+      - &csp_test scripts/tests/test_csp_policies_in_sync.py::test_every_fetch_directive_names_specific_sources
+      - scripts/tests/test_analytics_role_grants.py::test_code_interpreter_is_granted_on_the_managed_interpreter_only
+
+  error-analyzer-agent:
+    surfaces:
+      - agent:Error-Analyzer-Agent
+      - construct:lib/idp_common_pkg/idp_common/agents/error_analyzer/agent.py::create_error_analyzer_agent::Agent
+      - tool:lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/cloudwatch_tool.py::search_cloudwatch_logs
+      - tool:lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/cloudwatch_tool.py::search_performance_issues
+      - tool:lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/config_tool.py::fetch_pipeline_configuration
+      - tool:lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/dynamodb_tool.py::fetch_document_record
+      - tool:lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/dynamodb_tool.py::fetch_recent_records
+      - tool:lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/lambda_tool.py::retrieve_document_context
+      - tool:lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/stepfunction_tool.py::analyze_workflow_execution
+      - tool:lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/xray_tool.py::analyze_document_trace
+      - tool:lib/idp_common_pkg/idp_common/agents/error_analyzer/tools/xray_tool.py::analyze_system_performance
+    roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction, AgentProcessorFunction]
+    reads: [tracking_and_logs, configuration_profiles]
+    inputs: [orchestrator_query, logs_and_records, configuration]
+    outputs: [ui_rendered, sub_agent]
+    control:
+      - *safe_markdown_images
+      - *safe_markdown_schema
+    test:
+      - *safe_markdown_test
+      - *markdown_surfaces_test
+      - *csp_test
+
+  code-intelligence-agent:
+    surfaces:
+      - agent:Code-Intelligence-Agent
+      - construct:lib/idp_common_pkg/idp_common/agents/code_intelligence/agent.py::create_code_intelligence_agent::Agent
+      - construct:lib/idp_common_pkg/idp_common/agents/code_intelligence/agent.py::create_code_intelligence_agent::MCPClient
+    note: >-
+      Its tools are the DeepWiki server's own. The code around it reads nothing
+      private; what it sends to DeepWiki is the question the orchestrator wrote, so
+      the combination is held by the orchestrator entry.
+    reads: [nothing]
+    inputs: [orchestrator_query, remote_tool_results]
+    outputs: [deepwiki_mcp_server, sub_agent]
+
+  external-mcp-agent:
+    surfaces:
+      - "agent:<dynamic: create_mcp_agent_wrapper()>"
+      - construct:lib/idp_common_pkg/idp_common/agents/external_mcp/agent.py::create_external_mcp_agent::Agent
+      - construct:lib/idp_common_pkg/idp_common/agents/external_mcp/agent.py::_create_mcp_client_with_transport::MCPClient
+    note: >-
+      Registered once per server configured in the External MCP Agents secret. The
+      code around it reads nothing private; what it sends is the question the
+      orchestrator wrote, so the combination is held by the orchestrator entry.
+    reads: [nothing]
+    inputs: [orchestrator_query, remote_tool_results]
+    outputs: [external_mcp_server, sub_agent]
+
+  orchestrator:
+    surfaces:
+      - construct:lib/idp_common_pkg/idp_common/agents/orchestrator/agent.py::create_orchestrator_agent::Agent
+      - construct:lib/idp_common_pkg/idp_common/agents/orchestrator/agent.py::create_orchestrator_agent.create_tool_function::tool
+    note: >-
+      Each enabled agent is one of its tools. It holds the whole conversation, so an
+      answer the Analytics or Error Analyzer agent gave earlier is in its context
+      when it writes a question for another agent. The Code Intelligence and External
+      MCP agents are opt-in per request, and are left out of (or refused within) any
+      session in which a data agent has returned a result.
+    roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction, AgentProcessorFunction]
+    reads: [reporting_tables, tracking_and_logs, chat_memory]
+    inputs: [user_prompt, conversation_history, reporting_rows, logs_and_records,
+             remote_tool_results]
+    outputs: [ui_rendered, deepwiki_mcp_server, external_mcp_server, sub_agent]
+    control:
+      - {symbol: lib/idp_common_pkg/idp_common/chat_session_owner.py::holds_session_row,
+         limits: chat_memory}
+      - {symbol: lib/idp_common_pkg/idp_common/agents/utils/memory_provider.py::DynamoDBMemoryHookProvider,
+         limits: chat_memory}
+      - {symbol: lib/idp_common_pkg/idp_common/chat_session_agents.py::select_orchestrator_agent_ids,
+         limits: deepwiki_mcp_server}
+      - {symbol: lib/idp_common_pkg/idp_common/chat_session_agents.py::select_orchestrator_agent_ids,
+         limits: external_mcp_server}
+      - {symbol: lib/idp_common_pkg/idp_common/chat_session_agents.py::SessionAgentGate,
+         limits: deepwiki_mcp_server}
+      - {symbol: lib/idp_common_pkg/idp_common/chat_session_agents.py::SessionAgentGate,
+         limits: external_mcp_server}
+      - *safe_markdown_images
+      - *safe_markdown_schema
+    test:
+      - lib/idp_common_pkg/tests/unit/test_chat_session_owner.py::TestReadPath::test_the_row_a_message_used_to_create_is_not_ownership
+      - lib/idp_common_pkg/tests/unit/agents/utils/test_memory_provider.py::TestConstructionAndKeys::test_two_users_naming_one_session_id_get_different_keys
+      - lib/idp_common_pkg/tests/unit/test_chat_session_agents.py::TestSelection::test_a_flagged_session_gets_no_opt_in_agent_whatever_was_asked
+      - lib/idp_common_pkg/tests/unit/test_chat_session_agents.py::TestSelection::test_no_opt_in_means_no_opt_in_agent
+      - lib/idp_common_pkg/tests/unit/test_chat_session_agents.py::TestGate::test_first_data_result_records_once_and_closes_opt_in_agents
+      - lib/idp_common_pkg/tests/unit/test_chat_session_agents.py::TestRecheck::test_a_failed_recheck_closes_them
+      - *safe_markdown_test
+      - *markdown_surfaces_test
+      - *csp_test
+
+  quick-start-agent:
+    surfaces:
+      - agent:Quick-Start-Agent
+      - construct:lib/idp_common_pkg/idp_common/agents/quick_start/agent.py::create_quick_start_agent::Agent
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::activate_config_version
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::author_schema_from_prompt
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::check_generator_availability
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::create_config_version
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::estimate_generation_cost
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::generate_from_existing_config
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::get_class_schema
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::list_available_extensions
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::list_config_versions
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::list_sample_documents
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::refine_schema
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::request_document_generation
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::search_catalog
+    note: >-
+      Pinned as the single conversational agent of its mode, with the caller's own
+      memory. Its reads are configuration profiles and the schema catalog, so the
+      combination rule does not apply.
+    roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction, AgentProcessorFunction]
+    reads: [configuration_profiles]
+    inputs: [user_prompt, conversation_history, configuration]
+    outputs: [ui_rendered, configuration_write, generation_queue]
+    control:
+      - *safe_markdown_images
+      - *safe_markdown_schema
+    test:
+      - *safe_markdown_test
+      - *markdown_surfaces_test
+
+  sample-calculator-agent:
+    surfaces:
+      - construct:lib/idp_common_pkg/idp_common/agents/sample_calculator/agent.py::create_sample_calculator_agent::Agent
+      - tool:lib/idp_common_pkg/idp_common/agents/sample_calculator/calculator_tool.py::calculator
+    note: Reference code for developers; its registration in the agent registry is commented out.
+    reads: [nothing]
+    inputs: [user_prompt]
+    outputs: [ui_rendered]
+
+  strands-model-factory:
+    surfaces:
+      - construct:lib/idp_common_pkg/idp_common/agents/common/strands_bedrock_model.py::create_strands_bedrock_model::BedrockModel
+    note: >-
+      The shared constructor every agent above uses for its model. It holds no tools
+      and gives the model nothing beyond what its caller passes, which each caller's
+      entry declares.
+    reads: [nothing]
+    inputs: [fixed_code]
+    outputs: [none]
+
+  discovery-agent:
+    surfaces:
+      - construct:lib/idp_common_pkg/idp_common/discovery/discovery_agent.py::DiscoveryAgent._create_agent::Agent
+      - tool:lib/idp_common_pkg/idp_common/discovery/discovery_agent.py::DiscoveryAgent._create_agent.get_cluster_docids_by_distance_to_centroid
+      - tool:lib/idp_common_pkg/idp_common/discovery/discovery_agent.py::DiscoveryAgent._create_agent.get_document_image
+    note: >-
+      Multi-document discovery. The tools serve images loaded before the agent runs;
+      they make no AWS call of their own.
+    roles: [MultiDocDiscoveryAnalyzeFunction]
+    reads: [discovery_samples]
+    inputs: [document_content]
+    outputs: [configuration_write, ui_rendered]
+    control:
+      - {symbol: lib/idp_common_pkg/idp_common/discovery/discovery_agent.py::DocumentVisualTool.get_document_image,
+         limits: discovery_samples}
+      - &clean_schema
+        {symbol: lib/idp_common_pkg/idp_common/discovery/discovered_text.py::clean_schema_text,
+         limits: configuration_write}
+      - {symbol: lib/idp_common_pkg/idp_common/discovery/discovered_text.py::clean_text,
+         limits: ui_rendered}
+      - *safe_markdown_images
+      - *safe_markdown_schema
+    test:
+      - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestToolLimits::test_new_documents_past_the_sample_size_are_refused
+      - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestToolLimits::test_a_document_outside_the_cluster_is_refused
+      - &clean_text_test lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestCleanText::test_urls_images_and_html_are_removed
+      - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestWiring::test_the_cluster_result_is_cleaned
+      - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestWiring::test_the_reflection_report_is_cleaned
+      - *safe_markdown_test
+
+  discovery-single-document:
+    declared:
+      - lib/idp_common_pkg/idp_common/discovery/classes_discovery.py::ClassesDiscovery.discovery_classes_with_document
+      - lib/idp_common_pkg/idp_common/discovery/classes_discovery.py::ClassesDiscovery.discovery_classes_with_document_and_ground_truth
+      - lib/idp_common_pkg/idp_common/discovery/rules_discovery.py::RulesDiscovery.discovery_rules_from_document
+    note: >-
+      Single-document class and rule discovery: one model call per document, no
+      tools. Declared because the derivation reads only tool-holding constructions,
+      and the result is saved into a profile and shown in the UI.
+    reads: [this_document]
+    inputs: [document_content]
+    outputs: [configuration_write, ui_rendered]
+    control:
+      - *clean_schema
+      - {symbol: lib/idp_common_pkg/idp_common/discovery/discovered_text.py::clean_rule_classes,
+         limits: configuration_write}
+      - *safe_markdown_images
+      - *safe_markdown_schema
+    test:
+      - *clean_text_test
+      - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestWiring::test_the_class_write_path_cleans_the_discovered_class_only
+      - lib/idp_common_pkg/tests/unit/discovery/test_discovered_text.py::TestWiring::test_extracted_rules_are_cleaned_before_save
+      - *safe_markdown_test
+
+  agentic-extraction:
+    surfaces:
+      - construct:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::structured_output_async::Agent
+      - construct:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::structured_output_async::BedrockModel
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.apply_json_patches
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.extraction_tool
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.extraction_with_confidence_tool
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.extraction_with_topk_tool
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.finalize_table_extraction
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.make_buffer_data_final_extraction
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_view_image_tool.view_image
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::get_extraction_schema_reminder
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::patch_buffer_data
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::provide_field_assessment
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::view_buffer_data
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::view_buffer_data_section
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::view_buffer_data_stats
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::view_existing_extraction
+      - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::write_buffer_date
+      - tool:lib/idp_common_pkg/idp_common/extraction/tools/table_parser.py::create_map_table_to_schema_tool.map_table_to_schema
+      - tool:lib/idp_common_pkg/idp_common/extraction/tools/table_parser.py::create_parse_table_tool.parse_table
+      - tool:lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py::create_todo_list
+      - tool:lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py::update_todo
+      - tool:lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py::view_todo_list
+    note: >-
+      Every tool works on the agent's in-memory state and the page images loaded
+      before it runs. Its output is the document's own extraction result.
+    roles: [ExtractionFunction, ShardRuntimeFunction]
+    reads: [this_document]
+    inputs: [document_content, configuration]
+    outputs: [processing_results]
+
+  document-summary-and-rule-validation:
+    declared:
+      - lib/idp_common_pkg/idp_common/summarization/service.py::SummarizationService.process_document
+      - lib/idp_common_pkg/idp_common/rule_validation/service.py::RuleValidationService.validate_document
+    note: >-
+      Single model calls over one document, with no tools. Declared because the web
+      UI renders their markdown output.
+    reads: [this_document]
+    inputs: [document_content, configuration]
+    outputs: [processing_results, ui_rendered]
+    control:
+      - *safe_markdown_images
+      - *safe_markdown_schema
+    test:
+      - *safe_markdown_test
+      - *markdown_surfaces_test
+      - *csp_test
+
+  chat-with-document:
+    declared:
+      - src/lambda/chat_with_document_processor/index.py::handler
+      - src/lambda/chat_stream_processor/vendored/chat_with_document_processor.py::handler
+    note: >-
+      One model call per message over the selected document's text, with no tools.
+      Two delivery paths: the processor Lambda and the streaming Function URL.
+    reads: [this_document, chat_memory]
+    inputs: [user_prompt, document_content, conversation_history]
+    outputs: [ui_rendered]
+    control:
+      - {symbol: lib/idp_common_pkg/idp_common/chat_session_owner.py::claim_chat_session,
+         limits: chat_memory}
+      - *safe_markdown_images
+      - *safe_markdown_schema
+    test:
+      - lib/idp_common_pkg/tests/unit/test_chat_session_owner.py::TestWritePath::test_a_second_user_cannot_use_a_registered_id
+      - *safe_markdown_test
+      - *markdown_surfaces_test
+      - *csp_test
+
+  knowledge-base-query:
+    declared:
+      - nested/api-resolvers/src/lambda/query_knowledgebase_resolver/index.py::get_kb_response
+    note: >-
+      Bedrock Knowledge Base retrieve-and-generate, with no tools. Which callers may
+      query it is an authorization question recorded as GAP-02 in
+      scripts/api_rbac_expectations.yaml.
+    reads: [knowledge_base]
+    inputs: [user_prompt, knowledge_base_passages]
+    outputs: [ui_rendered]
+    control:
+      - *safe_markdown_images
+      - *safe_markdown_schema
+    test:
+      - *safe_markdown_test
+      - *markdown_surfaces_test
+      - *csp_test
+
+  data-generator-runtime:
+    declared:
+      - feature-platform/idp-data-generator/agent-source/runtime/handler.py::invoke
+    note: >-
+      The optional data generator's AgentCore runtime, which runs SEED's agents. Its
+      tools are inventoried in feature-platform/idp-data-generator/README.md.
+    reads: [configuration_profiles]
+    inputs: [generation_request, configuration]
+    outputs: [processing_results]
+
+  mcp-search:
+    surfaces: [mcp:search]
+    note: Runs the analytics agent for an MCP caller and returns its answer.
+    roles: [AgentCoreMCPHandlerFunction]
+    reads: [reporting_tables]
+    inputs: [mcp_tool_arguments, reporting_rows]
+    outputs: [mcp_client]
+    control:
+      - &mcp_verify_caller
+        {symbol: lib/idp_common_pkg/idp_common/mcp_access.py::verify_caller, limits: mcp_client}
+      - &mcp_authorize_tool
+        {symbol: lib/idp_common_pkg/idp_common/mcp_access.py::authorize_tool, limits: mcp_client}
+      # Names the result fields that carry document text and says to treat them as
+      # data, so the client's model is told which of what it reads came from documents.
+      - &mcp_provenance
+        {symbol: lib/idp_common_pkg/idp_common/mcp_access.py::with_provenance, limits: mcp_client}
+    test:
+      - lib/idp_common_pkg/tests/unit/test_mcp_access.py::test_search_is_refused_to_any_scoped_caller
+      - &mcp_provenance_test lib/idp_common_pkg/tests/unit/test_mcp_provenance.py::test_document_derived_results_carry_the_envelope
+      - &mcp_signature_test lib/idp_common_pkg/tests/unit/test_mcp_access.py::test_changing_any_field_invalidates_the_signature
+      - &mcp_unverified_test lib/idp_common_pkg/tests/unit/lambdas/test_agentcore_mcp_handler_scope.py::test_no_verified_caller_is_refused_before_the_tool
+
+  mcp-document-tools:
+    surfaces: [mcp:get_results, mcp:status]
+    note: Return a batch's status, or a document's processing results, to an MCP caller.
+    roles: [AgentCoreMCPHandlerFunction]
+    reads: [document_store, tracking_and_logs]
+    inputs: [mcp_tool_arguments]
+    outputs: [mcp_client]
+    control:
+      - *mcp_verify_caller
+      - *mcp_authorize_tool
+      - *mcp_provenance
+      - {symbol: src/lambda/agentcore_mcp_handler/tools/base.py::IDPTool, limits: document_store}
+    test:
+      - *mcp_provenance_test
+      - *mcp_signature_test
+      - *mcp_unverified_test
+      - lib/idp_common_pkg/tests/unit/lambdas/test_agentcore_mcp_handler_scope.py::test_get_results_refuses_a_document_outside_scope
+      - lib/idp_common_pkg/tests/unit/lambdas/test_agentcore_mcp_handler_scope.py::test_status_counts_only_documents_in_scope
+
+  mcp-write-tools:
+    surfaces: [mcp:process, mcp:reprocess]
+    note: Start processing or reprocessing for an MCP caller; they return a batch id and status.
+    roles: [AgentCoreMCPHandlerFunction]
+    reads: [document_store]
+    inputs: [mcp_tool_arguments]
+    outputs: [mcp_client, processing_results]
+    control:
+      - *mcp_verify_caller
+      - *mcp_authorize_tool
+    test:
+      - *mcp_signature_test
+      - *mcp_unverified_test
+      - lib/idp_common_pkg/tests/unit/test_mcp_access.py::test_write_tools_need_write_enabled
+
+  ai-review-harness:
+    surfaces: [harness:scripts/sdlc/ai_mr_review.py::claude_command]
+    note: The advisory AI review of a merge or pull request (ai_mr_review / ai_pr_review jobs).
+    reads: [repository_checkout]
+    inputs: [change_under_review]
+    outputs: [review_comment]
+    control:
+      - {symbol: scripts/sdlc/ai_mr_review.py::posting_refusals, limits: review_comment}
+      - {symbol: scripts/sdlc/ai_mr_review.py::SESSION_SCOPE_FLAGS, limits: repository_checkout}
+    test:
+      - scripts/tests/test_ai_mr_review.py::test_the_posting_check_refuses_each_kind
+      - scripts/tests/test_ai_mr_review.py::test_the_allowlist_grants_reading_and_nothing_else
+
+  ux-test-harness:
+    surfaces: [harness:scripts/ux_runner/agent.py::claude_argv]
+    note: >-
+      The MR UX test and the first-time-user stories (ai_ux_test, ai_ux_test_stories),
+      driving a confined browser against the shared review stack.
+    reads: [review_stack_session]
+    inputs: [review_stack_pages]
+    outputs: [review_comment]
+    control:
+      - {symbol: scripts/ux_test_proxy.py::EgressRules.permits, limits: review_stack_session}
+      - {symbol: scripts/ux_runner/artifacts.py::redactor_for, limits: review_comment}
+    test:
+      - scripts/tests/test_ux_test_proxy.py::test_unlisted_and_internal_targets_are_refused_before_any_lookup
+      - scripts/tests/test_ux_runner_artifacts.py::test_kept_strings_pass_exactly_while_everything_around_them_is_redacted
+
+  failure-agent-harness:
+    surfaces: [harness:scripts/sdlc/failure_agent.py::run_failure_agent]
+    note: >-
+      Opt-in root-cause analysis of a failed deployment pipeline run
+      (IDP_FAILURE_AGENT=1). Its report goes into the job's own log.
+    reads: [ci_account_read_only, repository_checkout]
+    inputs: [build_log]
+    outputs: [ci_job_log, shell_commands]
+    finding:
+      outputs: [shell_commands]
+      text: >-
+        The harness grants Bash rules for read-only aws verbs, and its own docstring
+        records that they are prefix matches, not a limit on what a chained command
+        does. With IDP_FAILURE_AGENT_ROLE_ARN unset it runs on the job's ambient
+        credentials; with it set, the read-only role
+        (_readonly_credentials) bounds what those commands can change, and no test
+        exercises that function. The agent is off unless IDP_FAILURE_AGENT=1.
+
+  sandbox-network-probe:
+    surfaces: [construct:scripts/sdlc/sandbox_network_probe.py::_run_live::CodeInterpreter]
+    note: make stacktest-sandbox-network runs fixed code in a Code Interpreter session.
+    reads: [nothing]
+    inputs: [fixed_code]
+    outputs: [code_interpreter_sandbox]

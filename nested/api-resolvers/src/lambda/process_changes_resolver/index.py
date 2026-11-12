@@ -288,6 +288,58 @@ def _assert_holds_review_item(event, object_key):
         )
 
 
+def _assert_production_document_in_profile_scope(event, object_key):
+    """Refuse a non-Admin caller a production document outside their profile scope.
+
+    The test-set rules above decide who may re-group a test-set document. A
+    production document (no ``TestSetId``) is governed by ``allowedConfigVersions``,
+    as every other single-document operation is: the document's profile, read from
+    its tracking row, must be one the caller's scope admits. This applies to every
+    non-Admin role the operation admits — a Reviewer, and an Author or Annotator who
+    also holds Reviewer — so it is checked here, once, rather than on each role's
+    branch. A missing row is refused for a scoped caller; a lookup that cannot be
+    answered is refused for every non-Admin caller.
+    """
+    from idp_common import document_scope
+
+    claims = document_scope.caller_claims(event)
+    if document_scope.is_unscoped_caller(claims):
+        return
+    try:
+        scope = document_scope.resolve_caller_scope(
+            claims,
+            users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+            dynamodb=lambda: boto3.resource("dynamodb"),
+            cache=_user_scope_cache,
+        )
+    except PermissionError as e:
+        raise ResourceAccessDenied(str(e)) from e
+    if scope is None:
+        return
+    try:
+        row = (
+            _tracking_table_resource()
+            .get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
+            .get("Item")
+        )
+    except Exception as e:  # noqa: BLE001 — fail closed
+        logger.error(
+            "Refusing updateDocumentSections: the document's profile could not be "
+            "read, so the caller's scope could not be evaluated: %s",
+            e,
+        )
+        raise ResourceAccessDenied(document_scope.REFUSAL) from e
+    if row and row.get("TestSetId"):
+        return
+    version = document_scope.config_version_of_item(row)
+    try:
+        if document_scope.is_absent(version):
+            raise PermissionError(document_scope.REFUSAL)
+        document_scope.assert_profile_in_scope(scope, version)
+    except PermissionError as e:
+        raise ResourceAccessDenied(str(e)) from e
+
+
 def _refusal(message):
     """A processChanges refusal: a 400 through the dispatcher, never a 200 body.
 
@@ -556,6 +608,7 @@ def update_document_sections(event):
     # (`sections: []` is one, and is what the live RBAC matrix drives this operation
     # with).
     _assert_annotator_scope(event, object_key)
+    _assert_production_document_in_profile_scope(event, object_key)
 
     if not incoming:
         return {

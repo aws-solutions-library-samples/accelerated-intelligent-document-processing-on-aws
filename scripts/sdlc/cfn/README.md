@@ -13,6 +13,11 @@ SPDX-License-Identifier: MIT-0
     * Enter the gitlab group name (e.g. `genaiic-reusable-assets/engagement-artifacts`)
     * Enter the gitlap project name (e.g. `genaiic-idp-accelerator`)
     * Enter the bucket name created in the last step (e.g. `genaiic-sdlc-source-code-YOUR_AWS_ACCOUNT-YOUR_REGION`)
+    * The stack creates two roles: `idp-sdlc-GitLab` for the integration tests and
+      the UX test jobs, and the Bedrock-only `idp-sdlc-GitLabReview` for the
+      `ai_mr_review` job. Set the masked project CI variable
+      `AI_REVIEW_GITLAB_ROLE_ARN` to the stack's `GitLabReviewRoleArn` output; the
+      job refuses to review until it holds that role.
 * Customize the environment variables in your CodePipeline/CodeBuild configuration.
 * The deployment will use the new `scripts/sdlc/codebuild_deployment.py` script automatically.
     * This will ensure that an archive is there to install, when 
