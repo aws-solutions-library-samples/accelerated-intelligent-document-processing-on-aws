@@ -66,10 +66,36 @@ def get_error_analyzer_model_id() -> str:
     except Exception as e:
         logger.warning(f"Failed to load model ID from configuration: {e}")
 
-        # Final fallback to default
-        default_model_id = "us.anthropic.claude-sonnet-4-6"
+        default_model_id = default_error_analyzer_model_id()
         logger.info(f"Using default error analyzer model ID: {default_model_id}")
         return default_model_id
+
+
+#: What :func:`default_error_analyzer_model_id` returns when the field default
+#: cannot be read: the same model through the same profile.
+ERROR_ANALYZER_MODEL_LAST_RESORT = "global.anthropic.claude-sonnet-4-6"
+
+
+def default_error_analyzer_model_id() -> str:
+    """The error analyzer's model when its configuration cannot be read.
+
+    ``ErrorAnalyzerConfig.model_id``'s declared default, which equals what
+    ``base-agents.yaml`` ships, served through its ``global.`` profile because a
+    ``us.`` fallback cannot be invoked from an EU or Canadian stack (see
+    :func:`idp_common.agents.common.config.portable_profile`). The import is
+    guarded: this runs because configuration could not be loaded.
+    """
+    from ..common.config import portable_profile
+
+    try:
+        from ...config.models import ErrorAnalyzerConfig
+
+        default = ErrorAnalyzerConfig.model_fields["model_id"].default
+        if isinstance(default, str) and default:
+            return portable_profile(default)
+    except Exception:  # defensive, see docstring
+        pass
+    return ERROR_ANALYZER_MODEL_LAST_RESORT
 
 
 def get_aws_service_capabilities() -> Dict[str, Any]:
