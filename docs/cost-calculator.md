@@ -121,6 +121,18 @@ Administrators change prices on the **Pricing** page. The shipped rates come fro
 `config_library/pricing.yaml` and are stored at deployment as the stack's default
 pricing; what you save is stored separately as custom pricing.
 
+A price is a non-negative decimal number, optionally with an exponent: `0.0015`,
+`6.0E-8` and `.5` are prices. Hexadecimal (`0x10`), `Infinity`, `NaN` and digit
+separators (`1_000`) are not, because the cost reports and the web UI read them
+differently. A sign and surrounding spaces are not accepted either, so that every
+saved price has one form. The Pricing page marks an invalid value and will not save
+the table until it is corrected, and the backend refuses to store one.
+
+A custom table saved by an earlier release can still hold such a value. It still
+loads, and the page lists the value for correction. A value whose only problem is
+surrounding spaces is still priced, because the reports and the web UI both read it.
+Any other invalid value is reported as unpriced until it is corrected.
+
 ⚠️ **Saving the Pricing page stores the whole table, and a saved table replaces the
 default table in full.** It is not merged over the defaults row by row. Two things
 follow for a stack that has ever saved the page, however small the edit:

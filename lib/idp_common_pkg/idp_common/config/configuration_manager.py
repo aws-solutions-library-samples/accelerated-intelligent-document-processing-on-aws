@@ -24,6 +24,7 @@ from .models import (
     ModelConfigLimitsConfig,
     ConfigurationRecord,
     ConfigMetadata,
+    STORED_PRICING_CONTEXT,
 )
 from .merge_utils import (
     deep_update,
@@ -1978,7 +1979,9 @@ class ConfigurationManager:
         deep_update(merged_dict, custom_dict)
 
         logger.info("Applied CustomPricing over DefaultPricing")
-        return PricingConfig(**merged_dict)
+        # Both halves were read from storage, so an invalid stored price is
+        # reported and left unpriced rather than failing every cost report.
+        return PricingConfig.model_validate(merged_dict, context=STORED_PRICING_CONTEXT)
 
     def save_custom_pricing(
         self, pricing_deltas: Union[PricingConfig, Dict[str, Any]]
