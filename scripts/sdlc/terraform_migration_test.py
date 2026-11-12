@@ -830,15 +830,26 @@ def managed_addresses(addresses: Iterable[str]) -> List[str]:
 
 
 def summarise(result: Dict[str, Any]) -> str:
-    """The human summary: one line per phase, then the findings."""
+    """The human summary: the header, then the findings and leftovers, then one
+    line per phase. Findings come first because chat posts keep only the start of
+    the summary (the GitLab job cuts it at 2000 characters), and a phase table
+    pushed the reason for a failure out of every post."""
     lines = [
         f"Terraform migration test: {result.get('status', 'UNKNOWN')}",
         f"  upstream {result.get('upstreamTag')} ({result.get('upstreamCommit', '')[:12]}), "
         f"old deployment {result.get('oldName')}, new deployment {result.get('newName')}, "
         f"region {result.get('region')}",
         f"  module {result.get('moduleUrl')}",
-        "",
     ]
+    findings = result.get("findings") or []
+    if findings:
+        lines += ["", "Findings:"] + [f"  - {f}" for f in findings]
+    leftovers = result.get("leftovers")
+    if leftovers is not None:
+        lines += ["", f"Leftovers after teardown: {len(leftovers)}"] + [
+            f"  - {x}" for x in leftovers
+        ]
+    lines += ["", "Phases:"]
     for p in result.get("phases", []):
         seconds = p.get("seconds")
         took = (
@@ -850,14 +861,6 @@ def summarise(result: Dict[str, Any]) -> str:
             f"  {p['status']:<8} {took}  {p['phase']}"
             + (f"  - {p['detail']}" if p.get("detail") else "")
         )
-    findings = result.get("findings") or []
-    if findings:
-        lines += ["", "Findings:"] + [f"  - {f}" for f in findings]
-    leftovers = result.get("leftovers")
-    if leftovers is not None:
-        lines += ["", f"Leftovers after teardown: {len(leftovers)}"] + [
-            f"  - {x}" for x in leftovers
-        ]
     return "\n".join(lines) + "\n"
 
 
