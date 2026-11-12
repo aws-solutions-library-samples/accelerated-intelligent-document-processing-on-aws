@@ -36,6 +36,9 @@ APP_DIR = Path(__file__).resolve().parents[1]
 ISSUER = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_EXAMPLE"
 CLIENT_ID = "exampleclientid"
 KID = "kid-1"
+# Values of the Cognito ``token_use`` claim.
+USE_ID = "id"
+USE_ACCESS = "access"
 SIGNING_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 A = {"sub": "aaaaaaaa-0000-4000-8000-000000000001", "email": "a@example.com"}
@@ -102,9 +105,9 @@ def env(monkeypatch):
         "AWS_REGION": "us-east-1",
         "AWS_DEFAULT_REGION": "us-east-1",
         "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
-        "AWS_SECRET_ACCESS_KEY": "testing",
     }.items():
         monkeypatch.setenv(k, v)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
     with mock_aws():
@@ -197,7 +200,7 @@ def _token(user: dict, groups=("Author",), **overrides) -> str:
         "cognito:groups": list(groups),
         "aud": CLIENT_ID,
         "iss": ISSUER,
-        "token_use": "id",
+        "token_use": USE_ID,
         "iat": now,
         "exp": now + 600,
     }
@@ -257,7 +260,7 @@ def test_a_request_with_no_token_is_refused_before_anything_runs(env, route):
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "overrides", [{"aud": "another-client"}, {"token_use": "access"}, {"exp": 1}]
+    "overrides", [{"aud": "another-client"}, {"token_use": USE_ACCESS}, {"exp": 1}]
 )
 def test_a_token_the_pool_did_not_issue_for_the_web_ui_is_refused(env, overrides):
     with pytest.raises(HTTPException) as refused:

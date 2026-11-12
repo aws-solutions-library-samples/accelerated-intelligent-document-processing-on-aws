@@ -519,12 +519,12 @@ def _fetch_hosts(tokens: list[str]) -> tuple[str, list[str]] | None:
                 hosts.append(host)
 
     pending = ""
-    for token in arguments:
+    for word in arguments:
         if pending:
-            option_value(pending, token)
+            option_value(pending, word)
             pending = ""
-        elif token.startswith("--"):
-            option, equals, inline = token.partition("=")
+        elif word.startswith("--"):
+            option, equals, inline = word.partition("=")
             if name in GETOPT_LONG:
                 option = _resolve_prefix(option, takes_value | unreadable | destination)
             if name == "curl" and option.startswith("--expand-"):
@@ -534,18 +534,18 @@ def _fetch_hosts(tokens: list[str]) -> tuple[str, list[str]] | None:
                     option_value(option, inline)
                 elif option not in OPTIONAL_LONG_VALUES:
                     pending = option
-        elif token.startswith("-") and token != "-":
-            cluster = _short_cluster(token, takes_value | unreadable | destination)
+        elif word.startswith("-") and word != "-":
+            cluster = _short_cluster(word, takes_value | unreadable | destination)
             if cluster:
                 option, inline = cluster
                 if inline:
                     option_value(option, inline)
                 else:
                     pending = option
-        elif "$" in token or "`" in token:
+        elif "$" in word or "`" in word:
             hosts.append("?")
         else:
-            host = _host(token)
+            host = _host(word)
             if host is not None:
                 hosts.append(host)
     if pending:
