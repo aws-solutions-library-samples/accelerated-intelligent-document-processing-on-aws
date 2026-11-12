@@ -453,7 +453,7 @@ summarization:
 
 ## Confidence (Assessment) Configuration
 
-As of **config v0.6**, per-field **confidence** and **geometry** are **outputs of
+As of **config format 0.6**, per-field **confidence** and **geometry** are **outputs of
 extraction**, configured under `extraction.confidence.*` and
 `extraction.geometry.*` — there is no top-level `assessment.{model, geometry_mode,
 ...}` block anymore. Human-in-the-loop review is configured under the top-level
@@ -1873,12 +1873,12 @@ Extraction supports a **cost-tiered** strategy: extract with a fast/cheap model,
 extraction:
   model: us.amazon.nova-pro-v1:0          # fast/cheap primary extractor
   validation:
-    enabled: true                          # on by default since v0.7
+    enabled: true                          # on by default since config format 0.7
     fail_action: escalate                  # default is 'warn' (free); escalate costs money
     escalation_model: us.anthropic.claude-opus-4-8   # stronger tier, used only on failure
 ```
 
-> **Moved in v0.7.** This block was `extraction.agentic.validation`. It now lives at
+> **Moved in config format 0.7.** This block was `extraction.agentic.validation`. It now lives at
 > `extraction.validation` because Simple extraction runs the same validate-and-retry
 > path, so the setting is no longer agentic-only. Stored configurations are migrated
 > automatically on read — no action is required.

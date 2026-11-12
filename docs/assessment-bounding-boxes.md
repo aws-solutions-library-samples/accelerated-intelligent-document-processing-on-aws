@@ -7,7 +7,7 @@ title: "Bounding Box Integration in Assessment Service"
 > **This guide has moved.** Extraction, confidence, and geometry documentation
 > is now consolidated in **[Extraction & Confidence](extraction-and-confidence.md)**.
 
-As of config v0.6, field geometry is an **output of extraction**, configured
+As of config format 0.6, field geometry is an **output of extraction**, configured
 under `extraction.geometry.*`. What moved:
 
 - **The four geometry modes** — `ocr_only` (default), `llm_grounded`, `llm`

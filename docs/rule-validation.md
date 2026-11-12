@@ -93,8 +93,6 @@ Rule validation works for any industry using this two-step process:
    - System automatically processes and validates against your rules
    - View results showing Pass/Fail for each rule with detailed reasoning
 
-**Coming Soon**: We're working on combining both steps into a single unified application.
-
 ### Quick Start with Healthcare Example
 
 Want to see it in action first? We provide a complete healthcare example with sample documents and pre-configured rules. See the [Healthcare Example](#healthcare-prior-authorization-example) section below for step-by-step instructions using:
@@ -155,7 +153,7 @@ The workflow includes:
 
 ## Human-in-the-Loop (HITL)
 
-HITL review for rule validation results is not supported in the current version and will be added in a future release. When HITL is enabled for extraction, rule validation automatically skips on the second execution and reuses results from the first run.
+HITL review of rule validation results is not supported. When HITL is enabled for extraction, rule validation automatically skips on the second execution and reuses results from the first run.
 
 ### No-Policy-Match Behavior
 

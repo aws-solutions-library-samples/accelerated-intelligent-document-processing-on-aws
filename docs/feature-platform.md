@@ -437,7 +437,7 @@ flowchart LR
 | `registerFeature(input): InstalledFeature` | IAM (feature stack CR) | Feature stack registers itself on create |
 | `registerFeatureHooks(input): FeatureHooksRegistration` | IAM (feature stack CR) | Feature stack registers pipeline hooks |
 
-Each GraphQL operation is backed by a Lambda under
+Each operation is reached through the REST API dispatcher (`POST /op/<operation>`) or, for the IAM-authorized ones, by direct Lambda invocation from the feature stack's custom resource, and is backed by a Lambda under
 `feature-platform/main-stack-extensions/lambdas/`.
 
 ## Pipeline hooks

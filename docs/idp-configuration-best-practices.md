@@ -1429,7 +1429,7 @@ For documents with multiple pages, the system provides comprehensive image suppo
 
 ### Overview
 
-As of **config v0.6**, per-field **confidence** and **geometry** are **outputs of
+As of **config format 0.6**, per-field **confidence** and **geometry** are **outputs of
 extraction**, configured under `extraction.confidence.*` and
 `extraction.geometry.*` (there is no top-level `assessment.{model, geometry_mode,
 ...}` block anymore). Confidence assessment analyzes extraction outputs against

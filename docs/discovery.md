@@ -330,7 +330,7 @@ In Multi-Section Package mode, the UI displays:
 The **"✨ Auto-detect sections"** button uses an LLM to automatically identify section boundaries:
 
 1. The PDF is uploaded to S3
-2. The `autoDetectSections` GraphQL mutation calls a Lambda that sends the full PDF to Bedrock
+2. The `autoDetectSections` operation (`POST /op/autoDetectSections`) calls a Lambda that sends the full PDF to Bedrock
 3. The LLM returns a JSON array of sections: `[{"start": 1, "end": 2, "type": "Letter"}, ...]`
 4. Page ranges are auto-populated with the LLM's boundary detection, including type labels
 5. User can review, adjust ranges, edit labels, then click "Start Discovery"
@@ -1485,7 +1485,7 @@ graph TD
 
 The sync direction can be specified when calling the sync operation:
 
-**GraphQL API:**
+**API operation** (`POST /op/syncBdaIdp`; the shape below is the contract in `schema.graphql`):
 ```graphql
 mutation SyncBdaIdp {
   syncBdaIdp(direction: "bidirectional") {
@@ -2046,7 +2046,7 @@ Causes:
 
 Solutions:
 - Split large documents into smaller sections
-- Use faster models (Nova Lite) for initial analysis
+- Try a smaller model, such as Nova Lite, for initial analysis (discovery latency is not benchmarked, so compare on your own document)
 - Implement retry logic with exponential backoff
 - Consider preprocessing to simplify document structure
 ```
@@ -2113,7 +2113,7 @@ def discovery_with_fallback(discovery_service, document_key, ground_truth_key=No
 
 **Configuration Table:**
 - Discovery feature stores all custom classes as an array in Configuration table with "custom" key.
-- ~~DynamoDB has hard limit of 400 KB per item.~~ **Resolved**: Configuration data is now gzip-compressed before storing to DynamoDB, achieving 37-95x compression ratios. Configurations with 3,000+ document classes fit comfortably within the 400KB limit.
+- DynamoDB limits an item to 400 KB, so configuration data is gzip-compressed before it is stored. `lib/idp_common_pkg/tests/unit/config/test_compression_matrix.py` asserts that synthetic configurations of at least 500 classes fit within that limit at 10, 20 and 30 fields per class, and its sweep currently reaches its 3,000-class ceiling at each without exceeding it. Its classes are highly repetitive, so a real configuration compresses less; check the size of yours if it holds hundreds of classes.
 
 **Discovery Output Format:**
 - Output format is configured via View/Edit Configuration. JSON format should follow custom classes format.  

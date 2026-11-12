@@ -2,6 +2,9 @@
 title: "EU Region Model Support and Mapping"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # EU Region Model Support and Mapping
 
 ## Overview
@@ -193,10 +196,10 @@ The UpdateConfiguration lambda processes default configurations as follows:
 
 ### Third-Party Models (US-Only)
 
-The following third-party models are available in US regions only and have no EU cross-region inference profiles. In EU deployments, the Meta Llama 4 models fall back to Claude Sonnet 4.5, while the single-region models (Gemma, Nemotron) are not available and should not be selected:
+The following third-party models are available in US regions only and have no EU cross-region inference profiles. In EU deployments, the Meta Llama 4 models fall back to Claude Sonnet 4.6, while the single-region models (Gemma, Nemotron) are not available and should not be selected:
 
-- **Meta Llama 4 Maverick 17B**: `us.meta.llama4-maverick-17b-instruct-v1:0` → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` (fallback)
-- **Meta Llama 4 Scout 17B**: `us.meta.llama4-scout-17b-instruct-v1:0` → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` (fallback)
+- **Meta Llama 4 Maverick 17B**: `us.meta.llama4-maverick-17b-instruct-v1:0` → `eu.anthropic.claude-sonnet-4-6` (fallback)
+- **Meta Llama 4 Scout 17B**: `us.meta.llama4-scout-17b-instruct-v1:0` → `eu.anthropic.claude-sonnet-4-6` (fallback)
 - **Google Gemma 3 27B IT**: `google.gemma-3-27b-it` — single-region only, no EU availability
 - **NVIDIA Nemotron Nano 12B v2**: `nvidia.nemotron-nano-12b-v2` — single-region only, no EU availability
 - **Qwen3 VL 235B A22B**: `qwen.qwen3-vl-235b-a22b` — single-region only, no EU availability
