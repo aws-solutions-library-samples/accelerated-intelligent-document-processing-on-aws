@@ -657,7 +657,13 @@ describe('the note a finished re-extract leaves (#1728)', () => {
   });
 });
 
-describe('the class a reclassified section names, across several saves (#1816)', () => {
+// Each case runs against a server that records the class a section's fields were
+// extracted under (`extractedAsClass`, as the resolver does) and against one that does
+// not, where the editor works it out for itself within a visit.
+describe.each([
+  { server: 'that records the extracted-under class', records: true },
+  { server: 'that does not record it', records: false },
+])('the class a reclassified section names, across several saves (#1816), on a server $server', ({ records }) => {
   type Stored = {
     sectionId: string;
     documentClass: string;
@@ -665,6 +671,8 @@ describe('the class a reclassified section names, across several saves (#1816)',
     /** The section's field values and label source; BASELINE's when not given. */
     fields?: Record<string, string>;
     labelSource?: string;
+    /** The section file's `extractedAsClass`, on a server that records it. */
+    extractedAs?: string;
   };
 
   /**
@@ -675,6 +683,10 @@ describe('the class a reclassified section names, across several saves (#1816)',
    * A sent section's fields and label source are the stored section's under the id it was
    * sent with, and a section sent under an id nothing is stored under is written with no
    * fields, as a draft — which is how the resolver tells an added section from a kept one.
+   * On a server that records it, a kept section's `extractedAsClass` is the one it already
+   * had, or else its class before the save, and is dropped when the class is that one again;
+   * a re-extract of a section drops it. The returned `reload` is a page reload: a fresh
+   * editor over what the server now stores, remembering nothing of the visit.
    */
   const serve = (initial: Stored[], { holdRefs = false }: { holdRefs?: boolean } = {}) => {
     let stored = initial;
@@ -686,6 +698,7 @@ describe('the class a reclassified section names, across several saves (#1816)',
         split_document: { page_indices: sec.pageIndices },
         ...(sec.fields ? { inference_result: sec.fields } : {}),
         ...(sec.labelSource ? { labelSource: sec.labelSource } : {}),
+        ...(records && sec.extractedAs ? { extractedAsClass: sec.extractedAs } : {}),
       };
       return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(body)) });
     }) as never;
@@ -699,23 +712,50 @@ describe('the class a reclassified section names, across several saves (#1816)',
         const before = new Map(stored.map((s) => [s.sectionId, s]));
         stored = sent.map((s, i) => {
           const kept = before.get(s.sectionId);
+          const extractedAs = kept ? (kept.extractedAs ?? kept.documentClass) : undefined;
           return {
             sectionId: String(i + 1),
             documentClass: s.documentClass,
             pageIndices: s.pageIndices,
             ...(kept ? { fields: kept.fields, labelSource: kept.labelSource } : { fields: {}, labelSource: 'draft-machine' }),
+            ...(extractedAs && extractedAs !== s.documentClass ? { extractedAs } : {}),
           };
         });
-        return Promise.resolve({ data: { updateTestSetDocumentSections: { testSetId: 'ts1', objectKey: 'p.pdf', sections: stored } } });
+        const written = stored.map(({ sectionId, documentClass, pageIndices, extractedAs }) => ({
+          sectionId,
+          documentClass,
+          pageIndices,
+          ...(records ? { extractedAsClass: extractedAs ?? null } : {}),
+        }));
+        return Promise.resolve({ data: { updateTestSetDocumentSections: { testSetId: 'ts1', objectKey: 'p.pdf', sections: written } } });
       }
       if (args.query === 'reextractTestSetDocument') {
+        const target = (args.variables as { input?: { sectionId?: string } } | undefined)?.input?.sectionId;
+        stored = stored.map((s) => (!target || s.sectionId === target ? { ...s, extractedAs: undefined } : s));
         return Promise.resolve({ data: { reextractTestSetDocument: { jobId: 'j1', status: 'SUCCEEDED' } } });
       }
       return Promise.resolve({ data: {} });
     });
     const refs = (): TestSetDocumentSectionRef[] =>
-      stored.map((s) => ({ ...s, baselineKey: `ts1/baseline/p.pdf/sections/${s.sectionId}/result.json` }));
-    render(<Harness sections={refs()} refsAfterChange={refs} holdRefs={holdRefs} />);
+      stored.map(({ sectionId, documentClass, pageIndices }) => ({
+        sectionId,
+        documentClass,
+        pageIndices,
+        baselineKey: `ts1/baseline/p.pdf/sections/${sectionId}/result.json`,
+      }));
+    let view = render(<Harness sections={refs()} refsAfterChange={refs} holdRefs={holdRefs} />);
+    return {
+      reload: async () => {
+        view.unmount();
+        onChanged.mockReset();
+        view = render(<Harness sections={refs()} refsAfterChange={refs} holdRefs={holdRefs} />);
+        await settle();
+      },
+      /** Change what the server stores behind the editor's back, as another tab or release would. */
+      edit: (change: (sections: Stored[]) => Stored[]) => {
+        stored = change(stored);
+      },
+    };
   };
   const START: Stored[] = [
     { sectionId: '1', documentClass: 'Invoice', pageIndices: [0, 1] },
@@ -850,6 +890,97 @@ describe('the class a reclassified section names, across several saves (#1816)',
     // The added section starts first, so it is section 1 now; it has no fields to mismatch.
     await openSection(1, '1');
     expect(note()).toBeNull();
+  });
+
+  describe.runIf(records)('after a page reload', () => {
+    const opened = () => waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+
+    it('still names the class the fields were extracted under', async () => {
+      const server = serve(START);
+      await opened();
+      await regroup({ 0: 'W2' });
+      await server.reload();
+      await opened();
+      await waitFor(() => expect(note()).toMatch(/extracted as Invoice\. .*the W2 schema/));
+    });
+
+    it('a second change after the reload still names the first class', async () => {
+      const server = serve(START);
+      await opened();
+      await regroup({ 0: 'W2' });
+      await server.reload();
+      await opened();
+      await regroup({ 0: 'Payslip' });
+      await waitFor(() => expect(note()).toMatch(/the Payslip schema/));
+      expect(note()).toMatch(/extracted as Invoice\. /);
+      await server.reload();
+      await opened();
+      await waitFor(() => expect(note()).toMatch(/extracted as Invoice\. .*the Payslip schema/));
+    });
+
+    it('drops the note on a section changed back without being opened since the reload', async () => {
+      const server = serve(START);
+      await opened();
+      // Section 2 (W2) becomes Invoice, then, after a reload that never opens it, W2 again.
+      await regroup({ 1: 'Invoice' });
+      await server.reload();
+      await opened();
+      await regroup({ 1: 'W2' });
+      await openSection(2, '3');
+      expect(note()).toBeNull();
+    });
+
+    it('follows the section, not its first page, when pages moved before the reload', async () => {
+      const server = serve(START);
+      await opened();
+      await regroup({ 0: 'W2' });
+      // Page 1 joins section 2, which becomes section 1; the old section 1 becomes 2.
+      await regroup({}, { page: 1, to: 2 });
+      await server.reload();
+      await waitFor(() => expect(screen.getByDisplayValue('1, 3')).toBeInTheDocument());
+      await settle();
+      expect(note()).toBeNull();
+      await openSection(2, '2');
+      expect(note()).toMatch(/extracted as Invoice\. .*the W2 schema/);
+    });
+
+    it('names nothing once the section was changed back before the reload', async () => {
+      const server = serve(START);
+      await opened();
+      await regroup({ 0: 'W2' });
+      await regroup({ 0: 'Invoice' });
+      await server.reload();
+      await opened();
+      expect(note()).toBeNull();
+    });
+
+    it('drops the note when the file records the class the section now has', async () => {
+      // A release that predates the record copies it through a regroup without updating
+      // it, so a section changed back there carries a record naming its own class.
+      const server = serve(START);
+      await opened();
+      await regroup({ 0: 'W2' });
+      await waitFor(() => expect(note()).toMatch(/extracted as Invoice\. /));
+      server.edit((sections) =>
+        sections.map((s) => (s.sectionId === '1' ? { ...s, documentClass: 'Invoice', extractedAs: 'Invoice' } : s)),
+      );
+      await openSection(2, '3');
+      await openSection(1, '1, 2');
+      expect(note()).toBeNull();
+    });
+
+    it('names nothing once the section was re-extracted before the reload', async () => {
+      const server = serve(START);
+      await opened();
+      await regroup({ 0: 'W2' });
+      const button = await screen.findByRole('button', { name: 'Re-extract section 1' });
+      await waitFor(() => expect(isActionable(button)).toBe(true));
+      await userEvent.click(button);
+      await waitFor(() => expect(reextractInputs()).toHaveLength(1));
+      await server.reload();
+      await opened();
+      expect(note()).toBeNull();
+    });
   });
 
   describe('section ids across a save (#1895)', () => {

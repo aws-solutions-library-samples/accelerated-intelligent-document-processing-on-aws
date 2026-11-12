@@ -3295,6 +3295,7 @@ export const updateTestSetDocumentSections = /* GraphQL */ `
         sectionId
         documentClass
         pageIndices
+        extractedAsClass
       }
     }
   }

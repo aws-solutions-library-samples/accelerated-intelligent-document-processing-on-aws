@@ -1663,6 +1663,10 @@ type TestSetSectionGrouping @aws_cognito_user_pools @aws_iam {
   sectionId: String!
   documentClass: String
   pageIndices: [Int!]!
+  # The class this section's fields were extracted under, when a regroup changed its
+  # class and nothing has re-extracted it since; null otherwise. Stored on the section's
+  # baseline as extractedAsClass, which the editor also reads when it opens the section.
+  extractedAsClass: String
 }
 
 input GenerateDraftLabelsInput {

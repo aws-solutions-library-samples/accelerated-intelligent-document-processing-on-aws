@@ -2859,6 +2859,7 @@ export type TestSetSectionDraft = {
 
 export type TestSetSectionGrouping = {
   documentClass?: Maybe<Scalars['String']['output']>;
+  extractedAsClass?: Maybe<Scalars['String']['output']>;
   pageIndices: Array<Scalars['Int']['output']>;
   sectionId: Scalars['String']['output'];
 };

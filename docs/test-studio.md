@@ -1331,11 +1331,18 @@ only the section you are looking at (see below). The note names the class the fi
 were extracted under, so a section changed twice before it is re-extracted (Invoice to
 W2, then to Payslip) still says Invoice, and a section changed back to that class shows
 no note. The note stays with its section when a later save moves pages and renumbers
-the sections, and when a different section is re-extracted. It lasts for the page visit
-only: saving a new class overwrites the class in the section's ground truth, and nothing
-the editor loads records the class the fields were extracted under, so after a reload
-the note is not shown, though the fields still belong to the earlier class until the
-section is re-extracted.
+the sections, and when a different section is re-extracted. It also survives a page
+reload: the save records the class the fields were extracted under on the section's
+ground truth (`extractedAsClass` in its `result.json`, and in its draft if it has one),
+and the editor reads it when it opens the section. Re-extracting the section, or a
+**Generate draft labels** run that rewrites it, removes it from the section and from its
+draft once the new fields are written. A draft is kept through a re-extract, so a
+section with a draft still opens with the draft's edited values rather than the
+re-extracted ones. For a section of
+authored ground truth, whose values a re-extract keeps, the record goes when the
+re-extract corrects the class. Saving or confirming the section's labels keeps it, because the
+values are still the ones extracted under the earlier class. A class change saved
+by a release that predates this is not recorded, so its note does not survive a reload.
 
 The corrected class is sent into the re-run itself, not merely written onto the
 existing labels: the document is re-processed with classification **skipped** and
