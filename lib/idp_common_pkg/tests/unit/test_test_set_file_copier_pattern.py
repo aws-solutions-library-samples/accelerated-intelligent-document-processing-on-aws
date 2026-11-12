@@ -256,6 +256,125 @@ class TestInputBucketPattern:
         assert docs["labeled.pdf"]["sections"] != []
 
 
+def _put_member(s3, set_id, name, baseline=b"REVIEWED"):
+    s3.put_object(Bucket=TEST_SET, Key=f"{set_id}/input/{name}", Body=b"OLD")
+    s3.put_object(
+        Bucket=TEST_SET,
+        Key=f"{set_id}/baseline/{name}/sections/1/result.json",
+        Body=baseline,
+    )
+
+
+def _body(s3, key):
+    return s3.get_object(Bucket=TEST_SET, Key=key)["Body"].read()
+
+
+@pytest.mark.unit
+class TestPatternNeverOverwritesAMember:
+    """A pattern add skips every document already in the set, as the by-key add
+    does: the set's copy of a member may carry labels reviewed there, and a copy
+    from the evaluation baseline bucket would replace them with no record."""
+
+    def test_a_labeled_members_reviewed_baseline_is_kept(self, env, caplog):
+        copier, s3 = env
+        _put_member(s3, "my-set", "x.pdf")
+        s3.put_object(Bucket=INPUT, Key="x.pdf", Body=b"NEW")
+        s3.put_object(
+            Bucket=BASELINE, Key="x.pdf/sections/1/result.json", Body=b"BUCKET"
+        )
+        s3.put_object(
+            Bucket=BASELINE, Key="x.pdf/sections/2/result.json", Body=b"BUCKET"
+        )
+        _put_input(s3, "fresh.pdf")
+        _put_baseline(s3, "fresh.pdf")
+
+        with caplog.at_level("INFO"):
+            row = _run(copier, mode="append", filePattern="*.pdf")
+
+        assert row["status"] == "COMPLETED", row.get("error")
+        assert row["fileCount"] == 2
+        assert _body(s3, "my-set/baseline/x.pdf/sections/1/result.json") == (
+            b"REVIEWED"
+        )
+        assert _body(s3, "my-set/input/x.pdf") == b"OLD"
+        assert _keys(s3, "my-set/") == [
+            "baseline/fresh.pdf/sections/1/result.json",
+            "baseline/x.pdf/sections/1/result.json",
+            "input/fresh.pdf",
+            "input/x.pdf",
+        ]
+        assert "my-set: Added 1 files (1 already in the set)" in caplog.text
+
+    def test_an_append_matching_only_members_completes_and_copies_nothing(self, env):
+        copier, s3 = env
+        _put_member(s3, "my-set", "x.pdf")
+        s3.put_object(Bucket=INPUT, Key="x.pdf", Body=b"NEW")
+        _put_baseline(s3, "x.pdf")
+
+        row = _run(copier, mode="append", filePattern="*.pdf")
+
+        assert row["status"] == "COMPLETED", row.get("error")
+        assert row["fileCount"] == 1
+        assert _body(s3, "my-set/baseline/x.pdf/sections/1/result.json") == (
+            b"REVIEWED"
+        )
+        assert _body(s3, "my-set/input/x.pdf") == b"OLD"
+
+    def test_a_member_in_a_subfolder_is_matched_by_its_full_key(self, env):
+        copier, s3 = env
+        _put_member(s3, "my-set", "docs/x.pdf")
+        s3.put_object(Bucket=INPUT, Key="docs/x.pdf", Body=b"NEW")
+        _put_baseline(s3, "docs/x.pdf")
+        # Same file name, other folder: a different document, so it is added.
+        s3.put_object(Bucket=INPUT, Key="x.pdf", Body=b"NEW")
+        _put_baseline(s3, "x.pdf")
+
+        row = _run(copier, mode="append", filePattern="**/*.pdf")
+
+        assert row["status"] == "COMPLETED", row.get("error")
+        assert row["fileCount"] == 2
+        assert _body(s3, "my-set/input/docs/x.pdf") == b"OLD"
+        assert _body(s3, "my-set/input/x.pdf") == b"NEW"
+
+    def test_a_test_set_bucket_append_keeps_the_members_baseline(self, env):
+        copier, s3 = env
+        _put_member(s3, "dest", "a.pdf")
+        _put_member(s3, "src", "a.pdf", baseline=b"SOURCE")
+        _put_member(s3, "src", "b.pdf", baseline=b"SOURCE")
+
+        row = _run(
+            copier,
+            set_id="dest",
+            mode="append",
+            bucket="testset",
+            filePattern="src/input/*",
+        )
+
+        assert row["status"] == "COMPLETED", row.get("error")
+        assert row["fileCount"] == 2
+        assert _body(s3, "dest/baseline/a.pdf/sections/1/result.json") == (b"REVIEWED")
+        assert _body(s3, "dest/baseline/b.pdf/sections/1/result.json") == b"SOURCE"
+
+
+@pytest.mark.unit
+def test_pattern_result_wording():
+    import importlib.util as iu
+
+    spec = iu.spec_from_file_location("copier_wording", _copier_path())
+    assert spec is not None and spec.loader is not None
+    mod = iu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod._pattern_result("create", 3, 0, 0) is None
+    assert mod._pattern_result("append", 3, 0, 0) == "Added 3 files"
+    assert (
+        mod._pattern_result("create", 3, 1, 0) == "Created with 3 files (1 unlabeled)"
+    )
+    assert (
+        mod._pattern_result("append", 1, 1, 2)
+        == "Added 1 files (1 unlabeled, 2 already in the set)"
+    )
+
+
 @pytest.mark.unit
 class TestTestSetBucketPatternStaysStrict:
     def test_a_missing_baseline_in_the_test_set_bucket_still_fails(self, env):
