@@ -60,6 +60,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Analytics Agent, Amazon Athena, S3 Reporting Bucket |
 | **Mitigations** | Athena workgroup with restricted permissions (read-only), query result size limits, SQL query validation/sanitization before execution, Athena query logging, IAM role with read-only Glue/S3 access |
+| **Evidence** | `lib/idp_common_pkg/tests/unit/agents/analytics/test_query_validation.py::test_refused`; `lib/idp_common_pkg/tests/unit/agents/analytics/test_query_validation.py::TestRunAthenaQueryRefusesBeforeCallingAthena::test_refused_query_makes_no_athena_call`; UNVERIFIED: the citations cover SQL query validation before execution; the workgroup, result size limits, query logging and read-only IAM items are not covered |
 
 ### AGT.T02: Arbitrary Code Execution via AgentCore
 
@@ -75,6 +76,7 @@ flowchart TD
 | **Affected Components** | Analytics Agent, Bedrock AgentCore |
 | **Mitigations** | AgentCore runs in AWS-managed sandboxed environment (no AWS credentials; no public internet access; reaches Amazon S3 in the session's region and the instance metadata service, which lists no role), code output validation, execution time limits, output size limits |
 | **Residual risk / recommendation** | Code running in a session can write data, including the result of the query the agent ran, to Amazon S3 in the session's region. The session holds no AWS credentials and cannot reach public internet hosts. `make stacktest-sandbox-network` measures this. |
+| **Evidence** | `make stacktest-sandbox-network`; `lib/idp_common_pkg/tests/unit/agents/analytics/test_sandbox_code_checks.py::test_refused`; `lib/idp_common_pkg/tests/unit/agents/analytics/test_code_interpreter_tools.py::TestWriteQueryResultsToCodeSandbox::test_the_tool_takes_no_arguments`; `scripts/tests/test_analytics_role_grants.py::test_code_interpreter_is_granted_on_the_managed_interpreter_only`; UNVERIFIED: the citations cover the session's network reach and credentials, the checks on code before it is sent, and what data the sandbox tool reads; code output validation, execution time limits and output size limits are not covered |
 
 ### AGT.T03: Agent Routing Manipulation
 
@@ -89,6 +91,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | Orchestrator Agent, all sub-agents |
 | **Mitigations** | Agent-level authorization checks, tool-level access controls, audit logging of all agent invocations, RBAC integration with agent capabilities |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### AGT.T04: Conversation History Poisoning
 
@@ -103,6 +106,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | DynamoDB Conversations Table, Chat Processor Lambda |
 | **Mitigations** | Conversation history sanitization, turn-level isolation in prompts, conversation session limits, ability to clear history |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### AGT.T05: Cross-User Data Leakage via Athena
 
@@ -117,6 +121,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Amazon Athena, S3 Reporting Bucket, Analytics Agent |
 | **Mitigations** | RBAC-based agent access control (Admin/Author roles required), Athena query scoping, user-aware query generation, deployment as single-tenant per stack — or, in a stack shared by several tenants, the agent is Admin-only under `TenantIsolationMode: Strict` |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ## 4. Security Controls Summary
 

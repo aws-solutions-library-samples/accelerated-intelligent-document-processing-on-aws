@@ -96,6 +96,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Chat Processor Lambda, Amazon Bedrock |
 | **Mitigations** | System prompt hardening with clear boundaries, input/output tagging, Bedrock Guardrails, tool-level authorization, output filtering |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### CHAT.T02: Conversation Session Hijacking
 
@@ -111,6 +112,7 @@ flowchart TD
 | **Affected Components** | `get_agent_chat_messages_resolver`, `delete_agent_chat_session_resolver`, ChatSessions / ChatMessages / document-chat-sessions tables |
 | **Mitigations** | UUID-based session IDs. For the **read/delete resolvers**, ownership is verified explicitly: `_verify_session_ownership` checks the agent `ChatSessionsTable` by `(userId, sessionId)` and falls back to `_owns_document_session`, which compares the stored `ownerSub` to the caller's Cognito `sub`; a session owned by neither raises `Unauthorized`. The agent `ChatSessionsTable` is additionally protected by construction (`PK=userId`). The **live IDOR suite in `make api-test`** asserts User B is denied User A's session while the owner retains access. See AUTH.T09. |
 | **Residual risk** | These controls cover the **REST resolver** paths only. The streaming transport does not perform them — see CHAT.T03. |
+| **Evidence** | `make api-test`; `lib/idp_common_pkg/tests/unit/test_chat_session_owner.py::TestWritePath::test_a_second_user_cannot_use_a_registered_id`; `lib/idp_common_pkg/tests/unit/agents/utils/test_memory_provider.py::TestConstructionAndKeys::test_two_users_naming_one_session_id_get_different_keys`; UNVERIFIED: the citations have not been matched to each listed mitigation |
 
 ### CHAT.T03: Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement
 
@@ -126,6 +128,7 @@ flowchart TD
 | **Affected Components** | `ChatStreamProcessorUrl` (`template.yaml`), `src/lambda/chat_stream_processor/app.py`, both vendored processors, `DynamoDBMemoryHookProvider`, `CognitoAuthorizedRole` |
 | **Mitigations** | **Authentication is enforced**: `AuthType=AWS_IAM` means an unauthenticated or non-SigV4 request is rejected by Lambda before any code runs. **Every chat route also verifies the caller's Cognito ID token**, which the browser sends in the `x-idp-id-token` header: `idp_common.cognito_id_token.verify_id_token` checks the signature against the user pool's key set, the issuer, the web UI's app client as audience, `token_use` and expiry, and the route answers 401 without a valid token. **Groups are enforced from the verified claims** before the stream opens: `/chat/agent` applies the Admin/Author/Viewer check (and Admin-only under tenant isolation) via `_enforce_groups_or_403`, and `/chat/document` refuses a caller in no group. **Session ownership is enforced**: `_claim_session_or_403` registers the session id to the caller's verified `sub` in `ChatSessionOwnersTable`, or answers 403 when another user owns it, and the agent processor checks again before it builds the orchestrator. Conversation memory is keyed `conversation#<sub>#<sessionId>`. Tested by `src/lambda/chat_stream_processor/tests/test_route_identity.py` and `test_processor_session_owner.py`. CORS is safe (`AllowCredentials: false`, no cookies). Chat tables are KMS-encrypted with TTL. |
 | **Residual risk / recommendation** | **Mitigated in code.** The `make api-test` cells for this transport (`run_chat_session_idor_suite` in `scripts/api_security_cases.py`) exist and are tested offline, and have not yet been run against a deployment. WAF and API Gateway throttling still do not cover the Function URL (CHAT.T05). |
+| **Evidence** | `src/lambda/chat_stream_processor/tests/test_route_identity.py`; `make api-test`; `scripts/api_security_cases.py`; UNVERIFIED: the citations have not been matched to each listed mitigation |
 
 ### CHAT.T06: Client-Supplied Caller Identity on the Agent Streaming Route
 
@@ -141,6 +144,7 @@ flowchart TD
 | **Affected Components** | `src/lambda/chat_stream_processor/app.py` (`chat_agent`, line ~172 vs `chat_document`, line ~119) |
 | **Mitigations** | Neither route reads an identity from the request body: the request models declare no `callerSub` field, so one sent by an earlier UI build is dropped, and every identity the routes use comes from the verified ID token (`_verified_caller` in `app.py`). The session list is filed under the token's `email` (then `cognito:username`, then `sub`), the same value the REST resolvers use, and ownership and memory under its `sub`. Tested by `test_a_body_caller_identity_is_ignored` in `src/lambda/chat_stream_processor/tests/test_route_identity.py`. |
 | **Residual risk / recommendation** | **Mitigated.** The route-level identity checks are also asserted structurally by the static scan (S7, `scripts/sdlc/scan_api_rbac.py`). |
+| **Evidence** | `src/lambda/chat_stream_processor/tests/test_route_identity.py`; `scripts/sdlc/scan_api_rbac.py`; UNVERIFIED: the citations have not been matched to each listed mitigation |
 
 > **What "the SigV4-derived identity" actually is (v3.2 correction).** The
 > derivation reads `requestContext.authorizer.iam.userArn` and, for an
@@ -253,6 +257,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | DynamoDB Conversations Table |
 | **Mitigations** | DynamoDB encryption at rest, IAM least-privilege access, conversation TTL/expiration policies, no direct DynamoDB access from users |
+| **Evidence** | `lib/idp_common_pkg/tests/unit/agents/utils/test_memory_provider.py::TestConstructionAndKeys::test_another_users_history_is_not_loaded`; UNVERIFIED: the citation covers per-user keying of stored conversations; encryption at rest, IAM scope and expiry are not covered |
 
 ### CHAT.T05: Streaming Response Denial of Service
 
@@ -268,6 +273,7 @@ flowchart TD
 | **Affected Components** | Chat Stream Processor, Chat Processor Lambda, Amazon Bedrock, Amazon Athena |
 | **Mitigations** | Lambda timeout limits, Bedrock token limits per request, Lambda reserved concurrency, CloudWatch alarms on Lambda duration/errors, conversation-manager context trimming (`DropAndSlideConversationManager`) bounding per-turn token growth. |
 | **Residual risk** | Rate limiting on the **streaming transport** is weaker than on the REST transport: a Function URL has no API Gateway stage throttling and (when the WAF is enabled) is **not** covered by the WebACL, which is associated with the REST API stage only. Lambda concurrency is the effective bound. Cost-amplification abuse via `/chat/agent` is therefore cheaper to mount than via `/op`. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ## 4. Security Controls Summary
 

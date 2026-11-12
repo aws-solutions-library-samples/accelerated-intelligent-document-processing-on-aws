@@ -104,7 +104,7 @@
 
 | Threat ID | Threat | Risk | Component | Status |
 |-----------|--------|------|-----------|--------|
-| AGT.T02 | Arbitrary Code Execution via AgentCore | **4** | Agent Analysis | Mitigated |
+| AGT.T02 | Arbitrary Code Execution via AgentCore | **4** | Agent Analysis | Partially Mitigated |
 | AGT.T03 | Agent Routing Manipulation | **4** | Agent Analysis | Mitigated |
 | AUTH.T01 | Privilege Escalation via Group Manipulation | **4** | Authentication/RBAC | Mitigated |
 | AUTH.T13 | Group Assignment From a User-Writable Attribute (External IdP Mapping) | **4** | Authentication/RBAC | Partially Mitigated |
@@ -228,8 +228,8 @@ than the threat total.
 
 | Status | Count | Description |
 |--------|-------|-------------|
-| **Mitigated** | 68 | Controls implemented and verified |
-| **Partially Mitigated** | 36 | Some controls in place, additional measures recommended |
+| **Mitigated** | 67 | Controls implemented and verified |
+| **Partially Mitigated** | 37 | Some controls in place, additional measures recommended |
 | **Open** | 1 | **Real gap with no effective control today — see the open-items list below** |
 | **Accepted** | 4 | Risk accepted with documented rationale |
 
