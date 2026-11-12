@@ -3087,6 +3087,7 @@ Resources:
           MCP_STACK_SERVICE_CLIENT_IDS: !Ref MCPConnectorClient
           CALLER_SIGNING_SECRET_ARN: !Ref McpCallerSigningSecret
           URL_SUFFIX: !Ref AWS::URLSuffix
+          MCP_CREDENTIALS_TABLE: !Ref McpCredentialsTable
       LoggingConfig:
         LogGroup: !Ref McpIdentityInterceptorLogGroup
       Policies:
@@ -3102,6 +3103,13 @@ Resources:
               Resource:
                 - !GetAtt UsersTable.Arn
                 - !Sub "${UsersTable.Arn}/index/EmailIndex"
+            # The credential registry: read each service caller's row, and record
+            # when it was last used (at most once an hour).
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt McpCredentialsTable.Arn
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue  # pragma: allowlist secret - IAM action name, not a secret value
@@ -3110,6 +3118,183 @@ Resources:
               Action:
                 - kms:Decrypt
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+
+  # One row per MCP service credential (a client-credentials app an Admin created
+  # on the MCP Configuration page). The interceptor reads a caller's row on every
+  # call, so a disabled, revoked or expired credential is refused at once.
+  McpCredentialsTable:
+    Type: AWS::DynamoDB::Table
+    Condition: CreateAgentCoreLambda
+    Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: clientId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: clientId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  McpCredentialManagerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateAgentCoreLambda
+    Properties:
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      RetentionInDays: !Ref LogRetentionDays
+
+  # The MCP Configuration page's operations (list, create, update, rotate, revoke,
+  # setMcpCredentialTenant), reached through the UI REST API, and the daily sweep
+  # that revokes expired credentials and warns their creators beforehand.
+  McpCredentialManagerFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateAgentCoreLambda
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with AWS services via APIs"
+          - id: W92
+            reason: "Function does not require reserved concurrency as it scales based on demand"
+    # checkov:skip=CKV_AWS_116: "Invoked synchronously by the API dispatcher and by a daily schedule; a DLQ does not apply"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales based on demand"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold resource names and ids only"
+    Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      FunctionName: !Sub "${AWS::StackName}-mcp-credential-manager"
+      CodeUri: src/lambda/mcp_credential_manager/
+      Handler: index.handler
+      Runtime: python3.12
+      MemorySize: 256
+      Timeout: 300
+      Layers:
+        - !Ref IDPCommonBaseLayer
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          STACK_NAME: !Ref AWS::StackName
+          USER_POOL_ID: !Ref UserPool
+          USERS_TABLE_NAME: !Ref UsersTable
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTable
+          MCP_CREDENTIALS_TABLE: !Ref McpCredentialsTable
+          GATEWAY_ID: !GetAtt AgentCoreGateway.GatewayId
+          GATEWAY_URL: !GetAtt AgentCoreGateway.GatewayUrl
+          TOKEN_URL: !Sub "https://${GetDomain.OutputString}.auth.${AWS::Region}.amazoncognito.com/oauth2/token"
+          OAUTH_SCOPES: idp-mcp-connector/access
+          KMS_KEY_ID: !GetAtt CustomerManagedEncryptionKey.Arn
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+      LoggingConfig:
+        LogGroup: !Ref McpCredentialManagerLogGroup
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:CreateUserPoolClient
+                - cognito-idp:DeleteUserPoolClient
+                - cognito-idp:DescribeUserPoolClient
+              Resource: !GetAtt UserPool.Arn
+            - Effect: Allow
+              Action:
+                - secretsmanager:CreateSecret
+                - secretsmanager:DeleteSecret
+                - secretsmanager:TagResource
+                - secretsmanager:DescribeSecret
+              Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/mcp/credentials/*"
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey
+              Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Scan
+              Resource: !GetAtt McpCredentialsTable.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource:
+                - !GetAtt UsersTable.Arn
+                - !Sub "${UsersTable.Arn}/index/EmailIndex"
+                - !GetAtt ConfigurationTable.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !GetAtt NotificationsTable.Arn
+                - !Sub "${NotificationsTable.Arn}/index/*"
+            # The gateway custom resource reports GatewayArn as N/A where
+            # AgentCore is unavailable, which is not a valid Resource, so the
+            # grant is limited to this account and region's gateways instead.
+            - Effect: Allow
+              Action:
+                - bedrock-agentcore:GetGateway
+                - bedrock-agentcore:UpdateGateway
+              Resource: !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*"
+            # UpdateGateway re-sends the gateway's role, which needs PassRole.
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: !GetAtt AgentCoreGatewayExecutionRole.Arn
+            # The function is also a custom resource's service token, so its last
+            # log lines on a stack delete could otherwise recreate its log group
+            # with no retention and no key.
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${McpCredentialManagerLogGroup}"
+                - !GetAtt McpCredentialManagerLogGroup.Arn
+
+  # Revokes every MCP credential when the registry is removed: a stack delete, a
+  # downgrade to a release without it, or EnableMCP switched off. The credentials'
+  # app clients, secrets and gateway entries are made at run time, so nothing else
+  # removes them. Create and Update do nothing. It references the manager, which
+  # references the table, pool and gateway, so CloudFormation deletes it first.
+  McpCredentialsCleanup:
+    Type: Custom::McpCredentialsCleanup
+    Condition: CreateAgentCoreLambda
+    # Deleted before the interceptor is detached: both rewrite the gateway's whole
+    # configuration, so run together the later write would undo the earlier one.
+    DependsOn: McpGatewayInterceptorAttachment
+    Properties:
+      ServiceToken: !GetAtt McpCredentialManagerFunction.Arn
+      # The handler answers within the function's 300-second timeout; this bounds
+      # CloudFormation's wait if it never does.
+      ServiceTimeout: 600
+
+  McpCredentialSweepSchedule:
+    Type: AWS::Events::Rule
+    Condition: CreateAgentCoreLambda
+    Properties:
+      Description: Daily revocation of expired MCP credentials, and expiry warnings.
+      ScheduleExpression: "cron(15 3 * * ? *)"
+      State: ENABLED
+      Targets:
+        - Id: McpCredentialSweep
+          Arn: !GetAtt McpCredentialManagerFunction.Arn
+
+  McpCredentialSweepPermission:
+    Type: AWS::Lambda::Permission
+    Condition: CreateAgentCoreLambda
+    Properties:
+      FunctionName: !Ref McpCredentialManagerFunction
+      Action: lambda:InvokeFunction
+      Principal: !Sub events.${AWS::URLSuffix}
+      SourceArn: !GetAtt McpCredentialSweepSchedule.Arn
 
   ##########################################################################
   # Read previous IDPPattern from SSM before PATTERNSTACK overwrites it
@@ -3439,6 +3624,13 @@ Resources:
 
         CompleteSectionReviewFunctionArn: !GetAtt CompleteSectionReviewFunction.Arn
         UserManagementFunctionArn: !GetAtt UserManagementFunction.Arn
+        # Built from the fixed FunctionName rather than GetAtt: the function's role
+        # names the gateway, the gateway names ExternalAppClient, and that client's
+        # callback URLs name this stack's API endpoint, so a GetAtt here is a cycle.
+        McpCredentialManagerFunctionArn: !If
+          - CreateAgentCoreLambda
+          - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-mcp-credential-manager"
+          - ""
         FinetuningJobsResolverFunctionArn: !GetAtt FinetuningJobsResolverFunction.Arn
         CalculateCapacityResolverFunctionArn: !GetAtt CalculateCapacityResolverFunction.Arn
         VersionCheckResolverFunctionArn: !GetAtt VersionCheckResolverFunction.Arn
@@ -8248,6 +8440,15 @@ Resources:
         # Vertical-product packs: customise the top-navigation banner.
         # Read by GenAIIDPTopNavigation; defaults to "IDP Accelerator Console".
         ConsoleTitle: !Ref ConsoleTitle
+        # The MCP Configuration page: shown only when these are set.
+        McpServerEndpoint: !If
+          - CreateAgentCoreLambda
+          - !GetAtt AgentCoreGateway.GatewayUrl
+          - ""
+        McpTokenUrl: !If
+          - CreateAgentCoreLambda
+          - !Sub "https://${GetDomain.OutputString}.auth.${AWS::Region}.amazoncognito.com/oauth2/token"
+          - ""
     UpdateReplacePolicy: Delete
     DeletionPolicy: Delete
 

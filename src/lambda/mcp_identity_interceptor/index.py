@@ -28,7 +28,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import boto3
 
@@ -107,8 +107,24 @@ def _resolve(request: Dict[str, Any]) -> mcp_access.Caller:
     cached = _user_cache.get(key)
     if cached and time.time() - cached[0] < USER_CACHE_SECONDS:
         return cached[1]
+    table_name = os.environ.get("MCP_CREDENTIALS_TABLE", "")
+    credential_row: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None
+    if table_name:
+        from idp_common import mcp_credentials
+
+        table = _client("dynamodb").Table(table_name)
+
+        def _credential_row(client_id: str) -> Optional[Dict[str, Any]]:
+            row = mcp_credentials.get_row(table, client_id)
+            if row and row.get("enabled"):
+                mcp_credentials.touch_last_used(table, client_id)
+            return row
+
+        credential_row = _credential_row
+
     caller = mcp_access.resolve_caller(
         claims,
+        credential_row=credential_row,
         user_client_ids=_ids("MCP_USER_CLIENT_IDS"),
         stack_service_client_ids=_ids("MCP_STACK_SERVICE_CLIENT_IDS"),
         cognito=_client("cognito-idp"),

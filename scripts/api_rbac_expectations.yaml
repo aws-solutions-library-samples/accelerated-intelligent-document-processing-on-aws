@@ -99,7 +99,7 @@
 #                  (chat sessions, agent jobs).
 #   schema_groups: set only when the code INTENTIONALLY enforces different
 #                  groups than the schema.graphql directive (documented drift).
-#   conditional:   circuit_breaker | feature_platform — op is only routable
+#   conditional:   circuit_breaker | feature_platform | mcp — op is only routable
 #                  when that stack feature is enabled; dynamic test skips on
 #                  404-for-admin instead of failing.
 #   args:          safe arguments for the dynamic test. Mutations use
@@ -1950,6 +1950,68 @@ operations:
 #
 # Routes needing no per-user authorization (health checks) are allowlisted in
 # FUNCTION_URL_OPEN_ROUTES in the scanner, not here.
+  # ==========================================================================
+  # MCP service credentials (McpCredentialManagerFunction). Admin only. Not
+  # routable when EnableMCP is false: the field map entry is then empty.
+  # ==========================================================================
+  listMcpCredentials:
+    groups: [Admin]
+    kind: read
+    conditional: mcp
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    args: {}
+    note: >-
+      Lists every credential's id, name, role, scope and lifecycle fields; never a
+      secret, which is not stored on the row.
+  createMcpCredential:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    # An unknown role is refused by validation before anything is created, so an
+    # allowed caller is refused benignly.
+    args: { name: "rbac-probe", role: "__not_a_role__" }
+    note: >-
+      A scoped Admin may grant only profiles inside their own allowedConfigVersions
+      and cannot create an unscoped credential; the scope must sit inside one
+      tenant (scope_rejection_reason, as createUser).
+  updateMcpCredential:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    args: { clientId: "__nonexistent__" }
+  rotateMcpCredential:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    args: { clientId: "__nonexistent__" }
+  revokeMcpCredential:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    args: { clientId: "__nonexistent__" }
+  setMcpCredentialTenant:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    # Only when TenantGrantSource is Api; elsewhere an allowed caller is refused by
+    # the mode check, and the probe id names no credential, so nothing is written.
+    args: { clientId: "__nonexistent__" }
+
 function_url_endpoints:
   ChatStreamProcessorUrl:
     auth_type: AWS_IAM

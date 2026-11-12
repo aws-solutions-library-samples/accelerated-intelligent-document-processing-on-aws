@@ -852,6 +852,37 @@ export type LatestPublishedVersion = {
   templateUrl?: Maybe<Scalars['String']['output']>;
 };
 
+export type McpCredential = {
+  allowedConfigVersions?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
+  clientId: Scalars['ID']['output'];
+  createdAt?: Maybe<Scalars['String']['output']>;
+  createdBy?: Maybe<Scalars['String']['output']>;
+  enabled?: Maybe<Scalars['Boolean']['output']>;
+  expiresAt?: Maybe<Scalars['String']['output']>;
+  kind?: Maybe<Scalars['String']['output']>;
+  lastUsedAt?: Maybe<Scalars['String']['output']>;
+  name?: Maybe<Scalars['String']['output']>;
+  replacedBy?: Maybe<Scalars['String']['output']>;
+  role?: Maybe<Scalars['String']['output']>;
+  rotatedFrom?: Maybe<Scalars['String']['output']>;
+  secretArn?: Maybe<Scalars['String']['output']>;
+  status?: Maybe<Scalars['String']['output']>;
+  tenant?: Maybe<Scalars['String']['output']>;
+  updatedAt?: Maybe<Scalars['String']['output']>;
+  updatedBy?: Maybe<Scalars['String']['output']>;
+  writeTools?: Maybe<Scalars['Boolean']['output']>;
+};
+
+export type McpCredentialIssued = {
+  clientId: Scalars['ID']['output'];
+  clientSecret: Scalars['String']['output'];
+  credential?: Maybe<McpCredential>;
+  gatewayUrl?: Maybe<Scalars['String']['output']>;
+  oauthScopes?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
+  secretArn?: Maybe<Scalars['String']['output']>;
+  tokenUrl?: Maybe<Scalars['String']['output']>;
+};
+
 export type MessageContent = {
   text?: Maybe<Scalars['String']['output']>;
 };
@@ -926,6 +957,7 @@ export type Mutation = {
   createDocument?: Maybe<CreateDocumentOutput>;
   createEmptyTestSet?: Maybe<TestSet>;
   createFinetuningJob?: Maybe<FinetuningJob>;
+  createMcpCredential?: Maybe<McpCredentialIssued>;
   createReviewQueue?: Maybe<ReviewQueueDefinition>;
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
@@ -993,6 +1025,8 @@ export type Mutation = {
   restoreDefaultModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   restoreDefaultPricing?: Maybe<UpdatePricingResponse>;
   resumeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
+  revokeMcpCredential?: Maybe<McpCredential>;
+  rotateMcpCredential?: Maybe<McpCredentialIssued>;
   saveReviewDraft?: Maybe<ReviewDraft>;
   saveSectionReviewEdits?: Maybe<Document>;
   saveTestSetDocumentSection?: Maybe<TestSetSectionSaveResult>;
@@ -1001,6 +1035,7 @@ export type Mutation = {
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
   sendTestRunToReview?: Maybe<SendTestRunToReviewResult>;
   setActiveVersion?: Maybe<UpdateConfigurationResponse>;
+  setMcpCredentialTenant?: Maybe<McpCredential>;
   setUserTenant?: Maybe<User>;
   skipAllSectionsReview?: Maybe<Document>;
   skipTestSetDocument?: Maybe<TestSetDocumentSkipResult>;
@@ -1048,6 +1083,7 @@ export type Mutation = {
   updateDocumentStatus?: Maybe<Document>;
   updateFinetuningJobStatus?: Maybe<FinetuningJob>;
   updateInboxPreferences?: Maybe<InboxPreferences>;
+  updateMcpCredential?: Maybe<McpCredential>;
   updateModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   updatePricing?: Maybe<UpdatePricingResponse>;
   updateReviewQueue?: Maybe<ReviewQueueDefinition>;
@@ -1189,6 +1225,15 @@ export type MutationCreateEmptyTestSetArgs = {
 
 export type MutationCreateFinetuningJobArgs = {
   input: CreateFinetuningJobInput;
+};
+
+
+export type MutationCreateMcpCredentialArgs = {
+  allowedConfigVersions?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
+  expiresInDays?: InputMaybe<Scalars['Int']['input']>;
+  name: Scalars['String']['input'];
+  role: Scalars['String']['input'];
+  writeTools?: InputMaybe<Scalars['Boolean']['input']>;
 };
 
 
@@ -1460,6 +1505,17 @@ export type MutationResumeCircuitBreakerArgs = {
 };
 
 
+export type MutationRevokeMcpCredentialArgs = {
+  clientId: Scalars['ID']['input'];
+};
+
+
+export type MutationRotateMcpCredentialArgs = {
+  clientId: Scalars['ID']['input'];
+  overlapDays?: InputMaybe<Scalars['Int']['input']>;
+};
+
+
 export type MutationSaveReviewDraftArgs = {
   baseRevision?: InputMaybe<Scalars['Int']['input']>;
   cycleId: Scalars['String']['input'];
@@ -1524,6 +1580,12 @@ export type MutationSendTestRunToReviewArgs = {
 
 export type MutationSetActiveVersionArgs = {
   versionName: Scalars['String']['input'];
+};
+
+
+export type MutationSetMcpCredentialTenantArgs = {
+  clientId: Scalars['ID']['input'];
+  tenantId?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -1689,6 +1751,16 @@ export type MutationUpdateFinetuningJobStatusArgs = {
 
 export type MutationUpdateInboxPreferencesArgs = {
   mutedTypes: Array<Scalars['String']['input']>;
+};
+
+
+export type MutationUpdateMcpCredentialArgs = {
+  allowedConfigVersions?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
+  clearScope?: InputMaybe<Scalars['Boolean']['input']>;
+  clientId: Scalars['ID']['input'];
+  enabled?: InputMaybe<Scalars['Boolean']['input']>;
+  role?: InputMaybe<Scalars['String']['input']>;
+  writeTools?: InputMaybe<Scalars['Boolean']['input']>;
 };
 
 
@@ -1940,6 +2012,7 @@ export type Query = {
    * installed extensions via SigV4 — the InstalledFeature type is already @aws_iam.
    */
   listInstalledFeatures?: Maybe<Array<InstalledFeature>>;
+  listMcpCredentials?: Maybe<Array<Maybe<McpCredential>>>;
   listMyReviewWork?: Maybe<ReviewItemPage>;
   listMyTestSetTasks?: Maybe<Array<TestSetTask>>;
   listReviewQueueItems?: Maybe<ReviewItemPage>;

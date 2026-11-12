@@ -32,6 +32,7 @@ import {
   MODEL_CONFIG_LIMITS_PATH,
   DISCOVERY_PATH,
   USER_MANAGEMENT_PATH,
+  MCP_CONFIGURATION_PATH,
   CONFIG_PREFIX_MAPPINGS_PATH,
   AGENT_CHAT_PATH,
   CAPACITY_PLANNING_PATH,
@@ -126,6 +127,8 @@ export const adminNavItems = [
       // Profile, which is the document-visibility partition, so it is not an
       // Author-level setting.
       { type: 'link', text: 'Prefix Mappings', href: `#${CONFIG_PREFIX_MAPPINGS_PATH}` },
+      // Admin-only: MCP service credentials. Hidden on a stack without MCP.
+      { type: 'link', text: 'MCP Configuration', href: `#${MCP_CONFIGURATION_PATH}` },
       { type: 'link', text: 'View / Edit Pricing', href: `#${PRICING_PATH}` },
       { type: 'link', text: 'View / Edit Model Limits', href: `#${MODEL_CONFIG_LIMITS_PATH}` },
     ],
@@ -540,6 +543,11 @@ const FullNavigation = ({
     if (!isCapacityPlanningSupported) {
       hiddenConfigItems.add('Capacity Planning');
     }
+    // MCP Configuration only where the stack has an MCP server. Hidden until the
+    // settings say so, so a stack without MCP never shows a dead link.
+    if (!settings?.McpServerEndpoint) {
+      hiddenConfigItems.add('MCP Configuration');
+    }
 
     // Transform navigation items: hide unsupported items, grey out region-restricted items
     return baseItems
@@ -579,7 +587,7 @@ const FullNavigation = ({
         return item;
       })
       .filter((item) => !hiddenConfigItems.has((item as { text?: string }).text ?? ''));
-  }, [baseItems, settings?.IDPPattern]);
+  }, [baseItems, settings?.IDPPattern, settings?.McpServerEndpoint]);
 
   // Determine active link based on current path
   if (path.includes(PRICING_PATH)) {
@@ -605,6 +613,8 @@ const FullNavigation = ({
     activeHref = `#${USER_MANAGEMENT_PATH}`;
   } else if (path.includes(CONFIG_PREFIX_MAPPINGS_PATH)) {
     activeHref = `#${CONFIG_PREFIX_MAPPINGS_PATH}`;
+  } else if (path.includes(MCP_CONFIGURATION_PATH)) {
+    activeHref = `#${MCP_CONFIGURATION_PATH}`;
   } else if (path.includes(CUSTOM_MODELS_PATH)) {
     activeHref = `#${CUSTOM_MODELS_PATH}`;
   } else if (path.includes(CAPACITY_PLANNING_PATH)) {

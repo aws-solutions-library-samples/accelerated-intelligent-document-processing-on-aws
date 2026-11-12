@@ -282,6 +282,12 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             "McpGatewayInterceptorAttachment",
             "McpInterceptorAttachFunction",
             "McpInterceptorAttachLogGroup",
+            "McpCredentialsTable",
+            "McpCredentialManagerFunction",
+            "McpCredentialManagerLogGroup",
+            "McpCredentialSweepSchedule",
+            "McpCredentialsCleanup",
+            "McpCredentialSweepPermission",
         }
 
         self.hitl_resources: Set[str] = {
@@ -1194,6 +1200,12 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
         if "ShouldUseDocumentKnowledgeBase" in settings_kvp:
             settings_kvp["ShouldUseDocumentKnowledgeBase"] = False
             logger.debug("Set ShouldUseDocumentKnowledgeBase to False")
+
+        # The MCP Configuration page's settings name the gateway and the Cognito
+        # domain, both removed here; a headless stack has no MCP and no UI.
+        for key in ("McpServerEndpoint", "McpTokenUrl", "McpUserClientId"):
+            if key in settings_kvp:
+                del settings_kvp[key]
 
         if "AllowedSignUpEmailDomains" in settings_kvp:
             del settings_kvp["AllowedSignUpEmailDomains"]
