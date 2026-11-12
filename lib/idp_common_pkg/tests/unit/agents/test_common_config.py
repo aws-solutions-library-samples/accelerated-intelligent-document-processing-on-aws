@@ -5,7 +5,6 @@
 Unit tests for the agents common configuration module.
 """
 
-import builtins
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -15,14 +14,12 @@ import yaml
 
 from idp_common.agents.common import config as common_config
 from idp_common.agents.common.config import (
-    AGENT_MODEL_LAST_RESORT,
-    DEFAULT_AGENT_MODEL_ID,
     get_environment_config,
-    portable_profile,
     validate_aws_credentials,
 )
 from idp_common.agents.error_analyzer import config as error_analyzer_config
-from idp_common.config.models import ChatCompanionConfig
+from idp_common.agents.quick_start import agent as quick_start_agent
+from idp_common.config.models import ChatCompanionConfig, ErrorAnalyzerConfig
 
 
 @pytest.mark.unit
@@ -104,103 +101,131 @@ class TestValidateAwsCredentials:
 
 _PRICING = Path(__file__).resolve().parents[5] / "config_library" / "pricing.yaml"
 
+#: Each agent fallback, called with the process environment as it stands.
+_FALLBACKS = {
+    "agent": common_config._default_agent_model_id,
+    "error_analyzer": error_analyzer_config.default_error_analyzer_model_id,
+    "quick_start": quick_start_agent.default_model_id,
+}
 
-@pytest.mark.unit
-class TestDefaultAgentModelId:
-    """The fallback an agent uses when its configured model cannot be read."""
-
-    def test_the_fallback_can_be_invoked_from_any_region(self):
-        """A ``us.`` profile cannot be invoked from an EU or Canadian stack, and
-        nothing remaps a code default the way a stored configuration is remapped."""
-        assert DEFAULT_AGENT_MODEL_ID.startswith("global."), DEFAULT_AGENT_MODEL_ID
-
-    def test_the_fallback_is_the_shipped_chat_companion_model(self):
-        shipped = ChatCompanionConfig().model_id
-        assert DEFAULT_AGENT_MODEL_ID.partition(".")[2] == shipped.partition(".")[2]
-
-    def test_the_fallback_is_an_offered_model(self):
-        """The ``global.`` profile has to exist; the pricing table lists the IDs
-        the solution offers, so a profile absent from it is not one it can run."""
-        names = {
-            entry.get("name")
-            for entry in yaml.safe_load(_PRICING.read_text())["pricing"]
-        }
-        assert f"bedrock/{DEFAULT_AGENT_MODEL_ID}" in names
+#: The model each fallback serves: the shipped configuration's field default.
+_SHIPPED = {
+    "agent": ChatCompanionConfig().model_id,
+    "error_analyzer": ErrorAnalyzerConfig().model_id,
+    "quick_start": ErrorAnalyzerConfig().model_id,
+}
 
 
-def _without_config_models(monkeypatch):
-    """Make the configuration models unimportable, as on the error path."""
-    real_import = builtins.__import__
-    models = {"ChatCompanionConfig", "ErrorAnalyzerConfig"}
-
-    def refuse(name, globals=None, locals=None, fromlist=(), level=0):
-        if models & set(fromlist or ()):
-            raise ImportError("simulated: configuration cannot be loaded")
-        return real_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", refuse)
+def _pricing_names() -> set:
+    return {
+        entry.get("name") for entry in yaml.safe_load(_PRICING.read_text())["pricing"]
+    }
 
 
-@pytest.mark.unit
-class TestLastResortModels:
-    """The literal each fallback returns when even the field default is unreadable.
+def _region_env(region):
+    env = {k: v for k, v in os.environ.items() if k not in _REGION_VARS}
+    if region:
+        env["AWS_REGION"] = region
+    return env
 
-    The literal equals the derived value by design, so "the call returned the
-    literal" cannot show the import failure was reached; each test swaps the literal
-    for a sentinel first, then checks the real literal separately.
-    """
 
-    def test_agent_last_resort_is_reached(self, monkeypatch):
-        monkeypatch.setattr(common_config, "AGENT_MODEL_LAST_RESORT", "SENTINEL")
-        _without_config_models(monkeypatch)
-        assert common_config._default_agent_model_id() == "SENTINEL"
+_REGION_VARS = ("AWS_REGION", "AWS_DEFAULT_REGION")
 
-    def test_agent_last_resort_is_the_derived_model(self):
-        assert AGENT_MODEL_LAST_RESORT == DEFAULT_AGENT_MODEL_ID
 
-    def test_error_analyzer_last_resort_is_reached(self, monkeypatch):
-        monkeypatch.setattr(
-            error_analyzer_config, "ERROR_ANALYZER_MODEL_LAST_RESORT", "SENTINEL"
-        )
-        _without_config_models(monkeypatch)
-        assert error_analyzer_config.default_error_analyzer_model_id() == "SENTINEL"
+_HAIKU = "anthropic.claude-haiku-4-5-20251001-v1:0"
+_SONNET = "anthropic.claude-sonnet-4-6"
 
-    def test_error_analyzer_last_resort_is_the_derived_model(self):
-        assert (
-            error_analyzer_config.ERROR_ANALYZER_MODEL_LAST_RESORT
-            == error_analyzer_config.default_error_analyzer_model_id()
-        )
-
-    def test_error_analyzer_fallback_is_the_shipped_model_through_global(self):
-        from idp_common.config.models import ErrorAnalyzerConfig
-
-        shipped = ErrorAnalyzerConfig().model_id
-        fallback = error_analyzer_config.default_error_analyzer_model_id()
-        assert fallback.startswith("global."), fallback
-        assert fallback.partition(".")[2] == shipped.partition(".")[2]
-        names = {
-            entry.get("name")
-            for entry in yaml.safe_load(_PRICING.read_text())["pricing"]
-        }
-        assert f"bedrock/{fallback}" in names
-
-    def test_error_analyzer_uses_it_when_configuration_cannot_be_read(self):
-        with patch(
-            "idp_common.config.get_config", side_effect=RuntimeError("no table")
-        ):
-            model_id = error_analyzer_config.get_error_analyzer_model_id()
-        assert model_id == error_analyzer_config.default_error_analyzer_model_id()
+#: What ``update_configuration``'s ``get_model_mapping`` makes of each shipped
+#: model, measured per Region type: EU moves to ``eu.``, and Canada keeps the US
+#: profile for both (neither is in ``CA_UNAVAILABLE_MODELS``).
+#: ``src/lambda/update_configuration/test_eu_region.py`` holds
+#: ``regional_models`` to the swap tables directly; these rows pin the
+#: agent-facing result so a fallback that stopped translating fails here.
+_EXPECTED = {
+    "us-east-1": {"agent": f"us.{_HAIKU}", "sonnet": f"us.{_SONNET}"},
+    "us-west-2": {"agent": f"us.{_HAIKU}", "sonnet": f"us.{_SONNET}"},
+    "eu-central-1": {"agent": f"eu.{_HAIKU}", "sonnet": f"eu.{_SONNET}"},
+    "eu-west-1": {"agent": f"eu.{_HAIKU}", "sonnet": f"eu.{_SONNET}"},
+    "ca-central-1": {"agent": f"us.{_HAIKU}", "sonnet": f"us.{_SONNET}"},
+}
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    ("model_id", "expected"),
-    [
-        ("us.anthropic.claude-sonnet-4-6", "global.anthropic.claude-sonnet-4-6"),
-        ("eu.amazon.nova-pro-v1:0", "global.amazon.nova-pro-v1:0"),
-        ("global.anthropic.claude-sonnet-4-6", "global.anthropic.claude-sonnet-4-6"),
-        ("amazon.nova-pro-v1:0", "amazon.nova-pro-v1:0"),
-    ],
-)
-def test_portable_profile(model_id, expected):
-    assert portable_profile(model_id) == expected
+@pytest.mark.parametrize("name", sorted(_FALLBACKS))
+@pytest.mark.parametrize("region", sorted(_EXPECTED))
+def test_each_fallback_is_what_the_swap_gives_the_stacks_region(name, region):
+    """A ``us.`` fallback cannot be invoked from an EU stack, and a ``global.`` one
+    can route an EU stack's requests outside the EU. The fallback has to be what
+    the deploy-time swap makes of the shipped model for the same Region, so a stack
+    that fell back runs the model a stack that read its configuration runs."""
+    with patch.dict(os.environ, _region_env(region), clear=True):
+        fallback = _FALLBACKS[name]()
+    expected = _EXPECTED[region]["agent" if name == "agent" else "sonnet"]
+    assert fallback == expected
+    assert fallback.partition(".")[2] == _SHIPPED[name].partition(".")[2]
+    assert f"bedrock/{fallback}" in _pricing_names()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", sorted(_FALLBACKS))
+def test_aws_default_region_is_read_when_aws_region_is_unset(name):
+    """A local SDK or CLI session often carries only ``AWS_DEFAULT_REGION``."""
+    env = _region_env(None)
+    env["AWS_DEFAULT_REGION"] = "eu-west-1"
+    with patch.dict(os.environ, env, clear=True):
+        assert _FALLBACKS[name]().startswith("eu."), name
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", sorted(_FALLBACKS))
+def test_aws_region_wins_over_aws_default_region(name):
+    env = _region_env("eu-west-1")
+    env["AWS_DEFAULT_REGION"] = "us-east-1"
+    with patch.dict(os.environ, env, clear=True):
+        assert _FALLBACKS[name]().startswith("eu."), name
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", sorted(_FALLBACKS))
+def test_no_region_gives_the_shipped_model(name):
+    """With no Region to translate for, the fallback is the shipped value, which
+    is what the swap leaves in a US stack."""
+    with patch.dict(os.environ, _region_env(None), clear=True):
+        assert _FALLBACKS[name]() == _SHIPPED[name]
+
+
+@pytest.mark.unit
+def test_the_translated_ids_are_the_shipped_defaults():
+    """The fallbacks name their model through ``regional_models`` constants; those
+    must stay the shipped field defaults, or retiring a model in the configuration
+    would leave the fallback naming the old one."""
+    from idp_common import regional_models
+
+    assert regional_models.AGENT_MODEL_ID == ChatCompanionConfig().model_id
+    assert regional_models.SONNET_4_6_MODEL_ID == ErrorAnalyzerConfig().model_id
+
+
+@pytest.mark.unit
+def test_default_agent_model_id_is_the_import_time_fallback():
+    """``DEFAULT_AGENT_MODEL_ID`` is what the other agent modules import."""
+    assert (
+        common_config.DEFAULT_AGENT_MODEL_ID == common_config._default_agent_model_id()
+    )
+
+
+@pytest.mark.unit
+def test_the_quick_start_agent_uses_the_fallback_when_given_no_model(monkeypatch):
+    monkeypatch.setenv("AWS_REGION", "eu-central-1")
+    with (
+        patch.object(quick_start_agent, "create_strands_bedrock_model") as make_model,
+        patch.object(quick_start_agent.strands, "Agent"),
+    ):
+        quick_start_agent.create_quick_start_agent(session=object())
+    assert make_model.call_args.kwargs["model_id"] == ("eu.anthropic.claude-sonnet-4-6")
+
+
+@pytest.mark.unit
+def test_error_analyzer_uses_the_fallback_when_configuration_cannot_be_read():
+    with patch("idp_common.config.get_config", side_effect=RuntimeError("no table")):
+        model_id = error_analyzer_config.get_error_analyzer_model_id()
+    assert model_id == error_analyzer_config.default_error_analyzer_model_id()

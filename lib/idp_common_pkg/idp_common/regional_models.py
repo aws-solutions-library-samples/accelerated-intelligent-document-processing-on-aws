@@ -33,13 +33,22 @@ EMBEDDING_MODEL_ID = "us.cohere.embed-v4:0"
 SONNET_4_6_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 #: The SDK's local discovery pipeline, when the shipped defaults name no model.
 NOVA_PRO_MODEL_ID = "us.amazon.nova-pro-v1:0"
+#: The agents' fallback when their configured model cannot be read: the chat
+#: companion's shipped model (``ChatCompanionConfig.model_id``).
+AGENT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 #: Chat with Document, when neither the chat nor the summarization section names
 #: a model.
 CHAT_MODEL_ID = "us.anthropic.claude-opus-4-8:1m"
 
 #: Every US id a code fallback passes to :func:`regional_default`.
 FALLBACK_MODEL_IDS = frozenset(
-    {EMBEDDING_MODEL_ID, SONNET_4_6_MODEL_ID, NOVA_PRO_MODEL_ID, CHAT_MODEL_ID}
+    {
+        EMBEDDING_MODEL_ID,
+        SONNET_4_6_MODEL_ID,
+        NOVA_PRO_MODEL_ID,
+        CHAT_MODEL_ID,
+        AGENT_MODEL_ID,
+    }
 )
 
 #: Region-name prefix -> {US id: the id callable from that Region}. An id absent
@@ -51,11 +60,12 @@ REGIONAL_DEFAULT_MODELS: dict[str, dict[str, str]] = {
         SONNET_4_6_MODEL_ID: "eu.anthropic.claude-sonnet-4-6",
         NOVA_PRO_MODEL_ID: "eu.amazon.nova-pro-v1:0",
         CHAT_MODEL_ID: "eu.anthropic.claude-opus-4-8:1m",
+        AGENT_MODEL_ID: "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
     },
     # Cohere Embed v4 is reachable from Canada only through its global. profile.
     # Nova Pro has no profile there, global. included, so the swap moves it to
-    # Nova 2 Lite. The US Sonnet 4.6 and Opus 4.8 profiles are callable from
-    # ca-central-1, so they stay.
+    # Nova 2 Lite. The US Sonnet 4.6, Opus 4.8 and Haiku 4.5 profiles are callable
+    # from ca-central-1, so they stay.
     "ca-": {
         EMBEDDING_MODEL_ID: "global.cohere.embed-v4:0",
         NOVA_PRO_MODEL_ID: "us.amazon.nova-2-lite-v1:0",
