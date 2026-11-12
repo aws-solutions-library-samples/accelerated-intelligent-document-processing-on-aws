@@ -19,6 +19,11 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/check_agent_filing.py\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/check_worktree_reach.py\"",
+            "timeout": 10
           }
         ]
       }

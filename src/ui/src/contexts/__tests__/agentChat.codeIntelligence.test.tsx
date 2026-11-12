@@ -35,4 +35,25 @@ describe('AgentChatProvider code intelligence default', () => {
     act(() => result.current.resetAgentChatState());
     expect(result.current.agentChatState.enableCodeIntelligence).toBe(false);
   });
+
+  it('starts with External MCP agents disabled, and a reset turns them off again', () => {
+    const { result } = renderHook(() => useAgentChatContext(), { wrapper });
+    expect(result.current.agentChatState.enableExternalMcpAgents).toBe(false);
+    act(() => result.current.updateAgentChatState({ enableExternalMcpAgents: true }));
+    act(() => result.current.resetAgentChatState());
+    expect(result.current.agentChatState.enableExternalMcpAgents).toBe(false);
+  });
+
+  it('starts a new session with the overrides applied', () => {
+    const { result } = renderHook(() => useAgentChatContext(), { wrapper });
+    const before = result.current.agentChatState.sessionId;
+    act(() => result.current.updateAgentChatState({ sessionHoldsDataResults: true }));
+    act(() => result.current.startNewAgentChatSession({ enableExternalMcpAgents: true, sessionNotice: 'n' }));
+    const state = result.current.agentChatState;
+    expect(state.sessionId).not.toBe(before);
+    expect(state.sessionHoldsDataResults).toBe(false);
+    expect(state.enableExternalMcpAgents).toBe(true);
+    expect(state.enableCodeIntelligence).toBe(false);
+    expect(state.sessionNotice).toBe('n');
+  });
 });

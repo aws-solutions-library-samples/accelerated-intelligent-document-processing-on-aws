@@ -24,7 +24,7 @@ import {
 import Editor, { type OnMount } from '@monaco-editor/react';
 
 import yaml from 'js-yaml';
-import ReactMarkdown from 'react-markdown';
+import SafeMarkdown from '../common/SafeMarkdown';
 import { useLocation } from 'react-router-dom';
 import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 import { generateClient } from '../../api/client-shim';
@@ -2445,7 +2445,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
         }
       >
         <Box padding="l">
-          <ReactMarkdown>{readmeContent}</ReactMarkdown>
+          <SafeMarkdown rawHtml={false}>{readmeContent}</SafeMarkdown>
         </Box>
       </Modal>
 

@@ -324,17 +324,19 @@ ACCOUNT_ID_EXEMPT_LINES = {
         ),
     },
     "scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod": {
-        "sites": 2,
+        "sites": 3,
         "reason": (
-            "Two IAM trust statements name a role in the account that owns the shared "
-            "CI runners. The id IS the trust relationship, so it cannot be replaced by "
+            "Three IAM trust statements name a role in the account that owns the "
+            "shared CI runners: two on GitLabRole (AssumeRole, TagSession) and one on "
+            "GitLabReviewRole, the review job's Bedrock-only role, which the same "
+            "runner fleet vends. The id IS the trust relationship, so it cannot be replaced by "
             "a placeholder -- that would grant trust to a different account. It could "
             "be parameterised: this same file already has a Parameters block whose "
             "SourceCodeBucket default is a YOUR_AWS_ACCOUNT-style template, so the "
             "pattern is demonstrated here. Doing it is a deploy-process change for the "
             "pipeline owner, because the value then has to be supplied at stack "
             "creation, which is why it is out of scope here rather than impossible. "
-            "The same two lines are exempted from the ARN-partition gate, for the "
+            "The same three lines are exempted from the ARN-partition gate, for the "
             "related reason that cross-partition IAM trust does not exist."
         ),
     },

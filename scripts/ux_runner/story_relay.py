@@ -137,6 +137,8 @@ COMMIT_VERBS: tuple[str, ...] = (
     "approve",
     "accept",
     "reject",
+    "revoke",
+    "rotate",
     "mark",
     "label",
     "claim",

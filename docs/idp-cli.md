@@ -3151,6 +3151,25 @@ idp-cli test-compare \
 
 ---
 
+### `mcp credentials`
+
+Manage MCP service credentials: client-credentials apps that an MCP client signing
+in as a service (a shared Amazon Quick workflow, the MCP Connector, a scheduled
+job) uses instead of a person's sign-in. Each credential has its own role,
+configuration profiles, expiry and secret; the rules are the ones the MCP
+Configuration page applies (see [MCP Server](mcp-server.md#service-credentials)).
+Every subcommand takes `--stack-name` and an optional `--region`, and needs IAM
+access to the stack's credential table, user pool, Secrets Manager and gateway.
+
+| Subcommand | Purpose |
+|---|---|
+| `list [--json]` | Print the credentials. Secrets are never listed |
+| `create --name N --role ROLE [--scope PROFILE …] [--write-tools] [--expires-in-days D]` | Create one and print, as JSON on stdout, its client ID and secret (shown once; also stored in Secrets Manager at `secretArn`), the token URL and the MCP server endpoint. `--scope` repeats; `--expires-in-days 0` means never (default 90) |
+| `update --client-id ID [--role ROLE] [--scope PROFILE …] [--clear-scope] [--write-tools/--no-write-tools] [--enable/--disable]` | Change role, profiles, write tools or enabled; never the secret |
+| `rotate --client-id ID [--overlap-days 0-7]` | Issue a replacement with the same access, print its secret once, and keep the old one working for the overlap (default 7 days) |
+| `revoke --client-id ID [--yes]` | Refuse the credential from its next request and delete its app client and secret |
+| `set-tenant --client-id ID [--tenant-id T]` | Grant one tenant, or none; only when `TenantGrantSource` is `Api` |
+
 ### `tenancy`
 
 Manage tenant declarations and check tenant isolation on a deployed stack. A tenant

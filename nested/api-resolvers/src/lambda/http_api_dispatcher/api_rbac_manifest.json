@@ -111,6 +111,9 @@
       "Admin",
       "Author"
     ],
+    "createMcpCredential": [
+      "Admin"
+    ],
     "createReviewQueue": [
       "Admin"
     ],
@@ -463,6 +466,9 @@
       "Viewer"
     ],
     "listInstalledFeatures": "ANY",
+    "listMcpCredentials": [
+      "Admin"
+    ],
     "listMyReviewWork": [
       "Admin",
       "Annotator",
@@ -602,6 +608,12 @@
     "resumeCircuitBreaker": [
       "Admin"
     ],
+    "revokeMcpCredential": [
+      "Admin"
+    ],
+    "rotateMcpCredential": [
+      "Admin"
+    ],
     "saveReviewDraft": [
       "Admin",
       "Annotator",
@@ -644,6 +656,9 @@
     "setActiveVersion": [
       "Admin",
       "Author"
+    ],
+    "setMcpCredentialTenant": [
+      "Admin"
     ],
     "setUserTenant": [
       "Admin"
@@ -703,6 +718,9 @@
       "Author",
       "Reviewer",
       "Viewer"
+    ],
+    "updateMcpCredential": [
+      "Admin"
     ],
     "updateModelConfigLimits": [
       "Admin"

@@ -84,6 +84,7 @@ flowchart TD
 | **Affected Components** | `FeatureLoader.tsx`, `feature-host-globals.ts`, S3 Web UI Bucket, feature ui-deployer roles, `listInstalledFeatures` |
 | **Mitigations** | **Install is a privileged, deliberate, out-of-band act**: a feature is a CloudFormation stack an Admin deploys with their own credentials — it cannot be installed through the UI by a lower-privileged user, and `subscribeFeature`/`unsubscribeFeature`/`getFeatureLaunchUrl` are **Admin-only** (server-side enforced; formerly GAP-06). The ui-deployer's S3 write is **prefix-scoped** to `features/<featureId>/v<version>/` via an explicit IAM policy, so one feature cannot overwrite another's bundle or the host SPA's own assets. Bundles are served same-origin (no third-party CDN in the trust path) with `Cache-Control: max-age=300`, so a malicious version can be replaced and propagate within minutes rather than being pinned for a year. The pipeline-hooks dispatcher only invokes Lambdas tagged `idp:feature-id`, bounding hook registration. Features are distributed with source in-repo for the bundled ones. |
 | **Residual risk / recommendation** | **No integrity verification occurs at load time** — there is no Subresource Integrity (SRI) hash, no signature, and no version pinning check against a manifest digest (`expectedVersion` only produces a warning; loading proceeds regardless). Recommended, in order: (1) record a SHA-384 digest of the bundle in the feature registry at install time and set `script.integrity` from it in `FeatureLoader` — this is a small change that converts (b) and (c) from silent to blocked; (2) document the trust decision explicitly in the install flow ("installing a feature grants it your users' UI privileges"); (3) longer term, consider rendering third-party feature UIs in a sandboxed iframe on a distinct origin with a narrow `postMessage` API instead of `window` globals. Treat FEAT.T01 as **accepted-with-compensating-controls for first-party/bundled features and open for third-party features**. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### FEAT.T02: Feature Registry Enumeration by Any Authenticated User
 
@@ -99,6 +100,7 @@ flowchart TD
 | **Affected Components** | `list_installed_features`, `list_catalog_features`, `check_feature_entitlement` |
 | **Mitigations** | Necessarily readable by all roles — the host SPA must render the Extensions nav for every user, so this is a **design requirement**, not an oversight. No secrets, credentials, or document data are returned. Version information is also inferable from the loaded bundle paths. Install/modify operations are Admin-only. |
 | **Status** | **Accepted risk** — inherent to rendering a per-user nav; disclosure is limited to non-sensitive inventory metadata. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### FEAT.T03: Feature Stack IAM Privilege and Host Resource Access
 
@@ -114,6 +116,7 @@ flowchart TD
 | **Affected Components** | Feature templates, feature Lambda execution roles, host `Fn::ImportValue` exports |
 | **Mitigations** | Features declare their host imports explicitly in their template, so the grant surface is **reviewable in the IaC before install**. `PermissionsBoundaryArn` is forwarded to the feature-platform nested stack and attached to the roles it creates (fixed in v0.6.1, with a static regression test asserting every deployed-stack template attaches the boundary and forwards the parameter) — so an SCP-enforced account can bound a feature's maximum privilege centrally. Feature-owned data (e.g. the PII mapping table) lives in the feature's own stack, encrypted, rather than in host tables. Install requires CloudFormation privileges. |
 | **Residual risk** | The permissions boundary is the real control here and is only as tight as the account's boundary policy. In accounts with no boundary, a feature stack's roles are bounded only by the installing principal's own privileges. Recommend requiring `PermissionsBoundaryArn` for deployments that install third-party features. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### FEAT.T04: Stale or Downgraded Feature Bundle Served to Users
 
@@ -129,6 +132,7 @@ flowchart TD
 | **Affected Components** | Feature ui-deployers, S3 Web UI Bucket, CloudFront TTL, `FeatureLoader` version check |
 | **Mitigations** | Feature ui-deployers set `Cache-Control: max-age=300` (down from a previously-shipped `max-age=31536000, immutable`, which pinned a stale bundle for up to a year on same-version republish), matching the CloudFront TTL — so an update propagates within minutes. The module-level registry loads a given feature's script once per page load, so a mid-session swap does not take effect until reload. `expectedVersion` mismatches are logged. |
 | **Residual risk** | The `expectedVersion` check **warns but still loads**, and there is no digest pinning (see FEAT.T01 recommendation 1, which also closes this). Prefer publishing security fixes under a **new version** so the registry path itself changes. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ## 4. Security Controls Summary
 

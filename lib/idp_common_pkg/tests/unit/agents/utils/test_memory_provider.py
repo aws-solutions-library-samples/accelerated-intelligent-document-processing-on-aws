@@ -59,7 +59,7 @@ def _provider(**overrides: Any):
     table = MagicMock()
     with patch(f"{MODULE}.boto3.resource") as resource:
         resource.return_value.Table.return_value = table
-        kwargs = {"table_name": "memory", "session_id": "sess-1"}
+        kwargs = {"table_name": "memory", "session_id": "sess-1", "user_id": "user-1"}
         kwargs.update(overrides)
         provider = DynamoDBMemoryHookProvider(**kwargs)
     return provider, table
@@ -67,7 +67,7 @@ def _provider(**overrides: Any):
 
 def _item(sk: str, messages: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
     item = {
-        "PK": "conversation#sess-1",
+        "PK": "conversation#user-1#sess-1",
         "SK": sk,
         "conversation_history": json.dumps(messages),
         "session_id": "sess-1",
@@ -102,7 +102,10 @@ class TestConstructionAndKeys:
     def test_the_table_is_bound_in_the_requested_region(self):
         with patch(f"{MODULE}.boto3.resource") as resource:
             DynamoDBMemoryHookProvider(
-                table_name="memory", session_id="s", region_name="eu-west-1"
+                table_name="memory",
+                session_id="s",
+                user_id="u",
+                region_name="eu-west-1",
             )
         assert resource.call_args.kwargs["region_name"] == "eu-west-1"
         resource.return_value.Table.assert_called_once_with("memory")
@@ -113,11 +116,51 @@ class TestConstructionAndKeys:
         assert provider.max_history_turns == 20
         assert provider.max_item_size_kb == 350.0
 
-    def test_the_partition_key_namespaces_the_session(self):
-        # Every read and write is scoped by this, so a key that did not include the
-        # session id would leak one user's conversation into another's.
-        provider, _ = _provider(session_id="abc")
-        assert provider._get_conversation_pk() == "conversation#abc"
+    def test_the_partition_key_namespaces_the_user_and_the_session(self):
+        # Every read and write is scoped by this key. The session id arrives in the
+        # request body, so it has to be the user AND the session: a key built from
+        # the session id alone is the same for every user who sends that id.
+        provider, _ = _provider(session_id="abc", user_id="u-1")
+        assert provider._get_conversation_pk() == "conversation#u-1#abc"
+
+    def test_two_users_naming_one_session_id_get_different_keys(self):
+        a, _ = _provider(session_id="shared", user_id="user-a")
+        b, _ = _provider(session_id="shared", user_id="user-b")
+        assert a._get_conversation_pk() != b._get_conversation_pk()
+
+    def test_another_users_history_is_not_loaded(self):
+        # User A's conversation is stored under A's key. User B naming the same
+        # session id queries B's own key and so loads nothing of A's. The table
+        # double answers only A's key, so a query by session id alone would hand
+        # B A's turns and fail the assertion.
+        a_key = "conversation#user-a#shared"
+
+        def _query(**kwargs):
+            condition = kwargs["KeyConditionExpression"]
+            asked = condition.get_expression()["values"][1]
+            if asked == a_key:
+                return {"Items": [_item("t1", [_message("user", "A secret")])]}
+            return {"Items": []}
+
+        b, table = _provider(session_id="shared", user_id="user-b")
+        table.query.side_effect = _query
+        agent = MagicMock()
+        agent.system_prompt = "base"
+        agent.messages = []
+        b.on_agent_initialized(MagicMock(agent=agent))
+        asked = table.query.call_args.kwargs["KeyConditionExpression"]
+        assert asked.get_expression()["values"][1] == "conversation#user-b#shared"
+        assert "A secret" not in json.dumps(agent.messages, default=str)
+        assert "A secret" not in str(agent.system_prompt)
+
+    def test_a_provider_with_no_user_is_refused(self):
+        with pytest.raises(ValueError, match="user_id is required"):
+            _provider(user_id="")
+
+    def test_a_user_id_containing_the_key_separator_is_refused(self):
+        # "u#x" + "y" and "u" + "x#y" would otherwise build the same key.
+        with pytest.raises(ValueError, match="must not contain"):
+            _provider(user_id="u#x")
 
     def test_the_sort_key_is_an_iso_timestamp(self):
         provider, _ = _provider()
@@ -395,7 +438,7 @@ class TestStoreMessage:
         table.query.return_value = {"Items": []}
         provider._store_message_to_dynamodb({"text": "hello"}, "user")
         item = _written_item(table)
-        assert item["PK"] == "conversation#sess-1"
+        assert item["PK"] == "conversation#user-1#sess-1"
         assert item["message_count"] == 1
         assert _written_messages(table)[0]["role"] == "user"
 
@@ -842,8 +885,8 @@ class TestHousekeeping:
         provider, table = _provider()
         table.query.return_value = {
             "Items": [
-                {"PK": "conversation#sess-1", "SK": "t1"},
-                {"PK": "conversation#sess-1", "SK": "t2"},
+                {"PK": "conversation#user-1#sess-1", "SK": "t1"},
+                {"PK": "conversation#user-1#sess-1", "SK": "t2"},
             ]
         }
         batch = table.batch_writer.return_value.__enter__.return_value
@@ -876,8 +919,8 @@ class TestHousekeeping:
         # behaviour is pinned rather than assumed.
         provider, table = _provider()
         table.query.return_value = {
-            "Items": [{"PK": "conversation#sess-1", "SK": "t1"}],
-            "LastEvaluatedKey": {"PK": "conversation#sess-1", "SK": "t1"},
+            "Items": [{"PK": "conversation#user-1#sess-1", "SK": "t1"}],
+            "LastEvaluatedKey": {"PK": "conversation#user-1#sess-1", "SK": "t1"},
         }
         batch = table.batch_writer.return_value.__enter__.return_value
         assert provider.clear_conversation_history() is True
@@ -931,3 +974,71 @@ class TestHousekeeping:
         stats = provider.get_conversation_stats()
         assert stats["exists"] is False
         assert "boom" in stats["error"]
+
+
+@pytest.mark.unit
+class TestMemoryExpiry:
+    """Memory is kept no longer than the session owner record it belongs with."""
+
+    def test_an_append_carries_an_expiry(self):
+        provider, table = _provider(expires_after_seconds=100)
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        with patch(f"{MODULE}.time.time", return_value=1000):
+            provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        assert _written_item(table)["ExpiresAfter"] == 1100
+
+    def test_a_new_item_carries_an_expiry(self):
+        provider, table = _provider(expires_after_seconds=100)
+        table.query.return_value = {"Items": []}
+        with patch(f"{MODULE}.time.time", return_value=1000):
+            provider._store_message_to_dynamodb({"text": "hello"}, "user")
+        assert _written_item(table)["ExpiresAfter"] == 1100
+
+    def test_no_expiry_unless_asked(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": []}
+        provider._store_message_to_dynamodb({"text": "hello"}, "user")
+        assert "ExpiresAfter" not in _written_item(table)
+
+    @pytest.mark.parametrize(
+        "days,expected", [("2", 172800), ("", None), ("0", None), ("x", None)]
+    )
+    def test_the_factory_takes_the_expiry_from_the_retention_period(
+        self, monkeypatch, days, expected
+    ):
+        import importlib
+
+        mod = importlib.import_module("idp_common.agents.factory.agent_factory")
+        monkeypatch.setenv("DATA_RETENTION_DAYS", days)
+        assert mod._memory_expiry_seconds() == expected
+
+
+@pytest.mark.unit
+class TestExpiredMemoryIsNotRead:
+    """An item past its ``ExpiresAfter`` reads as gone before DynamoDB deletes it."""
+
+    def test_history_skips_an_expired_item(self):
+        provider, table = _provider()
+        table.query.return_value = {
+            "Items": [
+                _item("t2", [_message("user", "new")], ExpiresAfter=2000),
+                _item("t1", [_message("user", "old")], ExpiresAfter=500),
+            ]
+        }
+        with patch(f"{MODULE}.time.time", return_value=1000):
+            turns = provider._load_conversation_history()
+        texts = [m["content"]["text"] for turn in turns for m in turn]
+        assert texts == ["new"]
+
+    def test_an_expired_newest_item_is_not_appended_to(self):
+        provider, table = _provider(expires_after_seconds=100)
+        table.query.return_value = {
+            "Items": [_item("t1", [_message("user", "old")], ExpiresAfter=500)]
+        }
+        with patch(f"{MODULE}.time.time", return_value=1000):
+            assert provider._get_latest_conversation_item() is None
+
+    def test_an_item_without_expiry_is_read(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        assert provider._get_latest_conversation_item() is not None

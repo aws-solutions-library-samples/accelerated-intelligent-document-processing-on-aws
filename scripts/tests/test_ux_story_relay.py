@@ -1795,6 +1795,7 @@ _FRAME = "components/edit-screen/EditScreen.tsx"
 _PROCESS_CHANGES = "PROCESS_CHANGES_LABEL"
 _INBOX = "components/inbox/InboxMessagesTable.tsx"
 _MAPPINGS = "components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx"
+_MCP = "components/mcp-configuration/McpConfigurationLayout.tsx"
 _TENANTS = "components/config-prefix-mappings/TenantsSection.tsx"
 _PRODUCTION_MODEL = "components/edit-screen/production-item-edit-model.tsx"
 _QUEUE = "components/review-queues/ReviewQueuePage.tsx"
@@ -1912,6 +1913,9 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
             "Create Job",
             inside_dialog=True,
         ),
+    ),
+    "CreateMcpCredential": (
+        Shipped(_MCP, "Create", source="'Create'", inside_dialog=True),
     ),
     "CreateReviewQueue": (
         Shipped(_QUEUE_SETTINGS, "Create", source="'Create'", inside_dialog=True),
@@ -2094,6 +2098,12 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_BREAKER, "Resume processing"),
         Shipped(_BREAKER, "Resume", source="confirmLabel: 'Resume'"),
     ),
+    "RevokeMcpCredential": (
+        Shipped(_MCP, "Revoke", source="'Revoke'", inside_dialog=True),
+    ),
+    "RotateMcpCredential": (
+        Shipped(_MCP, "Rotate", source="'Rotate'", inside_dialog=True),
+    ),
     "SaveReviewDraft": (
         Shipped(_FRAME, "Save"),
         Shipped(
@@ -2185,6 +2195,9 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "UpdateDocumentSections": (
         Shipped(_BOARD, "Save page grouping"),
         Shipped(_BOARD, "Save and Re-extract", inside_dialog=True),
+    ),
+    "UpdateMcpCredential": (
+        Shipped(_MCP, "Save", source="'Save'", inside_dialog=True),
     ),
     "UpdateInboxPreferences": (
         Shipped("components/inbox/InboxPreferences.tsx", "Save", inside_dialog=True),

@@ -61,6 +61,15 @@ PLATFORM_TYPES: tuple[NotificationType, ...] = (
         description="A bulk Skip All Reviews job you started has finished.",
         default_severity="info",
     ),
+    # MCP service credentials (idp_common.mcp_credentials.sweep is the only
+    # producer): sent once to the Admin who created a credential, two weeks
+    # before it expires.
+    NotificationType(
+        id="mcp.credential_expiring",
+        display_name="MCP credential expiring",
+        description="An MCP service credential you created expires soon.",
+        default_severity="warning",
+    ),
 )
 
 _lock = threading.Lock()

@@ -13,9 +13,9 @@
   "checks": {
     "CKV_AWS_50": {
       "name": "X-Ray tracing is enabled for Lambda",
-      "reason": "Won't fix, by decision: Lambda tracing is optional on purpose. The templates on the processing path declare the EnableXRayTracing parameter (default true) and EnableXRayTracingCondition, every function that opts in writes Tracing: !If [EnableXRayTracingCondition, Active, PassThrough] so the deployer can turn it off, and scripts/tests/test_xray_tracing.py holds that no function hardcodes a mode while deliberately not requiring any particular function to be traced. 100 of these are functions whose templates set no Tracing, which leaves them on PassThrough whatever the parameter says; that is accepted. Four are the functions of the custom-resource bridge the translator adds (terraform/translator/idp_tf/static_files.py), which run only during apply and destroy. The other 10 are root-module functions whose tracing_config is the EnableXRayTracingCondition expression, which checkov does not resolve in the root module; the same expression passes in every nested module. No CloudFormation-side suppression is needed: checkov has no CloudFormation counterpart of this check, and the SRT register records LAMBDA-004 (no X-Ray tracing) where SRT reports it.",
+      "reason": "Won't fix, by decision: Lambda tracing is optional on purpose. The templates on the processing path declare the EnableXRayTracing parameter (default true) and EnableXRayTracingCondition, every function that opts in writes Tracing: !If [EnableXRayTracingCondition, Active, PassThrough] so the deployer can turn it off, and scripts/tests/test_xray_tracing.py holds that no function hardcodes a mode while deliberately not requiring any particular function to be traced. 102 of these are functions whose templates set no Tracing, which leaves them on PassThrough whatever the parameter says; that is accepted. Four are the functions of the custom-resource bridge the translator adds (terraform/translator/idp_tf/static_files.py), which run only during apply and destroy. The other 10 are root-module functions whose tracing_config is the EnableXRayTracingCondition expression, which checkov does not resolve in the root module; the same expression passes in every nested module. No CloudFormation-side suppression is needed: checkov has no CloudFormation counterpart of this check, and the SRT register records LAMBDA-004 (no X-Ray tracing) where SRT reports it.",
       "counts": {
-        "aws_lambda_function": 114
+        "aws_lambda_function": 116
       }
     },
     "CKV_AWS_144": {
@@ -36,7 +36,7 @@
       "name": "Ensure AWS Lambda function is configured to validate code-signing",
       "reason": "Accepted. No function in the templates has a CodeSigningConfigArn (the solution publishes no signing profile), and the generated functions match; code signing is a deployment choice that needs a signing profile and a signed artifact pipeline. Includes the four bridge functions of the custom-resource bridge the translator adds to every module with custom resources (terraform/translator/idp_tf/static_files.py).",
       "counts": {
-        "aws_lambda_function": 138
+        "aws_lambda_function": 140
       }
     },
     "CKV_AWS_310": {
@@ -57,7 +57,7 @@
       "name": "Ensure CloudWatch log groups retains logs for at least 1 year",
       "reason": "Accepted. Retention is the deployer's LogRetentionDays parameter (default 30 days, up to 3653), applied as in the template; checkov wants at least 365 days. Includes the root UI build's log group (UICodeBuildLogGroup) and the four bridge log groups of the custom-resource bridge the translator adds (terraform/translator/idp_tf/static_files.py), fixed at 30 days.",
       "counts": {
-        "aws_cloudwatch_log_group": 65
+        "aws_cloudwatch_log_group": 69
       }
     },
     "CKV_AWS_355": {

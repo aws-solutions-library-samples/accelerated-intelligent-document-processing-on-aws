@@ -327,7 +327,6 @@ exclude = [
     "src/lambda/calculate_capacity/test_validation.py",
     "src/lambda/calculate_capacity/validation.py",
     "src/lambda/calculate_capacity_resolver/index.py",
-    "src/lambda/chat_stream_processor/sse.py",
     "src/lambda/chat_stream_processor/tests/test_stream_processor.py",
     "src/lambda/chat_stream_processor/tests/test_vendored_in_sync.py",
     "src/lambda/chat_stream_processor/vendored/agent_chat_processor.py",

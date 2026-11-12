@@ -8515,6 +8515,11 @@ from .tenancy import tenancy as _tenancy_group  # noqa: E402
 
 cli.add_command(_tenancy_group)
 
+# `idp-cli mcp credentials ...`, likewise.
+from .mcp import mcp as _mcp_group  # noqa: E402
+
+cli.add_command(_mcp_group)
+
 # `idp-cli terraform ...` (Terraform-only commands) likewise.
 from .terraform import configure as _configure_terraform  # noqa: E402
 from .terraform import terraform as _terraform_group  # noqa: E402

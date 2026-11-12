@@ -184,7 +184,14 @@ Once the secret is created, the External MCP Agent will automatically:
 2. **Authenticate**: Uses Cognito credentials to obtain bearer tokens
 3. **Connect to MCP Server**: Establishes connection using streamable HTTP transport
 4. **Discover Tools**: Automatically discovers available tools from your server
-5. **Register Agent**: Makes the agent available in the IDP web interface
+5. **Register Agent**: Makes the agent available in the IDP web interface, as an
+   opt-in agent
+
+External MCP agents are off in every Agent Companion Chat conversation until the
+user turns on "Enable External MCP agents" under the chat input (or an API caller
+sends `enableExternalMcpAgents: true`), and they are never used in a conversation
+that already holds Analytics or Error Analyzer results. See
+[Opt-in agents and conversations that hold your data](./agent-companion-chat.md#opt-in-agents-and-conversations-that-hold-your-data).
 
 **Check Agent Registration:**
 ```python
