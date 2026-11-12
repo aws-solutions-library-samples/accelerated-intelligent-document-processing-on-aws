@@ -1006,7 +1006,7 @@ arrives, and the extraction-time detection probe is there to catch that.
 
 Measured once, on the shipped `samples/paystub_multi_instance.pdf` (three
 records) and `samples/bank-statement-multipage.pdf` (one document, several pages)
-with the default discovery model at its default temperature of 1.0: the count was
+with the default discovery model: the count was
 right in every run (3 in four of four runs, 1 in one of one), and the key never
 reached the saved schema. Three control runs without the question produced the
 same 12 properties each time, while three runs with it produced 12, 11 and 12
