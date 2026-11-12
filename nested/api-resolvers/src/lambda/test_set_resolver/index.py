@@ -2089,7 +2089,13 @@ def _documents_needing_labels(test_set_id):
 
 
 def generate_draft_labels(
-    args, event=None, *, forced_sections=None, section_id=None, section_expected=None
+    args,
+    event=None,
+    *,
+    forced_sections=None,
+    section_id=None,
+    section_expected=None,
+    reextract=False,
 ):
     """Start a labeling job: run the active config over a test set's documents.
 
@@ -2229,6 +2235,11 @@ def generate_draft_labels(
         "createdAt": now,
         "startedBy": started_by,
     }
+    if reextract:
+        # The harvest deletes the draft of each section it writes back: a re-extract
+        # supersedes the edits saved over the fields it replaces (D34). A Generate
+        # draft labels run keeps drafts.
+        job_item["reextract"] = True
     if document_class:
         # The harvest writes the run's result only if the run applied this class
         # (_write_draft_labels_for_doc): Bedrock Data Automation mode does not.
@@ -2382,6 +2393,7 @@ def reextract_test_set_document(args, event=None):
             }
         },
         event,
+        reextract=True,
     )
     logger.info(
         f"Re-extracting {object_key} in {test_set_id} as "
@@ -2473,6 +2485,7 @@ def _reextract_one_section(
         forced_sections=encoded,
         section_id=section_id,
         section_expected={"class": document_class, "pages": target_pages},
+        reextract=True,
     )
     logger.info(
         f"Re-extracting section {section_id} of {object_key} in {test_set_id} as "
@@ -4338,6 +4351,7 @@ def _harvest_label_job(job, deadline=None):
                 only_section_id=job.get("sectionId") or None,
                 only_section_expected=_section_expected(job),
                 forced_class=job.get("forcedClass") or None,
+                discard_drafts=bool(job.get("reextract")),
             )
             # Keep the queue's summary of this document current as its draft lands.
             _refresh_summary(test_set_id, file_name)
@@ -4600,6 +4614,7 @@ def _write_draft_labels_for_doc(
     only_section_id=None,
     only_section_expected=None,
     forced_class=None,
+    discard_drafts=False,
 ):
     """Write one document's sections into the test-set baseline as draft labels.
 
@@ -4624,6 +4639,10 @@ def _write_draft_labels_for_doc(
     that did not apply the class (Bedrock Data Automation mode, again) would
     otherwise replace the class the reviewer just corrected with the one they
     corrected it from.
+
+    ``discard_drafts`` is set for a re-extract: each section written back loses its
+    draft, whose edits were made over the fields just replaced. Otherwise (a Generate
+    draft labels run) the draft is kept and only loses its EXTRACTED_AS_CLASS_KEY.
     """
     if only_section_id is not None:
         sections = [
@@ -4733,9 +4752,15 @@ def _write_draft_labels_for_doc(
         )
         written_section_ids.add(section_id)
         wrote = True
-        # The run's output carries no EXTRACTED_AS_CLASS_KEY, so the label above has
-        # none; the section's draft, which the editor opens instead, must not keep one.
-        _clear_draft_extracted_as(test_set_id, file_name, section_id)
+        if discard_drafts:
+            # Not best-effort: a draft left in place is what the editor opens and
+            # what Process Changes applies, so a failure here fails the document.
+            _labels().delete_draft(test_set_id, file_name, section_id)
+        else:
+            # The run's output carries no EXTRACTED_AS_CLASS_KEY, so the label above
+            # has none; the section's draft, which the editor opens instead, must not
+            # keep one.
+            _clear_draft_extracted_as(test_set_id, file_name, section_id)
 
     if wrote and only_section_id is None:
         _prune_superseded_draft_sections(

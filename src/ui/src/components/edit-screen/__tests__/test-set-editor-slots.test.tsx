@@ -78,6 +78,7 @@ const Harness = ({
   refsAfterChange,
   holdRefs = false,
   mayChangeClass = true,
+  changedGate,
 }: {
   sections?: TestSetDocumentSectionRef[];
   mayChangeClass?: boolean;
@@ -91,6 +92,8 @@ const Harness = ({
    * sections" is pressed, which reads `refsAfterChange` then.
    */
   holdRefs?: boolean;
+  /** When it holds a promise, the page's re-read of the refs settles only when that does. */
+  changedGate?: { promise: Promise<void> | null };
 }): React.JSX.Element => {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -110,6 +113,7 @@ const Harness = ({
       const next = refsAfterChange ? refsAfterChange() : afterChanges ? afterChanges[changes] : afterChange;
       setChanges((n) => n + 1);
       if (next && !holdRefs) setRefs(next);
+      return changedGate?.promise ?? undefined;
     },
   });
   const board = usePageClassBoard(slots.board, openId, data);
@@ -614,6 +618,34 @@ describe('the note a finished re-extract leaves (#1728)', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     });
     expect(screen.queryByText(/^Re-extracted section 1 as/)).not.toBeInTheDocument();
+  });
+
+  it("re-reads the section only after the page has re-read its refs, since the write-back deleted the section's draft (D34)", async () => {
+    const gate: { promise: Promise<void> | null } = { promise: null };
+    answer(TWO_SAVED);
+    render(<Harness afterChange={TWO_AFTER} changedGate={gate} />);
+    await waitFor(() => expect(screen.getByDisplayValue('1, 2')).toBeInTheDocument());
+    await reclassifyFirstAndSave();
+    const button = await screen.findByRole('button', { name: 'Re-extract section 1' });
+    await waitFor(() => expect(isActionable(button)).toBe(true));
+    let release: () => void = () => {};
+    gate.promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const changes = onChanged.mock.calls.length;
+    const before = fetchCalls();
+    await userEvent.click(button);
+    await waitFor(() => expect(onChanged.mock.calls.length).toBe(changes + 1));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    // Reading it now would follow the page's stale ref to the deleted draft.
+    expect(fetchCalls()).toBe(before);
+    await act(async () => {
+      release();
+      await gate.promise;
+    });
+    await waitFor(() => expect(fetchCalls()).toBeGreaterThan(before));
   });
 
   it('on authored ground truth, says the class was corrected and the values kept, not that it re-extracted', async () => {

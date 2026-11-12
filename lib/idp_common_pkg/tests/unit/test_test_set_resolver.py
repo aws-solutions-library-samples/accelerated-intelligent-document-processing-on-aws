@@ -27,6 +27,7 @@ from idp_common.review_queues.testset_docs import (
 from idp_common.review_queues.testset_docs import (
     TestSetDocStore as DocStore,  # aliased: pytest would try to collect "Test*"
 )
+from idp_common.review_queues.testset_labels import LabelEditor
 from tests.unit.review_queues._table import create_review_table
 
 #: The resolver's per-set check: the shared `assert_can_access_test_set`, given its
@@ -13466,3 +13467,168 @@ class TestReextractClearsExtractedAsClass:
         assert authored["inference_result"] == {"Bank-checks_field": "old-3"}
         assert "extractedAsClass" not in authored
         assert self._label(s3, "1")["extractedAsClass"] == "Invoice"
+
+
+@pytest.mark.unit
+class TestReextractDiscardsTheSectionsDraft:
+    """D34: a re-extract that writes a section back deletes that section's draft.
+
+    The editor opens a section's draft in place of its label, and Process Changes
+    applies it, so a kept draft would put the edits made over the old fields back
+    over the re-extracted ones. A Generate draft labels run keeps drafts, and every
+    other section's draft is untouched. Real handlers (reextractTestSetDocument,
+    generateDraftLabels, then the getDraftLabelJob harvest) on moto S3/DynamoDB.
+    """
+
+    EDITED = {"inference_result": {"field": "edited"}}
+
+    def _seed(self, drafts_env):
+        table, s3, store, _label = drafts_env
+        helper = TestReextractOneSection()
+        helper._seed(table, s3)
+        store.upsert_summary(
+            "ts1",
+            {
+                "objectKey": "packet.pdf",
+                "inputKey": "ts1/input/packet.pdf",
+                "labelSource": "draft-machine",
+            },
+        )
+        labels = test_set_index._labels()
+        for sid in ("1", "2"):
+            labels.save_draft(
+                "ts1",
+                "packet.pdf",
+                sid,
+                {**self.EDITED, "extractedAsClass": "Old"},
+                0,
+                editor=LabelEditor(name="ann", email="ann@example.com"),
+            )
+        return helper, table, s3
+
+    @staticmethod
+    def _draft(sid):
+        labels = test_set_index._labels()
+        found = [d for d in labels.drafts("ts1", "packet.pdf") if d.section_id == sid]
+        if not found:
+            return None
+        body = labels.s3.get_object(Bucket=labels.bucket, Key=found[0].s3_key)
+        return json.loads(body["Body"].read())
+
+    @staticmethod
+    def _label(s3, sid):
+        key = f"ts1/baseline/packet.pdf/sections/{sid}/result.json"
+        return json.loads(
+            s3.get_object(Bucket="test-set-bucket", Key=key)["Body"].read()
+        )
+
+    def test_the_written_sections_draft_is_gone_and_the_others_kept(self, drafts_env):
+        helper, table, s3 = self._seed(drafts_env)
+
+        result, run_input = helper._reextract("2")
+        # Not yet written back: the draft is still there.
+        assert self._draft("2") is not None
+        helper._run_pipeline(table, s3, run_input)
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "COMPLETED"
+        assert self._label(s3, "2")["inference_result"] == {"new_field": "new-2"}
+        assert self._draft("2") is None
+        assert _draft_keys(s3, "ts1/drafts/packet.pdf/sections/2/") == []
+        # Section 1 was not written back, so its draft is exactly as saved.
+        assert self._draft("1") == {**self.EDITED, "extractedAsClass": "Old"}
+        assert len(_draft_keys(s3, "ts1/drafts/packet.pdf/sections/1/")) == 1
+
+    def test_a_generate_draft_labels_run_keeps_the_draft(self, drafts_env):
+        helper, table, s3 = self._seed(drafts_env)
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_lambda.invoke.return_value = {
+                "Payload": MagicMock(
+                    read=lambda: json.dumps({"testRunId": "run3"}).encode()
+                )
+            }
+            mock_boto3.client.return_value = mock_lambda
+            result = test_set_index.generate_draft_labels(
+                {"input": {"testSetId": "ts1", "objectKeys": ["packet.pdf"]}}
+            )
+        key = "run3/packet.pdf/sections/2/result.json"
+        s3.put_object(
+            Bucket="output-bucket",
+            Key=key,
+            Body=json.dumps(
+                {
+                    "document_class": {"type": "W2"},
+                    "split_document": {"page_indices": [2]},
+                    "inference_result": {"new_field": "new-2"},
+                }
+            ),
+        )
+        _seed_completed_run(
+            table,
+            "run3",
+            "ts1",
+            ["packet.pdf"],
+            {"packet.pdf": [{"Id": "2", "OutputJSONUri": f"s3://output-bucket/{key}"}]},
+        )
+        test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert self._label(s3, "2")["inference_result"] == {"new_field": "new-2"}
+        # Kept, losing only the class stamp the run's output no longer matches.
+        assert self._draft("2") == self.EDITED
+        assert self._draft("1") == {**self.EDITED, "extractedAsClass": "Old"}
+
+    def test_a_whole_document_reextract_deletes_its_draft_too(self, drafts_env):
+        table, s3, store, _label = drafts_env
+        helper = TestReextractOneSection()
+        helper._seed(table, s3, [("1", "Invoice", "draft-machine", [0, 1])])
+        store.upsert_summary(
+            "ts1",
+            {
+                "objectKey": "packet.pdf",
+                "inputKey": "ts1/input/packet.pdf",
+                "labelSource": "draft-machine",
+            },
+        )
+        test_set_index._labels().save_draft(
+            "ts1",
+            "packet.pdf",
+            "1",
+            self.EDITED,
+            0,
+            editor=LabelEditor(name="ann", email="ann@example.com"),
+        )
+
+        result, run_input = helper._reextract(None, document_class="W2")
+        assert "documentSections" not in run_input
+        key = "run2/packet.pdf/sections/1/result.json"
+        s3.put_object(
+            Bucket="output-bucket",
+            Key=key,
+            Body=json.dumps(
+                {
+                    "document_class": {"type": "W2"},
+                    "split_document": {"page_indices": [0, 1]},
+                    "inference_result": {"new_field": "new-1"},
+                }
+            ),
+        )
+        _seed_completed_run(
+            table,
+            "run2",
+            "ts1",
+            ["packet.pdf"],
+            {"packet.pdf": [{"Id": "1", "OutputJSONUri": f"s3://output-bucket/{key}"}]},
+        )
+        test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert self._label(s3, "1")["inference_result"] == {"new_field": "new-1"}
+        assert self._draft("1") is None
+        assert _draft_keys(s3, "ts1/drafts/packet.pdf/") == []

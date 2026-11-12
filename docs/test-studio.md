@@ -1002,9 +1002,14 @@ above; **Process Changes** flips the label to *Reviewed*.
 **Saved changes are drafts until Process Changes.** A draft is stored under
 `<set>/drafts/` in the TestSetBucket, outside `baseline/`, so it is not part of a
 published version or a test run, and the label, the queue's progress and the
-confidence curve are unchanged until it is applied. Drafts survive **Re-extract**,
-**Clear draft labels** and **Reset labels**, move with their sections on **Edit Page
-Class**, and are deleted with the document when it is removed from the set. Once enough of the set is
+confidence curve are unchanged until it is applied. **Re-extract** deletes the draft
+of each section whose fields it writes back, because the draft's edits were made over
+the fields it replaces: those edits are lost, and the section opens with the
+re-extracted values. A section the re-extract does not write — another section of the
+packet, or authored ground truth, whose values it keeps — keeps its draft. Drafts
+survive **Generate draft labels**, **Clear draft labels** and **Reset labels**, move
+with their sections on **Edit Page Class**, and are deleted with the document when it
+is removed from the set. Once enough of the set is
 reviewed, publish a version to freeze it as a benchmark.
 
 **A field you edit stops carrying the model's confidence.** The score describes
@@ -1346,9 +1351,8 @@ reload: the save records the class the fields were extracted under on the sectio
 ground truth (`extractedAsClass` in its `result.json`, and in its draft if it has one),
 and the editor reads it when it opens the section. Re-extracting the section, or a
 **Generate draft labels** run that rewrites it, removes it from the section and from its
-draft once the new fields are written. A draft is kept through a re-extract, so a
-section with a draft still opens with the draft's edited values rather than the
-re-extracted ones. For a section of
+draft once the new fields are written; a re-extract deletes that section's draft
+instead, so the section opens with the re-extracted values. For a section of
 authored ground truth, whose values a re-extract keeps, the record goes when the
 re-extract corrects the class. Saving or confirming the section's labels keeps it, because the
 values are still the ones extracted under the earlier class. A class change saved
