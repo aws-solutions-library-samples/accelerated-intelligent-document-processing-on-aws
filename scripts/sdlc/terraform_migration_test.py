@@ -2452,16 +2452,12 @@ class Run:
         except PhaseFailed:
             pass
         self.save()
-        # Upstream sets force_destroy on some buckets only; its versioned test-set
-        # bucket holds the seeded objects and refuses DeleteBucket (measured). These
-        # are this run's own buckets, so empty them, every version, first.
-        # Recorded from this run's own old state, so each one is this run's.
-        for bucket in (self.ctx.get("oldNames") or {}).get("buckets", []):
-            try:
-                empty_bucket(self.boto("s3"), bucket)
-            except Exception as e:  # noqa: BLE001 - the destroy reports what is left
-                print(f"  could not empty {bucket}: {e}", flush=True)
         for attempt in (1, 2):
+            # Before every attempt, not once: a bucket another of the run's
+            # buckets logs into receives objects after it was emptied (measured:
+            # DeleteBucket refused with BucketNotEmpty on the logs bucket).
+            self._empty_old_buckets()
+            self._forget_items_of_deleted_tables()
             proc = self.terraform(
                 self.old_dir,
                 "destroy",
@@ -2481,6 +2477,60 @@ class Run:
         raise PhaseFailed(
             "terraform destroy of the old deployment failed twice; the sweep handles what is left"
         )
+
+    def _empty_old_buckets(self) -> None:
+        # Upstream sets force_destroy on some buckets only; its versioned test-set
+        # bucket holds the seeded objects and refuses DeleteBucket (measured). These
+        # are this run's own buckets, so empty them, every version, first.
+        # Recorded from this run's own old state, so each one is this run's.
+        for bucket in (self.ctx.get("oldNames") or {}).get("buckets", []):
+            try:
+                empty_bucket(self.boto("s3"), bucket)
+            except Exception as e:  # noqa: BLE001 - the destroy reports what is left
+                print(f"  could not empty {bucket}: {e}", flush=True)
+
+    def _forget_items_of_deleted_tables(self) -> None:
+        """Drop from the old state every table item whose table no longer exists.
+
+        After a failed adoption the new deployment's delete has already destroyed
+        the tables it adopted, and their KMS key, while the old state still lists
+        their items; deleting an item of a deleted table fails every attempt
+        (measured: the concurrency table's workflow_counter left the old state
+        listing it and its neighbours after the destroy). An item cannot outlive
+        its table, so there is nothing left to delete."""
+        try:
+            instances = state_instances(self.old_state())
+        except PhaseFailed:
+            return
+        ddb = self.boto("dynamodb")
+        gone: Dict[str, bool] = {}
+        stale = []
+        for inst in instances:
+            if inst["type"] != "aws_dynamodb_table_item":
+                continue
+            table = inst["attributes"].get("table_name")
+            if not table:
+                continue
+            if table not in gone:
+                try:
+                    ddb.describe_table(TableName=table)
+                    gone[table] = False
+                except Exception as e:  # noqa: BLE001 - only NotFound counts
+                    gone[table] = "ResourceNotFound" in type(e).__name__ or (
+                        "ResourceNotFoundException" in str(e)
+                    )
+            if gone[table]:
+                stale.append(inst["address"])
+        if stale:
+            print(
+                f"  forgetting {len(stale)} item(s) of deleted tables: {stale}",
+                flush=True,
+            )
+            proc = self.terraform(
+                self.old_dir, "state", "rm", *stale, log="old-state-rm.log", check=False
+            )
+            if proc.returncode != 0:
+                print("  could not forget them; see logs/old-state-rm.log", flush=True)
 
     def _attempt(self, name: str, fn: Optional[Callable[[], str]] = None) -> None:
         if fn is not None:
