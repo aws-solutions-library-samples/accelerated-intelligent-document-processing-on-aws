@@ -814,9 +814,9 @@ Few-shot learning enhances AI model performance by providing concrete examples a
 
 ### Key Benefits
 
-- **🎯 Improved Accuracy**: Models understand document patterns and expected formats better through concrete examples
+- **🎯 Accuracy**: Concrete examples can help a model recognise document patterns and expected formats. The size of the effect has not been measured in this repository's benchmarks, so A/B test it on your own documents
 - **📏 Consistent Output**: Examples establish exact JSON structure and formatting standards
-- **🚫 Reduced Hallucination**: Examples reduce likelihood of made-up classification or attribute values
+- **🚫 Fewer made-up values**: Examples showing the expected output can discourage invented classification or attribute values
 - **🔧 Domain Adaptation**: Examples help models understand domain-specific terminology and conventions
 - **💡 Better Edge Case Handling**: Visual examples clarify ambiguous cases that text descriptions might miss
 - **💰 Cost Effectiveness with Caching**: Using prompt caching with few-shot examples can significantly reduce costs for repeated processing
@@ -1028,7 +1028,7 @@ task_prompt: >-
 For models supporting cache checkpoints:
 - **Initial Request**: Full token cost
 - **Subsequent Requests**: Cache read cost (typically 10x cheaper) + new content cost
-- **Typical Savings**: 60-90% cost reduction for repeated processing
+- **Savings**: depend on how much of each request is a cacheable prefix, and need the prefix to reach the model's minimum cacheable size ([prompt-caching study](./benchmarking/studies/prompt-caching.md))
 
 ## LLM Inference Parameters
 
@@ -1074,11 +1074,19 @@ top_p: 0.0    # Take the most likely token
 top_k: 5      # Consider top 5 candidates
 ```
 
-**Conservative Configuration:**
+**Narrower alternative** (not shipped, and not measured to be more accurate):
 ```yaml
 top_p: 0.05   # More focused selection
 top_k: 3      # Fewer candidates
 ```
+
+The only top-k measurement in this repository found no effect: on Nova Lite
+Advanced extraction, `topK: 1` and the full greedy triple left the invalid
+tool-use failure rate unchanged
+([greedy-decoding study](./benchmarking/studies/greedy-decoding-tool-use.md)).
+Claude 4.7 and later, xAI Grok and OpenAI GPT-6 Astra reject sampling parameters,
+so the accelerator omits them for those models and a configured `top_k` is
+silently ignored there. A/B test any change on your own documents.
 
 ### Max Tokens Sizing
 
@@ -1134,9 +1142,9 @@ extraction:
 
 #### Token Efficiency Benefits
 
-YAML format provides significant token savings for all processing tasks:
+YAML usually needs fewer tokens than the equivalent JSON, though the saving has
+not been measured here and depends on the shape of your data:
 
-- **10-30% fewer tokens** than equivalent JSON
 - No quotes required around keys
 - More compact syntax for nested structures
 - Natural support for multiline content
@@ -1191,13 +1199,13 @@ customer_name: John Smith
 customer_address: 456 Oak Ave, City, State 67890
 ```
 
-The YAML version uses approximately 25% fewer tokens while maintaining the same information content.
+The YAML version carries the same information with less punctuation, so it usually needs fewer tokens.
 
 ### OCR Confidence Data Integration
 
 The assessment feature implements several cost optimization techniques:
 
-1. **Text Confidence Data**: Uses condensed OCR confidence information instead of full raw OCR results (80-90% token reduction)
+1. **Text Confidence Data**: Uses condensed OCR confidence information instead of full raw OCR results, which is smaller
 2. **Conditional Image Processing**: Images only processed when `{DOCUMENT_IMAGE}` placeholder is present
 3. **Efficient Prompting**: Optimized prompt templates minimize token usage while maintaining accuracy
 
@@ -1433,7 +1441,7 @@ full reference.
 
 - **Multimodal Analysis**: Combines text analysis with document images for comprehensive confidence assessment
 - **Per-Attribute Scoring**: Provides individual confidence scores and explanations for each extracted attribute
-- **Token-Optimized Processing**: Uses condensed text confidence data for 80-90% token reduction compared to full OCR results
+- **Token-Optimized Processing**: Uses condensed text confidence data, which is smaller than the full OCR results
 - **UI Integration**: Seamlessly displays confidence results in the web interface with explainability information
 - **Confidence Threshold Support**: Configurable global and per-attribute confidence thresholds with color-coded visual indicators
 - **Runtime Control**: Enabled/disabled via configuration (`extraction.confidence.enabled` / `mode`), no stack redeployment required

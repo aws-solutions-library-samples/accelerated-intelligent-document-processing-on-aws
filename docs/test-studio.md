@@ -1884,7 +1884,7 @@ happened to get, and the point estimate alone cannot distinguish 100% measured o
 observations from 100% measured on 300. The two justify completely different decisions.
 
 This matters more per field than it does overall. A run's overall accuracy firms up
-quickly — within roughly the first hundred documents — because every document contributes
+much faster than any single field's, because every field of every document contributes
 to it. A field that appears once per document gains one observation per document, so a
 badly-broken field can sit inside a healthy-looking overall score until the set is large
 enough to expose it. At a measured 90% accuracy:

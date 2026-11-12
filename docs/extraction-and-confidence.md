@@ -114,9 +114,11 @@ extraction:
 > GPT-5.x (`minimal`|`low`|`medium`|`high`), xAI Grok
 > (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`), and OpenAI GPT-6 Astra
 > (`none`|`low`|`medium`|`high`|`xhigh`|`max`, **not** `minimal`) — `reasoning_effort` controls how much
-> the model reasons before answering. Extraction **defaults to `low`**: a full
-> effort sweep found higher effort adds output-token cost with negligible
-> extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
+> the model reasons before answering. Extraction **defaults to `low`**, because higher
+> effort spends more output tokens. Its effect on extraction accuracy has not been
+> measured here: every benchmark cell holds effort at `low`
+> ([config-guidance](./benchmarking/config-guidance.md#configuration-axes-measured)).
+> If you raise it for reasoning-heavy documents, A/B test it on your own documents.
 > Ignored by Nova, Sonnet 4.5, and Haiku **4.5** — note the two Haikus differ here:
 > Haiku 5.5 is the first Haiku that accepts effort, and its own default is
 > `medium` rather than `high`. Sonnet 5.5's own default is `high`, the ordinary
@@ -528,7 +530,7 @@ extraction:
 - **`max_pages_per_shard` is the timeout lever.** It stays a small fixed default (5) rather than model-derived: the 900s Lambda limit is about *sequential agent turns per shard* (wall-clock), not context tokens, so a roomy token budget must not collapse a large doc back into one giant shard. Fewer pages/shard ⇒ fewer turns ⇒ each shard Lambda finishes well under 900s.
 - **Advanced defaults to the resumable runtime.** `runtime: step_functions` is now the agentic default: each shard is its own Lambda iteration in a nested Step Functions **Distributed Map**, so a very large section is not bound by the single-Lambda 15-minute limit and Step Functions **retries only the incomplete shards** (completed shards are reused from S3). `in_process` (asyncio within one Lambda) remains available but is still bound by that one Lambda's 900s.
 - **Confidence *and* bounding-box grounding are sharded too.** Each shard runs its confidence assessment **and grounds its own rows' bounding boxes against only its own pages** — so both scale per-shard and run concurrently. The final merge only concatenates already-scored, already-grounded rows (plus a fast top-up for any rows the assessment LLM omitted); it does **not** re-assess or re-ground the whole section. This keeps the merge step fast even on very large tables (previously a single full-section grounding sweep over thousands of rows could approach the merge Lambda's 900s limit).
-- **Large-document guidance.** The defaults above are tuned to work out-of-the-box on large documents. Validated at scale on 100- and 200-page single- and multi-table documents (exact row counts, no loss/duplication, no timeouts).
+- **Large-document guidance.** The defaults above are tuned to work out-of-the-box on large documents. The largest document the benchmark suite has measured is 66 pages and 3,200 rows, on which advanced mode at the default model returned every row on both repeats ([config-guidance](./benchmarking/config-guidance.md#largest-document-tested-66-pages-3200-rows)); larger documents have not been measured.
 
 See [Large-Document Guidance](#8-large-document-guidance) for choosing between
 Simple + separate confidence and Advanced sharding.
@@ -1289,7 +1291,7 @@ is configured under `extraction.confidence`.
 
 - **Per-attribute scoring**: Individual confidence scores for each field, recursively for nested groups and list items. To keep responses compact, the default prompts ask the model to include a `confidence_reason` **only for lower-confidence leaves (below 0.9)** — a high-confidence value emits just `{"confidence": <score>}`. This cuts assessment output tokens substantially (output tokens dominate assessment cost) without affecting the scores or thresholds. Widen or remove the threshold in the confidence `task_prompt` if you want a reason on every field.
 - **Multimodal analysis**: Optionally combines OCR text with document images.
-- **Token-optimized**: Uses condensed OCR text confidence data for 80–90% token reduction versus full OCR results.
+- **Token-optimized**: Uses condensed OCR text confidence data, which is smaller than the full OCR results it is derived from.
 - **Large-list batching**: Long list fields (hundreds of rows) are automatically assessed in sequential batches (`list_batch_size`) so every row is scored — see below.
 - **UI integration**: Results appear in the web interface with color-coded confidence indicators and (with geometry) bounding-box overlays.
 
@@ -1374,7 +1376,7 @@ The confidence prompts support the following placeholders:
 | `{EXTRACTION_RESULTS}` | JSON string of extraction results to assess |
 | `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` | Formatted list of attribute names and descriptions |
 | `{DOCUMENT_TEXT}` | OCR text (markdown) of the section's pages |
-| `{OCR_TEXT_CONFIDENCE}` | Condensed OCR confidence data (80-90% token reduction) |
+| `{OCR_TEXT_CONFIDENCE}` | Condensed OCR confidence data (smaller than the full OCR results) |
 | `{DOCUMENT_IMAGE}` | **Optional** — inserts document images at the specified position (see [Image Placement](#7-image-placement-cachepoint-output-formats--few-shot)) |
 
 A representative confidence `task_prompt` requesting scores (and geometry, when
@@ -2325,9 +2327,10 @@ standard input tokens).
 ### JSON and YAML output
 
 The extraction service auto-detects and parses both JSON and YAML LLM responses
-via `extract_structured_data_from_text()`. YAML is more token-efficient (~10–30%
-fewer tokens; ~25% typical): no quotes around keys, compact nested syntax,
-natural multiline support. All existing JSON prompts continue to work unchanged —
+via `extract_structured_data_from_text()`. YAML usually needs fewer tokens than the
+equivalent JSON — no quotes around keys, compact nested syntax, natural multiline
+support — though the saving has not been measured here and depends on the shape
+of your data. All existing JSON prompts continue to work unchanged —
 no configuration changes required, with intelligent fallback between formats if
 parsing fails.
 

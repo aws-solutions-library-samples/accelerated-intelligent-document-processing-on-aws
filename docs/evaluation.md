@@ -539,7 +539,7 @@ Weighted Overall Score = (2.0 + 0.8 + 0.3) / (2.0 + 1.0 + 0.5) = 3.1 / 3.5 = 0.8
 
 ### Best Practices
 
-1. **Weight Critical Fields Higher**: Invoice amounts, dates, IDs should have weights ≥ 1.5
+1. **Weight Critical Fields Higher**: Give fields such as invoice amounts, dates and IDs a weight above 1.0. A weight states relative business importance; no particular value has been measured to be better than another
 2. **Use Default Weight for Standard Fields**: Most fields should use weight=1.0 (or omit for default)
 3. **Reduce Weight for Optional Fields**: Notes, descriptions can use weight=0.5
 4. **Test Different Weightings**: Adjust weights based on business feedback and error impact analysis
