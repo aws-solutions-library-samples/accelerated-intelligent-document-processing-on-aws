@@ -27,6 +27,7 @@ import { exportToExcel } from '../common/download-func';
 import DeleteDocumentModal from '../common/DeleteDocumentModal';
 import ReprocessDocumentModal from '../common/ReprocessDocumentModal';
 import AbortWorkflowModal from '../common/AbortWorkflowModal';
+import AddProcessedDocumentsModal, { type PreselectedDocument } from '../test-studio/AddProcessedDocumentsModal';
 import DateRangeModal from '../common/DateRangeModal';
 import { isPendingForReviewer } from './reviewer-pending-filter';
 import { exportDocuments, triggerBrowserDownload } from '../document-panel/document-export';
@@ -125,6 +126,9 @@ const DocumentList = (): React.JSX.Element => {
   const [isReprocessLoading, setIsReprocessLoading] = useState(false);
   const [isAbortLoading, setIsAbortLoading] = useState(false);
   const [isDateRangeModalVisible, setIsDateRangeModalVisible] = useState(false);
+  // The selection the add-to-test-set dialog was opened with; null while it is closed.
+  const [addToTestSetDocuments, setAddToTestSetDocuments] = useState<PreselectedDocument[] | null>(null);
+  const [addToTestSetMessage, setAddToTestSetMessage] = useState<string | null>(null);
   const [currentUsername, setCurrentUsername] = useState('');
   // Server refusals from the last Start Review or Release Review, shown above the table.
   const [reviewRefusal, setReviewRefusal] = useState<{ header: string; messages: string[] } | null>(null);
@@ -534,6 +538,20 @@ const DocumentList = (): React.JSX.Element => {
     if (scope) void startBulkDownload(scope);
   };
 
+  const handleOpenAddToTestSet = () => {
+    const selected = (collectionProps.selectedItems ?? []) as MappedDocument[];
+    setAddToTestSetMessage(null);
+    setAddToTestSetDocuments(
+      selected.map((item) => ({
+        objectKey: item.objectKey,
+        objectStatus: item.objectStatus,
+        submitted: item.initialEventTime,
+        evaluationStatus: item.evaluationStatus,
+        configVersion: item.configVersion,
+      })),
+    );
+  };
+
   const handleCloseDownloadProgress = () => {
     setIsDownloadFinished(false);
     setDownloadProgress(null);
@@ -617,6 +635,11 @@ const DocumentList = (): React.JSX.Element => {
           ))}
         </Alert>
       )}
+      {addToTestSetMessage && (
+        <Alert type="success" dismissible onDismiss={() => setAddToTestSetMessage(null)}>
+          {addToTestSetMessage}
+        </Alert>
+      )}
       <Table
         {...collectionProps}
         header={
@@ -664,6 +687,10 @@ const DocumentList = (): React.JSX.Element => {
             onReleaseReview={isAdmin ? handleReleaseReview : null}
             reviewMenu={reviewMenu}
             onReviewAction={onReviewAction}
+            // Admin only, by decision on #812. The add itself is authorized
+            // server-side for Admin and Author, as it is from Test Studio. The
+            // Test Studio view lists test-run copies, not documents to curate.
+            onAddToTestSet={isAdmin && !isTestView ? handleOpenAddToTestSet : null}
             currentUsername={currentUsername}
           />
         }
@@ -728,6 +755,19 @@ const DocumentList = (): React.JSX.Element => {
         selectedItems={collectionProps.selectedItems}
         isLoading={isAbortLoading}
       />
+
+      {addToTestSetDocuments ? (
+        <AddProcessedDocumentsModal
+          visible
+          testSet={null}
+          preselected={addToTestSetDocuments}
+          onDismiss={() => setAddToTestSetDocuments(null)}
+          onSubmitted={({ message }) => {
+            setAddToTestSetDocuments(null);
+            setAddToTestSetMessage(message);
+          }}
+        />
+      ) : null}
 
       <DownloadOptionsModal
         visible={pendingDownloadScope !== null}

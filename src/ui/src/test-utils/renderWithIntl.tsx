@@ -10,10 +10,13 @@
  * catalog and a way to switch at run time. This helper is that, once, instead of one more
  * hand-rolled wrapper per test file.
  *
- * When not to use it. English tests keep plain `render`: English is inline (`defaultMessage`),
- * and `LocaleProvider` under `en` adds nothing to the markup (asserted in this helper's tests:
- * identical apart from per-render generated ids, which they normalise first). A test moves to
- * `renderWithIntl` when it renders another locale or its component reads `useLocale()`.
+ * When not to use it. English is inline (`defaultMessage`), and `LocaleProvider` under `en`
+ * adds nothing to the markup (asserted in this helper's tests: identical apart from per-render
+ * generated ids, which they normalise first), so an English test does not need this helper. It
+ * does still need an `IntlProvider` whenever its component calls `useIntl()` or renders
+ * `<FormattedMessage>`, which throw without one; an `en` `IntlProvider` as `render`'s `wrapper`
+ * is enough (see `src/i18n/README.md`, Testing). A test moves to `renderWithIntl` when it
+ * renders another locale or its component reads `useLocale()`.
  *
  * Fixture catalogs. Catalogs are a build artefact (`virtual:i18n-catalogs`), so a test that
  * passes `messages` mocks that module once, at the top of the file:
