@@ -819,8 +819,8 @@ class TestMergedPricing:
         `deep_update` assigns lists rather than merging them, so CustomPricing
         is a full replacement of `pricing` despite the docstring calling it
         "deltas". A custom record naming one service drops the price of every
-        other service, and the cost report then shows those services as free
-        rather than erroring.
+        other service, and the cost report then records those services as
+        unpriced (NULL) rather than costing them.
         """
         _make_table()
         manager = _manager(monkeypatch)
