@@ -1611,12 +1611,16 @@ def _validate_confidence_prompt_as_sent(
     the runtime builds it, from the validated configuration with prompt comments
     removed (``without_prompt_comments``), through ``select_confidence_task_prompt``,
     which appends ``extraction.geometry.task_prompt_bbox`` in the LLM-box geometry
-    modes. When that prompt carries ``{DOCUMENT_IMAGE}`` the service applies
+    modes. The service refuses an empty prompt ("task_prompt is required"), and
+    this does too: the placeholder check above skips an empty one, so an explicit
+    ``""`` used to pass. When the prompt carries ``{DOCUMENT_IMAGE}`` the service applies
     ``document_image_placeholder_error`` to it, and this applies the same rule.
 
-    Classification and extraction are not checked for this: given a repeated
-    ``{DOCUMENT_IMAGE}`` they log a warning and send the images after the text
-    instead of refusing.
+    Classification and extraction are not checked for this, because they do not
+    refuse a repeated ``{DOCUMENT_IMAGE}``: they log a warning and fall back.
+    Classification's context-pages and packet prompts then send the images after
+    the text; extraction and classification's page prompt send the text without the
+    images.
 
     Skipped when the confidence block turns scoring off, as the placeholder check
     above is, because the prompt is then never sent.
@@ -1638,12 +1642,24 @@ def _validate_confidence_prompt_as_sent(
     if geometry_requires_llm_boxes(extraction.geometry.mode):
         path += " (with extraction.geometry.task_prompt_bbox appended)"
 
+    if not prompt:
+        # The service's own test (``if not prompt_template``), so an empty prompt,
+        # or one holding nothing but a comment, is refused and whitespace is left
+        # to the placeholder check above. An absent prompt never reaches here: the
+        # merge fills it from the system defaults.
+        result["valid"] = False
+        result["errors"].append(
+            f"{path} is empty, and the confidence pass refuses a document when "
+            "it has no prompt. Remove the key to use the system default prompt."
+        )
+        return
+
     if DOCUMENT_IMAGE_PLACEHOLDER in prompt:
         error = document_image_placeholder_error(prompt)
         if error:
             result["valid"] = False
             result["errors"].append(
-                f"{path}: {error} The confidence pass refuses every document otherwise."
+                f"{path}: {error} The confidence pass refuses a document otherwise."
             )
 
 
