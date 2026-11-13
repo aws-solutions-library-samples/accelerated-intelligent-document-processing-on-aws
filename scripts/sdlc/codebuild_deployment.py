@@ -4980,6 +4980,26 @@ def terraform_deploy_role_template(
                         "Action": ["cloudcontrol:*"],
                         "Resource": "*",
                     },
+                    {
+                        # Cloud Control's AWS::IAM::ManagedPolicy delete handler
+                        # lists what a policy is attached to before deleting it,
+                        # which CloudFormation's own handling never needed. Read
+                        # only, and only on the policies the service role's
+                        # ManagedPoliciesWithinNamePrefix lets this role create.
+                        "Sid": "TerraformManagedPolicyEntities",
+                        "Effect": "Allow",
+                        "Action": ["iam:ListEntitiesForPolicy"],
+                        "Resource": [
+                            {
+                                "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:"
+                                "policy/${ManagedStackNamePrefix}*"
+                            },
+                            {
+                                "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:"
+                                "policy/*/${ManagedStackNamePrefix}*"
+                            },
+                        ],
+                    },
                     *(
                         copy.deepcopy(list(TERRAFORM_MIGRATION_ROLE_ADDITIONS))
                         if terraform_migration
