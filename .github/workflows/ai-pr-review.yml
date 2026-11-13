@@ -91,7 +91,9 @@ jobs:
   ai_pr_review:
     name: AI PR Review (advisory)
     runs-on: ubuntu-latest
-    # A review is ~9 minutes, of which ~3.5 is installing Node and the CLI. The
+    # A review is ~8 minutes, nearly all of it the review step itself (a median of
+    # 479s over 12 reviews on 2026-11-13); setting up Node and installing the CLI
+    # each took under 5s, so there is no install time worth caching here. The
     # sweep is bounded to 3 PRs below, so 45m covers a slow sweep without letting
     # a wedged run hold a runner for hours. Same budget as the GitLab job.
     timeout-minutes: 45
