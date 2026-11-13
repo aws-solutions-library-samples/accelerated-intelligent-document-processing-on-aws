@@ -54,15 +54,16 @@ cd lib/idp_common_pkg && make test-unit     # one root, isolated
 make test-integration-all                   # only the integration-marked tests (needs AWS)
 ```
 
-**`make test` itself runs in neither CI.** CI runs the same suites through two other
-targets — `make test-cicd -C lib/idp_common_pkg` and `make test-packages-cicd` — and
-the second of those is a hand-enumerated recipe, so a suite that `make test`
+**`make test` itself runs in neither CI.** CI runs the same suites through three other
+targets — `make test-cicd -C lib/idp_common_pkg`, `make coverage-all-cicd`, which runs
+every suite a coverage tree measures, and `make test-packages-cicd` for the rest — and
+the last of those is a hand-enumerated recipe, so a suite that `make test`
 discovers but nobody adds to it runs locally and on no pull request. 22 registered
 roots holding 506 tests were in exactly that state, including the resolver suites
 covering the download allow-list and the discovery upload target.
 `scripts/tests/test_src_lambda_tests_in_ci.py` now closes that by deriving both
 sides — every directory holding a tracked `test_*.py`, against the paths the two
-recipes actually run pytest against — so a root that is in neither is a test failure
+recipes run pytest against plus the directories the coverage trees measure — so a root that is in neither is a test failure
 rather than a gap somebody finds by hand months later. A suite that genuinely cannot
 run in the shared gate goes in the excluded registry [below](#suites-make-test-does-not-run)
 with a reason.
@@ -280,7 +281,7 @@ hand-written scanners for classes of defect that have each shipped at least once
 | `make typecheck` | `basedpyright` over every tracked `.py` file — this is what both CIs run. `make typecheck-pr` narrows it to the files a branch changes, for local latency, and is a gate in neither |
 | `make api-test-static` | an API operation added without authorization, and drift between the dispatcher's generated required-groups manifest and `scripts/api_rbac_expectations.yaml` — see [layer 6](#6-live-stack-tiers-manual-plus-the-weekly-probe-schedule) for the live half |
 | `python3 scripts/check_first_party_deps.py` | a first-party package in the **current environment** that came from a package index rather than from `lib/`, which on public PyPI is [somebody else's code](./dependency-confusion.md) |
-| `scripts/tests/test_doc_install_commands.py` (part of `make test-packages-cicd`) | a `pip install` **documented** in a fenced code block that could resolve a first-party name from an index — a bare name, or a path install missing a sibling the package requires by name. The environment checker above cannot see an instruction nobody has run yet |
+| `scripts/tests/test_doc_install_commands.py` (part of `make coverage-all-cicd`) | a `pip install` **documented** in a fenced code block that could resolve a first-party name from an index — a bare name, or a path install missing a sibling the package requires by name. The environment checker above cannot see an instruction nobody has run yet |
 | `python3 scripts/sdlc/validate_service_role_permissions.py` | the CloudFormation service role missing a permission the templates need |
 | `scripts/tests/test_agent_capabilities.py` (part of `make test-packages-cicd`) | an agent, tool, MCP tool or `claude -p` harness with no entry in `scripts/tests/agent_capabilities.yaml`, an entry whose surface is gone, and an entry that takes document-derived or external text and reads private data with an external output that no named control limits and no recorded finding lists. Surfaces are derived from source by AST. It checks the manifest's declarations, not whether they are true; the [`agent-capability-review`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/agent-capability-review.md) skill is the audit that re-reads them. `scripts/tests/test_analytics_role_grants.py` bounds the IAM grants of the roles those entries name |
 | `scripts/tests/test_threat_model_evidence.py` (part of `make test-packages-cicd`) | an entry under `security/threat-modeling/` (every one the export builder reads) whose mitigations neither cite a test, gate or `make` target that resolves nor say `UNVERIFIED`, and a rise in the pinned count of `UNVERIFIED` entries |

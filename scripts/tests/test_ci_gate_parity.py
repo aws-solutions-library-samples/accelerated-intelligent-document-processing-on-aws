@@ -243,8 +243,8 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "gated; this Makefile wrapper is the local spelling of it."
     ),
     "test-cli": (
-        "`lib/idp_cli_pkg` alone, verbosely. The same suite runs in both CIs as the "
-        "first step of `test-packages-cicd`."
+        "`lib/idp_cli_pkg` alone, verbosely. The same suite runs in both CIs, under "
+        "coverage, as the `idp_cli` tree of `coverage-all-cicd`."
     ),
     "test-config-library": (
         "`config_library/test_config_library.py` alone, verbosely. The same file "
@@ -252,7 +252,8 @@ GATES_DELIBERATELY_OUT_OF_CI = {
     ),
     "test-hooks": (
         "`scripts/tests/test_check_commit_text.py` alone, verbosely. It sits under "
-        "`scripts/tests`, which `test-packages-cicd` runs in full in both CIs."
+        "`scripts/tests`, which `coverage-all-cicd` runs in full in both CIs as the "
+        "`scripts` tree."
     ),
     "test-capacity": (
         "`src/lambda/calculate_capacity` alone, verbosely. `make test` covers it "
@@ -1829,12 +1830,12 @@ def test_the_integration_pytest_tier_runs_in_no_ci() -> None:
 
 #: The ``make`` targets through which a CI job reaches ``scripts/tests``, and so
 #: ``scripts/tests/test_ui_test_discovery.py``, whose three calibrations consult the
-#: installed Vitest. ``test-packages-cicd`` runs that suite directly;
-#: ``coverage-all-cicd`` re-runs it in order to measure it, which drags the same
-#: toolchain requirement into a job whose name and ``script:`` block say nothing
-#: about it. Both spellings are listed because either one alone would leave a job
-#: that runs the suite outside the universe below.
-SCRIPTS_SUITE_TARGETS = ("test-packages-cicd", "coverage-all-cicd")
+#: installed Vitest. ``coverage-all-cicd`` runs that suite in order to measure it,
+#: which drags the toolchain requirement into a job whose name and ``script:`` block
+#: say nothing about it. ``test-packages-cicd`` no longer runs it: the coverage run is
+#: the one execution of it in CI, so that recipe leaves out every suite a coverage tree
+#: measures.
+SCRIPTS_SUITE_TARGETS = ("coverage-all-cicd",)
 
 #: The composite-action input by which a GitHub job asks for the UI's npm
 #: dependencies. GitHub Actions has no YAML anchors, so the install itself lives in

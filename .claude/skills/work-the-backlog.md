@@ -916,7 +916,7 @@ the failures this repo keeps re-learning.
 | `ruff check`, `ruff format --check`, `check_lint_debt.py`, `make typecheck-pr` | **< 1 min** | every fixer agent, first, stopping on failure |
 | the targeted tests for the change (**first, as a fast fail** — ~6–8 s), then the whole `idp_common` unit suite — ⚠️ **with bounded workers**, see below | **~171 s at `-n 4`** | every fixer agent |
 | `check_coverage_debt.py`, with a report present | seconds | every fixer agent |
-| `make test-packages-cicd` (~12 min), `make test` (65 roots), `make lint-cicd`, `make typecheck`, `make test-hooks` | **minutes to tens of minutes** | **the merge agent and the batch integration agent — not fixer agents** |
+| `make test-packages-cicd` (~5 min on 4 CPUs; it no longer runs the `scripts` suites), `python3 scripts/coverage_all.py --only scripts`, `make test` (65 roots), `make lint-cicd`, `make typecheck`, `make test-hooks` | **minutes to tens of minutes** | **the merge agent and the batch integration agent — not fixer agents** |
 
 ⚠️ **Every fixer agent must cap its worker count. `make test-cicd` defaults to
 `pytest -n auto`, which takes *every* core**, so N agents running it unbounded is
@@ -968,8 +968,10 @@ in no module directory at all, and the capped runs go in parallel anyway so "eve
 it" costs one run's worth per round. The figures are in the hazards file.
 **Two exceptions, and they are not negotiable.** An agent whose change touches
 `scripts/`, a `Makefile`, `ruff.toml`, `pyrightconfig.json` or any gate **must**
-run `make test-packages-cicd` itself, because that is the suite most likely to
-catch its own change and deferring it wastes a review round. An agent that
+run the `scripts` suites itself (`python3 scripts/coverage_all.py --only scripts`, or
+`pytest scripts/tests scripts/sdlc/tests`), because those are the suites most likely
+to catch its own change and deferring them wastes a review round.
+`make test-packages-cicd` does not include them. An agent that
 touches a CloudFormation template must run `make cfn-lint` and
 `make check-arn-partitions`.
 
@@ -1287,9 +1289,10 @@ The list is the workflows' own, and it is longer than the battery a merge agent 
 make lint-cicd            # cfn-lint, validate-buildspec, check-arn-partitions, scans
 make typecheck            # whole tree
 make test-cicd -C lib/idp_common_pkg
+make coverage-all-cicd    # the only run of the scripts, idp_sdk and idp_cli suites
 make test-packages-cicd
 make api-test-static
-make check-coverage-debt
+make check-coverage-debt-cicd
 ( cd src/ui && npm ci && npm run build )
 CI=1 make srt-scan        # SRT; CI=1 or it can hang headlessly with no timeout
 python3 scripts/security/dep_audit.py
@@ -1428,7 +1431,8 @@ Measured on this host (16 cores, 123 GB, ~75 GB available):
 Battery wall-clock on this host: the `idp_common` unit suite is **77 s** alone at
 `-n auto`, **171 s** as one of four concurrent `-n 4` runs, and **224–243 s** as one
 of four concurrent `-n auto` runs — so its cost is a property of how many are running
-and with what worker cap, not of the suite. `make test-packages-cicd` **~12 min**;
+and with what worker cap, not of the suite. `make test-packages-cicd` **~5 min** on 4
+CPUs (305 s, 2026-11-12, after it stopped running the suites coverage measures);
 `pytest scripts/tests` **6–7 min**; the cheap checks **under a minute**.
 
 **So the two levers are independent and both matter:** N bounds how many agents run,
@@ -1614,8 +1618,9 @@ brief:
 >    passes and the local battery stays the authority.
 > 4. **Run the battery on the merge result, not the branch.** `make test-cicd -C
 >    lib/idp_common_pkg`, `scripts/check_coverage_debt.py`, `ruff check`,
->    `ruff format --check`; add `make test-packages-cicd` if the PR touches
->    `scripts/` or a gate. Report exact counts. A log with no `N passed` summary
+>    `ruff format --check`; add `python3 scripts/coverage_all.py --only scripts`
+>    if the PR touches `scripts/` or a gate (`make test-packages-cicd` does not run
+>    the `scripts` suites). Report exact counts. A log with no `N passed` summary
 >    line did not run. ⚠️ **Do not edit anything in that worktree while the
 >    battery runs** — an interrupted run still writes a `coverage.xml`, and the
 >    ratchet will then report fabricated losses.

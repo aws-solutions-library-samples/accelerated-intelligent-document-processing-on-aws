@@ -391,13 +391,15 @@ unit_tests:
       junit: lib/idp_common_pkg/test-reports/test-results.xml
     expire_in: 1 week
 
-# The package / Lambda suites not covered by idp_common_pkg (idp_cli, idp_sdk,
-# idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
-# config_library, and the repo's own gate suites under scripts/).
+# The package / Lambda suites that neither idp_common_pkg's test-cicd nor
+# coverage-all-cicd runs (Terraform, the Lambda and resolver handlers, the samples,
+# benchmarks, the state machine, config_library). The suites a coverage tree measures
+# (idp_cli, idp_sdk, idp_feature_sdk, main-stack-extensions, the gate suites under
+# scripts/) run once, under coverage, in unit_tests.
 #
-# Many separate pytest invocations, of which the nine measured above 20s in CI run
-# `-n auto` — see PYTEST_XDIST in the Makefile for the selection rule and why it is
-# not applied to all of them.
+# Many separate pytest invocations; those measured above 20s in CI run `-n auto` —
+# see PYTEST_XDIST in the Makefile for the selection rule and why it is not applied
+# to all of them.
 package_tests:
   <<: *fast_check_job
   tags:
@@ -422,9 +424,15 @@ package_tests:
 
   before_script:
     - *python_setup
+    # ⚠️ The three toolchains below (Node with basedpyright, pinned cfn-lint, the UI's
+    # npm dependencies) were added for `scripts/tests` and `lib/idp_sdk`. Those suites
+    # no longer run in this job: `test-packages-cicd` leaves out every suite a coverage
+    # tree measures, and `unit_tests` runs them under `coverage-all-cicd` with the same
+    # three toolchains. They are kept here until it is measured that no remaining suite
+    # in this job needs them; the reasons below describe the suites they were added for.
     # ⚠️ Node and basedpyright ARE needed here, which is not obvious from the
     # script below and cost this job a red run when they were left out.
-    # `scripts/tests` is one of the suites `test-packages-cicd` runs, and
+    # `scripts/tests` is one of the suites `coverage-all-cicd` runs, and
     # `test_pyright_config.py` RUNS basedpyright — a live 0.5s probe confirming
     # that pyrightconfig.json's five `extraPaths` really resolve the first-party
     # packages, rather than trusting that the config looks right. That is the whole

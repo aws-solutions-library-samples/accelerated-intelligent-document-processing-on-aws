@@ -53,7 +53,8 @@ deployed MCP server.
 ## Verify with
 - `cd lib/idp_sdk && pytest -m "not integration" -v`
 - `cd lib/idp_cli_pkg && python -m pytest -v`
-- `make test-packages-cicd` and `make ruff-lint`
+- `python3 scripts/coverage_all.py --only idp_sdk --only idp_cli` (the CI run of both
+  suites) and `make ruff-lint`
 - `scripts/tests/test_config_region_threading.py` and
   `scripts/tests/test_doc_install_commands.py`
 

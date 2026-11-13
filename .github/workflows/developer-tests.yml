@@ -188,8 +188,9 @@ jobs:
 
       # ⚠️ Node and the pinned cfn-lint are load-bearing here, and neither is visible
       # from any `run:` line below. This job used to need neither; the coverage
-      # producer two steps down re-runs the `scripts` and `idp_sdk` suites to measure
-      # them, which drags their toolchain requirements into this job wholesale —
+      # producer two steps down is the one CI run of the `scripts` and `idp_sdk` suites
+      # (it measures them; `test-packages-cicd` leaves out every suite a coverage tree
+      # runs), which drags their toolchain requirements into this job wholesale —
       # `scripts/tests/test_ux_recorder.py` runs the recorder's cursor-overlay
       # JavaScript under node and FAILS rather than skipping without it, and
       # `scripts/tests/test_pyright_config.py` runs basedpyright live. cfn-lint is
