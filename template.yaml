@@ -6053,8 +6053,10 @@ Resources:
               # than only with the docs. ⚠️ It does NOT reach the analytics
               # agent: that prompt carries its own hand-written table
               # descriptions and never reads Glue metadata, so the same
-              # warning is repeated in schema_provider.py on purpose.
-              Comment: "Document runs: one run is one (document_id, timestamp) pair in metering. NULL, permanently, for partitions older than the data-mart migration window (Days, default 30) - meaning not recorded, never zero runs. SUM() skips NULLs, so pair it with COUNT(*) and COUNT(n_runs) to see whether a range is fully covered."
+              # warning is repeated in schema_provider.py on purpose. Glue
+              # caps a column Comment at 255 characters; the stack fails to
+              # deploy above it (test_glue_column_comment_length.py).
+              Comment: "Document runs, one per (document_id, timestamp) in metering. NULL - not recorded, never zero - for partitions older than the migration window (Days, default 30). SUM() skips NULLs: pair it with COUNT(*) and COUNT(n_runs) to check full coverage."
               Type: bigint
           Compressed: true
         PartitionKeys:
@@ -6125,8 +6127,10 @@ Resources:
               # than only with the docs. ⚠️ It does NOT reach the analytics
               # agent: that prompt carries its own hand-written table
               # descriptions and never reads Glue metadata, so the same
-              # warning is repeated in schema_provider.py on purpose.
-              Comment: "Document runs: one run is one (document_id, timestamp) pair in metering. NULL, permanently, for partitions older than the data-mart migration window (Days, default 30) - meaning not recorded, never zero runs. SUM() skips NULLs, so pair it with COUNT(*) and COUNT(n_runs) to see whether a range is fully covered."
+              # warning is repeated in schema_provider.py on purpose. Glue
+              # caps a column Comment at 255 characters; the stack fails to
+              # deploy above it (test_glue_column_comment_length.py).
+              Comment: "Document runs, one per (document_id, timestamp) in metering. NULL - not recorded, never zero - for partitions older than the migration window (Days, default 30). SUM() skips NULLs: pair it with COUNT(*) and COUNT(n_runs) to check full coverage."
               Type: bigint
           Compressed: true
         PartitionKeys:
