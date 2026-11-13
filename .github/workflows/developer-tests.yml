@@ -186,8 +186,8 @@ jobs:
       - name: Set up Git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      # ⚠️ The `scripts` tree no longer runs in this job (package_tests measures it),
-      # so the node and ui-deps reasons below now apply to package_tests; this job
+      # ⚠️ The `scripts` tree no longer runs in this job (scripts_coverage measures it),
+      # so the node and ui-deps reasons below now apply to scripts_coverage; this job
       # keeps them until it is measured that no remaining tree here needs them. The
       # pinned cfn-lint is still load-bearing here, for the idp_sdk tree.
       # The reasons, as written for the suites they were added for: the coverage
@@ -229,10 +229,10 @@ jobs:
       # still requires it by name.
       #
       # ⚠️ The `scripts` tree is NOT measured here: it is the longest tree (about 17
-      # minutes of this job at 2 workers on 2026-11-13) and package_tests below
+      # minutes of this job at 2 workers on 2026-11-13) and scripts_coverage below
       # measures and ratchets it with all four CPUs. `--measured-elsewhere scripts`
       # is the only tree this job's ratchet does not require, and
-      # scripts/tests/test_coverage_debt.py asserts that package_tests requires it.
+      # scripts/tests/test_coverage_debt.py asserts that scripts_coverage requires it.
       - name: Coverage reports for every other measurable tree (concurrent)
         run: make coverage-all-cicd COVERAGE_CICD_SKIP="--skip idp_common --skip scripts"
         continue-on-error: false
@@ -364,10 +364,46 @@ jobs:
         run: make test-packages-cicd
         continue-on-error: false
 
-      # The scripts tree's one CI run, under coverage, moved here from unit_tests:
-      # this job had spare time once test-packages-cicd stopped re-running the
-      # coverage-measured suites, and a single tree gets every CPU. Its ratchet
-      # requires the tree by name, so a report that was not produced fails here.
+  # The `scripts` coverage tree -- this repository's own gate suites -- in a job of its
+  # own. On GitHub's 4-vCPU runners it is the longest tree, and it does not speed up
+  # with more workers: 1,006 s at two workers inside unit_tests and 941 s at four
+  # inside package_tests (2026-11-13), so the only way to take it off the critical
+  # path is to run it beside the other jobs rather than after one of them.
+  # unit_tests' ratchet passes `--measured-elsewhere scripts`, and
+  # scripts/tests/test_coverage_debt.py asserts this job requires the tree.
+  scripts_coverage:
+    name: Scripts Coverage (gate suites)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
+
+    container:
+      image: python:3.13-bookworm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          # Full history: test_no_skip_ci_markers.py scans commits since a pinned
+          # start point and skips quietly on a shallow clone.
+          fetch-depth: 0
+
+      - name: Set up Git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # The scripts suites need node (test_ux_recorder.py, and basedpyright for
+      # test_pyright_config.py), the UI's npm dependencies (test_ui_test_discovery.py)
+      # and the pinned cfn-lint -- the same three inputs, for the same reasons, that
+      # the unit_tests comment above records.
+      - name: Set up the Python environment
+        uses: ./.github/actions/python-env
+        with:
+          node: "true"
+          cfn-lint: "true"
+          ui-deps: "true"
+
       - name: Coverage report and ratchet for the scripts tree
         run: |
           make coverage-all-cicd COVERAGE_CICD_SKIP= COVERAGE_ARGS="--only scripts"

@@ -282,7 +282,7 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "tree, and the exact state that left eight of nine trees advisory-but-passing "
         "in CI (#1256). Both CIs therefore reach `check-coverage-debt-cicd` instead, "
         "which adds `--require-all-trees` and is in SHARED_GATES. GitHub's "
-        "package_tests job also calls this bare target, with `--require-tree scripts`, "
+        "scripts_coverage job also calls this bare target, with `--require-tree scripts`, "
         "for the one tree it measures; it is still not a shared gate, because GitLab "
         "has no second coverage job to call it from."
     ),

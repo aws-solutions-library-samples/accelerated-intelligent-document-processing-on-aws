@@ -1340,7 +1340,7 @@ def main() -> int:
         help=(
             "With --require-all-trees: do not require this tree here, because another "
             "job of the same CI run measures and ratchets it (repeatable). GitHub's "
-            "package_tests job carries the scripts tree, so unit_tests passes "
+            "scripts_coverage job carries the scripts tree, so unit_tests passes "
             "--measured-elsewhere scripts. That the other job really requires it is "
             "asserted statically in scripts/tests/test_coverage_debt.py."
         ),

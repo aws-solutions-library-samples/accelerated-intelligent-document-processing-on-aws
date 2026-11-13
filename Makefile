@@ -396,7 +396,7 @@ coverage-all: ## Measure EVERY tree the registry names and print each one's figu
 #            (idp_common). The ratchet step below still requires it BY NAME, so
 #            dropping the wrong tree here turns the gate red rather than quietly
 #            narrowing it. GitHub's unit_tests also skips `scripts`, which its
-#            package_tests job measures and ratchets instead; the ratchet there passes
+#            scripts_coverage job measures and ratchets instead; the ratchet there passes
 #            --measured-elsewhere scripts, and test_coverage_debt.py's cross-job
 #            closure test asserts the other job requires it.
 COVERAGE_CICD_JOBS ?= 4
